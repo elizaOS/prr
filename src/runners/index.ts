@@ -90,5 +90,12 @@ export function printRunnerSummary(detected: DetectedRunner[]): void {
   for (const { runner, status } of detected) {
     const versionText = status.version ? chalk.gray(` v${status.version}`) : '';
     console.log(chalk.green(`  ✓ ${runner.displayName}${versionText}`));
+    
+    // Show discovered models if available (dynamically fetched)
+    if (runner.supportedModels && runner.supportedModels.length > 0) {
+      const modelList = runner.supportedModels.slice(0, 5).join(', ');
+      const moreText = runner.supportedModels.length > 5 ? ` (+${runner.supportedModels.length - 5} more)` : '';
+      console.log(chalk.gray(`    Models: ${modelList}${moreText}`));
+    }
   }
 }

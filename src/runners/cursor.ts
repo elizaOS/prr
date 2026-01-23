@@ -17,9 +17,133 @@ function isValidModel(model: string): boolean {
 // Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
 const CURSOR_AGENT_BINARY = 'cursor-agent';
 
+// Fallback model list if dynamic discovery fails
+const FALLBACK_MODELS = [
+  'sonnet-4.5',
+  'gpt-5.2',
+  'opus-4.5',
+  'gpt-5.2-codex',
+  'gemini-3-pro',
+];
+
+/**
+ * Model family priority for sorting discovered models
+ * WHY: We want to try Claude first (best reasoning), then GPT (good coding),
+ * then Gemini, then others. Within families, prefer thinking variants and higher tiers.
+ */
+const MODEL_FAMILY_PRIORITY: Array<{ pattern: RegExp; priority: number; subPriority?: (model: string) => number }> = [
+  // Claude models - highest priority
+  { 
+    pattern: /^(opus|sonnet|haiku)-?\d/i, 
+    priority: 1,
+    subPriority: (m) => {
+      if (m.includes('opus')) return 1;
+      if (m.includes('sonnet')) return 2;
+      if (m.includes('haiku')) return 3;
+      return 10;
+    }
+  },
+  // GPT models - second priority  
+  { 
+    pattern: /^gpt-/i, 
+    priority: 2,
+    subPriority: (m) => {
+      // Prefer higher versions, codex variants, and high tiers
+      if (m.includes('5.2') && m.includes('codex') && m.includes('high')) return 1;
+      if (m.includes('5.2') && m.includes('codex')) return 2;
+      if (m.includes('5.2') && m.includes('high')) return 3;
+      if (m.includes('5.2')) return 4;
+      if (m.includes('5.1')) return 5;
+      return 10;
+    }
+  },
+  // Gemini models - third priority
+  { 
+    pattern: /^gemini-/i, 
+    priority: 3,
+    subPriority: (m) => m.includes('pro') ? 1 : 2
+  },
+  // Others (grok, etc) - lowest priority
+  { pattern: /.*/, priority: 99 },
+];
+
+/**
+ * Parse `cursor-agent models` output and return prioritized model list
+ */
+function parseAndPrioritizeModels(output: string): string[] {
+  const models: string[] = [];
+  const lines = output.split('\n');
+  
+  for (const line of lines) {
+    // Format: "model-id - Model Description" or "model-id - Description (current, default)"
+    const match = line.match(/^([a-zA-Z0-9._-]+)\s+-\s+/);
+    if (match) {
+      const modelId = match[1];
+      // Skip 'auto' and 'composer-1' as they're meta-models
+      if (modelId !== 'auto' && modelId !== 'composer-1') {
+        models.push(modelId);
+      }
+    }
+  }
+  
+  // Sort by family priority
+  models.sort((a, b) => {
+    let aPriority = 99, bPriority = 99;
+    let aSubPriority = 99, bSubPriority = 99;
+    
+    for (const { pattern, priority, subPriority } of MODEL_FAMILY_PRIORITY) {
+      if (pattern.test(a) && priority < aPriority) {
+        aPriority = priority;
+        aSubPriority = subPriority?.(a) ?? 99;
+      }
+      if (pattern.test(b) && priority < bPriority) {
+        bPriority = priority;
+        bSubPriority = subPriority?.(b) ?? 99;
+      }
+    }
+    
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    if (aSubPriority !== bSubPriority) return aSubPriority - bSubPriority;
+    return a.localeCompare(b);
+  });
+  
+  // Return top models (don't need all variants)
+  // Pick: best Claude, best GPT, one Gemini, one alternative
+  const selected: string[] = [];
+  const families = new Set<string>();
+  
+  for (const model of models) {
+    let family = 'other';
+    if (/^(opus|sonnet|haiku)/i.test(model)) family = 'claude';
+    else if (/^gpt-/i.test(model)) family = 'gpt';
+    else if (/^gemini-/i.test(model)) family = 'gemini';
+    
+    // Take first 2 from claude, first 2 from gpt, first 1 from others
+    const familyCount = selected.filter(m => {
+      if (/^(opus|sonnet|haiku)/i.test(m)) return family === 'claude';
+      if (/^gpt-/i.test(m)) return family === 'gpt';
+      if (/^gemini-/i.test(m)) return family === 'gemini';
+      return family === 'other';
+    }).length;
+    
+    const maxPerFamily = family === 'claude' || family === 'gpt' ? 2 : 1;
+    if (familyCount < maxPerFamily) {
+      selected.push(model);
+    }
+    
+    // Stop after we have enough variety
+    if (selected.length >= 6) break;
+  }
+  
+  return selected;
+}
+
 export class CursorRunner implements Runner {
   name = 'cursor';
   displayName = 'Cursor Agent';
+  
+  // Dynamically discovered models (populated on checkStatus)
+  supportedModels?: string[];
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -48,21 +172,36 @@ export class CursorRunner implements Runner {
       // Version check failed, but might still work
     }
 
-    // Check if logged in by trying a simple command
+    // Check if logged in and get available models
     try {
-      const { stdout } = await exec(`${CURSOR_AGENT_BINARY} --list-models 2>&1`);
+      const { stdout } = await exec(`${CURSOR_AGENT_BINARY} models 2>&1`);
       if (stdout.includes('Available models') || stdout.includes('auto')) {
+        // Parse and prioritize models dynamically
+        // WHY: Model names change over time, dynamic discovery keeps us current
+        const discoveredModels = parseAndPrioritizeModels(stdout);
+        if (discoveredModels.length > 0) {
+          this.supportedModels = discoveredModels;
+          debug('Discovered Cursor models', { models: discoveredModels });
+        } else {
+          // Fallback if parsing failed
+          this.supportedModels = FALLBACK_MODELS;
+          debug('Using fallback Cursor models (parsing failed)');
+        }
         return { installed: true, ready: true, version };
       }
       if (stdout.includes('login') || stdout.includes('auth') || stdout.includes('unauthorized')) {
         return { installed: true, ready: false, version, error: 'Not logged in (run: cursor-agent login)' };
       }
+      // Command worked but unexpected output - use fallback
+      this.supportedModels = FALLBACK_MODELS;
       return { installed: true, ready: true, version };
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       if (error.includes('login') || error.includes('auth')) {
         return { installed: true, ready: false, version, error: 'Not logged in (run: cursor-agent login)' };
       }
+      // Use fallback models on error
+      this.supportedModels = FALLBACK_MODELS;
       return { installed: true, ready: false, version, error };
     }
   }
