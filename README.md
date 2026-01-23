@@ -20,9 +20,15 @@ CLI tool to automatically resolve PR review comments using LLM-powered fixing an
 - Uses LLM to detect which issues still exist in the code
 - Generates fix prompts and runs Cursor CLI or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
+- **Final audit**: Adversarial re-verification of ALL issues before declaring done
 - Tracks "lessons learned" to prevent flip-flopping between solutions
-- Batched commits to avoid flooding git history
+- **LLM-powered failure analysis**: Learns from rejected fixes to avoid repeating mistakes
+- **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
+- **Dynamic model discovery**: Auto-detects available models for each fixer tool
+- **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
+- Batched commits with LLM-generated messages (not "fix review comments")
 - Hash-based work directories for efficient re-runs
+- **State persistence**: Resumes from where it left off, including tool/model rotation position
 
 ## Installation
 
@@ -112,19 +118,22 @@ prr https://github.com/owner/repo/pull/123 \
 |--------|---------|-------------|
 | `--tool <name>` | `cursor` | Fixer tool: cursor, claude-code, aider, opencode, codex, llm-api |
 | `--model <model>` | (auto) | Override model for fixer tool |
-| `--auto-push` | off | Push after fixes verified, wait for re-review, loop |
+| `--auto-push` | **on** | Push after fixes verified, wait for re-review, loop |
+| `--no-auto-push` | off | Disable auto-push (just push once) |
 | `--max-fix-iterations <n>` | unlimited | Max fix attempts per push cycle |
 | `--max-push-iterations <n>` | unlimited | Max push/re-review cycles |
 | `--poll-interval <sec>` | 120 | Seconds to wait for re-review |
 | `--max-context <chars>` | 400000 | Max chars per LLM batch (~100k tokens) |
 | `--reverify` | off | Re-check all cached "fixed" issues |
 | `--dry-run` | off | Show issues without fixing |
-| `--no-commit` | on | Don't commit (for testing) |
-| `--commit` | off | Actually commit (override --no-commit) |
-| `--no-push` | on | Don't push (safer testing) |
+| `--no-commit` | off | Don't commit (for testing) |
+| `--no-push` | off | Commit but don't push |
+| `--no-bell` | off | Disable terminal bell on completion |
 | `--keep-workdir` | on | Keep work directory after completion |
 | `--no-batch` | off | Disable batched LLM calls |
 | `--verbose` | on | Debug output |
+
+**Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 
 ## How It Works
 
@@ -153,23 +162,30 @@ prr https://github.com/owner/repo/pull/123 \
 
 3. **Generate Prompt**: Builds a fix prompt including:
    - All unresolved issues with code context
-   - "Lessons learned" from previous failed attempts
+   - "Lessons learned" from previous failed attempts (analyzed by LLM)
    - *Why lessons*: Prevents flip-flopping. If attempt #1 tried X and it was rejected, attempt #2 knows not to try X again.
+   - *Why LLM-analyzed*: Generic "tool failed" messages aren't helpful. LLM analyzes the diff and rejection to generate actionable guidance.
 
 4. **Run Fixer**: Executes the AI coding tool in the cloned repo.
-  - Rotates through models (claude-4-sonnet-thinking → gpt-5.2 → claude-4-opus-thinking) when stuck
-   - Rotates through tools (Cursor → Claude Code → Aider) when models exhausted
+   - **Model rotation**: Interleaves model families - tries Claude, then GPT, then Gemini before exhausting any single family
+   - **Tool rotation**: Cursor → Claude Code → Aider → Direct LLM API when models exhausted
+   - *Why interleave families*: Same-family models often fail the same way. Switching families gives fresh perspective.
    - *Why rotation*: Different models have different strengths. If one gets stuck, another might succeed.
 
 5. **Verify Fixes**: For each changed file, asks the LLM: "Does this diff address the concern?"
    - *Why verify*: Fixer tools can make changes that don't actually fix the issue. Catches false positives early.
 
-6. **Final Audit**: Before declaring "done", re-verifies ALL issues with a stricter adversarial prompt.
-   - *Why*: Verification cache can have stale entries from previous runs. The audit clears the cache and re-checks everything.
-   - *Why adversarial*: Regular verification is lenient. The audit assumes fixes might be incomplete and demands evidence.
+6. **Check for New Comments**: Before declaring "done", checks if any NEW review comments were added during the fix cycle.
+   - *Why*: Bot reviewers or humans might add new issues while you're fixing others. Ensures nothing slips through.
 
-7. **Commit**: Generates a clean commit message via LLM describing the actual changes (not "fix review comments").
+7. **Final Audit**: Re-verifies ALL issues with a stricter adversarial prompt.
+   - *Why clear cache first*: Verification cache can have stale entries from previous runs. The audit clears it.
+   - *Why adversarial*: Regular verification asks "is this fixed?" (LLMs tend toward yes). Adversarial asks "find what's NOT fixed" (catches more issues).
+   - *Why dynamic batching*: Large PRs might have 50+ issues. Groups by character count (~400k default) to stay within context limits.
+
+8. **Commit**: Generates a clean commit message via LLM describing the actual changes.
    - *Why LLM-generated*: Commit messages are permanent history. They should describe WHAT changed, not the review process.
+   - *Why forbidden phrases*: LLMs default to "address review comments" - we explicitly forbid this and fall back to file-specific messages.
 
 ## Work Directory
 
@@ -187,13 +203,27 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
   "pr": "owner/repo#123",
   "branch": "feature-branch",
   "iterations": [...],
-  "lessonsLearned": [
-    "Attempted try/catch but issue requires early return",
-    "The validateUser function must preserve backward compatibility"
+  "lessonsLearned": [...],
+  "verifiedComments": [
+    {
+      "commentId": "comment_id_1",
+      "verifiedAt": "2026-01-23T10:30:00Z",
+      "verifiedAtIteration": 5,
+      "passed": true,
+      "reason": "The null check was added at line 45"
+    }
   ],
-  "verifiedFixed": ["comment_id_1", "comment_id_2"]
+  "currentRunnerIndex": 0,
+  "modelIndices": { "cursor": 2, "llm-api": 0 }
 }
 ```
+
+**Why these fields:**
+- `verifiedComments`: Tracks WHEN each verification happened (not just what). Enables verification expiry.
+- `currentRunnerIndex`: Resume from the same tool after interruption. Prevents restarting rotation from scratch.
+- `modelIndices`: Per-tool model position. If Cursor was on model #2, resume there.
+
+**Why not just store tool/model names?** Indices are resilient to model list changes. If we add new models, existing indices still work.
 
 ## Requirements
 
@@ -229,58 +259,35 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 If you're new to Cursor's CLI agent, you'll need to install and authenticate first:
 
 ```bash
-# Install cursor-agent (pick the right OS/arch)
-uname -s
-uname -m
-
-# macOS ARM64
-curl -fsSL https://www.cursor.com/download/stable/agent/darwin/arm64 -o cursor-agent
-# macOS AMD64 (Intel)
-curl -fsSL https://www.cursor.com/download/stable/agent/darwin/amd64 -o cursor-agent
-# Linux AMD64
-curl -fsSL https://www.cursor.com/download/stable/agent/linux/amd64 -o cursor-agent
-# Linux ARM64
-curl -fsSL https://www.cursor.com/download/stable/agent/linux/arm64 -o cursor-agent
-
-chmod +x cursor-agent
-sudo mv cursor-agent /usr/local/bin/
-
-# For other platforms, visit: https://www.cursor.com/download
+# Install cursor-agent (official installer - works on all platforms)
+curl https://cursor.com/install -fsS | bash
 
 # Login (required before first use!)
 cursor-agent login
 
 # Verify installation and list available models
-cursor-agent --list-models
+cursor-agent models
 ```
 
 This opens a browser window to authenticate with your Cursor account. You only need to do this once - your credentials are saved locally.
 
 Without logging in first, you'll see authentication errors when prr tries to run the fixer.
 
-**Available models** (use with `--model`, verify with `cursor-agent --list-models`):
+**Dynamic Model Discovery**: prr automatically discovers available models by running `cursor-agent models` on startup. No hardcoded model lists to maintain.
 
-| Model | Description | Best for |
-|-------|-------------|----------|
-| `claude-4-sonnet-thinking` | Claude 4 Sonnet (thinking) | Default, balanced |
-| `claude-4-opus-thinking` | Claude 4 Opus (thinking) | Complex fixes, best quality |
-| `o3` | OpenAI o3 | Fast reasoning |
-| `gpt-5.2` | GPT-5.2 | Great for coding |
-| `Grok` | Grok | xAI model |
-| `auto` | Auto-select | Let Cursor decide |
-
-**Model rotation**: When stuck, prr automatically rotates through models:
+**Model rotation strategy**: prr interleaves model families for better coverage:
 
 ```text
-claude-4-sonnet-thinking → gpt-5.2 → claude-4-opus-thinking → o3
+Round 1: sonnet-4.5 (Claude) → gpt-5.2 (GPT) → gemini-3-pro (Gemini)
+Round 2: opus-4.5-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
+... then next tool ...
 ```
 
-```bash
-# Example: use a faster model for simple fixes
-prr https://github.com/owner/repo/pull/123 --model o3
+*Why interleave families?* Same-family models often fail the same way. If Claude Sonnet can't fix something, Claude Opus probably can't either. But GPT might succeed.
 
-# Example: max power for complex issues  
-prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
+```bash
+# Example: override model (bypasses rotation)
+prr https://github.com/owner/repo/pull/123 --model opus-4.5-thinking
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123

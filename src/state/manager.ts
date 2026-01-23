@@ -1,3 +1,17 @@
+/**
+ * State persistence for prr resolver.
+ * 
+ * WHY per-workdir state: Each PR gets its own workdir (hash-based). State is
+ * specific to that PR's resolution process.
+ * 
+ * WHY persist tool/model indices: Without this, every restart begins rotation
+ * from scratch. With persistence, we continue from where we left off - important
+ * for long-running resolutions interrupted by Ctrl+C.
+ * 
+ * WHY verification timestamps: Enables "verification expiry" - re-check old
+ * verifications that might be stale. A fix verified 10 iterations ago might
+ * no longer be valid if surrounding code changed.
+ */
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
@@ -260,12 +274,25 @@ export class StateManager {
     return this.state?.lessonsLearned.length || 0;
   }
   
-  // Deduplicate and compact existing lessons (one per file:line)
+  /**
+   * Deduplicate lessons - keep one per file:line.
+   * 
+   * WHY deduplicate: If we learn something new about line 45, we should
+   * replace the old lesson, not accumulate them. Multiple lessons for the
+   * same location bloat the prompt and confuse the LLM.
+   * 
+   * WHY separate uniqueCounter: Early bug used `removed` counter for both
+   * generating unique keys AND calculating duplicates removed. Now we use
+   * a separate counter to avoid miscounting.
+   * 
+   * @returns Number of duplicate lessons removed
+   */
   compactLessons(): number {
     if (!this.state) return 0;
     
     const lessonsByKey = new Map<string, string>();
-    // Use separate counter for unique keys (not related to removal count)
+    // WHY separate counter: Previously we used `removed` for both key generation
+    // and return value calculation, causing incorrect counts
     let uniqueCounter = 0;
     
     for (const lesson of this.state.lessonsLearned) {

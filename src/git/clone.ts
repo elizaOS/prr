@@ -1,3 +1,20 @@
+/**
+ * Git operations for cloning, fetching, and handling conflicts.
+ * 
+ * WHY simple-git: Type-safe wrapper around git CLI, handles async operations
+ * and error parsing. More reliable than exec('git ...').
+ * 
+ * WHY preserveChanges option: Interrupted runs leave uncommitted changes.
+ * Without this, restart would wipe them via hard reset.
+ * 
+ * WHY token stripping: Git stores clone URLs in .git/config. If URL contains
+ * the token (https://TOKEN@github.com/...), anyone with workdir access can
+ * steal it. We strip the token immediately after clone/fetch.
+ * 
+ * WHY auto-stashing: User interrupts prr with Ctrl+C. Changes exist but aren't
+ * committed. Next run does `git pull` which fails "local changes would be
+ * overwritten". Auto-stash makes this seamless.
+ */
 import { simpleGit, SimpleGit } from 'simple-git';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';

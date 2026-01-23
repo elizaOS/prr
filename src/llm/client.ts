@@ -1,3 +1,17 @@
+/**
+ * LLM client for verification, issue detection, and commit message generation.
+ * 
+ * WHY separate from fixer tools: Verification needs different models than fixing.
+ * We use Claude Haiku/Sonnet for fast verification checks, while fixer tools
+ * might use Opus or GPT for actual code changes.
+ * 
+ * WHY extended thinking support: For complex verification, Claude's "thinking"
+ * capability improves accuracy by reasoning through the problem before answering.
+ * 
+ * WHY adversarial prompts: Regular "is this fixed?" prompts have high false positive
+ * rates - LLMs tend toward "yes". Adversarial prompts ("find what's NOT fixed")
+ * are more reliable.
+ */
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { Config, LLMProvider } from '../config.js';
@@ -683,6 +697,21 @@ RESOLVED:
     };
   }
 
+  /**
+   * Generate a clean, meaningful commit message from fixed issues.
+   * 
+   * WHY LLM-generated: Early versions concatenated review comments verbatim,
+   * producing garbage like "fix: address review comments - <details>...".
+   * Commit messages are permanent history - they must describe WHAT changed.
+   * 
+   * WHY forbidden phrases: LLMs default to "address review comments" because
+   * that's the most likely completion. We explicitly forbid these and fall back
+   * to file-specific messages if detected.
+   * 
+   * WHY 72 char limit: Git convention. First line should fit in git log --oneline.
+   * 
+   * WHY truncate issues: 10 issues max, 200 chars each. Keeps prompt focused.
+   */
   async generateCommitMessage(
     fixedIssues: Array<{
       filePath: string;

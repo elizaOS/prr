@@ -1,3 +1,12 @@
+/**
+ * CLI argument parsing and validation for prr.
+ * 
+ * WHY Commander.js: Battle-tested, handles complex option parsing including
+ * the special --no-* negation syntax we rely on.
+ * 
+ * WHY defaults are "full automation": prr is designed to run unattended.
+ * --auto-push=true, commit by default, push by default.
+ */
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { validateTool, isValidModelName, type FixerTool } from './config.js';
@@ -97,8 +106,20 @@ export function parseArgs(program: Command): ParsedArgs {
   
   const validatedTool = validateTool(opts.tool);
   
-  // Commander.js: --no-X options create opts.X (not opts.noX)
-  // --no-commit -> opts.commit (true by default, false when --no-commit passed)
+  // WHY this pattern: Commander.js handles --no-X specially.
+  // It does NOT create opts.noX = true.
+  // Instead, it creates opts.X with default true, set to false when --no-X is passed.
+  // 
+  // Example:
+  //   .option('--no-commit', 'description')  // No default needed
+  //   - User runs: prr <url>          -> opts.commit = true  (Commander default)
+  //   - User runs: prr <url> --no-commit -> opts.commit = false
+  //
+  // So: noCommit = !opts.commit
+  //   - !true = false  (user wants commits - default behavior)
+  //   - !false = true  (user passed --no-commit)
+  //
+  // This is non-obvious and caused bugs. See DEVELOPMENT.md for details.
   return {
     prUrl: args[0],
     options: {

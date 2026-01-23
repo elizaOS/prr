@@ -129,66 +129,99 @@ OUTER LOOP (push cycles):
 ```
 Layer 1: Initial verification (per fix)
   └─ "Does this diff address the concern?" 
-  └─ Results cached for efficiency
+  └─ Results cached with timestamp/iteration for expiry
   
-Layer 2: Final audit (before declaring done)
+Layer 2: New comment check (before audit)
+  └─ Fetch latest comments from GitHub
+  └─ Compare against known comments
+  └─ WHY: Bot reviewers might add new issues during fix cycle
+  
+Layer 3: Final audit (before declaring done)
   └─ Clear ALL cached verifications first
   └─ Re-check EVERY issue with stricter prompt
   └─ Adversarial: "Find issues NOT properly fixed"
   └─ Requires citing specific code evidence
   └─ Only audit results determine what's "fixed"
+  └─ If audit fails: re-enter fix loop (don't exit!)
 ```
 
 **Why clear cache before audit?** Prevents stale false positives from surviving. If an issue was wrongly marked "fixed" 10 iterations ago, the audit catches it.
 
 **Why adversarial prompt?** Regular verification asks "is this fixed?" - LLMs tend toward yes. Adversarial asks "find what's NOT fixed" - catches more issues.
 
+**Why check for new comments?** If we don't, we might push code that has new unresolved issues. The new comment check ensures we don't declare victory prematurely.
+
+**Why re-enter fix loop on audit failure?** Early versions would exit after printing failed audit results. Now we populate unresolvedIssues and continue fixing.
+
 ### 3. Model & Tool Rotation
 
 **The Problem**: AI tools get stuck. They'll make the same mistake repeatedly.
 
-**Solution**: Rotate through different models and tools:
+**Solution**: Rotate through different models and tools with family interleaving:
 
 ```
-Model rotation (within each tool):
-  claude-sonnet-4.5 → gpt-5.2 → claude-opus-4.5 → gpt-5-mini
+Model rotation (interleaved by family):
+  Round 1: sonnet-4.5 (Claude) → gpt-5.2 (GPT) → gemini-3-pro (Gemini)
+  Round 2: opus-4.5 (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
   
-Tool rotation (after all models exhausted):
+Tool rotation (after MAX_MODELS_PER_TOOL_ROUND models tried):
   Cursor → Claude Code → Aider → Direct LLM API
+  (then back to Cursor with next model in rotation)
 
 Strategy per failure:
-  1st fail: Try single-issue focus (reduce context)
-  2nd fail: Rotate to next model
-  3rd fail: Try single-issue focus with new model
-  4th fail: Rotate to next tool
-  ... repeat ...
-  All exhausted: Direct LLM API as last resort
+  1st fail: Rotate to next model (different family)
+  2nd fail: Rotate to next model (different family again)
+  After MAX_MODELS_PER_TOOL_ROUND: Switch tool, reset that tool's model index
+  All tools exhausted all models: Reset all indices, start fresh round
 ```
 
-**Why rotate models?** Different models have different strengths:
-- Claude excels at following complex instructions
-- GPT excels at common patterns
-- Opus has better reasoning for hard problems
-- Mini models work fine for simple fixes
+**Why interleave model families?** Same-family models fail the same way:
+- If Claude Sonnet can't fix it, Claude Opus probably can't either
+- But GPT might have a completely different approach
+- Interleaving gives each attempt a "fresh perspective"
 
-**Why single-issue focus?** Large prompts with many issues can confuse the model. Focusing on one issue at a time often unsticks things.
+**Why MAX_MODELS_PER_TOOL_ROUND (default 2)?** 
+- Prevents getting stuck cycling through all Cursor models
+- Forces tool rotation earlier for better coverage
+- Each tool tries 2 models before we switch tools
+
+**Why dynamic model discovery for Cursor?**
+- Model lists change frequently (new releases, deprecations)
+- Running `cursor-agent models` gives authoritative list
+- Prioritization logic selects diverse, capable models
+- Fallback to hardcoded list if discovery fails
+
+**State persistence**: Tool index and per-tool model indices saved to state file. Resuming continues from same position instead of restarting rotation.
 
 ### 4. Lessons Learned System
 
 **The Problem**: Fixer tools flip-flop. Attempt #1 adds a try/catch. Verification rejects it. Attempt #2 adds the same try/catch. Loop forever.
 
-**Solution**: Record what didn't work and include it in future prompts:
+**Solution**: Record what didn't work, analyze failures with LLM, and include in future prompts:
 
 ```
 Lessons store: ~/.prr/lessons/<owner>/<repo>/<branch>.json
 {
-  "global": ["Tool made no changes - issue may need manual work"],
+  "global": [],
   "files": {
-    "src/auth.ts": ["Fix rejected: try/catch doesn't handle the edge case"],
-    "src/api.ts:45": ["Validation must preserve backward compatibility"]
+    "src/auth.ts": ["Fix rejected: try/catch doesn't handle the edge case - need early return"],
+    "src/api.ts:45": ["Validation must preserve backward compatibility - don't change function signature"]
   }
 }
 ```
+
+**Why LLM-analyzed lessons?** Generic "tool failed" messages aren't actionable:
+- BAD: "cursor failed: Process exited with code 1"
+- GOOD: "Fix rejected: The null check was added but doesn't cover the undefined case mentioned in review"
+
+The LLM analyzes: original issue + attempted diff + rejection reason → actionable guidance.
+
+**Why prune stale lessons?** Transient failures pollute the lessons store:
+- "Connection stalled" - not actionable, will retry
+- "Cannot use this model" - transient config issue
+- "Process exited with code X" - doesn't help future attempts
+
+On startup, `pruneStaleLessons()` removes these patterns.
 
 **Why file-scoped?** Lessons about `auth.ts` aren't relevant when fixing `api.ts`. Reduces prompt noise.
 
@@ -252,6 +285,34 @@ git.remote(['set-url', 'origin', 'https://github.com/...']);
 
 **Why?** Workdirs persist. Anyone with access to `~/.prr/work/` could steal your GitHub token from `.git/config`.
 
+### 8. Auto-Stashing for Interrupted Runs
+
+**The Problem**: User interrupts prr (Ctrl+C). Local changes exist but aren't committed. Next run does `git pull` which fails: "Your local changes would be overwritten".
+
+**Solution**: Auto-stash before pull, auto-pop after:
+
+```typescript
+// Before pull
+if (!status.isClean()) {
+  await git.stash(['save', 'prr-auto-stash-before-pull']);
+  stashed = true;
+}
+
+// Pull
+await git.pull('origin', branch);
+
+// After pull (if we stashed)
+if (stashed) {
+  await git.stash(['pop']);  // Restore changes
+}
+```
+
+**Why not just fail?** User experience. Interruptions happen. prr should handle them gracefully.
+
+**Why stash instead of commit?** Changes might not be ready to commit. They might be work-in-progress that would fail verification.
+
+**What about stash conflicts?** If `stash pop` conflicts, we return with `stashConflicts` list. The caller can handle this (show warning, continue without changes, etc.).
+
 ### 8. Lock File Conflict Resolution
 
 **The Problem**: `bun.lock`, `package-lock.json`, etc. conflict on merge. LLM can't fix them properly.
@@ -270,6 +331,46 @@ git.remote(['set-url', 'origin', 'https://github.com/...']);
 
 **Why whitelist commands?** Security. Only run known-safe commands (bun install, npm install, etc.), not arbitrary shell.
 
+### 9. Commit Message Generation
+
+**The Problem**: Early versions produced commit messages like:
+```
+fix: address review comments
+
+Issues addressed:
+- src/cli.ts: _⚠️ Potential issue_ | _🔴 Critical_
+<details><summary>...
+```
+
+This is awful for git history. Commit messages are permanent and should describe WHAT changed.
+
+**Solution**: LLM-generated commit messages with strict rules:
+
+```typescript
+// Prompt includes:
+// 1. Conventional commit format requirement
+// 2. Focus on ACTUAL CODE CHANGES
+// 3. FORBIDDEN PHRASES list (explicit)
+
+const forbiddenPatterns = [
+  /address(ed|ing)?\s+(review\s+)?comments?/i,
+  /address(ed|ing)?\s+feedback/i,
+  /based on\s+(review|feedback)/i,
+  // ... more
+];
+
+// Check output, fallback if forbidden phrase detected
+if (hasForbidden) {
+  return `fix(${mainFile}): improve implementation based on code review`;
+}
+```
+
+**Why forbidden phrases?** LLMs default to "address review comments" - it's the most likely completion. We must explicitly forbid it.
+
+**Why file-based fallback?** If forbidden phrase detected, we generate from file names. At least it mentions WHAT files changed.
+
+**Why not just tell the LLM to avoid it?** We do! But LLMs don't always follow instructions. The fallback catches failures.
+
 ## State Files
 
 ### Workdir State (`<workdir>/.pr-resolver-state.json`)
@@ -280,13 +381,31 @@ git.remote(['set-url', 'origin', 'https://github.com/...']);
   "headSha": "abc123...",
   "iterations": [...],
   "lessonsLearned": [...],  // Legacy, now uses LessonsManager
-  "verifiedFixed": ["comment_id_1", ...],
+  "verifiedFixed": ["comment_id_1", ...],  // Legacy string array
+  "verifiedComments": [  // NEW: detailed verification with timestamps
+    {
+      "commentId": "comment_id_1",
+      "verifiedAt": "2026-01-23T10:30:00Z",
+      "verifiedAtIteration": 5,
+      "passed": true,
+      "reason": "The null check was added at line 45"
+    }
+  ],
+  "currentRunnerIndex": 0,     // NEW: tool rotation position
+  "modelIndices": {            // NEW: per-tool model rotation position
+    "cursor": 2,
+    "llm-api": 0
+  },
   "interrupted": false,
   "interruptPhase": null,
   "totalTimings": { "Fetch PR info": 500, ... },
   "totalTokenUsage": [{ "phase": "Analyze", "inputTokens": 1000, ... }]
 }
 ```
+
+**Why `verifiedComments` with timestamps?** Enables verification expiry. If a verification is N iterations old, re-check it.
+
+**Why `currentRunnerIndex` and `modelIndices`?** Resume rotation from where we left off. Without this, every restart begins with the same tool/model.
 
 ### Lessons Store (`~/.prr/lessons/<owner>/<repo>/<branch>.json`)
 ```json
@@ -299,6 +418,29 @@ git.remote(['set-url', 'origin', 'https://github.com/...']);
     "src/runtime.rs": ["Fix for runtime.rs:1743 rejected: ..."]
   }
 }
+```
+
+## CLI Implementation Notes
+
+### Commander.js `--no-*` Options
+
+**The Problem**: Commander.js handles `--no-X` options specially. They don't create `opts.noX`, they create `opts.X` with inverted boolean.
+
+```typescript
+// WRONG - this doesn't exist!
+const noCommit = opts.noCommit;  // undefined
+
+// RIGHT - Commander sets opts.commit to false when --no-commit is passed
+const noCommit = !opts.commit;   // true when --no-commit passed, false otherwise
+```
+
+**Why this matters**: We had a bug where `--no-commit` was ignored because we were reading the wrong property.
+
+**Pattern for all `--no-*` options**:
+```typescript
+.option('--no-commit', 'Make changes but do not commit')
+// In parseArgs:
+noCommit: !opts.commit,  // --no-commit -> opts.commit=false -> noCommit=true
 ```
 
 ## Security Considerations
