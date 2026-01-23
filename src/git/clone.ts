@@ -336,7 +336,8 @@ export async function mergeBaseBranch(
 
 export async function startMergeForConflictResolution(
   git: SimpleGit,
-  baseBranch: string
+  baseBranch: string,
+  mergeMessage: string
 ): Promise<{ conflictedFiles: string[]; error?: string }> {
   debug('Starting merge for conflict resolution', { baseBranch });
   
@@ -362,6 +363,14 @@ export async function startMergeForConflictResolution(
     const status = await git.status();
     const conflictedFiles = status.conflicted || [];
     
+    if (conflictedFiles.length === 0 && !status.isClean()) {
+      const commitResult = await completeMerge(git, mergeMessage);
+      if (!commitResult.success) {
+        await abortMerge(git);
+        return { conflictedFiles: [], error: commitResult.error || 'Failed to complete merge' };
+      }
+    }
+
     debug('Merge started, conflicts', { conflictedFiles });
     return { conflictedFiles };
   } catch (error) {

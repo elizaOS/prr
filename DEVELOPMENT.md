@@ -4,7 +4,7 @@ This document provides technical context for developers working on prr.
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │                           CLI (index.ts)                        │
 │  - Entry point, signal handling, graceful shutdown              │
@@ -44,6 +44,7 @@ This document provides technical context for developers working on prr.
 ## Key Files
 
 ### Core
+
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | CLI entry point, signal handlers |
@@ -53,12 +54,14 @@ This document provides technical context for developers working on prr.
 | `src/logger.ts` | Logging, timing, token tracking |
 
 ### GitHub Integration
+
 | File | Purpose |
 |------|---------|
 | `src/github/api.ts` | Octokit wrapper, GraphQL queries |
 | `src/github/types.ts` | PRInfo, ReviewComment, etc. |
 
 ### Git Operations
+
 | File | Purpose |
 |------|---------|
 | `src/git/clone.ts` | Clone, fetch, conflict detection/resolution |
@@ -66,6 +69,7 @@ This document provides technical context for developers working on prr.
 | `src/git/workdir.ts` | Hash-based workdir management |
 
 ### Fixer Tool Runners
+
 | File | Purpose |
 |------|---------|
 | `src/runners/index.ts` | Auto-detection, rotation |
@@ -77,11 +81,13 @@ This document provides technical context for developers working on prr.
 | `src/runners/llm-api.ts` | Direct API (fallback) |
 
 ### LLM Verification
+
 | File | Purpose |
 |------|---------|
 | `src/llm/client.ts` | Anthropic/OpenAI for verification |
 
 ### State Persistence
+
 | File | Purpose |
 |------|---------|
 | `src/state/manager.ts` | Per-workdir state (iterations, verified fixes) |
@@ -89,6 +95,7 @@ This document provides technical context for developers working on prr.
 | `src/state/types.ts` | State interfaces |
 
 ### Prompt Building
+
 | File | Purpose |
 |------|---------|
 | `src/analyzer/prompt-builder.ts` | Build fix prompts with context |
@@ -97,7 +104,7 @@ This document provides technical context for developers working on prr.
 ## Key Design Decisions
 
 ### 1. Two-Level Fix Loop
-```
+```text
 OUTER LOOP (push cycles):
   INNER LOOP (fix iterations):
     1. Analyze issues (LLM checks if still present)
@@ -126,7 +133,7 @@ OUTER LOOP (push cycles):
 
 **Our solution**: Multi-layer verification with final audit:
 
-```
+```text
 Layer 1: Initial verification (per fix)
   └─ "Does this diff address the concern?" 
   └─ Results cached for efficiency
@@ -149,7 +156,7 @@ Layer 2: Final audit (before declaring done)
 
 **Solution**: Rotate through different models and tools:
 
-```
+```text
 Model rotation (within each tool):
   claude-sonnet-4.5 → gpt-5.2 → claude-opus-4.5 → gpt-5-mini
   
@@ -179,7 +186,7 @@ Strategy per failure:
 
 **Solution**: Record what didn't work and include it in future prompts:
 
-```
+```text
 Lessons store: ~/.prr/lessons/<owner>/<repo>/<branch>.json
 {
   "global": ["Tool made no changes - issue may need manual work"],
@@ -258,7 +265,7 @@ git.remote(['set-url', 'origin', 'https://github.com/...']);
 
 **Solution**: Delete and regenerate:
 
-```
+```text
 1. Detect lock file conflicts
 2. Delete the lock files
 3. Run package manager install (bun install, npm install, etc.)

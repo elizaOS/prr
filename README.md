@@ -157,7 +157,7 @@ prr https://github.com/owner/repo/pull/123 \
    - *Why lessons*: Prevents flip-flopping. If attempt #1 tried X and it was rejected, attempt #2 knows not to try X again.
 
 4. **Run Fixer**: Executes the AI coding tool in the cloned repo.
-  - Rotates through models (claude-4-sonnet-thinking → gpt-5.2 → claude-4-opus-thinking) when stuck
+   - Rotates through models (claude-4-sonnet-thinking → gpt-5.2 → claude-4-opus-thinking) when stuck
    - Rotates through tools (Cursor → Claude Code → Aider) when models exhausted
    - *Why rotation*: Different models have different strengths. If one gets stuck, another might succeed.
 

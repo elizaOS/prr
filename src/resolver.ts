@@ -714,7 +714,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
           console.log(chalk.yellow('  Auto-merge failed, resolving conflicts...'));
           
           // Start the merge to get conflict markers in files
-          const { conflictedFiles, error } = await startMergeForConflictResolution(git, this.prInfo.baseBranch);
+          const { conflictedFiles, error } = await startMergeForConflictResolution(
+            git,
+            this.prInfo.baseBranch,
+            `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`
+          );
           
           if (error && conflictedFiles.length === 0) {
             console.log(chalk.red(`✗ Failed to start merge: ${error}`));
@@ -1590,11 +1594,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
         // Commit changes if we have any
         debugStep('COMMIT PHASE');
         if (await hasChanges(git)) {
-          const fixedIssues = unresolvedIssues
-            .filter((i) => this.stateManager.isCommentVerifiedFixed(i.comment.id))
-            .map((i) => ({
-              filePath: i.comment.path,
-              comment: i.comment.body,
+          const fixedIssues = comments
+            .filter((c) => this.stateManager.isCommentVerifiedFixed(c.id))
+            .map((c) => ({
+              filePath: c.path,
+              comment: c.body,
             }));
 
           if (this.options.noCommit) {

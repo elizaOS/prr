@@ -264,47 +264,55 @@ export class CursorRunner implements Runner {
       let stdout = '';
       let stderr = '';
       let lastContent = '';
+      let pending = '';
+
+      const handleLine = (line: string) => {
+        try {
+          const json = JSON.parse(line);
+          // Handle different event types from stream-json
+          if (json.type === 'text' && json.content) {
+            // Incremental text output
+            process.stdout.write(json.content);
+            lastContent += json.content;
+          } else if (json.type === 'tool_use') {
+            // Tool being used
+            console.log(`\n🔧 ${json.name || 'tool'}: ${json.input?.path || json.input?.command || ''}`);
+          } else if (json.type === 'tool_result') {
+            // Tool result - usually verbose, skip or summarize
+            if (json.is_error) {
+              console.log(`   ❌ Error: ${json.content?.slice(0, 100)}...`);
+            }
+          } else if (json.type === 'message_start' || json.type === 'content_block_start') {
+            // Message starting, ignore
+          } else if (json.type === 'message_stop' || json.type === 'content_block_stop') {
+            // Message ended
+            if (lastContent) {
+              process.stdout.write('\n');
+              lastContent = '';
+            }
+          } else if (json.content) {
+            // Fallback: if there's content, print it
+            process.stdout.write(json.content);
+          }
+        } catch {
+          // Not JSON, print raw (might be plain text mode)
+          if (line.trim() && !line.includes('"type"')) {
+            process.stdout.write(line + '\n');
+          }
+        }
+      };
 
       child.stdout?.on('data', (data) => {
         const str = data.toString();
         stdout += str;
+        pending += str;
         
         // Parse stream-json output and display nicely
-        const lines = str.split('\n').filter((l: string) => l.trim());
-        for (const line of lines) {
-          try {
-            const json = JSON.parse(line);
-            // Handle different event types from stream-json
-            if (json.type === 'text' && json.content) {
-              // Incremental text output
-              process.stdout.write(json.content);
-              lastContent += json.content;
-            } else if (json.type === 'tool_use') {
-              // Tool being used
-              console.log(`\n🔧 ${json.name || 'tool'}: ${json.input?.path || json.input?.command || ''}`);
-            } else if (json.type === 'tool_result') {
-              // Tool result - usually verbose, skip or summarize
-              if (json.is_error) {
-                console.log(`   ❌ Error: ${json.content?.slice(0, 100)}...`);
-              }
-            } else if (json.type === 'message_start' || json.type === 'content_block_start') {
-              // Message starting, ignore
-            } else if (json.type === 'message_stop' || json.type === 'content_block_stop') {
-              // Message ended
-              if (lastContent) {
-                process.stdout.write('\n');
-                lastContent = '';
-              }
-            } else if (json.content) {
-              // Fallback: if there's content, print it
-              process.stdout.write(json.content);
-            }
-          } catch {
-            // Not JSON, print raw (might be plain text mode)
-            if (line.trim() && !line.includes('"type"')) {
-              process.stdout.write(line + '\n');
-            }
-          }
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+        const nonEmpty = lines.filter((l: string) => l.trim());
+        for (const line of nonEmpty) {
+          handleLine(line);
         }
       });
 
@@ -318,6 +326,10 @@ export class CursorRunner implements Runner {
       });
 
       child.on('close', (code) => {
+        if (pending.trim()) {
+          handleLine(pending);
+          pending = '';
+        }
         // Clean up prompt file
         try {
           unlinkSync(promptFile);
