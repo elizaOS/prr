@@ -575,6 +575,34 @@ Start your response with \`\`\` and end with \`\`\`.`;
         console.log(chalk.green('✓'), 'PR is idle - safe to proceed');
       }
 
+      // Check CodeRabbit status on startup
+      // WHY: If CodeRabbit is in manual mode and hasn't reviewed the current commit,
+      // we should trigger it early so reviews are ready when we need them
+      debugStep('CHECKING CODERABBIT STATUS');
+      try {
+        spinner.start('Checking CodeRabbit status...');
+        const crResult = await this.github.triggerCodeRabbitIfNeeded(
+          owner, repo, number, this.prInfo.branch, this.prInfo.headSha
+        );
+        
+        if (crResult.mode === 'none') {
+          spinner.info('CodeRabbit: not configured for this repo');
+        } else if (crResult.reviewedCurrentCommit) {
+          spinner.succeed(`CodeRabbit: already reviewed ${this.prInfo.headSha.substring(0, 7)} ✓`);
+        } else if (crResult.triggered) {
+          spinner.succeed(`CodeRabbit: triggered review (${crResult.mode} mode)`);
+          info('CodeRabbit review requested - it will analyze while we work');
+        } else if (crResult.mode === 'auto') {
+          spinner.info(`CodeRabbit: auto mode - will review automatically`);
+        } else {
+          spinner.info(`CodeRabbit: ${crResult.reason}`);
+        }
+        debug('CodeRabbit startup check', crResult);
+      } catch (err) {
+        spinner.warn('Could not check CodeRabbit status (continuing anyway)');
+        debug('CodeRabbit startup check failed', { error: err });
+      }
+
       // Setup workdir (includes branch in hash for repos with PRs on different target branches)
       debugStep('SETTING UP WORKDIR');
       const workdirInfo = getWorkdirInfo(this.config.workdirBase, owner, repo, number, this.prInfo.branch);

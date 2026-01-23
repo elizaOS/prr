@@ -44,6 +44,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
 - **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
+- **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position

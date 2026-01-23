@@ -421,7 +421,53 @@ if (ahead > 0 && behind > 0) {
 - If merge also fails (conflicts), abort and report
 - User can manually resolve in workdir
 
-### 11. Empty Issue Guards (Defense in Depth)
+### 11. CodeRabbit Auto-Trigger on Startup
+
+**The Problem**: Some repos configure CodeRabbit in manual mode (`@coderabbitai review` required). If prr starts fixing issues without triggering CodeRabbit first, we might miss new review comments that CodeRabbit would add.
+
+**Solution**: Check CodeRabbit status on startup, trigger if needed:
+
+```typescript
+// On startup, after fetching PR info:
+const crResult = await this.github.triggerCodeRabbitIfNeeded(
+  owner, repo, number, branch, headSha
+);
+
+// Returns:
+// - mode: 'auto' | 'manual' | 'none' | 'unknown'
+// - reviewedCurrentCommit: boolean
+// - triggered: boolean
+// - reason: string
+```
+
+**How it determines mode**:
+1. Fetch `.coderabbit.yaml` from the repo
+2. Check `reviews.auto_review` setting
+3. If `auto_review: false` → manual mode
+4. If `auto_review: true` or not specified → auto mode
+5. If `request_changes_workflow` present → likely manual
+
+**When we trigger**:
+- Manual mode AND CodeRabbit hasn't reviewed current commit → trigger
+- Auto mode → no trigger needed (CodeRabbit will pick it up)
+- Already reviewed current commit → no trigger needed
+
+**WHY trigger early?**
+- CodeRabbit takes time to analyze
+- By triggering on startup, review is ready by the time we finish fixing
+- Avoids delay loop of: fix → push → wait for CodeRabbit → more comments → fix again
+
+**Output on startup**:
+```text
+✓ CodeRabbit: already reviewed abc1234 ✓
+  or
+✓ CodeRabbit: triggered review (manual mode)
+  CodeRabbit review requested - it will analyze while we work
+  or
+ℹ CodeRabbit: not configured for this repo
+```
+
+### 12. Empty Issue Guards (Defense in Depth)
 
 **The Problem**: Code paths exist where `unresolvedIssues` array becomes empty but the fix loop continues. Running fixer tools with empty prompts wastes time and causes confusing errors.
 
