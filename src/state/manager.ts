@@ -192,6 +192,19 @@ export class StateManager {
       this.state.verifiedComments = this.state.verifiedComments.filter(v => v.commentId !== commentId);
     }
   }
+
+  /**
+   * Clear all verification cache entries.
+   * Called before final audit to ensure audit results are authoritative.
+   */
+  clearVerificationCache(): void {
+    if (!this.state) {
+      throw new Error('State not loaded. Call load() first.');
+    }
+    
+    this.state.verifiedFixed = [];
+    this.state.verifiedComments = [];
+  }
   
   /**
    * Get comment IDs that were verified more than N iterations ago (stale verifications)

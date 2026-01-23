@@ -855,6 +855,12 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // Before declaring victory, run a final audit to catch false positives
           debugStep('FINAL AUDIT');
           setTokenPhase('Final audit');
+          
+          // Clear verification cache so audit results are authoritative
+          // This prevents stale "verified fixed" entries from persisting
+          this.stateManager.clearVerificationCache();
+          debug('Cleared verification cache before final audit');
+          
           spinner.start('Running final audit on all issues...');
           
           // Gather all comments with their current code
@@ -879,14 +885,20 @@ Start your response with \`\`\` and end with \`\`\`.`;
           
           const auditResults = await this.llm.finalAudit(allIssuesForAudit, this.options.maxContextChars);
           
-          // Find issues that failed the audit
+          // Find issues that failed the audit - mark passing ones as verified
           const failedAudit: Array<{ comment: ReviewComment; explanation: string }> = [];
           for (const comment of comments) {
             const result = auditResults.get(comment.id);
-            if (result && result.stillExists) {
-              failedAudit.push({ comment, explanation: result.explanation });
-              // Unmark from verified cache so it gets fixed
-              this.stateManager.unmarkCommentVerifiedFixed(comment.id);
+            if (result) {
+              if (result.stillExists) {
+                failedAudit.push({ comment, explanation: result.explanation });
+              } else {
+                // Audit confirmed this is fixed - add to cache
+                this.stateManager.markCommentVerifiedFixed(comment.id);
+              }
+            } else {
+              // No result from audit - treat as needing review (fail-safe)
+              failedAudit.push({ comment, explanation: 'Audit did not return a result for this issue' });
             }
           }
           
