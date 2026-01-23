@@ -148,14 +148,78 @@ export async function checkForConflicts(git: SimpleGit, branch: string): Promise
   };
 }
 
-export async function pullLatest(git: SimpleGit, branch: string): Promise<{ success: boolean; error?: string }> {
+export async function pullLatest(git: SimpleGit, branch: string): Promise<{ success: boolean; error?: string; stashConflicts?: string[] }> {
   debug('Pulling latest changes', { branch });
+  
+  // Check for uncommitted changes and stash them
+  // WHY: Interrupted runs may leave uncommitted changes that block pulls
+  const status = await git.status();
+  const hasLocalChanges = !status.isClean();
+  let didStash = false;
+  
+  if (hasLocalChanges) {
+    debug('Stashing local changes before pull', { 
+      modified: status.modified.length,
+      created: status.created.length,
+      deleted: status.deleted.length,
+    });
+    try {
+      await git.stash(['push', '-m', 'prr-auto-stash-before-pull']);
+      didStash = true;
+      console.log(`  Stashed ${status.modified.length + status.created.length + status.deleted.length} local changes`);
+    } catch (stashError) {
+      debug('Failed to stash', { error: stashError });
+      // Continue anyway - pull might still work
+    }
+  }
   
   try {
     await git.pull('origin', branch);
+    
+    // If we stashed, try to restore
+    if (didStash) {
+      debug('Restoring stashed changes');
+      try {
+        await git.stash(['pop']);
+        console.log('  Restored stashed changes');
+      } catch (popError) {
+        const popMessage = popError instanceof Error ? popError.message : String(popError);
+        debug('Stash pop failed', { error: popMessage });
+        
+        // Check if there are conflicts from stash pop
+        const postPopStatus = await git.status();
+        if (postPopStatus.conflicted && postPopStatus.conflicted.length > 0) {
+          console.log(`  ⚠ Stash conflicts in: ${postPopStatus.conflicted.join(', ')}`);
+          // Keep the stash conflicts - user's changes need to be reconciled
+          return { success: true, stashConflicts: postPopStatus.conflicted };
+        }
+        
+        // If pop failed but no conflicts, the stash is still there
+        // Drop it since pull succeeded and we don't want stale changes
+        console.log('  ⚠ Could not restore stashed changes (may have been outdated)');
+        try {
+          await git.stash(['drop']);
+        } catch {
+          // Ignore drop errors
+        }
+      }
+    }
+    
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    
+    // If pull failed and we stashed, restore the stash
+    if (didStash) {
+      debug('Pull failed, restoring stash');
+      try {
+        await git.stash(['pop']);
+        console.log('  Restored stashed changes (pull failed)');
+      } catch {
+        // Stash restore failed too - leave it in stash list
+        console.log('  ⚠ Changes still in stash (use `git stash pop` to restore)');
+      }
+    }
     
     // Check if it's a merge conflict
     if (message.includes('CONFLICT') || message.includes('conflict')) {

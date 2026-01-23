@@ -540,6 +540,14 @@ Start your response with \`\`\` and end with \`\`\`.`;
           }
           return;
         }
+        
+        if (pullResult.stashConflicts && pullResult.stashConflicts.length > 0) {
+          spinner.warn('Pulled with stash conflicts');
+          console.log(chalk.yellow(`  Your previous changes conflict with remote updates in: ${pullResult.stashConflicts.join(', ')}`));
+          console.log(chalk.yellow('  Resolve conflicts and commit, then re-run prr.'));
+          return;
+        }
+        
         spinner.succeed('Pulled latest changes');
       } else {
         console.log(chalk.green('✓ Branch is up to date with remote'));
