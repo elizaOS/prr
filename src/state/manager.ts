@@ -126,8 +126,28 @@ export class StateManager {
     return this.state;
   }
 
-  isCommentVerifiedFixed(commentId: string): boolean {
+  /**
+   * Check if a comment is verified as fixed.
+   * @param commentId The comment ID to check
+   * @param maxIterationsAgo Optional: If set, only return true if verified within this many iterations
+   */
+  isCommentVerifiedFixed(commentId: string, maxIterationsAgo?: number): boolean {
     if (!this.state) return false;
+    
+    // Check new detailed records first
+    if (this.state.verifiedComments) {
+      const record = this.state.verifiedComments.find(v => v.commentId === commentId);
+      if (record) {
+        if (maxIterationsAgo !== undefined) {
+          const currentIteration = this.state.iterations.length;
+          const iterationsSince = currentIteration - record.verifiedAtIteration;
+          return iterationsSince <= maxIterationsAgo;
+        }
+        return true;
+      }
+    }
+    
+    // Fall back to legacy array (for backwards compatibility)
     return this.state.verifiedFixed.includes(commentId);
   }
 
@@ -135,9 +155,54 @@ export class StateManager {
     if (!this.state) {
       throw new Error('State not loaded. Call load() first.');
     }
+    
+    // Update legacy array for backwards compatibility
     if (!this.state.verifiedFixed.includes(commentId)) {
       this.state.verifiedFixed.push(commentId);
     }
+    
+    // Update new detailed records
+    if (!this.state.verifiedComments) {
+      this.state.verifiedComments = [];
+    }
+    
+    // Remove existing record if any (we'll add a fresh one)
+    this.state.verifiedComments = this.state.verifiedComments.filter(v => v.commentId !== commentId);
+    
+    this.state.verifiedComments.push({
+      commentId,
+      verifiedAt: new Date().toISOString(),
+      verifiedAtIteration: this.state.iterations.length,
+    });
+  }
+
+  unmarkCommentVerifiedFixed(commentId: string): void {
+    if (!this.state) {
+      throw new Error('State not loaded. Call load() first.');
+    }
+    
+    // Remove from legacy array
+    const index = this.state.verifiedFixed.indexOf(commentId);
+    if (index !== -1) {
+      this.state.verifiedFixed.splice(index, 1);
+    }
+    
+    // Remove from new detailed records
+    if (this.state.verifiedComments) {
+      this.state.verifiedComments = this.state.verifiedComments.filter(v => v.commentId !== commentId);
+    }
+  }
+  
+  /**
+   * Get comment IDs that were verified more than N iterations ago (stale verifications)
+   */
+  getStaleVerifications(maxIterationsAgo: number): string[] {
+    if (!this.state || !this.state.verifiedComments) return [];
+    
+    const currentIteration = this.state.iterations.length;
+    return this.state.verifiedComments
+      .filter(v => (currentIteration - v.verifiedAtIteration) > maxIterationsAgo)
+      .map(v => v.commentId);
   }
 
   addLesson(lesson: string): void {

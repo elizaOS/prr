@@ -22,6 +22,12 @@ export interface TokenUsageRecord {
   calls: number;
 }
 
+export interface VerifiedComment {
+  commentId: string;
+  verifiedAt: string;        // ISO timestamp when verified
+  verifiedAtIteration: number;  // Which iteration it was verified in
+}
+
 export interface ResolverState {
   pr: string;
   branch: string;
@@ -30,7 +36,8 @@ export interface ResolverState {
   lastUpdated: string;
   iterations: Iteration[];
   lessonsLearned: string[];
-  verifiedFixed: string[];   // Comment IDs that have been verified as fixed
+  verifiedFixed: string[];   // Comment IDs that have been verified as fixed (legacy, for backwards compat)
+  verifiedComments?: VerifiedComment[];  // New: detailed verification records with timestamps
   interrupted?: boolean;     // True if last run was interrupted
   interruptPhase?: string;   // Phase where interruption occurred
   // Cumulative stats across all sessions
@@ -48,6 +55,7 @@ export function createInitialState(pr: string, branch: string, headSha: string):
     iterations: [],
     lessonsLearned: [],
     verifiedFixed: [],
+    verifiedComments: [],
     totalTimings: {},
     totalTokenUsage: [],
   };

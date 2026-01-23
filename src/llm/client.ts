@@ -152,23 +152,31 @@ export class LLMClient {
     line: number | null,
     codeSnippet: string
   ): Promise<{ exists: boolean; explanation: string }> {
-    const prompt = `Given this code review comment:
+    const prompt = `You are a strict code reviewer verifying whether a review comment has been properly addressed.
+
+REVIEW COMMENT:
 ---
 File: ${filePath}
 ${line ? `Line: ${line}` : 'Line: (not specified)'}
 Comment: ${comment}
 ---
 
-And the current code at that location:
+CURRENT CODE AT THAT LOCATION:
 ---
 ${codeSnippet}
 ---
 
-Is this issue STILL PRESENT in the code? 
+INSTRUCTIONS:
+1. Carefully read the review comment to understand EXACTLY what is being requested
+2. Examine the code to see if the SPECIFIC issue has been fixed
+3. Be STRICT: partial fixes, workarounds, or tangentially related changes do NOT count
+4. If the comment asks for X and the code does Y, that is NOT fixed unless Y fully addresses X
 
-Respond with exactly one of these formats:
-YES: <brief explanation of why the issue still exists>
-NO: <brief explanation of why the issue has been resolved>`;
+Is this SPECIFIC issue STILL PRESENT in the code?
+
+Respond with EXACTLY one of these formats:
+YES: <quote the problematic code or explain what's still missing>
+NO: <cite the specific code that resolves this issue>`;
 
     const response = await this.complete(prompt);
     const content = response.content.trim();
@@ -194,14 +202,19 @@ NO: <brief explanation of why the issue has been resolved>`;
 
     // Build batch prompt
     const parts: string[] = [
-      'Analyze each of the following code review comments and determine if the issue is STILL PRESENT in the current code.',
+      'You are a STRICT code reviewer verifying whether review comments have been properly addressed.',
+      '',
+      'RULES:',
+      '- Be STRICT: partial fixes, workarounds, or tangentially related changes do NOT count as fixed',
+      '- If the comment asks for X and the code does Y, that is NOT fixed unless Y fully addresses X', 
+      '- When in doubt, say YES (issue still exists) - false negatives are worse than false positives',
       '',
       'For EACH issue, respond with a line in this exact format:',
-      'ISSUE_ID: YES|NO: brief explanation',
+      'ISSUE_ID: YES|NO: cite specific code or explain what is missing/fixed',
       '',
       'Example responses:',
-      'issue_123: YES: The null check is still missing',
-      'issue_456: NO: The function now validates input',
+      'issue_123: YES: Line 45 still has `user.email` without null check',
+      'issue_456: NO: Line 23 now has `if (input === null) return;`',
       '',
       '---',
       '',
@@ -221,7 +234,7 @@ NO: <brief explanation of why the issue has been resolved>`;
 
     parts.push('---');
     parts.push('');
-    parts.push('Now analyze each issue and respond with one line per issue:');
+    parts.push('Now analyze each issue STRICTLY and respond with one line per issue:');
 
     const response = await this.complete(parts.join('\n'));
     const results = new Map<string, { exists: boolean; explanation: string }>();
@@ -240,6 +253,90 @@ NO: <brief explanation of why the issue has been resolved>`;
         });
       }
     }
+
+    return results;
+  }
+
+  /**
+   * Final audit: Re-verify ALL issues with an adversarial, stricter prompt.
+   * This is run when prr thinks it's done, to catch false positives.
+   */
+  async finalAudit(
+    issues: Array<{
+      id: string;
+      comment: string;
+      filePath: string;
+      line: number | null;
+      codeSnippet: string;
+    }>
+  ): Promise<Map<string, { stillExists: boolean; explanation: string }>> {
+    if (issues.length === 0) {
+      return new Map();
+    }
+
+    debug('Running final audit on all issues', { count: issues.length });
+
+    // Build adversarial audit prompt
+    const parts: string[] = [
+      'FINAL AUDIT: You are performing a thorough final review before marking this PR as complete.',
+      '',
+      'YOUR TASK: Find any issues that were NOT properly fixed. Be adversarial - assume fixes might be incomplete.',
+      '',
+      'AUDIT RULES (be strict):',
+      '1. Read each review comment carefully - understand the EXACT issue being raised',
+      '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
+      '3. Partial fixes do NOT count - the full issue must be resolved',
+      '4. Documentation issues: verify the exact text/description was updated',
+      '5. Security issues: verify the specific vulnerability was addressed',
+      '6. Validation issues: verify the exact validation requested was added',
+      '7. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
+      '',
+      'For EACH issue, respond with:',
+      'ISSUE_ID: FIXED|UNFIXED: <cite specific evidence from code OR explain what is missing>',
+      '',
+      '---',
+      '',
+    ];
+
+    for (const issue of issues) {
+      parts.push(`## Issue ${issue.id}`);
+      parts.push(`File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`);
+      parts.push(`Review Comment: ${issue.comment}`);
+      parts.push('');
+      parts.push('Current code at this location:');
+      parts.push('```');
+      parts.push(issue.codeSnippet);
+      parts.push('```');
+      parts.push('');
+    }
+
+    parts.push('---');
+    parts.push('');
+    parts.push('AUDIT each issue now. For each one, cite the specific evidence it is FIXED, or explain why it is UNFIXED:');
+
+    const response = await this.complete(parts.join('\n'));
+    const results = new Map<string, { stillExists: boolean; explanation: string }>();
+
+    // Parse responses
+    const lines = response.content.split('\n');
+    for (const line of lines) {
+      // Match patterns like "issue_123: FIXED: explanation" or "ISSUE_123: UNFIXED: explanation"
+      const match = line.match(/^([^:]+):\s*(FIXED|UNFIXED):\s*(.*)$/i);
+      if (match) {
+        const [, id, status, explanation] = match;
+        const cleanId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '');
+        results.set(cleanId, {
+          stillExists: status.toUpperCase() === 'UNFIXED',
+          explanation: explanation.trim(),
+        });
+      }
+    }
+
+    debug('Final audit results', { 
+      total: issues.length,
+      parsed: results.size,
+      unfixed: Array.from(results.values()).filter(r => r.stillExists).length
+    });
 
     return results;
   }

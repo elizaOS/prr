@@ -15,6 +15,7 @@ export interface CLIOptions {
   noPush: boolean;
   verbose: boolean;
   noBatch: boolean;
+  reverify: boolean;
 }
 
 export interface ParsedArgs {
@@ -61,7 +62,8 @@ export function createCLI(): Command {
     .option('--commit', 'Actually commit changes (override --no-commit)')
     .option('--no-push', 'Commit locally but do not push (safer testing)', true)
     .option('-v, --verbose', 'Verbose debug output', true)
-    .option('--no-batch', 'Disable batched LLM calls (one call per issue)', false);
+    .option('--no-batch', 'Disable batched LLM calls (one call per issue)', false)
+    .option('--reverify', 'Re-verify all cached "fixed" issues (ignore verification cache)', false);
 
   return program;
 }
@@ -121,6 +123,7 @@ export function parseArgs(program: Command): ParsedArgs {
       noPush: opts.noPush ?? true,
       verbose: opts.verbose ?? true,
       noBatch: opts.noBatch ?? false,
+      reverify: opts.reverify ?? false,
     },
   };
 }

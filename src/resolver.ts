@@ -763,7 +763,58 @@ Start your response with \`\`\` and end with \`\`\`.`;
         })));
 
         if (unresolvedIssues.length === 0) {
-          console.log(chalk.green('\nAll issues have been resolved!'));
+          // Before declaring victory, run a final audit to catch false positives
+          debugStep('FINAL AUDIT');
+          setTokenPhase('Final audit');
+          spinner.start('Running final audit on all issues...');
+          
+          // Gather all comments with their current code
+          const allIssuesForAudit: Array<{
+            id: string;
+            comment: string;
+            filePath: string;
+            line: number | null;
+            codeSnippet: string;
+          }> = [];
+          
+          for (const comment of comments) {
+            const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
+            allIssuesForAudit.push({
+              id: comment.id,
+              comment: comment.body,
+              filePath: comment.path,
+              line: comment.line,
+              codeSnippet,
+            });
+          }
+          
+          const auditResults = await this.llm.finalAudit(allIssuesForAudit);
+          
+          // Find issues that failed the audit
+          const failedAudit: Array<{ comment: ReviewComment; explanation: string }> = [];
+          for (const comment of comments) {
+            const result = auditResults.get(comment.id);
+            if (result && result.stillExists) {
+              failedAudit.push({ comment, explanation: result.explanation });
+              // Unmark from verified cache so it gets fixed
+              this.stateManager.unmarkCommentVerifiedFixed(comment.id);
+            }
+          }
+          
+          if (failedAudit.length > 0) {
+            spinner.fail(`Final audit found ${failedAudit.length} issue(s) not properly fixed`);
+            console.log(chalk.yellow('\n⚠ Issues that need more work:'));
+            for (const { comment, explanation } of failedAudit) {
+              console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'}`));
+              console.log(chalk.gray(`    ${explanation}`));
+            }
+            await this.stateManager.save();
+            // Continue to fix loop instead of breaking
+            continue;
+          }
+          
+          spinner.succeed('Final audit passed - all issues verified fixed!');
+          console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
           
           // Check if we have uncommitted changes that need to be committed
           if (await hasChanges(git)) {
@@ -1317,7 +1368,13 @@ After resolving, the files should have NO conflict markers remaining.`;
   private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<UnresolvedIssue[]> {
     const unresolved: UnresolvedIssue[] = [];
     let alreadyResolved = 0;
+    let skippedCache = 0;
+    let staleRecheck = 0;
 
+    // Verification expiry: re-check issues verified more than 5 iterations ago
+    const VERIFICATION_EXPIRY_ITERATIONS = 5;
+    const staleVerifications = this.stateManager.getStaleVerifications(VERIFICATION_EXPIRY_ITERATIONS);
+    
     // First pass: filter out already-verified issues and gather code snippets
     const toCheck: Array<{
       comment: ReviewComment;
@@ -1325,17 +1382,34 @@ After resolving, the files should have NO conflict markers remaining.`;
     }> = [];
 
     for (const comment of comments) {
-      if (this.stateManager.isCommentVerifiedFixed(comment.id)) {
+      const isStale = staleVerifications.includes(comment.id);
+      
+      // If --reverify flag is set, ignore the cache and re-check everything
+      if (!this.options.reverify && !isStale && this.stateManager.isCommentVerifiedFixed(comment.id)) {
         alreadyResolved++;
         continue;
+      }
+      
+      if (this.options.reverify && this.stateManager.isCommentVerifiedFixed(comment.id)) {
+        skippedCache++;
+      }
+      
+      if (isStale) {
+        staleRecheck++;
       }
 
       const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
       toCheck.push({ comment, codeSnippet });
     }
 
-    if (alreadyResolved > 0) {
+    if (this.options.reverify && skippedCache > 0) {
+      console.log(chalk.yellow(`  --reverify: Re-checking ${skippedCache} previously cached as "fixed"`));
+    } else if (alreadyResolved > 0) {
       console.log(chalk.gray(`  ${alreadyResolved} already verified as fixed (cached)`));
+    }
+    
+    if (staleRecheck > 0) {
+      console.log(chalk.yellow(`  ${staleRecheck} stale verifications (>${VERIFICATION_EXPIRY_ITERATIONS} iterations old) - re-checking`));
     }
 
     if (toCheck.length === 0) {
