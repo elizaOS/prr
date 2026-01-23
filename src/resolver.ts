@@ -2129,13 +2129,16 @@ After resolving, the files should have NO conflict markers remaining.`;
       // Batch mode - one LLM call for all comments
       console.log(chalk.gray(`  Batch analyzing ${toCheck.length} comments with LLM...`));
       
-      const batchInput = toCheck.map((item, index) => ({
-        id: `issue_${index}`,
-        comment: item.comment.body,
-        filePath: item.comment.path,
-        line: item.comment.line,
-        codeSnippet: item.codeSnippet,
-      }));
+      const batchInput = toCheck.map((item, index) => {
+        const issueId = `issue_${index}`;
+        return {
+          id: issueId,
+          comment: item.comment.body,
+          filePath: item.comment.path,
+          line: item.comment.line,
+          codeSnippet: item.codeSnippet,
+        };
+      });
 
       const results = await this.llm.batchCheckIssuesExist(batchInput);
       debug('Batch analysis results', { count: results.size });
@@ -2143,11 +2146,12 @@ After resolving, the files should have NO conflict markers remaining.`;
       // Process results
       for (let i = 0; i < toCheck.length; i++) {
         const { comment, codeSnippet } = toCheck[i];
-        const result = results.get(String(i)) || results.get(`issue_${i}`);
+        const issueId = batchInput[i].id.toLowerCase();
+        const result = results.get(issueId);
 
         if (!result) {
           // If LLM didn't return a result for this, assume it still exists
-          warn(`No result for comment ${i}, assuming unresolved`);
+          warn(`No result for comment ${issueId}, assuming unresolved`);
           unresolved.push({
             comment,
             codeSnippet,

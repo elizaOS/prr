@@ -267,8 +267,9 @@ NO: <cite the specific code that resolves this issue>`;
       const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
       if (match) {
         const [, id, yesNo, explanation] = match;
-        const cleanId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
-        results.set(cleanId, {
+        const normalizedId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+        const resultId = normalizedId.length > 0 ? `issue_${normalizedId}` : normalizedId;
+        results.set(resultId, {
           exists: yesNo.toUpperCase() === 'YES',
           explanation: explanation.trim(),
         });

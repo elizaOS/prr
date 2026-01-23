@@ -263,12 +263,13 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 - `OPENAI_API_KEY` - Required for verification (if using OpenAI), and for `codex`, `aider`, `llm-api` runners
 
 **Fixer CLI Tools** (depending on `--tool` option; at least one required):
-- `--tool cursor`: `cursor-agent`
-- `--tool opencode`: `opencode`
-- `--tool aider`: `aider`
-- `--tool claude-code`: `claude` or `claude-code`
-- `--tool codex`: `codex` or `openai-codex` (OpenAI Codex access)
-- `--tool llm-api`: no CLI (direct API)
+- `--tool cursor`: `cursor-agent` (Cursor login required)
+- `--tool opencode`: `opencode` (configure API keys per opencode docs)
+- `--tool aider`: `aider` (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
+- `--tool claude-code`: `claude` or `claude-code` (`ANTHROPIC_API_KEY`)
+- `--tool codex`: `codex` or `openai-codex` (OpenAI Codex access / `OPENAI_API_KEY`)
+- `--tool llm-api`: no CLI (direct API; `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
+
 
 | `--tool` value | CLI Binary | Requirements |
 |----------------|------------|--------------|
@@ -278,6 +279,7 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 | `opencode` | `opencode` | (check opencode docs) |
 | `codex` | `codex` or `openai-codex` | `OPENAI_API_KEY` |
 | `llm-api` | (none - direct API) | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+
 
 ### Cursor CLI Setup
 
@@ -307,11 +309,13 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
+
 ```text
 Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3 (OpenAI)
 Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → Grok (Other)
 ... then next tool ...
 ```
+
 
 *Why interleave families?* Same-family models often fail the same way. If Claude Sonnet can't fix something, Claude Opus probably can't either. But GPT might succeed.
 
