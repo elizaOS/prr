@@ -46,14 +46,16 @@ export interface Runner {
  * Updated January 2026 with latest model versions from official docs.
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
-  // Cursor: Mix of Claude 4.5 and GPT-5.x models
+  // Cursor: Uses short model names (from `cursor --list-models`)
+  // WHY these names: Cursor has its own model aliases, not full API names
   'cursor': [
-    'claude-sonnet-4-5-20250929',     // Claude 4.5 Sonnet - balanced
+    'sonnet-4.5',                      // Claude 4.5 Sonnet - balanced
     'gpt-5.2',                         // GPT-5.2 - best for coding/agentic
-    'claude-opus-4-5-20251101',        // Claude 4.5 Opus - most capable
-    'gpt-5-mini',                      // GPT-5 mini - faster, cost-efficient
+    'opus-4.5',                        // Claude 4.5 Opus - most capable
+    'gpt-5.2-codex',                   // GPT-5.2 Codex - optimized for code
+    'gemini-3-pro',                    // Gemini 3 Pro - alternative
   ],
-  // Claude Code: Claude 4.5 models only
+  // Claude Code: Claude 4.5 models only (uses full API names)
   'claude-code': [
     'claude-sonnet-4-5-20250929',      // Claude 4.5 Sonnet
     'claude-opus-4-5-20251101',        // Claude 4.5 Opus
@@ -78,7 +80,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'gpt-5.2',                         // Fallback to standard
     'gpt-5-mini',                      // Fast option
   ],
-  // LLM API: Direct Anthropic API calls
+  // LLM API: Direct Anthropic API calls (uses full API names)
   'llm-api': [
     'claude-sonnet-4-5-20250929',
     'claude-opus-4-5-20251101',
