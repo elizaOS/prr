@@ -4,6 +4,7 @@ import { OpencodeRunner } from './opencode.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { AiderRunner } from './aider.js';
 import { CodexRunner } from './codex.js';
+import { LLMAPIRunner } from './llm-api.js';
 import chalk from 'chalk';
 
 export { CursorRunner } from './cursor.js';
@@ -11,15 +12,18 @@ export { OpencodeRunner } from './opencode.js';
 export { ClaudeCodeRunner } from './claude-code.js';
 export { AiderRunner } from './aider.js';
 export { CodexRunner } from './codex.js';
+export { LLMAPIRunner } from './llm-api.js';
 export type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 
 // All available runners in priority order
+// CLI tools first (more capable with workspace context), then direct API as fallback
 export const ALL_RUNNERS: Runner[] = [
   new CursorRunner(),
   new ClaudeCodeRunner(),
   new AiderRunner(),
   new OpencodeRunner(),
   new CodexRunner(),
+  new LLMAPIRunner(),  // Direct API fallback - always available with API key
 ];
 
 export interface DetectedRunner {
@@ -77,6 +81,7 @@ export function printRunnerSummary(detected: DetectedRunner[]): void {
   if (detected.length === 0) {
     console.log(chalk.red('No fix tools available!'));
     console.log(chalk.gray('Install one of: cursor-agent, claude-code, aider, opencode'));
+    console.log(chalk.gray('Or set ANTHROPIC_API_KEY / OPENAI_API_KEY for direct LLM API'));
     return;
   }
 
