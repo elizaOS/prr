@@ -221,6 +221,9 @@ Working directory: ${workdir}`;
             debug('Search text not found even with normalized whitespace', { filePath });
             continue;
           }
+          // Normalized match found but exact match failed - skip to avoid incorrect replacement
+          debug('Search text found only with normalized whitespace - skipping for safety', { filePath, searchLength: searchNormalized.length });
+          continue;
         }
 
         const newContent = originalContent.replace(searchNormalized, replaceText.trim());

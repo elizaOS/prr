@@ -48,7 +48,7 @@ GITHUB_TOKEN=ghp_xxxx
 
 # LLM for verification (anthropic or openai)
 PRR_LLM_PROVIDER=anthropic
-PRR_LLM_MODEL=claude-sonnet-4-5-20250929  # Claude 4.5 Sonnet
+PRR_LLM_MODEL=claude-sonnet-4.5
 ANTHROPIC_API_KEY=sk-ant-xxxx
 
 # Or use OpenAI
@@ -95,7 +95,7 @@ prr https://github.com/owner/repo/pull/123 --max-context 200000
 # All options
 prr https://github.com/owner/repo/pull/123 \
   --tool cursor \
-  --model claude-sonnet-4-5 \
+  --model claude-4-sonnet-thinking \
   --auto-push \
   --max-fix-iterations 10 \
   --max-push-iterations 3 \
@@ -130,7 +130,7 @@ prr https://github.com/owner/repo/pull/123 \
 
 ### The Fix Loop
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │  1. FETCH     → Get review comments from GitHub             │
 │  2. ANALYZE   → LLM checks: "Is this issue still present?"  │
@@ -157,7 +157,7 @@ prr https://github.com/owner/repo/pull/123 \
    - *Why lessons*: Prevents flip-flopping. If attempt #1 tried X and it was rejected, attempt #2 knows not to try X again.
 
 4. **Run Fixer**: Executes the AI coding tool in the cloned repo.
-   - Rotates through models (claude-sonnet → gpt-5.2 → claude-opus) when stuck
+  - Rotates through models (claude-4-sonnet-thinking → gpt-5.2 → claude-4-opus-thinking) when stuck
    - Rotates through tools (Cursor → Claude Code → Aider) when models exhausted
    - *Why rotation*: Different models have different strengths. If one gets stuck, another might succeed.
 
@@ -223,8 +223,23 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 If you're new to Cursor's CLI agent, you'll need to install and authenticate first:
 
 ```bash
-# Install cursor-agent
-curl https://cursor.com/install -fsS | bash
+# Install cursor-agent (pick the right OS/arch)
+uname -s
+uname -m
+
+# macOS ARM64
+curl -fsSL https://www.cursor.com/download/stable/agent/darwin/arm64 -o cursor-agent
+# macOS AMD64 (Intel)
+curl -fsSL https://www.cursor.com/download/stable/agent/darwin/amd64 -o cursor-agent
+# Linux AMD64
+curl -fsSL https://www.cursor.com/download/stable/agent/linux/amd64 -o cursor-agent
+# Linux ARM64
+curl -fsSL https://www.cursor.com/download/stable/agent/linux/arm64 -o cursor-agent
+
+chmod +x cursor-agent
+sudo mv cursor-agent /usr/local/bin/
+
+# For other platforms, visit: https://www.cursor.com/download
 
 # Login (required before first use!)
 cursor-agent login
@@ -241,25 +256,25 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 | Model | Description | Best for |
 |-------|-------------|----------|
-| `claude-sonnet-4-5-20250929` | Claude 4.5 Sonnet | Default, balanced |
-| `claude-opus-4-5-20251101` | Claude 4.5 Opus | Complex fixes, best quality |
-| `claude-haiku-4-5-20251001` | Claude 4.5 Haiku | Fast, simple fixes |
+| `claude-4-sonnet-thinking` | Claude 4 Sonnet (thinking) | Default, balanced |
+| `claude-4-opus-thinking` | Claude 4 Opus (thinking) | Complex fixes, best quality |
+| `o3` | OpenAI o3 | Fast reasoning |
 | `gpt-5.2` | GPT-5.2 | Great for coding |
-| `gpt-5.2-codex` | GPT-5.2 Codex | Optimized for code |
-| `gpt-5-mini` | GPT-5 Mini | Fast, cost-efficient |
+| `Grok` | Grok | xAI model |
 | `auto` | Auto-select | Let Cursor decide |
 
 **Model rotation**: When stuck, prr automatically rotates through models:
-```
-claude-sonnet-4.5 → gpt-5.2 → claude-opus-4.5 → gpt-5-mini
+
+```text
+claude-4-sonnet-thinking → gpt-5.2 → claude-4-opus-thinking → o3
 ```
 
 ```bash
 # Example: use a faster model for simple fixes
-prr https://github.com/owner/repo/pull/123 --model claude-haiku-4-5-20251001
+prr https://github.com/owner/repo/pull/123 --model o3
 
 # Example: max power for complex issues  
-prr https://github.com/owner/repo/pull/123 --model claude-opus-4-5-20251101
+prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123

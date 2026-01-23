@@ -1,17 +1,17 @@
-import { spawn } from 'child_process';
+import { spawn, execFile as execFileCallback } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
+import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 // Validate model name to prevent injection (defense in depth)
 // Allows forward slashes for provider-prefixed names like "anthropic/claude-..."
 function isValidModel(model: string): boolean {
-  return /^[A-Za-z0-9._\/-]+$/.test(model);
+  return isValidModelName(model);
 }
 
 // Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
@@ -150,7 +150,7 @@ export class CursorRunner implements Runner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec(`which ${CURSOR_AGENT_BINARY}`);
+      await execFile('which', [CURSOR_AGENT_BINARY]);
       debug(`Found Cursor Agent CLI: ${CURSOR_AGENT_BINARY}`);
       return true;
     } catch {
@@ -169,7 +169,7 @@ export class CursorRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec(`${CURSOR_AGENT_BINARY} --version`);
+      const { stdout } = await execFile(CURSOR_AGENT_BINARY, ['--version']);
       version = stdout.trim();
     } catch {
       // Version check failed, but might still work
@@ -177,7 +177,7 @@ export class CursorRunner implements Runner {
 
     // Check if logged in and get available models
     try {
-      const { stdout } = await exec(`${CURSOR_AGENT_BINARY} models 2>&1`);
+      const { stdout } = await execFile(CURSOR_AGENT_BINARY, ['models']);
       if (stdout.includes('Available models') || stdout.includes('auto')) {
         // Parse and prioritize models dynamically
         // WHY: Model names change over time, dynamic discovery keeps us current
@@ -251,10 +251,14 @@ export class CursorRunner implements Runner {
       console.log(`\nRunning: ${CURSOR_AGENT_BINARY}${modelInfo} --workspace ${workdir} [prompt]\n`);
       debug('Cursor command', { binary: CURSOR_AGENT_BINARY, workdir, model: options?.model, promptLength: prompt.length });
 
+      // SECURITY: Use spawn with argument array (no shell) to prevent shell injection.
+      // Paths like workdir could contain special characters from repo names or PR numbers.
+      // By using spawn without shell: true, arguments are passed directly to the process.
       const child = spawn(CURSOR_AGENT_BINARY, args, {
         cwd: workdir,
         stdio: ['inherit', 'pipe', 'pipe'],
         env: { ...process.env },
+        shell: false, // Explicit: prevent shell injection via paths/arguments
       });
 
       let stdout = '';

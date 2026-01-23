@@ -5,12 +5,13 @@ import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
+import { isValidModelName } from '../config.js';
 
 const exec = promisify(execCallback);
 
 // Validate model name to prevent injection (defense in depth)
 function isValidModel(model: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(model);
+  return isValidModelName(model);
 }
 
 // Claude Code CLI binary names

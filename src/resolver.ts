@@ -802,6 +802,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               }
               
               // Run regenerate commands using spawn with validated args
+              // Security: Only execute whitelisted commands with spawn (no shell)
               for (const cmd of regenerateCommands) {
                 const cmdArgs = ALLOWED_COMMANDS[cmd];
                 if (!cmdArgs) {
@@ -810,6 +811,14 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 }
                 
                 const [executable, ...args] = cmdArgs;
+                
+                // Security: Verify executable is a simple name (no path components)
+                // This ensures we use the system PATH lookup, not a potentially malicious local file
+                if (executable.includes('/') || executable.includes('\\')) {
+                  console.log(chalk.yellow(`    ⚠ Skipping command with path in executable: ${executable}`));
+                  continue;
+                }
+                
                 console.log(chalk.cyan(`    Running: ${cmd}`));
                 
                 try {
@@ -818,13 +827,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
                       cwd: resolvedWorkdir,
                       stdio: 'inherit',
                       env: safeEnv,
-                      shell: false, // Never use shell
+                      shell: false, // Never use shell - prevents shell injection
                     });
                     
+                    // Security: 60 second timeout prevents resource exhaustion
                     const timeout = setTimeout(() => {
                       proc.kill('SIGTERM');
+                      // Give process 5s to terminate gracefully, then SIGKILL
+                      setTimeout(() => proc.kill('SIGKILL'), 5000);
                       reject(new Error('Timeout exceeded (60s)'));
-                    }, 60000); // 60 second timeout
+                    }, 60000);
                     
                     proc.on('close', (code) => {
                       clearTimeout(timeout);
@@ -1008,7 +1020,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
         pushIteration++;
         
         if (this.options.autoPush && pushIteration > 1) {
-          const iterLabel = this.options.maxPushIterations ? `${pushIteration}/${maxPushIterations}` : `${pushIteration}`;
+          const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
           console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
         }
 
@@ -1243,7 +1255,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // Get lessons for all files being fixed
           const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];
           const lessons = this.lessonsManager.getLessonsForFiles(affectedFiles);
-          const { prompt, summary, detailedSummary, lessonsIncluded, issues } = buildFixPrompt(
+          const { prompt, detailedSummary, lessonsIncluded } = buildFixPrompt(
             unresolvedIssues,
             lessons
           );
@@ -1490,7 +1502,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
             }
           }
 
-          const totalIssues = issues.length;
+          const totalIssues = unresolvedIssues.length;
           const verifyTime = endTimer('Verify fixes');
           const progressPct = Math.round((verifiedCount / totalIssues) * 100);
           const lessonsAfterVerify = this.lessonsManager.getTotalCount();
@@ -1679,7 +1691,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
     const detected = await detectAvailableRunners(this.options.verbose);
     
     if (detected.length === 0) {
-      throw new Error('No fix tools available! Install one of: cursor-agent, claude-code, aider, opencode');
+      throw new Error('No fix tools available! Install one of: cursor, claude-code, aider, opencode, codex, llm-api');
     }
 
     // Print summary
@@ -1850,7 +1862,7 @@ After resolving, the files should have NO conflict markers remaining.`;
       console.log(chalk.gray(`  Batch analyzing ${toCheck.length} comments with LLM...`));
       
       const batchInput = toCheck.map((item, index) => ({
-        id: String(index),
+        id: `issue_${index}`,
         comment: item.comment.body,
         filePath: item.comment.path,
         line: item.comment.line,
@@ -1863,7 +1875,7 @@ After resolving, the files should have NO conflict markers remaining.`;
       // Process results
       for (let i = 0; i < toCheck.length; i++) {
         const { comment, codeSnippet } = toCheck[i];
-        const result = results.get(String(i));
+        const result = results.get(String(i)) || results.get(`issue_${i}`);
 
         if (!result) {
           // If LLM didn't return a result for this, assume it still exists

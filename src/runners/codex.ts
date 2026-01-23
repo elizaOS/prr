@@ -1,16 +1,17 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
-import { writeFileSync, unlinkSync, readFileSync } from 'fs';
+import { createReadStream, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
+import { isValidModelName } from '../config.js';
 
 const exec = promisify(execCallback);
 
 // Validate model name to prevent injection (defense in depth)
 function isValidModel(model: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(model);
+  return isValidModelName(model);
 }
 
 // OpenAI Codex CLI binary names
@@ -77,18 +78,24 @@ export class CodexRunner implements Runner {
         args.push('--model', options.model);
       }
       
-      // Read prompt from file and pass as positional argument
-      const promptContent = readFileSync(promptFile, 'utf-8');
-      args.push(promptContent);
+      // Use stdin flag to read prompt from stdin (avoids command injection)
+      args.push('--stdin');
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-      console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt]\n`);
+      console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt via stdin]\n`);
       debug('Codex command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
 
       const child = spawn(this.binaryPath, args, {
         cwd: workdir,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
+      });
+      
+      // Pipe prompt file to stdin (safe - no shell interpolation)
+      const promptStream = createReadStream(promptFile);
+      promptStream.pipe(child.stdin);
+      promptStream.on('error', (err) => {
+        debug('Error reading prompt file', { error: err.message });
       });
 
       let stdout = '';

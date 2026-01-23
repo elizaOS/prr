@@ -35,8 +35,18 @@ async function handleShutdown(signal: string): Promise<void> {
 }
 
 // Set up signal handlers
-process.on('SIGINT', () => handleShutdown('SIGINT'));
-process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+process.on('SIGINT', () => {
+  handleShutdown('SIGINT').catch(err => {
+    console.error('Error during shutdown:', err);
+    process.exit(1);
+  });
+});
+process.on('SIGTERM', () => {
+  handleShutdown('SIGTERM').catch(err => {
+    console.error('Error during shutdown:', err);
+    process.exit(1);
+  });
+});
 
 async function main(): Promise<void> {
   try {

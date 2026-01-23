@@ -70,11 +70,16 @@ export function loadConfig(): Config {
   return config;
 }
 
-const VALID_TOOLS: readonly FixerTool[] = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'];
+
+export const MODEL_NAME_PATTERN = /^[A-Za-z0-9._\/-]+$/;
+
+export function isValidModelName(model: string): boolean {
+  return MODEL_NAME_PATTERN.test(model);
+}
 
 export function validateTool(tool: string): FixerTool {
-  if (!VALID_TOOLS.includes(tool as FixerTool)) {
-    throw new Error(`Invalid tool: ${tool}. Must be one of: ${VALID_TOOLS.join(', ')}`);
+  if (!['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'].includes(tool as FixerTool)) {
+    throw new Error(`Invalid tool: ${tool}. Must be one of: cursor, opencode, claude-code, aider, codex, llm-api`);
   }
   return tool as FixerTool;
 }

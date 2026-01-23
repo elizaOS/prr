@@ -763,12 +763,19 @@ RESOLVED:
       return `fix(${mainFile}): improve implementation based on code review`;
     }
 
-    // Ensure the message starts with a conventional commit prefix
-    if (!message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\(.+\))?:/i)) {
+    // Normalize the conventional commit prefix (lowercase, proper colon)
+    const prefixMatch = message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\([^)]+\))?([:\s]+)?/i);
+    if (prefixMatch) {
+      const type = prefixMatch[1].toLowerCase();
+      const scope = prefixMatch[2] ?? '';
+      const rest = message.slice(prefixMatch[0].length).trimStart();
+      message = rest ? `${type}${scope}: ${rest}` : `${type}${scope}: update`;
+    } else {
+      // No valid prefix, add one
       message = `fix: ${message}`;
     }
     
-    // Truncate if too long
+    // Truncate first line if too long (72 char limit for commit messages)
     const lines = message.split('\n');
     if (lines[0].length > 72) {
       lines[0] = lines[0].substring(0, 69) + '...';
