@@ -260,6 +260,7 @@ NO: <cite the specific code that resolves this issue>`;
   /**
    * Final audit: Re-verify ALL issues with an adversarial, stricter prompt.
    * This is run when prr thinks it's done, to catch false positives.
+   * Batches issues to avoid exceeding context limits.
    */
   async finalAudit(
     issues: Array<{
@@ -276,69 +277,110 @@ NO: <cite the specific code that resolves this issue>`;
 
     debug('Running final audit on all issues', { count: issues.length });
 
-    // Build adversarial audit prompt
-    const parts: string[] = [
-      'FINAL AUDIT: You are performing a thorough final review before marking this PR as complete.',
-      '',
-      'YOUR TASK: Find any issues that were NOT properly fixed. Be adversarial - assume fixes might be incomplete.',
-      '',
-      'AUDIT RULES (be strict):',
-      '1. Read each review comment carefully - understand the EXACT issue being raised',
-      '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
-      '3. Partial fixes do NOT count - the full issue must be resolved',
-      '4. Documentation issues: verify the exact text/description was updated',
-      '5. Security issues: verify the specific vulnerability was addressed',
-      '6. Validation issues: verify the exact validation requested was added',
-      '7. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
-      '',
-      'For EACH issue, respond with:',
-      'ISSUE_ID: FIXED|UNFIXED: <cite specific evidence from code OR explain what is missing>',
-      '',
-      '---',
-      '',
-    ];
-
-    for (const issue of issues) {
-      parts.push(`## Issue ${issue.id}`);
-      parts.push(`File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`);
-      parts.push(`Review Comment: ${issue.comment}`);
-      parts.push('');
-      parts.push('Current code at this location:');
-      parts.push('```');
-      parts.push(issue.codeSnippet);
-      parts.push('```');
-      parts.push('');
+    // Batch issues to keep context size manageable (~10 issues per batch)
+    const BATCH_SIZE = 10;
+    const batches: typeof issues[] = [];
+    for (let i = 0; i < issues.length; i += BATCH_SIZE) {
+      batches.push(issues.slice(i, i + BATCH_SIZE));
     }
 
-    parts.push('---');
-    parts.push('');
-    parts.push('AUDIT each issue now. For each one, cite the specific evidence it is FIXED, or explain why it is UNFIXED:');
+    debug('Final audit batches', { batches: batches.length, batchSize: BATCH_SIZE });
 
-    const response = await this.complete(parts.join('\n'));
-    const results = new Map<string, { stillExists: boolean; explanation: string }>();
+    const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
 
-    // Parse responses
-    const lines = response.content.split('\n');
-    for (const line of lines) {
-      // Match patterns like "issue_123: FIXED: explanation" or "ISSUE_123: UNFIXED: explanation"
-      const match = line.match(/^([^:]+):\s*(FIXED|UNFIXED):\s*(.*)$/i);
-      if (match) {
-        const [, id, status, explanation] = match;
-        const cleanId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '');
-        results.set(cleanId, {
-          stillExists: status.toUpperCase() === 'UNFIXED',
-          explanation: explanation.trim(),
-        });
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const batch = batches[batchIdx];
+      debug(`Processing audit batch ${batchIdx + 1}/${batches.length}`, { issueCount: batch.length });
+
+      // Build adversarial audit prompt with numeric indices for reliable parsing
+      const parts: string[] = [
+        'FINAL AUDIT: You are performing a thorough final review before marking this PR as complete.',
+        '',
+        'YOUR TASK: Find any issues that were NOT properly fixed. Be adversarial - assume fixes might be incomplete.',
+        '',
+        'AUDIT RULES (be strict):',
+        '1. Read each review comment carefully - understand the EXACT issue being raised',
+        '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
+        '3. Partial fixes do NOT count - the full issue must be resolved',
+        '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
+        '',
+        'RESPONSE FORMAT (use exactly this format for each issue):',
+        '[1] FIXED: The code now includes X',
+        '[2] UNFIXED: The validation is still missing',
+        '',
+        '---',
+        '',
+      ];
+
+      // Use simple numeric indices for reliable parsing
+      batch.forEach((issue, idx) => {
+        const issueNum = idx + 1;
+        // Truncate long comments to save context
+        const truncatedComment = issue.comment.length > 500 
+          ? issue.comment.substring(0, 500) + '...' 
+          : issue.comment;
+        // Truncate long code snippets
+        const truncatedCode = issue.codeSnippet.length > 1000
+          ? issue.codeSnippet.substring(0, 1000) + '\n... (truncated)'
+          : issue.codeSnippet;
+          
+        parts.push(`[${issueNum}] File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`);
+        parts.push(`Comment: ${truncatedComment}`);
+        parts.push('Code:');
+        parts.push('```');
+        parts.push(truncatedCode);
+        parts.push('```');
+        parts.push('');
+      });
+
+      parts.push('---');
+      parts.push(`Respond with exactly ${batch.length} lines, one per issue [1] through [${batch.length}]:`);
+
+      const response = await this.complete(parts.join('\n'));
+
+      // Parse responses - match [N] FIXED/UNFIXED pattern
+      const lines = response.content.split('\n');
+      for (const line of lines) {
+        // Match patterns like "[1] FIXED: explanation" or "[2] UNFIXED: explanation"
+        const match = line.match(/^\[(\d+)\]\s*(FIXED|UNFIXED):\s*(.*)$/i);
+        if (match) {
+          const [, numStr, status, explanation] = match;
+          const idx = parseInt(numStr, 10) - 1;
+          if (idx >= 0 && idx < batch.length) {
+            const issue = batch[idx];
+            allResults.set(issue.id, {
+              stillExists: status.toUpperCase() === 'UNFIXED',
+              explanation: explanation.trim(),
+            });
+          }
+        }
       }
     }
 
+    const parsed = allResults.size;
+    const unfixed = Array.from(allResults.values()).filter(r => r.stillExists).length;
+    
     debug('Final audit results', { 
       total: issues.length,
-      parsed: results.size,
-      unfixed: Array.from(results.values()).filter(r => r.stillExists).length
+      parsed,
+      unfixed
     });
 
-    return results;
+    // CRITICAL: If we couldn't parse most responses, that's a failure - don't silently pass
+    if (parsed < issues.length * 0.5) {
+      debug('WARNING: Failed to parse most audit responses - marking unparsed as needing review');
+      // Mark any unparsed issues as potentially unfixed (fail-safe)
+      for (const issue of issues) {
+        if (!allResults.has(issue.id)) {
+          allResults.set(issue.id, {
+            stillExists: true,
+            explanation: 'Audit response could not be parsed - needs manual review',
+          });
+        }
+      }
+    }
+
+    return allResults;
   }
 
   async verifyFix(
