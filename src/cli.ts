@@ -28,7 +28,7 @@ const CAT_BANNER = `
 (__(__)___(__)__)
 
   ${chalk.cyan.bold('prr')} ${chalk.gray('v1.0.0')}
-  ${chalk.dim('PR Resolver - Fix LLM review bot comments')}
+  ${chalk.dim("sits on your PR and won't get up until it's ready")}
 `;
 
 export function createCLI(): Command {
