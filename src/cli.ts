@@ -78,16 +78,13 @@ export function createCLI(): Command {
   return program;
 }
 
-const CLI_MODEL_NAME_PATTERN = /^[A-Za-z0-9.-]+$/;
-
 // Validate model name to prevent command injection
 function validateModelName(model: string | undefined): string | undefined {
   if (!model) return undefined;
   
-  // Only allow alphanumeric characters, hyphens, and dots
-  if (!isValidModelName(model) || !CLI_MODEL_NAME_PATTERN.test(model)) {
+  if (!isValidModelName(model)) {
     console.error(chalk.red(`Invalid model name: "${model}"`));
-    console.error(chalk.gray('Model names can only contain letters, numbers, hyphens, and dots.'));
+    console.error(chalk.gray('Model names can only contain letters, numbers, hyphens, underscores, dots, and forward slashes.'));
     process.exit(1);
   }
   

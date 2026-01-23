@@ -17,6 +17,10 @@ export class GitHubAPI {
     debug('GitHub API client initialized');
   }
 
+  private escapeRegex(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   async getPRInfo(owner: string, repo: string, prNumber: number): Promise<PRInfo> {
     debug('Fetching PR info', { owner, repo, prNumber });
     const { data: pr } = await this.octokit.pulls.get({
@@ -361,7 +365,7 @@ export class GitHubAPI {
         per_page: 100,
       });
       
-      const pattern = new RegExp(botNamePattern, 'i');
+      const pattern = new RegExp(this.escapeRegex(botNamePattern), 'i');
       const hasIssueComment = issueComments.some(c => pattern.test(c.user?.login || ''));
       if (hasIssueComment) return true;
       
@@ -399,7 +403,7 @@ export class GitHubAPI {
   }> {
     debug('Checking bot review status', { owner, repo, prNumber, botNamePattern, currentHeadSha });
     
-    const pattern = new RegExp(botNamePattern, 'i');
+    const pattern = new RegExp(this.escapeRegex(botNamePattern), 'i');
     
     try {
       // Get all reviews to find bot's latest

@@ -488,8 +488,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
         const codeMatch = response.content.match(/```[\w]*\n?([\s\S]*?)```/);
         if (codeMatch) {
           const fixedCode = codeMatch[1].trim();
-          if (fixedCode !== fileContent.trim()) {
-            fs.writeFileSync(filePath, fixedCode, 'utf-8');
+          const fileContentTrimmed = fileContent.trimEnd();
+          if (fixedCode !== fileContentTrimmed) {
+            // Preserve trailing newline if original file had one
+            const hasTrailingNewline = fileContent.endsWith('\n');
+            fs.writeFileSync(filePath, fixedCode + (hasTrailingNewline ? '\n' : ''), 'utf-8');
             console.log(chalk.green(`    ✓ Fixed: ${issue.comment.path}`));
             anyFixed = true;
           }

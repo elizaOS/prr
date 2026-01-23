@@ -84,8 +84,8 @@ export class CodexRunner implements Runner {
         args.push('--model', options.model);
       }
       
-      // Use stdin flag to read prompt from stdin (avoids command injection)
-      args.push('--stdin');
+      // Use "-" prompt to read from stdin (avoids command injection)
+      args.push('-');
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt via stdin]\n`);

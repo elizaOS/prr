@@ -297,7 +297,7 @@ cursor-agent login
 cursor-agent models
 ```
 
-If you're unsure which platform you're on, check `uname -s` and `uname -m`. For manual downloads, see https://www.cursor.com/download.
+If you're unsure which platform you're on, check `uname -s` and `uname -m`. For manual downloads, see <https://www.cursor.com/download>.
 
 This opens a browser window to authenticate with your Cursor account. You only need to do this once - your credentials are saved locally.
 

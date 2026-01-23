@@ -1,5 +1,5 @@
 import type { SimpleGit } from 'simple-git';
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
 
 export interface CommitResult {
@@ -70,7 +70,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {
       // Inject token into URL
       const authUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
-      execSync(`git remote set-url origin "${authUrl}"`, { cwd: workdir });
+      execFileSync('git', ['remote', 'set-url', 'origin', authUrl], { cwd: workdir });
       debug('Injected token into remote URL for push');
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
@@ -264,7 +264,7 @@ export function stripMarkdownForCommit(text: string): string {
     // Remove markdown links [text](url) -> text
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     // Remove common review comment prefixes/emoji patterns
-    .replace(/^[⚠️🔴🟡🟢✅❌💡📝🐛]+\s*/g, '')
+    .replace(/^(?:⚠️|🔴|🟡|🟢|✅|❌|💡|📝|🐛)+\s*/g, '')
     // Collapse whitespace
     .replace(/\s+/g, ' ')
     .trim();

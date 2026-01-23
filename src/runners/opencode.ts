@@ -101,6 +101,11 @@ export class OpencodeRunner implements Runner {
       // Pipe the prompt file to stdin
       const promptStream = createReadStream(promptFile);
       promptStream.pipe(child.stdin);
+      promptStream.on('error', (err) => {
+        debug('Error reading prompt file', { error: err.message });
+        child.stdin?.destroy();
+        child.kill('SIGTERM');
+      });
 
       let stdout = '';
       let stderr = '';
