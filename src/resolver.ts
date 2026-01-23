@@ -19,7 +19,7 @@ import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js'
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
 import type { SimpleGit } from 'simple-git';
 import { squashCommit, push } from './git/commit.js';
-import { detectAvailableRunners, getRunnerByName, printRunnerSummary } from './runners/index.js';
+import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage } from './logger.js';
 
 export class PRResolver {
@@ -36,13 +36,76 @@ export class PRResolver {
   private workdir!: string;
   private isShuttingDown = false;
   private consecutiveFailures = 0;
-  private toolCycleFailures = 0;
+  
+  // Model rotation: track current model index for each runner
+  private modelIndices: Map<string, number> = new Map();
+  private modelFailuresInCycle = 0;  // Failures since last model/tool rotation
 
   constructor(config: Config, options: CLIOptions) {
     this.config = config;
     this.options = options;
     this.github = new GitHubAPI(config.githubToken);
     this.llm = new LLMClient(config);
+  }
+
+  /**
+   * Get the list of models available for a runner
+   */
+  private getModelsForRunner(runner: Runner): string[] {
+    // Use runner's own list if provided, otherwise use defaults
+    return runner.supportedModels || DEFAULT_MODEL_ROTATIONS[runner.name] || [];
+  }
+
+  /**
+   * Get the current model for the active runner
+   * Returns undefined if using CLI default or user-specified model
+   */
+  private getCurrentModel(): string | undefined {
+    // If user specified a model via CLI, always use that
+    if (this.options.toolModel) {
+      return this.options.toolModel;
+    }
+    
+    const models = this.getModelsForRunner(this.runner);
+    if (models.length === 0) {
+      return undefined;  // Let the tool use its default
+    }
+    
+    const index = this.modelIndices.get(this.runner.name) || 0;
+    return models[index];
+  }
+
+  /**
+   * Rotate to the next model for the current runner
+   * Returns true if rotated to a new model, false if we've cycled through all
+   */
+  private rotateModel(): boolean {
+    const models = this.getModelsForRunner(this.runner);
+    if (models.length <= 1) {
+      return false;  // No rotation possible
+    }
+    
+    const currentIndex = this.modelIndices.get(this.runner.name) || 0;
+    const nextIndex = (currentIndex + 1) % models.length;
+    
+    // Check if we've completed a full cycle
+    if (nextIndex === 0) {
+      return false;  // Cycled through all models
+    }
+    
+    const previousModel = models[currentIndex];
+    const nextModel = models[nextIndex];
+    this.modelIndices.set(this.runner.name, nextIndex);
+    
+    console.log(chalk.yellow(`\n  🔄 Rotating model: ${previousModel} → ${nextModel}`));
+    return true;
+  }
+
+  /**
+   * Reset model index for current runner (start fresh after tool switch)
+   */
+  private resetModelIndex(): void {
+    this.modelIndices.set(this.runner.name, 0);
   }
 
   private switchToNextRunner(): boolean {
@@ -52,8 +115,34 @@ export class PRResolver {
     this.currentRunnerIndex = (this.currentRunnerIndex + 1) % this.runners.length;
     this.runner = this.runners[this.currentRunnerIndex];
     
-    console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${this.runner.name}`));
+    // Reset model index for the new runner
+    this.resetModelIndex();
+    
+    const newModel = this.getCurrentModel();
+    const modelInfo = newModel ? ` (${newModel})` : '';
+    console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${this.runner.name}${modelInfo}`));
     return true;
+  }
+
+  /**
+   * Try rotating model first, then tool if all models exhausted
+   * Returns true if we rotated something, false if nothing left to try
+   */
+  private tryRotation(): boolean {
+    // First try rotating the model within the current tool
+    if (this.rotateModel()) {
+      this.modelFailuresInCycle = 0;
+      return true;
+    }
+    
+    // All models exhausted for this tool, try next tool
+    if (this.switchToNextRunner()) {
+      this.modelFailuresInCycle = 0;
+      return true;
+    }
+    
+    // Nothing left to rotate
+    return false;
   }
 
   private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit): Promise<boolean> {
@@ -75,7 +164,7 @@ export class PRResolver {
       const focusedPrompt = this.buildSingleIssuePrompt(issue);
       
       // Run with current runner
-      const result = await this.runner.run(this.workdir, focusedPrompt, { model: this.options.toolModel });
+      const result = await this.runner.run(this.workdir, focusedPrompt, { model: this.getCurrentModel() });
       
       if (result.success) {
         // Check if this specific file changed
@@ -570,7 +659,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               
               // Run the cursor/opencode tool to resolve conflicts
               console.log(chalk.cyan(`\n  Attempt 1: Using ${this.runner.name} to resolve conflicts...`));
-              const runResult = await this.runner.run(this.workdir, conflictPrompt, { model: this.options.toolModel });
+              const runResult = await this.runner.run(this.workdir, conflictPrompt, { model: this.getCurrentModel() });
               
               if (!runResult.success) {
                 console.log(chalk.yellow(`  ${this.runner.name} failed, will try direct API...`));
@@ -870,7 +959,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
         while (fixIteration < maxFixIterations && !allFixed) {
           fixIteration++;
           const iterLabel = this.options.maxFixIterations ? `${fixIteration}/${maxFixIterations}` : `${fixIteration}`;
-          console.log(chalk.blue(`\n--- Fix iteration ${iterLabel} ---\n`));
+          const currentModel = this.getCurrentModel();
+          const modelInfo = currentModel ? chalk.gray(` [${this.runner.name}/${currentModel}]`) : chalk.gray(` [${this.runner.name}]`);
+          console.log(chalk.blue(`\n--- Fix iteration ${iterLabel}${modelInfo} ---\n`));
 
           // Start new iteration in state
           this.stateManager.startIteration();
@@ -923,7 +1014,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
           spinner.stop();
           
           debug('Executing runner', { tool: this.runner.name, workdir: this.workdir, model: this.options.toolModel });
-          const result = await this.runner.run(this.workdir, prompt, { model: this.options.toolModel });
+          const result = await this.runner.run(this.workdir, prompt, { model: this.getCurrentModel() });
           const fixerTime = endTimer('Run fixer');
           debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
@@ -939,32 +1030,41 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           // Check for changes
           if (!(await hasChanges(git))) {
-            console.log(chalk.yellow('\nNo changes made by fixer tool'));
-            this.lessonsManager.addGlobalLesson(`${this.runner.name} made no changes - trying different approach`);
+            const currentModel = this.getCurrentModel();
+            console.log(chalk.yellow(`\nNo changes made by ${this.runner.name}${currentModel ? ` (${currentModel})` : ''}`));
+            this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes - trying different approach`);
             
             // Count this as a failure for rotation purposes
             this.consecutiveFailures++;
-            this.toolCycleFailures++;
+            this.modelFailuresInCycle++;
+            
+            // Rotation strategy:
+            // 1. Try single-issue focus with current model (odd failures)
+            // 2. Rotate to next model for current tool (even failures, has more models)
+            // 3. Rotate to next tool (all models exhausted for current tool)
+            // 4. Try direct LLM API as last resort (all tools exhausted)
             
             const isOddFailure = this.consecutiveFailures % 2 === 1;
-            const toolCycles = Math.floor(this.consecutiveFailures / 2);
             
             if (isOddFailure && unresolvedIssues.length > 1) {
               console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
               const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git);
               if (singleIssueFixed) {
                 this.consecutiveFailures = 0;
-                this.toolCycleFailures = 0;
+                this.modelFailuresInCycle = 0;
               }
-            } else if (!isOddFailure && this.runners.length > 1 && toolCycles < this.runners.length) {
-              this.switchToNextRunner();
-              console.log(chalk.cyan('  Starting fresh with batch mode...'));
-            } else if (toolCycles >= this.runners.length) {
-              console.log(chalk.yellow('\n  🧠 All tools exhausted, trying direct LLM API fix...'));
-              const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
-              if (directFixed) {
-                this.consecutiveFailures = 0;
-                this.toolCycleFailures = 0;
+            } else if (!isOddFailure) {
+              // Try rotating model or tool
+              if (this.tryRotation()) {
+                console.log(chalk.cyan('  Starting fresh with batch mode...'));
+              } else {
+                // All models and tools exhausted
+                console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
+                const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
+                if (directFixed) {
+                  this.consecutiveFailures = 0;
+                  this.modelFailuresInCycle = 0;
+                }
               }
             }
             
@@ -1139,44 +1239,44 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // Track consecutive failures for strategy switching
             if (verifiedCount === 0) {
               this.consecutiveFailures++;
-              this.toolCycleFailures++;
+              this.modelFailuresInCycle++;
               
-              // Strategy per tool:
+              // Rotation strategy:
               // 1. Batch mode (normal) - first attempt
-              // 2. Single-issue focus mode - if batch fails
-              // 3. Rotate to next tool and repeat
-              // 4. Direct LLM API - after all tools exhausted
+              // 2. Single-issue focus mode - if batch fails (odd failure)
+              // 3. Rotate model within current tool (even failure, has more models)
+              // 4. Rotate to next tool (all models exhausted)
+              // 5. Direct LLM API - after all tools exhausted
               
               const isOddFailure = this.consecutiveFailures % 2 === 1;
-              const toolCycles = Math.floor(this.consecutiveFailures / 2);
               
               if (isOddFailure && unresolvedIssues.length > 1) {
-                // Odd failure = batch failed, try single-issue with same tool
+                // Odd failure = batch failed, try single-issue with same tool/model
                 console.log(chalk.yellow('\n  🎯 Batch failed, trying single-issue focus mode...'));
                 const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git);
                 if (singleIssueFixed) {
                   this.consecutiveFailures = 0;
-                  this.toolCycleFailures = 0;
+                  this.modelFailuresInCycle = 0;
                 }
               }
-              else if (!isOddFailure && this.runners.length > 1 && toolCycles < this.runners.length) {
-                // Even failure = single-issue also failed, rotate to next tool
-                this.switchToNextRunner();
-                console.log(chalk.cyan('  Starting fresh with batch mode...'));
-              }
-              else if (toolCycles >= this.runners.length) {
-                // All tools exhausted, try direct LLM as last resort
-                console.log(chalk.yellow('\n  🧠 All tools exhausted, trying direct LLM API fix...'));
-                const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
-                if (directFixed) {
-                  this.consecutiveFailures = 0;
-                  this.toolCycleFailures = 0;
+              else if (!isOddFailure) {
+                // Even failure = single-issue also failed, try rotation
+                if (this.tryRotation()) {
+                  console.log(chalk.cyan('  Starting fresh with batch mode...'));
+                } else {
+                  // All models and tools exhausted, try direct LLM as last resort
+                  console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
+                  const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
+                  if (directFixed) {
+                    this.consecutiveFailures = 0;
+                    this.modelFailuresInCycle = 0;
+                  }
                 }
               }
             } else {
               // Made progress, reset failure counters
               this.consecutiveFailures = 0;
-              this.toolCycleFailures = 0;
+              this.modelFailuresInCycle = 0;
             }
             
             // Update unresolved list for next iteration
@@ -1326,9 +1426,19 @@ Start your response with \`\`\` and end with \`\`\`.`;
       this.runners.unshift(primaryRunner);
     }
 
+    // Initialize model indices and show info
+    const primaryModels = this.getModelsForRunner(primaryRunner);
+    const initialModel = this.options.toolModel || primaryModels[0];
+    
     console.log(chalk.cyan(`\nPrimary fixer: ${primaryRunner.displayName}`));
+    if (initialModel) {
+      console.log(chalk.gray(`  Starting model: ${initialModel}`));
+    }
+    if (primaryModels.length > 1 && !this.options.toolModel) {
+      console.log(chalk.gray(`  Model rotation: ${primaryModels.join(' → ')}`));
+    }
     if (this.runners.length > 1) {
-      console.log(chalk.gray(`  Rotation order: ${this.runners.map(r => r.displayName).join(' → ')}`));
+      console.log(chalk.gray(`  Tool rotation: ${this.runners.map(r => r.displayName).join(' → ')}`));
     }
 
     return primaryRunner;

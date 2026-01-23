@@ -14,6 +14,7 @@ export { AiderRunner } from './aider.js';
 export { CodexRunner } from './codex.js';
 export { LLMAPIRunner } from './llm-api.js';
 export type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
+export { DEFAULT_MODEL_ROTATIONS } from './types.js';
 
 // All available runners in priority order
 // CLI tools first (more capable with workspace context), then direct API as fallback
