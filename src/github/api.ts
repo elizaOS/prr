@@ -324,4 +324,73 @@ export class GitHubAPI {
       return null;
     }
   }
+
+  /**
+   * Post a comment on a PR (issue comment, not review comment).
+   */
+  async postComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
+    debug('Posting comment to PR', { owner, repo, prNumber, bodyLength: body.length });
+    await this.octokit.issues.createComment({
+      owner,
+      repo,
+      issue_number: prNumber,
+      body,
+    });
+    debug('Comment posted successfully');
+  }
+
+  /**
+   * Check if a bot has ever commented on this PR.
+   * Used to detect if CodeRabbit or other review bots are configured.
+   */
+  async hasBotCommented(owner: string, repo: string, prNumber: number, botNamePattern: string): Promise<boolean> {
+    debug('Checking if bot has commented', { owner, repo, prNumber, botNamePattern });
+    
+    try {
+      // Check issue comments
+      const { data: issueComments } = await this.octokit.issues.listComments({
+        owner,
+        repo,
+        issue_number: prNumber,
+        per_page: 100,
+      });
+      
+      const pattern = new RegExp(botNamePattern, 'i');
+      const hasIssueComment = issueComments.some(c => pattern.test(c.user?.login || ''));
+      if (hasIssueComment) return true;
+      
+      // Check review comments
+      const { data: reviews } = await this.octokit.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100,
+      });
+      
+      const hasReviewComment = reviews.some(r => pattern.test(r.user?.login || ''));
+      return hasReviewComment;
+    } catch (error) {
+      debug('Failed to check bot comments', { error });
+      return false;
+    }
+  }
+
+  /**
+   * Trigger CodeRabbit review by posting a comment.
+   * Only triggers if CodeRabbit has previously commented (i.e., is configured for this repo).
+   */
+  async triggerCodeRabbitReview(owner: string, repo: string, prNumber: number): Promise<boolean> {
+    debug('Checking if CodeRabbit should be triggered', { owner, repo, prNumber });
+    
+    const hasCodeRabbit = await this.hasBotCommented(owner, repo, prNumber, 'coderabbit');
+    
+    if (!hasCodeRabbit) {
+      debug('CodeRabbit has not commented on this PR - not configured or not triggered yet');
+      return false;
+    }
+    
+    debug('CodeRabbit detected, triggering review');
+    await this.postComment(owner, repo, prNumber, '@coderabbitai review');
+    return true;
+  }
 }

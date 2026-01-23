@@ -1619,6 +1619,21 @@ Start your response with \`\`\` and end with \`\`\`.`;
             await push(git, this.prInfo.branch);
             spinner.succeed('Pushed to remote');
 
+            // Trigger CodeRabbit if it's configured for this repo
+            // WHY: Some repos require manual trigger (@coderabbitai review) to start review
+            try {
+              spinner.start('Checking for CodeRabbit...');
+              const triggered = await this.github.triggerCodeRabbitReview(owner, repo, number);
+              if (triggered) {
+                spinner.succeed('Triggered CodeRabbit review');
+              } else {
+                spinner.info('CodeRabbit not detected on this PR');
+              }
+            } catch (err) {
+              debug('Failed to trigger CodeRabbit', { error: err });
+              spinner.warn('Could not trigger CodeRabbit (continuing anyway)');
+            }
+
             // Wait for re-review
             if (pushIteration < maxPushIterations) {
               console.log(chalk.gray(`\nWaiting ${this.options.pollInterval}s for re-review...`));
