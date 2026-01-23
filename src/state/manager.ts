@@ -323,4 +323,37 @@ export class StateManager {
       iteration.verificationResults[commentId] = result;
     }
   }
+
+  // Tool/model rotation state persistence
+  // WHY: Resume from where we left off if interrupted, don't restart from first model
+  
+  setCurrentRunnerIndex(index: number): void {
+    if (!this.state) return;
+    this.state.currentRunnerIndex = index;
+  }
+  
+  getCurrentRunnerIndex(): number {
+    return this.state?.currentRunnerIndex ?? 0;
+  }
+  
+  setModelIndex(runnerName: string, index: number): void {
+    if (!this.state) return;
+    if (!this.state.modelIndices) {
+      this.state.modelIndices = {};
+    }
+    this.state.modelIndices[runnerName] = index;
+  }
+  
+  getModelIndex(runnerName: string): number {
+    return this.state?.modelIndices?.[runnerName] ?? 0;
+  }
+  
+  getModelIndices(): Record<string, number> {
+    return this.state?.modelIndices ?? {};
+  }
+  
+  setModelIndices(indices: Record<string, number>): void {
+    if (!this.state) return;
+    this.state.modelIndices = indices;
+  }
 }

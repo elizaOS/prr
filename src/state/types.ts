@@ -40,6 +40,9 @@ export interface ResolverState {
   verifiedComments?: VerifiedComment[];  // New: detailed verification records with timestamps
   interrupted?: boolean;     // True if last run was interrupted
   interruptPhase?: string;   // Phase where interruption occurred
+  // Tool/model rotation state - persisted so we resume where we left off
+  currentRunnerIndex?: number;           // Which runner (tool) we're on
+  modelIndices?: Record<string, number>; // runner name -> current model index
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms
   totalTokenUsage?: TokenUsageRecord[];   // token usage per phase

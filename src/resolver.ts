@@ -107,6 +107,9 @@ export class PRResolver {
     const nextModel = models[nextIndex];
     this.modelIndices.set(this.runner.name, nextIndex);
     
+    // Persist to state so we resume here if interrupted
+    this.stateManager.setModelIndex(this.runner.name, nextIndex);
+    
     console.log(chalk.yellow(`\n  🔄 Rotating model: ${previousModel} → ${nextModel}`));
     return true;
   }
@@ -116,6 +119,7 @@ export class PRResolver {
    */
   private resetModelIndex(): void {
     this.modelIndices.set(this.runner.name, 0);
+    this.stateManager.setModelIndex(this.runner.name, 0);
   }
 
   private switchToNextRunner(): boolean {
@@ -124,6 +128,9 @@ export class PRResolver {
     const previousRunner = this.runner.name;
     this.currentRunnerIndex = (this.currentRunnerIndex + 1) % this.runners.length;
     this.runner = this.runners[this.currentRunnerIndex];
+    
+    // Persist runner index so we resume here if interrupted
+    this.stateManager.setCurrentRunnerIndex(this.currentRunnerIndex);
     
     // Reset model index for the new runner
     this.resetModelIndex();
@@ -493,6 +500,27 @@ Start your response with \`\`\` and end with \`\`\`.`;
       debugStep('SETTING UP RUNNER');
       this.runner = await this.setupRunner();
       debug('Using runner', this.runner.name);
+      
+      // Restore tool/model rotation state from previous session
+      // WHY: Resume where we left off if interrupted, don't restart from first model
+      const savedRunnerIndex = this.stateManager.getCurrentRunnerIndex();
+      const savedModelIndices = this.stateManager.getModelIndices();
+      
+      if (savedRunnerIndex > 0 && savedRunnerIndex < this.runners.length) {
+        this.currentRunnerIndex = savedRunnerIndex;
+        this.runner = this.runners[savedRunnerIndex];
+        console.log(chalk.gray(`  Resuming at tool: ${this.runner.displayName} (from previous session)`));
+      }
+      
+      if (Object.keys(savedModelIndices).length > 0) {
+        for (const [runnerName, index] of Object.entries(savedModelIndices)) {
+          this.modelIndices.set(runnerName, index);
+        }
+        const currentModel = this.getCurrentModel();
+        if (currentModel) {
+          console.log(chalk.gray(`  Resuming at model: ${currentModel} (from previous session)`));
+        }
+      }
 
       // Clone or update repo
       // If we have verified fixes from a previous run, preserve local changes
