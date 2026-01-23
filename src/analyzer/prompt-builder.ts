@@ -6,9 +6,67 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   parts.push('# Code Review Issues to Fix\n');
   parts.push('Please address the following code review issues.\n');
 
+  // Build a short summary for console output
+  const fileSet = new Set(issues.map(i => i.comment.path));
+  const files = Array.from(fileSet);
+  const filesSummary = files.length <= 3 
+    ? files.map(f => f.split('/').pop()).join(', ')  // Just filename
+    : `${files.slice(0, 2).map(f => f.split('/').pop()).join(', ')} +${files.length - 2} more`;
+  
+  const authors = Array.from(new Set(issues.map(i => i.comment.author)));
+  const authorsSummary = authors.length <= 2 
+    ? authors.join(', ') 
+    : `${authors.slice(0, 2).join(', ')} +${authors.length - 2} more`;
+
+  // Group issues by type of comment (look for keywords)
+  const issueTypes: string[] = [];
+  const bodies = issues.map(i => i.comment.body.toLowerCase());
+  if (bodies.some(b => b.includes('error') || b.includes('bug') || b.includes('fix'))) issueTypes.push('bugs');
+  if (bodies.some(b => b.includes('type') || b.includes('typescript'))) issueTypes.push('types');
+  if (bodies.some(b => b.includes('test'))) issueTypes.push('tests');
+  if (bodies.some(b => b.includes('security') || b.includes('auth'))) issueTypes.push('security');
+  if (bodies.some(b => b.includes('performance') || b.includes('optimize'))) issueTypes.push('perf');
+  if (bodies.some(b => b.includes('style') || b.includes('format') || b.includes('lint'))) issueTypes.push('style');
+  
+  const typesStr = issueTypes.length > 0 ? ` (${issueTypes.join(', ')})` : '';
+
+  const summary = `Fixing ${issues.length} issue${issues.length > 1 ? 's' : ''} in ${filesSummary}${typesStr}`;
+  
+  // Build detailed summary lines
+  const detailedLines: string[] = [];
+  detailedLines.push(`  From: ${authorsSummary}`);
+  detailedLines.push(`  Files: ${files.length} (${files.map(f => f.split('/').pop()).slice(0, 5).join(', ')}${files.length > 5 ? '...' : ''})`);
+  
+  // Show first few issue previews
+  const previews = issues.slice(0, 3).map((issue, i) => {
+    const preview = issue.comment.body.split('\n')[0].substring(0, 60);
+    return `  ${i + 1}. ${preview}${issue.comment.body.length > 60 ? '...' : ''}`;
+  });
+  if (issues.length > 3) {
+    previews.push(`  ... and ${issues.length - 3} more`);
+  }
+
+  // Add lessons learned section to detailed summary
+  const lessonsSection: string[] = [];
+  if (lessonsLearned.length > 0) {
+    lessonsSection.push('');
+    lessonsSection.push(`  ⚠ Previous Attempts (${lessonsLearned.length}):`);
+    // Show all lessons - these are critical for debugging progress
+    for (const lesson of lessonsLearned) {
+      // Wrap long lessons
+      const wrapped = lesson.length > 80 
+        ? lesson.substring(0, 77) + '...'
+        : lesson;
+      lessonsSection.push(`    • ${wrapped}`);
+    }
+  }
+
+  const detailedSummary = [summary, ...detailedLines, '', '  Issues:', ...previews, ...lessonsSection].join('\n');
+
   // Add lessons learned to prevent flip-flopping
   if (lessonsLearned.length > 0) {
     parts.push('## Previous Attempts (DO NOT REPEAT THESE MISTAKES)\n');
+    parts.push('The following approaches have already been tried and FAILED. Do NOT repeat them:\n');
     for (const lesson of lessonsLearned) {
       parts.push(`- ${lesson}`);
     }
@@ -46,6 +104,9 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
 
   return {
     prompt: parts.join('\n'),
+    summary,
+    detailedSummary,
+    lessonsIncluded: lessonsLearned.length,
     issues,
   };
 }

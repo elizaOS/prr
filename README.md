@@ -137,11 +137,59 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 
 ## Requirements
 
-- Node.js >= 18
-- `cursor` CLI (if using Cursor) or `opencode` CLI (if using opencode)
+- Node.js >= 18 (or Bun)
+- `cursor-agent` CLI (if using Cursor) or `opencode` CLI (if using opencode)
 - GitHub personal access token with `repo` scope
 - Anthropic or OpenAI API key for verification
 
+### Cursor CLI Setup
+
+If you're new to Cursor's CLI agent, you'll need to authenticate first:
+
+```bash
+# Install cursor-agent (macOS)
+curl -fsSL https://www.cursor.com/download/stable/agent/darwin/arm64 -o cursor-agent
+chmod +x cursor-agent
+sudo mv cursor-agent /usr/local/bin/
+
+# Login (required before first use!)
+cursor-agent login
+
+# List available models
+cursor-agent --list-models
+```
+
+This opens a browser window to authenticate with your Cursor account. You only need to do this once - your credentials are saved locally.
+
+Without logging in first, you'll see authentication errors when prr tries to run the fixer.
+
+**Available models** (use with `--model`):
+
+| Model | Description | Best for |
+|-------|-------------|----------|
+| `opus-4.5-thinking` | Claude 4.5 Opus with Thinking (default) | Complex fixes, best quality |
+| `opus-4.5` | Claude 4.5 Opus | Good balance |
+| `sonnet-4.5-thinking` | Claude 4.5 Sonnet with Thinking | Faster with reasoning |
+| `sonnet-4.5` | Claude 4.5 Sonnet | Quick fixes |
+| `gpt-5.2-codex-xhigh` | GPT-5.2 Codex Extra High | Alternative to Opus |
+| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | Heavy lifting |
+| `gemini-3-pro` | Gemini 3 Pro | Google's best |
+| `auto` | Auto-select | Let Cursor decide |
+
+```bash
+# Example: use a faster model for simple fixes
+prr https://github.com/owner/repo/pull/123 --model sonnet-4.5
+
+# Example: max power for complex issues
+prr https://github.com/owner/repo/pull/123 --model gpt-5.1-codex-max
+```
+
 ## License
 
-MIT
+MIT with one condition:
+
+**Hours Saved Clause**: By using this tool, you agree to track the hours saved from not manually addressing PR review comments. Post your hours saved (with optional war stories) in a GitHub issue:
+
+→ [Report Hours Saved](https://github.com/rtharp/prr/issues/new?title=Hours+Saved&labels=hours-saved&body=Hours+saved:+%0A%0AStory+(optional):+)
+
+We're building the case that cats sitting on PRs is a valid engineering strategy. 🐱

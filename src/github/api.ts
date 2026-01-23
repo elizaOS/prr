@@ -1,6 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import { graphql } from '@octokit/graphql';
-import type { PRInfo, ReviewThread, ReviewComment } from './types.js';
+import type { PRInfo, ReviewThread, ReviewComment, PRStatus } from './types.js';
+import { debug } from '../logger.js';
 
 export class GitHubAPI {
   private octokit: Octokit;
@@ -13,25 +14,185 @@ export class GitHubAPI {
         authorization: `token ${token}`,
       },
     });
+    debug('GitHub API client initialized');
   }
 
   async getPRInfo(owner: string, repo: string, prNumber: number): Promise<PRInfo> {
+    debug('Fetching PR info', { owner, repo, prNumber });
     const { data: pr } = await this.octokit.pulls.get({
       owner,
       repo,
       pull_number: prNumber,
     });
 
-    return {
+    const info: PRInfo = {
       owner,
       repo,
       number: prNumber,
       branch: pr.head.ref,
+      baseBranch: pr.base.ref,
+      headSha: pr.head.sha,
       cloneUrl: pr.head.repo?.clone_url || `https://github.com/${owner}/${repo}.git`,
+      mergeable: pr.mergeable,
+      mergeableState: pr.mergeable_state,
     };
+    debug('PR info fetched', info);
+    return info;
+  }
+
+  async getPRStatus(owner: string, repo: string, prNumber: number, ref: string): Promise<PRStatus> {
+    debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
+
+    // Get check runs for this ref
+    const { data: checkRuns } = await this.octokit.checks.listForRef({
+      owner,
+      repo,
+      ref,
+      per_page: 100,
+    });
+
+    const inProgressChecks: string[] = [];
+    const pendingChecks: string[] = [];
+    let completedChecks = 0;
+
+    for (const check of checkRuns.check_runs) {
+      if (check.status === 'in_progress') {
+        inProgressChecks.push(check.name);
+      } else if (check.status === 'queued' || check.status === 'pending') {
+        pendingChecks.push(check.name);
+      } else if (check.status === 'completed') {
+        completedChecks++;
+      }
+    }
+
+    // Get combined status
+    const { data: status } = await this.octokit.repos.getCombinedStatusForRef({
+      owner,
+      repo,
+      ref,
+    });
+
+    // Get requested reviewers (pending review requests)
+    const { data: pr } = await this.octokit.pulls.get({
+      owner,
+      repo,
+      pull_number: prNumber,
+    });
+
+    const pendingReviewers: string[] = [
+      ...pr.requested_reviewers?.map(r => r.login) || [],
+      ...pr.requested_teams?.map(t => t.name) || [],
+    ];
+
+    // Get reviews to check for "in progress" bot reviews
+    const { data: reviews } = await this.octokit.pulls.listReviews({
+      owner,
+      repo,
+      pull_number: prNumber,
+      per_page: 100,
+    });
+
+    // Patterns that indicate a bot is still reviewing
+    const inProgressPatterns = [
+      /reviewing|analyzing|processing|scanning|checking/i,
+      /will (comment|review|analyze)/i,
+      /in progress/i,
+      /please wait/i,
+      /^>/,  // CodeRabbit summary blocks often start with >
+    ];
+
+    // Track bots that might still be reviewing
+    const botReviewStates = new Map<string, { hasInProgress: boolean; hasCompleted: boolean }>();
+    
+    for (const review of reviews) {
+      const author = review.user?.login || '';
+      const isBot = author.includes('[bot]') || author.toLowerCase().includes('bot');
+      
+      if (isBot) {
+        if (!botReviewStates.has(author)) {
+          botReviewStates.set(author, { hasInProgress: false, hasCompleted: false });
+        }
+        
+        const state = botReviewStates.get(author)!;
+        const body = review.body || '';
+        
+        // Check if this looks like an "in progress" message
+        const looksInProgress = inProgressPatterns.some(p => p.test(body)) && body.length < 500;
+        // Check if this looks like a completed review (has substantial content or code comments)
+        const looksCompleted = body.length > 500 || review.state === 'CHANGES_REQUESTED' || review.state === 'APPROVED';
+        
+        if (looksInProgress && !looksCompleted) {
+          state.hasInProgress = true;
+        }
+        if (looksCompleted) {
+          state.hasCompleted = true;
+        }
+      }
+    }
+
+    // Bots that have in-progress markers but no completed review
+    const activelyReviewingBots = Array.from(botReviewStates.entries())
+      .filter(([_, state]) => state.hasInProgress && !state.hasCompleted)
+      .map(([author]) => author);
+
+    // Check for 👀 (eyes) reactions from bots on recent comments
+    // This indicates "I'm looking at this / working on it"
+    const botsWithEyesReaction = new Set<string>();
+    
+    try {
+      // Get PR comments (issue comments on the PR)
+      const { data: issueComments } = await this.octokit.issues.listComments({
+        owner,
+        repo,
+        issue_number: prNumber,
+        per_page: 30,  // Recent comments only
+      });
+
+      // Check reactions on each comment
+      for (const comment of issueComments) {
+        if (comment.reactions && comment.reactions.eyes && comment.reactions.eyes > 0) {
+          // Get who reacted with eyes
+          try {
+            const { data: reactions } = await this.octokit.reactions.listForIssueComment({
+              owner,
+              repo,
+              comment_id: comment.id,
+              content: 'eyes',
+              per_page: 10,
+            });
+            
+            for (const reaction of reactions) {
+              const user = reaction.user?.login || '';
+              if (user.includes('[bot]') || user.toLowerCase().includes('bot')) {
+                botsWithEyesReaction.add(user);
+              }
+            }
+          } catch {
+            // Reactions API might fail, ignore
+          }
+        }
+      }
+    } catch (err) {
+      debug('Failed to check comment reactions', err);
+    }
+
+    const prStatus: PRStatus = {
+      ciState: status.state as PRStatus['ciState'],
+      inProgressChecks,
+      pendingChecks,
+      totalChecks: checkRuns.total_count,
+      completedChecks,
+      pendingReviewers,
+      activelyReviewingBots,
+      botsWithEyesReaction: Array.from(botsWithEyesReaction),
+    };
+
+    debug('PR status fetched', prStatus);
+    return prStatus;
   }
 
   async getReviewThreads(owner: string, repo: string, prNumber: number): Promise<ReviewThread[]> {
+    debug('Fetching review threads via GraphQL', { owner, repo, prNumber });
     const query = `
       query($owner: String!, $repo: String!, $pr: Int!) {
         repository(owner: $owner, name: $repo) {
@@ -90,6 +251,9 @@ export class GitHubAPI {
       pr: prNumber,
     });
 
+    const threadCount = response.repository.pullRequest.reviewThreads.nodes.length;
+    debug(`Found ${threadCount} review threads`);
+
     return response.repository.pullRequest.reviewThreads.nodes.map((thread) => ({
       id: thread.id,
       path: thread.path,
@@ -111,6 +275,7 @@ export class GitHubAPI {
   }
 
   async getReviewComments(owner: string, repo: string, prNumber: number): Promise<ReviewComment[]> {
+    debug('Getting review comments', { owner, repo, prNumber });
     const threads = await this.getReviewThreads(owner, repo, prNumber);
     const reviewComments: ReviewComment[] = [];
 
@@ -131,6 +296,7 @@ export class GitHubAPI {
       }
     }
 
+    debug(`Extracted ${reviewComments.length} review comments from threads`);
     return reviewComments;
   }
 

@@ -5,6 +5,29 @@ import { loadConfig } from './config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { PRResolver } from './resolver.js';
 
+let resolver: PRResolver | null = null;
+let isShuttingDown = false;
+
+async function handleShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) {
+    // Second signal - force exit
+    console.log(chalk.red('\nForce exit.'));
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  
+  if (resolver) {
+    await resolver.gracefulShutdown();
+  }
+  
+  process.exit(130); // Standard exit code for Ctrl+C
+}
+
+// Set up signal handlers
+process.on('SIGINT', () => handleShutdown('SIGINT'));
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+
 async function main(): Promise<void> {
   try {
     // Parse CLI arguments
@@ -22,7 +45,7 @@ async function main(): Promise<void> {
     }
 
     // Create and run resolver
-    const resolver = new PRResolver(config, options);
+    resolver = new PRResolver(config, options);
     await resolver.run(prUrl);
 
   } catch (error) {

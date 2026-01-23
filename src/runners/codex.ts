@@ -8,17 +8,27 @@ import { debug } from '../logger.js';
 
 const exec = promisify(execCallback);
 
-export class OpencodeRunner implements Runner {
-  name = 'opencode';
-  displayName = 'OpenCode';
+// OpenAI Codex CLI binary names
+const CODEX_BINARIES = ['codex', 'openai-codex'];
+
+export class CodexRunner implements Runner {
+  name = 'codex';
+  displayName = 'OpenAI Codex';
+  private binaryPath: string = 'codex';
 
   async isAvailable(): Promise<boolean> {
-    try {
-      await exec('which opencode');
-      return true;
-    } catch {
-      return false;
+    for (const binary of CODEX_BINARIES) {
+      try {
+        await exec(`which ${binary}`);
+        this.binaryPath = binary;
+        debug(`Found Codex CLI at: ${binary}`);
+        return true;
+      } catch {
+        // Try next binary
+      }
     }
+    debug('Codex CLI not found', { tried: CODEX_BINARIES });
+    return false;
   }
 
   async checkStatus(): Promise<RunnerStatus> {
@@ -30,31 +40,33 @@ export class OpencodeRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec('opencode --version 2>&1');
+      const { stdout } = await exec(`${this.binaryPath} --version 2>&1`);
       version = stdout.trim();
     } catch {
-      // Version check might not be supported
+      // Version check might fail
     }
 
-    // OpenCode typically ready if installed
+    // Check for OpenAI API key
+    if (!process.env.OPENAI_API_KEY) {
+      return { installed: true, ready: false, version, error: 'OPENAI_API_KEY not set' };
+    }
+
     return { installed: true, ready: true, version };
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
-    // Write prompt to a temp file to avoid command line length limits
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
     return new Promise((resolve) => {
-      // Read prompt from file using shell, pipe to opencode
-      // Note: opencode model selection may vary - check opencode docs
+      // Codex CLI typically uses positional prompt argument
       const modelFlag = options?.model ? `--model ${options.model}` : '';
-      const shellCommand = `cat "${promptFile}" | opencode ${modelFlag}`.trim();
+      const shellCommand = `${this.binaryPath} ${modelFlag} "$(cat "${promptFile}")"`;
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-      console.log(`Running: opencode${modelInfo} < [prompt file] in ${workdir}`);
-      debug('Opencode command', { workdir, model: options?.model, promptLength: prompt.length });
+      console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt]\n`);
+      debug('Codex command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
 
       const child = spawn('sh', ['-c', shellCommand], {
         cwd: workdir,
@@ -78,40 +90,18 @@ export class OpencodeRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
+        try { unlinkSync(promptFile); } catch { }
 
         if (code === 0) {
-          resolve({
-            success: true,
-            output: stdout,
-          });
+          resolve({ success: true, output: stdout });
         } else {
-          resolve({
-            success: false,
-            output: stdout,
-            error: stderr || `Process exited with code ${code}`,
-          });
+          resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
         }
       });
 
       child.on('error', (err) => {
-        // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
-
-        resolve({
-          success: false,
-          output: stdout,
-          error: err.message,
-        });
+        try { unlinkSync(promptFile); } catch { }
+        resolve({ success: false, output: stdout, error: err.message });
       });
     });
   }

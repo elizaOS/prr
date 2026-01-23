@@ -3,7 +3,24 @@ export interface PRInfo {
   repo: string;
   number: number;
   branch: string;
+  baseBranch: string;
+  headSha: string;
   cloneUrl: string;
+  mergeable: boolean | null;  // null = GitHub is still calculating
+  mergeableState: string;     // 'clean', 'dirty', 'blocked', 'unstable', 'unknown'
+}
+
+export interface PRStatus {
+  // CI checks
+  ciState: 'pending' | 'success' | 'failure' | 'error';
+  inProgressChecks: string[];
+  pendingChecks: string[];
+  totalChecks: number;
+  completedChecks: number;
+  // Bot reviews
+  pendingReviewers: string[];
+  activelyReviewingBots: string[];  // Bots that posted "reviewing" but no final review yet
+  botsWithEyesReaction: string[];   // Bots that reacted with 👀 (working on it)
 }
 
 export interface ThreadComment {

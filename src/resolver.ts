@@ -15,10 +15,11 @@ import { LLMClient } from './llm/client.js';
 import { StateManager } from './state/manager.js';
 import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
-import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges } from './git/clone.js';
+import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
+import type { SimpleGit } from 'simple-git';
 import { squashCommit, push, buildCommitMessage } from './git/commit.js';
-import { CursorRunner } from './runners/cursor.js';
-import { OpencodeRunner } from './runners/opencode.js';
+import { detectAvailableRunners, getRunnerByName, printRunnerSummary } from './runners/index.js';
+import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage } from './logger.js';
 
 export class PRResolver {
   private config: Config;
@@ -27,8 +28,13 @@ export class PRResolver {
   private llm: LLMClient;
   private stateManager!: StateManager;
   private runner!: Runner;
+  private runners!: Runner[];
+  private currentRunnerIndex = 0;
   private prInfo!: PRInfo;
   private workdir!: string;
+  private isShuttingDown = false;
+  private consecutiveFailures = 0;
+  private toolCycleFailures = 0;
 
   constructor(config: Config, options: CLIOptions) {
     this.config = config;
@@ -37,39 +43,305 @@ export class PRResolver {
     this.llm = new LLMClient(config);
   }
 
+  private switchToNextRunner(): boolean {
+    if (this.runners.length <= 1) return false;
+    
+    const previousRunner = this.runner.name;
+    this.currentRunnerIndex = (this.currentRunnerIndex + 1) % this.runners.length;
+    this.runner = this.runners[this.currentRunnerIndex];
+    
+    console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${this.runner.name}`));
+    return true;
+  }
+
+  private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit): Promise<boolean> {
+    // Focus on one issue at a time to reduce context and improve success rate
+    console.log(chalk.cyan(`\n  Focusing on ${issues.length} issues one at a time...`));
+    
+    let anyFixed = false;
+    
+    for (let i = 0; i < Math.min(issues.length, 3); i++) { // Try up to 3 single issues
+      const issue = issues[i];
+      console.log(chalk.cyan(`\n  [${i + 1}/${Math.min(issues.length, 3)}] Focusing on: ${issue.comment.path}:${issue.comment.line || '?'}`));
+      console.log(chalk.gray(`    "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
+      
+      // Build a focused prompt for just this one issue
+      const focusedPrompt = this.buildSingleIssuePrompt(issue);
+      
+      // Run with current runner
+      const result = await this.runner.run(this.workdir, focusedPrompt, { model: this.options.toolModel });
+      
+      if (result.success) {
+        // Check if this specific file changed
+        const changedFiles = await getChangedFiles(git);
+        if (changedFiles.includes(issue.comment.path)) {
+          // Verify this single fix
+          setTokenPhase('Verify single fix');
+          const diff = await getDiffForFile(git, issue.comment.path);
+          const verification = await this.llm.verifyFix(
+            issue.comment.body,
+            issue.comment.path,
+            diff
+          );
+          
+          if (verification.fixed) {
+            console.log(chalk.green(`    ✓ Fixed and verified!`));
+            this.stateManager.markCommentVerifiedFixed(issue.comment.id);
+            anyFixed = true;
+          } else {
+            console.log(chalk.yellow(`    ○ Changed but not verified: ${verification.explanation}`));
+            this.stateManager.addLesson(`Single-issue fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`);
+            // Reset the file to try again
+            await git.checkout([issue.comment.path]);
+          }
+        } else {
+          console.log(chalk.gray(`    - No changes made to target file`));
+        }
+      } else {
+        console.log(chalk.red(`    ✗ Failed: ${result.error}`));
+      }
+      
+      await this.stateManager.save();
+    }
+    
+    return anyFixed;
+  }
+
+  private buildSingleIssuePrompt(issue: UnresolvedIssue): string {
+    const lessons = this.stateManager.getLessons()
+      .filter(l => l.includes(issue.comment.path))
+      .slice(-3); // Only relevant lessons, last 3
+    
+    let prompt = `# SINGLE ISSUE FIX
+
+Focus on fixing ONLY this one issue. Make minimal, targeted changes.
+
+## Issue
+File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}
+
+Review Comment:
+${issue.comment.body}
+
+`;
+
+    if (issue.codeSnippet) {
+      prompt += `Current Code:
+\`\`\`
+${issue.codeSnippet}
+\`\`\`
+
+`;
+    }
+
+    if (lessons.length > 0) {
+      prompt += `## Previous Failed Attempts (DO NOT REPEAT)
+${lessons.map(l => `- ${l}`).join('\n')}
+
+`;
+    }
+
+    prompt += `## Instructions
+1. Fix ONLY this specific issue
+2. Make the minimal change required
+3. Do not modify any other files or code
+4. Ensure the fix addresses the reviewer's concern`;
+
+    return prompt;
+  }
+
+  private async tryDirectLLMFix(issues: UnresolvedIssue[]): Promise<boolean> {
+    console.log(chalk.cyan(`\n  🧠 Attempting direct ${this.config.llmProvider} API fix...`));
+    setTokenPhase('Direct LLM fix');
+    
+    let anyFixed = false;
+    const fs = await import('fs');
+    
+    for (const issue of issues) {
+      const filePath = join(this.workdir, issue.comment.path);
+      
+      try {
+        const fileContent = fs.readFileSync(filePath, 'utf-8');
+        
+        const prompt = `Fix this code review issue:
+
+FILE: ${issue.comment.path}
+ISSUE: ${issue.comment.body}
+
+CURRENT CODE:
+\`\`\`
+${issue.codeSnippet}
+\`\`\`
+
+FULL FILE:
+\`\`\`
+${fileContent}
+\`\`\`
+
+Provide the COMPLETE fixed file content. Output ONLY the code, no explanations.
+Start your response with \`\`\` and end with \`\`\`.`;
+
+        const response = await this.llm.complete(prompt);
+        
+        // Extract code from response
+        const codeMatch = response.content.match(/```[\w]*\n?([\s\S]*?)```/);
+        if (codeMatch) {
+          const fixedCode = codeMatch[1].trim();
+          if (fixedCode !== fileContent.trim()) {
+            fs.writeFileSync(filePath, fixedCode, 'utf-8');
+            console.log(chalk.green(`    ✓ Fixed: ${issue.comment.path}`));
+            anyFixed = true;
+          }
+        }
+      } catch (e) {
+        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: ${e}`));
+      }
+    }
+    
+    return anyFixed;
+  }
+
+  async gracefulShutdown(): Promise<void> {
+    if (this.isShuttingDown) return;
+    this.isShuttingDown = true;
+    
+    console.log(chalk.yellow('\n\n⚠ Interrupted! Saving state...'));
+    
+    if (this.stateManager) {
+      try {
+        await this.stateManager.markInterrupted();
+        console.log(chalk.green('✓ State saved. Run again to resume.'));
+        
+        // Print timing summary even on interrupt
+        endTimer('Total');
+        printTimingSummary();
+        printTokenSummary();
+      } catch (e) {
+        console.log(chalk.red('✗ Failed to save state:', e));
+      }
+    }
+  }
+
+  isRunning(): boolean {
+    return !this.isShuttingDown;
+  }
+
   async run(prUrl: string): Promise<void> {
     const spinner = ora();
+    
+    // Enable verbose logging if requested
+    setVerbose(this.options.verbose);
 
     try {
+      debugStep('INITIALIZATION');
+      resetTimings();
+      resetTokenUsage();
+      startTimer('Total');
+      
       // Parse PR URL
+      debug('Parsing PR URL', prUrl);
       const { owner, repo, number } = parsePRUrl(prUrl);
+      debug('Parsed PR info', { owner, repo, number });
+      
       console.log(chalk.blue(`\nProcessing PR: ${owner}/${repo}#${number}\n`));
+      
+      // Show mode warnings
+      if (this.options.noCommit) {
+        warn('NO-COMMIT MODE: Changes will be made but not committed');
+      }
+      if (this.options.noPush && !this.options.noCommit) {
+        info('NO-PUSH MODE: Changes will be committed locally but not pushed');
+      }
+      if (this.options.dryRun) {
+        info('DRY-RUN MODE: No changes will be made');
+      }
 
       // Get PR info
+      debugStep('FETCHING PR INFO');
+      startTimer('Fetch PR info');
       spinner.start('Fetching PR information...');
       this.prInfo = await this.github.getPRInfo(owner, repo, number);
       spinner.succeed(`PR branch: ${this.prInfo.branch}`);
+      debug('PR info', this.prInfo);
+      endTimer('Fetch PR info');
 
-      // Setup workdir
-      const workdirInfo = getWorkdirInfo(this.config.workdirBase, owner, repo, number);
+      // Check PR status (are bots still running?)
+      debugStep('CHECKING PR STATUS');
+      spinner.start('Checking CI/bot status...');
+      const prStatus = await this.github.getPRStatus(owner, repo, number, this.prInfo.headSha);
+      spinner.stop();
+      
+      // CI checks status
+      if (prStatus.inProgressChecks.length > 0) {
+        warn(`CI: ${prStatus.inProgressChecks.length} checks running: ${prStatus.inProgressChecks.join(', ')}`);
+      } else if (prStatus.pendingChecks.length > 0) {
+        warn(`CI: ${prStatus.pendingChecks.length} checks queued: ${prStatus.pendingChecks.join(', ')}`);
+      } else {
+        console.log(chalk.green('✓'), `CI: ${prStatus.completedChecks}/${prStatus.totalChecks} checks completed (${prStatus.ciState})`);
+      }
+
+      // Bot review status
+      if (prStatus.activelyReviewingBots.length > 0) {
+        warn(`Bots reviewing: ${prStatus.activelyReviewingBots.join(', ')}`);
+        info('These bots may still be analyzing - consider waiting for them to finish.');
+      }
+      
+      // Bots with 👀 reaction (looking at it)
+      if (prStatus.botsWithEyesReaction.length > 0) {
+        warn(`Bots looking (👀): ${prStatus.botsWithEyesReaction.join(', ')}`);
+      }
+      
+      // Pending reviewers
+      if (prStatus.pendingReviewers.length > 0) {
+        info(`Pending reviewers: ${prStatus.pendingReviewers.join(', ')}`);
+      }
+
+      // Overall status
+      const hasActivity = prStatus.inProgressChecks.length > 0 || 
+                          prStatus.pendingChecks.length > 0 || 
+                          prStatus.activelyReviewingBots.length > 0 ||
+                          prStatus.botsWithEyesReaction.length > 0;
+      if (!hasActivity) {
+        console.log(chalk.green('✓'), 'PR is idle - safe to proceed');
+      }
+
+      // Setup workdir (includes branch in hash for repos with PRs on different target branches)
+      debugStep('SETTING UP WORKDIR');
+      const workdirInfo = getWorkdirInfo(this.config.workdirBase, owner, repo, number, this.prInfo.branch);
       this.workdir = workdirInfo.path;
+      debug('Workdir info', workdirInfo);
       
       if (workdirInfo.exists) {
         console.log(chalk.gray(`Reusing existing workdir: ${this.workdir}`));
+        console.log(chalk.gray(`  → ${workdirInfo.identifier}`));
       } else {
         console.log(chalk.gray(`Creating workdir: ${this.workdir}`));
+        console.log(chalk.gray(`  → ${workdirInfo.identifier}`));
       }
 
       await ensureWorkdir(this.workdir);
 
       // Initialize state manager
+      debugStep('LOADING STATE');
       this.stateManager = new StateManager(this.workdir);
-      await this.stateManager.load(`${owner}/${repo}#${number}`, this.prInfo.branch);
+      this.stateManager.setPhase('init');
+      const state = await this.stateManager.load(
+        `${owner}/${repo}#${number}`, 
+        this.prInfo.branch,
+        this.prInfo.headSha
+      );
+      debug('Loaded state', {
+        iterations: state.iterations.length,
+        lessonsLearned: state.lessonsLearned.length,
+        verifiedFixed: state.verifiedFixed.length,
+      });
 
       // Setup runner
+      debugStep('SETTING UP RUNNER');
       this.runner = await this.setupRunner();
+      debug('Using runner', this.runner.name);
 
       // Clone or update repo
+      debugStep('CLONING/UPDATING REPOSITORY');
       spinner.start('Setting up repository...');
       const { git } = await cloneOrUpdate(
         this.prInfo.cloneUrl,
@@ -78,22 +350,302 @@ export class PRResolver {
         this.config.githubToken
       );
       spinner.succeed('Repository ready');
+      debug('Repository cloned/updated at', this.workdir);
+
+      // Check for conflicts and sync with remote
+      debugStep('CHECKING FOR CONFLICTS');
+      spinner.start('Checking for conflicts with remote...');
+      const conflictStatus = await checkForConflicts(git, this.prInfo.branch);
+      spinner.stop();
+
+      if (conflictStatus.hasConflicts) {
+        console.log(chalk.red('✗ Merge conflicts detected!'));
+        console.log(chalk.red('  Conflicted files:'));
+        for (const file of conflictStatus.conflictedFiles) {
+          console.log(chalk.red(`    - ${file}`));
+        }
+        console.log(chalk.yellow('\n  Please resolve conflicts manually before running prr.'));
+        await abortMerge(git);
+        return;
+      }
+
+      if (conflictStatus.behindBy > 0) {
+        console.log(chalk.yellow(`⚠ Branch is ${conflictStatus.behindBy} commits behind remote`));
+        spinner.start('Pulling latest changes...');
+        const pullResult = await pullLatest(git, this.prInfo.branch);
+        
+        if (!pullResult.success) {
+          spinner.fail('Failed to pull');
+          console.log(chalk.red(`  Error: ${pullResult.error}`));
+          if (pullResult.error?.includes('conflict')) {
+            console.log(chalk.yellow('  Please resolve conflicts manually before running prr.'));
+            await abortMerge(git);
+          }
+          return;
+        }
+        spinner.succeed('Pulled latest changes');
+      } else {
+        console.log(chalk.green('✓ Branch is up to date with remote'));
+      }
+
+      if (conflictStatus.aheadBy > 0) {
+        info(`Branch is ${conflictStatus.aheadBy} commits ahead of remote`);
+      }
+
+      // Check if PR has merge conflicts with base branch
+      debugStep('CHECKING PR MERGE STATUS');
+      if (this.prInfo.mergeable === false || this.prInfo.mergeableState === 'dirty') {
+        startTimer('Resolve conflicts');
+        console.log(chalk.yellow(`⚠ PR has conflicts with ${this.prInfo.baseBranch}`));
+        console.log(chalk.cyan(`  Attempting to merge origin/${this.prInfo.baseBranch} into ${this.prInfo.branch}...`));
+        
+        const mergeResult = await mergeBaseBranch(git, this.prInfo.baseBranch);
+        
+        if (!mergeResult.success) {
+          // Merge failed - use LLM tool to resolve conflicts
+          console.log(chalk.yellow('  Auto-merge failed, resolving conflicts...'));
+          
+          // Start the merge to get conflict markers in files
+          const { conflictedFiles, error } = await startMergeForConflictResolution(git, this.prInfo.baseBranch);
+          
+          if (error && conflictedFiles.length === 0) {
+            console.log(chalk.red(`✗ Failed to start merge: ${error}`));
+            return;
+          }
+          
+          if (conflictedFiles.length === 0) {
+            console.log(chalk.yellow('  No conflicts detected after merge attempt'));
+          } else {
+            // Separate lock files from regular files
+            const lockFiles = conflictedFiles.filter(f => isLockFile(f));
+            const codeFiles = conflictedFiles.filter(f => !isLockFile(f));
+            
+            console.log(chalk.cyan(`  Conflicted files (${conflictedFiles.length}):`));
+            for (const file of conflictedFiles) {
+              const isLock = isLockFile(file);
+              console.log(chalk.cyan(`    - ${file}${isLock ? chalk.gray(' (lock file - will regenerate)') : ''}`));
+            }
+            
+            // Handle lock files first - delete and regenerate
+            if (lockFiles.length > 0) {
+              console.log(chalk.cyan('\n  Handling lock files...'));
+              const { execSync } = await import('child_process');
+              
+              // Group lock files by their regenerate command
+              const regenerateCommands = new Set<string>();
+              
+              for (const lockFile of lockFiles) {
+                const info = getLockFileInfo(lockFile);
+                if (info) {
+                  // Delete the lock file
+                  const fullPath = join(this.workdir, lockFile);
+                  try {
+                    const fs = await import('fs');
+                    fs.unlinkSync(fullPath);
+                    console.log(chalk.green(`    ✓ Deleted ${lockFile}`));
+                    regenerateCommands.add(info.regenerateCmd);
+                  } catch (e) {
+                    console.log(chalk.yellow(`    ⚠ Could not delete ${lockFile}: ${e}`));
+                  }
+                }
+              }
+              
+              // Run regenerate commands
+              for (const cmd of regenerateCommands) {
+                console.log(chalk.cyan(`    Running: ${cmd}`));
+                try {
+                  execSync(cmd, { 
+                    cwd: this.workdir, 
+                    stdio: 'inherit',
+                    timeout: 300000 // 5 min timeout for installs
+                  });
+                  console.log(chalk.green(`    ✓ ${cmd} completed`));
+                } catch (e) {
+                  console.log(chalk.yellow(`    ⚠ ${cmd} failed, continuing...`));
+                }
+              }
+              
+              // Stage the regenerated lock files
+              for (const lockFile of lockFiles) {
+                try {
+                  await git.add(lockFile);
+                } catch {
+                  // File might not exist if regenerate failed, ignore
+                }
+              }
+            }
+            
+            // Handle code files with LLM tools
+            if (codeFiles.length > 0) {
+              // Build prompt for conflict resolution (only non-lock files)
+              const conflictPrompt = this.buildConflictResolutionPrompt(codeFiles, this.prInfo.baseBranch);
+              
+              // Run the cursor/opencode tool to resolve conflicts
+              console.log(chalk.cyan(`\n  Attempt 1: Using ${this.runner.name} to resolve conflicts...`));
+              const runResult = await this.runner.run(this.workdir, conflictPrompt, { model: this.options.toolModel });
+              
+              if (!runResult.success) {
+                console.log(chalk.yellow(`  ${this.runner.name} failed, will try direct API...`));
+              } else {
+                // Stage all code files that cursor may have resolved
+                console.log(chalk.cyan('  Staging resolved files...'));
+                for (const file of codeFiles) {
+                  try {
+                    await git.add(file);
+                  } catch {
+                    // File might still have conflicts, ignore
+                  }
+                }
+              }
+            }
+            
+            // Check if conflicts remain after first attempt
+            // Check both git status AND actual file contents for conflict markers
+            let statusAfter = await git.status();
+            let gitConflicts = statusAfter.conflicted || [];
+            let markerConflicts = await findFilesWithConflictMarkers(this.workdir, codeFiles);
+            let remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
+            
+            if (remainingConflicts.length === 0 && codeFiles.length > 0) {
+              console.log(chalk.green(`  ✓ ${this.runner.name} resolved all conflicts`));
+            } else if (markerConflicts.length > 0) {
+              console.log(chalk.yellow(`  Files still have conflict markers: ${markerConflicts.join(', ')}`));
+            }
+            
+            // If conflicts remain, try direct LLM API as fallback
+            if (remainingConflicts.length > 0) {
+              setTokenPhase('Resolve conflicts');
+              console.log(chalk.cyan(`\n  Attempt 2: Using direct ${this.config.llmProvider} API to resolve ${remainingConflicts.length} remaining conflicts...`));
+              
+              const fs = await import('fs');
+              
+              for (const conflictFile of remainingConflicts) {
+                // Skip lock files in case they slipped through
+                if (isLockFile(conflictFile)) continue;
+                
+                const fullPath = join(this.workdir, conflictFile);
+                
+                try {
+                  // Read the conflicted file
+                  const conflictedContent = fs.readFileSync(fullPath, 'utf-8');
+                  
+                  // Check if it actually has conflict markers
+                  if (!conflictedContent.includes('<<<<<<<')) {
+                    console.log(chalk.gray(`    - ${conflictFile}: no conflict markers found`));
+                    continue;
+                  }
+                  
+                  console.log(chalk.cyan(`    Resolving: ${conflictFile}`));
+                  
+                  // Ask LLM to resolve
+                  const result = await this.llm.resolveConflict(
+                    conflictFile,
+                    conflictedContent,
+                    this.prInfo.baseBranch
+                  );
+                  
+                  if (result.resolved) {
+                    // Write the resolved content
+                    fs.writeFileSync(fullPath, result.content, 'utf-8');
+                    console.log(chalk.green(`    ✓ ${conflictFile}: ${result.explanation}`));
+                    
+                    // Stage the file
+                    await git.add(conflictFile);
+                  } else {
+                    console.log(chalk.red(`    ✗ ${conflictFile}: ${result.explanation}`));
+                  }
+                } catch (e) {
+                  console.log(chalk.red(`    ✗ ${conflictFile}: Error - ${e}`));
+                }
+              }
+              
+              // Check again - both git status and file contents
+              statusAfter = await git.status();
+              gitConflicts = statusAfter.conflicted || [];
+              markerConflicts = await findFilesWithConflictMarkers(this.workdir, codeFiles);
+              remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
+            }
+            
+            // Final check
+            if (remainingConflicts.length > 0) {
+              console.log(chalk.yellow('\n⚠ Could not resolve all merge conflicts automatically'));
+              console.log(chalk.yellow('  Remaining conflicts:'));
+              for (const file of remainingConflicts) {
+                console.log(chalk.yellow(`    - ${file}`));
+              }
+              console.log(chalk.cyan('\n  Aborting merge and resetting to PR branch...'));
+              
+              // Abort merge and reset to clean state on PR branch
+              await abortMerge(git);
+              await git.reset(['--hard', `origin/${this.prInfo.branch}`]);
+              await git.clean('f', ['-d']);
+              
+              endTimer('Resolve conflicts');
+              console.log(chalk.green(`  ✓ Reset to ${this.prInfo.branch} - ready to fix review comments`));
+              console.log(chalk.gray('  (PR still has conflicts with base branch - human can resolve later)'));
+              
+              // Continue to fix review comments instead of returning
+            }
+            
+            // Stage all resolved files and complete the merge
+            await markConflictsResolved(git, codeFiles);
+            const commitResult = await completeMerge(git, `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`);
+            
+            if (!commitResult.success) {
+              console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
+              return;
+            }
+            
+            console.log(chalk.green(`✓ Conflicts resolved and merged ${this.prInfo.baseBranch}`));
+          }
+        } else {
+          console.log(chalk.green(`✓ Successfully merged ${this.prInfo.baseBranch} into ${this.prInfo.branch}`));
+        }
+        
+        // Push the merge if auto-push enabled
+        if (!this.options.noPush && !this.options.noCommit) {
+          spinner.start('Pushing merge commit...');
+          await git.push('origin', this.prInfo.branch);
+          spinner.succeed('Pushed merge commit');
+        } else {
+          console.log(chalk.yellow('  Merge commit created locally. Use --push to push it.'));
+        }
+        endTimer('Resolve conflicts');
+      } else if (this.prInfo.mergeable === null) {
+        console.log(chalk.gray('  GitHub is still calculating merge status...'));
+      } else {
+        console.log(chalk.green(`✓ PR is mergeable with ${this.prInfo.baseBranch}`));
+      }
 
       // Main loop
       let pushIteration = 0;
-      const maxPushIterations = this.options.autoPush ? this.options.maxPushIterations : 1;
+      const maxPushIterations = this.options.autoPush 
+        ? (this.options.maxPushIterations || Infinity)  // 0 = unlimited
+        : 1;
 
       while (pushIteration < maxPushIterations) {
         pushIteration++;
         
         if (this.options.autoPush && pushIteration > 1) {
-          console.log(chalk.blue(`\n--- Push iteration ${pushIteration}/${maxPushIterations} ---\n`));
+          const iterLabel = this.options.maxPushIterations ? `${pushIteration}/${maxPushIterations}` : `${pushIteration}`;
+          console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
         }
 
         // Fetch review comments
+        debugStep('FETCHING REVIEW COMMENTS');
+        startTimer('Fetch comments');
         spinner.start('Fetching review comments...');
         const comments = await this.github.getReviewComments(owner, repo, number);
-        spinner.succeed(`Found ${comments.length} review comments`);
+        const fetchTime = endTimer('Fetch comments');
+        spinner.succeed(`Found ${comments.length} review comments (${formatDuration(fetchTime)})`);
+        
+        debug('Review comments', comments.map(c => ({
+          id: c.id,
+          author: c.author,
+          path: c.path,
+          line: c.line,
+          bodyPreview: c.body.substring(0, 100) + (c.body.length > 100 ? '...' : ''),
+        })));
 
         if (comments.length === 0) {
           console.log(chalk.green('\nNo review comments found. Nothing to do!'));
@@ -101,9 +653,26 @@ export class PRResolver {
         }
 
         // Check which issues still exist
-        spinner.start('Analyzing which issues still exist...');
-        const unresolvedIssues = await this.findUnresolvedIssues(comments);
-        spinner.succeed(`Found ${unresolvedIssues.length} unresolved issues`);
+        debugStep('ANALYZING ISSUES');
+        this.stateManager.setPhase('analyzing');
+        setTokenPhase('Analyze issues');
+        startTimer('Analyze issues');
+        console.log(chalk.gray(`Analyzing ${comments.length} review comments...`));
+        const unresolvedIssues = await this.findUnresolvedIssues(comments, comments.length);
+        const analyzeTime = endTimer('Analyze issues');
+        
+        const resolvedCount = comments.length - unresolvedIssues.length;
+        console.log(chalk.green(`✓ ${resolvedCount}/${comments.length} already resolved (${formatDuration(analyzeTime)})`));
+        if (unresolvedIssues.length > 0) {
+          console.log(chalk.yellow(`→ ${unresolvedIssues.length} issues remaining to fix`));
+        }
+        
+        debug('Unresolved issues', unresolvedIssues.map(i => ({
+          id: i.comment.id,
+          path: i.comment.path,
+          line: i.comment.line,
+          explanation: i.explanation,
+        })));
 
         if (unresolvedIssues.length === 0) {
           console.log(chalk.green('\nAll issues have been resolved!'));
@@ -119,34 +688,59 @@ export class PRResolver {
         // Inner fix loop
         let fixIteration = 0;
         let allFixed = false;
+        const maxFixIterations = this.options.maxFixIterations || Infinity;  // 0 = unlimited
 
-        while (fixIteration < this.options.maxFixIterations && !allFixed) {
+        while (fixIteration < maxFixIterations && !allFixed) {
           fixIteration++;
-          console.log(chalk.blue(`\n--- Fix iteration ${fixIteration}/${this.options.maxFixIterations} ---\n`));
+          const iterLabel = this.options.maxFixIterations ? `${fixIteration}/${maxFixIterations}` : `${fixIteration}`;
+          console.log(chalk.blue(`\n--- Fix iteration ${iterLabel} ---\n`));
 
           // Start new iteration in state
           this.stateManager.startIteration();
 
           // Build fix prompt
-          const { prompt, issues } = buildFixPrompt(
+          debugStep('GENERATING FIX PROMPT');
+          const lessonsBeforeFix = this.stateManager.getLessons().length;
+          const lessons = this.stateManager.getLessons();
+          const { prompt, summary, detailedSummary, lessonsIncluded, issues } = buildFixPrompt(
             unresolvedIssues,
-            this.stateManager.getLessons()
+            lessons
           );
 
-          console.log(chalk.gray('Generated fix prompt with', issues.length, 'issues'));
+          console.log(chalk.cyan(`\n${detailedSummary}\n`));
+          
+          // In verbose mode, show full lessons without truncation
+          if (this.options.verbose && lessons.length > 0) {
+            console.log(chalk.yellow('  Full lessons learned (for debugging):'));
+            for (let i = 0; i < lessons.length; i++) {
+              console.log(chalk.gray(`    ${i + 1}. ${lessons[i]}`));
+            }
+            console.log('');
+          }
+          
+          debug('Fix prompt length', prompt.length);
+          debug('Lessons learned count', lessonsIncluded);
 
           // Run fixer tool
+          debugStep('RUNNING FIXER TOOL');
+          this.stateManager.setPhase('fixing');
+          startTimer('Run fixer');
           spinner.start(`Running ${this.runner.name} to fix issues...`);
           spinner.stop();
           
-          const result = await this.runner.run(this.workdir, prompt);
+          debug('Executing runner', { tool: this.runner.name, workdir: this.workdir, model: this.options.toolModel });
+          const result = await this.runner.run(this.workdir, prompt, { model: this.options.toolModel });
+          const fixerTime = endTimer('Run fixer');
+          debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
           if (!result.success) {
-            console.log(chalk.red(`\n${this.runner.name} failed:`, result.error));
+            console.log(chalk.red(`\n${this.runner.name} failed (${formatDuration(fixerTime)}):`, result.error));
             this.stateManager.addLesson(`${this.runner.name} failed: ${result.error}`);
             await this.stateManager.save();
             continue;
           }
+          
+          console.log(chalk.gray(`\n  Fixer completed in ${formatDuration(fixerTime)}`));
 
           // Check for changes
           if (!(await hasChanges(git))) {
@@ -157,56 +751,210 @@ export class PRResolver {
           }
 
           // Verify fixes
+          debugStep('VERIFYING FIXES');
+          this.stateManager.setPhase('verifying');
+          setTokenPhase('Verify fixes');
+          startTimer('Verify fixes');
           spinner.start('Verifying fixes...');
           const changedFiles = await getChangedFiles(git);
+          debug('Changed files', changedFiles);
           let verifiedCount = 0;
           let failedCount = 0;
 
+          // Separate issues by whether their file was changed
+          const unchangedIssues: typeof unresolvedIssues = [];
+          const changedIssues: typeof unresolvedIssues = [];
+          
           for (const issue of unresolvedIssues) {
             if (!changedFiles.includes(issue.comment.path)) {
-              // File not changed, issue not addressed
-              this.stateManager.addVerificationResult(issue.comment.id, {
-                passed: false,
-                reason: 'File was not modified',
-              });
-              failedCount++;
-              continue;
-            }
-
-            // Get diff for this file
-            const diff = await getDiffForFile(git, issue.comment.path);
-            
-            // Verify with LLM
-            const verification = await this.llm.verifyFix(
-              issue.comment.body,
-              issue.comment.path,
-              diff
-            );
-
-            this.stateManager.addVerificationResult(issue.comment.id, {
-              passed: verification.fixed,
-              reason: verification.explanation,
-            });
-
-            if (verification.fixed) {
-              verifiedCount++;
-              this.stateManager.markCommentVerifiedFixed(issue.comment.id);
-              this.stateManager.addCommentToIteration(issue.comment.id);
+              unchangedIssues.push(issue);
             } else {
-              failedCount++;
-              this.stateManager.addLesson(
-                `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`
-              );
+              changedIssues.push(issue);
             }
           }
 
-          spinner.succeed(`Verified: ${verifiedCount} fixed, ${failedCount} remaining`);
+          // Mark unchanged files as failed immediately
+          for (const issue of unchangedIssues) {
+            this.stateManager.addVerificationResult(issue.comment.id, {
+              passed: false,
+              reason: 'File was not modified',
+            });
+            failedCount++;
+          }
+
+          // Verify changed files
+          if (changedIssues.length > 0) {
+            // Cache diffs by file to avoid fetching same diff multiple times
+            const diffCache = new Map<string, string>();
+            
+            const getDiff = async (path: string): Promise<string> => {
+              let diff = diffCache.get(path);
+              if (!diff) {
+                diff = await getDiffForFile(git, path);
+                diffCache.set(path, diff);
+              }
+              return diff;
+            };
+
+            if (this.options.noBatch) {
+              // Sequential mode - one LLM call per fix
+              spinner.text = `Verifying ${changedIssues.length} fixes sequentially...`;
+              
+              for (let i = 0; i < changedIssues.length; i++) {
+                const issue = changedIssues[i];
+                spinner.text = `Verifying [${i + 1}/${changedIssues.length}] ${issue.comment.path}:${issue.comment.line || '?'}`;
+                
+                const diff = await getDiff(issue.comment.path);
+                const verification = await this.llm.verifyFix(
+                  issue.comment.body,
+                  issue.comment.path,
+                  diff
+                );
+
+                this.stateManager.addVerificationResult(issue.comment.id, {
+                  passed: verification.fixed,
+                  reason: verification.explanation,
+                });
+
+                debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, verification);
+                
+                if (verification.fixed) {
+                  verifiedCount++;
+                  this.stateManager.markCommentVerifiedFixed(issue.comment.id);
+                  this.stateManager.addCommentToIteration(issue.comment.id);
+                } else {
+                  failedCount++;
+                  this.stateManager.addLesson(
+                    `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`
+                  );
+                }
+              }
+            } else {
+              // Batch mode - one LLM call for all fixes
+              const fixesToVerify: Array<{
+                id: string;
+                comment: string;
+                filePath: string;
+                diff: string;
+              }> = [];
+
+              for (const issue of changedIssues) {
+                const diff = await getDiff(issue.comment.path);
+                fixesToVerify.push({
+                  id: issue.comment.id,
+                  comment: issue.comment.body,
+                  filePath: issue.comment.path,
+                  diff,
+                });
+              }
+
+              spinner.text = `Batch verifying ${fixesToVerify.length} fixes with LLM...`;
+              const verificationResults = await this.llm.batchVerifyFixes(fixesToVerify);
+
+              // Process results
+              for (const issue of changedIssues) {
+                const result = verificationResults.get(issue.comment.id.toLowerCase());
+                
+                if (!result) {
+                  // LLM didn't return result for this issue, mark as needing review
+                  this.stateManager.addVerificationResult(issue.comment.id, {
+                    passed: false,
+                    reason: 'Verification result not found in LLM response',
+                  });
+                  failedCount++;
+                  continue;
+                }
+
+                this.stateManager.addVerificationResult(issue.comment.id, {
+                  passed: result.fixed,
+                  reason: result.explanation,
+                });
+
+                debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, result);
+                
+                if (result.fixed) {
+                  verifiedCount++;
+                  this.stateManager.markCommentVerifiedFixed(issue.comment.id);
+                  this.stateManager.addCommentToIteration(issue.comment.id);
+                } else {
+                  failedCount++;
+                  this.stateManager.addLesson(
+                    `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${result.explanation}`
+                  );
+                }
+              }
+            }
+          }
+
+          const totalIssues = issues.length;
+          const verifyTime = endTimer('Verify fixes');
+          const progressPct = Math.round((verifiedCount / totalIssues) * 100);
+          const lessonsAfterVerify = this.stateManager.getLessons().length;
+          const newLessons = lessonsAfterVerify - lessonsBeforeFix;
+          
+          spinner.succeed(`Verified: ${verifiedCount}/${totalIssues} fixed (${progressPct}%), ${failedCount} remaining (${formatDuration(verifyTime)})`);
+          
+          // Show iteration summary
+          console.log(chalk.gray(`\n  Iteration ${fixIteration} summary:`));
+          console.log(chalk.gray(`    • Fixed: ${verifiedCount} issues`));
+          console.log(chalk.gray(`    • Failed: ${failedCount} issues`));
+          if (newLessons > 0) {
+            console.log(chalk.yellow(`    • New lessons: +${newLessons} (total: ${lessonsAfterVerify})`));
+          } else {
+            console.log(chalk.gray(`    • Lessons: ${lessonsAfterVerify} (no new)`));
+          }
+          
+          debug('Verification summary', { verifiedCount, failedCount, totalIssues, newLessons, totalLessons: lessonsAfterVerify, duration: verifyTime });
           await this.stateManager.save();
+          debug('State saved');
 
           // Check if all fixed
           allFixed = failedCount === 0;
 
-          if (!allFixed && fixIteration < this.options.maxFixIterations) {
+          if (!allFixed) {
+            // Track consecutive failures for strategy switching
+            if (verifiedCount === 0) {
+              this.consecutiveFailures++;
+              this.toolCycleFailures++;
+              
+              // Strategy per tool:
+              // 1. Batch mode (normal) - first attempt
+              // 2. Single-issue focus mode - if batch fails
+              // 3. Rotate to next tool and repeat
+              // 4. Direct LLM API - after all tools exhausted
+              
+              const isOddFailure = this.consecutiveFailures % 2 === 1;
+              const toolCycles = Math.floor(this.consecutiveFailures / 2);
+              
+              if (isOddFailure && unresolvedIssues.length > 1) {
+                // Odd failure = batch failed, try single-issue with same tool
+                console.log(chalk.yellow('\n  🎯 Batch failed, trying single-issue focus mode...'));
+                const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git);
+                if (singleIssueFixed) {
+                  this.consecutiveFailures = 0;
+                  this.toolCycleFailures = 0;
+                }
+              }
+              else if (!isOddFailure && this.runners.length > 1 && toolCycles < this.runners.length) {
+                // Even failure = single-issue also failed, rotate to next tool
+                this.switchToNextRunner();
+                console.log(chalk.cyan('  Starting fresh with batch mode...'));
+              }
+              else if (toolCycles >= this.runners.length) {
+                // All tools exhausted, try direct LLM as last resort
+                console.log(chalk.yellow('\n  🧠 All tools exhausted, trying direct LLM API fix...'));
+                const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
+                if (directFixed) {
+                  this.consecutiveFailures = 0;
+                  this.toolCycleFailures = 0;
+                }
+              }
+            } else {
+              // Made progress, reset failure counters
+              this.consecutiveFailures = 0;
+              this.toolCycleFailures = 0;
+            }
+            
             // Update unresolved list for next iteration
             unresolvedIssues.splice(
               0,
@@ -218,33 +966,47 @@ export class PRResolver {
           }
         }
 
-        if (!allFixed) {
-          console.log(chalk.yellow(`\nMax fix iterations reached. ${unresolvedIssues.length} issues remain.`));
+        if (!allFixed && this.options.maxFixIterations > 0) {
+          console.log(chalk.yellow(`\nMax fix iterations (${this.options.maxFixIterations}) reached. ${unresolvedIssues.length} issues remain.`));
         }
 
         // Commit changes if we have any
+        debugStep('COMMIT PHASE');
         if (await hasChanges(git)) {
           const fixedIssues = unresolvedIssues
             .filter((i) => this.stateManager.isCommentVerifiedFixed(i.comment.id))
             .map((i) => `${i.comment.path}: ${i.comment.body.substring(0, 50)}...`);
 
           const commitMsg = buildCommitMessage(fixedIssues, []);
+          debug('Commit message', commitMsg);
+
+          if (this.options.noCommit) {
+            warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
+            console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            break;
+          }
           
           spinner.start('Committing changes...');
           const commit = await squashCommit(git, 'fix: address review comments', commitMsg);
           spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
+          debug('Commit created', commit);
 
-          // Push if auto-push mode
-          if (this.options.autoPush) {
+          // Push if auto-push mode AND not in no-push mode
+          if (this.options.autoPush && !this.options.noPush) {
+            debugStep('PUSH PHASE');
             spinner.start('Pushing changes...');
             await push(git, this.prInfo.branch);
             spinner.succeed('Pushed to remote');
 
-            // Wait for bot re-review
+            // Wait for re-review
             if (pushIteration < maxPushIterations) {
-              console.log(chalk.gray(`\nWaiting ${this.options.pollInterval}s for Copilot to re-review...`));
+              console.log(chalk.gray(`\nWaiting ${this.options.pollInterval}s for re-review...`));
               await this.sleep(this.options.pollInterval * 1000);
             }
+          } else if (this.options.noPush) {
+            warn('NO-PUSH MODE: Changes committed locally but not pushed.');
+            console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            break;
           } else {
             console.log(chalk.blue('\nChanges committed locally. Use --auto-push to push automatically.'));
             console.log(chalk.gray(`Workdir: ${this.workdir}`));
@@ -252,6 +1014,7 @@ export class PRResolver {
           }
         } else {
           console.log(chalk.yellow('\nNo changes to commit'));
+          debug('Git status shows no changes');
           break;
         }
       }
@@ -265,63 +1028,201 @@ export class PRResolver {
         console.log(chalk.gray(`\nWorkdir preserved: ${this.workdir}`));
       }
 
+      endTimer('Total');
+      printTimingSummary();
+      printTokenSummary();
       console.log(chalk.green('\nDone!'));
 
     } catch (error) {
+      endTimer('Total');
+      printTimingSummary();
+      printTokenSummary();
       spinner.fail('Error');
       throw error;
     }
   }
 
   private async setupRunner(): Promise<Runner> {
-    const runners: Record<string, Runner> = {
-      cursor: new CursorRunner(),
-      opencode: new OpencodeRunner(),
-    };
-
-    const runner = runners[this.options.tool];
-    if (!runner) {
-      throw new Error(`Unknown tool: ${this.options.tool}`);
+    // Auto-detect all available and ready runners
+    const detected = await detectAvailableRunners(this.options.verbose);
+    
+    if (detected.length === 0) {
+      throw new Error('No fix tools available! Install one of: cursor-agent, claude-code, aider, opencode');
     }
 
-    const available = await runner.isAvailable();
-    if (!available) {
-      throw new Error(`Tool '${this.options.tool}' is not installed or not in PATH`);
+    // Print summary
+    printRunnerSummary(detected);
+
+    // Find preferred runner or use first available
+    let primaryRunner: Runner;
+    
+    if (this.options.tool) {
+      const preferred = detected.find(d => d.runner.name === this.options.tool);
+      if (preferred) {
+        primaryRunner = preferred.runner;
+      } else {
+        // Check if it exists but isn't ready
+        const runner = getRunnerByName(this.options.tool);
+        if (runner) {
+          const status = await runner.checkStatus();
+          if (status.installed && !status.ready) {
+            warn(`${runner.displayName} is installed but not ready: ${status.error}`);
+          } else {
+            warn(`${this.options.tool} not available, using ${detected[0].runner.displayName}`);
+          }
+        }
+        primaryRunner = detected[0].runner;
+      }
+    } else {
+      primaryRunner = detected[0].runner;
     }
 
-    return runner;
+    // Build list of all ready runners for rotation
+    this.runners = detected.map(d => d.runner);
+    
+    // Move primary to front
+    const primaryIndex = this.runners.findIndex(r => r.name === primaryRunner.name);
+    if (primaryIndex > 0) {
+      this.runners.splice(primaryIndex, 1);
+      this.runners.unshift(primaryRunner);
+    }
+
+    console.log(chalk.cyan(`\nPrimary fixer: ${primaryRunner.displayName}`));
+    if (this.runners.length > 1) {
+      console.log(chalk.gray(`  Rotation order: ${this.runners.map(r => r.displayName).join(' → ')}`));
+    }
+
+    return primaryRunner;
   }
 
-  private async findUnresolvedIssues(comments: ReviewComment[]): Promise<UnresolvedIssue[]> {
+  private buildConflictResolutionPrompt(conflictedFiles: string[], baseBranch: string): string {
+    const fileList = conflictedFiles.map(f => `- ${f}`).join('\n');
+    
+    return `MERGE CONFLICT RESOLUTION
+
+The following files have merge conflicts that need to be resolved:
+
+${fileList}
+
+These conflicts occurred while merging '${baseBranch}' into the current branch.
+
+INSTRUCTIONS:
+1. Open each conflicted file
+2. Look for conflict markers: <<<<<<<, =======, >>>>>>>
+3. For each conflict:
+   - Understand what both sides are trying to do
+   - Choose the correct resolution that preserves the intent of both changes
+   - Remove all conflict markers
+4. Ensure the code compiles/runs correctly after resolution
+5. Save all files
+
+IMPORTANT:
+- Do NOT just pick one side blindly
+- Merge the changes intelligently, combining both when possible
+- Pay special attention to imports, function signatures, and data structures
+- For lock files (bun.lock, package-lock.json, yarn.lock), regenerate them by running the package manager install command
+- For configuration files, ensure all necessary entries from both sides are preserved
+
+After resolving, the files should have NO conflict markers remaining.`;
+  }
+
+  private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<UnresolvedIssue[]> {
     const unresolved: UnresolvedIssue[] = [];
+    let alreadyResolved = 0;
+
+    // First pass: filter out already-verified issues and gather code snippets
+    const toCheck: Array<{
+      comment: ReviewComment;
+      codeSnippet: string;
+    }> = [];
 
     for (const comment of comments) {
-      // Skip if already verified as fixed
       if (this.stateManager.isCommentVerifiedFixed(comment.id)) {
+        alreadyResolved++;
         continue;
       }
 
-      // Get current code at the comment location
-      const codeSnippet = await this.getCodeSnippet(comment.path, comment.line);
+      const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
+      toCheck.push({ comment, codeSnippet });
+    }
 
-      // Ask LLM if issue still exists
-      const result = await this.llm.checkIssueExists(
-        comment.body,
-        comment.path,
-        comment.line,
-        codeSnippet
-      );
+    if (alreadyResolved > 0) {
+      console.log(chalk.gray(`  ${alreadyResolved} already verified as fixed (cached)`));
+    }
 
-      if (result.exists) {
-        unresolved.push({
-          comment,
-          codeSnippet,
-          stillExists: true,
-          explanation: result.explanation,
-        });
-      } else {
-        // Mark as fixed in state
-        this.stateManager.markCommentVerifiedFixed(comment.id);
+    if (toCheck.length === 0) {
+      return [];
+    }
+
+    if (this.options.noBatch) {
+      // Sequential mode - one LLM call per comment
+      console.log(chalk.gray(`  Analyzing ${toCheck.length} comments sequentially...`));
+      
+      for (let i = 0; i < toCheck.length; i++) {
+        const { comment, codeSnippet } = toCheck[i];
+        console.log(chalk.gray(`    [${i + 1}/${toCheck.length}] ${comment.path}:${comment.line || '?'}`));
+        
+        const result = await this.llm.checkIssueExists(
+          comment.body,
+          comment.path,
+          comment.line,
+          codeSnippet
+        );
+        
+        if (result.exists) {
+          unresolved.push({
+            comment,
+            codeSnippet,
+            stillExists: true,
+            explanation: result.explanation,
+          });
+        } else {
+          this.stateManager.markCommentVerifiedFixed(comment.id);
+        }
+      }
+    } else {
+      // Batch mode - one LLM call for all comments
+      console.log(chalk.gray(`  Batch analyzing ${toCheck.length} comments with LLM...`));
+      
+      const batchInput = toCheck.map((item, index) => ({
+        id: String(index),
+        comment: item.comment.body,
+        filePath: item.comment.path,
+        line: item.comment.line,
+        codeSnippet: item.codeSnippet,
+      }));
+
+      const results = await this.llm.batchCheckIssuesExist(batchInput);
+      debug('Batch analysis results', { count: results.size });
+
+      // Process results
+      for (let i = 0; i < toCheck.length; i++) {
+        const { comment, codeSnippet } = toCheck[i];
+        const result = results.get(String(i));
+
+        if (!result) {
+          // If LLM didn't return a result for this, assume it still exists
+          warn(`No result for comment ${i}, assuming unresolved`);
+          unresolved.push({
+            comment,
+            codeSnippet,
+            stillExists: true,
+            explanation: 'Unable to determine status',
+          });
+          continue;
+        }
+
+        if (result.exists) {
+          unresolved.push({
+            comment,
+            codeSnippet,
+            stillExists: true,
+            explanation: result.explanation,
+          });
+        } else {
+          // Mark as fixed in state
+          this.stateManager.markCommentVerifiedFixed(comment.id);
+        }
       }
     }
 
@@ -329,20 +1230,46 @@ export class PRResolver {
     return unresolved;
   }
 
-  private async getCodeSnippet(path: string, line: number | null): Promise<string> {
+  private async getCodeSnippet(path: string, line: number | null, commentBody?: string): Promise<string> {
     try {
       const filePath = join(this.workdir, path);
       const content = await readFile(filePath, 'utf-8');
       const lines = content.split('\n');
 
-      if (line === null) {
+      // Try to extract line range from comment body (bugbot format)
+      // <!-- LOCATIONS START
+      // packages/rust/src/runtime.rs#L1743-L1781
+      // LOCATIONS END -->
+      let startLine = line;
+      let endLine = line;
+      
+      if (commentBody) {
+        const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
+        if (locationsMatch) {
+          const locationLines = locationsMatch[1].trim().split('\n');
+          for (const loc of locationLines) {
+            // Match: file.ext#L123-L456 or file.ext#L123
+            const lineMatch = loc.match(/#L(\d+)(?:-L(\d+))?/);
+            if (lineMatch) {
+              startLine = parseInt(lineMatch[1], 10);
+              endLine = lineMatch[2] ? parseInt(lineMatch[2], 10) : startLine + 20;
+              debug('Extracted line range from comment', { startLine, endLine, loc });
+              break;
+            }
+          }
+        }
+      }
+
+      if (startLine === null) {
         // Return first 50 lines if no specific line
         return lines.slice(0, 50).join('\n');
       }
 
-      // Return context around the line (10 lines before and after)
-      const start = Math.max(0, line - 10);
-      const end = Math.min(lines.length, line + 10);
+      // Return code from startLine to endLine (with some context)
+      const contextBefore = 5;
+      const contextAfter = 10;
+      const start = Math.max(0, startLine - contextBefore - 1); // -1 for 0-indexed
+      const end = Math.min(lines.length, (endLine || startLine) + contextAfter);
       
       return lines
         .slice(start, end)

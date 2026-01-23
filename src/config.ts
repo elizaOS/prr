@@ -15,6 +15,7 @@ export interface Config {
   openaiApiKey?: string;
   defaultTool: FixerTool;
   workdirBase: string;
+  anthropicThinkingBudget?: number;  // Extended thinking token budget
 }
 
 function getEnvOrThrow(key: string): string {
@@ -36,6 +37,10 @@ export function loadConfig(): Config {
     throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'anthropic' or 'openai'`);
   }
 
+  // Parse thinking budget if set
+  const thinkingBudgetStr = process.env.PRR_THINKING_BUDGET;
+  const thinkingBudget = thinkingBudgetStr ? parseInt(thinkingBudgetStr, 10) : undefined;
+
   const config: Config = {
     githubToken: getEnvOrThrow('GITHUB_TOKEN'),
     llmProvider,
@@ -45,6 +50,7 @@ export function loadConfig(): Config {
     ),
     defaultTool: getEnvOrDefault('PRR_TOOL', 'cursor') as FixerTool,
     workdirBase: join(homedir(), '.prr', 'work'),
+    anthropicThinkingBudget: thinkingBudget,
   };
 
   // Validate API key exists for chosen provider

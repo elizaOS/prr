@@ -8,15 +8,17 @@ import { debug } from '../logger.js';
 
 const exec = promisify(execCallback);
 
-export class OpencodeRunner implements Runner {
-  name = 'opencode';
-  displayName = 'OpenCode';
+export class AiderRunner implements Runner {
+  name = 'aider';
+  displayName = 'Aider';
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which opencode');
+      await exec('which aider');
+      debug('Found Aider CLI');
       return true;
     } catch {
+      debug('Aider CLI not found');
       return false;
     }
   }
@@ -24,37 +26,42 @@ export class OpencodeRunner implements Runner {
   async checkStatus(): Promise<RunnerStatus> {
     const installed = await this.isAvailable();
     if (!installed) {
-      return { installed: false, ready: false, error: 'Not installed' };
+      return { installed: false, ready: false, error: 'Not installed (install: pip install aider-chat)' };
     }
 
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec('opencode --version 2>&1');
+      const { stdout } = await exec('aider --version 2>&1');
       version = stdout.trim();
     } catch {
-      // Version check might not be supported
+      // Version check might fail
     }
 
-    // OpenCode typically ready if installed
+    // Aider needs API keys - check for common ones
+    const hasAnthropicKey = !!process.env.ANTHROPIC_API_KEY;
+    const hasOpenAIKey = !!process.env.OPENAI_API_KEY;
+    
+    if (!hasAnthropicKey && !hasOpenAIKey) {
+      return { installed: true, ready: false, version, error: 'No API key set (ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
+    }
+
     return { installed: true, ready: true, version };
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
-    // Write prompt to a temp file to avoid command line length limits
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
     return new Promise((resolve) => {
-      // Read prompt from file using shell, pipe to opencode
-      // Note: opencode model selection may vary - check opencode docs
+      // Aider uses --message for non-interactive prompts, --yes-always to auto-accept
       const modelFlag = options?.model ? `--model ${options.model}` : '';
-      const shellCommand = `cat "${promptFile}" | opencode ${modelFlag}`.trim();
+      const shellCommand = `aider --yes-always ${modelFlag} --message "$(cat "${promptFile}")"`;
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-      console.log(`Running: opencode${modelInfo} < [prompt file] in ${workdir}`);
-      debug('Opencode command', { workdir, model: options?.model, promptLength: prompt.length });
+      console.log(`\nRunning: aider${modelInfo} [prompt]\n`);
+      debug('Aider command', { workdir, model: options?.model, promptLength: prompt.length });
 
       const child = spawn('sh', ['-c', shellCommand], {
         cwd: workdir,
@@ -74,44 +81,24 @@ export class OpencodeRunner implements Runner {
       child.stderr?.on('data', (data) => {
         const str = data.toString();
         stderr += str;
-        process.stderr.write(str);
+        if (!str.includes('Warning')) {
+          process.stderr.write(str);
+        }
       });
 
       child.on('close', (code) => {
-        // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
+        try { unlinkSync(promptFile); } catch { }
 
         if (code === 0) {
-          resolve({
-            success: true,
-            output: stdout,
-          });
+          resolve({ success: true, output: stdout });
         } else {
-          resolve({
-            success: false,
-            output: stdout,
-            error: stderr || `Process exited with code ${code}`,
-          });
+          resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
         }
       });
 
       child.on('error', (err) => {
-        // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
-
-        resolve({
-          success: false,
-          output: stdout,
-          error: err.message,
-        });
+        try { unlinkSync(promptFile); } catch { }
+        resolve({ success: false, output: stdout, error: err.message });
       });
     });
   }
