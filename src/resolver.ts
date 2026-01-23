@@ -58,13 +58,17 @@ export class PRResolver {
 
   private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit): Promise<boolean> {
     // Focus on one issue at a time to reduce context and improve success rate
-    console.log(chalk.cyan(`\n  Focusing on ${issues.length} issues one at a time...`));
+    // Randomize which issues to try to avoid hammering the same hard issue
+    const shuffled = [...issues].sort(() => Math.random() - 0.5);
+    const toTry = shuffled.slice(0, Math.min(issues.length, 3));
+    
+    console.log(chalk.cyan(`\n  Focusing on ${toTry.length} random issues one at a time...`));
     
     let anyFixed = false;
     
-    for (let i = 0; i < Math.min(issues.length, 3); i++) { // Try up to 3 single issues
-      const issue = issues[i];
-      console.log(chalk.cyan(`\n  [${i + 1}/${Math.min(issues.length, 3)}] Focusing on: ${issue.comment.path}:${issue.comment.line || '?'}`));
+    for (let i = 0; i < toTry.length; i++) {
+      const issue = toTry[i];
+      console.log(chalk.cyan(`\n  [${i + 1}/${toTry.length}] Focusing on: ${issue.comment.path}:${issue.comment.line || '?'}`));
       console.log(chalk.gray(`    "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
       
       // Build a focused prompt for just this one issue
