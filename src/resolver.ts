@@ -40,6 +40,8 @@ export class PRResolver {
   // Model rotation: track current model index for each runner
   private modelIndices: Map<string, number> = new Map();
   private modelFailuresInCycle = 0;  // Failures since last model/tool rotation
+  private modelsTriedThisToolRound = 0;  // Models tried on current tool before switching
+  private static readonly MAX_MODELS_PER_TOOL_ROUND = 2;  // Switch tools after this many models
 
   constructor(config: Config, options: CLIOptions) {
     this.config = config;
@@ -110,18 +112,16 @@ export class PRResolver {
     // Persist to state so we resume here if interrupted
     this.stateManager.setModelIndex(this.runner.name, nextIndex);
     
+    this.modelsTriedThisToolRound++;
     console.log(chalk.yellow(`\n  🔄 Rotating model: ${previousModel} → ${nextModel}`));
     return true;
   }
 
   /**
-   * Reset model index for current runner (start fresh after tool switch)
+   * Switch to the next runner/tool
+   * Does NOT reset model index - we continue where we left off when we come back
+   * WHY: Interleaving tools is more effective than exhausting all models on one tool
    */
-  private resetModelIndex(): void {
-    this.modelIndices.set(this.runner.name, 0);
-    this.stateManager.setModelIndex(this.runner.name, 0);
-  }
-
   private switchToNextRunner(): boolean {
     if (this.runners.length <= 1) return false;
     
@@ -132,8 +132,9 @@ export class PRResolver {
     // Persist runner index so we resume here if interrupted
     this.stateManager.setCurrentRunnerIndex(this.currentRunnerIndex);
     
-    // Reset model index for the new runner
-    this.resetModelIndex();
+    // Reset the per-tool-round counter, but DON'T reset model index
+    // We'll continue from where we left off on this tool
+    this.modelsTriedThisToolRound = 0;
     
     const newModel = this.getCurrentModel();
     const modelInfo = newModel ? ` (${newModel})` : '';
@@ -142,20 +143,77 @@ export class PRResolver {
   }
 
   /**
-   * Try rotating model first, then tool if all models exhausted
-   * Returns true if we rotated something, false if nothing left to try
+   * Check if all tools have exhausted all their models
+   */
+  private allModelsExhausted(): boolean {
+    for (const runner of this.runners) {
+      const models = this.getModelsForRunner(runner);
+      const currentIndex = this.modelIndices.get(runner.name) || 0;
+      // If any runner has models left to try, we're not exhausted
+      if (currentIndex < models.length - 1) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Try rotating - interleaves tools more aggressively
+   * Strategy: Try MAX_MODELS_PER_TOOL_ROUND models on current tool, then switch tools
+   * WHY: Different tools have different strengths; cycling through tools faster
+   * gives each tool a chance before we exhaust all options on one tool
    */
   private tryRotation(): boolean {
-    // First try rotating the model within the current tool
+    // If we've tried enough models on this tool, switch to next tool first
+    if (this.modelsTriedThisToolRound >= PRResolver.MAX_MODELS_PER_TOOL_ROUND && this.runners.length > 1) {
+      // Switch tool, but the new tool might also have tried its quota
+      // Keep switching until we find a tool with models to try or we've cycled all
+      const startingRunner = this.currentRunnerIndex;
+      
+      do {
+        if (this.switchToNextRunner()) {
+          // Check if this tool still has models to try
+          const models = this.getModelsForRunner(this.runner);
+          const currentIndex = this.modelIndices.get(this.runner.name) || 0;
+          
+          if (currentIndex < models.length - 1) {
+            // This tool has more models, rotate to next one
+            if (this.rotateModel()) {
+              this.modelFailuresInCycle = 0;
+              return true;
+            }
+          }
+          // This tool is exhausted, try next tool
+        }
+      } while (this.currentRunnerIndex !== startingRunner);
+      
+      // All tools exhausted their models
+      return false;
+    }
+    
+    // Try rotating model within current tool
     if (this.rotateModel()) {
       this.modelFailuresInCycle = 0;
       return true;
     }
     
-    // All models exhausted for this tool, try next tool
-    if (this.switchToNextRunner()) {
-      this.modelFailuresInCycle = 0;
-      return true;
+    // Current tool exhausted, try switching to another tool
+    if (this.runners.length > 1) {
+      const startingRunner = this.currentRunnerIndex;
+      
+      do {
+        if (this.switchToNextRunner()) {
+          const models = this.getModelsForRunner(this.runner);
+          const currentIndex = this.modelIndices.get(this.runner.name) || 0;
+          
+          if (currentIndex < models.length - 1) {
+            if (this.rotateModel()) {
+              this.modelFailuresInCycle = 0;
+              return true;
+            }
+          }
+        }
+      } while (this.currentRunnerIndex !== startingRunner);
     }
     
     // Nothing left to rotate
