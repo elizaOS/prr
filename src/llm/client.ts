@@ -259,10 +259,26 @@ NO: <cite the specific code that resolves this issue>`;
 
   /**
    * Final audit: Re-verify ALL issues with an adversarial, stricter prompt.
-   * This is run when prr thinks it's done, to catch false positives.
-   * Dynamically batches issues based on context size.
    * 
-   * @param maxContextChars - Maximum characters per batch (default 100k, ~25k tokens)
+   * WHY THIS EXISTS:
+   * Regular verification can have false positives - the LLM says "looks fixed"
+   * when it isn't. These get cached and persist forever. The final audit:
+   * 
+   * 1. Runs AFTER all issues appear resolved (cache says everything is fixed)
+   * 2. Cache is cleared before audit - audit results are authoritative
+   * 3. Uses adversarial prompt: "Find issues NOT properly fixed"
+   * 4. Requires citing specific code evidence, not just "looks good"
+   * 5. Any failures get unmarked and re-enter the fix loop
+   * 
+   * WHY ADVERSARIAL:
+   * Regular prompts ask "is this fixed?" - LLMs tend toward yes.
+   * Adversarial prompts ask "what's wrong?" - catches more issues.
+   * 
+   * WHY DYNAMIC BATCHING:
+   * 36 issues × 3KB = 108KB prompt. Too big for some models.
+   * We batch based on actual content size, not fixed counts.
+   * 
+   * @param maxContextChars - Maximum characters per batch (default 400k, ~100k tokens)
    */
   async finalAudit(
     issues: Array<{

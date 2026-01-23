@@ -105,53 +105,170 @@ OUTER LOOP (push cycles):
     3. Run fixer tool
     4. Verify fixes (LLM checks if addressed)
     5. Learn from failures
-  Commit when verified
+  FINAL AUDIT (adversarial re-check of ALL issues)
+  Commit when audit passes
   Push if --auto-push
   Wait for re-review
 ```
 
-### 2. Tool Rotation Strategy
-When stuck (no progress for 2 iterations):
+**Why two loops?** The inner loop fixes issues quickly. The outer loop handles the reality that bot reviewers may add NEW comments after you push. Auto-push mode keeps going until the PR is clean.
+
+### 2. Verification System
+
+**The Problem**: How do we know an issue is actually fixed?
+
+**Naive approach**: Trust the fixer tool. *Why bad*: Tools make changes that don't address the actual issue.
+
+**Better approach**: LLM verification after each fix. *Why still problematic*: 
+- Single LLM call can be wrong (false positives)
+- Verification is cached forever - stale entries persist
+- Lenient prompts lead to "looks good to me" without evidence
+
+**Our solution**: Multi-layer verification with final audit:
+
 ```
-Tool A: Batch mode (all issues)
-    ↓ (no progress)
-Tool A: Single-issue focus mode (random 3 issues)
-    ↓ (no progress)
-Tool B: Batch mode
-    ↓ ... repeat ...
-Direct LLM API (last resort)
+Layer 1: Initial verification (per fix)
+  └─ "Does this diff address the concern?" 
+  └─ Results cached for efficiency
+  
+Layer 2: Final audit (before declaring done)
+  └─ Clear ALL cached verifications first
+  └─ Re-check EVERY issue with stricter prompt
+  └─ Adversarial: "Find issues NOT properly fixed"
+  └─ Requires citing specific code evidence
+  └─ Only audit results determine what's "fixed"
 ```
 
-### 3. Lessons Learned System
-- **File-scoped**: Lessons about `runtime.rs` only shown when fixing `runtime.rs`
-- **Global**: Some lessons apply to all files
-- **Branch-permanent**: Stored in `~/.prr/lessons/<owner>/<repo>/<branch>.json`
-- **Deduplicated**: One lesson per `file:line`, latest wins
+**Why clear cache before audit?** Prevents stale false positives from surviving. If an issue was wrongly marked "fixed" 10 iterations ago, the audit catches it.
 
-### 4. Code Snippet Extraction
-Review comments may be attached at line X but reference code at lines Y-Z:
+**Why adversarial prompt?** Regular verification asks "is this fixed?" - LLMs tend toward yes. Adversarial asks "find what's NOT fixed" - catches more issues.
+
+### 3. Model & Tool Rotation
+
+**The Problem**: AI tools get stuck. They'll make the same mistake repeatedly.
+
+**Solution**: Rotate through different models and tools:
+
 ```
+Model rotation (within each tool):
+  claude-sonnet-4.5 → gpt-5.2 → claude-opus-4.5 → gpt-5-mini
+  
+Tool rotation (after all models exhausted):
+  Cursor → Claude Code → Aider → Direct LLM API
+
+Strategy per failure:
+  1st fail: Try single-issue focus (reduce context)
+  2nd fail: Rotate to next model
+  3rd fail: Try single-issue focus with new model
+  4th fail: Rotate to next tool
+  ... repeat ...
+  All exhausted: Direct LLM API as last resort
+```
+
+**Why rotate models?** Different models have different strengths:
+- Claude excels at following complex instructions
+- GPT excels at common patterns
+- Opus has better reasoning for hard problems
+- Mini models work fine for simple fixes
+
+**Why single-issue focus?** Large prompts with many issues can confuse the model. Focusing on one issue at a time often unsticks things.
+
+### 4. Lessons Learned System
+
+**The Problem**: Fixer tools flip-flop. Attempt #1 adds a try/catch. Verification rejects it. Attempt #2 adds the same try/catch. Loop forever.
+
+**Solution**: Record what didn't work and include it in future prompts:
+
+```
+Lessons store: ~/.prr/lessons/<owner>/<repo>/<branch>.json
+{
+  "global": ["Tool made no changes - issue may need manual work"],
+  "files": {
+    "src/auth.ts": ["Fix rejected: try/catch doesn't handle the edge case"],
+    "src/api.ts:45": ["Validation must preserve backward compatibility"]
+  }
+}
+```
+
+**Why file-scoped?** Lessons about `auth.ts` aren't relevant when fixing `api.ts`. Reduces prompt noise.
+
+**Why branch-permanent?** Issues recur when you resume work. Lessons survive across runs.
+
+**Why deduplicated?** One lesson per `file:line`. If we learn something new about line 45, it replaces the old lesson.
+
+### 5. Context Size Management
+
+**The Problem**: LLMs have context limits. 36 review comments × 3KB each = 108KB prompt. Too big.
+
+**Solution**: Dynamic batching based on actual content size:
+
+```typescript
+// Default: 400k chars (~100k tokens)
+// Fills batches until limit reached
+for (const issue of issues) {
+  const issueSize = buildIssueText(issue).length;
+  if (currentSize + issueSize > maxContextChars) {
+    batches.push(currentBatch);
+    currentBatch = [];
+  }
+  currentBatch.push(issue);
+  currentSize += issueSize;
+}
+```
+
+**Why dynamic?** Fixed batch sizes waste context (small issues) or overflow (large issues). Dynamic batching is efficient.
+
+**Why 400k default?** Claude 4.5 handles 200k tokens. 400k chars ≈ 100k tokens. Leaves room for response.
+
+**Why configurable?** Smaller models need smaller batches. `--max-context 100000` for GPT-4 class.
+
+### 6. Code Snippet Extraction
+
+**The Problem**: Review comment is attached at line 50, but the issue is about lines 100-150.
+
+**Solution**: Parse LOCATIONS metadata from comment body:
+
+```markdown
 <!-- LOCATIONS START
-packages/rust/src/runtime.rs#L1743-L1781
+packages/rust/src/runtime.rs#L100-L150
 LOCATIONS END -->
 ```
-We parse LOCATIONS from comment body to show the right code.
 
-### 5. Conflict Resolution
-```
-1. Check GitHub mergeable status
-2. Try git merge base branch
-3. If conflicts:
-   a. Lock files (bun.lock, etc.) → delete & regenerate
-   b. Code files → run fixer tool
-   c. Still conflicts → direct LLM API
-   d. Still conflicts → abort merge, continue with review fixes
+**Why?** Bot reviewers (CodeRabbit, etc.) attach comments at convenient lines but reference code elsewhere. We need the actual code to verify fixes.
+
+### 7. Git Token Security
+
+**The Problem**: Git stores clone URLs in `.git/config`. URL contains token = credential leak.
+
+**Solution**: Strip token from remote URL after clone/fetch:
+
+```typescript
+// Clone with auth
+git.clone(`https://${token}@github.com/...`, workdir);
+
+// Immediately remove token from stored URL
+git.remote(['set-url', 'origin', 'https://github.com/...']);
 ```
 
-### 6. Session vs Overall Stats
-- **Session**: Current run only (reset on start)
-- **Overall**: Cumulative across all runs (persisted in state)
-- Shown separately in timing/token summaries
+**Why?** Workdirs persist. Anyone with access to `~/.prr/work/` could steal your GitHub token from `.git/config`.
+
+### 8. Lock File Conflict Resolution
+
+**The Problem**: `bun.lock`, `package-lock.json`, etc. conflict on merge. LLM can't fix them properly.
+
+**Solution**: Delete and regenerate:
+
+```
+1. Detect lock file conflicts
+2. Delete the lock files
+3. Run package manager install (bun install, npm install, etc.)
+4. Stage regenerated files
+5. Continue merge
+```
+
+**Why delete/regenerate?** Lock files are auto-generated. Merging them manually is error-prone. Fresh generation is reliable.
+
+**Why whitelist commands?** Security. Only run known-safe commands (bun install, npm install, etc.), not arbitrary shell.
 
 ## State Files
 
@@ -263,6 +380,62 @@ If conflicts persist after all attempts:
 1. prr aborts the merge and continues with review fixes
 2. Human must resolve base branch conflicts manually
 3. Check `git status` in workdir for conflict markers
+
+### False Positives (issues marked fixed but aren't)
+**Symptoms**: prr says "All issues resolved!" but review comments aren't actually addressed.
+
+**Causes**:
+1. Stale verification cache from previous runs
+2. Final audit parsing failed (check logs for `parsed: 0`)
+3. Code snippet didn't include the relevant lines
+
+**Fixes**:
+```bash
+# Force re-verification of all cached issues
+prr <url> --reverify
+
+# Clear state and start fresh
+rm ~/.prr/work/<hash>/.pr-resolver-state.json
+prr <url>
+
+# Check what's in the cache
+cat ~/.prr/work/<hash>/.pr-resolver-state.json | jq '.verifiedFixed'
+```
+
+### False Negatives (issues marked unresolved but are fixed)
+**Symptoms**: prr keeps trying to fix things that are already correct.
+
+**Causes**:
+1. Code snippet too small - LLM doesn't see the fix
+2. Strict verification prompt - LLM can't find "evidence"
+3. Review comment is vague - LLM doesn't know what to look for
+
+**Fixes**:
+```bash
+# Check what the verification LLM sees
+prr <url> --verbose --no-batch
+
+# The logs will show each issue and the code snippet provided
+```
+
+### Final Audit Parsing Failures
+**Symptoms**: Log shows `Final audit results → { total: 36, parsed: 0, unfixed: 0 }`
+
+**Why this is bad**: `parsed: 0` means no audit responses were parsed. The fail-safe kicks in and marks all unparsed issues as UNFIXED.
+
+**Causes**:
+1. LLM didn't follow the `[1] FIXED:` format
+2. Response was truncated
+3. Model confusion from too-large batch
+
+**Fixes**:
+```bash
+# Reduce batch size
+prr <url> --max-context 100000
+
+# Check the raw LLM response (verbose mode)
+prr <url> --verbose
+```
 
 ## Adding a New Runner
 

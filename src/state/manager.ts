@@ -195,7 +195,16 @@ export class StateManager {
 
   /**
    * Clear all verification cache entries.
-   * Called before final audit to ensure audit results are authoritative.
+   * 
+   * WHY: Called before final audit to ensure audit results are authoritative.
+   * Without this, stale "verified fixed" entries from previous runs survive
+   * even if the audit would have caught them as false positives.
+   * 
+   * The flow is:
+   * 1. Regular verification marks issues as "fixed" (may have false positives)
+   * 2. When all appear resolved, we clear this cache
+   * 3. Final audit re-checks everything with stricter criteria
+   * 4. Only audit results populate the new cache
    */
   clearVerificationCache(): void {
     if (!this.state) {

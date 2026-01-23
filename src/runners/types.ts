@@ -27,7 +27,22 @@ export interface Runner {
 
 /**
  * Default model rotation lists for each tool type.
- * These provide variety when a tool gets stuck - different models may have different strengths.
+ * 
+ * WHY MODEL ROTATION EXISTS:
+ * AI models get stuck. They'll make the same mistake repeatedly.
+ * Different models have different strengths:
+ * - Claude excels at following complex instructions
+ * - GPT excels at common patterns  
+ * - Opus has better reasoning for hard problems
+ * - Mini models work fine for simple fixes (and are faster/cheaper)
+ * 
+ * When a model fails twice, we rotate to the next one.
+ * This often unsticks the fix loop without human intervention.
+ * 
+ * WHY THIS ORDER:
+ * Start with the balanced model (sonnet), escalate to powerful (opus),
+ * try alternative provider (GPT), then fast/cheap options (mini).
+ * 
  * Updated January 2026 with latest model versions from official docs.
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
