@@ -107,35 +107,38 @@ function parseAndPrioritizeModels(output: string): string[] {
     return a.localeCompare(b);
   });
   
-  // Return top models (don't need all variants)
-  // Pick: best Claude, best GPT, one Gemini, one alternative
-  const selected: string[] = [];
-  const families = new Set<string>();
+  // Group models by family
+  const byFamily: Record<string, string[]> = {
+    claude: [],
+    gpt: [],
+    gemini: [],
+    other: [],
+  };
   
   for (const model of models) {
-    let family = 'other';
-    if (/^(opus|sonnet|haiku)/i.test(model)) family = 'claude';
-    else if (/^gpt-/i.test(model)) family = 'gpt';
-    else if (/^gemini-/i.test(model)) family = 'gemini';
-    
-    // Take first 2 from claude, first 2 from gpt, first 1 from others
-    const familyCount = selected.filter(m => {
-      if (/^(opus|sonnet|haiku)/i.test(m)) return family === 'claude';
-      if (/^gpt-/i.test(m)) return family === 'gpt';
-      if (/^gemini-/i.test(m)) return family === 'gemini';
-      return family === 'other';
-    }).length;
-    
-    const maxPerFamily = family === 'claude' || family === 'gpt' ? 2 : 1;
-    if (familyCount < maxPerFamily) {
-      selected.push(model);
-    }
-    
-    // Stop after we have enough variety
-    if (selected.length >= 6) break;
+    if (/^(opus|sonnet|haiku)/i.test(model)) byFamily.claude.push(model);
+    else if (/^gpt-/i.test(model)) byFamily.gpt.push(model);
+    else if (/^gemini-/i.test(model)) byFamily.gemini.push(model);
+    else byFamily.other.push(model);
   }
   
-  return selected;
+  // Interleave families: switch providers before trying another model from same provider
+  // WHY: If Claude sonnet can't solve it, GPT might have better luck than Claude opus
+  // Different providers have different strengths/weaknesses
+  const selected: string[] = [];
+  const familyOrder = ['claude', 'gpt', 'gemini', 'other'];
+  const maxPerFamily = 2;
+  
+  for (let round = 0; round < maxPerFamily; round++) {
+    for (const family of familyOrder) {
+      if (byFamily[family][round]) {
+        selected.push(byFamily[family][round]);
+      }
+    }
+  }
+  
+  // Limit to reasonable size
+  return selected.slice(0, 6);
 }
 
 export class CursorRunner implements Runner {
