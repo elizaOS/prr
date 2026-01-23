@@ -1619,19 +1619,26 @@ Start your response with \`\`\` and end with \`\`\`.`;
             await push(git, this.prInfo.branch);
             spinner.succeed('Pushed to remote');
 
-            // Trigger CodeRabbit if it's configured for this repo
-            // WHY: Some repos require manual trigger (@coderabbitai review) to start review
+            // Trigger CodeRabbit if it's in manual mode
+            // WHY: Some repos configure CodeRabbit to require manual trigger (@coderabbitai review)
+            // We detect the mode from .coderabbit.yaml and only trigger if needed
             try {
-              spinner.start('Checking for CodeRabbit...');
-              const triggered = await this.github.triggerCodeRabbitReview(owner, repo, number);
-              if (triggered) {
-                spinner.succeed('Triggered CodeRabbit review');
-              } else {
+              spinner.start('Checking CodeRabbit mode...');
+              const result = await this.github.triggerCodeRabbitIfNeeded(
+                owner, repo, number, this.prInfo.branch
+              );
+              
+              if (result.mode === 'none') {
                 spinner.info('CodeRabbit not detected on this PR');
+              } else if (result.triggered) {
+                spinner.succeed(`CodeRabbit (${result.mode} mode) - triggered review`);
+              } else {
+                spinner.succeed(`CodeRabbit (${result.mode} mode) - will review automatically`);
               }
+              debug('CodeRabbit check result', result);
             } catch (err) {
-              debug('Failed to trigger CodeRabbit', { error: err });
-              spinner.warn('Could not trigger CodeRabbit (continuing anyway)');
+              debug('Failed to check/trigger CodeRabbit', { error: err });
+              spinner.warn('Could not check CodeRabbit (continuing anyway)');
             }
 
             // Wait for re-review

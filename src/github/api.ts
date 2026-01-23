@@ -376,21 +376,97 @@ export class GitHubAPI {
   }
 
   /**
-   * Trigger CodeRabbit review by posting a comment.
-   * Only triggers if CodeRabbit has previously commented (i.e., is configured for this repo).
+   * Check CodeRabbit's review mode from .coderabbit.yaml config.
+   * Returns: 'auto' | 'manual' | 'unknown'
    */
-  async triggerCodeRabbitReview(owner: string, repo: string, prNumber: number): Promise<boolean> {
-    debug('Checking if CodeRabbit should be triggered', { owner, repo, prNumber });
+  async getCodeRabbitMode(owner: string, repo: string, branch: string): Promise<'auto' | 'manual' | 'unknown'> {
+    debug('Checking CodeRabbit config', { owner, repo, branch });
     
+    // Try to read .coderabbit.yaml from repo
+    const configContent = await this.getFileContent(owner, repo, branch, '.coderabbit.yaml');
+    
+    if (!configContent) {
+      debug('No .coderabbit.yaml found');
+      return 'unknown';
+    }
+    
+    debug('Found .coderabbit.yaml', { length: configContent.length });
+    
+    // Look for auto_review or reviews.auto settings
+    // CodeRabbit config uses: reviews: auto_review: true/false
+    // or at top level: auto_review: true/false
+    
+    // Check for explicit auto_review: false (manual mode)
+    if (/auto_review:\s*false/i.test(configContent)) {
+      debug('CodeRabbit is in manual mode (auto_review: false)');
+      return 'manual';
+    }
+    
+    // Check for auto_review: true (auto mode)
+    if (/auto_review:\s*true/i.test(configContent)) {
+      debug('CodeRabbit is in auto mode (auto_review: true)');
+      return 'auto';
+    }
+    
+    // Check for request_changes_workflow which often indicates manual mode
+    if (/request_changes_workflow:\s*true/i.test(configContent)) {
+      debug('CodeRabbit has request_changes_workflow - likely manual');
+      return 'manual';
+    }
+    
+    // Default assumption: if config exists but doesn't specify, assume auto
+    debug('CodeRabbit config exists but mode not explicit - assuming auto');
+    return 'auto';
+  }
+
+  /**
+   * Trigger CodeRabbit review if needed.
+   * - Detects if CodeRabbit is configured for this repo
+   * - Checks if it's in manual mode (needs trigger) vs auto mode
+   * - Only triggers if manual mode detected
+   * 
+   * Returns: { triggered: boolean, mode: string, reason: string }
+   */
+  async triggerCodeRabbitIfNeeded(
+    owner: string, 
+    repo: string, 
+    prNumber: number,
+    branch: string
+  ): Promise<{ triggered: boolean; mode: string; reason: string }> {
+    debug('Checking if CodeRabbit trigger needed', { owner, repo, prNumber });
+    
+    // First check if CodeRabbit has ever commented (is it even configured?)
     const hasCodeRabbit = await this.hasBotCommented(owner, repo, prNumber, 'coderabbit');
     
     if (!hasCodeRabbit) {
-      debug('CodeRabbit has not commented on this PR - not configured or not triggered yet');
-      return false;
+      return { 
+        triggered: false, 
+        mode: 'none', 
+        reason: 'CodeRabbit not detected on this PR' 
+      };
     }
     
-    debug('CodeRabbit detected, triggering review');
+    // Check the mode from config
+    const mode = await this.getCodeRabbitMode(owner, repo, branch);
+    
+    if (mode === 'auto') {
+      return { 
+        triggered: false, 
+        mode: 'auto', 
+        reason: 'CodeRabbit is in auto mode - will review automatically' 
+      };
+    }
+    
+    // Manual mode or unknown - trigger it
+    debug('Triggering CodeRabbit review', { mode });
     await this.postComment(owner, repo, prNumber, '@coderabbitai review');
-    return true;
+    
+    return { 
+      triggered: true, 
+      mode: mode === 'manual' ? 'manual' : 'unknown',
+      reason: mode === 'manual' 
+        ? 'CodeRabbit is in manual mode - triggered review'
+        : 'CodeRabbit mode unknown - triggered review to be safe'
+    };
   }
 }
