@@ -290,24 +290,20 @@ export class StateManager {
     if (!this.state) return 0;
     
     const lessonsByKey = new Map<string, string>();
+    const before = this.state.lessonsLearned.length;
     // WHY separate counter: Previously we used `removed` for both key generation
     // and return value calculation, causing incorrect counts
     let uniqueCounter = 0;
-    let removed = 0;
     
     for (const lesson of this.state.lessonsLearned) {
       const keyMatch = lesson.match(/^Fix for ([^:]+:\S+)/);
       const key = keyMatch ? keyMatch[1] : `unique_${uniqueCounter++}`;
       
-      // Keep the latest (last seen) lesson for each key
-      if (lessonsByKey.has(key)) {
-        removed++;
-      }
       lessonsByKey.set(key, lesson);
     }
 
     this.state.lessonsLearned = Array.from(lessonsByKey.values());
-    return removed;
+    return before - this.state.lessonsLearned.length;
   }
 
   startIteration(): Iteration {
