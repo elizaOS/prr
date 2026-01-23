@@ -6,7 +6,7 @@ export interface PRInfo {
   cloneUrl: string;
 }
 
-export interface ReviewComment {
+export interface ThreadComment {
   id: string;
   threadId: string;
   author: string;
@@ -24,10 +24,10 @@ export interface ReviewThread {
   line: number | null;
   diffSide: 'LEFT' | 'RIGHT' | null;
   isResolved: boolean;
-  comments: ReviewComment[];
+  comments: ThreadComment[];
 }
 
-export interface BotComment {
+export interface ReviewComment {
   id: string;
   threadId: string;
   author: string;

@@ -36,7 +36,7 @@ export function createCLI(): Command {
 
   program
     .name('prr')
-    .description('Automatically resolve LLM review bot comments on PRs')
+    .description('Automatically resolve PR review comments')
     .version(CAT_BANNER, '-V, --version', 'output the version number')
     .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
     .option('-t, --tool <tool>', 'LLM tool to use for fixing (cursor or opencode)', 'cursor')

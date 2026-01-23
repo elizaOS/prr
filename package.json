@@ -1,7 +1,7 @@
 {
   "name": "prr",
   "version": "1.0.0",
-  "description": "CLI tool to automatically resolve LLM review bot comments on PRs",
+  "description": "CLI tool to automatically resolve PR review comments",
   "type": "module",
   "main": "dist/index.js",
   "bin": {

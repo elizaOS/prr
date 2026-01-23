@@ -7,17 +7,6 @@ dotenv.config();
 export type LLMProvider = 'anthropic' | 'openai';
 export type FixerTool = 'cursor' | 'opencode';
 
-// Default bot usernames to look for in PR reviews
-// These are matched as substrings (case-insensitive)
-const DEFAULT_BOT_USERS = [
-  'copilot',                    // GitHub Copilot, copilot-pull-request-reviewer
-  'coderabbitai',               // CodeRabbit
-  'greptile',                   // Greptile
-  'codex-connector',            // ChatGPT Codex Connector
-  'sourcery',                   // Sourcery
-  'codiumai',                   // CodiumAI / Qodo
-];
-
 export interface Config {
   githubToken: string;
   llmProvider: LLMProvider;
@@ -26,7 +15,6 @@ export interface Config {
   openaiApiKey?: string;
   defaultTool: FixerTool;
   workdirBase: string;
-  botUsers: string[];
 }
 
 function getEnvOrThrow(key: string): string {
@@ -39,13 +27,6 @@ function getEnvOrThrow(key: string): string {
 
 function getEnvOrDefault(key: string, defaultValue: string): string {
   return process.env[key] || defaultValue;
-}
-
-function parseBotUsers(envValue: string | undefined): string[] {
-  if (!envValue) {
-    return DEFAULT_BOT_USERS;
-  }
-  return envValue.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 }
 
 export function loadConfig(): Config {
@@ -64,7 +45,6 @@ export function loadConfig(): Config {
     ),
     defaultTool: getEnvOrDefault('PRR_TOOL', 'cursor') as FixerTool,
     workdirBase: join(homedir(), '.prr', 'work'),
-    botUsers: parseBotUsers(process.env.PRR_BOT_USERS),
   };
 
   // Validate API key exists for chosen provider

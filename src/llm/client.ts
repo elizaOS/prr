@@ -106,7 +106,7 @@ export class LLMClient {
     line: number | null,
     codeSnippet: string
   ): Promise<{ exists: boolean; explanation: string }> {
-    const prompt = `Given this code review comment from an LLM review bot:
+    const prompt = `Given this code review comment:
 ---
 File: ${filePath}
 ${line ? `Line: ${line}` : 'Line: (not specified)'}
@@ -138,7 +138,7 @@ NO: <brief explanation of why the issue has been resolved>`;
     filePath: string,
     diff: string
   ): Promise<{ fixed: boolean; explanation: string }> {
-    const prompt = `Given this code review comment from an LLM review bot:
+    const prompt = `Given this code review comment:
 ---
 Comment: ${comment}
 File: ${filePath}

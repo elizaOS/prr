@@ -1,7 +1,7 @@
-import type { BotComment } from '../github/types.js';
+import type { ReviewComment } from '../github/types.js';
 
 export interface UnresolvedIssue {
-  comment: BotComment;
+  comment: ReviewComment;
   codeSnippet: string;
   stillExists: boolean;
   explanation: string;

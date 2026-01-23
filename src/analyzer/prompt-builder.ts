@@ -4,7 +4,7 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   const parts: string[] = [];
 
   parts.push('# Code Review Issues to Fix\n');
-  parts.push('Please address the following code review issues identified by LLM review bots.\n');
+  parts.push('Please address the following code review issues.\n');
 
   // Add lessons learned to prevent flip-flopping
   if (lessonsLearned.length > 0) {
@@ -20,7 +20,7 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   for (let i = 0; i < issues.length; i++) {
     const issue = issues[i];
     parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}\n`);
-    parts.push(`**Bot Comment** (${issue.comment.author}):`);
+    parts.push(`**Review Comment** (${issue.comment.author}):`);
     parts.push('```');
     parts.push(issue.comment.body);
     parts.push('```\n');
@@ -55,7 +55,7 @@ export function buildVerificationPrompt(
   filePath: string,
   diff: string
 ): string {
-  return `Given this code review comment from an LLM review bot:
+  return `Given this code review comment:
 ---
 Comment: ${commentBody}
 File: ${filePath}

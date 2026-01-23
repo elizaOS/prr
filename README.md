@@ -8,9 +8,11 @@
   (           )
  ( (  )   (  ) )
 (__(__)___(__)__)
+
+sits on your PR and won't get up until it's ready
 ```
 
-CLI tool to automatically resolve LLM review bot comments on PRs using LLM-powered fixing and verification.
+CLI tool to automatically resolve PR review comments using LLM-powered fixing and verification. Works with comments from humans, bots, or any reviewer.
 
 ## Features
 
@@ -57,23 +59,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 # Default fixer tool
 PRR_TOOL=cursor
 
-# Bot usernames to look for (comma-separated, matched as substrings)
-# Defaults to: copilot, coderabbitai, greptile, codex-connector, sourcery, codiumai
-# PRR_BOT_USERS=copilot,coderabbitai,greptile
 ```
-
-## Supported Bots
-
-Out of the box, prr detects comments from:
-
-- **GitHub Copilot** (`Copilot`, `copilot-pull-request-reviewer[bot]`)
-- **CodeRabbit** (`coderabbitai[bot]`)
-- **Greptile** (`greptile-apps[bot]`)
-- **ChatGPT Codex** (`chatgpt-codex-connector[bot]`)
-- **Sourcery** (`sourcery-ai[bot]`)
-- **CodiumAI/Qodo** (`codiumai[bot]`)
-
-Add custom bots via `PRR_BOT_USERS` env var (comma-separated, matched as substrings).
 
 ## Usage
 
@@ -109,7 +95,7 @@ prr https://github.com/owner/repo/pull/123 \
 
 ## How It Works
 
-1. **Fetch Comments**: Gets all LLM review bot comments from the PR via GitHub GraphQL API (supports Copilot, CodeRabbit, Sourcery, etc.)
+1. **Fetch Comments**: Gets all review comments from the PR via GitHub GraphQL API (from humans, bots, any reviewer)
 
 2. **Detect Unresolved**: For each comment, asks the verification LLM: "Is this issue still present in the code?" Skips issues already marked as fixed in state.
 
@@ -123,7 +109,7 @@ prr https://github.com/owner/repo/pull/123 \
 
 6. **Commit**: Squashes all changes into a single commit with descriptive message
 
-7. **Push (optional)**: In `--auto-push` mode, pushes and waits for bots to re-review, then loops
+7. **Push (optional)**: In `--auto-push` mode, pushes and waits for reviewers, then loops
 
 ## Work Directory
 

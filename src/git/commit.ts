@@ -47,7 +47,7 @@ export async function getLastCommitHash(git: SimpleGit): Promise<string> {
 }
 
 export function buildCommitMessage(issuesFixed: string[], lessonsLearned: string[]): string {
-  const lines: string[] = ['fix: address LLM review bot comments', ''];
+  const lines: string[] = ['fix: address review comments', ''];
 
   if (issuesFixed.length > 0) {
     lines.push('Issues addressed:');

@@ -1,25 +1,18 @@
 import { Octokit } from '@octokit/rest';
 import { graphql } from '@octokit/graphql';
-import type { PRInfo, ReviewThread, BotComment } from './types.js';
+import type { PRInfo, ReviewThread, ReviewComment } from './types.js';
 
 export class GitHubAPI {
   private octokit: Octokit;
   private graphqlWithAuth: typeof graphql;
-  private botUsers: string[];
 
-  constructor(token: string, botUsers: string[] = ['copilot']) {
+  constructor(token: string) {
     this.octokit = new Octokit({ auth: token });
     this.graphqlWithAuth = graphql.defaults({
       headers: {
         authorization: `token ${token}`,
       },
     });
-    this.botUsers = botUsers.map((u) => u.toLowerCase());
-  }
-
-  private isBotUser(username: string): boolean {
-    const lower = username.toLowerCase();
-    return this.botUsers.some((bot) => lower === bot || lower.includes(bot));
   }
 
   async getPRInfo(owner: string, repo: string, prNumber: number): Promise<PRInfo> {
@@ -117,28 +110,28 @@ export class GitHubAPI {
     }));
   }
 
-  async getBotComments(owner: string, repo: string, prNumber: number): Promise<BotComment[]> {
+  async getReviewComments(owner: string, repo: string, prNumber: number): Promise<ReviewComment[]> {
     const threads = await this.getReviewThreads(owner, repo, prNumber);
-    const botComments: BotComment[] = [];
+    const reviewComments: ReviewComment[] = [];
 
     for (const thread of threads) {
-      // Find comments from any configured bot in this thread
-      const botComment = thread.comments.find((c) => this.isBotUser(c.author));
+      // Get the first comment in each thread (the original review comment)
+      const firstComment = thread.comments[0];
 
-      if (botComment) {
-        botComments.push({
-          id: botComment.id,
+      if (firstComment) {
+        reviewComments.push({
+          id: firstComment.id,
           threadId: thread.id,
-          author: botComment.author,
-          body: botComment.body,
+          author: firstComment.author,
+          body: firstComment.body,
           path: thread.path,
           line: thread.line,
-          createdAt: botComment.createdAt,
+          createdAt: firstComment.createdAt,
         });
       }
     }
 
-    return botComments;
+    return reviewComments;
   }
 
   async getFileContent(owner: string, repo: string, branch: string, path: string): Promise<string | null> {

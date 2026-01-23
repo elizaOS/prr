@@ -5,7 +5,7 @@ import { join } from 'path';
 
 import type { Config } from './config.js';
 import type { CLIOptions } from './cli.js';
-import type { BotComment, PRInfo } from './github/types.js';
+import type { ReviewComment, PRInfo } from './github/types.js';
 import type { UnresolvedIssue } from './analyzer/types.js';
 import type { Runner } from './runners/types.js';
 
@@ -33,7 +33,7 @@ export class PRResolver {
   constructor(config: Config, options: CLIOptions) {
     this.config = config;
     this.options = options;
-    this.github = new GitHubAPI(config.githubToken, config.botUsers);
+    this.github = new GitHubAPI(config.githubToken);
     this.llm = new LLMClient(config);
   }
 
@@ -90,13 +90,13 @@ export class PRResolver {
           console.log(chalk.blue(`\n--- Push iteration ${pushIteration}/${maxPushIterations} ---\n`));
         }
 
-        // Fetch bot comments
-        spinner.start('Fetching LLM review bot comments...');
-        const comments = await this.github.getBotComments(owner, repo, number);
-        spinner.succeed(`Found ${comments.length} bot comments`);
+        // Fetch review comments
+        spinner.start('Fetching review comments...');
+        const comments = await this.github.getReviewComments(owner, repo, number);
+        spinner.succeed(`Found ${comments.length} review comments`);
 
         if (comments.length === 0) {
-          console.log(chalk.green('\nNo LLM review bot comments found. Nothing to do!'));
+          console.log(chalk.green('\nNo review comments found. Nothing to do!'));
           break;
         }
 
@@ -231,7 +231,7 @@ export class PRResolver {
           const commitMsg = buildCommitMessage(fixedIssues, []);
           
           spinner.start('Committing changes...');
-          const commit = await squashCommit(git, 'fix: address LLM review bot comments', commitMsg);
+          const commit = await squashCommit(git, 'fix: address review comments', commitMsg);
           spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
 
           // Push if auto-push mode
@@ -292,7 +292,7 @@ export class PRResolver {
     return runner;
   }
 
-  private async findUnresolvedIssues(comments: BotComment[]): Promise<UnresolvedIssue[]> {
+  private async findUnresolvedIssues(comments: ReviewComment[]): Promise<UnresolvedIssue[]> {
     const unresolved: UnresolvedIssue[] = [];
 
     for (const comment of comments) {
