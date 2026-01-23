@@ -13,6 +13,7 @@ import { GitHubAPI } from './github/api.js';
 import { parsePRUrl } from './github/types.js';
 import { LLMClient } from './llm/client.js';
 import { StateManager } from './state/manager.js';
+import { LessonsManager } from './state/lessons.js';
 import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
@@ -27,6 +28,7 @@ export class PRResolver {
   private github: GitHubAPI;
   private llm: LLMClient;
   private stateManager!: StateManager;
+  private lessonsManager!: LessonsManager;
   private runner!: Runner;
   private runners!: Runner[];
   private currentRunnerIndex = 0;
@@ -90,7 +92,7 @@ export class PRResolver {
             anyFixed = true;
           } else {
             console.log(chalk.yellow(`    ○ Changed but not verified: ${verification.explanation}`));
-            this.stateManager.addLesson(`Single-issue fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`);
+            this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`);
             // Reset the file to try again
             await git.checkout([issue.comment.path]);
           }
@@ -102,15 +104,16 @@ export class PRResolver {
       }
       
       await this.stateManager.save();
+      await this.lessonsManager.save();
     }
     
     return anyFixed;
   }
 
   private buildSingleIssuePrompt(issue: UnresolvedIssue): string {
-    const lessons = this.stateManager.getLessons()
-      .filter(l => l.includes(issue.comment.path))
-      .slice(-3); // Only relevant lessons, last 3
+    // Get file-scoped lessons (automatically includes global + this file's lessons)
+    const lessons = this.lessonsManager.getLessonsForFiles([issue.comment.path])
+      .slice(-5); // Last 5 relevant lessons
     
     let prompt = `# SINGLE ISSUE FIX
 
@@ -331,9 +334,14 @@ Start your response with \`\`\` and end with \`\`\`.`;
       );
       debug('Loaded state', {
         iterations: state.iterations.length,
-        lessonsLearned: state.lessonsLearned.length,
         verifiedFixed: state.verifiedFixed.length,
       });
+
+      // Initialize lessons manager (branch-permanent storage)
+      this.lessonsManager = new LessonsManager(owner, repo, this.prInfo.branch);
+      await this.lessonsManager.load();
+      const lessonCounts = this.lessonsManager.getCounts();
+      debug('Loaded lessons', lessonCounts);
 
       // Setup runner
       debugStep('SETTING UP RUNNER');
@@ -700,8 +708,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           // Build fix prompt
           debugStep('GENERATING FIX PROMPT');
-          const lessonsBeforeFix = this.stateManager.getLessons().length;
-          const lessons = this.stateManager.getLessons();
+          const lessonsBeforeFix = this.lessonsManager.getTotalCount();
+          // Get lessons for all files being fixed
+          const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];
+          const lessons = this.lessonsManager.getLessonsForFiles(affectedFiles);
           const { prompt, summary, detailedSummary, lessonsIncluded, issues } = buildFixPrompt(
             unresolvedIssues,
             lessons
@@ -709,11 +719,26 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           console.log(chalk.cyan(`\n${detailedSummary}\n`));
           
-          // In verbose mode, show full lessons without truncation
+          // In verbose mode, show lessons by scope
           if (this.options.verbose && lessons.length > 0) {
-            console.log(chalk.yellow('  Full lessons learned (for debugging):'));
-            for (let i = 0; i < lessons.length; i++) {
-              console.log(chalk.gray(`    ${i + 1}. ${lessons[i]}`));
+            const allLessons = this.lessonsManager.getAllLessons();
+            console.log(chalk.yellow('  Lessons learned (by scope):'));
+            
+            if (allLessons.global.length > 0) {
+              console.log(chalk.gray('    Global:'));
+              for (const lesson of allLessons.global.slice(-5)) {
+                console.log(chalk.gray(`      • ${lesson.substring(0, 100)}...`));
+              }
+            }
+            
+            for (const filePath of affectedFiles) {
+              const fileLessons = allLessons.files[filePath];
+              if (fileLessons && fileLessons.length > 0) {
+                console.log(chalk.gray(`    ${filePath}:`));
+                for (const lesson of fileLessons.slice(-3)) {
+                  console.log(chalk.gray(`      • ${lesson.substring(0, 100)}...`));
+                }
+              }
             }
             console.log('');
           }
@@ -735,8 +760,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           if (!result.success) {
             console.log(chalk.red(`\n${this.runner.name} failed (${formatDuration(fixerTime)}):`, result.error));
-            this.stateManager.addLesson(`${this.runner.name} failed: ${result.error}`);
+            this.lessonsManager.addGlobalLesson(`${this.runner.name} failed: ${result.error}`);
             await this.stateManager.save();
+            await this.lessonsManager.save();
             continue;
           }
           
@@ -745,8 +771,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // Check for changes
           if (!(await hasChanges(git))) {
             console.log(chalk.yellow('\nNo changes made by fixer tool'));
-            this.stateManager.addLesson('Fixer tool made no changes - issue may require manual intervention');
+            this.lessonsManager.addGlobalLesson('Fixer tool made no changes - issue may require manual intervention');
             await this.stateManager.save();
+            await this.lessonsManager.save();
             break;
           }
 
@@ -824,7 +851,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                   this.stateManager.addCommentToIteration(issue.comment.id);
                 } else {
                   failedCount++;
-                  this.stateManager.addLesson(
+                  this.lessonsManager.addLesson(
                     `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`
                   );
                 }
@@ -878,7 +905,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                   this.stateManager.addCommentToIteration(issue.comment.id);
                 } else {
                   failedCount++;
-                  this.stateManager.addLesson(
+                  this.lessonsManager.addLesson(
                     `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${result.explanation}`
                   );
                 }
@@ -889,7 +916,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
           const totalIssues = issues.length;
           const verifyTime = endTimer('Verify fixes');
           const progressPct = Math.round((verifiedCount / totalIssues) * 100);
-          const lessonsAfterVerify = this.stateManager.getLessons().length;
+          const lessonsAfterVerify = this.lessonsManager.getTotalCount();
           const newLessons = lessonsAfterVerify - lessonsBeforeFix;
           
           spinner.succeed(`Verified: ${verifiedCount}/${totalIssues} fixed (${progressPct}%), ${failedCount} remaining (${formatDuration(verifyTime)})`);
@@ -906,7 +933,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
           
           debug('Verification summary', { verifiedCount, failedCount, totalIssues, newLessons, totalLessons: lessonsAfterVerify, duration: verifyTime });
           await this.stateManager.save();
-          debug('State saved');
+          await this.lessonsManager.save();
+          debug('State and lessons saved');
 
           // Check if all fixed
           allFixed = failedCount === 0;
@@ -1227,6 +1255,7 @@ After resolving, the files should have NO conflict markers remaining.`;
     }
 
     await this.stateManager.save();
+    await this.lessonsManager.save();
     return unresolved;
   }
 
