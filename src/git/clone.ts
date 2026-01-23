@@ -25,6 +25,41 @@ export interface GitOperations {
   workdir: string;
 }
 
+/**
+ * Strip any embedded token from the git remote URL.
+ * 
+ * WHY: Git stores clone URLs in .git/config. If URL contains a token
+ * (https://TOKEN@github.com/...), anyone with workdir access can steal it.
+ * 
+ * This runs EVERY time we access a workdir, not just on fresh clone:
+ * - Existing workdirs may have been created before we added stripping
+ * - Ensures credentials never persist in .git/config
+ */
+async function stripTokenFromRemote(git: SimpleGit, cleanUrl: string): Promise<void> {
+  try {
+    // Check if current URL has a token
+    const remotes = await git.getRemotes(true);
+    const origin = remotes.find(r => r.name === 'origin');
+    const currentUrl = origin?.refs?.fetch || '';
+    
+    if (currentUrl.includes('@') && currentUrl.includes('github.com')) {
+      debug('Found token in remote URL, stripping it');
+      await git.raw(['remote', 'set-url', 'origin', cleanUrl]);
+      console.log('  🔒 Stripped token from git remote URL');
+      
+      // Verify
+      const newRemotes = await git.getRemotes(true);
+      const newOrigin = newRemotes.find(r => r.name === 'origin');
+      if (newOrigin?.refs?.fetch?.includes('@')) {
+        console.warn('⚠ WARNING: Token still in remote URL after set-url!');
+      }
+    }
+  } catch (error) {
+    debug('Failed to strip token from remote', { error });
+    // Non-fatal - continue anyway
+  }
+}
+
 export interface ConflictStatus {
   hasConflicts: boolean;
   conflictedFiles: string[];
@@ -85,10 +120,10 @@ export async function cloneOrUpdate(
       console.log(`Updated to latest ${branch}`);
     }
     
-    // Remove token from stored remote URL to prevent credential persistence
-    if (githubToken) {
-      await git.remote(['set-url', 'origin', cloneUrl]);
-    }
+    // ALWAYS strip any token from stored remote URL
+    // WHY: Existing workdirs may have been created with token in URL before
+    // we added stripping. Check and fix every time.
+    await stripTokenFromRemote(git, cloneUrl);
   } else {
     // Fresh clone
     git = simpleGit();
@@ -98,10 +133,8 @@ export async function cloneOrUpdate(
     
     git = simpleGit(workdir);
     
-    // Remove token from stored remote URL to prevent credential persistence
-    if (githubToken) {
-      await git.remote(['set-url', 'origin', cloneUrl]);
-    }
+    // ALWAYS strip any token from stored remote URL
+    await stripTokenFromRemote(git, cloneUrl);
     
     console.log(`Cloned ${branch} successfully`);
   }
