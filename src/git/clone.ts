@@ -15,11 +15,16 @@ export interface ConflictStatus {
   aheadBy: number;
 }
 
+export interface CloneOptions {
+  preserveChanges?: boolean;  // If true, don't reset - keep existing uncommitted changes
+}
+
 export async function cloneOrUpdate(
   cloneUrl: string,
   branch: string,
   workdir: string,
-  githubToken?: string
+  githubToken?: string,
+  options?: CloneOptions
 ): Promise<GitOperations> {
   // Inject token into clone URL for authentication
   let authUrl = cloneUrl;
@@ -33,19 +38,35 @@ export async function cloneOrUpdate(
   let git: SimpleGit;
 
   if (isExistingRepo) {
-    // Existing repo - clean up any leftover state, then fetch and reset
     git = simpleGit(workdir);
     
-    console.log('Existing workdir found, cleaning up and fetching latest...');
-    
-    // Clean up any leftover merge/rebase state from previous runs
-    await cleanupGitState(git);
-    
-    await git.fetch('origin', branch);
-    await git.checkout(branch);
-    await git.reset(['--hard', `origin/${branch}`]);
-    
-    console.log(`Updated to latest ${branch}`);
+    if (options?.preserveChanges) {
+      // Preserve existing changes - just make sure we're on the right branch
+      console.log('Existing workdir found, preserving local changes...');
+      const status = await git.status();
+      const hasChanges = status.modified.length > 0 || status.created.length > 0 || status.staged.length > 0;
+      if (hasChanges) {
+        console.log(`  Keeping ${status.modified.length + status.created.length} modified files`);
+      }
+      // Just ensure we're on the right branch, don't reset
+      try {
+        await git.checkout(branch);
+      } catch {
+        // Already on branch or changes prevent checkout - that's fine
+      }
+    } else {
+      // Clean start - reset everything
+      console.log('Existing workdir found, cleaning up and fetching latest...');
+      
+      // Clean up any leftover merge/rebase state from previous runs
+      await cleanupGitState(git);
+      
+      await git.fetch('origin', branch);
+      await git.checkout(branch);
+      await git.reset(['--hard', `origin/${branch}`]);
+      
+      console.log(`Updated to latest ${branch}`);
+    }
   } else {
     // Fresh clone
     git = simpleGit();

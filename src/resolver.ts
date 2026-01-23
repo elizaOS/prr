@@ -18,7 +18,7 @@ import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
 import type { SimpleGit } from 'simple-git';
-import { squashCommit, push, buildCommitMessage } from './git/commit.js';
+import { squashCommit, push } from './git/commit.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary } from './runners/index.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage } from './logger.js';
 
@@ -353,13 +353,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
       debug('Using runner', this.runner.name);
 
       // Clone or update repo
+      // If we have verified fixes from a previous run, preserve local changes
+      const hasVerifiedFixes = state.verifiedFixed.length > 0;
       debugStep('CLONING/UPDATING REPOSITORY');
       spinner.start('Setting up repository...');
       const { git } = await cloneOrUpdate(
         this.prInfo.cloneUrl,
         this.prInfo.branch,
         this.workdir,
-        this.config.githubToken
+        this.config.githubToken,
+        { preserveChanges: hasVerifiedFixes }
       );
       spinner.succeed('Repository ready');
       debug('Repository cloned/updated at', this.workdir);
@@ -688,6 +691,44 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
         if (unresolvedIssues.length === 0) {
           console.log(chalk.green('\nAll issues have been resolved!'));
+          
+          // Check if we have uncommitted changes that need to be committed
+          if (await hasChanges(git)) {
+            debugStep('COMMIT PHASE (all resolved)');
+            
+            if (this.options.noCommit) {
+              warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
+              console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            } else {
+              // Get all comments that were fixed for commit message
+              const fixedIssues = comments
+                .filter((c) => this.stateManager.isCommentVerifiedFixed(c.id))
+                .map((c) => ({
+                  filePath: c.path,
+                  comment: c.body,
+                }));
+              
+              spinner.start('Generating commit message...');
+              const commitMsg = await this.llm.generateCommitMessage(fixedIssues);
+              debug('Generated commit message', commitMsg);
+              
+              spinner.text = 'Committing changes...';
+              const commit = await squashCommit(git, commitMsg);
+              spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
+              debug('Commit created', commit);
+              
+              if (this.options.autoPush && !this.options.noPush) {
+                spinner.start('Pushing changes...');
+                await push(git, this.prInfo.branch);
+                spinner.succeed('Pushed to remote');
+              } else if (!this.options.noPush) {
+                console.log(chalk.blue('\nChanges committed locally. Use --auto-push to push automatically.'));
+              } else {
+                warn('NO-PUSH MODE: Changes committed locally but not pushed.');
+              }
+              console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            }
+          }
           break;
         }
 
@@ -1007,10 +1048,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
         if (await hasChanges(git)) {
           const fixedIssues = unresolvedIssues
             .filter((i) => this.stateManager.isCommentVerifiedFixed(i.comment.id))
-            .map((i) => `${i.comment.path}: ${i.comment.body.substring(0, 50)}...`);
-
-          const commitMsg = buildCommitMessage(fixedIssues, []);
-          debug('Commit message', commitMsg);
+            .map((i) => ({
+              filePath: i.comment.path,
+              comment: i.comment.body,
+            }));
 
           if (this.options.noCommit) {
             warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
@@ -1018,8 +1059,12 @@ Start your response with \`\`\` and end with \`\`\`.`;
             break;
           }
           
-          spinner.start('Committing changes...');
-          const commit = await squashCommit(git, 'fix: address review comments', commitMsg);
+          spinner.start('Generating commit message...');
+          const commitMsg = await this.llm.generateCommitMessage(fixedIssues);
+          debug('Generated commit message', commitMsg);
+          
+          spinner.text = 'Committing changes...';
+          const commit = await squashCommit(git, commitMsg);
           spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
           debug('Commit created', commit);
 

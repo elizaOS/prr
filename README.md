@@ -163,27 +163,8 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 If you're new to Cursor's CLI agent, you'll need to install and authenticate first:
 
 ```bash
-# Detect your platform
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')   # darwin or linux
-ARCH=$(uname -m)                               # arm64 or x86_64
-[ "$ARCH" = "x86_64" ] && ARCH="amd64"
-
-# Download cursor-agent for your platform
-# macOS ARM (Apple Silicon):
-curl -fsSL https://www.cursor.com/download/stable/agent/darwin/arm64 -o cursor-agent
-
-# macOS Intel:
-# curl -fsSL https://www.cursor.com/download/stable/agent/darwin/amd64 -o cursor-agent
-
-# Linux x86_64:
-# curl -fsSL https://www.cursor.com/download/stable/agent/linux/amd64 -o cursor-agent
-
-# Linux ARM64:
-# curl -fsSL https://www.cursor.com/download/stable/agent/linux/arm64 -o cursor-agent
-
-# Make executable and install
-chmod +x cursor-agent
-sudo mv cursor-agent /usr/local/bin/
+# Install cursor-agent
+curl https://cursor.com/install -fsS | bash
 
 # Login (required before first use!)
 cursor-agent login

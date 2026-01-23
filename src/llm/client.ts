@@ -415,4 +415,83 @@ RESOLVED:
       explanation,
     };
   }
+
+  async generateCommitMessage(
+    fixedIssues: Array<{
+      filePath: string;
+      comment: string;
+    }>
+  ): Promise<string> {
+    if (fixedIssues.length === 0) {
+      return 'fix: address review comments';
+    }
+
+    const parts: string[] = [
+      'You are writing a git commit message that will be part of permanent project history.',
+      'Analyze the review feedback and write a clear, professional commit message.',
+      '',
+      'COMMIT MESSAGE RULES:',
+      '1. First line: conventional commit format, max 72 characters',
+      '   - Use "fix:" for bug fixes, "refactor:" for improvements, "feat:" for features',
+      '   - Describe WHAT changed, not that you "addressed comments"',
+      '2. If there are multiple distinct changes, add a blank line then concise bullet points',
+      '3. Focus on the ACTUAL CODE CHANGES, not the review process',
+      '4. Write for future developers reading git log - they need to understand what changed and why',
+      '5. NO markdown, HTML, emoji, or reviewer metadata',
+      '6. NO generic phrases like "address review comments" or "fix issues"',
+      '',
+      'GOOD EXAMPLES:',
+      '```',
+      'fix: add null check before accessing user.email',
+      '```',
+      '',
+      '```',
+      'refactor: extract validation logic into dedicated helper',
+      '',
+      '- Move email validation to validateEmail()',
+      '- Add unit tests for edge cases',
+      '- Update callers to use new helper',
+      '```',
+      '',
+      '```',
+      'fix(auth): handle expired tokens gracefully',
+      '',
+      'Previously threw unhandled exception when token expired during',
+      'request. Now returns 401 with clear error message.',
+      '```',
+      '',
+      'BAD EXAMPLES (do not write like this):',
+      '- "fix: address review comments" (too vague)',
+      '- "fix: update code based on feedback" (says nothing)',
+      '- "fix: changes requested by reviewer" (about process, not code)',
+      '',
+      '---',
+      '',
+      'Review comments that were addressed (use these to understand what changed):',
+      '',
+    ];
+
+    for (const issue of fixedIssues) {
+      parts.push(`FILE: ${issue.filePath}`);
+      parts.push(`FEEDBACK: ${issue.comment}`);
+      parts.push('');
+    }
+
+    parts.push('---');
+    parts.push('');
+    parts.push('Write the commit message now. Output ONLY the commit message, nothing else:');
+
+    const response = await this.complete(parts.join('\n'));
+    let message = response.content.trim();
+    
+    // Remove any markdown code fences if the LLM wrapped it
+    message = message.replace(/^```\n?/, '').replace(/\n?```$/, '');
+
+    // Ensure the message starts with a conventional commit prefix
+    if (!message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\(.+\))?:/i)) {
+      return `fix: ${message}`;
+    }
+
+    return message;
+  }
 }

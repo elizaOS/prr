@@ -9,44 +9,40 @@ import { debug } from '../logger.js';
 const exec = promisify(execCallback);
 
 // Validate model name to prevent injection (defense in depth)
+// Allows forward slashes for provider-prefixed names like "anthropic/claude-..."
 function isValidModel(model: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(model);
+  return /^[A-Za-z0-9._\/-]+$/.test(model);
 }
 
-// Cursor CLI can be installed as 'cursor' or 'cursor-agent'
-const CURSOR_BINARIES = ['cursor-agent', 'cursor', 'agent'];
+// Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
+const CURSOR_AGENT_BINARY = 'cursor-agent';
 
 export class CursorRunner implements Runner {
   name = 'cursor';
   displayName = 'Cursor Agent';
-  private binaryPath: string = 'cursor-agent';
 
   async isAvailable(): Promise<boolean> {
-    for (const binary of CURSOR_BINARIES) {
-      try {
-        await exec(`which ${binary}`);
-        this.binaryPath = binary;
-        debug(`Found cursor CLI at: ${binary}`);
-        return true;
-      } catch {
-        // Try next binary
-      }
+    try {
+      await exec(`which ${CURSOR_AGENT_BINARY}`);
+      debug(`Found Cursor Agent CLI: ${CURSOR_AGENT_BINARY}`);
+      return true;
+    } catch {
+      debug('Cursor Agent CLI not found (install: curl https://cursor.com/install -fsS | bash)');
+      return false;
     }
-    debug('Cursor CLI not found', { tried: CURSOR_BINARIES });
-    return false;
   }
 
   async checkStatus(): Promise<RunnerStatus> {
     // Check if installed
     const installed = await this.isAvailable();
     if (!installed) {
-      return { installed: false, ready: false, error: 'Not installed' };
+      return { installed: false, ready: false, error: 'cursor-agent not installed (run: curl https://cursor.com/install -fsS | bash)' };
     }
 
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec(`${this.binaryPath} --version`);
+      const { stdout } = await exec(`${CURSOR_AGENT_BINARY} --version`);
       version = stdout.trim();
     } catch {
       // Version check failed, but might still work
@@ -54,7 +50,7 @@ export class CursorRunner implements Runner {
 
     // Check if logged in by trying a simple command
     try {
-      const { stdout } = await exec(`${this.binaryPath} --list-models 2>&1`);
+      const { stdout } = await exec(`${CURSOR_AGENT_BINARY} --list-models 2>&1`);
       if (stdout.includes('Available models') || stdout.includes('auto')) {
         return { installed: true, ready: true, version };
       }
@@ -97,6 +93,8 @@ export class CursorRunner implements Runner {
       // Validate and add model if specified
       if (options?.model) {
         if (!isValidModel(options.model)) {
+          // Clean up the temp prompt file before returning
+          try { unlinkSync(promptFile); } catch { /* ignore unlink errors */ }
           resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
           return;
         }
@@ -108,10 +106,10 @@ export class CursorRunner implements Runner {
       args.push(promptContent);
       
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-      console.log(`\nRunning: ${this.binaryPath}${modelInfo} --workspace ${workdir} [prompt]\n`);
-      debug('Cursor command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
+      console.log(`\nRunning: ${CURSOR_AGENT_BINARY}${modelInfo} --workspace ${workdir} [prompt]\n`);
+      debug('Cursor command', { binary: CURSOR_AGENT_BINARY, workdir, model: options?.model, promptLength: prompt.length });
 
-      const child = spawn(this.binaryPath, args, {
+      const child = spawn(CURSOR_AGENT_BINARY, args, {
         cwd: workdir,
         stdio: ['inherit', 'pipe', 'pipe'],
         env: { ...process.env },

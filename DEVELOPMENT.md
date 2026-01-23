@@ -245,11 +245,10 @@ cat ~/.prr/lessons/<owner>/<repo>/<branch>.json
 # Check if installed
 which cursor-agent
 
-# Install (macOS ARM)
-curl -fsSL https://www.cursor.com/download/stable/agent/darwin/arm64 -o cursor-agent
-chmod +x cursor-agent && sudo mv cursor-agent /usr/local/bin/
+# Install
+curl https://cursor.com/install -fsS | bash
 
-# Login
+# Login (required before first use)
 cursor-agent login
 ```
 

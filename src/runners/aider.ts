@@ -9,8 +9,9 @@ import { debug } from '../logger.js';
 const exec = promisify(execCallback);
 
 // Validate model name to prevent injection (defense in depth - also validated in CLI)
+// Allows forward slashes for provider-prefixed names like "anthropic/claude-..." or "openrouter/anthropic/..."
 function isValidModel(model: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(model);
+  return /^[A-Za-z0-9._\/-]+$/.test(model);
 }
 
 export class AiderRunner implements Runner {
@@ -66,6 +67,8 @@ export class AiderRunner implements Runner {
       // Validate and add model if specified
       if (options?.model) {
         if (!isValidModel(options.model)) {
+          // Clean up the temp prompt file before returning
+          try { unlinkSync(promptFile); } catch { /* ignore unlink errors */ }
           resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
           return;
         }

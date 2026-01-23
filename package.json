@@ -8,10 +8,10 @@
     "prr": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "bunx tsc",
     "start": "bun dist/index.js",
     "dev": "bun --watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit"
   },
   "keywords": [
     "github",

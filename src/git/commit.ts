@@ -46,6 +46,24 @@ export async function getLastCommitHash(git: SimpleGit): Promise<string> {
   return log.latest?.hash || '';
 }
 
+/**
+ * Strip markdown/HTML formatting from text for use in commit messages
+ */
+export function stripMarkdownForCommit(text: string): string {
+  return text
+    // Remove HTML tags
+    .replace(/<[^>]+>/g, '')
+    // Remove markdown emphasis (_text_, *text*, **text**, ~~text~~)
+    .replace(/[_*~]{1,2}([^_*~]+)[_*~]{1,2}/g, '$1')
+    // Remove markdown links [text](url) -> text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    // Remove common review comment prefixes/emoji patterns
+    .replace(/^[⚠️🔴🟡🟢✅❌💡📝🐛]+\s*/g, '')
+    // Collapse whitespace
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function buildCommitMessage(issuesFixed: string[], lessonsLearned: string[]): string {
   const lines: string[] = ['fix: address review comments', ''];
 

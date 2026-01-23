@@ -5,7 +5,7 @@ import { join } from 'path';
 dotenv.config();
 
 export type LLMProvider = 'anthropic' | 'openai';
-export type FixerTool = 'cursor' | 'opencode';
+export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'llm-api';
 
 export interface Config {
   githubToken: string;
@@ -63,9 +63,11 @@ export function loadConfig(): Config {
   return config;
 }
 
+const VALID_TOOLS: readonly FixerTool[] = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'];
+
 export function validateTool(tool: string): FixerTool {
-  if (tool !== 'cursor' && tool !== 'opencode') {
-    throw new Error(`Invalid tool: ${tool}. Must be 'cursor' or 'opencode'`);
+  if (!VALID_TOOLS.includes(tool as FixerTool)) {
+    throw new Error(`Invalid tool: ${tool}. Must be one of: ${VALID_TOOLS.join(', ')}`);
   }
-  return tool;
+  return tool as FixerTool;
 }

@@ -97,10 +97,11 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
 
   parts.push('## Instructions\n');
   parts.push('1. Address each issue listed above');
-  parts.push('2. Make minimal, targeted changes');
-  parts.push('3. Do not introduce new issues or change unrelated code');
-  parts.push('4. Ensure the code still compiles and passes tests');
-  parts.push('5. If an issue cannot be fixed without breaking changes, explain why in a comment');
+  parts.push('2. Make MINIMAL, SURGICAL changes - only modify lines directly related to the fix');
+  parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes');
+  parts.push('4. Do NOT change working code that is not mentioned in the review');
+  parts.push('5. Preserve existing code structure, variable names, and formatting');
+  parts.push('6. If an issue is unclear, make the smallest reasonable fix');
 
   return {
     prompt: parts.join('\n'),
