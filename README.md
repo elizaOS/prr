@@ -208,6 +208,12 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 - `OPENAI_API_KEY` - Required for verification (if using OpenAI), and for `codex`, `aider`, `llm-api` runners
 
 **Fixer Tools** (at least one required, use `--tool <name>`):
+- `--tool cursor`: `cursor-agent`
+- `--tool opencode`: `opencode`
+- `--tool aider`: `aider`
+- `--tool claude-code`: `claude` or `claude-code`
+- `--tool codex`: OpenAI Codex access
+- `--tool llm-api`: no CLI (direct API)
 
 | `--tool` value | CLI Binary | Requirements |
 |----------------|------------|--------------|
