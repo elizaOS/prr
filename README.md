@@ -14,6 +14,22 @@ sits on your PR and won't get up until it's ready
 
 CLI tool to automatically resolve PR review comments using LLM-powered fixing and verification. Works with comments from humans, bots, or any reviewer.
 
+## Philosophy
+
+There are plenty of AI tools that autonomously create PRs, write code, and push changes without human involvement. **prr takes a different approach.**
+
+**Human-driven, AI-assisted**: You stay in control. You decide which PR to work on, when to run prr, and when it's done. The AI handles the tedious back-and-forth with reviewers (human or bot), but you're the driver.
+
+**The right tool for the job**: Sometimes you want to manually address feedback. Sometimes you want AI to grind through 50 nitpicks from CodeRabbit. prr gives you the option without taking over your workflow.
+
+**AI talking to AI, supervised by humans**: Modern PRs often involve bot reviewers (CodeRabbit, Copilot, etc.) that leave dozens of comments. Instead of manually addressing each one, let prr's AI negotiate with the reviewer AI while you focus on what matters. You can always interrupt, inspect, and override.
+
+**Philosophy in practice**:
+- Run prr on a specific PR (you choose)
+- Watch it work, interrupt with Ctrl+C anytime
+- Inspect the workdir, modify files, continue
+- Push when *you* decide it's ready
+
 ## Features
 
 - Fetches review comments from PRs (humans, bots, or any reviewer)

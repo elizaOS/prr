@@ -2,6 +2,23 @@
 
 This document provides technical context for developers working on prr.
 
+## Design Philosophy
+
+prr is designed around **human-in-the-loop** automation, not full autonomy:
+
+1. **Human initiates**: User explicitly runs prr on a specific PR
+2. **Human can interrupt**: Ctrl+C at any time, state is preserved
+3. **Human can inspect**: Workdir persists, user can examine/modify files
+4. **Human decides when done**: Even with `--auto-push`, user can stop anytime
+
+This contrasts with fully autonomous agents that create PRs without human involvement. prr assumes a human made the PR, received review feedback, and wants help addressing it - not a replacement for the human developer.
+
+**Technical implications**:
+- State persistence is critical (resume after interruption)
+- Workdir preservation by default (inspect before pushing)
+- Verbose logging (understand what's happening)
+- No silent failures (human needs to know)
+
 ## Architecture Overview
 
 ```
