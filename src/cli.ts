@@ -48,18 +48,18 @@ export function createCLI(): Command {
     .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
     .option('-t, --tool <tool>', 'LLM tool to use for fixing (cursor, opencode, claude-code, aider, codex, llm-api)', 'cursor')
     .option('-m, --model <model>', 'Model for fixer tool (e.g., opus-4, sonnet-4-thinking, gpt-5)')
-    .option('--auto-push', 'Automatically push after fixes are verified', false)
+    .option('--auto-push', 'Push and wait for bot re-review in a loop (full automation)', true)
+    .option('--no-auto-push', 'Disable auto-push (just push once)')
     .option('--keep-workdir', 'Keep work directory after completion', true)
     .option('--max-fix-iterations <n>', 'Maximum fix iterations per push cycle (0 = unlimited)', '0')
     .option('--max-push-iterations <n>', 'Maximum push/re-review cycles (0 = unlimited)', '0')
     .option('--poll-interval <seconds>', 'Seconds to wait for bot re-review (auto-push mode)', '120')
     .option('--dry-run', 'Show unresolved issues without fixing', false)
-    .option('--no-commit', 'Make changes but do not commit (for testing)', true)
-    .option('--commit', 'Actually commit changes (override --no-commit)')
-    .option('--no-push', 'Commit locally but do not push (safer testing)', true)
+    .option('--no-commit', 'Make changes but do not commit (for testing)')
+    .option('--no-push', 'Commit but do not push')
     .option('-v, --verbose', 'Verbose debug output', true)
-    .option('--no-batch', 'Disable batched LLM calls (one call per issue)', false)
-    .option('--reverify', 'Re-verify all cached "fixed" issues (ignore verification cache)', false)
+    .option('--no-batch', 'Disable batched LLM calls (slower, but more reliable for complex issues)')
+    .option('--reverify', 'Ignore verification cache, re-check all "fixed" issues from scratch', false)
     .option('--max-context <chars>', 'Max characters per LLM batch (default: 400000)', '400000')
     .option('--no-bell', 'Disable terminal bell on completion', false);
 
@@ -94,9 +94,6 @@ export function parseArgs(program: Command): ParsedArgs {
 
   // Validate model name for security (prevent shell injection)
   const toolModel = validateModelName(opts.model);
-
-  // --commit overrides --no-commit
-  const noCommit = opts.commit ? false : (opts.noCommit ?? true);
   
   const validatedTool = validateTool(opts.tool);
   
@@ -105,14 +102,14 @@ export function parseArgs(program: Command): ParsedArgs {
     options: {
       tool: validatedTool,
       toolModel,
-      autoPush: opts.autoPush,
+      autoPush: opts.autoPush ?? true,        // Default: full automation
       keepWorkdir: opts.keepWorkdir ?? true,
       maxFixIterations: parseInt(opts.maxFixIterations, 10),
       maxPushIterations: parseInt(opts.maxPushIterations, 10),
       pollInterval: parseInt(opts.pollInterval, 10),
       dryRun: opts.dryRun,
-      noCommit,
-      noPush: opts.noPush ?? true,
+      noCommit: opts.noCommit ?? false,       // Default: commit
+      noPush: opts.noPush ?? false,           // Default: push
       verbose: opts.verbose ?? true,
       noBatch: opts.noBatch ?? false,
       reverify: opts.reverify ?? false,
