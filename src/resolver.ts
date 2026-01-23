@@ -889,10 +889,37 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // Check for changes
           if (!(await hasChanges(git))) {
             console.log(chalk.yellow('\nNo changes made by fixer tool'));
-            this.lessonsManager.addGlobalLesson('Fixer tool made no changes - issue may require manual intervention');
+            this.lessonsManager.addGlobalLesson(`${this.runner.name} made no changes - trying different approach`);
+            
+            // Count this as a failure for rotation purposes
+            this.consecutiveFailures++;
+            this.toolCycleFailures++;
+            
+            const isOddFailure = this.consecutiveFailures % 2 === 1;
+            const toolCycles = Math.floor(this.consecutiveFailures / 2);
+            
+            if (isOddFailure && unresolvedIssues.length > 1) {
+              console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
+              const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git);
+              if (singleIssueFixed) {
+                this.consecutiveFailures = 0;
+                this.toolCycleFailures = 0;
+              }
+            } else if (!isOddFailure && this.runners.length > 1 && toolCycles < this.runners.length) {
+              this.switchToNextRunner();
+              console.log(chalk.cyan('  Starting fresh with batch mode...'));
+            } else if (toolCycles >= this.runners.length) {
+              console.log(chalk.yellow('\n  🧠 All tools exhausted, trying direct LLM API fix...'));
+              const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
+              if (directFixed) {
+                this.consecutiveFailures = 0;
+                this.toolCycleFailures = 0;
+              }
+            }
+            
             await this.stateManager.save();
             await this.lessonsManager.save();
-            break;
+            continue;  // Continue to next iteration instead of breaking
           }
 
           // Verify fixes
