@@ -1671,19 +1671,18 @@ Start your response with \`\`\` and end with \`\`\`.`;
       printTokenSummary();
       spinner.fail('Error');
       
-      // Ring terminal bell on error too - user needs to know
-      if (!this.options.noBell) {
-        this.ringBell(3);
-      }
-      
-      // Cleanup workdir on error if keepWorkdir is false
+      // Clean up workdir on error if not keeping it
       if (!this.options.keepWorkdir && this.workdir) {
         try {
           await cleanupWorkdir(this.workdir);
-          console.log(chalk.gray('Workdir cleaned up after error'));
         } catch {
-          // Ignore cleanup errors
+          // Ignore cleanup errors to avoid masking the original error
         }
+      }
+      
+      // Ring terminal bell on error too - user needs to know
+      if (!this.options.noBell) {
+        this.ringBell(3);
       }
       
       throw error;

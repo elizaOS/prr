@@ -253,7 +253,7 @@ NO: <cite the specific code that resolves this issue>`;
       const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
       if (match) {
         const [, id, yesNo, explanation] = match;
-        const cleanId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '');
+        const cleanId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
         results.set(cleanId, {
           exists: yesNo.toUpperCase() === 'YES',
           explanation: explanation.trim(),
@@ -771,11 +771,11 @@ RESOLVED:
     }
 
     // Normalize the conventional commit prefix (lowercase, proper colon)
-    const prefixMatch = message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\([^)]+\))?([:\s]+)?/i);
+    const prefixMatch = message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\([^)]+\))?(?=$|[:\s])/i);
     if (prefixMatch) {
       const type = prefixMatch[1].toLowerCase();
       const scope = prefixMatch[2] ?? '';
-      const rest = message.slice(prefixMatch[0].length).trimStart();
+      const rest = message.slice(prefixMatch[0].length).replace(/^[:\s]+/, '').trimStart();
       message = rest ? `${type}${scope}: ${rest}` : `${type}${scope}: update`;
     } else {
       // No valid prefix, add one

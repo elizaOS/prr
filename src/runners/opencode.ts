@@ -13,7 +13,7 @@ function isValidModel(model: string): boolean {
 // Helper to run a command without shell (prevents injection)
 function execNoShell(command: string, args: string[] = []): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], shell: false });
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (data) => { stdout += data.toString(); });
@@ -88,6 +88,7 @@ export class OpencodeRunner implements Runner {
       const child = spawn('opencode', args, {
         cwd: workdir,
         stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
         env: { ...process.env },
       });
 

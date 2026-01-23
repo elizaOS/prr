@@ -1,6 +1,6 @@
 import { spawn, execFile as execFileCallback } from 'child_process';
 import { promisify } from 'util';
-import { writeFileSync, unlinkSync, readFileSync } from 'fs';
+import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
@@ -12,6 +12,10 @@ const execFile = promisify(execFileCallback);
 // Allows forward slashes for provider-prefixed names like "anthropic/claude-..."
 function isValidModel(model: string): boolean {
   return isValidModelName(model);
+}
+
+function isSafePath(value: string): boolean {
+  return value.length > 0 && !/[\0\r\n]/.test(value);
 }
 
 // Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
@@ -210,8 +214,14 @@ export class CursorRunner implements Runner {
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
+    if (!isSafePath(workdir)) {
+      return { success: false, output: '', error: `Invalid workdir path: ${workdir}` };
+    }
     // Write prompt to a temp file for reference
     const promptFile = join(workdir, '.prr-prompt.txt');
+    if (!isSafePath(promptFile)) {
+      return { success: false, output: '', error: `Invalid prompt file path: ${promptFile}` };
+    }
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
@@ -243,9 +253,8 @@ export class CursorRunner implements Runner {
         args.push('--model', options.model);
       }
       
-      // Read prompt from file and pass as positional argument
-      const promptContent = readFileSync(promptFile, 'utf-8');
-      args.push(promptContent);
+      // Pass prompt content directly as positional argument
+      args.push(prompt);
       
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: ${CURSOR_AGENT_BINARY}${modelInfo} --workspace ${workdir} [prompt]\n`);

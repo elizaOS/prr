@@ -5,14 +5,13 @@ import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
-import { isValidModelName } from '../config.js';
 
 const exec = promisify(execCallback);
 
 // Validate model name to prevent injection (defense in depth - also validated in CLI)
 // Allows forward slashes for provider-prefixed names like "anthropic/claude-..." or "openrouter/anthropic/..."
 function isValidModel(model: string): boolean {
-  return isValidModelName(model);
+  return /^[A-Za-z0-9._\/-]+$/.test(model);
 }
 
 export class AiderRunner implements Runner {

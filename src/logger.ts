@@ -297,12 +297,15 @@ export function printTokenSummary(): void {
   
   // Only show overall if different from session (i.e., resumed)
   if (hasOverall) {
-    let overallTotals = { totalInput: 0, totalOutput: 0, totalCalls: 0 };
-    for (const { inputTokens, outputTokens, calls } of overallTokenUsage) {
-      overallTotals.totalInput += inputTokens;
-      overallTotals.totalOutput += outputTokens;
-      overallTotals.totalCalls += calls;
-    }
+    const overallTotals = overallTokenUsage.reduce(
+      (totals, { inputTokens, outputTokens, calls }) => {
+        totals.totalInput += inputTokens;
+        totals.totalOutput += outputTokens;
+        totals.totalCalls += calls;
+        return totals;
+      },
+      { totalInput: 0, totalOutput: 0, totalCalls: 0 }
+    );
     
     // Show overall breakdown if different from session
     if (overallTotals.totalCalls > sessionTotals.totalCalls) {

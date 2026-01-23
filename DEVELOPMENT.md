@@ -53,12 +53,14 @@ This document provides technical context for developers working on prr.
 | `src/resolver.ts` | Main orchestration (1300+ lines) |
 | `src/logger.ts` | Logging, timing, token tracking |
 
+
 ### GitHub Integration
 
 | File | Purpose |
 |------|---------|
 | `src/github/api.ts` | Octokit wrapper, GraphQL queries |
 | `src/github/types.ts` | PRInfo, ReviewComment, etc. |
+
 
 ### Git Operations
 
@@ -67,6 +69,7 @@ This document provides technical context for developers working on prr.
 | `src/git/clone.ts` | Clone, fetch, conflict detection/resolution |
 | `src/git/commit.ts` | Squash commit, push |
 | `src/git/workdir.ts` | Hash-based workdir management |
+
 
 ### Fixer Tool Runners
 
@@ -80,11 +83,13 @@ This document provides technical context for developers working on prr.
 | `src/runners/codex.ts` | OpenAI Codex CLI |
 | `src/runners/llm-api.ts` | Direct API (fallback) |
 
+
 ### LLM Verification
 
 | File | Purpose |
 |------|---------|
 | `src/llm/client.ts` | Anthropic/OpenAI for verification |
+
 
 ### State Persistence
 
@@ -94,12 +99,14 @@ This document provides technical context for developers working on prr.
 | `src/state/lessons.ts` | Branch-permanent lessons (~/.prr/lessons/) |
 | `src/state/types.ts` | State interfaces |
 
+
 ### Prompt Building
 
 | File | Purpose |
 |------|---------|
 | `src/analyzer/prompt-builder.ts` | Build fix prompts with context |
 | `src/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
+
 
 ## Key Design Decisions
 
