@@ -260,7 +260,9 @@ NO: <cite the specific code that resolves this issue>`;
   /**
    * Final audit: Re-verify ALL issues with an adversarial, stricter prompt.
    * This is run when prr thinks it's done, to catch false positives.
-   * Batches issues to avoid exceeding context limits.
+   * Dynamically batches issues based on context size.
+   * 
+   * @param maxContextChars - Maximum characters per batch (default 100k, ~25k tokens)
    */
   async finalAudit(
     issues: Array<{
@@ -269,72 +271,91 @@ NO: <cite the specific code that resolves this issue>`;
       filePath: string;
       line: number | null;
       codeSnippet: string;
-    }>
+    }>,
+    maxContextChars: number = 100_000
   ): Promise<Map<string, { stillExists: boolean; explanation: string }>> {
     if (issues.length === 0) {
       return new Map();
     }
 
-    debug('Running final audit on all issues', { count: issues.length });
+    debug('Running final audit on all issues', { count: issues.length, maxContextChars });
 
-    // Batch issues to keep context size manageable (~10 issues per batch)
-    const BATCH_SIZE = 10;
-    const batches: typeof issues[] = [];
-    for (let i = 0; i < issues.length; i += BATCH_SIZE) {
-      batches.push(issues.slice(i, i + BATCH_SIZE));
+    // Build the static prompt header (used for each batch)
+    const headerParts = [
+      'FINAL AUDIT: You are performing a thorough final review before marking this PR as complete.',
+      '',
+      'YOUR TASK: Find any issues that were NOT properly fixed. Be adversarial - assume fixes might be incomplete.',
+      '',
+      'AUDIT RULES (be strict):',
+      '1. Read each review comment carefully - understand the EXACT issue being raised',
+      '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
+      '3. Partial fixes do NOT count - the full issue must be resolved',
+      '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
+      '',
+      'RESPONSE FORMAT (use exactly this format for each issue):',
+      '[1] FIXED: The code now includes X',
+      '[2] UNFIXED: The validation is still missing',
+      '',
+      '---',
+      '',
+    ];
+    const headerSize = headerParts.join('\n').length;
+    const footerSize = 100; // Reserve space for closing instructions
+    const availableForIssues = maxContextChars - headerSize - footerSize;
+
+    // Build batches dynamically based on content size
+    const batches: Array<{ issues: typeof issues; issueTexts: string[] }> = [];
+    let currentBatch: typeof issues = [];
+    let currentTexts: string[] = [];
+    let currentSize = 0;
+
+    for (const issue of issues) {
+      // Build the text for this issue
+      const issueText = this.buildIssueText(currentBatch.length + 1, issue);
+      const issueSize = issueText.length;
+
+      // If adding this issue would exceed limit, start a new batch
+      if (currentSize + issueSize > availableForIssues && currentBatch.length > 0) {
+        batches.push({ issues: currentBatch, issueTexts: currentTexts });
+        currentBatch = [];
+        currentTexts = [];
+        currentSize = 0;
+      }
+
+      // Re-index if we started a new batch
+      const indexedText = this.buildIssueText(currentBatch.length + 1, issue);
+      currentBatch.push(issue);
+      currentTexts.push(indexedText);
+      currentSize += indexedText.length;
     }
 
-    debug('Final audit batches', { batches: batches.length, batchSize: BATCH_SIZE });
+    // Don't forget the last batch
+    if (currentBatch.length > 0) {
+      batches.push({ issues: currentBatch, issueTexts: currentTexts });
+    }
+
+    debug('Final audit batches', { 
+      batches: batches.length, 
+      sizes: batches.map(b => ({ issues: b.issues.length, chars: b.issueTexts.join('').length }))
+    });
 
     const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const batch = batches[batchIdx];
-      debug(`Processing audit batch ${batchIdx + 1}/${batches.length}`, { issueCount: batch.length });
-
-      // Build adversarial audit prompt with numeric indices for reliable parsing
-      const parts: string[] = [
-        'FINAL AUDIT: You are performing a thorough final review before marking this PR as complete.',
-        '',
-        'YOUR TASK: Find any issues that were NOT properly fixed. Be adversarial - assume fixes might be incomplete.',
-        '',
-        'AUDIT RULES (be strict):',
-        '1. Read each review comment carefully - understand the EXACT issue being raised',
-        '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
-        '3. Partial fixes do NOT count - the full issue must be resolved',
-        '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
-        '',
-        'RESPONSE FORMAT (use exactly this format for each issue):',
-        '[1] FIXED: The code now includes X',
-        '[2] UNFIXED: The validation is still missing',
-        '',
-        '---',
-        '',
-      ];
-
-      // Use simple numeric indices for reliable parsing
-      batch.forEach((issue, idx) => {
-        const issueNum = idx + 1;
-        // Truncate long comments to save context
-        const truncatedComment = issue.comment.length > 500 
-          ? issue.comment.substring(0, 500) + '...' 
-          : issue.comment;
-        // Truncate long code snippets
-        const truncatedCode = issue.codeSnippet.length > 1000
-          ? issue.codeSnippet.substring(0, 1000) + '\n... (truncated)'
-          : issue.codeSnippet;
-          
-        parts.push(`[${issueNum}] File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`);
-        parts.push(`Comment: ${truncatedComment}`);
-        parts.push('Code:');
-        parts.push('```');
-        parts.push(truncatedCode);
-        parts.push('```');
-        parts.push('');
+      const { issues: batch, issueTexts } = batches[batchIdx];
+      const batchChars = issueTexts.join('').length + headerSize + footerSize;
+      debug(`Processing audit batch ${batchIdx + 1}/${batches.length}`, { 
+        issueCount: batch.length,
+        chars: batchChars 
       });
 
-      parts.push('---');
-      parts.push(`Respond with exactly ${batch.length} lines, one per issue [1] through [${batch.length}]:`);
+      // Build full prompt
+      const parts = [
+        ...headerParts,
+        ...issueTexts,
+        '---',
+        `Respond with exactly ${batch.length} lines, one per issue [1] through [${batch.length}]:`,
+      ];
 
       const response = await this.complete(parts.join('\n'));
 
@@ -381,6 +402,35 @@ NO: <cite the specific code that resolves this issue>`;
     }
 
     return allResults;
+  }
+
+  /**
+   * Build the text representation of an issue for the audit prompt
+   */
+  private buildIssueText(
+    index: number,
+    issue: { filePath: string; line: number | null; comment: string; codeSnippet: string }
+  ): string {
+    // Truncate long comments and code to keep batches reasonable
+    const maxCommentLen = 800;
+    const maxCodeLen = 1500;
+    
+    const truncatedComment = issue.comment.length > maxCommentLen
+      ? issue.comment.substring(0, maxCommentLen) + '...'
+      : issue.comment;
+    const truncatedCode = issue.codeSnippet.length > maxCodeLen
+      ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+      : issue.codeSnippet;
+
+    return [
+      `[${index}] File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+      `Comment: ${truncatedComment}`,
+      'Code:',
+      '```',
+      truncatedCode,
+      '```',
+      '',
+    ].join('\n');
   }
 
   async verifyFix(

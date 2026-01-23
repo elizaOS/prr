@@ -877,7 +877,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
             });
           }
           
-          const auditResults = await this.llm.finalAudit(allIssuesForAudit);
+          const auditResults = await this.llm.finalAudit(allIssuesForAudit, this.options.maxContextChars);
           
           // Find issues that failed the audit
           const failedAudit: Array<{ comment: ReviewComment; explanation: string }> = [];
