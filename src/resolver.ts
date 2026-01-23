@@ -199,8 +199,16 @@ export class PRResolver {
             // Reset the file to try again
             await git.checkout([issue.comment.path]);
           }
+        } else if (changedFiles.length > 0) {
+          // Tool made changes but to different files - might still be relevant
+          console.log(chalk.yellow(`    ○ Changed other files instead: ${changedFiles.slice(0, 3).join(', ')}${changedFiles.length > 3 ? ` (+${changedFiles.length - 3} more)` : ''}`));
+          // Add lesson so tool knows to focus on the right file
+          this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify ${issue.comment.path}`);
         } else {
-          console.log(chalk.gray(`    - No changes made to target file`));
+          // Tool ran but made no changes at all
+          console.log(chalk.gray(`    - No changes made (tool may not understand the task)`));
+          // Add lesson about the failed attempt
+          this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes, may need clearer instructions`);
         }
       } else {
         console.log(chalk.red(`    ✗ Failed: ${result.error}`));
@@ -247,10 +255,12 @@ ${lessons.map(l => `- ${l}`).join('\n')}
     }
 
     prompt += `## Instructions
-1. Fix ONLY this specific issue
-2. Make the minimal change required
-3. Do not modify any other files or code
-4. Ensure the fix addresses the reviewer's concern`;
+1. EDIT the file ${issue.comment.path} to fix this issue
+2. Make the minimal change required - do NOT rewrite the whole file
+3. Do not modify any other files
+4. You MUST make a change - if unsure, make your best attempt
+
+IMPORTANT: Actually edit the file. Do not just explain what to do.`;
 
     return prompt;
   }
