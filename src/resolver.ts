@@ -2132,7 +2132,7 @@ After resolving, the files should have NO conflict markers remaining.`;
       console.log(chalk.gray(`  Batch analyzing ${toCheck.length} comments with LLM...`));
       
       const batchInput = toCheck.map((item, index) => {
-        const issueId = `issue_${index}`;
+        const issueId = `issue_${index + 1}`;
         return {
           id: issueId,
           comment: item.comment.body,

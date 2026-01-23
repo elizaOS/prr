@@ -62,6 +62,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 ### Core
 
+
 | File | Purpose |
 |------|---------|
 | `src/index.ts` | CLI entry point, signal handlers |
@@ -70,14 +71,18 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/resolver.ts` | Main orchestration (1300+ lines) |
 | `src/logger.ts` | Logging, timing, token tracking |
 
+
 ### GitHub Integration
+
 
 | File | Purpose |
 |------|---------|
 | `src/github/api.ts` | Octokit wrapper, GraphQL queries |
 | `src/github/types.ts` | PRInfo, ReviewComment, etc. |
 
+
 ### Git Operations
+
 
 | File | Purpose |
 |------|---------|
@@ -85,7 +90,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/git/commit.ts` | Squash commit, push with retry, token injection |
 | `src/git/workdir.ts` | Hash-based workdir management |
 
+
 ### Fixer Tool Runners
+
 
 | File | Purpose |
 |------|---------|
@@ -97,13 +104,17 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/runners/codex.ts` | OpenAI Codex CLI |
 | `src/runners/llm-api.ts` | Direct API (fallback) |
 
+
 ### LLM Verification
+
 
 | File | Purpose |
 |------|---------|
 | `src/llm/client.ts` | Anthropic/OpenAI for verification |
 
+
 ### State Persistence
+
 
 | File | Purpose |
 |------|---------|
@@ -111,7 +122,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/state/lessons.ts` | Branch-permanent lessons (~/.prr/lessons/) |
 | `src/state/types.ts` | State interfaces |
 
+
 ### Prompt Building
+
 
 | File | Purpose |
 |------|---------|

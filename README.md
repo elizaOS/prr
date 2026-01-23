@@ -154,11 +154,13 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-batch` | off | Disable batched LLM calls |
 | `--verbose` | on | Debug output |
 
+
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 
 ## How It Works
 
 ### The Fix Loop
+
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │  1. FETCH     → Get review comments from GitHub             │
@@ -317,7 +319,7 @@ cursor-agent login
 cursor-agent models
 ```
 
-For other platforms, visit: <https://www.cursor.com/download>.
+If you're unsure which platform you're on, check `uname -s` and `uname -m`. For manual downloads, see <https://www.cursor.com/download>.
 
 This opens a browser window to authenticate with your Cursor account. You only need to do this once - your credentials are saved locally.
 
