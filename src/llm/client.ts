@@ -480,6 +480,68 @@ NO: <brief explanation of what's still missing or wrong>`;
     return { fixed, explanation };
   }
 
+  /**
+   * Analyze a failed fix attempt to generate an actionable lesson
+   * WHY: Simple "rejected: [reason]" lessons don't help the next attempt.
+   * This extracts specific guidance like "don't just X, also need to Y"
+   */
+  async analyzeFailedFix(
+    issue: {
+      comment: string;
+      filePath: string;
+      line: number | null;
+    },
+    diff: string,
+    rejectionReason: string
+  ): Promise<string> {
+    const prompt = `A code fix attempt was rejected. Analyze what went wrong and extract a specific lesson.
+
+ORIGINAL ISSUE:
+File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
+Review Comment: ${issue.comment}
+
+ATTEMPTED FIX (diff):
+${diff.substring(0, 1500)}
+
+REJECTION REASON:
+${rejectionReason}
+
+Generate ONE specific, actionable lesson that will help the next fix attempt succeed.
+
+GOOD LESSONS (specific, actionable):
+- "When adding validation for X, must also update the error message to mention X"
+- "The fix added A but the comment also requires B - need both"
+- "Don't just check for null, also handle the empty string case mentioned"
+- "The validation was added but in the wrong location - must be before Y"
+
+BAD LESSONS (vague, not actionable):
+- "Fix was incomplete" (doesn't say what's missing)
+- "Need to try again" (no guidance)
+- "The change didn't work" (no specifics)
+
+Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
+
+    try {
+      const response = await this.complete(prompt);
+      const lesson = response.content.trim();
+      
+      // Ensure it's not too long and is actually useful
+      if (lesson.length > 200) {
+        return lesson.substring(0, 197) + '...';
+      }
+      if (lesson.length < 10) {
+        // Too short, fall back to basic lesson
+        return `Fix rejected: ${rejectionReason}`;
+      }
+      
+      return lesson;
+    } catch (error) {
+      // If analysis fails, return basic lesson
+      debug('Failed to analyze fix failure', { error });
+      return `Fix rejected: ${rejectionReason}`;
+    }
+  }
+
   async batchVerifyFixes(
     fixes: Array<{
       id: string;

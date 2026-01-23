@@ -214,7 +214,22 @@ export class PRResolver {
               diff: diff.substring(0, 500),
               issueComment: issue.comment.body.substring(0, 200),
             });
-            this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`);
+            
+            // Analyze the failure to generate an actionable lesson
+            // WHY: "rejected: [reason]" isn't helpful; we need specific guidance
+            setTokenPhase('Analyze failure');
+            const lesson = await this.llm.analyzeFailedFix(
+              {
+                comment: issue.comment.body,
+                filePath: issue.comment.path,
+                line: issue.comment.line,
+              },
+              diff,
+              verification.explanation
+            );
+            console.log(chalk.gray(`    📝 Lesson: ${lesson}`));
+            this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+            
             // Reset the file to try again
             await git.checkout([issue.comment.path]);
           }
@@ -1263,9 +1278,17 @@ Start your response with \`\`\` and end with \`\`\`.`;
                   this.stateManager.addCommentToIteration(issue.comment.id);
                 } else {
                   failedCount++;
-                  this.lessonsManager.addLesson(
-                    `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`
+                  // Analyze failure to generate actionable lesson
+                  const lesson = await this.llm.analyzeFailedFix(
+                    {
+                      comment: issue.comment.body,
+                      filePath: issue.comment.path,
+                      line: issue.comment.line,
+                    },
+                    diff,
+                    verification.explanation
                   );
+                  this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
                 }
               }
             } else {
