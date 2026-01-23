@@ -1,4 +1,5 @@
 import type { SimpleGit } from 'simple-git';
+import { spawn } from 'child_process';
 import { debug } from '../logger.js';
 
 export interface CommitResult {
@@ -33,29 +34,75 @@ export async function squashCommit(
 }
 
 /**
- * Push changes to remote with timeout.
+ * Push changes to remote with timeout and signal handling.
  * 
- * WHY timeout: Git push can hang indefinitely if:
- * - Network is slow/unavailable
- * - Auth prompt is waiting (but we can't respond in non-interactive mode)
- * - Remote is unreachable
+ * WHY spawn instead of simple-git: simple-git's promises can't be cancelled,
+ * and the underlying git process keeps running even after timeout. Using
+ * spawn directly lets us SIGKILL the process on timeout or Ctrl+C.
  * 
- * 60 second timeout is generous for most pushes.
+ * WHY 60s timeout: Generous for most pushes, but prevents infinite hang
+ * if network is unavailable or auth prompt is waiting.
  */
 export async function push(git: SimpleGit, branch: string, force = false): Promise<void> {
   const PUSH_TIMEOUT_MS = 60_000; // 60 seconds
   
-  debug('Starting git push', { branch, force });
+  // Get the workdir from the git instance
+  const workdir = (git as any)._baseDir || process.cwd();
   
-  const args = force ? ['--force'] : [];
+  debug('Starting git push', { branch, force, workdir });
   
-  const pushPromise = git.push('origin', branch, args);
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Push timed out after 60 seconds. Check network/auth.')), PUSH_TIMEOUT_MS);
+  const args = ['push', 'origin', branch];
+  if (force) args.push('--force');
+  
+  return new Promise((resolve, reject) => {
+    const gitProcess = spawn('git', args, {
+      cwd: workdir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    let killed = false;
+    
+    gitProcess.stdout?.on('data', (data) => { stdout += data.toString(); });
+    gitProcess.stderr?.on('data', (data) => { stderr += data.toString(); });
+    
+    // Timeout - kill the process
+    const timeout = setTimeout(() => {
+      killed = true;
+      gitProcess.kill('SIGKILL');
+      reject(new Error(`Push timed out after 60 seconds. Check network/auth.\nstderr: ${stderr}`));
+    }, PUSH_TIMEOUT_MS);
+    
+    // Handle Ctrl+C - kill the git process too
+    const sigintHandler = () => {
+      killed = true;
+      gitProcess.kill('SIGKILL');
+      clearTimeout(timeout);
+      process.removeListener('SIGINT', sigintHandler);
+    };
+    process.on('SIGINT', sigintHandler);
+    
+    gitProcess.on('close', (code) => {
+      clearTimeout(timeout);
+      process.removeListener('SIGINT', sigintHandler);
+      
+      if (killed) return; // Already handled by timeout/sigint
+      
+      if (code === 0) {
+        debug('Git push completed', { branch });
+        resolve();
+      } else {
+        reject(new Error(`Git push failed with code ${code}\nstderr: ${stderr}`));
+      }
+    });
+    
+    gitProcess.on('error', (err) => {
+      clearTimeout(timeout);
+      process.removeListener('SIGINT', sigintHandler);
+      reject(new Error(`Git push failed: ${err.message}`));
+    });
   });
-  
-  await Promise.race([pushPromise, timeoutPromise]);
-  debug('Git push completed', { branch });
 }
 
 export async function getCurrentBranch(git: SimpleGit): Promise<string> {
