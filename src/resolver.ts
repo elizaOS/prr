@@ -221,8 +221,8 @@ export class PRResolver {
         
         // Check if this tool has more models to try
         if (!checkToolExhausted(this.runner.name)) {
-          // This tool has more models - rotate to next one and use it
-          this.rotateModel();
+          // Start with current model on the new tool (don't skip index 0)
+          this.modelsTriedThisToolRound = 1;
           this.modelFailuresInCycle = 0;
           foundTool = true;
           break;
@@ -263,8 +263,8 @@ export class PRResolver {
         this.switchToNextRunner();
         
         if (!checkToolExhausted(this.runner.name)) {
-          // This tool has more models
-          this.rotateModel();
+          // Start with current model on the new tool (don't skip index 0)
+          this.modelsTriedThisToolRound = 1;
           this.modelFailuresInCycle = 0;
           return true;
         }
@@ -317,6 +317,7 @@ export class PRResolver {
       if (result.success) {
         // Check if this specific file changed
         const changedFiles = await getChangedFiles(git);
+        
         if (changedFiles.includes(issue.comment.path)) {
           // Verify this single fix
           setTokenPhase('Verify single fix');
@@ -326,7 +327,7 @@ export class PRResolver {
             issue.comment.path,
             diff
           );
-          
+
           if (verification.fixed) {
             console.log(chalk.green(`    ✓ Fixed and verified!`));
             debug('Fix verified successfully', {
@@ -345,7 +346,7 @@ export class PRResolver {
               diff: diff.substring(0, 500),
               issueComment: issue.comment.body.substring(0, 200),
             });
-            
+
             // Analyze the failure to generate an actionable lesson
             // WHY: "rejected: [reason]" isn't helpful; we need specific guidance
             setTokenPhase('Analyze failure');
@@ -360,9 +361,9 @@ export class PRResolver {
             );
             console.log(chalk.gray(`    📝 Lesson: ${lesson}`));
             this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
-            
-            // Reset the file to try again
-            await git.checkout([issue.comment.path]);
+
+            // Reset unverified edits
+            await git.checkout(changedFiles);
           }
         } else if (changedFiles.length > 0) {
           // Tool made changes but to different files - might still be relevant
@@ -375,6 +376,7 @@ export class PRResolver {
           });
           // Add lesson so tool knows to focus on the right file
           this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify ${issue.comment.path}`);
+          await git.checkout(changedFiles);
         } else {
           // Tool ran but made no changes at all
           console.log(chalk.gray(`    - No changes made (tool may not understand the task)`));

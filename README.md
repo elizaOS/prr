@@ -286,11 +286,29 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 If you're new to Cursor's CLI agent, you'll need to install and authenticate first:
 
 ```bash
-# Install cursor-agent (Linux)
-curl https://cursor.com/install -fsS | bash
+# Detect OS/arch (use to pick the right binary)
+uname -s
+uname -m
 
-# Install cursor-agent (macOS - Intel or Apple Silicon)
-curl https://cursor.com/install -fsS | bash
+# Install cursor-agent (macOS ARM64)
+curl -fsSL https://www.cursor.com/download/stable/agent/darwin/arm64 -o cursor-agent
+chmod +x cursor-agent
+sudo mv cursor-agent /usr/local/bin/
+
+# Install cursor-agent (macOS Intel)
+curl -fsSL https://www.cursor.com/download/stable/agent/darwin/amd64 -o cursor-agent
+chmod +x cursor-agent
+sudo mv cursor-agent /usr/local/bin/
+
+# Install cursor-agent (Linux x86_64)
+curl -fsSL https://www.cursor.com/download/stable/agent/linux/amd64 -o cursor-agent
+chmod +x cursor-agent
+sudo mv cursor-agent /usr/local/bin/
+
+# Install cursor-agent (Linux ARM64)
+curl -fsSL https://www.cursor.com/download/stable/agent/linux/arm64 -o cursor-agent
+chmod +x cursor-agent
+sudo mv cursor-agent /usr/local/bin/
 
 # Login (required before first use!)
 cursor-agent login
@@ -299,13 +317,24 @@ cursor-agent login
 cursor-agent models
 ```
 
-If you're unsure which platform you're on, check `uname -s` and `uname -m`. For manual downloads, see <https://www.cursor.com/download>.
+For other platforms, visit: <https://www.cursor.com/download>.
 
 This opens a browser window to authenticate with your Cursor account. You only need to do this once - your credentials are saved locally.
 
 Without logging in first, you'll see authentication errors when prr tries to run the fixer.
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `cursor-agent models` on startup. No hardcoded model lists to maintain.
+
+Model names change over time — use `cursor-agent models` or `curl https://api.cursor.com/v0/models` for the canonical list. Examples:
+
+| Model | Notes |
+|-------|-------|
+| `auto` | Let Cursor pick |
+| `claude-4-opus-thinking` | Claude Opus (thinking) |
+| `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
+| `o3` | OpenAI reasoning |
+| `gpt-5.2` | GPT-5.2 |
+| `Grok` | Grok |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
