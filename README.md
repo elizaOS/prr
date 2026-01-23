@@ -16,7 +16,7 @@ CLI tool to automatically resolve PR review comments using LLM-powered fixing an
 
 ## Features
 
-- Fetches GitHub Copilot review comments from PRs
+- Fetches review comments from PRs (humans, bots, or any reviewer)
 - Uses LLM to detect which issues still exist in the code
 - Generates fix prompts and runs Cursor CLI or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives

@@ -37,9 +37,16 @@ export function loadConfig(): Config {
     throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'anthropic' or 'openai'`);
   }
 
-  // Parse thinking budget if set
+  // Parse and validate thinking budget if set
   const thinkingBudgetStr = process.env.PRR_THINKING_BUDGET;
-  const thinkingBudget = thinkingBudgetStr ? parseInt(thinkingBudgetStr, 10) : undefined;
+  let thinkingBudget: number | undefined;
+  if (thinkingBudgetStr) {
+    const parsed = parseInt(thinkingBudgetStr, 10);
+    if (isNaN(parsed) || parsed <= 0) {
+      throw new Error(`Invalid PRR_THINKING_BUDGET: "${thinkingBudgetStr}". Must be a positive integer.`);
+    }
+    thinkingBudget = parsed;
+  }
 
   const config: Config = {
     githubToken: getEnvOrThrow('GITHUB_TOKEN'),

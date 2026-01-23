@@ -67,6 +67,11 @@ export async function cloneOrUpdate(
       
       console.log(`Updated to latest ${branch}`);
     }
+    
+    // Remove token from stored remote URL to prevent credential persistence
+    if (githubToken) {
+      await git.remote(['set-url', 'origin', cloneUrl]);
+    }
   } else {
     // Fresh clone
     git = simpleGit();
@@ -75,6 +80,12 @@ export async function cloneOrUpdate(
     await git.clone(authUrl, workdir, ['--branch', branch, '--single-branch']);
     
     git = simpleGit(workdir);
+    
+    // Remove token from stored remote URL to prevent credential persistence
+    if (githubToken) {
+      await git.remote(['set-url', 'origin', cloneUrl]);
+    }
+    
     console.log(`Cloned ${branch} successfully`);
   }
 
