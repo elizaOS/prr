@@ -49,6 +49,16 @@ export class PRResolver {
   }
 
   /**
+   * Ring terminal bell to notify user
+   * WHY: Long-running processes need audio notification when complete
+   */
+  private ringBell(times: number = 3): void {
+    for (let i = 0; i < times; i++) {
+      process.stdout.write('\x07'); // BEL character (ASCII 7)
+    }
+  }
+
+  /**
    * Get the list of models available for a runner
    */
   private getModelsForRunner(runner: Runner): string[] {
@@ -910,51 +920,66 @@ Start your response with \`\`\` and end with \`\`\`.`;
               console.log(chalk.gray(`    ${explanation}`));
             }
             await this.stateManager.save();
-            // Continue to fix loop instead of breaking
-            continue;
-          }
-          
-          spinner.succeed('Final audit passed - all issues verified fixed!');
-          console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
-          
-          // Check if we have uncommitted changes that need to be committed
-          if (await hasChanges(git)) {
-            debugStep('COMMIT PHASE (all resolved)');
             
-            if (this.options.noCommit) {
-              warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
-              console.log(chalk.gray(`Workdir: ${this.workdir}`));
-            } else {
-              // Get all comments that were fixed for commit message
-              const fixedIssues = comments
-                .filter((c) => this.stateManager.isCommentVerifiedFixed(c.id))
-                .map((c) => ({
-                  filePath: c.path,
-                  comment: c.body,
-                }));
-              
-              spinner.start('Generating commit message...');
-              const commitMsg = await this.llm.generateCommitMessage(fixedIssues);
-              debug('Generated commit message', commitMsg);
-              
-              spinner.text = 'Committing changes...';
-              const commit = await squashCommit(git, commitMsg);
-              spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
-              debug('Commit created', commit);
-              
-              if (this.options.autoPush && !this.options.noPush) {
-                spinner.start('Pushing changes...');
-                await push(git, this.prInfo.branch);
-                spinner.succeed('Pushed to remote');
-              } else if (!this.options.noPush) {
-                console.log(chalk.blue('\nChanges committed locally. Use --auto-push to push automatically.'));
-              } else {
-                warn('NO-PUSH MODE: Changes committed locally but not pushed.');
-              }
-              console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            // Re-populate unresolvedIssues with failed audit items so fix loop can continue
+            // WHY: We can't just `continue` - that goes to outer push loop which may exit
+            // Instead, we populate unresolvedIssues and fall through to the inner fix loop
+            unresolvedIssues.length = 0; // Clear
+            for (const { comment, explanation } of failedAudit) {
+              const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
+              unresolvedIssues.push({
+                comment,
+                codeSnippet,
+                stillExists: true,
+                explanation,
+              });
             }
+            console.log(chalk.cyan(`\n→ Re-entering fix loop with ${unresolvedIssues.length} issues from audit\n`));
+            // Fall through to inner fix loop below (don't break or continue)
+          } else {
+            // Final audit passed - all issues verified fixed
+            spinner.succeed('Final audit passed - all issues verified fixed!');
+            console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
+            
+            // Check if we have uncommitted changes that need to be committed
+            if (await hasChanges(git)) {
+              debugStep('COMMIT PHASE (all resolved)');
+              
+              if (this.options.noCommit) {
+                warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
+                console.log(chalk.gray(`Workdir: ${this.workdir}`));
+              } else {
+                // Get all comments that were fixed for commit message
+                const fixedIssues = comments
+                  .filter((c) => this.stateManager.isCommentVerifiedFixed(c.id))
+                  .map((c) => ({
+                    filePath: c.path,
+                    comment: c.body,
+                  }));
+                
+                spinner.start('Generating commit message...');
+                const commitMsg = await this.llm.generateCommitMessage(fixedIssues);
+                debug('Generated commit message', commitMsg);
+                
+                spinner.text = 'Committing changes...';
+                const commit = await squashCommit(git, commitMsg);
+                spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
+                debug('Commit created', commit);
+                
+                if (this.options.autoPush && !this.options.noPush) {
+                  spinner.start('Pushing changes...');
+                  await push(git, this.prInfo.branch);
+                  spinner.succeed('Pushed to remote');
+                } else if (!this.options.noPush) {
+                  console.log(chalk.blue('\nChanges committed locally. Use --auto-push to push automatically.'));
+                } else {
+                  warn('NO-PUSH MODE: Changes committed locally but not pushed.');
+                }
+                console.log(chalk.gray(`Workdir: ${this.workdir}`));
+              }
+            }
+            break;
           }
-          break;
         }
 
         // Dry run - just show issues
@@ -1371,6 +1396,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
       endTimer('Total');
       printTimingSummary();
       printTokenSummary();
+      
+      // Ring terminal bell 3 times to notify user completion
+      // WHY: Long-running processes need audio notification when done
+      if (!this.options.noBell) {
+        this.ringBell(3);
+      }
+      
       console.log(chalk.green('\nDone!'));
 
     } catch (error) {
@@ -1378,6 +1410,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
       printTimingSummary();
       printTokenSummary();
       spinner.fail('Error');
+      
+      // Ring terminal bell on error too - user needs to know
+      if (!this.options.noBell) {
+        this.ringBell(3);
+      }
       
       // Cleanup workdir on error if keepWorkdir is false
       if (!this.options.keepWorkdir && this.workdir) {

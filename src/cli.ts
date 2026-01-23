@@ -17,6 +17,7 @@ export interface CLIOptions {
   noBatch: boolean;
   reverify: boolean;
   maxContextChars: number;
+  noBell: boolean;
 }
 
 export interface ParsedArgs {
@@ -65,7 +66,8 @@ export function createCLI(): Command {
     .option('-v, --verbose', 'Verbose debug output', true)
     .option('--no-batch', 'Disable batched LLM calls (one call per issue)', false)
     .option('--reverify', 'Re-verify all cached "fixed" issues (ignore verification cache)', false)
-    .option('--max-context <chars>', 'Max characters per LLM batch (default: 400000)', '400000');
+    .option('--max-context <chars>', 'Max characters per LLM batch (default: 400000)', '400000')
+    .option('--no-bell', 'Disable terminal bell on completion', false);
 
   return program;
 }
@@ -127,6 +129,7 @@ export function parseArgs(program: Command): ParsedArgs {
       noBatch: opts.noBatch ?? false,
       reverify: opts.reverify ?? false,
       maxContextChars: parseInt(opts.maxContext, 10) || 400_000,
+      noBell: opts.noBell ?? false,
     },
   };
 }
