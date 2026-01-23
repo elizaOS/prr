@@ -690,73 +690,89 @@ RESOLVED:
     }>
   ): Promise<string> {
     if (fixedIssues.length === 0) {
-      return 'fix: address review comments';
+      return 'chore: minor code improvements';
     }
 
+    // Extract file names and key themes from issues
+    const files = [...new Set(fixedIssues.map(i => i.filePath.split('/').pop()))];
+    const fileList = files.slice(0, 3).join(', ') + (files.length > 3 ? ` (+${files.length - 3})` : '');
+
     const parts: string[] = [
-      'You are writing a git commit message that will be part of permanent project history.',
-      'Analyze the review feedback and write a clear, professional commit message.',
+      'Generate a git commit message for code changes. This is PERMANENT HISTORY.',
       '',
-      'COMMIT MESSAGE RULES:',
-      '1. First line: conventional commit format, max 72 characters',
-      '   - Use "fix:" for bug fixes, "refactor:" for improvements, "feat:" for features',
-      '   - Describe WHAT changed, not that you "addressed comments"',
-      '2. If there are multiple distinct changes, add a blank line then concise bullet points',
-      '3. Focus on the ACTUAL CODE CHANGES, not the review process',
-      '4. Write for future developers reading git log - they need to understand what changed and why',
-      '5. NO markdown, HTML, emoji, or reviewer metadata',
-      '6. NO generic phrases like "address review comments" or "fix issues"',
+      'ABSOLUTE REQUIREMENTS:',
+      '1. First line: type(scope): specific description (max 72 chars)',
+      '2. Type: fix/feat/refactor/chore/docs',
+      '3. Describe the ACTUAL CHANGE, not "review comments" or "feedback"',
       '',
-      'GOOD EXAMPLES:',
-      '```',
-      'fix: add null check before accessing user.email',
-      '```',
+      '🚫 FORBIDDEN PHRASES (never use these):',
+      '- "address review comments"',
+      '- "address feedback"', 
+      '- "fix issues"',
+      '- "update code"',
+      '- "apply changes"',
+      '- "based on review"',
+      '- Any mention of "review", "comments", "feedback", "requested"',
       '',
-      '```',
-      'refactor: extract validation logic into dedicated helper',
+      'Read the feedback below, understand WHAT was changed, and describe THAT.',
       '',
-      '- Move email validation to validateEmail()',
-      '- Add unit tests for edge cases',
-      '- Update callers to use new helper',
-      '```',
-      '',
-      '```',
-      'fix(auth): handle expired tokens gracefully',
-      '',
-      'Previously threw unhandled exception when token expired during',
-      'request. Now returns 401 with clear error message.',
-      '```',
-      '',
-      'BAD EXAMPLES (do not write like this):',
-      '- "fix: address review comments" (too vague)',
-      '- "fix: update code based on feedback" (says nothing)',
-      '- "fix: changes requested by reviewer" (about process, not code)',
+      `Files changed: ${fileList}`,
       '',
       '---',
       '',
-      'Review comments that were addressed (use these to understand what changed):',
-      '',
     ];
 
-    for (const issue of fixedIssues) {
-      parts.push(`FILE: ${issue.filePath}`);
-      parts.push(`FEEDBACK: ${issue.comment}`);
+    // Show feedback with emphasis on extracting the actual change
+    for (const issue of fixedIssues.slice(0, 10)) { // Limit to avoid huge prompts
+      const fileName = issue.filePath.split('/').pop();
+      // Extract just the key issue, truncate long comments
+      const shortComment = issue.comment.length > 200 
+        ? issue.comment.substring(0, 200) + '...'
+        : issue.comment;
+      parts.push(`[${fileName}] ${shortComment}`);
       parts.push('');
     }
 
     parts.push('---');
     parts.push('');
-    parts.push('Write the commit message now. Output ONLY the commit message, nothing else:');
+    parts.push('Based on the above, what SPECIFIC CODE CHANGES were made? Write the commit message:');
 
     const response = await this.complete(parts.join('\n'));
     let message = response.content.trim();
     
     // Remove any markdown code fences if the LLM wrapped it
-    message = message.replace(/^```\n?/, '').replace(/\n?```$/, '');
+    message = message.replace(/^```[\w]*\n?/g, '').replace(/\n?```$/g, '');
+    message = message.trim();
+    
+    // Check for forbidden phrases and regenerate if found
+    const forbiddenPatterns = [
+      /address(ed|ing)?\s+(review\s+)?comments?/i,
+      /address(ed|ing)?\s+feedback/i,
+      /based on\s+(review|feedback)/i,
+      /review(er)?\s+(comments?|feedback)/i,
+      /requested\s+changes?/i,
+      /apply\s+(the\s+)?changes/i,
+    ];
+    
+    const hasForbidden = forbiddenPatterns.some(p => p.test(message));
+    
+    if (hasForbidden) {
+      debug('Commit message contained forbidden phrase, generating fallback', { message });
+      // Generate a simple but specific message from file names
+      const mainFile = files[0]?.replace(/\.[^.]+$/, '') || 'code';
+      return `fix(${mainFile}): improve implementation based on code review`;
+    }
 
     // Ensure the message starts with a conventional commit prefix
     if (!message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\(.+\))?:/i)) {
-      return `fix: ${message}`;
+      message = `fix: ${message}`;
+    }
+    
+    // Truncate if too long
+    const lines = message.split('\n');
+    if (lines[0].length > 72) {
+      lines[0] = lines[0].substring(0, 69) + '...';
+      message = lines.join('\n');
     }
 
     return message;
