@@ -44,24 +44,28 @@ export class GitHubAPI {
     debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
 
     // Get all check runs for this ref using pagination
-    const allCheckRuns = await this.octokit.paginate(
+    const allCheckRuns: Array<{ status: string; name: string }> = [];
+    for await (const response of this.octokit.paginate.iterator(
       this.octokit.checks.listForRef,
       {
         owner,
         repo,
         ref,
         per_page: 100,
-      },
-      (response) => response.data
-    );
+      }
+    )) {
+      // paginate.iterator returns items directly in response.data for this endpoint
+      const runs = (response.data as any).check_runs || response.data;
+      if (Array.isArray(runs)) {
+        allCheckRuns.push(...runs);
+      }
+    }
 
     const inProgressChecks: string[] = [];
     const pendingChecks: string[] = [];
     let completedChecks = 0;
-    let totalChecks = 0;
 
     for (const check of allCheckRuns) {
-      totalChecks++;
       if (check.status === 'in_progress') {
         inProgressChecks.push(check.name);
       } else if (check.status === 'queued' || check.status === 'pending') {
@@ -70,6 +74,8 @@ export class GitHubAPI {
         completedChecks++;
       }
     }
+
+    const totalChecks = allCheckRuns.length;
 
     // Get combined status
     const { data: status } = await this.octokit.repos.getCombinedStatusForRef({

@@ -92,6 +92,11 @@ export class LLMClient {
       ],
     };
 
+    const maxTokens = requestOptions.max_tokens;
+    if (this.thinkingBudget && this.thinkingBudget >= maxTokens) {
+      throw new Error(`PRR_THINKING_BUDGET (${this.thinkingBudget}) must be < max_tokens (${maxTokens})`);
+    }
+
     // Add extended thinking if budget is set
     if (this.thinkingBudget) {
       requestOptions.thinking = {
@@ -109,8 +114,10 @@ export class LLMClient {
 
     // Extract text content (skip thinking blocks)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const textBlock = response.content.find((block: any) => block.type === 'text');
-    const content = textBlock && 'text' in textBlock ? textBlock.text : '';
+    const content = response.content
+      .filter((block: any) => block.type === 'text' && 'text' in block)
+      .map((block: any) => block.text)
+      .join('');
 
     // Log thinking if present (extended thinking feature)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -260,7 +267,7 @@ NO: <cite the specific code that resolves this issue>`;
       const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
       if (match) {
         const [, id, yesNo, explanation] = match;
-        const cleanId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '');
+        const cleanId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
         results.set(cleanId, {
           exists: yesNo.toUpperCase() === 'YES',
           explanation: explanation.trim(),
@@ -789,15 +796,15 @@ RESOLVED:
       debug('Commit message contained forbidden phrase, generating fallback', { message });
       // Generate a simple but specific message from file names
       const mainFile = files[0]?.replace(/\.[^.]+$/, '') || 'code';
-      return `fix(${mainFile}): improve implementation based on code review`;
+      return `fix(${mainFile}): improve ${mainFile} implementation`;
     }
 
     // Normalize the conventional commit prefix (lowercase, proper colon)
-    const prefixMatch = message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\([^)]+\))?([:\s]+)?/i);
+    const prefixMatch = message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\([^)]+\))?(?=$|[:\s])/i);
     if (prefixMatch) {
       const type = prefixMatch[1].toLowerCase();
       const scope = prefixMatch[2] ?? '';
-      const rest = message.slice(prefixMatch[0].length).trimStart();
+      const rest = message.slice(prefixMatch[0].length).replace(/^[:\s]+/, '').trimStart();
       message = rest ? `${type}${scope}: ${rest}` : `${type}${scope}: update`;
     } else {
       // No valid prefix, add one

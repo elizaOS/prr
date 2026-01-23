@@ -56,7 +56,10 @@ export function createCLI(): Command {
     .version(CAT_BANNER, '-V, --version', 'output the version number')
     .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
     .option('-t, --tool <tool>', 'LLM tool to use for fixing (cursor, opencode, claude-code, aider, codex, llm-api)', 'cursor')
-    .option('-m, --model <model>', 'Model for fixer tool (e.g., opus-4, sonnet-4-thinking, gpt-5)')
+    .option('-m, --model <model>', 'Model for fixer tool (e.g., opus-4, sonnet-4-thinking, gpt-5)', (value) => {
+      validateModelName(value);
+      return value;
+    })
     .option('--auto-push', 'Push and wait for bot re-review in a loop (full automation)', true)
     .option('--no-auto-push', 'Disable auto-push (just push once)')
     .option('--keep-workdir', 'Keep work directory after completion', true)
@@ -101,8 +104,8 @@ export function parseArgs(program: Command): ParsedArgs {
     process.exit(1);
   }
 
-  // Validate model name for security (prevent shell injection)
-  const toolModel = validateModelName(opts.model);
+  // Model name already validated by option parser
+  const toolModel = opts.model;
   
   const validatedTool = validateTool(opts.tool);
   

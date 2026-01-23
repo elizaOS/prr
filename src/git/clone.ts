@@ -57,6 +57,14 @@ export async function cloneOrUpdate(
   if (isExistingRepo) {
     git = simpleGit(workdir);
     
+    // Ensure token is in remote URL for authentication
+    // WHY: Old versions stripped the token, or workdir may have been created
+    // before we embedded tokens. Re-inject to ensure push works.
+    if (githubToken) {
+      await git.raw(['remote', 'set-url', 'origin', authUrl]);
+      debug('Ensured token is in remote URL');
+    }
+    
     if (options?.preserveChanges) {
       // Preserve existing changes - just make sure we're on the right branch
       console.log('Existing workdir found, preserving local changes...');
@@ -156,7 +164,10 @@ export async function checkForConflicts(git: SimpleGit, branch: string): Promise
   };
 }
 
-export async function pullLatest(git: SimpleGit, branch: string): Promise<{ success: boolean; error?: string; stashConflicts?: string[] }> {
+export async function pullLatest(
+  git: SimpleGit,
+  branch: string
+): Promise<{ success: boolean; error?: string; stashConflicts?: string[]; stashLeft?: boolean }> {
   debug('Pulling latest changes', { branch });
   
   // Check for uncommitted changes and stash them
@@ -206,6 +217,7 @@ export async function pullLatest(git: SimpleGit, branch: string): Promise<{ succ
         // Keep it so users can recover their changes
         console.warn('  ⚠ Could not restore stashed changes - kept in stash list');
         console.warn('    Use `git stash list` and `git stash pop` to recover (message: prr-auto-stash-before-pull)');
+        return { success: true, stashLeft: true };
       }
     }
     
@@ -344,7 +356,8 @@ export async function mergeBaseBranch(
 
 export async function startMergeForConflictResolution(
   git: SimpleGit,
-  baseBranch: string
+  baseBranch: string,
+  mergeMessage: string
 ): Promise<{ conflictedFiles: string[]; error?: string }> {
   debug('Starting merge for conflict resolution', { baseBranch });
   
@@ -370,6 +383,21 @@ export async function startMergeForConflictResolution(
     const status = await git.status();
     const conflictedFiles = status.conflicted || [];
     
+    if (conflictedFiles.length === 0) {
+      // No conflicts - either complete the merge or abort if nothing to merge
+      if (!status.isClean()) {
+        // Staged changes exist from merge - commit them
+        const commitResult = await completeMerge(git, mergeMessage);
+        if (!commitResult.success) {
+          await abortMerge(git);
+          return { conflictedFiles: [], error: commitResult.error || 'Failed to complete merge' };
+        }
+      } else {
+        // No changes and no conflicts - merge was a no-op, abort merge state
+        await abortMerge(git);
+      }
+    }
+
     debug('Merge started, conflicts', { conflictedFiles });
     return { conflictedFiles };
   } catch (error) {
@@ -425,7 +453,7 @@ export function hasConflictMarkers(content: string): boolean {
          content.includes('>>>>>>>');
 }
 
-export async function findFilesWithConflictMarkers(workdir: string, files: string[]): Promise<string[]> {
+export function findFilesWithConflictMarkers(workdir: string, files: string[]): string[] {
   const conflicted: string[] = [];
   
   for (const file of files) {

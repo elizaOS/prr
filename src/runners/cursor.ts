@@ -1,6 +1,6 @@
 import { spawn, execFile as execFileCallback } from 'child_process';
 import { promisify } from 'util';
-import { writeFileSync, unlinkSync, readFileSync } from 'fs';
+import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
@@ -12,6 +12,10 @@ const execFile = promisify(execFileCallback);
 // Allows forward slashes for provider-prefixed names like "anthropic/claude-..."
 function isValidModel(model: string): boolean {
   return isValidModelName(model);
+}
+
+function isSafePath(value: string): boolean {
+  return value.length > 0 && !/[\0\r\n]/.test(value);
 }
 
 // Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
@@ -210,8 +214,14 @@ export class CursorRunner implements Runner {
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
+    if (!isSafePath(workdir)) {
+      return { success: false, output: '', error: `Invalid workdir path: ${workdir}` };
+    }
     // Write prompt to a temp file for reference
     const promptFile = join(workdir, '.prr-prompt.txt');
+    if (!isSafePath(promptFile)) {
+      return { success: false, output: '', error: `Invalid prompt file path: ${promptFile}` };
+    }
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
@@ -243,9 +253,8 @@ export class CursorRunner implements Runner {
         args.push('--model', options.model);
       }
       
-      // Read prompt from file and pass as positional argument
-      const promptContent = readFileSync(promptFile, 'utf-8');
-      args.push(promptContent);
+      // Pass prompt content directly as positional argument
+      args.push(prompt);
       
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: ${CURSOR_AGENT_BINARY}${modelInfo} --workspace ${workdir} [prompt]\n`);
@@ -264,47 +273,55 @@ export class CursorRunner implements Runner {
       let stdout = '';
       let stderr = '';
       let lastContent = '';
+      let pending = '';
+
+      const handleLine = (line: string) => {
+        try {
+          const json = JSON.parse(line);
+          // Handle different event types from stream-json
+          if (json.type === 'text' && json.content) {
+            // Incremental text output
+            process.stdout.write(json.content);
+            lastContent += json.content;
+          } else if (json.type === 'tool_use') {
+            // Tool being used
+            console.log(`\n🔧 ${json.name || 'tool'}: ${json.input?.path || json.input?.command || ''}`);
+          } else if (json.type === 'tool_result') {
+            // Tool result - usually verbose, skip or summarize
+            if (json.is_error) {
+              console.log(`   ❌ Error: ${json.content?.slice(0, 100)}...`);
+            }
+          } else if (json.type === 'message_start' || json.type === 'content_block_start') {
+            // Message starting, ignore
+          } else if (json.type === 'message_stop' || json.type === 'content_block_stop') {
+            // Message ended
+            if (lastContent) {
+              process.stdout.write('\n');
+              lastContent = '';
+            }
+          } else if (json.content) {
+            // Fallback: if there's content, print it
+            process.stdout.write(json.content);
+          }
+        } catch {
+          // Not JSON, print raw (might be plain text mode)
+          if (line.trim() && !line.includes('"type"')) {
+            process.stdout.write(line + '\n');
+          }
+        }
+      };
 
       child.stdout?.on('data', (data) => {
         const str = data.toString();
         stdout += str;
+        pending += str;
         
         // Parse stream-json output and display nicely
-        const lines = str.split('\n').filter((l: string) => l.trim());
-        for (const line of lines) {
-          try {
-            const json = JSON.parse(line);
-            // Handle different event types from stream-json
-            if (json.type === 'text' && json.content) {
-              // Incremental text output
-              process.stdout.write(json.content);
-              lastContent += json.content;
-            } else if (json.type === 'tool_use') {
-              // Tool being used
-              console.log(`\n🔧 ${json.name || 'tool'}: ${json.input?.path || json.input?.command || ''}`);
-            } else if (json.type === 'tool_result') {
-              // Tool result - usually verbose, skip or summarize
-              if (json.is_error) {
-                console.log(`   ❌ Error: ${json.content?.slice(0, 100)}...`);
-              }
-            } else if (json.type === 'message_start' || json.type === 'content_block_start') {
-              // Message starting, ignore
-            } else if (json.type === 'message_stop' || json.type === 'content_block_stop') {
-              // Message ended
-              if (lastContent) {
-                process.stdout.write('\n');
-                lastContent = '';
-              }
-            } else if (json.content) {
-              // Fallback: if there's content, print it
-              process.stdout.write(json.content);
-            }
-          } catch {
-            // Not JSON, print raw (might be plain text mode)
-            if (line.trim() && !line.includes('"type"')) {
-              process.stdout.write(line + '\n');
-            }
-          }
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+        const nonEmpty = lines.filter((l: string) => l.trim());
+        for (const line of nonEmpty) {
+          handleLine(line);
         }
       });
 
@@ -318,6 +335,10 @@ export class CursorRunner implements Runner {
       });
 
       child.on('close', (code) => {
+        if (pending.trim()) {
+          handleLine(pending);
+          pending = '';
+        }
         // Clean up prompt file
         try {
           unlinkSync(promptFile);

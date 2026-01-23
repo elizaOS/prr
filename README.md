@@ -154,7 +154,6 @@ prr https://github.com/owner/repo/pull/123 \
 ## How It Works
 
 ### The Fix Loop
-
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │  1. FETCH     → Get review comments from GitHub             │
@@ -253,12 +252,12 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 - `ANTHROPIC_API_KEY` - Required for verification (if using Anthropic), and for `claude-code`, `aider`, `llm-api` runners
 - `OPENAI_API_KEY` - Required for verification (if using OpenAI), and for `codex`, `aider`, `llm-api` runners
 
-**Fixer Tools** (at least one required, use `--tool <name>`):
+**Fixer CLI Tools** (depending on `--tool` option; at least one required):
 - `--tool cursor`: `cursor-agent`
 - `--tool opencode`: `opencode`
 - `--tool aider`: `aider`
 - `--tool claude-code`: `claude` or `claude-code`
-- `--tool codex`: OpenAI Codex access
+- `--tool codex`: `codex` or `openai-codex` (OpenAI Codex access)
 - `--tool llm-api`: no CLI (direct API)
 
 | `--tool` value | CLI Binary | Requirements |
@@ -315,6 +314,6 @@ MIT with one condition:
 
 **Hours Saved Clause**: By using this tool, you agree to track the hours saved from not manually addressing PR review comments. Post your hours saved (with optional war stories) in a GitHub issue:
 
-→ [Report Hours Saved](https://github.com/elizaOS/prr/issues/new?title=Hours+Saved&labels=hours-saved&body=Hours+saved:+%0A%0AStory+(optional):+)
+→ [Report Hours Saved](https://github.com/elizaOS/prr/issues/new?title=Hours+Saved&labels=hours-saved&body=Hours+saved:%0A%0AStory+(optional):)
 
 We're building the case that cats sitting on PRs is a valid engineering strategy. 🐱

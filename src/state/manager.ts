@@ -47,11 +47,10 @@ export class StateManager {
             this.state.headSha = headSha;
           }
           
-          // Log if resuming from interrupted run, but DON'T clear the flags here
-          // Callers should check wasInterrupted() and clear explicitly after handling
+          // Log if resuming from interrupted run; keep flags set for callers
           if (this.state.interrupted) {
             console.log(`Resuming from interrupted run (phase: ${this.state.interruptPhase || 'unknown'})`);
-            // Note: interrupted flag is NOT cleared here - caller must handle via clearInterrupted()
+            // Keep flags set; clear explicitly after handling.
           }
           
           // Compact duplicate lessons from previous runs
@@ -294,18 +293,21 @@ export class StateManager {
     // WHY separate counter: Previously we used `removed` for both key generation
     // and return value calculation, causing incorrect counts
     let uniqueCounter = 0;
+    let removed = 0;
     
     for (const lesson of this.state.lessonsLearned) {
       const keyMatch = lesson.match(/^Fix for ([^:]+:\S+)/);
       const key = keyMatch ? keyMatch[1] : `unique_${uniqueCounter++}`;
       
       // Keep the latest (last seen) lesson for each key
+      if (lessonsByKey.has(key)) {
+        removed++;
+      }
       lessonsByKey.set(key, lesson);
     }
-    
-    const before = this.state.lessonsLearned.length;
+
     this.state.lessonsLearned = Array.from(lessonsByKey.values());
-    return before - this.state.lessonsLearned.length;
+    return removed;
   }
 
   startIteration(): Iteration {

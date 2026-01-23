@@ -189,6 +189,7 @@ Working directory: ${workdir}`;
 
   private async applyFileChanges(workdir: string, response: string): Promise<string[]> {
     const filesModified = new Set<string>();
+    const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     
     // Parse <change path="..."><search>...</search><replace>...</replace></change> blocks
     const changePattern = /<change\s+path="([^"]+)">\s*<search>([\s\S]*?)<\/search>\s*<replace>([\s\S]*?)<\/replace>\s*<\/change>/g;
@@ -221,8 +222,17 @@ Working directory: ${workdir}`;
             debug('Search text not found even with normalized whitespace', { filePath });
             continue;
           }
-          // Normalized match found but exact match failed - skip to avoid incorrect replacement
-          debug('Search text found only with normalized whitespace - skipping for safety', { filePath, searchLength: searchNormalized.length });
+          const patternParts = searchNormalized.split(/\s+/).map(part => escapeRegExp(part)).filter(Boolean);
+          const whitespacePattern = patternParts.join('\\s+');
+          const whitespaceRegex = new RegExp(whitespacePattern, 'm');
+          const newContent = originalContent.replace(whitespaceRegex, replaceText.trim());
+          if (newContent === originalContent) {
+            debug('Search text found only with normalized whitespace but replacement failed', { filePath, searchLength: searchNormalized.length });
+            continue;
+          }
+          writeFileSync(fullPath, newContent, 'utf-8');
+          filesModified.add(filePath);
+          debug('Applied whitespace-normalized search/replace', { filePath });
           continue;
         }
 

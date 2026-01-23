@@ -41,8 +41,11 @@ export function loadConfig(): Config {
   const thinkingBudgetStr = process.env.PRR_THINKING_BUDGET;
   let thinkingBudget: number | undefined;
   if (thinkingBudgetStr) {
-    const parsed = parseInt(thinkingBudgetStr, 10);
-    if (isNaN(parsed) || parsed <= 0) {
+    if (!/^\d+$/.test(thinkingBudgetStr)) {
+      throw new Error(`Invalid PRR_THINKING_BUDGET: "${thinkingBudgetStr}". Must be a positive integer.`);
+    }
+    const parsed = Number(thinkingBudgetStr);
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
       throw new Error(`Invalid PRR_THINKING_BUDGET: "${thinkingBudgetStr}". Must be a positive integer.`);
     }
     thinkingBudget = parsed;
@@ -55,7 +58,7 @@ export function loadConfig(): Config {
       'PRR_LLM_MODEL',
       llmProvider === 'anthropic' ? 'claude-sonnet-4-5-20250929' : 'gpt-5.2'
     ),
-    defaultTool: getEnvOrDefault('PRR_TOOL', 'cursor') as FixerTool,
+    defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'cursor')),
     workdirBase: join(homedir(), '.prr', 'work'),
     anthropicThinkingBudget: thinkingBudget,
   };

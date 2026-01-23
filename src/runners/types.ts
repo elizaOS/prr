@@ -49,11 +49,10 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Cursor: Uses short model names (from `cursor --list-models`)
   // WHY these names: Cursor has its own model aliases, not full API names
   'cursor': [
-    'sonnet-4.5',                      // Claude 4.5 Sonnet - balanced
+    'claude-4-sonnet-thinking',        // Claude 4 Sonnet (thinking) - balanced
     'gpt-5.2',                         // GPT-5.2 - best for coding/agentic
-    'opus-4.5',                        // Claude 4.5 Opus - most capable
-    'gpt-5.2-codex',                   // GPT-5.2 Codex - optimized for code
-    'gemini-3-pro',                    // Gemini 3 Pro - alternative
+    'claude-4-opus-thinking',          // Claude 4 Opus (thinking) - most capable
+    'o3',                              // OpenAI o3 - fast reasoning
   ],
   // Claude Code: Claude 4.5 models only (uses full API names)
   'claude-code': [
