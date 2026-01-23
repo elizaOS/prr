@@ -1623,21 +1623,27 @@ Start your response with \`\`\` and end with \`\`\`.`;
             await push(git, this.prInfo.branch);
             spinner.succeed('Pushed to remote');
 
-            // Trigger CodeRabbit if it's in manual mode
+            // Check CodeRabbit status and trigger if needed
             // WHY: Some repos configure CodeRabbit to require manual trigger (@coderabbitai review)
-            // We detect the mode from .coderabbit.yaml and only trigger if needed
+            // We check if it has reviewed the current commit and trigger only if needed
             try {
-              spinner.start('Checking CodeRabbit mode...');
+              spinner.start('Checking CodeRabbit status...');
+              
+              // Get the latest HEAD sha after push
+              const latestPR = await this.github.getPRInfo(owner, repo, number);
+              
               const result = await this.github.triggerCodeRabbitIfNeeded(
-                owner, repo, number, this.prInfo.branch
+                owner, repo, number, this.prInfo.branch, latestPR.headSha
               );
               
               if (result.mode === 'none') {
                 spinner.info('CodeRabbit not detected on this PR');
+              } else if (result.reviewedCurrentCommit) {
+                spinner.succeed(`CodeRabbit already reviewed current commit ✓`);
               } else if (result.triggered) {
-                spinner.succeed(`CodeRabbit (${result.mode} mode) - triggered review`);
+                spinner.succeed(`CodeRabbit triggered for new commit`);
               } else {
-                spinner.succeed(`CodeRabbit (${result.mode} mode) - will review automatically`);
+                spinner.info(`CodeRabbit (${result.mode}) - ${result.reason}`);
               }
               debug('CodeRabbit check result', result);
             } catch (err) {

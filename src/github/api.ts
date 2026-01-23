@@ -382,6 +382,87 @@ export class GitHubAPI {
   }
 
   /**
+   * Check if a bot has reviewed the current commit (HEAD).
+   * Returns info about the bot's review status.
+   */
+  async getBotReviewStatus(
+    owner: string, 
+    repo: string, 
+    prNumber: number, 
+    botNamePattern: string,
+    currentHeadSha: string
+  ): Promise<{
+    hasReviewed: boolean;
+    isCurrentCommit: boolean;
+    lastReviewSha?: string;
+    lastReviewDate?: string;
+  }> {
+    debug('Checking bot review status', { owner, repo, prNumber, botNamePattern, currentHeadSha });
+    
+    const pattern = new RegExp(botNamePattern, 'i');
+    
+    try {
+      // Get all reviews to find bot's latest
+      const { data: reviews } = await this.octokit.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: 100,
+      });
+      
+      // Find bot's reviews
+      const botReviews = reviews.filter(r => pattern.test(r.user?.login || ''));
+      
+      if (botReviews.length === 0) {
+        // Check issue comments as fallback (some bots use issue comments)
+        const { data: issueComments } = await this.octokit.issues.listComments({
+          owner,
+          repo,
+          issue_number: prNumber,
+          per_page: 100,
+        });
+        
+        const botComments = issueComments.filter(c => pattern.test(c.user?.login || ''));
+        
+        if (botComments.length === 0) {
+          return { hasReviewed: false, isCurrentCommit: false };
+        }
+        
+        // Get latest bot comment
+        const latestComment = botComments[botComments.length - 1];
+        
+        // Check if the comment mentions the current SHA or was made recently
+        // CodeRabbit often includes commit SHA in its comments
+        const mentionsCurrentSha = latestComment.body?.includes(currentHeadSha.substring(0, 7)) || false;
+        
+        return {
+          hasReviewed: true,
+          isCurrentCommit: mentionsCurrentSha,
+          lastReviewDate: latestComment.created_at,
+        };
+      }
+      
+      // Get latest bot review
+      const latestReview = botReviews[botReviews.length - 1];
+      
+      // Check if review is for current commit
+      // Reviews have commit_id field
+      const reviewSha = latestReview.commit_id ?? undefined;
+      const isCurrentCommit = reviewSha === currentHeadSha;
+      
+      return {
+        hasReviewed: true,
+        isCurrentCommit,
+        lastReviewSha: reviewSha,
+        lastReviewDate: latestReview.submitted_at ?? undefined,
+      };
+    } catch (error) {
+      debug('Failed to get bot review status', { error });
+      return { hasReviewed: false, isCurrentCommit: false };
+    }
+  }
+
+  /**
    * Check CodeRabbit's review mode from .coderabbit.yaml config.
    * Returns: 'auto' | 'manual' | 'unknown'
    */
@@ -428,51 +509,74 @@ export class GitHubAPI {
   /**
    * Trigger CodeRabbit review if needed.
    * - Detects if CodeRabbit is configured for this repo
+   * - Checks if it has already reviewed the current commit
    * - Checks if it's in manual mode (needs trigger) vs auto mode
-   * - Only triggers if manual mode detected
+   * - Only triggers if needed
    * 
-   * Returns: { triggered: boolean, mode: string, reason: string }
+   * Returns: { triggered: boolean, mode: string, reason: string, reviewStatus: ... }
    */
   async triggerCodeRabbitIfNeeded(
     owner: string, 
     repo: string, 
     prNumber: number,
-    branch: string
-  ): Promise<{ triggered: boolean; mode: string; reason: string }> {
-    debug('Checking if CodeRabbit trigger needed', { owner, repo, prNumber });
+    branch: string,
+    currentHeadSha: string
+  ): Promise<{ 
+    triggered: boolean; 
+    mode: string; 
+    reason: string;
+    reviewedCurrentCommit: boolean;
+  }> {
+    debug('Checking if CodeRabbit trigger needed', { owner, repo, prNumber, currentHeadSha });
     
-    // First check if CodeRabbit has ever commented (is it even configured?)
-    const hasCodeRabbit = await this.hasBotCommented(owner, repo, prNumber, 'coderabbit');
+    // Check CodeRabbit's current review status
+    const reviewStatus = await this.getBotReviewStatus(owner, repo, prNumber, 'coderabbit', currentHeadSha);
     
-    if (!hasCodeRabbit) {
+    if (!reviewStatus.hasReviewed) {
       return { 
         triggered: false, 
         mode: 'none', 
-        reason: 'CodeRabbit not detected on this PR' 
+        reason: 'CodeRabbit not detected on this PR',
+        reviewedCurrentCommit: false,
       };
     }
     
+    // If CodeRabbit has already reviewed the current commit, no need to trigger
+    if (reviewStatus.isCurrentCommit) {
+      return {
+        triggered: false,
+        mode: 'up-to-date',
+        reason: `CodeRabbit already reviewed current commit (${currentHeadSha.substring(0, 7)})`,
+        reviewedCurrentCommit: true,
+      };
+    }
+    
+    // CodeRabbit exists but hasn't reviewed current commit
     // Check the mode from config
     const mode = await this.getCodeRabbitMode(owner, repo, branch);
     
     if (mode === 'auto') {
+      // Auto mode - CodeRabbit should pick up changes automatically
+      // But we can still check if it's been a while
       return { 
         triggered: false, 
         mode: 'auto', 
-        reason: 'CodeRabbit is in auto mode - will review automatically' 
+        reason: `CodeRabbit (auto mode) reviewing older commit (${reviewStatus.lastReviewSha?.substring(0, 7) || '?'}) - should auto-update`,
+        reviewedCurrentCommit: false,
       };
     }
     
-    // Manual mode or unknown - trigger it
-    debug('Triggering CodeRabbit review', { mode });
+    // Manual mode or unknown - trigger it for the new commit
+    debug('Triggering CodeRabbit review for new commit', { mode, currentHeadSha });
     await this.postComment(owner, repo, prNumber, '@coderabbitai review');
     
     return { 
       triggered: true, 
       mode: mode === 'manual' ? 'manual' : 'unknown',
       reason: mode === 'manual' 
-        ? 'CodeRabbit is in manual mode - triggered review'
-        : 'CodeRabbit mode unknown - triggered review to be safe'
+        ? `CodeRabbit (manual mode) - triggered review for new commit (${currentHeadSha.substring(0, 7)})`
+        : `CodeRabbit needs trigger for new commit (${currentHeadSha.substring(0, 7)})`,
+      reviewedCurrentCommit: false,
     };
   }
 }
