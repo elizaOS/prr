@@ -61,7 +61,7 @@ export function createCLI(): Command {
     .option('--no-batch', 'Disable batched LLM calls (slower, but more reliable for complex issues)')
     .option('--reverify', 'Ignore verification cache, re-check all "fixed" issues from scratch', false)
     .option('--max-context <chars>', 'Max characters per LLM batch (default: 400000)', '400000')
-    .option('--no-bell', 'Disable terminal bell on completion', false);
+    .option('--no-bell', 'Disable terminal bell on completion');
 
   return program;
 }
@@ -97,6 +97,8 @@ export function parseArgs(program: Command): ParsedArgs {
   
   const validatedTool = validateTool(opts.tool);
   
+  // Commander.js: --no-X options create opts.X (not opts.noX)
+  // --no-commit -> opts.commit (true by default, false when --no-commit passed)
   return {
     prUrl: args[0],
     options: {
@@ -108,13 +110,13 @@ export function parseArgs(program: Command): ParsedArgs {
       maxPushIterations: parseInt(opts.maxPushIterations, 10),
       pollInterval: parseInt(opts.pollInterval, 10),
       dryRun: opts.dryRun,
-      noCommit: opts.noCommit ?? false,       // Default: commit
-      noPush: opts.noPush ?? false,           // Default: push
+      noCommit: !opts.commit,                 // --no-commit sets opts.commit=false
+      noPush: !opts.push,                     // --no-push sets opts.push=false
       verbose: opts.verbose ?? true,
-      noBatch: opts.noBatch ?? false,
+      noBatch: !opts.batch,                   // --no-batch sets opts.batch=false
       reverify: opts.reverify ?? false,
       maxContextChars: parseInt(opts.maxContext, 10) || 400_000,
-      noBell: opts.noBell ?? false,
+      noBell: !opts.bell,                     // --no-bell sets opts.bell=false
     },
   };
 }
