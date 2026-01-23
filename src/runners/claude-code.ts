@@ -70,6 +70,12 @@ export class ClaudeCodeRunner implements Runner {
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
+    // Guard: Don't run with empty prompt
+    if (!prompt || prompt.trim().length === 0) {
+      debug('Empty prompt - skipping claude-code run');
+      return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
+    }
+    
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });

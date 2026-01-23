@@ -1,6 +1,18 @@
 import type { UnresolvedIssue, FixPrompt } from './types.js';
 
 export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string[]): FixPrompt {
+  // Guard: Return empty prompt if no issues
+  // WHY: Prevents confusing "Fixing 0 issues" output and wasted fixer runs
+  if (issues.length === 0) {
+    return {
+      prompt: '',
+      summary: 'No issues to fix',
+      detailedSummary: 'No issues to fix',
+      lessonsIncluded: 0,
+      issues: [],
+    };
+  }
+
   const parts: string[] = [];
 
   parts.push('# Code Review Issues to Fix\n');

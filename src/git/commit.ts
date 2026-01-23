@@ -1,5 +1,5 @@
 import type { SimpleGit } from 'simple-git';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { debug } from '../logger.js';
 
 export interface CommitResult {
@@ -34,27 +34,60 @@ export async function squashCommit(
 }
 
 /**
+ * Result of a push attempt, indicating whether it was rejected due to being behind.
+ */
+export interface PushResult {
+  success: boolean;
+  rejected?: boolean;  // True if push was rejected because remote has newer commits
+  error?: string;
+}
+
+/**
  * Push changes to remote with timeout and signal handling.
  * 
  * WHY spawn instead of simple-git: simple-git's promises can't be cancelled,
  * and the underlying git process keeps running even after timeout. Using
  * spawn directly lets us SIGKILL the process on timeout or Ctrl+C.
  * 
- * WHY 60s timeout: Generous for most pushes, but prevents infinite hang
- * if network is unavailable or auth prompt is waiting.
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,
+ * something is wrong (auth prompt, network). 30s is still generous.
+ * 
+ * Returns PushResult instead of throwing for rejected pushes, allowing caller
+ * to handle pull-and-retry logic.
  */
-export async function push(git: SimpleGit, branch: string, force = false): Promise<void> {
-  const PUSH_TIMEOUT_MS = 60_000; // 60 seconds
+export async function push(git: SimpleGit, branch: string, force = false, githubToken?: string): Promise<PushResult> {
+  const PUSH_TIMEOUT_MS = 30_000; // 30 seconds (reduced from 60)
   
   // Get the workdir from the git instance
   const workdir = (git as any)._baseDir || process.cwd();
   
-  debug('Starting git push', { branch, force, workdir });
+  // Check if remote URL has token, inject if missing
+  // WHY: Token may be stripped or repo cloned without it
+  try {
+    const remoteUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf8' }).trim();
+    const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
+    
+    if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {
+      // Inject token into URL
+      const authUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
+      execSync(`git remote set-url origin "${authUrl}"`, { cwd: workdir });
+      debug('Injected token into remote URL for push');
+    } else if (!hasTokenInUrl && !githubToken) {
+      debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
+    } else {
+      debug('Pre-push check', { hasTokenInUrl });
+    }
+  } catch (e) {
+    debug('Could not check/set remote URL', { error: String(e) });
+  }
   
   const args = ['push', 'origin', branch];
   if (force) args.push('--force');
   
-  return new Promise((resolve, reject) => {
+  const fullCommand = `git ${args.join(' ')}`;
+  debug('Starting git push', { command: fullCommand, workdir });
+  
+  return new Promise((resolve) => {
     const gitProcess = spawn('git', args, {
       cwd: workdir,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -64,14 +97,36 @@ export async function push(git: SimpleGit, branch: string, force = false): Promi
     let stderr = '';
     let killed = false;
     
-    gitProcess.stdout?.on('data', (data) => { stdout += data.toString(); });
-    gitProcess.stderr?.on('data', (data) => { stderr += data.toString(); });
+    // Log output as it comes in (git push progress goes to stderr)
+    gitProcess.stdout?.on('data', (data) => { 
+      stdout += data.toString(); 
+      debug('git push stdout', data.toString().trim());
+    });
+    gitProcess.stderr?.on('data', (data) => { 
+      stderr += data.toString();
+      // Show progress (git push writes progress to stderr)
+      const line = data.toString().trim();
+      if (line && !line.includes('Username') && !line.includes('Password')) {
+        debug('git push progress', line);
+      }
+    });
     
     // Timeout - kill the process
     const timeout = setTimeout(() => {
       killed = true;
       gitProcess.kill('SIGKILL');
-      reject(new Error(`Push timed out after 60 seconds. Check network/auth.\nstderr: ${stderr}`));
+      // Include the command in error for debugging
+      const errMsg = [
+        `Push timed out after 30 seconds.`,
+        `Command: ${fullCommand}`,
+        `Workdir: ${workdir}`,
+        `This usually means:`,
+        `  - Network issue (check connectivity)`,
+        `  - Auth issue (token missing/expired)`,
+        `  - Git waiting for interactive input`,
+        stderr ? `stderr: ${stderr}` : '',
+      ].filter(Boolean).join('\n');
+      resolve({ success: false, error: errMsg });
     }, PUSH_TIMEOUT_MS);
     
     // Handle Ctrl+C - kill the git process too
@@ -91,18 +146,100 @@ export async function push(git: SimpleGit, branch: string, force = false): Promi
       
       if (code === 0) {
         debug('Git push completed', { branch });
-        resolve();
+        resolve({ success: true });
       } else {
-        reject(new Error(`Git push failed with code ${code}\nstderr: ${stderr}`));
+        // Check if push was rejected due to being behind remote
+        const isRejected = stderr.includes('rejected') && 
+          (stderr.includes('fetch first') || stderr.includes('non-fast-forward'));
+        
+        if (isRejected) {
+          debug('Push rejected - remote has newer commits', { stderr });
+          resolve({ 
+            success: false, 
+            rejected: true,
+            error: 'Push rejected: remote has newer commits. Need to pull first.',
+          });
+        } else {
+          resolve({ 
+            success: false,
+            error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${stderr}`,
+          });
+        }
       }
     });
     
     gitProcess.on('error', (err) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
-      reject(new Error(`Git push failed: ${err.message}`));
+      resolve({ 
+        success: false,
+        error: `Git push failed: ${err.message}\nCommand: ${fullCommand}\nWorkdir: ${workdir}`,
+      });
     });
   });
+}
+
+/**
+ * Push with auto-retry on rejection.
+ * If push is rejected because remote has newer commits, fetches and rebases, then retries.
+ * 
+ * WHY: Common scenario when CodeRabbit or another user pushes while prr is working.
+ * Auto-retry makes the workflow smoother without manual intervention.
+ * 
+ * WHY rebase instead of merge: Keeps history clean. Our fix commits go on top.
+ */
+export async function pushWithRetry(
+  git: SimpleGit, 
+  branch: string, 
+  options?: { force?: boolean; onPullNeeded?: () => void; githubToken?: string }
+): Promise<void> {
+  const result = await push(git, branch, options?.force, options?.githubToken);
+  
+  if (result.success) {
+    return;
+  }
+  
+  if (result.rejected) {
+    debug('Push rejected, attempting fetch + rebase + retry');
+    options?.onPullNeeded?.();
+    
+    // Fetch and rebase to handle divergent branches
+    try {
+      // First fetch
+      await git.fetch('origin', branch);
+      debug('Fetch successful');
+      
+      // Then rebase our commits on top of remote
+      await git.rebase([`origin/${branch}`]);
+      debug('Rebase successful, retrying push');
+    } catch (syncError) {
+      const syncMsg = syncError instanceof Error ? syncError.message : String(syncError);
+      
+      // If rebase failed, try to abort it
+      try {
+        await git.rebase(['--abort']);
+      } catch {
+        // Ignore abort errors
+      }
+      
+      // Check if it's a conflict
+      if (syncMsg.includes('CONFLICT') || syncMsg.includes('conflict')) {
+        throw new Error(`Push rejected and rebase has conflicts. Manual resolution needed.\nOriginal: ${result.error}`);
+      }
+      
+      throw new Error(`Push rejected and sync failed: ${syncMsg}\nOriginal: ${result.error}`);
+    }
+    
+    // Retry push
+    const retryResult = await push(git, branch, options?.force, options?.githubToken);
+    if (!retryResult.success) {
+      throw new Error(`Push failed after rebase: ${retryResult.error}`);
+    }
+    return;
+  }
+  
+  // Non-rejected failure
+  throw new Error(result.error || 'Push failed');
 }
 
 export async function getCurrentBranch(git: SimpleGit): Promise<string> {

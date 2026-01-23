@@ -62,7 +62,22 @@ export async function cloneOrUpdate(
     // before we embedded tokens. Re-inject to ensure push works.
     if (githubToken) {
       await git.raw(['remote', 'set-url', 'origin', authUrl]);
-      debug('Ensured token is in remote URL');
+      debug('Ensured token is in remote URL', { 
+        hasToken: true, 
+        tokenLength: githubToken.length,
+        urlContainsAt: authUrl.includes('@'),
+      });
+    } else {
+      debug('No GitHub token provided - push may require manual auth');
+      // Get current remote URL to check if it has a token
+      try {
+        const remotes = await git.getRemotes(true);
+        const origin = remotes.find(r => r.name === 'origin');
+        const hasTokenInUrl = origin?.refs?.push?.includes('@') || false;
+        debug('Remote URL status', { hasTokenInUrl });
+      } catch {
+        // Ignore errors checking remote
+      }
     }
     
     if (options?.preserveChanges) {
@@ -164,10 +179,22 @@ export async function checkForConflicts(git: SimpleGit, branch: string): Promise
   };
 }
 
+/**
+ * Pull latest changes from remote, handling divergent branches and local changes.
+ * 
+ * WHY rebase: Keeps history clean. prr's commits should go on top of remote changes.
+ * WHY auto-stash: Interrupted runs leave uncommitted changes that block pulls.
+ * 
+ * Flow:
+ * 1. Stash any uncommitted changes
+ * 2. Fetch latest from remote
+ * 3. If branches diverged, rebase local commits on top of remote
+ * 4. Pop stash and handle any conflicts
+ */
 export async function pullLatest(
   git: SimpleGit,
   branch: string
-): Promise<{ success: boolean; error?: string; stashConflicts?: string[]; stashLeft?: boolean }> {
+): Promise<{ success: boolean; error?: string; stashConflicts?: string[]; stashLeft?: boolean; rebased?: boolean }> {
   debug('Pulling latest changes', { branch });
   
   // Check for uncommitted changes and stash them
@@ -192,8 +219,83 @@ export async function pullLatest(
     }
   }
   
+  // Helper to restore stash on failure
+  const restoreStashOnFailure = async () => {
+    if (didStash) {
+      debug('Restoring stash after failure');
+      try {
+        await git.stash(['pop']);
+        console.log('  Restored stashed changes');
+      } catch {
+        console.log('  ⚠ Changes still in stash (use `git stash pop` to restore)');
+      }
+    }
+  };
+  
   try {
-    await git.pull('origin', branch);
+    // First, fetch to see what we're dealing with
+    await git.fetch('origin', branch);
+    
+    // Check if branches have diverged
+    const postFetchStatus = await git.status();
+    const ahead = postFetchStatus.ahead || 0;
+    const behind = postFetchStatus.behind || 0;
+    
+    debug('Post-fetch status', { ahead, behind });
+    
+    let rebased = false;
+    
+    if (ahead > 0 && behind > 0) {
+      // Branches have diverged - need to rebase our commits on top of remote
+      debug('Branches diverged, rebasing local commits on remote');
+      console.log(`  Rebasing ${ahead} local commit(s) onto ${behind} remote commit(s)...`);
+      
+      try {
+        await git.rebase([`origin/${branch}`]);
+        rebased = true;
+        console.log('  Rebase successful');
+      } catch (rebaseError) {
+        const rebaseMsg = rebaseError instanceof Error ? rebaseError.message : String(rebaseError);
+        debug('Rebase failed', { error: rebaseMsg });
+        
+        // Check for rebase conflicts
+        if (rebaseMsg.includes('CONFLICT') || rebaseMsg.includes('conflict')) {
+          // Abort the rebase and restore state
+          try {
+            await git.rebase(['--abort']);
+            debug('Aborted failed rebase');
+          } catch {
+            // Ignore abort errors
+          }
+          await restoreStashOnFailure();
+          return { success: false, error: `Rebase conflicts detected. Manual resolution needed.` };
+        }
+        
+        // Other rebase failure - abort and fall back to merge
+        try {
+          await git.rebase(['--abort']);
+        } catch {
+          // Ignore
+        }
+        
+        debug('Rebase failed, falling back to merge');
+        console.log('  Rebase failed, trying merge...');
+        
+        try {
+          await git.merge([`origin/${branch}`]);
+          console.log('  Merged remote changes');
+        } catch (mergeError) {
+          const mergeMsg = mergeError instanceof Error ? mergeError.message : String(mergeError);
+          await restoreStashOnFailure();
+          return { success: false, error: `Failed to sync with remote: ${mergeMsg}` };
+        }
+      }
+    } else if (behind > 0) {
+      // Just behind - simple fast-forward pull
+      debug('Fast-forward pull');
+      await git.pull('origin', branch, { '--ff-only': null });
+    }
+    // If only ahead (or equal), nothing to pull
     
     // If we stashed, try to restore
     if (didStash) {
@@ -210,36 +312,32 @@ export async function pullLatest(
         if (postPopStatus.conflicted && postPopStatus.conflicted.length > 0) {
           console.log(`  ⚠ Stash conflicts in: ${postPopStatus.conflicted.join(', ')}`);
           // Keep the stash conflicts - user's changes need to be reconciled
-          return { success: true, stashConflicts: postPopStatus.conflicted };
+          return { success: true, stashConflicts: postPopStatus.conflicted, rebased };
         }
         
         // If pop failed but no conflicts, the stash is still there
         // Keep it so users can recover their changes
         console.warn('  ⚠ Could not restore stashed changes - kept in stash list');
         console.warn('    Use `git stash list` and `git stash pop` to recover (message: prr-auto-stash-before-pull)');
-        return { success: true, stashLeft: true };
+        return { success: true, stashLeft: true, rebased };
       }
     }
     
-    return { success: true };
+    return { success: true, rebased };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    debug('Pull/sync failed', { error: message });
     
-    // If pull failed and we stashed, restore the stash
-    if (didStash) {
-      debug('Pull failed, restoring stash');
-      try {
-        await git.stash(['pop']);
-        console.log('  Restored stashed changes (pull failed)');
-      } catch {
-        // Stash restore failed too - leave it in stash list
-        console.log('  ⚠ Changes still in stash (use `git stash pop` to restore)');
-      }
-    }
+    await restoreStashOnFailure();
     
     // Check if it's a merge conflict
     if (message.includes('CONFLICT') || message.includes('conflict')) {
       return { success: false, error: 'Merge conflicts detected' };
+    }
+    
+    // Check for divergent branches error (shouldn't happen now but just in case)
+    if (message.includes('divergent branches') || message.includes('Need to specify how to reconcile')) {
+      return { success: false, error: 'Branches have diverged. This should have been handled automatically - please report this bug.' };
     }
     
     return { success: false, error: message };

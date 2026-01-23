@@ -62,6 +62,12 @@ export class OpencodeRunner implements Runner {
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
+    // Guard: Don't run with empty prompt
+    if (!prompt || prompt.trim().length === 0) {
+      debug('Empty prompt - skipping opencode run');
+      return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
+    }
+    
     // Write prompt to a temp file to avoid command line length limits
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');

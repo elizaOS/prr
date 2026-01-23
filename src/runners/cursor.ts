@@ -218,6 +218,14 @@ export class CursorRunner implements Runner {
     if (!isSafePath(workdir)) {
       return { success: false, output: '', error: `Invalid workdir path: ${workdir}` };
     }
+    
+    // Guard: Don't run with empty prompt
+    // WHY: Empty prompt means nothing to fix - cursor-agent will error
+    if (!prompt || prompt.trim().length === 0) {
+      debug('Empty prompt - skipping cursor run');
+      return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
+    }
+    
     // Write prompt to a temp file for reference
     const promptFile = join(workdir, '.prr-prompt.txt');
     if (!isSafePath(promptFile)) {

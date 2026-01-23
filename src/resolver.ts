@@ -18,7 +18,7 @@ import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
 import type { SimpleGit } from 'simple-git';
-import { squashCommit, push } from './git/commit.js';
+import { squashCommit, pushWithRetry } from './git/commit.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from './logger.js';
 
@@ -1246,8 +1246,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 debug('Commit created', commit);
                 
                 if (this.options.autoPush && !this.options.noPush) {
+                  // Log command BEFORE spinner so user can copy it if needed
+                  console.log(chalk.gray(`  Running: git push origin ${this.prInfo.branch}`));
+                  console.log(chalk.gray(`  Workdir: ${this.workdir}`));
                   spinner.start('Pushing changes...');
-                  await push(git, this.prInfo.branch);
+                  await pushWithRetry(git, this.prInfo.branch, {
+                    onPullNeeded: () => {
+                      spinner.text = 'Push rejected, pulling and retrying...';
+                    },
+                    githubToken: this.config.githubToken,
+                  });
                   spinner.succeed('Pushed to remote');
                 } else if (!this.options.noPush) {
                   console.log(chalk.blue('\nChanges committed locally. Use --auto-push to push automatically.'));
@@ -1267,12 +1275,30 @@ Start your response with \`\`\` and end with \`\`\`.`;
           break;
         }
 
+        // Skip fix loop if there are no issues to fix
+        // WHY: After final audit passes or all issues are resolved, we shouldn't
+        // run the fixer with an empty prompt - it wastes time and may cause errors
+        if (unresolvedIssues.length === 0) {
+          debug('No unresolved issues - skipping fix loop');
+          console.log(chalk.green('\n✓ All issues resolved - nothing to fix'));
+          break;
+        }
+
         // Inner fix loop
         let fixIteration = 0;
         let allFixed = false;
         const maxFixIterations = this.options.maxFixIterations || Infinity;  // 0 = unlimited
 
         while (fixIteration < maxFixIterations && !allFixed) {
+          // CRITICAL: Check for empty issues at start of each iteration
+          // WHY: After verification, unresolvedIssues can be filtered to 0
+          // but allFixed might still be false (e.g., if fixer made no changes)
+          if (unresolvedIssues.length === 0) {
+            debug('No issues to fix at start of iteration - breaking');
+            console.log(chalk.green('\n✓ All issues resolved'));
+            break;
+          }
+          
           fixIteration++;
           const iterLabel = this.options.maxFixIterations ? `${fixIteration}/${maxFixIterations}` : `${fixIteration}`;
           const currentModel = this.getCurrentModel();
@@ -1321,6 +1347,15 @@ Start your response with \`\`\` and end with \`\`\`.`;
           
           debug('Fix prompt length', prompt.length);
           debug('Lessons learned count', lessonsIncluded);
+
+          // Guard: Don't run fixer with empty prompt
+          // WHY: Empty prompt = nothing to fix, fixer will fail or do nothing
+          if (prompt.length === 0 || unresolvedIssues.length === 0) {
+            debug('Empty prompt or no issues - skipping fixer');
+            console.log(chalk.green('\n✓ Nothing to fix - all issues resolved'));
+            allFixed = true;
+            break;
+          }
 
           // Run fixer tool
           debugStep('RUNNING FIXER TOOL');
@@ -1648,8 +1683,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // Push if auto-push mode AND not in no-push mode
           if (this.options.autoPush && !this.options.noPush) {
             debugStep('PUSH PHASE');
+            // Log command BEFORE spinner so user can copy it if needed
+            console.log(chalk.gray(`  Running: git push origin ${this.prInfo.branch}`));
+            console.log(chalk.gray(`  Workdir: ${this.workdir}`));
             spinner.start('Pushing changes...');
-            await push(git, this.prInfo.branch);
+            await pushWithRetry(git, this.prInfo.branch, {
+              onPullNeeded: () => {
+                spinner.text = 'Push rejected, pulling and retrying...';
+              },
+              githubToken: this.config.githubToken,
+            });
             spinner.succeed('Pushed to remote');
 
             // Check CodeRabbit status and trigger if needed

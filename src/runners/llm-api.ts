@@ -61,6 +61,12 @@ export class LLMAPIRunner implements Runner {
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
+    // Guard: Don't run with empty prompt
+    if (!prompt || prompt.trim().length === 0) {
+      debug('Empty prompt - skipping LLM API run');
+      return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
+    }
+    
     debug('LLM API runner starting', { provider: this.provider, workdir, promptLength: prompt.length });
 
     const { anthropic, openai } = this.getClient();
