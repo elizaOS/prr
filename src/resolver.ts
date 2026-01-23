@@ -164,30 +164,57 @@ export class PRResolver {
    * gives each tool a chance before we exhaust all options on one tool
    */
   private tryRotation(): boolean {
-    // If we've tried enough models on this tool, switch to next tool first
+    // Track which tools we've fully exhausted (tried all models)
+    const exhaustedTools = new Set<string>();
+    
+    // Check if current tool is exhausted
+    const checkToolExhausted = (runnerName: string): boolean => {
+      const models = this.getModelsForRunner(this.runners.find(r => r.name === runnerName)!);
+      const currentIndex = this.modelIndices.get(runnerName) || 0;
+      return currentIndex >= models.length - 1;  // On last model or beyond
+    };
+    
+    // If we've tried enough models on this tool, switch to next tool
     if (this.modelsTriedThisToolRound >= PRResolver.MAX_MODELS_PER_TOOL_ROUND && this.runners.length > 1) {
-      // Switch tool, but the new tool might also have tried its quota
-      // Keep switching until we find a tool with models to try or we've cycled all
+      // Mark current tool if exhausted
+      if (checkToolExhausted(this.runner.name)) {
+        exhaustedTools.add(this.runner.name);
+      }
+      
+      // Find a tool that has models left to try
       const startingRunner = this.currentRunnerIndex;
+      let foundTool = false;
       
       do {
-        if (this.switchToNextRunner()) {
-          // Check if this tool still has models to try
-          const models = this.getModelsForRunner(this.runner);
-          const currentIndex = this.modelIndices.get(this.runner.name) || 0;
-          
-          if (currentIndex < models.length - 1) {
-            // This tool has more models, rotate to next one
-            if (this.rotateModel()) {
-              this.modelFailuresInCycle = 0;
-              return true;
-            }
-          }
-          // This tool is exhausted, try next tool
+        this.switchToNextRunner();
+        
+        // Check if this tool has more models to try
+        if (!checkToolExhausted(this.runner.name)) {
+          // This tool has more models - rotate to next one and use it
+          this.rotateModel();
+          this.modelFailuresInCycle = 0;
+          foundTool = true;
+          break;
+        } else {
+          exhaustedTools.add(this.runner.name);
         }
-      } while (this.currentRunnerIndex !== startingRunner);
+      } while (this.currentRunnerIndex !== startingRunner && exhaustedTools.size < this.runners.length);
       
-      // All tools exhausted their models
+      if (foundTool) {
+        return true;
+      }
+      
+      // All tools exhausted - reset all model indices and start fresh round
+      if (exhaustedTools.size >= this.runners.length) {
+        console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
+        for (const runner of this.runners) {
+          this.modelIndices.set(runner.name, 0);
+          this.stateManager.setModelIndex(runner.name, 0);
+        }
+        this.modelsTriedThisToolRound = 0;
+        return true;  // Will retry with first model on current tool
+      }
+      
       return false;
     }
     
@@ -197,26 +224,41 @@ export class PRResolver {
       return true;
     }
     
-    // Current tool exhausted, try switching to another tool
+    // Current tool exhausted its models, try switching to another tool
     if (this.runners.length > 1) {
       const startingRunner = this.currentRunnerIndex;
       
       do {
-        if (this.switchToNextRunner()) {
-          const models = this.getModelsForRunner(this.runner);
-          const currentIndex = this.modelIndices.get(this.runner.name) || 0;
-          
-          if (currentIndex < models.length - 1) {
-            if (this.rotateModel()) {
-              this.modelFailuresInCycle = 0;
-              return true;
-            }
-          }
+        this.switchToNextRunner();
+        
+        if (!checkToolExhausted(this.runner.name)) {
+          // This tool has more models
+          this.rotateModel();
+          this.modelFailuresInCycle = 0;
+          return true;
         }
       } while (this.currentRunnerIndex !== startingRunner);
+      
+      // All tools exhausted - reset and start fresh
+      console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
+      for (const runner of this.runners) {
+        this.modelIndices.set(runner.name, 0);
+        this.stateManager.setModelIndex(runner.name, 0);
+      }
+      this.modelsTriedThisToolRound = 0;
+      return true;
     }
     
-    // Nothing left to rotate
+    // Only one tool and it's exhausted - reset it
+    const models = this.getModelsForRunner(this.runner);
+    if (models.length > 0) {
+      console.log(chalk.yellow('\n  Tool exhausted, restarting model rotation...'));
+      this.modelIndices.set(this.runner.name, 0);
+      this.stateManager.setModelIndex(this.runner.name, 0);
+      this.modelsTriedThisToolRound = 0;
+      return true;
+    }
+    
     return false;
   }
 
