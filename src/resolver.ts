@@ -673,18 +673,18 @@ Start your response with \`\`\` and end with \`\`\`.`;
               console.log(chalk.gray('  (PR still has conflicts with base branch - human can resolve later)'));
               
               // Continue to fix review comments instead of returning
+            } else {
+              // All conflicts resolved - stage files and complete the merge
+              await markConflictsResolved(git, codeFiles);
+              const commitResult = await completeMerge(git, `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`);
+              
+              if (!commitResult.success) {
+                console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
+                return;
+              }
+              
+              console.log(chalk.green(`✓ Conflicts resolved and merged ${this.prInfo.baseBranch}`));
             }
-            
-            // Stage all resolved files and complete the merge
-            await markConflictsResolved(git, codeFiles);
-            const commitResult = await completeMerge(git, `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`);
-            
-            if (!commitResult.success) {
-              console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
-              return;
-            }
-            
-            console.log(chalk.green(`✓ Conflicts resolved and merged ${this.prInfo.baseBranch}`));
           }
         } else {
           console.log(chalk.green(`✓ Successfully merged ${this.prInfo.baseBranch} into ${this.prInfo.branch}`));
@@ -1215,6 +1215,17 @@ Start your response with \`\`\` and end with \`\`\`.`;
       printTimingSummary();
       printTokenSummary();
       spinner.fail('Error');
+      
+      // Cleanup workdir on error if keepWorkdir is false
+      if (!this.options.keepWorkdir && this.workdir) {
+        try {
+          await cleanupWorkdir(this.workdir);
+          console.log(chalk.gray('Workdir cleaned up after error'));
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      
       throw error;
     }
   }

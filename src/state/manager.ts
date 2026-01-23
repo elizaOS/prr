@@ -178,11 +178,11 @@ export class StateManager {
     if (!this.state) return 0;
     
     const lessonsByKey = new Map<string, string>();
-    let removed = 0;
+    let uniqueCounter = 0;  // Separate counter for generating unique keys
     
     for (const lesson of this.state.lessonsLearned) {
       const keyMatch = lesson.match(/^Fix for ([^:]+:\S+)/);
-      const key = keyMatch ? keyMatch[1] : `unique_${removed++}`;
+      const key = keyMatch ? keyMatch[1] : `unique_${uniqueCounter++}`;
       
       // Keep the latest (last seen) lesson for each key
       lessonsByKey.set(key, lesson);
