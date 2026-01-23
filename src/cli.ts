@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import type { FixerTool } from './config.js';
+import { validateTool, type FixerTool } from './config.js';
 
 export interface CLIOptions {
   tool: FixerTool;
@@ -44,7 +44,13 @@ export function createCLI(): Command {
     .version(CAT_BANNER, '-V, --version', 'output the version number')
     .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
     .option('-t, --tool <tool>', 'LLM tool to use for fixing (cursor, opencode, claude-code, aider, codex, llm-api)', 'cursor')
-    .option('-m, --model <model>', 'Model for fixer tool (e.g., opus-4, sonnet-4-thinking, gpt-5)')
+    .option('-m, --model <model>', 'Model for fixer tool (e.g., opus-4, sonnet-4-thinking, gpt-5)', (value) => {
+      if (value && !/^[A-Za-z0-9-]+$/.test(value)) {
+        console.error('Error: Model name can only contain alphanumeric characters and hyphens');
+        process.exit(1);
+      }
+      return value;
+    })
     .option('--auto-push', 'Automatically push after fixes are verified', false)
     .option('--keep-workdir', 'Keep work directory after completion', true)
     .option('--max-fix-iterations <n>', 'Maximum fix iterations per push cycle (0 = unlimited)', '0')
@@ -93,10 +99,17 @@ export function parseArgs(program: Command): ParsedArgs {
   // --commit overrides --no-commit
   const noCommit = opts.commit ? false : (opts.noCommit ?? true);
   
+  const validatedTool = validateTool(opts.tool);
+  if (!validatedTool) {
+    console.error(chalk.red(`Invalid tool: "${opts.tool}"`));
+    console.error(chalk.gray('Supported tools: cursor, opencode, claude-code, aider, codex, llm-api'));
+    process.exit(1);
+  }
+  
   return {
     prUrl: args[0],
     options: {
-      tool: opts.tool as FixerTool,
+      tool: validatedTool as FixerTool,
       toolModel,
       autoPush: opts.autoPush,
       keepWorkdir: opts.keepWorkdir ?? true,

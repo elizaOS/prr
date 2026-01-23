@@ -444,7 +444,45 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // Handle lock files first - delete and regenerate
             if (lockFiles.length > 0) {
               console.log(chalk.cyan('\n  Handling lock files...'));
-              const { execSync } = await import('child_process');
+              const { spawn } = await import('child_process');
+              const fs = await import('fs');
+              const path = await import('path');
+              
+              // Validate workdir using realpath to prevent symlink attacks
+              let resolvedWorkdir: string;
+              try {
+                resolvedWorkdir = fs.realpathSync(this.workdir);
+                const resolvedBase = fs.realpathSync(this.config.workdirBase);
+                if (!resolvedWorkdir.startsWith(resolvedBase + path.sep) && resolvedWorkdir !== resolvedBase) {
+                  throw new Error(`Workdir ${resolvedWorkdir} is outside base ${resolvedBase}`);
+                }
+              } catch (e) {
+                console.log(chalk.red(`    ✗ Workdir validation failed: ${e}`));
+                return;
+              }
+              
+              // Whitelist of allowed package manager commands (command -> args)
+              const ALLOWED_COMMANDS: Record<string, string[]> = {
+                'bun install': ['bun', 'install'],
+                'npm install': ['npm', 'install'],
+                'yarn install': ['yarn', 'install'],
+                'pnpm install': ['pnpm', 'install'],
+                'cargo generate-lockfile': ['cargo', 'generate-lockfile'],
+                'bundle install': ['bundle', 'install'],
+                'poetry lock': ['poetry', 'lock'],
+                'composer install': ['composer', 'install'],
+              };
+              
+              // Minimal environment whitelist for package managers
+              const ENV_WHITELIST = ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TERM', 'SHELL', 
+                                     'CARGO_HOME', 'RUSTUP_HOME', 'GOPATH', 'GOROOT',
+                                     'NODE_OPTIONS', 'NPM_TOKEN', 'YARN_ENABLE_IMMUTABLE_INSTALLS'];
+              const safeEnv: Record<string, string> = {};
+              for (const key of ENV_WHITELIST) {
+                if (process.env[key]) {
+                  safeEnv[key] = process.env[key]!;
+                }
+              }
               
               // Group lock files by their regenerate command
               const regenerateCommands = new Set<string>();
@@ -453,10 +491,15 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 const info = getLockFileInfo(lockFile);
                 if (info) {
                   // Delete the lock file
-                  const fullPath = join(this.workdir, lockFile);
+                  const fullPath = path.join(resolvedWorkdir, lockFile);
+                  // Verify the file path is still within workdir after join
+                  const resolvedFullPath = path.resolve(fullPath);
+                  if (!resolvedFullPath.startsWith(resolvedWorkdir + path.sep)) {
+                    console.log(chalk.yellow(`    ⚠ Skipping ${lockFile}: path traversal detected`));
+                    continue;
+                  }
                   try {
-                    const fs = await import('fs');
-                    fs.unlinkSync(fullPath);
+                    fs.unlinkSync(resolvedFullPath);
                     console.log(chalk.green(`    ✓ Deleted ${lockFile}`));
                     regenerateCommands.add(info.regenerateCmd);
                   } catch (e) {
@@ -465,18 +508,48 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 }
               }
               
-              // Run regenerate commands
+              // Run regenerate commands using spawn with validated args
               for (const cmd of regenerateCommands) {
+                const cmdArgs = ALLOWED_COMMANDS[cmd];
+                if (!cmdArgs) {
+                  console.log(chalk.yellow(`    ⚠ Skipping unknown command: ${cmd}`));
+                  continue;
+                }
+                
+                const [executable, ...args] = cmdArgs;
                 console.log(chalk.cyan(`    Running: ${cmd}`));
+                
                 try {
-                  execSync(cmd, { 
-                    cwd: this.workdir, 
-                    stdio: 'inherit',
-                    timeout: 300000 // 5 min timeout for installs
+                  await new Promise<void>((resolve, reject) => {
+                    const proc = spawn(executable, args, {
+                      cwd: resolvedWorkdir,
+                      stdio: 'inherit',
+                      env: safeEnv,
+                      shell: false, // Never use shell
+                    });
+                    
+                    const timeout = setTimeout(() => {
+                      proc.kill('SIGTERM');
+                      reject(new Error('Timeout exceeded (60s)'));
+                    }, 60000); // 60 second timeout
+                    
+                    proc.on('close', (code) => {
+                      clearTimeout(timeout);
+                      if (code === 0) {
+                        resolve();
+                      } else {
+                        reject(new Error(`Exit code ${code}`));
+                      }
+                    });
+                    
+                    proc.on('error', (err) => {
+                      clearTimeout(timeout);
+                      reject(err);
+                    });
                   });
                   console.log(chalk.green(`    ✓ ${cmd} completed`));
                 } catch (e) {
-                  console.log(chalk.yellow(`    ⚠ ${cmd} failed, continuing...`));
+                  console.log(chalk.yellow(`    ⚠ ${cmd} failed: ${e}, continuing...`));
                 }
               }
               
