@@ -1,5 +1,5 @@
 import { simpleGit, SimpleGit } from 'simple-git';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { debug } from '../logger.js';
 
@@ -195,13 +195,9 @@ export async function pullLatest(git: SimpleGit, branch: string): Promise<{ succ
         }
         
         // If pop failed but no conflicts, the stash is still there
-        // Drop it since pull succeeded and we don't want stale changes
-        console.log('  ⚠ Could not restore stashed changes (may have been outdated)');
-        try {
-          await git.stash(['drop']);
-        } catch {
-          // Ignore drop errors
-        }
+        // Keep it so users can recover their changes
+        console.warn('  ⚠ Could not restore stashed changes - kept in stash list');
+        console.warn('    Use `git stash list` and `git stash pop` to recover (message: prr-auto-stash-before-pull)');
       }
     }
     
@@ -325,6 +321,7 @@ export async function mergeBaseBranch(
     // Check for conflicts
     const status = await git.status();
     if (status.conflicted && status.conflicted.length > 0) {
+      await abortMerge(git);
       return { 
         success: false, 
         conflictedFiles: status.conflicted,
@@ -332,6 +329,7 @@ export async function mergeBaseBranch(
       };
     }
     
+    await abortMerge(git);
     return { success: false, error: message };
   }
 }
@@ -420,9 +418,6 @@ export function hasConflictMarkers(content: string): boolean {
 }
 
 export async function findFilesWithConflictMarkers(workdir: string, files: string[]): Promise<string[]> {
-  const { readFileSync, existsSync } = await import('fs');
-  const { join } = await import('path');
-  
   const conflicted: string[] = [];
   
   for (const file of files) {

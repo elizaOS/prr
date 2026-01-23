@@ -1,16 +1,32 @@
-import { spawn } from 'child_process';
-import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { writeFileSync, unlinkSync, createReadStream } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
-
-const exec = promisify(execCallback);
+import { isValidModelName } from '../config.js';
 
 // Validate model name to prevent injection (defense in depth)
 function isValidModel(model: string): boolean {
-  return /^[A-Za-z0-9._-]+$/.test(model);
+  return isValidModelName(model);
+}
+
+// Helper to run a command without shell (prevents injection)
+function execNoShell(command: string, args: string[] = []): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (data) => { stdout += data.toString(); });
+    child.stderr?.on('data', (data) => { stderr += data.toString(); });
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        reject(new Error(`Command failed with code ${code}`));
+      }
+    });
+    child.on('error', reject);
+  });
 }
 
 export class OpencodeRunner implements Runner {
@@ -19,7 +35,7 @@ export class OpencodeRunner implements Runner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which opencode');
+      await execNoShell('which', ['opencode']);
       return true;
     } catch {
       return false;
@@ -35,8 +51,8 @@ export class OpencodeRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec('opencode --version 2>&1');
-      version = stdout.trim();
+      const { stdout, stderr } = await execNoShell('opencode', ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might not be supported
     }

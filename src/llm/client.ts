@@ -755,10 +755,14 @@ RESOLVED:
     message = message.replace(/^```\n?/, '').replace(/\n?```$/, '');
 
     // Ensure the message starts with a conventional commit prefix
-    if (!message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\(.+\))?:/i)) {
-      return `fix: ${message}`;
+    const prefixMatch = message.match(/^(fix|feat|chore|refactor|docs|style|test|perf)(\(.+\))?([:\s]+)?/i);
+    if (prefixMatch) {
+      const type = prefixMatch[1].toLowerCase();
+      const scope = prefixMatch[2] ?? '';
+      const rest = message.slice(prefixMatch[0].length).trimStart();
+      return rest ? `${type}${scope}: ${rest}` : `${type}${scope}:`;
     }
 
-    return message;
+    return `fix: ${message}`;
   }
 }

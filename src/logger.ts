@@ -290,7 +290,6 @@ export function printTokenSummary(): void {
   console.log(chalk.cyan('\n🔤 Token Usage:'));
   
   let sessionTotals = { totalInput: 0, totalOutput: 0, totalCalls: 0 };
-  let overallTotals = { totalInput: 0, totalOutput: 0, totalCalls: 0 };
   
   if (hasSession) {
     sessionTotals = printTokenSection('This session', sessionTokenUsage, true);
@@ -298,6 +297,7 @@ export function printTokenSummary(): void {
   
   // Only show overall if different from session (i.e., resumed)
   if (hasOverall) {
+    let overallTotals = { totalInput: 0, totalOutput: 0, totalCalls: 0 };
     for (const { inputTokens, outputTokens, calls } of overallTokenUsage) {
       overallTotals.totalInput += inputTokens;
       overallTotals.totalOutput += outputTokens;

@@ -304,7 +304,7 @@ git.remote(['set-url', 'origin', 'https://github.com/...']);
 ## Security Considerations
 
 ### Shell Injection Prevention
-- `--model` validated against `/^[A-Za-z0-9._-]+$/`
+- `--model` validated against `/^[A-Za-z0-9._\/-]+$/`
 - All runners use `spawn(binary, args)` not `sh -c "..."`
 - Prompts passed via file read, not shell interpolation
 

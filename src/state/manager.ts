@@ -265,7 +265,8 @@ export class StateManager {
     if (!this.state) return 0;
     
     const lessonsByKey = new Map<string, string>();
-    let uniqueCounter = 0;  // Separate counter for generating unique keys
+    // Use separate counter for unique keys (not related to removal count)
+    let uniqueCounter = 0;
     
     for (const lesson of this.state.lessonsLearned) {
       const keyMatch = lesson.match(/^Fix for ([^:]+:\S+)/);
