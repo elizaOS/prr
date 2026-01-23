@@ -298,7 +298,6 @@ export function printTokenSummary(): void {
   
   // Only show overall if different from session (i.e., resumed)
   if (hasOverall) {
-    overallTotals = { totalInput: 0, totalOutput: 0, totalCalls: 0 };
     for (const { inputTokens, outputTokens, calls } of overallTokenUsage) {
       overallTotals.totalInput += inputTokens;
       overallTotals.totalOutput += outputTokens;
