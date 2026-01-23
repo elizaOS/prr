@@ -65,7 +65,7 @@ export function createCLI(): Command {
     .option('-v, --verbose', 'Verbose debug output', true)
     .option('--no-batch', 'Disable batched LLM calls (one call per issue)', false)
     .option('--reverify', 'Re-verify all cached "fixed" issues (ignore verification cache)', false)
-    .option('--max-context <chars>', 'Max characters per LLM batch (default: 100000)', '100000');
+    .option('--max-context <chars>', 'Max characters per LLM batch (default: 400000)', '400000');
 
   return program;
 }
@@ -126,7 +126,7 @@ export function parseArgs(program: Command): ParsedArgs {
       verbose: opts.verbose ?? true,
       noBatch: opts.noBatch ?? false,
       reverify: opts.reverify ?? false,
-      maxContextChars: parseInt(opts.maxContext, 10) || 100_000,
+      maxContextChars: parseInt(opts.maxContext, 10) || 400_000,
     },
   };
 }

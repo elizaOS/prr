@@ -272,7 +272,7 @@ NO: <cite the specific code that resolves this issue>`;
       line: number | null;
       codeSnippet: string;
     }>,
-    maxContextChars: number = 100_000
+    maxContextChars: number = 400_000
   ): Promise<Map<string, { stillExists: boolean; explanation: string }>> {
     if (issues.length === 0) {
       return new Map();
