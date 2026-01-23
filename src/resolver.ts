@@ -20,7 +20,7 @@ import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForCon
 import type { SimpleGit } from 'simple-git';
 import { squashCommit, push } from './git/commit.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
-import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage } from './logger.js';
+import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from './logger.js';
 
 export class PRResolver {
   private config: Config;
@@ -1030,7 +1030,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
         spinner.start('Fetching review comments...');
         const comments = await this.github.getReviewComments(owner, repo, number);
         const fetchTime = endTimer('Fetch comments');
-        spinner.succeed(`Found ${comments.length} review comments (${formatDuration(fetchTime)})`);
+        spinner.succeed(`Found ${formatNumber(comments.length)} review comments (${formatDuration(fetchTime)})`);
         
         debug('Review comments', comments.map(c => ({
           id: c.id,
@@ -1050,14 +1050,14 @@ Start your response with \`\`\` and end with \`\`\`.`;
         this.stateManager.setPhase('analyzing');
         setTokenPhase('Analyze issues');
         startTimer('Analyze issues');
-        console.log(chalk.gray(`Analyzing ${comments.length} review comments...`));
+        console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
         const unresolvedIssues = await this.findUnresolvedIssues(comments, comments.length);
         const analyzeTime = endTimer('Analyze issues');
         
         const resolvedCount = comments.length - unresolvedIssues.length;
-        console.log(chalk.green(`✓ ${resolvedCount}/${comments.length} already resolved (${formatDuration(analyzeTime)})`));
+        console.log(chalk.green(`✓ ${formatNumber(resolvedCount)}/${formatNumber(comments.length)} already resolved (${formatDuration(analyzeTime)})`));
         if (unresolvedIssues.length > 0) {
-          console.log(chalk.yellow(`→ ${unresolvedIssues.length} issues remaining to fix`));
+          console.log(chalk.yellow(`→ ${formatNumber(unresolvedIssues.length)} issues remaining to fix`));
         }
         
         debug('Unresolved issues', unresolvedIssues.map(i => ({
@@ -1078,7 +1078,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
           const newComments = freshComments.filter(c => !existingIds.has(c.id));
           
           if (newComments.length > 0) {
-            spinner.warn(`Found ${newComments.length} new comment(s) added during fix cycle`);
+            spinner.warn(`Found ${formatNumber(newComments.length)} new comment(s) added during fix cycle`);
             console.log(chalk.yellow('\n⚠ New review comments found:'));
             for (const comment of newComments) {
               console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
@@ -1099,7 +1099,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               });
             }
             
-            console.log(chalk.cyan(`\n→ Re-entering fix loop with ${unresolvedIssues.length} new issues\n`));
+            console.log(chalk.cyan(`\n→ Re-entering fix loop with ${formatNumber(unresolvedIssues.length)} new issues\n`));
             // Fall through to fix loop below
           } else {
             spinner.succeed('No new comments');
@@ -1159,7 +1159,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
           }
           
           if (failedAudit.length > 0) {
-            spinner.fail(`Final audit found ${failedAudit.length} issue(s) not properly fixed`);
+            spinner.fail(`Final audit found ${formatNumber(failedAudit.length)} issue(s) not properly fixed`);
             console.log(chalk.yellow('\n⚠ Issues that need more work:'));
             for (const { comment, explanation } of failedAudit) {
               console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'}`));
@@ -1180,7 +1180,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 explanation,
               });
             }
-            console.log(chalk.cyan(`\n→ Re-entering fix loop with ${unresolvedIssues.length} issues from audit\n`));
+            console.log(chalk.cyan(`\n→ Re-entering fix loop with ${formatNumber(unresolvedIssues.length)} issues from audit\n`));
             // Fall through to inner fix loop below (don't break or continue)
           } else {
             // Final audit passed - all issues verified fixed
@@ -1209,7 +1209,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 
                 spinner.text = 'Committing changes...';
                 const commit = await squashCommit(git, commitMsg);
-                spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
+                spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${formatNumber(commit.filesChanged)} files)`);
                 debug('Commit created', commit);
                 
                 if (this.options.autoPush && !this.options.noPush) {
@@ -1508,12 +1508,12 @@ Start your response with \`\`\` and end with \`\`\`.`;
           const lessonsAfterVerify = this.lessonsManager.getTotalCount();
           const newLessons = lessonsAfterVerify - lessonsBeforeFix;
           
-          spinner.succeed(`Verified: ${verifiedCount}/${totalIssues} fixed (${progressPct}%), ${failedCount} remaining (${formatDuration(verifyTime)})`);
+          spinner.succeed(`Verified: ${formatNumber(verifiedCount)}/${formatNumber(totalIssues)} fixed (${progressPct}%), ${formatNumber(failedCount)} remaining (${formatDuration(verifyTime)})`);
           
           // Show iteration summary
           console.log(chalk.gray(`\n  Iteration ${fixIteration} summary:`));
-          console.log(chalk.gray(`    • Fixed: ${verifiedCount} issues`));
-          console.log(chalk.gray(`    • Failed: ${failedCount} issues`));
+          console.log(chalk.gray(`    • Fixed: ${formatNumber(verifiedCount)} issues`));
+          console.log(chalk.gray(`    • Failed: ${formatNumber(failedCount)} issues`));
           if (newLessons > 0) {
             console.log(chalk.yellow(`    • New lessons: +${newLessons} (total: ${lessonsAfterVerify})`));
           } else {
@@ -1584,7 +1584,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
         }
 
         if (!allFixed && this.options.maxFixIterations > 0) {
-          console.log(chalk.yellow(`\nMax fix iterations (${this.options.maxFixIterations}) reached. ${unresolvedIssues.length} issues remain.`));
+          console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(this.options.maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
         }
 
         // Commit changes if we have any

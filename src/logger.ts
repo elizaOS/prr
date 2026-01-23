@@ -255,6 +255,14 @@ function formatTokenCount(tokens: number): string {
   }
 }
 
+/**
+ * Format a number with locale-aware separators (e.g., 1,234,567).
+ * Use this for all user-facing number output.
+ */
+export function formatNumber(n: number): string {
+  return n.toLocaleString();
+}
+
 function printTokenSection(label: string, usage: TokenUsage[], isSession: boolean): { totalInput: number; totalOutput: number; totalCalls: number } {
   let totalInput = 0;
   let totalOutput = 0;
