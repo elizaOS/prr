@@ -47,6 +47,13 @@ export class LessonsManager {
             loaded.branch === this.store.branch) {
           this.store = loaded;
           
+          // Prune transient/stale lessons on load
+          const pruned = this.pruneTransientLessons();
+          if (pruned > 0) {
+            console.log(`Pruned ${pruned} stale/transient lessons`);
+            this.dirty = true;
+          }
+          
           const globalCount = this.store.global.length;
           const fileCount = Object.keys(this.store.files).length;
           const fileLessonCount = Object.values(this.store.files).reduce((sum, arr) => sum + arr.length, 0);
@@ -59,6 +66,51 @@ export class LessonsManager {
         console.warn('Failed to load lessons file, starting fresh:', error);
       }
     }
+  }
+
+  /**
+   * Remove transient lessons that aren't actionable for future fixes
+   * WHY: Tool failures (connection, model unavailable) pollute lessons and aren't helpful
+   */
+  private pruneTransientLessons(): number {
+    const transientPatterns = [
+      /failed: Cannot use this model/i,      // Model availability issues
+      /failed: Connection/i,                  // Connection issues
+      /failed: timeout/i,                     // Timeout issues
+      /failed: ECONNREFUSED/i,               // Connection refused
+      /failed: ETIMEDOUT/i,                  // Connection timeout
+      /failed: rate limit/i,                 // Rate limiting
+      /failed: 5\d{2}/i,                     // 5xx server errors
+      /failed: 4\d{2}/i,                     // 4xx client errors (except useful ones)
+      /tool made no changes, may need clearer/i,  // Generic "no changes" - not actionable
+    ];
+
+    let pruned = 0;
+
+    // Prune global lessons
+    const originalGlobalCount = this.store.global.length;
+    this.store.global = this.store.global.filter(lesson => {
+      const isTransient = transientPatterns.some(pattern => pattern.test(lesson));
+      return !isTransient;
+    });
+    pruned += originalGlobalCount - this.store.global.length;
+
+    // Prune file-specific lessons
+    for (const filePath of Object.keys(this.store.files)) {
+      const originalCount = this.store.files[filePath].length;
+      this.store.files[filePath] = this.store.files[filePath].filter(lesson => {
+        const isTransient = transientPatterns.some(pattern => pattern.test(lesson));
+        return !isTransient;
+      });
+      pruned += originalCount - this.store.files[filePath].length;
+
+      // Remove empty file entries
+      if (this.store.files[filePath].length === 0) {
+        delete this.store.files[filePath];
+      }
+    }
+
+    return pruned;
   }
 
   async save(): Promise<void> {

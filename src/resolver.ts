@@ -1209,9 +1209,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           if (!result.success) {
             console.log(chalk.red(`\n${this.runner.name} failed (${formatDuration(fixerTime)}):`, result.error));
-            this.lessonsManager.addGlobalLesson(`${this.runner.name} failed: ${result.error}`);
+            // DON'T record transient tool failures as lessons
+            // WHY: "connection stalled", "model unavailable" aren't actionable for future fixes
+            // Only code-related lessons (fix rejected, wrong approach) are useful
+            debug('Tool failure (not recorded as lesson)', { tool: this.runner.name, error: result.error });
             await this.stateManager.save();
-            await this.lessonsManager.save();
             continue;
           }
           
