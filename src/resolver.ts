@@ -750,7 +750,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
               try {
                 resolvedWorkdir = fs.realpathSync(this.workdir);
                 const resolvedBase = fs.realpathSync(this.config.workdirBase);
-                if (!resolvedWorkdir.startsWith(resolvedBase + path.sep) && resolvedWorkdir !== resolvedBase) {
+                const relativeWorkdir = path.relative(resolvedBase, resolvedWorkdir);
+                if (relativeWorkdir.startsWith('..') || path.isAbsolute(relativeWorkdir)) {
                   throw new Error(`Workdir ${resolvedWorkdir} is outside base ${resolvedBase}`);
                 }
               } catch (e) {
@@ -773,13 +774,34 @@ Start your response with \`\`\` and end with \`\`\`.`;
               // Minimal environment whitelist for package managers
               const ENV_WHITELIST = ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TERM', 'SHELL', 
                                      'CARGO_HOME', 'RUSTUP_HOME', 'GOPATH', 'GOROOT',
-                                     'NODE_OPTIONS', 'NPM_TOKEN', 'YARN_ENABLE_IMMUTABLE_INSTALLS'];
+                                     'NPM_TOKEN', 'YARN_ENABLE_IMMUTABLE_INSTALLS'];
               const safeEnv: Record<string, string> = {};
               for (const key of ENV_WHITELIST) {
                 if (process.env[key]) {
                   safeEnv[key] = process.env[key]!;
                 }
               }
+              if (safeEnv.PATH) {
+                const pathEntries = safeEnv.PATH.split(path.delimiter).filter(Boolean);
+                const safePathEntries = pathEntries.filter((entry) => {
+                  if (!path.isAbsolute(entry)) {
+                    return false;
+                  }
+                  try {
+                    const resolvedEntry = fs.realpathSync(entry);
+                    return !(resolvedEntry === resolvedWorkdir || resolvedEntry.startsWith(resolvedWorkdir + path.sep));
+                  } catch {
+                    return false;
+                  }
+                });
+                safeEnv.PATH = safePathEntries.length > 0
+                  ? safePathEntries.join(path.delimiter)
+                  : '/usr/bin:/bin';
+              }
+              safeEnv.npm_config_ignore_scripts = 'true';
+              safeEnv.YARN_ENABLE_SCRIPTS = '0';
+              safeEnv.BUN_INSTALL_DISABLE_POSTINSTALL = '1';
+              safeEnv.PNPM_DISABLE_SCRIPTS = 'true';
               
               // Group lock files by their regenerate command
               const regenerateCommands = new Set<string>();
@@ -791,12 +813,19 @@ Start your response with \`\`\` and end with \`\`\`.`;
                   const fullPath = path.join(resolvedWorkdir, lockFile);
                   // Verify the file path is still within workdir after join
                   const resolvedFullPath = path.resolve(fullPath);
-                  if (!resolvedFullPath.startsWith(resolvedWorkdir + path.sep)) {
+                  const relativePath = path.relative(resolvedWorkdir, resolvedFullPath);
+                  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
                     console.log(chalk.yellow(`    ⚠ Skipping ${lockFile}: path traversal detected`));
                     continue;
                   }
                   try {
-                    fs.unlinkSync(resolvedFullPath);
+                    const realPath = fs.realpathSync(resolvedFullPath);
+                    const relativeRealPath = path.relative(resolvedWorkdir, realPath);
+                    if (relativeRealPath.startsWith('..') || path.isAbsolute(relativeRealPath)) {
+                      console.log(chalk.yellow(`    ⚠ Skipping ${lockFile}: resolved outside workdir`));
+                      continue;
+                    }
+                    fs.unlinkSync(realPath);
                     console.log(chalk.green(`    ✓ Deleted ${lockFile}`));
                     regenerateCommands.add(info.regenerateCmd);
                   } catch (e) {

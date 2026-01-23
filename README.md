@@ -1,6 +1,6 @@
 # prr (PR Resolver)
 
-```
+```text
     /\_____/\
    /  o   o  \
   ( ==  ^  == )
@@ -277,7 +277,7 @@ If you're new to Cursor's CLI agent, you'll need to install and authenticate fir
 # Install cursor-agent (Linux)
 curl https://cursor.com/install -fsS | bash
 
-# Install cursor-agent (Intel Mac)
+# Install cursor-agent (macOS - Intel or Apple Silicon)
 curl https://cursor.com/install -fsS | bash
 
 # Login (required before first use!)
@@ -286,6 +286,8 @@ cursor-agent login
 # Verify installation and list available models
 cursor-agent models
 ```
+
+If you're unsure which platform you're on, check `uname -s` and `uname -m`. For manual downloads, see https://www.cursor.com/download.
 
 This opens a browser window to authenticate with your Cursor account. You only need to do this once - your credentials are saved locally.
 
@@ -297,7 +299,7 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 ```text
 Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3 (OpenAI)
-Round 2: claude-4-opus-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
+Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → Grok (Other)
 ... then next tool ...
 ```
 

@@ -467,7 +467,7 @@ noCommit: !opts.commit,  // --no-commit -> opts.commit=false -> noCommit=true
 ## Security Considerations
 
 ### Shell Injection Prevention
-- `--model` validated against `/^[A-Za-z0-9._\/-]+$/`
+- `--model` validated against `/^[A-Za-z0-9.-]+$/`
 - All runners use `spawn(binary, args)` not `sh -c "..."`
 - Prompts passed via file read, not shell interpolation
 

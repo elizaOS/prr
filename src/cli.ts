@@ -78,15 +78,16 @@ export function createCLI(): Command {
   return program;
 }
 
+const CLI_MODEL_NAME_PATTERN = /^[A-Za-z0-9.-]+$/;
+
 // Validate model name to prevent command injection
 function validateModelName(model: string | undefined): string | undefined {
   if (!model) return undefined;
   
-  // Only allow alphanumeric characters, hyphens, underscores, dots, and forward slashes
-  // (forward slashes are needed for provider-prefixed names like "anthropic/claude-..." or "openrouter/anthropic/...")
-  if (!isValidModelName(model)) {
+  // Only allow alphanumeric characters, hyphens, and dots
+  if (!isValidModelName(model) || !CLI_MODEL_NAME_PATTERN.test(model)) {
     console.error(chalk.red(`Invalid model name: "${model}"`));
-    console.error(chalk.gray('Model names can only contain letters, numbers, hyphens, underscores, dots, and forward slashes.'));
+    console.error(chalk.gray('Model names can only contain letters, numbers, hyphens, and dots.'));
     process.exit(1);
   }
   
