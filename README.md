@@ -137,25 +137,58 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 
 ## Requirements
 
+**Runtime:**
 - Node.js >= 18 (or Bun)
-- `cursor-agent` CLI (if using Cursor) or `opencode` CLI (if using opencode)
-- GitHub personal access token with `repo` scope
-- Anthropic or OpenAI API key for verification
+
+**GitHub Access:**
+- GitHub personal access token with `repo` scope (`GITHUB_TOKEN`)
+
+**LLM API Keys** (for verification and some runners):
+- `ANTHROPIC_API_KEY` - Required for verification (if using Anthropic), and for `claude-code`, `aider`, `llm-api` runners
+- `OPENAI_API_KEY` - Required for verification (if using OpenAI), and for `codex`, `aider`, `llm-api` runners
+
+**Fixer Tools** (at least one required, use `--tool <name>`):
+
+| `--tool` value | CLI Binary | Requirements |
+|----------------|------------|--------------|
+| `cursor` | `cursor-agent` | Cursor account, login via `cursor-agent login` |
+| `claude-code` | `claude` or `claude-code` | `ANTHROPIC_API_KEY` |
+| `aider` | `aider` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+| `opencode` | `opencode` | (check opencode docs) |
+| `codex` | `codex` or `openai-codex` | `OPENAI_API_KEY` |
+| `llm-api` | (none - direct API) | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 
 ### Cursor CLI Setup
 
-If you're new to Cursor's CLI agent, you'll need to authenticate first:
+If you're new to Cursor's CLI agent, you'll need to install and authenticate first:
 
 ```bash
-# Install cursor-agent (macOS)
+# Detect your platform
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')   # darwin or linux
+ARCH=$(uname -m)                               # arm64 or x86_64
+[ "$ARCH" = "x86_64" ] && ARCH="amd64"
+
+# Download cursor-agent for your platform
+# macOS ARM (Apple Silicon):
 curl -fsSL https://www.cursor.com/download/stable/agent/darwin/arm64 -o cursor-agent
+
+# macOS Intel:
+# curl -fsSL https://www.cursor.com/download/stable/agent/darwin/amd64 -o cursor-agent
+
+# Linux x86_64:
+# curl -fsSL https://www.cursor.com/download/stable/agent/linux/amd64 -o cursor-agent
+
+# Linux ARM64:
+# curl -fsSL https://www.cursor.com/download/stable/agent/linux/arm64 -o cursor-agent
+
+# Make executable and install
 chmod +x cursor-agent
 sudo mv cursor-agent /usr/local/bin/
 
 # Login (required before first use!)
 cursor-agent login
 
-# List available models
+# Verify installation and list available models
 cursor-agent --list-models
 ```
 
@@ -163,25 +196,24 @@ This opens a browser window to authenticate with your Cursor account. You only n
 
 Without logging in first, you'll see authentication errors when prr tries to run the fixer.
 
-**Available models** (use with `--model`):
+**Available models** (use with `--model`, verify with `cursor-agent --list-models`):
 
 | Model | Description | Best for |
 |-------|-------------|----------|
-| `opus-4.5-thinking` | Claude 4.5 Opus with Thinking (default) | Complex fixes, best quality |
-| `opus-4.5` | Claude 4.5 Opus | Good balance |
-| `sonnet-4.5-thinking` | Claude 4.5 Sonnet with Thinking | Faster with reasoning |
-| `sonnet-4.5` | Claude 4.5 Sonnet | Quick fixes |
-| `gpt-5.2-codex-xhigh` | GPT-5.2 Codex Extra High | Alternative to Opus |
-| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | Heavy lifting |
-| `gemini-3-pro` | Gemini 3 Pro | Google's best |
+| `claude-4-opus-thinking` | Claude 4 Opus with extended thinking | Complex fixes, best quality |
+| `claude-4-sonnet-thinking` | Claude 4 Sonnet with extended thinking | Good balance with reasoning |
+| `claude-4-sonnet` | Claude 4 Sonnet | Quick fixes |
+| `o3` | OpenAI o3 reasoning model | Complex multi-step reasoning |
+| `gpt-5.2` | GPT-5.2 | Fast, capable |
+| `grok` | Grok | Alternative perspective |
 | `auto` | Auto-select | Let Cursor decide |
 
 ```bash
 # Example: use a faster model for simple fixes
-prr https://github.com/owner/repo/pull/123 --model sonnet-4.5
+prr https://github.com/owner/repo/pull/123 --model claude-4-sonnet
 
 # Example: max power for complex issues
-prr https://github.com/owner/repo/pull/123 --model gpt-5.1-codex-max
+prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
 ```
 
 ## License
@@ -190,6 +222,6 @@ MIT with one condition:
 
 **Hours Saved Clause**: By using this tool, you agree to track the hours saved from not manually addressing PR review comments. Post your hours saved (with optional war stories) in a GitHub issue:
 
-→ [Report Hours Saved](https://github.com/rtharp/prr/issues/new?title=Hours+Saved&labels=hours-saved&body=Hours+saved:+%0A%0AStory+(optional):+)
+→ [Report Hours Saved](https://github.com/elizaOS/prr/issues/new?title=Hours+Saved&labels=hours-saved&body=Hours+saved:+%0A%0AStory+(optional):+)
 
 We're building the case that cats sitting on PRs is a valid engineering strategy. 🐱

@@ -1,12 +1,17 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
-import { writeFileSync, unlinkSync } from 'fs';
+import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
 
 const exec = promisify(execCallback);
+
+// Validate model name to prevent injection (defense in depth)
+function isValidModel(model: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(model);
+}
 
 // OpenAI Codex CLI binary names
 const CODEX_BINARIES = ['codex', 'openai-codex'];
@@ -60,15 +65,27 @@ export class CodexRunner implements Runner {
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
     return new Promise((resolve) => {
-      // Codex CLI typically uses positional prompt argument
-      const modelFlag = options?.model ? `--model ${options.model}` : '';
-      const shellCommand = `${this.binaryPath} ${modelFlag} "$(cat "${promptFile}")"`;
+      // Build args array safely (no shell interpolation)
+      const args: string[] = [];
+      
+      // Validate and add model if specified
+      if (options?.model) {
+        if (!isValidModel(options.model)) {
+          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
+          return;
+        }
+        args.push('--model', options.model);
+      }
+      
+      // Read prompt from file and pass as positional argument
+      const promptContent = readFileSync(promptFile, 'utf-8');
+      args.push(promptContent);
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt]\n`);
       debug('Codex command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
 
-      const child = spawn('sh', ['-c', shellCommand], {
+      const child = spawn(this.binaryPath, args, {
         cwd: workdir,
         stdio: ['inherit', 'pipe', 'pipe'],
         env: { ...process.env },

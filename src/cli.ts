@@ -60,6 +60,21 @@ export function createCLI(): Command {
   return program;
 }
 
+// Validate model name to prevent command injection
+function validateModelName(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  
+  // Only allow alphanumeric characters, hyphens, underscores, and dots
+  const validModelPattern = /^[A-Za-z0-9._-]+$/;
+  if (!validModelPattern.test(model)) {
+    console.error(chalk.red(`Invalid model name: "${model}"`));
+    console.error(chalk.gray('Model names can only contain letters, numbers, hyphens, underscores, and dots.'));
+    process.exit(1);
+  }
+  
+  return model;
+}
+
 export function parseArgs(program: Command): ParsedArgs {
   program.parse();
 
@@ -71,6 +86,9 @@ export function parseArgs(program: Command): ParsedArgs {
     process.exit(1);
   }
 
+  // Validate model name for security (prevent shell injection)
+  const toolModel = validateModelName(opts.model);
+
   // --commit overrides --no-commit
   const noCommit = opts.commit ? false : (opts.noCommit ?? true);
   
@@ -78,7 +96,7 @@ export function parseArgs(program: Command): ParsedArgs {
     prUrl: args[0],
     options: {
       tool: opts.tool as FixerTool,
-      toolModel: opts.model,
+      toolModel,
       autoPush: opts.autoPush,
       keepWorkdir: opts.keepWorkdir ?? true,
       maxFixIterations: parseInt(opts.maxFixIterations, 10),

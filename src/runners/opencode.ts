@@ -1,12 +1,17 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
-import { writeFileSync, unlinkSync } from 'fs';
+import { writeFileSync, unlinkSync, createReadStream } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
 
 const exec = promisify(execCallback);
+
+// Validate model name to prevent injection (defense in depth)
+function isValidModel(model: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(model);
+}
 
 export class OpencodeRunner implements Runner {
   name = 'opencode';
@@ -47,20 +52,32 @@ export class OpencodeRunner implements Runner {
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
     return new Promise((resolve) => {
-      // Read prompt from file using shell, pipe to opencode
-      // Note: opencode model selection may vary - check opencode docs
-      const modelFlag = options?.model ? `--model ${options.model}` : '';
-      const shellCommand = `cat "${promptFile}" | opencode ${modelFlag}`.trim();
+      // Build args array safely (no shell interpolation)
+      const args: string[] = [];
+      
+      // Validate and add model if specified
+      if (options?.model) {
+        if (!isValidModel(options.model)) {
+          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
+          return;
+        }
+        args.push('--model', options.model);
+      }
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`Running: opencode${modelInfo} < [prompt file] in ${workdir}`);
       debug('Opencode command', { workdir, model: options?.model, promptLength: prompt.length });
 
-      const child = spawn('sh', ['-c', shellCommand], {
+      // Use pipe for stdin to stream prompt file contents
+      const child = spawn('opencode', args, {
         cwd: workdir,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
       });
+
+      // Pipe the prompt file to stdin
+      const promptStream = createReadStream(promptFile);
+      promptStream.pipe(child.stdin);
 
       let stdout = '';
       let stderr = '';

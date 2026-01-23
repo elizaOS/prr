@@ -21,7 +21,17 @@ async function handleShutdown(signal: string): Promise<void> {
     await resolver.gracefulShutdown();
   }
   
-  process.exit(130); // Standard exit code for Ctrl+C
+  // Compute signal-specific exit code (128 + signal number)
+  // SIGINT (2) -> 130, SIGTERM (15) -> 143
+  const signalCodes: Record<string, number> = {
+    'SIGINT': 130,   // 128 + 2
+    'SIGTERM': 143,  // 128 + 15
+    'SIGHUP': 129,   // 128 + 1
+    'SIGQUIT': 131,  // 128 + 3
+  };
+  const exitCode = signalCodes[signal] ?? 128;
+  
+  process.exit(exitCode);
 }
 
 // Set up signal handlers

@@ -80,7 +80,7 @@ export function getRunnerByName(name: string): Runner | undefined {
 export function printRunnerSummary(detected: DetectedRunner[]): void {
   if (detected.length === 0) {
     console.log(chalk.red('No fix tools available!'));
-    console.log(chalk.gray('Install one of: cursor-agent, claude-code, aider, opencode'));
+    console.log(chalk.gray('Install one of: cursor, claude-code, aider, opencode, codex'));
     console.log(chalk.gray('Or set ANTHROPIC_API_KEY / OPENAI_API_KEY for direct LLM API'));
     return;
   }

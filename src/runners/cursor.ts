@@ -8,6 +8,11 @@ import { debug } from '../logger.js';
 
 const exec = promisify(execCallback);
 
+// Validate model name to prevent injection (defense in depth)
+function isValidModel(model: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(model);
+}
+
 // Cursor CLI can be installed as 'cursor' or 'cursor-agent'
 const CURSOR_BINARIES = ['cursor-agent', 'cursor', 'agent'];
 
@@ -67,12 +72,13 @@ export class CursorRunner implements Runner {
   }
 
   async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
-    // Write prompt to a temp file for reference and to pass via env var for long prompts
+    // Write prompt to a temp file for reference
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
     return new Promise((resolve) => {
+      // Build args array safely (no shell interpolation)
       // cursor-agent options:
       // --print: Output to console (for scripts)
       // --output-format stream-json: Stream JSON chunks for live output
@@ -81,18 +87,31 @@ export class CursorRunner implements Runner {
       // --model: Model to use (e.g., opus-4, sonnet-4-thinking)
       // prompt: Positional argument at the end
       
-      // Build model flag if specified
-      const modelFlag = options?.model ? `--model ${options.model}` : '';
+      const args: string[] = [
+        '--print',
+        '--output-format', 'stream-json',
+        '--stream-partial-output',
+        '--workspace', workdir,
+      ];
       
-      // For long prompts, we use a shell trick: read from file and pass as argument
-      // Using $() to read file content as the prompt argument
-      const shellCommand = `${this.binaryPath} --print --output-format stream-json --stream-partial-output ${modelFlag} --workspace "${workdir}" "$(cat "${promptFile}")"`;
+      // Validate and add model if specified
+      if (options?.model) {
+        if (!isValidModel(options.model)) {
+          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
+          return;
+        }
+        args.push('--model', options.model);
+      }
+      
+      // Read prompt from file and pass as positional argument
+      const promptContent = readFileSync(promptFile, 'utf-8');
+      args.push(promptContent);
       
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: ${this.binaryPath}${modelInfo} --workspace ${workdir} [prompt]\n`);
       debug('Cursor command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
 
-      const child = spawn('sh', ['-c', shellCommand], {
+      const child = spawn(this.binaryPath, args, {
         cwd: workdir,
         stdio: ['inherit', 'pipe', 'pipe'],
         env: { ...process.env },

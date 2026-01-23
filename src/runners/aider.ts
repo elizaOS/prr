@@ -1,12 +1,17 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
-import { writeFileSync, unlinkSync } from 'fs';
+import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
 
 const exec = promisify(execCallback);
+
+// Validate model name to prevent injection (defense in depth - also validated in CLI)
+function isValidModel(model: string): boolean {
+  return /^[A-Za-z0-9._-]+$/.test(model);
+}
 
 export class AiderRunner implements Runner {
   name = 'aider';
@@ -55,15 +60,27 @@ export class AiderRunner implements Runner {
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
 
     return new Promise((resolve) => {
-      // Aider uses --message for non-interactive prompts, --yes-always to auto-accept
-      const modelFlag = options?.model ? `--model ${options.model}` : '';
-      const shellCommand = `aider --yes-always ${modelFlag} --message "$(cat "${promptFile}")"`;
+      // Build args array safely (no shell interpolation)
+      const args: string[] = ['--yes-always'];
+      
+      // Validate and add model if specified
+      if (options?.model) {
+        if (!isValidModel(options.model)) {
+          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
+          return;
+        }
+        args.push('--model', options.model);
+      }
+      
+      // Read prompt from file and pass via --message
+      const promptContent = readFileSync(promptFile, 'utf-8');
+      args.push('--message', promptContent);
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: aider${modelInfo} [prompt]\n`);
       debug('Aider command', { workdir, model: options?.model, promptLength: prompt.length });
 
-      const child = spawn('sh', ['-c', shellCommand], {
+      const child = spawn('aider', args, {
         cwd: workdir,
         stdio: ['inherit', 'pipe', 'pipe'],
         env: { ...process.env },

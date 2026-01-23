@@ -6,6 +6,16 @@ export function setVerbose(enabled: boolean): void {
   verboseEnabled = enabled;
 }
 
+// Safe stringify that handles BigInt, circular refs, and custom toJSON errors
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    // Fallback for values that can't be JSON serialized (BigInt, circular, etc.)
+    return String(value);
+  }
+}
+
 function formatCompact(data: unknown): string {
   if (typeof data === 'string') {
     // Truncate long strings
@@ -30,7 +40,7 @@ function formatCompact(data: unknown): string {
         }
         return `${k}: {...}`;
       }
-      return `${k}: ${JSON.stringify(v)}`;
+      return `${k}: ${safeStringify(v)}`;
     });
     return '{ ' + parts.join(', ') + ' }';
   }
@@ -99,8 +109,11 @@ export function formatDuration(ms: number): string {
     return `${(ms / 1000).toFixed(1)}s`;
   } else {
     const mins = Math.floor(ms / 60000);
-    const secs = ((ms % 60000) / 1000).toFixed(0);
-    return `${mins}m ${secs}s`;
+    // Use Math.floor to prevent rounding to 60 seconds
+    const secs = Math.floor((ms % 60000) / 1000);
+    // Pad seconds with leading zero for consistency (e.g., "1m 05s")
+    const secsStr = secs.toString().padStart(2, '0');
+    return `${mins}m ${secsStr}s`;
   }
 }
 

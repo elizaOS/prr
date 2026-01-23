@@ -33,11 +33,11 @@ export class StateManager {
             this.state.headSha = headSha;
           }
           
-          // Clear interrupted flag on successful load
+          // Log if resuming from interrupted run, but DON'T clear the flags here
+          // Callers should check wasInterrupted() and clear explicitly after handling
           if (this.state.interrupted) {
             console.log(`Resuming from interrupted run (phase: ${this.state.interruptPhase || 'unknown'})`);
-            this.state.interrupted = false;
-            this.state.interruptPhase = undefined;
+            // Note: interrupted flag is NOT cleared here - caller must handle via clearInterrupted()
           }
           
           // Compact duplicate lessons from previous runs
@@ -90,6 +90,13 @@ export class StateManager {
 
   getInterruptPhase(): string | undefined {
     return this.state?.interruptPhase;
+  }
+
+  clearInterrupted(): void {
+    if (this.state) {
+      this.state.interrupted = false;
+      this.state.interruptPhase = undefined;
+    }
   }
 
   async save(): Promise<void> {

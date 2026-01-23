@@ -43,19 +43,25 @@ export class GitHubAPI {
   async getPRStatus(owner: string, repo: string, prNumber: number, ref: string): Promise<PRStatus> {
     debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
 
-    // Get check runs for this ref
-    const { data: checkRuns } = await this.octokit.checks.listForRef({
-      owner,
-      repo,
-      ref,
-      per_page: 100,
-    });
+    // Get all check runs for this ref using pagination
+    const allCheckRuns = await this.octokit.paginate(
+      this.octokit.checks.listForRef,
+      {
+        owner,
+        repo,
+        ref,
+        per_page: 100,
+      },
+      (response) => response.data
+    );
 
     const inProgressChecks: string[] = [];
     const pendingChecks: string[] = [];
     let completedChecks = 0;
+    let totalChecks = 0;
 
-    for (const check of checkRuns.check_runs) {
+    for (const check of allCheckRuns) {
+      totalChecks++;
       if (check.status === 'in_progress') {
         inProgressChecks.push(check.name);
       } else if (check.status === 'queued' || check.status === 'pending') {
@@ -180,7 +186,7 @@ export class GitHubAPI {
       ciState: status.state as PRStatus['ciState'],
       inProgressChecks,
       pendingChecks,
-      totalChecks: checkRuns.total_count,
+      totalChecks,
       completedChecks,
       pendingReviewers,
       activelyReviewingBots,
