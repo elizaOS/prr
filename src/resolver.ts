@@ -1014,6 +1014,46 @@ Start your response with \`\`\` and end with \`\`\`.`;
         })));
 
         if (unresolvedIssues.length === 0) {
+          // Before declaring victory, check for new comments added while we were fixing
+          // WHY: Humans or bots may add new review comments during our fix cycle
+          debugStep('CHECK FOR NEW COMMENTS');
+          spinner.start('Checking for new review comments...');
+          
+          const freshComments = await this.github.getReviewComments(owner, repo, number);
+          const existingIds = new Set(comments.map(c => c.id));
+          const newComments = freshComments.filter(c => !existingIds.has(c.id));
+          
+          if (newComments.length > 0) {
+            spinner.warn(`Found ${newComments.length} new comment(s) added during fix cycle`);
+            console.log(chalk.yellow('\n⚠ New review comments found:'));
+            for (const comment of newComments) {
+              console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
+              console.log(chalk.gray(`    "${comment.body.split('\n')[0].substring(0, 60)}..."`));
+            }
+            
+            // Add new comments to our list and re-enter fix loop
+            comments.push(...newComments);
+            
+            // Check which new comments need fixing
+            for (const comment of newComments) {
+              const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
+              unresolvedIssues.push({
+                comment,
+                codeSnippet,
+                stillExists: true,
+                explanation: 'New comment added during fix cycle',
+              });
+            }
+            
+            console.log(chalk.cyan(`\n→ Re-entering fix loop with ${unresolvedIssues.length} new issues\n`));
+            // Fall through to fix loop below
+          } else {
+            spinner.succeed('No new comments');
+          }
+        }
+        
+        // Only run final audit if we still have no unresolved issues
+        if (unresolvedIssues.length === 0) {
           // Before declaring victory, run a final audit to catch false positives
           debugStep('FINAL AUDIT');
           setTokenPhase('Final audit');
