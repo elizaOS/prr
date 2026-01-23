@@ -1,0 +1,44 @@
+{
+  "name": "prr",
+  "version": "1.0.0",
+  "description": "CLI tool to automatically resolve LLM review bot comments on PRs",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "prr": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "bun dist/index.js",
+    "dev": "bun --watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "github",
+    "pr",
+    "code-review",
+    "automation",
+    "copilot"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "@octokit/graphql": "^8.1.1",
+    "@octokit/rest": "^21.0.2",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "openai": "^4.73.0",
+    "ora": "^8.1.0",
+    "simple-git": "^3.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
