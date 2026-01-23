@@ -274,7 +274,10 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 If you're new to Cursor's CLI agent, you'll need to install and authenticate first:
 
 ```bash
-# Install cursor-agent (official installer - works on all platforms)
+# Install cursor-agent (Linux)
+curl https://cursor.com/install -fsS | bash
+
+# Install cursor-agent (Intel Mac)
 curl https://cursor.com/install -fsS | bash
 
 # Login (required before first use!)
@@ -293,8 +296,8 @@ Without logging in first, you'll see authentication errors when prr tries to run
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 ```text
-Round 1: sonnet-4.5 (Claude) → gpt-5.2 (GPT) → gemini-3-pro (Gemini)
-Round 2: opus-4.5-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
+Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3 (OpenAI)
+Round 2: claude-4-opus-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
 ... then next tool ...
 ```
 
@@ -302,7 +305,7 @@ Round 2: opus-4.5-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (G
 
 ```bash
 # Example: override model (bypasses rotation)
-prr https://github.com/owner/repo/pull/123 --model opus-4.5-thinking
+prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123

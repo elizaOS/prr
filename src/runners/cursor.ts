@@ -23,11 +23,11 @@ const CURSOR_AGENT_BINARY = 'cursor-agent';
 
 // Fallback model list if dynamic discovery fails
 const FALLBACK_MODELS = [
-  'sonnet-4.5',
+  'claude-4-sonnet-thinking',
   'gpt-5.2',
-  'opus-4.5',
+  'claude-4-opus-thinking',
   'gpt-5.2-codex',
-  'gemini-3-pro',
+  'o3',
 ];
 
 /**
@@ -38,7 +38,7 @@ const FALLBACK_MODELS = [
 const MODEL_FAMILY_PRIORITY: Array<{ pattern: RegExp; priority: number; subPriority?: (model: string) => number }> = [
   // Claude models - highest priority
   { 
-    pattern: /^(opus|sonnet|haiku)-?\d/i, 
+    pattern: /^(?:claude-\d+-)?(opus|sonnet|haiku)/i, 
     priority: 1,
     subPriority: (m) => {
       if (m.includes('opus')) return 1;
@@ -49,9 +49,10 @@ const MODEL_FAMILY_PRIORITY: Array<{ pattern: RegExp; priority: number; subPrior
   },
   // GPT models - second priority  
   { 
-    pattern: /^gpt-/i, 
+    pattern: /^(gpt-|o\d)/i, 
     priority: 2,
     subPriority: (m) => {
+      if (/^o\d/i.test(m)) return 1;
       // Prefer higher versions, codex variants, and high tiers
       if (m.includes('5.2') && m.includes('codex') && m.includes('high')) return 1;
       if (m.includes('5.2') && m.includes('codex')) return 2;
@@ -120,8 +121,8 @@ function parseAndPrioritizeModels(output: string): string[] {
   };
   
   for (const model of models) {
-    if (/^(opus|sonnet|haiku)/i.test(model)) byFamily.claude.push(model);
-    else if (/^gpt-/i.test(model)) byFamily.gpt.push(model);
+    if (/^(?:claude-\d+-)?(opus|sonnet|haiku)/i.test(model)) byFamily.claude.push(model);
+    else if (/^(gpt-|o\d)/i.test(model)) byFamily.gpt.push(model);
     else if (/^gemini-/i.test(model)) byFamily.gemini.push(model);
     else byFamily.other.push(model);
   }
@@ -158,7 +159,7 @@ export class CursorRunner implements Runner {
       debug(`Found Cursor Agent CLI: ${CURSOR_AGENT_BINARY}`);
       return true;
     } catch {
-      debug('Cursor Agent CLI not found (install: curl https://cursor.com/install -fsS | bash)');
+      debug('Cursor Agent CLI not found (install: Linux curl https://cursor.com/install -fsS | bash; Intel Mac curl https://cursor.com/install -fsS | bash)');
       return false;
     }
   }
@@ -167,7 +168,7 @@ export class CursorRunner implements Runner {
     // Check if installed
     const installed = await this.isAvailable();
     if (!installed) {
-      return { installed: false, ready: false, error: 'cursor-agent not installed (run: curl https://cursor.com/install -fsS | bash)' };
+      return { installed: false, ready: false, error: 'cursor-agent not installed (install: Linux curl https://cursor.com/install -fsS | bash; Intel Mac curl https://cursor.com/install -fsS | bash)' };
     }
 
     // Check version
@@ -232,7 +233,7 @@ export class CursorRunner implements Runner {
       // --output-format stream-json: Stream JSON chunks for live output
       // --stream-partial-output: Stream partial text as it's generated
       // --workspace: Working directory
-      // --model: Model to use (e.g., opus-4, sonnet-4-thinking)
+      // --model: Model to use (e.g., claude-4-opus-thinking, claude-4-sonnet-thinking)
       // prompt: Positional argument at the end
       
       const args: string[] = [

@@ -70,14 +70,12 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/resolver.ts` | Main orchestration (1300+ lines) |
 | `src/logger.ts` | Logging, timing, token tracking |
 
-
 ### GitHub Integration
 
 | File | Purpose |
 |------|---------|
 | `src/github/api.ts` | Octokit wrapper, GraphQL queries |
 | `src/github/types.ts` | PRInfo, ReviewComment, etc. |
-
 
 ### Git Operations
 
@@ -86,7 +84,6 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/git/clone.ts` | Clone, fetch, conflict detection/resolution |
 | `src/git/commit.ts` | Squash commit, push |
 | `src/git/workdir.ts` | Hash-based workdir management |
-
 
 ### Fixer Tool Runners
 
@@ -100,13 +97,11 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/runners/codex.ts` | OpenAI Codex CLI |
 | `src/runners/llm-api.ts` | Direct API (fallback) |
 
-
 ### LLM Verification
 
 | File | Purpose |
 |------|---------|
 | `src/llm/client.ts` | Anthropic/OpenAI for verification |
-
 
 ### State Persistence
 
@@ -116,14 +111,12 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/state/lessons.ts` | Branch-permanent lessons (~/.prr/lessons/) |
 | `src/state/types.ts` | State interfaces |
 
-
 ### Prompt Building
 
 | File | Purpose |
 |------|---------|
 | `src/analyzer/prompt-builder.ts` | Build fix prompts with context |
 | `src/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
-
 
 ## Key Design Decisions
 
@@ -190,10 +183,10 @@ Layer 3: Final audit (before declaring done)
 
 **Solution**: Rotate through different models and tools with family interleaving:
 
-```
+```text
 Model rotation (interleaved by family):
-  Round 1: sonnet-4.5 (Claude) → gpt-5.2 (GPT) → gemini-3-pro (Gemini)
-  Round 2: opus-4.5 (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
+  Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3 (OpenAI)
+  Round 2: claude-4-opus-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
   
 Tool rotation (after MAX_MODELS_PER_TOOL_ROUND models tried):
   Cursor → Claude Code → Aider → Direct LLM API
@@ -238,7 +231,7 @@ Lessons store: ~/.prr/lessons/<owner>/<repo>/<branch>.json
     "src/auth.ts": ["Fix rejected: try/catch doesn't handle the edge case - need early return"],
     "src/api.ts:45": ["Validation must preserve backward compatibility - don't change function signature"]
   }
-}
+  }
 ```
 
 **Why LLM-analyzed lessons?** Generic "tool failed" messages aren't actionable:
@@ -303,7 +296,7 @@ LOCATIONS END -->
 ### 7. Git Authentication
 
 Token is embedded in the HTTPS remote URL for authentication:
-```
+```text
 https://TOKEN@github.com/owner/repo.git
 ```
 
@@ -362,7 +355,7 @@ if (stashed) {
 ### 9. Commit Message Generation
 
 **The Problem**: Early versions produced commit messages like:
-```
+```text
 fix: address review comments
 
 Issues addressed:
@@ -532,7 +525,10 @@ cat ~/.prr/lessons/<owner>/<repo>/<branch>.json
 # Check if installed
 which cursor-agent
 
-# Install
+# Install (Linux)
+curl https://cursor.com/install -fsS | bash
+
+# Install (Intel Mac)
 curl https://cursor.com/install -fsS | bash
 
 # Login (required before first use)
