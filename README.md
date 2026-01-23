@@ -42,9 +42,12 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
+- **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
+- **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
 - Batched commits with LLM-generated messages (not "fix review comments")
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
+- **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 
 ## Installation
 
@@ -201,6 +204,11 @@ prr https://github.com/owner/repo/pull/123 \
 8. **Commit**: Generates a clean commit message via LLM describing the actual changes.
    - *Why LLM-generated*: Commit messages are permanent history. They should describe WHAT changed, not the review process.
    - *Why forbidden phrases*: LLMs default to "address review comments" - we explicitly forbid this and fall back to file-specific messages.
+
+9. **Push** (if `--auto-push`): Pushes changes with automatic retry on rejection.
+   - *Why auto-inject token*: The remote URL might not have the GitHub token (old workdir, manual clone). We inject it automatically before pushing.
+   - *Why fetch+rebase on rejection*: If someone else pushed while prr was working (common with CodeRabbit), we rebase our changes on top instead of failing.
+   - *Why 30s timeout*: Push should be fast. If it takes longer, something's wrong (network, auth prompt). 60s was too generous.
 
 ## Work Directory
 

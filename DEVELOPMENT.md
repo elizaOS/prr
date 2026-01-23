@@ -81,8 +81,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/git/clone.ts` | Clone, fetch, conflict detection/resolution |
-| `src/git/commit.ts` | Squash commit, push |
+| `src/git/clone.ts` | Clone, fetch, conflict detection, pullLatest with auto-rebase |
+| `src/git/commit.ts` | Squash commit, push with retry, token injection |
 | `src/git/workdir.ts` | Hash-based workdir management |
 
 ### Fixer Tool Runners
@@ -334,6 +334,131 @@ if (stashed) {
 
 **What about stash conflicts?** If `stash pop` conflicts, we return with `stashConflicts` list. The caller can handle this (show warning, continue without changes, etc.).
 
+### 9. Push Handling with Auto-Retry
+
+**The Problem**: Push can fail for several reasons:
+1. Remote has newer commits (CodeRabbit or someone pushed while we worked)
+2. Token not in remote URL (old workdir, manual clone)
+3. Network issues or timeout
+
+**Solution**: Multi-layer push handling:
+
+```typescript
+// 1. Pre-push: Ensure token is in remote URL
+const remoteUrl = execSync('git remote get-url origin');
+if (!remoteUrl.includes('@') && githubToken) {
+  const authUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
+  execSync(`git remote set-url origin "${authUrl}"`);
+}
+
+// 2. Push with rejection detection
+const result = await push(git, branch);
+if (result.rejected) {
+  // 3. Fetch + rebase + retry
+  await git.fetch('origin', branch);
+  await git.rebase([`origin/${branch}`]);
+  await push(git, branch);  // retry
+}
+```
+
+**Why inject token before push?**
+- Token might be missing from old workdirs
+- Manual clones don't have token
+- Without token, git prompts for credentials (causes timeout)
+
+**Why rebase on rejection?**
+- Merge would create ugly merge commits
+- Rebase puts our fixes cleanly on top of remote
+- History stays linear and readable
+
+**Why 30s timeout (reduced from 60s)?**
+- Push should be fast (network + auth negotiation)
+- If it takes longer, something is wrong
+- 60s was too long to wait for a hung process
+
+**What if rebase has conflicts?**
+- We abort the rebase (`git rebase --abort`)
+- Return error asking for manual resolution
+- User's local state is preserved
+
+### 10. Divergent Branch Handling
+
+**The Problem**: "Need to specify how to reconcile divergent branches" error when local and remote have diverged.
+
+**Solution**: `pullLatest` fetches first, then rebases:
+
+```typescript
+// 1. Fetch to see what we're dealing with
+await git.fetch('origin', branch);
+
+// 2. Check divergence
+const status = await git.status();
+const { ahead, behind } = status;
+
+if (ahead > 0 && behind > 0) {
+  // 3. Diverged - rebase our commits on top of remote
+  console.log(`Rebasing ${ahead} local commit(s) onto ${behind} remote commit(s)...`);
+  await git.rebase([`origin/${branch}`]);
+} else if (behind > 0) {
+  // 4. Just behind - simple fast-forward
+  await git.pull('origin', branch, { '--ff-only': null });
+}
+// If only ahead (or equal), nothing to pull
+```
+
+**Why fetch first instead of pull?**
+- We need to know the divergence state before deciding strategy
+- `git pull` without options fails on divergence
+- Fetch is always safe (doesn't modify working tree)
+
+**Why rebase instead of merge?**
+- Our local commits are prr's fixes - they should go ON TOP of remote
+- Merge would interleave commits, making history harder to read
+- Rebase keeps the "prr did this" commits together
+
+**Fallback if rebase fails:**
+- Try merge instead
+- If merge also fails (conflicts), abort and report
+- User can manually resolve in workdir
+
+### 11. Empty Issue Guards (Defense in Depth)
+
+**The Problem**: Code paths exist where `unresolvedIssues` array becomes empty but the fix loop continues. Running fixer tools with empty prompts wastes time and causes confusing errors.
+
+**Solution**: 5 layers of guards:
+
+```text
+Layer 1: Before outer fix loop (resolver.ts)
+  └─ if (unresolvedIssues.length === 0) break;
+  
+Layer 2: At START of each inner loop iteration (resolver.ts)
+  └─ if (unresolvedIssues.length === 0) break;
+  └─ WHY: After verification, issues may all be filtered out
+  
+Layer 3: After building prompt (resolver.ts)
+  └─ if (prompt.length === 0 || unresolvedIssues.length === 0) break;
+  └─ WHY: buildFixPrompt returns empty string for 0 issues
+  
+Layer 4: In buildFixPrompt (prompt-builder.ts)
+  └─ if (issues.length === 0) return { prompt: '', ... };
+  └─ WHY: Don't build meaningless "Fixing 0 issues" prompt
+  
+Layer 5: In every runner (cursor.ts, llm-api.ts, etc.)
+  └─ if (!prompt || prompt.trim().length === 0) return error;
+  └─ WHY: Final defense - runners refuse to run with empty prompt
+```
+
+**Why so many layers?**
+- Complex control flow with multiple exit paths
+- `unresolvedIssues` can be modified in many places (splice, filter, etc.)
+- Better to catch early than waste a fixer run
+- Each layer has different context and can provide clearer error messages
+
+**What triggers this?**
+- All issues verified fixed, but loop didn't exit properly
+- State loaded from previous run where issues are already resolved
+- Issues filtered out during verification but `allFixed` flag not set
+
 ### 8. Lock File Conflict Resolution
 
 **The Problem**: `bun.lock`, `package-lock.json`, etc. conflict on merge. LLM can't fix them properly.
@@ -546,6 +671,50 @@ If conflicts persist after all attempts:
 1. prr aborts the merge and continues with review fixes
 2. Human must resolve base branch conflicts manually
 3. Check `git status` in workdir for conflict markers
+
+### Push Timeout or Rejection
+**Symptoms**: "Push timed out after 30 seconds" or "Push rejected: remote has newer commits"
+
+**Causes**:
+1. Token not in remote URL (git waiting for credentials)
+2. Someone pushed while prr was working (CodeRabbit, human)
+3. Network issues
+
+**What prr does automatically**:
+1. Injects token if missing: `git remote set-url origin https://TOKEN@github.com/...`
+2. On rejection: fetches, rebases local commits on remote, retries push
+3. Times out after 30s instead of hanging forever
+
+**If it still fails**:
+```bash
+# Check remote URL has token
+cd ~/.prr/work/<hash>
+git remote get-url origin
+# Should show https://ghp_xxx@github.com/...
+
+# Manual push
+git push origin <branch>
+
+# If rejected, rebase manually
+git fetch origin <branch>
+git rebase origin/<branch>
+git push
+```
+
+### "Need to specify how to reconcile divergent branches"
+**Cause**: Local branch has commits remote doesn't have, AND remote has commits local doesn't have.
+
+**What prr does**: Automatically rebases local commits on top of remote.
+
+**If rebase has conflicts**:
+```bash
+cd ~/.prr/work/<hash>
+git status  # See conflicted files
+# Resolve conflicts manually
+git add .
+git rebase --continue
+git push
+```
 
 ### False Positives (issues marked fixed but aren't)
 **Symptoms**: prr says "All issues resolved!" but review comments aren't actually addressed.
