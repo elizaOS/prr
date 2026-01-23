@@ -1290,10 +1290,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
               } else {
                 // Get all comments that were fixed for commit message
                 const fixedIssues = comments
-                  .filter((c) => this.stateManager.isCommentVerifiedFixed(c.id))
-                  .map((c) => ({
-                    filePath: c.path,
-                    comment: c.body,
+                  .filter((comment) => this.stateManager.isCommentVerifiedFixed(comment.id))
+                  .map((comment) => ({
+                    filePath: comment.path,
+                    comment: comment.body,
                   }));
                 
                 spinner.start('Generating commit message...');
@@ -1819,10 +1819,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
         debugStep('COMMIT PHASE');
         if (await hasChanges(git)) {
           const fixedIssues = comments
-            .filter((c) => this.stateManager.isCommentVerifiedFixed(c.id))
-            .map((c) => ({
-              filePath: c.path,
-              comment: c.body,
+            .filter((comment) => this.stateManager.isCommentVerifiedFixed(comment.id))
+            .map((comment) => ({
+              filePath: comment.path,
+              comment: comment.body,
             }));
 
           if (this.options.noCommit) {
