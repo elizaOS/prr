@@ -1,4 +1,5 @@
 import type { SimpleGit } from 'simple-git';
+import { debug } from '../logger.js';
 
 export interface CommitResult {
   hash: string;
@@ -31,9 +32,30 @@ export async function squashCommit(
   };
 }
 
+/**
+ * Push changes to remote with timeout.
+ * 
+ * WHY timeout: Git push can hang indefinitely if:
+ * - Network is slow/unavailable
+ * - Auth prompt is waiting (but we can't respond in non-interactive mode)
+ * - Remote is unreachable
+ * 
+ * 60 second timeout is generous for most pushes.
+ */
 export async function push(git: SimpleGit, branch: string, force = false): Promise<void> {
+  const PUSH_TIMEOUT_MS = 60_000; // 60 seconds
+  
+  debug('Starting git push', { branch, force });
+  
   const args = force ? ['--force'] : [];
-  await git.push('origin', branch, args);
+  
+  const pushPromise = git.push('origin', branch, args);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Push timed out after 60 seconds. Check network/auth.')), PUSH_TIMEOUT_MS);
+  });
+  
+  await Promise.race([pushPromise, timeoutPromise]);
+  debug('Git push completed', { branch });
 }
 
 export async function getCurrentBranch(git: SimpleGit): Promise<string> {
