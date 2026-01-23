@@ -191,10 +191,22 @@ export class PRResolver {
           
           if (verification.fixed) {
             console.log(chalk.green(`    ✓ Fixed and verified!`));
+            debug('Fix verified successfully', {
+              file: issue.comment.path,
+              line: issue.comment.line,
+              diffLength: diff.length,
+            });
             this.stateManager.markCommentVerifiedFixed(issue.comment.id);
             anyFixed = true;
           } else {
             console.log(chalk.yellow(`    ○ Changed but not verified: ${verification.explanation}`));
+            debug('Fix rejected by verification', {
+              file: issue.comment.path,
+              line: issue.comment.line,
+              explanation: verification.explanation,
+              diff: diff.substring(0, 500),
+              issueComment: issue.comment.body.substring(0, 200),
+            });
             this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${verification.explanation}`);
             // Reset the file to try again
             await git.checkout([issue.comment.path]);
@@ -202,16 +214,37 @@ export class PRResolver {
         } else if (changedFiles.length > 0) {
           // Tool made changes but to different files - might still be relevant
           console.log(chalk.yellow(`    ○ Changed other files instead: ${changedFiles.slice(0, 3).join(', ')}${changedFiles.length > 3 ? ` (+${changedFiles.length - 3} more)` : ''}`));
+          debug('Fixer modified wrong files', {
+            expectedFile: issue.comment.path,
+            actualFiles: changedFiles,
+            issueComment: issue.comment.body.substring(0, 200),
+            toolOutput: result.output?.substring(0, 500),
+          });
           // Add lesson so tool knows to focus on the right file
           this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify ${issue.comment.path}`);
         } else {
           // Tool ran but made no changes at all
           console.log(chalk.gray(`    - No changes made (tool may not understand the task)`));
+          debug('Fixer made no changes', {
+            targetFile: issue.comment.path,
+            targetLine: issue.comment.line,
+            issueComment: issue.comment.body.substring(0, 300),
+            codeSnippet: issue.codeSnippet?.substring(0, 300),
+            promptSent: focusedPrompt.substring(0, 500) + '...',
+            toolOutput: result.output?.substring(0, 1000),
+            toolError: result.error,
+          });
           // Add lesson about the failed attempt
           this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes, may need clearer instructions`);
         }
       } else {
         console.log(chalk.red(`    ✗ Failed: ${result.error}`));
+        debug('Fixer tool failed', {
+          file: issue.comment.path,
+          line: issue.comment.line,
+          error: result.error,
+          output: result.output?.substring(0, 500),
+        });
       }
       
       await this.stateManager.save();
