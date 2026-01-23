@@ -31,42 +31,42 @@ export interface Runner {
  * Updated January 2026 with latest model versions.
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
-  // Cursor: Mix of Claude 4 and OpenAI reasoning models
+  // Cursor: Mix of Claude 4.5 and GPT-5.x models
   'cursor': [
-    'claude-sonnet-4-20250514',      // Claude 4 Sonnet - balanced
-    'gpt-4o',                         // GPT-4o - fast multimodal
-    'claude-opus-4-20250514',         // Claude 4 Opus - most capable
-    'o3-mini',                        // OpenAI o3-mini - reasoning
+    'claude-sonnet-4-5-20250514',     // Claude 4.5 Sonnet - balanced
+    'gpt-5.2',                         // GPT-5.2 - latest
+    'claude-opus-4-5-20250514',        // Claude 4.5 Opus - most capable
+    'gpt-5.2-mini',                    // GPT-5.2 mini - fast
   ],
-  // Claude Code: Claude 4 models only
+  // Claude Code: Claude 4.5 models only
   'claude-code': [
-    'claude-sonnet-4-20250514',       // Claude 4 Sonnet
-    'claude-opus-4-20250514',         // Claude 4 Opus
-    'claude-haiku-4-5-20251001',      // Claude 4.5 Haiku - fast
+    'claude-sonnet-4-5-20250514',      // Claude 4.5 Sonnet
+    'claude-opus-4-5-20250514',        // Claude 4.5 Opus
+    'claude-haiku-4-5-20251001',       // Claude 4.5 Haiku - fast
   ],
   // Aider: Supports many providers (provider-prefixed)
   'aider': [
-    'anthropic/claude-sonnet-4-20250514',
-    'openai/gpt-4o',
-    'anthropic/claude-opus-4-20250514',
-    'openai/o3-mini',
+    'anthropic/claude-sonnet-4-5-20250514',
+    'openai/gpt-5.2',
+    'anthropic/claude-opus-4-5-20250514',
+    'openai/gpt-5.2-mini',
   ],
   // OpenCode: Mix of providers
   'opencode': [
-    'claude-sonnet-4-20250514',
-    'gpt-4o',
-    'o3-mini',
+    'claude-sonnet-4-5-20250514',
+    'gpt-5.2',
+    'gpt-5.2-mini',
   ],
-  // Codex: OpenAI models (reasoning-focused)
+  // Codex: OpenAI models
   'codex': [
-    'gpt-4o',
+    'gpt-5.2',
+    'gpt-5.2-mini',
     'o3-mini',
-    'o1',
   ],
   // LLM API: Direct Anthropic API calls
   'llm-api': [
-    'claude-sonnet-4-20250514',
-    'claude-opus-4-20250514',
+    'claude-sonnet-4-5-20250514',
+    'claude-opus-4-5-20250514',
     'claude-haiku-4-5-20251001',
   ],
 };

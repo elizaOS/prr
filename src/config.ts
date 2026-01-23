@@ -53,7 +53,7 @@ export function loadConfig(): Config {
     llmProvider,
     llmModel: getEnvOrDefault(
       'PRR_LLM_MODEL',
-      llmProvider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o'
+      llmProvider === 'anthropic' ? 'claude-sonnet-4-5-20250514' : 'gpt-5.2'
     ),
     defaultTool: getEnvOrDefault('PRR_TOOL', 'cursor') as FixerTool,
     workdirBase: join(homedir(), '.prr', 'work'),
