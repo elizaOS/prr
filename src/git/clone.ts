@@ -7,13 +7,12 @@
  * WHY preserveChanges option: Interrupted runs leave uncommitted changes.
  * Without this, restart would wipe them via hard reset.
  * 
- * WHY token stripping: Git stores clone URLs in .git/config. If URL contains
- * the token (https://TOKEN@github.com/...), anyone with workdir access can
- * steal it. We strip the token immediately after clone/fetch.
- * 
  * WHY auto-stashing: User interrupts prr with Ctrl+C. Changes exist but aren't
  * committed. Next run does `git pull` which fails "local changes would be
  * overwritten". Auto-stash makes this seamless.
+ * 
+ * NOTE: Token is embedded in remote URL for HTTPS auth. This is stored in
+ * .git/config but workdirs are local-only and not committed anywhere.
  */
 import { simpleGit, SimpleGit } from 'simple-git';
 import { existsSync, readFileSync } from 'fs';
@@ -25,40 +24,6 @@ export interface GitOperations {
   workdir: string;
 }
 
-/**
- * Strip any embedded token from the git remote URL.
- * 
- * WHY: Git stores clone URLs in .git/config. If URL contains a token
- * (https://TOKEN@github.com/...), anyone with workdir access can steal it.
- * 
- * This runs EVERY time we access a workdir, not just on fresh clone:
- * - Existing workdirs may have been created before we added stripping
- * - Ensures credentials never persist in .git/config
- */
-async function stripTokenFromRemote(git: SimpleGit, cleanUrl: string): Promise<void> {
-  try {
-    // Check if current URL has a token
-    const remotes = await git.getRemotes(true);
-    const origin = remotes.find(r => r.name === 'origin');
-    const currentUrl = origin?.refs?.fetch || '';
-    
-    if (currentUrl.includes('@') && currentUrl.includes('github.com')) {
-      debug('Found token in remote URL, stripping it');
-      await git.raw(['remote', 'set-url', 'origin', cleanUrl]);
-      console.log('  🔒 Stripped token from git remote URL');
-      
-      // Verify
-      const newRemotes = await git.getRemotes(true);
-      const newOrigin = newRemotes.find(r => r.name === 'origin');
-      if (newOrigin?.refs?.fetch?.includes('@')) {
-        console.warn('⚠ WARNING: Token still in remote URL after set-url!');
-      }
-    }
-  } catch (error) {
-    debug('Failed to strip token from remote', { error });
-    // Non-fatal - continue anyway
-  }
-}
 
 export interface ConflictStatus {
   hasConflicts: boolean;
@@ -120,10 +85,6 @@ export async function cloneOrUpdate(
       console.log(`Updated to latest ${branch}`);
     }
     
-    // ALWAYS strip any token from stored remote URL
-    // WHY: Existing workdirs may have been created with token in URL before
-    // we added stripping. Check and fix every time.
-    await stripTokenFromRemote(git, cloneUrl);
   } else {
     // Fresh clone
     git = simpleGit();
@@ -132,9 +93,6 @@ export async function cloneOrUpdate(
     await git.clone(authUrl, workdir, ['--branch', branch, '--single-branch']);
     
     git = simpleGit(workdir);
-    
-    // ALWAYS strip any token from stored remote URL
-    await stripTokenFromRemote(git, cloneUrl);
     
     console.log(`Cloned ${branch} successfully`);
   }

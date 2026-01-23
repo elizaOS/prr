@@ -286,21 +286,18 @@ LOCATIONS END -->
 
 **Why?** Bot reviewers (CodeRabbit, etc.) attach comments at convenient lines but reference code elsewhere. We need the actual code to verify fixes.
 
-### 7. Git Token Security
+### 7. Git Authentication
 
-**The Problem**: Git stores clone URLs in `.git/config`. URL contains token = credential leak.
-
-**Solution**: Strip token from remote URL after clone/fetch:
-
-```typescript
-// Clone with auth
-git.clone(`https://${token}@github.com/...`, workdir);
-
-// Immediately remove token from stored URL
-git.remote(['set-url', 'origin', 'https://github.com/...']);
+Token is embedded in the HTTPS remote URL for authentication:
+```
+https://TOKEN@github.com/owner/repo.git
 ```
 
-**Why?** Workdirs persist. Anyone with access to `~/.prr/work/` could steal your GitHub token from `.git/config`.
+This is stored in `.git/config` within the workdir. We accept this tradeoff because:
+- Workdirs are local-only (`~/.prr/work/`)
+- Not committed to any repository
+- Simpler than SSH key setup or credential helpers
+- User controls their own machine security
 
 ### 8. Auto-Stashing for Interrupted Runs
 
