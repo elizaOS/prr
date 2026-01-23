@@ -8,7 +8,15 @@ export type LLMProvider = 'anthropic' | 'openai';
 export type FixerTool = 'cursor' | 'opencode';
 
 // Default bot usernames to look for in PR reviews
-const DEFAULT_BOT_USERS = ['copilot', 'coderabbitai', 'sourcery-ai', 'codiumai'];
+// These are matched as substrings (case-insensitive)
+const DEFAULT_BOT_USERS = [
+  'copilot',                    // GitHub Copilot, copilot-pull-request-reviewer
+  'coderabbitai',               // CodeRabbit
+  'greptile',                   // Greptile
+  'codex-connector',            // ChatGPT Codex Connector
+  'sourcery',                   // Sourcery
+  'codiumai',                   // CodiumAI / Qodo
+];
 
 export interface Config {
   githubToken: string;

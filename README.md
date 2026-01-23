@@ -57,10 +57,23 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 # Default fixer tool
 PRR_TOOL=cursor
 
-# Bot usernames to look for (comma-separated)
-# Defaults to: copilot, coderabbitai, sourcery-ai, codiumai
-PRR_BOT_USERS=copilot,coderabbitai
+# Bot usernames to look for (comma-separated, matched as substrings)
+# Defaults to: copilot, coderabbitai, greptile, codex-connector, sourcery, codiumai
+# PRR_BOT_USERS=copilot,coderabbitai,greptile
 ```
+
+## Supported Bots
+
+Out of the box, prr detects comments from:
+
+- **GitHub Copilot** (`Copilot`, `copilot-pull-request-reviewer[bot]`)
+- **CodeRabbit** (`coderabbitai[bot]`)
+- **Greptile** (`greptile-apps[bot]`)
+- **ChatGPT Codex** (`chatgpt-codex-connector[bot]`)
+- **Sourcery** (`sourcery-ai[bot]`)
+- **CodiumAI/Qodo** (`codiumai[bot]`)
+
+Add custom bots via `PRR_BOT_USERS` env var (comma-separated, matched as substrings).
 
 ## Usage
 
