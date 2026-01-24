@@ -367,8 +367,10 @@ export class PRResolver {
             console.log(chalk.gray(`    📝 Lesson: ${lesson}`));
             this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
 
-            // Reset unverified edits
-            await git.checkout(changedFiles);
+            // Reset ONLY this issue's file, not all changed files
+            // WHY: Other issues in this batch may have been successfully fixed
+            // and we don't want to lose those changes
+            await git.checkout([issue.comment.path]);
           }
         } else if (changedFiles.length > 0) {
           // Tool made changes but to different files - might still be relevant
@@ -381,7 +383,12 @@ export class PRResolver {
           });
           // Add lesson so tool knows to focus on the right file
           this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify ${issue.comment.path}`);
-          await git.checkout(changedFiles);
+          // Reset wrong files but keep any changes to the target file
+          // WHY: The target file might have partial progress worth keeping
+          const wrongFiles = changedFiles.filter(f => f !== issue.comment.path);
+          if (wrongFiles.length > 0) {
+            await git.checkout(wrongFiles);
+          }
         } else {
           // Tool ran but made no changes at all
           console.log(chalk.gray(`    - No changes made (tool may not understand the task)`));
