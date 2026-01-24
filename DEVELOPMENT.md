@@ -680,7 +680,7 @@ if (hasForbidden) {
 
 **Why `currentRunnerIndex` and `modelIndices`?** Resume rotation from where we left off. Without this, every restart begins with the same tool/model.
 
-**Why `modelPerformance`?** Track which models work well for this project. Shows success rate at end of run. Could be used to auto-prioritize models in future.
+**Why `modelPerformance`?** Track which models work well for this project. Shows success rate at end of run. Could be used to auto-prioritize models in the future.
 
 ### Lessons Store (`~/.prr/lessons/<owner>/<repo>/<branch>.json`)
 ```json
