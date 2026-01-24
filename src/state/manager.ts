@@ -15,7 +15,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
-import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord } from './types.js';
+import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../logger.js';
 
@@ -385,5 +385,115 @@ export class StateManager {
   setModelIndices(indices: Record<string, number>): void {
     if (!this.state) return;
     this.state.modelIndices = indices;
+  }
+  
+  // Model performance tracking
+  // WHY: Track which models work well for this project so we can prioritize them
+  
+  /**
+   * Get the key for model performance tracking.
+   * Format: "tool/model" e.g., "cursor/claude-4-sonnet-thinking"
+   */
+  private getModelKey(tool: string, model?: string): string {
+    return model ? `${tool}/${model}` : tool;
+  }
+  
+  /**
+   * Ensure model stats exist for a given key.
+   */
+  private ensureModelStats(key: string): ModelStats {
+    if (!this.state) throw new Error('State not loaded');
+    if (!this.state.modelPerformance) {
+      this.state.modelPerformance = {};
+    }
+    if (!this.state.modelPerformance[key]) {
+      this.state.modelPerformance[key] = {
+        fixes: 0,
+        failures: 0,
+        noChanges: 0,
+        errors: 0,
+        lastUsed: new Date().toISOString(),
+      };
+    }
+    return this.state.modelPerformance[key];
+  }
+  
+  /**
+   * Record a successful fix by a model.
+   * Called when verification passes for an issue.
+   */
+  recordModelFix(tool: string, model?: string, count: number = 1): void {
+    const key = this.getModelKey(tool, model);
+    const stats = this.ensureModelStats(key);
+    stats.fixes += count;
+    stats.lastUsed = new Date().toISOString();
+  }
+  
+  /**
+   * Record a failed fix attempt by a model.
+   * Called when verification fails for an issue.
+   */
+  recordModelFailure(tool: string, model?: string, count: number = 1): void {
+    const key = this.getModelKey(tool, model);
+    const stats = this.ensureModelStats(key);
+    stats.failures += count;
+    stats.lastUsed = new Date().toISOString();
+  }
+  
+  /**
+   * Record when a model made no changes.
+   */
+  recordModelNoChanges(tool: string, model?: string): void {
+    const key = this.getModelKey(tool, model);
+    const stats = this.ensureModelStats(key);
+    stats.noChanges += 1;
+    stats.lastUsed = new Date().toISOString();
+  }
+  
+  /**
+   * Record a tool error (connection, timeout, etc.)
+   */
+  recordModelError(tool: string, model?: string): void {
+    const key = this.getModelKey(tool, model);
+    const stats = this.ensureModelStats(key);
+    stats.errors += 1;
+    stats.lastUsed = new Date().toISOString();
+  }
+  
+  /**
+   * Get performance stats for all models.
+   */
+  getModelPerformance(): ModelPerformance {
+    return this.state?.modelPerformance ?? {};
+  }
+  
+  /**
+   * Get stats for a specific model.
+   */
+  getModelStats(tool: string, model?: string): ModelStats | undefined {
+    const key = this.getModelKey(tool, model);
+    return this.state?.modelPerformance?.[key];
+  }
+  
+  /**
+   * Get models sorted by success rate (best first).
+   * 
+   * WHY: Use this to prioritize models that work well for this project.
+   */
+  getModelsBySuccessRate(): Array<{ key: string; stats: ModelStats; successRate: number }> {
+    const perf = this.state?.modelPerformance ?? {};
+    return Object.entries(perf)
+      .map(([key, stats]) => {
+        const total = stats.fixes + stats.failures;
+        const successRate = total > 0 ? stats.fixes / total : 0;
+        return { key, stats, successRate };
+      })
+      .sort((a, b) => {
+        // Sort by success rate descending, then by total attempts descending
+        if (b.successRate !== a.successRate) {
+          return b.successRate - a.successRate;
+        }
+        return (b.stats.fixes + b.stats.failures) - (a.stats.fixes + a.stats.failures);
+      });
   }
 }

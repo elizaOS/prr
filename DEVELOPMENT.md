@@ -467,7 +467,66 @@ const crResult = await this.github.triggerCodeRabbitIfNeeded(
 ℹ CodeRabbit: not configured for this repo
 ```
 
-### 12. Empty Issue Guards (Defense in Depth)
+### 12. Model Performance Tracking
+
+**The Problem**: Different models have different strengths. Some work well for a codebase, others don't. Without tracking, we can't learn from experience.
+
+**Solution**: Track model performance per project in state file:
+
+```typescript
+// State includes:
+modelPerformance: {
+  "cursor/claude-4-sonnet-thinking": {
+    fixes: 15,       // Issues successfully fixed
+    failures: 3,     // Fix attempts that failed verification
+    noChanges: 2,    // Times model made no changes
+    errors: 1,       // Tool errors (connection, timeout)
+    lastUsed: "2026-01-23T..."
+  },
+  "cursor/gpt-5.2": { ... }
+}
+```
+
+**What we track**:
+- `fixes`: Verification passed (issue resolved)
+- `failures`: Verification failed (issue not resolved)
+- `noChanges`: Model ran but made no changes (often means it didn't understand the task)
+- `errors`: Tool errors (connection stalled, timeout, model unavailable)
+
+**When we track**:
+```typescript
+// After verification completes:
+if (verifiedCount > 0) {
+  this.stateManager.recordModelFix(runner.name, model, verifiedCount);
+}
+if (failedCount > 0) {
+  this.stateManager.recordModelFailure(runner.name, model, failedCount);
+}
+
+// On tool failure:
+this.stateManager.recordModelError(runner.name, model);
+
+// On no changes:
+this.stateManager.recordModelNoChanges(runner.name, model);
+```
+
+**Output at end of run**:
+```text
+📊 Model Performance:
+  cursor/claude-4-sonnet-thinking: 15 fixes, 3 failed (83% success)
+  cursor/gpt-5.2: 5 fixes, 8 failed (38% success)
+  cursor/o3: 2 no-change, 1 errors
+```
+
+**WHY track this?**
+- Learn which models work for this codebase
+- Prioritize better-performing models in future
+- Skip models that consistently fail
+- Help users understand tool effectiveness
+
+**Future use**: Could use this data to auto-prioritize models (try best-performing first).
+
+### 13. Empty Issue Guards (Defense in Depth)
 
 **The Problem**: Code paths exist where `unresolvedIssues` array becomes empty but the fix loop continues. Running fixer tools with empty prompts wastes time and causes confusing errors.
 
@@ -588,6 +647,15 @@ if (hasForbidden) {
     "cursor": 2,
     "llm-api": 0
   },
+  "modelPerformance": {        // NEW: track which models work well
+    "cursor/claude-4-sonnet-thinking": {
+      "fixes": 15,
+      "failures": 3,
+      "noChanges": 2,
+      "errors": 0,
+      "lastUsed": "2026-01-23T10:30:00Z"
+    }
+  },
   "interrupted": false,
   "interruptPhase": null,
   "totalTimings": { "Fetch PR info": 500, ... },
@@ -598,6 +666,8 @@ if (hasForbidden) {
 **Why `verifiedComments` with timestamps?** Enables verification expiry. If a verification is N iterations old, re-check it.
 
 **Why `currentRunnerIndex` and `modelIndices`?** Resume rotation from where we left off. Without this, every restart begins with the same tool/model.
+
+**Why `modelPerformance`?** Track which models work well for this project. Shows success rate at end of run. Could be used to auto-prioritize models in future.
 
 ### Lessons Store (`~/.prr/lessons/<owner>/<repo>/<branch>.json`)
 ```json

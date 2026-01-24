@@ -61,6 +61,37 @@ export class PRResolver {
   }
 
   /**
+   * Print model performance summary.
+   * WHY: Shows which models work well for this project and which don't.
+   * Helps users understand which models to prefer or avoid.
+   */
+  private printModelPerformance(): void {
+    if (!this.stateManager) return;
+    
+    const models = this.stateManager.getModelsBySuccessRate();
+    if (models.length === 0) return;
+    
+    console.log(chalk.cyan('\n📊 Model Performance:'));
+    
+    for (const { key, stats, successRate } of models) {
+      const total = stats.fixes + stats.failures;
+      if (total === 0 && stats.noChanges === 0 && stats.errors === 0) continue;
+      
+      const pct = total > 0 ? Math.round(successRate * 100) : 0;
+      const successColor = pct >= 70 ? chalk.green : pct >= 40 ? chalk.yellow : chalk.red;
+      
+      const parts: string[] = [];
+      if (stats.fixes > 0) parts.push(chalk.green(`${formatNumber(stats.fixes)} fixes`));
+      if (stats.failures > 0) parts.push(chalk.red(`${formatNumber(stats.failures)} failed`));
+      if (stats.noChanges > 0) parts.push(chalk.gray(`${formatNumber(stats.noChanges)} no-change`));
+      if (stats.errors > 0) parts.push(chalk.red(`${formatNumber(stats.errors)} errors`));
+      
+      const rateStr = total > 0 ? ` (${successColor(pct + '%')} success)` : '';
+      console.log(`  ${key}: ${parts.join(', ')}${rateStr}`);
+    }
+  }
+
+  /**
    * Get the list of models available for a runner
    */
   private getModelsForRunner(runner: Runner): string[] {
@@ -486,6 +517,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
         endTimer('Total');
         printTimingSummary();
         printTokenSummary();
+        this.printModelPerformance();
       } catch (e) {
         console.log(chalk.red('✗ Failed to save state:', e));
       }
@@ -1403,6 +1435,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // WHY: "connection stalled", "model unavailable" aren't actionable for future fixes
             // Only code-related lessons (fix rejected, wrong approach) are useful
             debug('Tool failure (not recorded as lesson)', { tool: this.runner.name, error: result.error });
+            // Track model error for performance stats
+            this.stateManager.recordModelError(this.runner.name, this.getCurrentModel());
             await this.stateManager.save();
             continue;
           }
@@ -1414,6 +1448,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
             const currentModel = this.getCurrentModel();
             console.log(chalk.yellow(`\nNo changes made by ${this.runner.name}${currentModel ? ` (${currentModel})` : ''}`));
             this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes - trying different approach`);
+            // Track no-changes for performance stats
+            this.stateManager.recordModelNoChanges(this.runner.name, currentModel);
             
             // Count this as a failure for rotation purposes
             this.consecutiveFailures++;
@@ -1604,6 +1640,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
           const lessonsAfterVerify = this.lessonsManager.getTotalCount();
           const newLessons = lessonsAfterVerify - lessonsBeforeFix;
           
+          // Track model performance for this iteration
+          // WHY: Know which models work well for this project
+          // Note: currentModel already defined at start of iteration
+          if (verifiedCount > 0) {
+            this.stateManager.recordModelFix(this.runner.name, currentModel, verifiedCount);
+          }
+          if (failedCount > 0) {
+            this.stateManager.recordModelFailure(this.runner.name, currentModel, failedCount);
+          }
+          
           spinner.succeed(`Verified: ${formatNumber(verifiedCount)}/${formatNumber(totalIssues)} fixed (${progressPct}%), ${formatNumber(failedCount)} remaining (${formatDuration(verifyTime)})`);
           
           // Show iteration summary
@@ -1784,6 +1830,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
       endTimer('Total');
       printTimingSummary();
       printTokenSummary();
+      this.printModelPerformance();
       
       // Ring terminal bell 3 times to notify user completion
       // WHY: Long-running processes need audio notification when done
@@ -1797,6 +1844,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
       endTimer('Total');
       printTimingSummary();
       printTokenSummary();
+      this.printModelPerformance();
       spinner.fail('Error');
       
       // Clean up workdir on error if not keeping it

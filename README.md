@@ -48,6 +48,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - Batched commits with LLM-generated messages (not "fix review comments")
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
+- **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 
 ## Installation
