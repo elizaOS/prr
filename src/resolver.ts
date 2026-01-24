@@ -293,7 +293,11 @@ export class PRResolver {
     return false;
   }
 
-  private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit): Promise<boolean> {
+  private async trySingleIssueFix(
+    issues: UnresolvedIssue[], 
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>
+  ): Promise<boolean> {
     // Focus on one issue at a time to reduce context and improve success rate
     // Randomize which issues to try to avoid hammering the same hard issue
     const shuffled = [...issues].sort(() => Math.random() - 0.5);
@@ -336,6 +340,7 @@ export class PRResolver {
               diffLength: diff.length,
             });
             this.stateManager.markCommentVerifiedFixed(issue.comment.id);
+            verifiedThisSession?.add(issue.comment.id);  // Track for session filtering
             anyFixed = true;
           } else {
             console.log(chalk.yellow(`    ○ Changed but not verified: ${verification.explanation}`));
@@ -1353,27 +1358,32 @@ Start your response with \`\`\` and end with \`\`\`.`;
         let fixIteration = 0;
         let allFixed = false;
         const maxFixIterations = this.options.maxFixIterations || Infinity;  // 0 = unlimited
+        
+        // Track which items were verified THIS SESSION (not from previous runs)
+        // WHY: findUnresolvedIssues already handles stale verifications correctly.
+        // We only need to filter items that got verified DURING this fix loop.
+        const verifiedThisSession = new Set<string>();
 
         while (fixIteration < maxFixIterations && !allFixed) {
-          // Filter out issues that were verified in previous iterations (e.g., by single-issue mode)
-          // WHY: trySingleIssueFix marks items as verified but doesn't filter the array
-          // This must happen BEFORE the length check
-          const verifiedThisRound = unresolvedIssues.filter(
-            (i) => this.stateManager.isCommentVerifiedFixed(i.comment.id)
-          );
-          if (verifiedThisRound.length > 0) {
-            debug('Filtering already-verified issues at start of iteration', {
-              before: unresolvedIssues.length,
-              verified: verifiedThisRound.length,
-            });
-            unresolvedIssues.splice(
-              0,
-              unresolvedIssues.length,
-              ...unresolvedIssues.filter(
-                (i) => !this.stateManager.isCommentVerifiedFixed(i.comment.id)
-              )
-            );
-            debug('After filtering', { remaining: unresolvedIssues.length });
+          // Filter out issues that were verified during THIS session (by single-issue mode, etc.)
+          // WHY: trySingleIssueFix marks items as verified but 'continue' skips normal filtering
+          // IMPORTANT: Don't use isCommentVerifiedFixed here - it would remove stale items
+          // that findUnresolvedIssues intentionally kept for re-checking
+          if (verifiedThisSession.size > 0) {
+            const beforeCount = unresolvedIssues.length;
+            const toRemove = unresolvedIssues.filter(i => verifiedThisSession.has(i.comment.id));
+            if (toRemove.length > 0) {
+              debug('Filtering issues verified this session', {
+                before: beforeCount,
+                removing: toRemove.map(i => i.comment.id),
+              });
+              unresolvedIssues.splice(
+                0,
+                unresolvedIssues.length,
+                ...unresolvedIssues.filter(i => !verifiedThisSession.has(i.comment.id))
+              );
+              debug('After filtering', { remaining: unresolvedIssues.length });
+            }
           }
           
           // Check for empty issues at start of each iteration
@@ -1532,7 +1542,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
             
             if (isOddFailure && unresolvedIssues.length > 1) {
               console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
-              const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git);
+              const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git, verifiedThisSession);
               if (singleIssueFixed) {
                 this.consecutiveFailures = 0;
                 this.modelFailuresInCycle = 0;
@@ -1555,8 +1565,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // After single-issue or rotation attempts, filter out any newly verified items
             // WHY: trySingleIssueFix/tryDirectLLMFix can mark items as verified
             // but we 'continue' before the normal filtering at end of verification
+            // IMPORTANT: Use verifiedThisSession, not isCommentVerifiedFixed, to avoid
+            // removing stale verifications that findUnresolvedIssues kept for re-checking
             const verifiedDuringRecovery = unresolvedIssues.filter(
-              (i) => this.stateManager.isCommentVerifiedFixed(i.comment.id)
+              (i) => verifiedThisSession.has(i.comment.id)
             );
             if (verifiedDuringRecovery.length > 0) {
               debug('Filtering verified items after recovery attempt', {
@@ -1567,7 +1579,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 0,
                 unresolvedIssues.length,
                 ...unresolvedIssues.filter(
-                  (i) => !this.stateManager.isCommentVerifiedFixed(i.comment.id)
+                  (i) => !verifiedThisSession.has(i.comment.id)
                 )
               );
             }
@@ -1653,6 +1665,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                   verifiedCount++;
                   this.stateManager.markCommentVerifiedFixed(issue.comment.id);
                   this.stateManager.addCommentToIteration(issue.comment.id);
+                  verifiedThisSession.add(issue.comment.id);  // Track for session filtering
                 } else {
                   failedCount++;
                   // Analyze failure to generate actionable lesson
@@ -1715,6 +1728,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                   verifiedCount++;
                   this.stateManager.markCommentVerifiedFixed(issue.comment.id);
                   this.stateManager.addCommentToIteration(issue.comment.id);
+                  verifiedThisSession.add(issue.comment.id);  // Track for session filtering
                 } else {
                   failedCount++;
                   this.lessonsManager.addLesson(
@@ -1779,7 +1793,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               if (isOddFailure && unresolvedIssues.length > 1) {
                 // Odd failure = batch failed, try single-issue with same tool/model
                 console.log(chalk.yellow('\n  🎯 Batch failed, trying single-issue focus mode...'));
-                const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git);
+                const singleIssueFixed = await this.trySingleIssueFix(unresolvedIssues, git, verifiedThisSession);
                 if (singleIssueFixed) {
                   this.consecutiveFailures = 0;
                   this.modelFailuresInCycle = 0;
@@ -1806,11 +1820,15 @@ Start your response with \`\`\` and end with \`\`\`.`;
             }
             
             // Update unresolved list for next iteration
+            // IMPORTANT: Use verifiedThisSession, not isCommentVerifiedFixed
+            // WHY: isCommentVerifiedFixed includes stale items that findUnresolvedIssues
+            // intentionally kept for re-checking. We only want to remove items
+            // that were actually verified THIS session.
             unresolvedIssues.splice(
               0,
               unresolvedIssues.length,
               ...unresolvedIssues.filter(
-                (i) => !this.stateManager.isCommentVerifiedFixed(i.comment.id)
+                (i) => !verifiedThisSession.has(i.comment.id)
               )
             );
           }
