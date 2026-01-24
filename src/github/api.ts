@@ -297,7 +297,8 @@ export class GitHubAPI {
 
     for (const thread of threads) {
       // Get the first comment in each thread (the original review comment)
-      const firstComment = thread.comments[0];
+      const firstComment = [...thread.comments]
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
 
       if (firstComment) {
         reviewComments.push({
@@ -370,12 +371,10 @@ export class GitHubAPI {
       if (hasIssueComment) return true;
       
       // Check review comments
-      const { data: reviews } = await this.octokit.pulls.listReviews({
-        owner,
-        repo,
-        pull_number: prNumber,
-        per_page: 100,
-      });
+      const reviews = await this.octokit.paginate(
+        this.octokit.pulls.listReviews,
+        { owner, repo, pull_number: prNumber, per_page: 100 }
+      );
       
       const hasReviewComment = reviews.some(r => pattern.test(r.user?.login || ''));
       return hasReviewComment;
@@ -419,12 +418,10 @@ export class GitHubAPI {
       
       if (botReviews.length === 0) {
         // Check issue comments as fallback (some bots use issue comments)
-        const { data: issueComments } = await this.octokit.issues.listComments({
-          owner,
-          repo,
-          issue_number: prNumber,
-          per_page: 100,
-        });
+        const issueComments = await this.octokit.paginate(
+          this.octokit.issues.listComments,
+          { owner, repo, issue_number: prNumber, per_page: 100 }
+        );
         
         const botComments = issueComments.filter(c => pattern.test(c.user?.login || ''));
         
