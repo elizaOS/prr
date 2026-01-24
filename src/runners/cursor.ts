@@ -23,9 +23,9 @@ const CURSOR_AGENT_BINARY = 'cursor-agent';
 
 // Fallback model list if dynamic discovery fails
 const FALLBACK_MODELS = [
-  'claude-4-sonnet-thinking',
+  'claude-sonnet-4-5',
   'gpt-5.2',
-  'claude-4-opus-thinking',
+  'claude-opus-4-5',
   'gpt-5.2-codex',
   'o3',
 ];
@@ -241,7 +241,7 @@ export class CursorRunner implements Runner {
       // --output-format stream-json: Stream JSON chunks for live output
       // --stream-partial-output: Stream partial text as it's generated
       // --workspace: Working directory
-      // --model: Model to use (e.g., claude-4-opus-thinking, claude-4-sonnet-thinking)
+      // --model: Model to use (e.g., claude-opus-4-5, claude-sonnet-4-5)
       // prompt: Positional argument at the end
       
       const args: string[] = [
