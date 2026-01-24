@@ -463,47 +463,85 @@ export class GitHubAPI {
   }
 
   /**
-   * Check CodeRabbit's review mode from .coderabbit.yaml config.
+   * Check CodeRabbit's review mode.
+   * 
+   * WHY multiple detection methods:
+   * 1. PR comments - Most reliable. CodeRabbit posts "Review skipped - Auto reviews 
+   *    are disabled" when in manual mode.
+   * 2. .coderabbit.yaml - Config file may specify auto_review: false
+   * 3. Default to unknown if neither found
+   * 
    * Returns: 'auto' | 'manual' | 'unknown'
    */
-  async getCodeRabbitMode(owner: string, repo: string, branch: string): Promise<'auto' | 'manual' | 'unknown'> {
-    debug('Checking CodeRabbit config', { owner, repo, branch });
+  async getCodeRabbitMode(owner: string, repo: string, branch: string, prNumber?: number): Promise<'auto' | 'manual' | 'unknown'> {
+    debug('Checking CodeRabbit mode', { owner, repo, branch, prNumber });
     
-    // Try to read .coderabbit.yaml from repo
+    // Method 1: Check PR comments for "Review skipped" message
+    // WHY: This is the most reliable indicator - CodeRabbit explicitly says it skipped
+    if (prNumber) {
+      try {
+        const comments = await this.octokit.rest.issues.listComments({
+          owner,
+          repo,
+          issue_number: prNumber,
+          per_page: 100,
+        });
+        
+        for (const comment of comments.data) {
+          const isCodeRabbit = comment.user?.login?.toLowerCase().includes('coderabbit') ||
+                              comment.user?.login?.toLowerCase() === 'coderabbitai';
+          if (!isCodeRabbit) continue;
+          
+          // Check for the "Review skipped" message that indicates manual mode
+          if (comment.body?.includes('Review skipped') && 
+              comment.body?.includes('Auto reviews are disabled')) {
+            debug('Found "Review skipped" message - manual mode confirmed');
+            return 'manual';
+          }
+          
+          // If we find an actual review (not skipped), it's likely auto mode
+          if (comment.body?.includes('## Summary') || 
+              comment.body?.includes('## Walkthrough')) {
+            debug('Found actual review - auto mode confirmed');
+            return 'auto';
+          }
+        }
+      } catch (e) {
+        debug('Failed to check PR comments for CodeRabbit mode', { error: e });
+      }
+    }
+    
+    // Method 2: Try to read .coderabbit.yaml from repo
     const configContent = await this.getFileContent(owner, repo, branch, '.coderabbit.yaml');
     
-    if (!configContent) {
-      debug('No .coderabbit.yaml found');
-      return 'unknown';
-    }
-    
-    debug('Found .coderabbit.yaml', { length: configContent.length });
-    
-    // Look for auto_review or reviews.auto settings
-    // CodeRabbit config uses: reviews: auto_review: true/false
-    // or at top level: auto_review: true/false
-    
-    // Check for explicit auto_review: false (manual mode)
-    if (/auto_review:\s*false/i.test(configContent)) {
-      debug('CodeRabbit is in manual mode (auto_review: false)');
-      return 'manual';
-    }
-    
-    // Check for auto_review: true (auto mode)
-    if (/auto_review:\s*true/i.test(configContent)) {
-      debug('CodeRabbit is in auto mode (auto_review: true)');
+    if (configContent) {
+      debug('Found .coderabbit.yaml', { length: configContent.length });
+      
+      // Check for explicit auto_review: false (manual mode)
+      if (/auto_review:\s*false/i.test(configContent)) {
+        debug('CodeRabbit is in manual mode (auto_review: false)');
+        return 'manual';
+      }
+      
+      // Check for auto_review: true (auto mode)
+      if (/auto_review:\s*true/i.test(configContent)) {
+        debug('CodeRabbit is in auto mode (auto_review: true)');
+        return 'auto';
+      }
+      
+      // Check for request_changes_workflow which often indicates manual mode
+      if (/request_changes_workflow:\s*true/i.test(configContent)) {
+        debug('CodeRabbit has request_changes_workflow - likely manual');
+        return 'manual';
+      }
+      
+      // Config exists but doesn't specify - assume auto
+      debug('CodeRabbit config exists but mode not explicit - assuming auto');
       return 'auto';
     }
     
-    // Check for request_changes_workflow which often indicates manual mode
-    if (/request_changes_workflow:\s*true/i.test(configContent)) {
-      debug('CodeRabbit has request_changes_workflow - likely manual');
-      return 'manual';
-    }
-    
-    // Default assumption: if config exists but doesn't specify, assume auto
-    debug('CodeRabbit config exists but mode not explicit - assuming auto');
-    return 'auto';
+    debug('No .coderabbit.yaml found and no definitive PR comments');
+    return 'unknown';
   }
 
   /**
@@ -552,8 +590,8 @@ export class GitHubAPI {
     }
     
     // CodeRabbit exists but hasn't reviewed current commit
-    // Check the mode from config
-    const mode = await this.getCodeRabbitMode(owner, repo, branch);
+    // Check the mode from config and PR comments
+    const mode = await this.getCodeRabbitMode(owner, repo, branch, prNumber);
     
     if (mode === 'auto') {
       // Auto mode - CodeRabbit should pick up changes automatically
