@@ -1350,13 +1350,75 @@ Start your response with \`\`\` and end with \`\`\`.`;
         const maxFixIterations = this.options.maxFixIterations || Infinity;  // 0 = unlimited
 
         while (fixIteration < maxFixIterations && !allFixed) {
-          // CRITICAL: Check for empty issues at start of each iteration
-          // WHY: After verification, unresolvedIssues can be filtered to 0
-          // but allFixed might still be false (e.g., if fixer made no changes)
+          // Filter out issues that were verified in previous iterations (e.g., by single-issue mode)
+          // WHY: trySingleIssueFix marks items as verified but doesn't filter the array
+          // This must happen BEFORE the length check
+          const verifiedThisRound = unresolvedIssues.filter(
+            (i) => this.stateManager.isCommentVerifiedFixed(i.comment.id)
+          );
+          if (verifiedThisRound.length > 0) {
+            debug('Filtering already-verified issues at start of iteration', {
+              before: unresolvedIssues.length,
+              verified: verifiedThisRound.length,
+            });
+            unresolvedIssues.splice(
+              0,
+              unresolvedIssues.length,
+              ...unresolvedIssues.filter(
+                (i) => !this.stateManager.isCommentVerifiedFixed(i.comment.id)
+              )
+            );
+            debug('After filtering', { remaining: unresolvedIssues.length });
+          }
+          
+          // Check for empty issues at start of each iteration
+          // WHY: After verification/filtering, unresolvedIssues can be 0
           if (unresolvedIssues.length === 0) {
-            debug('No issues to fix at start of iteration - breaking');
-            console.log(chalk.green('\n✓ All issues resolved'));
-            break;
+            // Sanity check: verify that all comments are actually marked as verified
+            const actuallyVerified = comments.filter(c => 
+              this.stateManager.isCommentVerifiedFixed(c.id)
+            ).length;
+            const actuallyUnverified = comments.length - actuallyVerified;
+            
+            if (actuallyUnverified > 0) {
+              // BUG: We think we're done but there are unverified comments!
+              console.log(chalk.red(`\n⚠ BUG DETECTED: unresolvedIssues is empty but ${actuallyUnverified} comments are not verified`));
+              debug('Mismatch detected', {
+                unresolvedIssuesLength: unresolvedIssues.length,
+                actuallyVerified,
+                actuallyUnverified,
+                totalComments: comments.length,
+                verifiedIds: comments.filter(c => this.stateManager.isCommentVerifiedFixed(c.id)).map(c => c.id),
+              });
+              
+              // Re-populate unresolvedIssues from scratch
+              unresolvedIssues.splice(0, unresolvedIssues.length);
+              for (const comment of comments) {
+                if (!this.stateManager.isCommentVerifiedFixed(comment.id)) {
+                  const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
+                  unresolvedIssues.push({
+                    comment,
+                    codeSnippet,
+                    stillExists: true,
+                    explanation: 'Re-added after bug detection',
+                  });
+                }
+              }
+              debug('Re-populated unresolvedIssues', { count: unresolvedIssues.length });
+              
+              if (unresolvedIssues.length === 0) {
+                // Now it's actually empty (all verified)
+                debug('All comments now verified - breaking');
+                console.log(chalk.green('\n✓ All issues resolved'));
+                break;
+              }
+              // Continue with the re-populated list
+              console.log(chalk.yellow(`→ Continuing with ${unresolvedIssues.length} issues`));
+            } else {
+              debug('No issues to fix at start of iteration - breaking');
+              console.log(chalk.green('\n✓ All issues resolved'));
+              break;
+            }
           }
           
           fixIteration++;
@@ -1485,6 +1547,30 @@ Start your response with \`\`\` and end with \`\`\`.`;
               }
             }
             
+            // After single-issue or rotation attempts, filter out any newly verified items
+            // WHY: trySingleIssueFix/tryDirectLLMFix can mark items as verified
+            // but we 'continue' before the normal filtering at end of verification
+            const verifiedDuringRecovery = unresolvedIssues.filter(
+              (i) => this.stateManager.isCommentVerifiedFixed(i.comment.id)
+            );
+            if (verifiedDuringRecovery.length > 0) {
+              debug('Filtering verified items after recovery attempt', {
+                before: unresolvedIssues.length,
+                verified: verifiedDuringRecovery.map(i => i.comment.id),
+              });
+              unresolvedIssues.splice(
+                0,
+                unresolvedIssues.length,
+                ...unresolvedIssues.filter(
+                  (i) => !this.stateManager.isCommentVerifiedFixed(i.comment.id)
+                )
+              );
+            }
+            
+            debug('Continuing to next iteration after no-changes recovery', {
+              unresolvedCount: unresolvedIssues.length,
+              consecutiveFailures: this.consecutiveFailures,
+            });
             await this.stateManager.save();
             await this.lessonsManager.save();
             continue;  // Continue to next iteration instead of breaking
