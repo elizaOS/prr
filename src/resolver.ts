@@ -465,7 +465,11 @@ IMPORTANT: Actually edit the file. Do not just explain what to do.`;
     return prompt;
   }
 
-  private async tryDirectLLMFix(issues: UnresolvedIssue[]): Promise<boolean> {
+  private async tryDirectLLMFix(
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>
+  ): Promise<boolean> {
     console.log(chalk.cyan(`\n  🧠 Attempting direct ${this.config.llmProvider} API fix...`));
     setTokenPhase('Direct LLM fix');
     
@@ -507,8 +511,29 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // Preserve trailing newline if original file had one
             const hasTrailingNewline = fileContent.endsWith('\n');
             fs.writeFileSync(filePath, fixedCode + (hasTrailingNewline ? '\n' : ''), 'utf-8');
-            console.log(chalk.green(`    ✓ Fixed: ${issue.comment.path}`));
-            anyFixed = true;
+            console.log(chalk.green(`    ✓ Written: ${issue.comment.path}`));
+            
+            // Verify the fix before counting it as successful
+            // WHY: Direct LLM writes code but we need to verify it addresses the issue
+            // Without this, the fix could be wrong and get undone by next fixer iteration
+            setTokenPhase('Verify single fix');
+            const diff = await getDiffForFile(git, issue.comment.path);
+            const verification = await this.llm.verifyFix(
+              issue.comment.body,
+              issue.comment.path,
+              diff
+            );
+            
+            if (verification.fixed) {
+              console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}`));
+              this.stateManager.markCommentVerifiedFixed(issue.comment.id);
+              verifiedThisSession?.add(issue.comment.id);
+              anyFixed = true;
+            } else {
+              console.log(chalk.yellow(`    ○ Not verified: ${verification.explanation}`));
+              // Reset the file - the fix wasn't correct
+              await git.checkout([issue.comment.path]);
+            }
           }
         }
       } catch (e) {
@@ -1561,7 +1586,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               } else {
                 // All models and tools exhausted
                 console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
-                const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
+                const directFixed = await this.tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
                 if (directFixed) {
                   this.consecutiveFailures = 0;
                   this.modelFailuresInCycle = 0;
@@ -1813,7 +1838,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 } else {
                   // All models and tools exhausted, try direct LLM as last resort
                   console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
-                  const directFixed = await this.tryDirectLLMFix(unresolvedIssues);
+                  const directFixed = await this.tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
                   if (directFixed) {
                     this.consecutiveFailures = 0;
                     this.modelFailuresInCycle = 0;
