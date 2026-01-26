@@ -1550,6 +1550,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
             if (await hasChanges(git)) {
               debugStep('COMMIT PHASE (all resolved)');
               
+              // Export lessons to repo BEFORE commit so they're included
+              if (this.lessonsManager.hasNewLessonsForRepo()) {
+                spinner.start('Exporting lessons to repo...');
+                await this.lessonsManager.saveToRepo();
+                spinner.succeed('Lessons exported');
+              }
+              
               if (this.options.noCommit) {
                 warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
                 console.log(chalk.gray(`Workdir: ${this.workdir}`));
@@ -2196,6 +2203,14 @@ Start your response with \`\`\` and end with \`\`\`.`;
         // Commit changes if we have any
         debugStep('COMMIT PHASE');
         if (await hasChanges(git)) {
+          // Export lessons to repo BEFORE commit so they're included
+          // WHY: Team gets lessons with the same push as fixes - single atomic update
+          if (this.lessonsManager.hasNewLessonsForRepo()) {
+            spinner.start('Exporting lessons to repo...');
+            await this.lessonsManager.saveToRepo();
+            spinner.succeed('Lessons exported');
+          }
+
           const fixedIssues = comments
             .filter((comment) => this.stateManager.isCommentVerifiedFixed(comment.id))
             .map((comment) => ({
@@ -2282,14 +2297,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
         }
       }
 
-      // Export lessons to repo files for team sharing
-      // WHY: Different AI tools read different files (CLAUDE.md, CONVENTIONS.md, etc.)
-      // Auto-detects which formats the repo uses and writes to all of them
+      // Final lessons export (catches any lessons from last iteration not yet committed)
+      // WHY: Lessons are also exported before each commit, but this catches edge cases
       if (this.lessonsManager.hasNewLessonsForRepo()) {
-        spinner.start('Exporting lessons...');
+        spinner.start('Exporting final lessons...');
         const saved = await this.lessonsManager.saveToRepo();
         if (saved) {
-          spinner.succeed('Lessons exported (commit to share with team)');
+          spinner.succeed('Lessons exported (run git add/commit to include)');
         } else {
           spinner.warn('Could not export lessons to repo');
         }
