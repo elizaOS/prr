@@ -37,16 +37,18 @@ function hasPermissionError(output: string): boolean {
 
 /**
  * Check if --dangerously-skip-permissions should be used
- * Controlled via PRR_CLAUDE_SKIP_PERMISSIONS env var
  * 
- * WARNING: This bypasses all permission prompts. Only use in:
- * - CI/CD pipelines
- * - Containerized/isolated environments
- * - Automated workflows where you trust the prompts
+ * Always returns true for prr because:
+ * - prr is an automated fixer tool that needs to write files
+ * - Without this flag, Claude Code waits for interactive permission approval
+ * - Non-interactive execution makes Claude Code useless without this flag
+ * 
+ * Can be disabled via PRR_CLAUDE_SKIP_PERMISSIONS=0 if needed
  */
 function shouldSkipPermissions(): boolean {
   const envValue = process.env.PRR_CLAUDE_SKIP_PERMISSIONS;
-  return envValue === '1' || envValue === 'true';
+  // Default to true (enabled), only disable if explicitly set to '0' or 'false'
+  return envValue !== '0' && envValue !== 'false';
 }
 
 export class ClaudeCodeRunner implements Runner {
