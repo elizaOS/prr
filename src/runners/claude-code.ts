@@ -36,6 +36,13 @@ function hasPermissionError(output: string): boolean {
 }
 
 /**
+ * Check if running as root/sudo
+ */
+function isRunningAsRoot(): boolean {
+  return process.getuid?.() === 0;
+}
+
+/**
  * Check if --dangerously-skip-permissions should be used
  * 
  * Always returns true for prr because:
@@ -44,6 +51,9 @@ function hasPermissionError(output: string): boolean {
  * - Non-interactive execution makes Claude Code useless without this flag
  * 
  * Can be disabled via PRR_CLAUDE_SKIP_PERMISSIONS=0 if needed
+ * 
+ * NOTE: Claude Code refuses this flag when running as root for security reasons.
+ * We detect this early and fail with a clear message rather than looping.
  */
 function shouldSkipPermissions(): boolean {
   const envValue = process.env.PRR_CLAUDE_SKIP_PERMISSIONS;
@@ -110,6 +120,19 @@ export class ClaudeCodeRunner implements Runner {
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
 
+    // Guard: Claude Code refuses --dangerously-skip-permissions when running as root
+    // Detect this early and fail with a clear message rather than looping
+    const skipPermissions = shouldSkipPermissions();
+    if (skipPermissions && isRunningAsRoot()) {
+      debug('Running as root with skip-permissions - Claude Code will refuse');
+      return {
+        success: false,
+        output: '',
+        error: 'Claude Code refuses --dangerously-skip-permissions when running as root. Run prr as a non-root user, or use a different fixer tool (e.g., --tool=aider).',
+        errorType: 'permission',
+      };
+    }
+
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
@@ -118,9 +141,8 @@ export class ClaudeCodeRunner implements Runner {
       // Build args array safely (no shell interpolation)
       const args: string[] = ['--print'];
 
-      // Add --dangerously-skip-permissions if enabled via env var
+      // Add --dangerously-skip-permissions if enabled
       // This allows fully non-interactive operation (CI/CD, automated workflows)
-      const skipPermissions = shouldSkipPermissions();
       if (skipPermissions) {
         args.push('--dangerously-skip-permissions');
         debug('Using --dangerously-skip-permissions mode');

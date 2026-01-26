@@ -1626,9 +1626,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // WHY: If the tool can't write files, retrying won't help. User needs to fix permissions.
             if (result.errorType === 'permission') {
               console.log(chalk.red('\n⛔ PERMISSION ERROR: Fixer tool cannot write to files'));
-              console.log(chalk.yellow('  This wastes tokens - bailing out immediately.'));
-              console.log(chalk.cyan('  To fix: Set PRR_CLAUDE_SKIP_PERMISSIONS=1 to bypass permission prompts'));
-              console.log(chalk.gray('  (Only use in CI/CD or isolated environments)'));
+              console.log(chalk.yellow('  Bailing out - retrying won\'t help.'));
+              if (result.error) {
+                console.log(chalk.cyan(`  ${result.error}`));
+              }
               debug('Bailing out due to permission error', { tool: this.runner.name, error: result.error });
               // Don't record as lesson - this is an environment/config issue, not a code issue
               return;
