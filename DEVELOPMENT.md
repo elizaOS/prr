@@ -118,9 +118,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/state/manager.ts` | Per-workdir state (iterations, verified fixes) |
+| `src/state/manager.ts` | Per-workdir state (iterations, verified fixes, bail-out tracking) |
 | `src/state/lessons.ts` | Branch-permanent lessons (~/.prr/lessons/) |
-| `src/state/types.ts` | State interfaces |
+| `src/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 
 
 ### Prompt Building
@@ -133,7 +133,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 ## Key Design Decisions
 
-### 1. Two-Level Fix Loop
+### 1. Two-Level Fix Loop with Bail-Out
 ```text
 OUTER LOOP (push cycles):
   INNER LOOP (fix iterations):
@@ -142,13 +142,19 @@ OUTER LOOP (push cycles):
     3. Run fixer tool
     4. Verify fixes (LLM checks if addressed)
     5. Learn from failures
+    6. Track progress: progressThisCycle += verifiedCount
+    7. If no progress: rotate model/tool
+    8. If cycle complete with zero progress: noProgressCycles++
+    9. If noProgressCycles >= maxStaleCycles: BAIL OUT
   FINAL AUDIT (adversarial re-check of ALL issues)
-  Commit when audit passes
+  Commit when audit passes (or partial progress on bail-out)
   Push if --auto-push
   Wait for re-review
 ```
 
 **Why two loops?** The inner loop fixes issues quickly. The outer loop handles the reality that bot reviewers may add NEW comments after you push. Auto-push mode keeps going until the PR is clean.
+
+**Why bail-out in inner loop?** We want to commit/push partial progress even if some issues couldn't be fixed. Without bail-out, the inner loop would run forever on stubborn issues.
 
 ### 2. Verification System
 
@@ -265,6 +271,68 @@ On startup, `pruneStaleLessons()` removes these patterns.
 **Why branch-permanent?** Issues recur when you resume work. Lessons survive across runs.
 
 **Why deduplicated?** One lesson per `file:line`. If we learn something new about line 45, it replaces the old lesson.
+
+### 4b. Two-Tier Lessons Storage
+
+**The Problem**: Where should lessons live? If we write to CLAUDE.md, we might overwrite user content. If we use a hidden file, tools like Cursor/Claude Code won't read it.
+
+**Solution**: Two tiers with different responsibilities:
+
+```text
+Tier 1: .prr/lessons.md (Canonical Source)
+  └─ We control this file completely
+  └─ Full history, no limits
+  └─ Human-readable markdown
+  └─ Team shares via git
+
+Tier 2: CLAUDE.md, CONVENTIONS.md, etc. (Sync Targets)
+  └─ We only update a DELIMITED SECTION
+  └─ User's existing content preserved
+  └─ Compacted to prevent bloat
+  └─ Auto-detected based on repo contents
+```
+
+**Compaction for sync targets** (WHY: keep CLAUDE.md readable):
+- 15 global lessons (most recent)
+- 20 files with most lessons
+- 5 lessons per file (most recent)
+- Full history stays in `.prr/lessons.md`
+
+**Auto-detection of sync targets**:
+```typescript
+// Always sync to CLAUDE.md (Cursor + Claude Code)
+detected.push('claude-md');
+
+// If Aider config exists → also sync there
+if (existsSync('.aider.conf.yml') || existsSync('CONVENTIONS.md')) {
+  detected.push('conventions-md');
+}
+
+// If Cursor rules directory exists → also sync there
+if (existsSync('.cursor/rules/')) {
+  detected.push('cursor-rules');
+}
+```
+
+**Delimited section format** (preserves user content):
+```markdown
+<!-- User's existing CLAUDE.md content above -->
+
+<!-- PRR_LESSONS_START -->
+## PRR Lessons Learned
+
+> Auto-synced from .prr/lessons.md - edit there for full history.
+
+### Global
+- Lesson 1
+- Lesson 2
+<!-- PRR_LESSONS_END -->
+```
+
+**When lessons are exported**:
+- BEFORE each commit (so lessons are included with fixes)
+- Final export at end of run (catches edge cases)
+- NOT after commit (would require separate commit for lessons)
 
 ### 5. Context Size Management
 
@@ -539,7 +607,151 @@ this.stateManager.recordModelNoChanges(runner.name, model);
 
 **Future use**: Could use this data to auto-prioritize models (try best-performing first).
 
-### 13. Empty Issue Guards (Defense in Depth)
+### 13. Bail-Out Mechanism (Stalemate Detection)
+
+**The Problem**: AI agents can get into stalemates where no progress is made:
+- Fixer says "already fixed", verifier disagrees → loop forever
+- Multiple agents (CodeRabbit, LLM judge, fixer tool) have conflicting opinions
+- Issues genuinely beyond automation capability (unclear spec, conflicting requirements)
+- Observed: 5+ consecutive attempts where fixer makes NO changes, just retries
+
+**Solution**: Track "no-progress cycles" and bail out gracefully:
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          Progress Tracking                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  progressThisCycle: number    // Verified fixes in current cycle         │
+│  noProgressCycles: number     // Cycles completed with zero progress     │
+│  maxStaleCycles: number       // Threshold for bail-out (default: 1)     │
+│                                                                          │
+│  A "cycle" = all tools × all models tried once                           │
+│                                                                          │
+│  When ALL tools exhaust ALL models (cycle complete):                     │
+│    if (progressThisCycle === 0) {                                        │
+│      noProgressCycles++;                                                 │
+│      if (noProgressCycles >= maxStaleCycles) → BAIL OUT                  │
+│    } else {                                                              │
+│      noProgressCycles = 0;  // Reset on progress                         │
+│    }                                                                     │
+│    progressThisCycle = 0;   // Reset for next cycle                      │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**Implementation locations**:
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| `progressThisCycle` | `resolver.ts` | Track verified fixes per cycle |
+| `noProgressCycles` | `state/manager.ts` | Persisted cycle counter |
+| `maxStaleCycles` | `cli.ts` | CLI option (default: 1) |
+| `BailOutRecord` | `state/types.ts` | Document why automation stopped |
+| `executeBailOut()` | `resolver.ts` | Graceful bail-out sequence |
+
+**Where bail-out is triggered** (in `resolver.ts`):
+
+```typescript
+// In tryRotation(), when all tools exhausted:
+const checkBailOut = (): boolean => {
+  if (this.progressThisCycle === 0) {
+    const cycles = this.stateManager.incrementNoProgressCycles();
+    if (cycles >= this.options.maxStaleCycles) {
+      return true;  // Signal bail-out
+    }
+  } else {
+    this.stateManager.resetNoProgressCycles();
+  }
+  this.progressThisCycle = 0;
+  return false;
+};
+
+// In fix loop, after tryRotation() returns false:
+if (this.stateManager.getNoProgressCycles() >= this.options.maxStaleCycles) {
+  // Last resort: try direct LLM API
+  const directFixed = await this.tryDirectLLMFix(...);
+  if (!directFixed) {
+    await this.executeBailOut(unresolvedIssues, comments);
+    break;  // Exit fix loop
+  }
+}
+```
+
+**Bail-out sequence** (`executeBailOut()`):
+
+```text
+1. Record bail-out in state (for debugging/analysis)
+   └─ Reason, cycles completed, remaining issues, tools tried
+   
+2. Print detailed summary
+   └─ What was fixed, what remains, lessons learned
+   └─ Tools/models exhausted, suggested next steps
+   
+3. Exit fix loop cleanly
+   └─ Caller handles commit/push of partial progress
+   └─ Whatever WAS fixed gets committed and pushed
+```
+
+**Why track cycles, not individual failures?**
+- Individual failures are normal (model needs different approach)
+- Consecutive failures might just mean hard issue (keep trying)
+- Full cycle failure = "every tool, every model tried, zero progress"
+- More robust signal that we're genuinely stuck
+
+**Why default to 1 cycle?**
+- Conservative: bail early, let human debug
+- Prevents overnight loops burning API costs
+- User can increase once they trust the system
+- `--max-stale-cycles 2` for more patience
+
+**Why persist noProgressCycles?**
+- Survives Ctrl+C interruptions
+- Resuming picks up where we left off
+- Prevents "reset to 0" on each restart defeating the purpose
+
+**BailOutRecord structure** (`state/types.ts`):
+
+```typescript
+interface BailOutRecord {
+  timestamp: string;
+  reason: 'no-progress-cycles' | 'max-iterations' | 'user-interrupt' | 'all-dismissed';
+  cyclesCompleted: number;
+  remainingIssues: Array<{
+    commentId: string;
+    filePath: string;
+    line: number | null;
+    summary: string;
+  }>;
+  partialProgress: {
+    issuesFixed: number;
+    issuesRemaining: number;
+    lessonsLearned: number;
+  };
+  toolsExhausted: string[];
+}
+```
+
+**Why document bail-outs?**
+- Human needs to know where to pick up
+- Pattern analysis: what types of issues cause stalemates?
+- Feedback loop: improve prompts/lessons based on failures
+- Accountability: prove automation tried before giving up
+
+**Who makes the final call when agents disagree?**
+
+The LLM verifier has final authority, with these rules:
+1. Fixer says "already fixed" + Verifier confirms → Mark fixed
+2. Fixer says "already fixed" + Verifier disagrees → Keep trying
+3. All fixers fail + Verifier confirms unfixable → Bail with documented reason
+4. All fixers fail + Verifier says should be fixable → Bail, flag for human
+
+**Design decision: Why not just increase maxFixIterations?**
+- Iterations ≠ cycles. 100 iterations with same model = same failure mode
+- Cycles ensure diversity (different tools, different models)
+- More meaningful progress metric
+
+### 14. Empty Issue Guards (Defense in Depth)
 
 **The Problem**: Code paths exist where `unresolvedIssues` array becomes empty but the fix loop continues. Running fixer tools with empty prompts wastes time and causes confusing errors.
 
@@ -577,23 +789,85 @@ Layer 5: In every runner (cursor.ts, llm-api.ts, etc.)
 - State loaded from previous run where issues are already resolved
 - Issues filtered out during verification but `allFixed` flag not set
 
-### 8. Lock File Conflict Resolution
+### 15. Merge Conflict Resolution
 
-**The Problem**: `bun.lock`, `package-lock.json`, etc. conflict on merge. LLM can't fix them properly.
+**The Problem**: Merge conflicts block progress. prr needs to handle them automatically to keep the fix loop running.
 
-**Solution**: Delete and regenerate:
+**Solution**: Unified `resolveConflictsWithLLM()` method with two-stage approach:
 
 ```text
-1. Detect lock file conflicts
-2. Delete the lock files
-3. Run package manager install (bun install, npm install, etc.)
-4. Stage regenerated files
-5. Continue merge
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     Conflict Resolution Flow                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Stage 1: Lock Files (handleLockFileConflicts)                           │
+│    └─ bun.lock, package-lock.json, yarn.lock, etc.                       │
+│    └─ Delete and regenerate via package manager                          │
+│    └─ WHY: LLMs can't merge lock files correctly                         │
+│                                                                          │
+│  Stage 2: Code Files (LLM-powered)                                       │
+│    └─ Attempt 1: Use fixer tool (Cursor, Claude Code, etc.)              │
+│    └─ Attempt 2: Direct LLM API fallback                                 │
+│    └─ Check for conflict markers (<<<<<<<) after each attempt            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Why delete/regenerate?** Lock files are auto-generated. Merging them manually is error-prone. Fresh generation is reliable.
+**WHY unified method?** Conflict resolution code was duplicated in multiple places:
+- Initial conflict detection after clone
+- Pull conflicts
+- Stash pop conflicts
+- Base branch merge conflicts
 
-**Why whitelist commands?** Security. Only run known-safe commands (bun install, npm install, etc.), not arbitrary shell.
+Now all share `resolveConflictsWithLLM()` for consistent behavior.
+
+**Lock file handling**:
+```typescript
+// 1. Delete conflicted lock files
+fs.unlinkSync(lockFilePath);
+
+// 2. Regenerate via package manager (whitelisted commands only!)
+const ALLOWED_COMMANDS = {
+  'bun install': ['bun', 'install'],
+  'npm install': ['npm', 'install'],
+  'yarn install': ['yarn', 'install'],
+  // ... etc
+};
+
+// Security: spawn with args array, NOT shell
+spawn(executable, args, { shell: false });
+```
+
+**WHY delete/regenerate lock files?**
+- Lock files are auto-generated from manifest (package.json)
+- Merging them manually is error-prone
+- Fresh generation is deterministic and correct
+
+**WHY whitelist commands?**
+- Security: only run known-safe commands
+- Prevent arbitrary code execution from repo content
+
+**Code file resolution**:
+```typescript
+// Attempt 1: Fixer tool
+const runResult = await this.runner.run(workdir, conflictPrompt);
+
+// Check for remaining conflict markers
+const markerConflicts = await findFilesWithConflictMarkers(workdir, files);
+
+// Attempt 2: Direct LLM API (if conflicts remain)
+for (const file of remainingConflicts) {
+  const result = await this.llm.resolveConflict(file, content, branch);
+  if (result.resolved) {
+    fs.writeFileSync(file, result.content);
+  }
+}
+```
+
+**WHY two attempts?**
+- Fixer tools are good at agentic changes but sometimes miss conflict markers
+- Direct LLM API gives precise control for targeted resolution
+- Second attempt catches what first attempt missed
 
 ### 9. Commit Message Generation
 
@@ -650,17 +924,15 @@ if (hasForbidden) {
     {
       "commentId": "comment_id_1",
       "verifiedAt": "2026-01-23T10:30:00Z",
-      "verifiedAtIteration": 5,
-      "passed": true,
-      "reason": "The null check was added at line 45"
+      "verifiedAtIteration": 5
     }
   ],
-  "currentRunnerIndex": 0,     // NEW: tool rotation position
-  "modelIndices": {            // NEW: per-tool model rotation position
+  "currentRunnerIndex": 0,     // Tool rotation position
+  "modelIndices": {            // Per-tool model rotation position
     "cursor": 2,
     "llm-api": 0
   },
-  "modelPerformance": {        // NEW: track which models work well
+  "modelPerformance": {        // Track which models work well
     "cursor/claude-4-sonnet-thinking": {
       "fixes": 15,
       "failures": 3,
@@ -668,6 +940,15 @@ if (hasForbidden) {
       "errors": 0,
       "lastUsed": "2026-01-23T10:30:00Z"
     }
+  },
+  "noProgressCycles": 0,       // Cycles with zero verified fixes (for bail-out)
+  "bailOutRecord": {           // Last bail-out event (if any)
+    "timestamp": "2026-01-23T12:00:00Z",
+    "reason": "no-progress-cycles",
+    "cyclesCompleted": 1,
+    "remainingIssues": [...],
+    "partialProgress": { "issuesFixed": 3, "issuesRemaining": 2, "lessonsLearned": 7 },
+    "toolsExhausted": ["cursor", "claude-code", "llm-api"]
   },
   "interrupted": false,
   "interruptPhase": null,
@@ -681,6 +962,14 @@ if (hasForbidden) {
 **Why `currentRunnerIndex` and `modelIndices`?** Resume rotation from where we left off. Without this, every restart begins with the same tool/model.
 
 **Why `modelPerformance`?** Track which models work well for this project. Shows success rate at end of run. Could be used to auto-prioritize models in the future.
+
+**Why `noProgressCycles`?** Track how many complete tool/model cycles have run with zero progress. Triggers bail-out when threshold reached. Persists across restarts so interruption doesn't reset the counter.
+
+**Why `bailOutRecord`?** Document exactly what happened when automation gave up:
+- What tools/models were tried
+- What issues remain (for human follow-up)
+- How much progress was made before giving up
+- Enables pattern analysis of what causes stalemates
 
 ### Lessons Store (`~/.prr/lessons/<owner>/<repo>/<branch>.json`)
 ```json
@@ -865,6 +1154,35 @@ prr <url>
 # Check what's in the cache
 cat ~/.prr/work/<hash>/.pr-resolver-state.json | jq '.verifiedFixed'
 ```
+
+### Bail-Out Triggered Too Early
+**Symptoms**: prr bails out after 1 cycle, but you think more attempts might work.
+
+**Causes**:
+1. Default `--max-stale-cycles` is 1 (conservative)
+2. Issue is hard but solvable with more attempts
+3. Lessons not helping the fixer improve
+
+**Fixes**:
+```bash
+# Allow more cycles before bailing
+prr <url> --max-stale-cycles 2
+
+# Or unlimited (not recommended for unattended runs)
+prr <url> --max-stale-cycles 0
+
+# Check what lessons were learned
+cat ~/.prr/work/<hash>/.pr-resolver-state.json | jq '.lessonsLearned'
+
+# Check bail-out record
+cat ~/.prr/work/<hash>/.pr-resolver-state.json | jq '.bailOutRecord'
+```
+
+**What the bail-out record tells you**:
+- `cyclesCompleted`: How many full cycles ran with zero progress
+- `remainingIssues`: What's left for human follow-up
+- `toolsExhausted`: Which tools/models were tried
+- `partialProgress`: How much was actually fixed before giving up
 
 ### False Negatives (issues marked unresolved but are fixed)
 **Symptoms**: prr keeps trying to fix things that are already correct.

@@ -50,6 +50,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
 - **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
+- **Stalemate detection & bail-out**: Detects when agents disagree, bails out gracefully after N cycles with zero progress
 
 ## Installation
 
@@ -144,6 +145,7 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-auto-push` | off | Disable auto-push (just push once) |
 | `--max-fix-iterations <n>` | unlimited | Max fix attempts per push cycle |
 | `--max-push-iterations <n>` | unlimited | Max push/re-review cycles |
+| `--max-stale-cycles <n>` | 1 | Bail out after N complete tool/model cycles with zero progress |
 | `--poll-interval <sec>` | 120 | Seconds to wait for re-review |
 | `--max-context <chars>` | 400000 | Max chars per LLM batch (~100k tokens) |
 | `--reverify` | off | Re-check all cached "fixed" issues |
@@ -215,6 +217,66 @@ prr https://github.com/owner/repo/pull/123 \
    - *Why fetch+rebase on rejection*: If someone else pushed while prr was working (common with CodeRabbit), we rebase our changes on top instead of failing.
    - *Why 30s timeout*: Push should be fast. If it takes longer, something's wrong (network, auth prompt). 60s was too generous.
 
+### Bail-Out Mechanism
+
+**The Problem**: AI agents can get into stalemates. The fixer says "done", the verifier says "not fixed", and this loops forever wasting time and money.
+
+**Solution**: Track "no-progress cycles" and bail out gracefully:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Cycle = All tools tried × All models on each tool           │
+│                                                              │
+│  If a full cycle completes with zero verified fixes:         │
+│    → Increment noProgressCycles counter                      │
+│    → If noProgressCycles >= maxStaleCycles: BAIL OUT         │
+│                                                              │
+│  Bail-out sequence:                                          │
+│    1. Try direct LLM API one last time                       │
+│    2. Record what was tried and what remains                 │
+│    3. Commit/push whatever WAS successfully fixed            │
+│    4. Print clear summary for human follow-up                │
+│    5. Exit cleanly (don't loop all night)                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Why bail out?**
+- Agents disagree: Fixer says "already fixed", verifier disagrees
+- Issues genuinely beyond automation (conflicting requirements, unclear spec)
+- Prevents infinite loops and wasted API costs
+- Lets humans step in when automation is stuck
+
+**Why track cycles, not individual attempts?**
+- One "cycle" = all tools × all models tried
+- Single failures are normal (model might just need a different approach)
+- Full cycle failures indicate genuine stalemate
+- More robust than counting consecutive failures
+
+**Why default to 1 cycle?**
+- Conservative default: step in early to debug
+- Increase to 2-3 once you trust the system
+- Use `--max-stale-cycles 0` to disable (unlimited retries)
+
+**Bail-out output**:
+```text
+════════════════════════════════════════════════════════════════
+  BAIL-OUT: Stalemate Detected
+════════════════════════════════════════════════════════════════
+
+  Reason: 1 complete cycle(s) with zero verified fixes
+  Max allowed: 1 (--max-stale-cycles)
+
+  Progress Summary:
+    ✓ Fixed: 3 issues
+    ✗ Remaining: 2 issues
+    📚 Lessons learned: 7
+
+  Remaining Issues (need human attention):
+    • src/foo.ts:42
+      "Consider using async/await instead of..."
+════════════════════════════════════════════════════════════════
+```
+
 ## Work Directory
 
 - Location: `~/.prr/work/<hash>`
@@ -236,13 +298,13 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
     {
       "commentId": "comment_id_1",
       "verifiedAt": "2026-01-23T10:30:00Z",
-      "verifiedAtIteration": 5,
-      "passed": true,
-      "reason": "The null check was added at line 45"
+      "verifiedAtIteration": 5
     }
   ],
   "currentRunnerIndex": 0,
-  "modelIndices": { "cursor": 2, "llm-api": 0 }
+  "modelIndices": { "cursor": 2, "llm-api": 0 },
+  "noProgressCycles": 0,
+  "bailOutRecord": null
 }
 ```
 
@@ -250,6 +312,8 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 - `verifiedComments`: Tracks WHEN each verification happened (not just what). Enables verification expiry.
 - `currentRunnerIndex`: Resume from the same tool after interruption. Prevents restarting rotation from scratch.
 - `modelIndices`: Per-tool model position. If Cursor was on model #2, resume there.
+- `noProgressCycles`: How many complete tool/model cycles completed with zero progress. Persists across restarts.
+- `bailOutRecord`: Documents WHY automation stopped, what remains, for human follow-up.
 
 **Why not just store tool/model names?** Indices are resilient to model list changes. If we add new models, existing indices still work.
 
@@ -324,6 +388,26 @@ The full history stays in `.prr/lessons.md`.
 <!-- PRR_LESSONS_END -->
 ```
 
+### When Lessons Are Committed
+
+Lessons are **committed with your code fixes** - they're not a separate step:
+
+```text
+Fix loop runs
+    ↓
+Lessons added (when fixes rejected, etc.)
+    ↓
+Export lessons to .prr/lessons.md + CLAUDE.md  ← BEFORE commit
+    ↓
+Commit (includes code fixes AND lessons)
+    ↓
+Push
+    ↓
+Team gets everything in one atomic update
+```
+
+**WHY commit together?** Lessons explain the fixes. If you push fixes without lessons, teammates miss context about what was tried and why.
+
 ### Why This Approach?
 
 1. **Full history preserved**: `.prr/lessons.md` keeps everything
@@ -331,6 +415,7 @@ The full history stays in `.prr/lessons.md`.
 3. **Multi-tool support**: Works with Cursor, Claude Code, Aider
 4. **No bloat**: Synced files get only recent/relevant lessons
 5. **Team sync**: `git pull` gives everyone the latest
+6. **Atomic commits**: Fixes and lessons travel together
 
 ## Requirements
 
