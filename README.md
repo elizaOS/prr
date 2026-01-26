@@ -43,6 +43,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
 - **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
+- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically (remote sync, pull, stash, base branch)
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
@@ -216,6 +217,41 @@ prr https://github.com/owner/repo/pull/123 \
    - *Why auto-inject token*: The remote URL might not have the GitHub token (old workdir, manual clone). We inject it automatically before pushing.
    - *Why fetch+rebase on rejection*: If someone else pushed while prr was working (common with CodeRabbit), we rebase our changes on top instead of failing.
    - *Why 30s timeout*: Push should be fast. If it takes longer, something's wrong (network, auth prompt). 60s was too generous.
+
+### Auto-Conflict Resolution
+
+**The Problem**: Merge conflicts block the fix loop. Previously, prr would bail out with "resolve manually" - frustrating when the same LLM tools that fix review comments can also resolve merge conflicts.
+
+**Solution**: Automatic conflict resolution using a two-stage approach:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Stage 1: Lock Files (bun.lock, package-lock.json, etc.)    │
+│    └─ Delete and regenerate via package manager             │
+│    └─ WHY: LLMs can't merge lock files correctly            │
+│                                                              │
+│  Stage 2: Code Files (LLM-powered)                          │
+│    └─ Attempt 1: Use fixer tool (Cursor, Aider, etc.)       │
+│    └─ Attempt 2: Direct LLM API fallback                    │
+│    └─ Check for conflict markers after each attempt         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Conflict scenarios handled:**
+- **Remote sync conflicts**: Previous interrupted merge/rebase left conflict markers
+- **Pull conflicts**: Branch diverged while prr was working
+- **Stash conflicts**: Interrupted run had uncommitted changes
+- **Base branch merge**: PR conflicts with target branch (main/master)
+
+**Why two attempts for code files?**
+- Fixer tools are good at agentic changes but sometimes miss conflict markers
+- Direct LLM API gives precise control for targeted resolution
+- Second attempt catches what first attempt missed
+
+**Why check both git status AND file contents?**
+- Git might mark a file as resolved (not in `status.conflicted`)
+- But file might still contain `<<<<<<<` markers if tool staged prematurely
+- Double-check catches false positives
 
 ### Bail-Out Mechanism
 

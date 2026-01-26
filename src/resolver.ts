@@ -391,7 +391,12 @@ export class PRResolver {
     console.log(chalk.cyan('\n  Progress Summary:'));
     console.log(chalk.green(`    ✓ Fixed: ${issuesFixed} issues`));
     console.log(chalk.red(`    ✗ Remaining: ${unresolvedIssues.length} issues`));
-    console.log(chalk.gray(`    📚 Lessons learned: ${this.lessonsManager.getTotalCount()}`));
+    const totalLessons = this.lessonsManager.getTotalCount();
+    const newLessons = this.lessonsManager.getNewLessonsCount();
+    const lessonInfo = newLessons > 0 
+      ? `${totalLessons} total (${newLessons} new this run)` 
+      : `${totalLessons} (from previous runs)`;
+    console.log(chalk.gray(`    📚 Lessons: ${lessonInfo}`));
     
     console.log(chalk.cyan('\n  Tools Exhausted:'));
     for (const tool of toolsExhausted) {
@@ -543,21 +548,19 @@ export class PRResolver {
               );
             }
           } else {
-            console.log(chalk.gray(`    - No changes made (tool may not understand the task)`));
-            warn(`      ⚠️  Fixer did not provide NO_CHANGES: explanation`);
-            this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes without explanation, may need clearer instructions`);
+            // No explanation provided - this is a problem but not fatal
+            console.log(chalk.yellow(`    - No changes made (fixer didn't explain why)`));
+            console.log(chalk.gray(`      Tip: Will rotate to different model/tool on next attempt`));
+            this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes without explanation, trying different approach`);
+            
+            // Only show debug details in verbose mode, and sanitize output
+            debug('Fixer made no changes', {
+              targetFile: issue.comment.path,
+              targetLine: issue.comment.line,
+              promptLength: focusedPrompt.length,
+              toolOutput: this.sanitizeOutputForLog(result.output, 300),
+            });
           }
-
-          debug('Fixer made no changes', {
-            targetFile: issue.comment.path,
-            targetLine: issue.comment.line,
-            issueComment: issue.comment.body.substring(0, 300),
-            codeSnippet: issue.codeSnippet?.substring(0, 300),
-            promptSent: focusedPrompt.substring(0, 500) + '...',
-            toolOutput: result.output?.substring(0, 1000),
-            toolError: result.error,
-            explanation: noChangesExplanation,
-          });
         }
       } else {
         console.log(chalk.red(`    ✗ Failed: ${result.error}`));
@@ -925,12 +928,22 @@ Start your response with \`\`\` and end with \`\`\`.`;
       debug('Repository cloned/updated at', this.workdir);
 
       // Check for conflicts and sync with remote
+      // WHY CHECK EARLY: Conflict markers in files will cause fixer tools to fail confusingly.
+      // Better to detect and resolve conflicts upfront before entering the fix loop.
+      // 
+      // SCENARIOS HANDLED:
+      // 1. Previous interrupted merge/rebase left conflict markers in files
+      // 2. User manually started a merge but didn't complete it
+      // 3. Previous prr run was interrupted mid-conflict-resolution
       debugStep('CHECKING FOR CONFLICTS');
       spinner.start('Checking for conflicts with remote...');
       const conflictStatus = await checkForConflicts(git, this.prInfo.branch);
       spinner.stop();
 
       if (conflictStatus.hasConflicts) {
+        // WHY AUTO-RESOLVE: Previously, prr would bail out here with "resolve manually".
+        // This was frustrating because the same LLM tools that fix review comments can
+        // also resolve merge conflicts. Auto-resolution keeps the workflow seamless.
         console.log(chalk.yellow('⚠ Merge conflicts detected from previous operation'));
         console.log(chalk.cyan('  Attempting to resolve conflicts automatically...'));
         
@@ -1559,7 +1572,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // In verbose mode, show lessons by scope
           if (this.options.verbose && lessons.length > 0) {
             const allLessons = this.lessonsManager.getAllLessons();
-            console.log(chalk.yellow('  Lessons learned (by scope):'));
+            const counts = this.lessonsManager.getCounts();
+            const newLabel = counts.newThisSession > 0 ? ` (${counts.newThisSession} new this run)` : '';
+            console.log(chalk.yellow(`  Lessons from previous attempts${newLabel}:`));
             
             if (allLessons.global.length > 0) {
               console.log(chalk.gray('    Global:'));
@@ -1656,10 +1671,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 console.log(chalk.gray(`  → This will be recorded for feedback loop`));
               }
             } else {
-              // Fixer made zero changes WITHOUT explaining why - this is a problem
-              warn('⚠️  Fixer made zero changes without providing NO_CHANGES: explanation');
-              warn('   This breaks the feedback loop - the fixer should document why it made no changes');
-              this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes without explanation - tool may not understand the NO_CHANGES instruction`);
+              // Fixer made zero changes WITHOUT explaining why
+              console.log(chalk.yellow(`  Fixer didn't explain why no changes were made`));
+              console.log(chalk.gray(`  → Will try different model/tool approach`));
+              this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes without explanation - trying different approach`);
             }
 
             // Track no-changes for performance stats
@@ -2305,9 +2320,32 @@ After resolving, the files should have NO conflict markers remaining.`;
   /**
    * Resolve merge conflicts using LLM tools.
    * 
+   * WHY THIS EXISTS: Merge conflicts block the entire fix loop. Previously, prr would
+   * bail out when conflicts were detected, requiring manual intervention. This method
+   * enables automatic conflict resolution using the same LLM infrastructure we use
+   * for fixing review comments.
+   * 
+   * WHY UNIFIED: This method is called from multiple places:
+   * - Initial remote conflict detection (previous interrupted merge)
+   * - Pull conflicts (diverged branches)
+   * - Stash pop conflicts (interrupted run with local changes)
+   * - PR merge conflicts (base branch out of sync)
+   * Centralizing the logic ensures consistent behavior and reduces code duplication.
+   * 
    * Two-stage resolution:
    * 1. Lock files: Delete and regenerate via package manager
+   *    WHY: LLMs cannot correctly merge lock files - they're machine-generated
+   *    and must be regenerated from the manifest (package.json, etc.)
+   * 
    * 2. Code files: Use runner tool (Cursor/Aider/etc), then fallback to direct LLM API
+   *    WHY TWO ATTEMPTS: Fixer tools are good at agentic changes but sometimes
+   *    miss conflict markers or make partial fixes. Direct LLM API gives precise
+   *    control for targeted resolution of remaining conflicts.
+   * 
+   * WHY CHECK BOTH GIT STATUS AND FILE CONTENTS: Git might mark a file as resolved
+   * (no longer in `status.conflicted`) but the file might still contain conflict
+   * markers (<<<<<<<) if the tool staged it without fully resolving. We check both
+   * to catch false positives.
    * 
    * @param git - SimpleGit instance
    * @param conflictedFiles - Array of files with conflicts
@@ -2433,6 +2471,26 @@ After resolving, the files should have NO conflict markers remaining.`;
 
   /**
    * Handle lock file conflicts by deleting and regenerating them.
+   * 
+   * WHY DELETE/REGENERATE: Lock files (bun.lock, package-lock.json, yarn.lock, etc.)
+   * are auto-generated from manifests (package.json). Attempting to merge them is:
+   * 1. Error-prone: LLMs don't understand the lock file format semantics
+   * 2. Unnecessary: Fresh generation from manifest is deterministic and correct
+   * 3. Safe: The manifest has already been merged, so regeneration gives correct result
+   * 
+   * WHY WHITELIST COMMANDS: Security. We're executing package managers with user-controlled
+   * paths. Only known-safe commands are allowed to prevent arbitrary code execution.
+   * 
+   * WHY SPAWN WITHOUT SHELL: Prevents shell injection attacks. By using spawn() with
+   * an args array instead of shell: true, special characters in paths can't be
+   * interpreted as shell commands.
+   * 
+   * WHY DISABLE SCRIPTS: Package managers can run arbitrary scripts during install
+   * (postinstall, preinstall, etc.). These scripts come from dependencies and could
+   * be malicious. Disabling them makes lock file regeneration safe.
+   * 
+   * WHY TIMEOUT: Prevents resource exhaustion. A hung package manager should not
+   * block prr indefinitely. 60 seconds is generous for a lock file regeneration.
    */
   private async handleLockFileConflicts(git: SimpleGit, lockFiles: string[]): Promise<void> {
     console.log(chalk.cyan('\n  Handling lock files...'));
@@ -2441,6 +2499,7 @@ After resolving, the files should have NO conflict markers remaining.`;
     const path = await import('path');
     
     // Validate workdir using realpath to prevent symlink attacks
+    // WHY: A malicious repo could create symlinks pointing outside the workdir
     let resolvedWorkdir: string;
     try {
       resolvedWorkdir = fs.realpathSync(this.workdir);
@@ -2602,27 +2661,94 @@ After resolving, the files should have NO conflict markers remaining.`;
    * WHY: When the fixer makes zero changes, it MUST explain why.
    * This enables us to dismiss issues appropriately and document the reasoning.
    *
-   * Format expected in output: "NO_CHANGES: <detailed explanation>"
+   * Two-stage parsing:
+   * 1. Look for formal "NO_CHANGES: <explanation>" format
+   * 2. Infer explanation from common patterns if no formal prefix
+   *
+   * WHY infer? LLMs don't always follow the exact format, but often explain
+   * themselves in natural language. Capturing these explanations is better
+   * than losing the information.
    */
   private parseNoChangesExplanation(output: string): string | null {
     if (!output) {
       return null;
     }
 
-    // Look for "NO_CHANGES:" line in output
+    // Stage 1: Look for formal "NO_CHANGES:" line
     const lines = output.split('\n');
     for (const line of lines) {
       const match = line.match(/NO_CHANGES:\s*(.+)/i);
       if (match && match[1]) {
         const explanation = match[1].trim();
-        // Validate the explanation is meaningful
         if (explanation.length >= 20) {
           return explanation;
         }
       }
     }
 
+    // Stage 2: Infer explanation from common patterns
+    // WHY: LLMs often explain without using the exact format
+    const inferPatterns = [
+      // "already" patterns
+      /(?:this|the|issue|code|fix|implementation)\s+(?:is\s+)?already\s+(?:fixed|implemented|handled|present|exists|correct)/i,
+      /already\s+(?:has|have|contains?|includes?)\s+/i,
+      // "exists" patterns  
+      /(?:null\s+check|validation|handling|guard)\s+(?:already\s+)?exists/i,
+      /(?:the\s+)?(?:code|implementation)\s+already\s+/i,
+      // "no changes needed" patterns
+      /no\s+(?:changes?|modifications?|updates?)\s+(?:are\s+)?(?:needed|required|necessary)/i,
+      /(?:doesn't|does not|don't|do not)\s+(?:need|require)\s+(?:any\s+)?(?:changes?|fixes?)/i,
+      // "correct as is" patterns
+      /(?:code|implementation|current)\s+(?:is\s+)?(?:correct|fine|ok|appropriate)\s+(?:as\s+is|already)/i,
+    ];
+
+    // Look for sentences containing these patterns
+    for (const pattern of inferPatterns) {
+      const match = output.match(pattern);
+      if (match) {
+        // Extract the sentence containing the match
+        const sentenceMatch = output.match(new RegExp(`[^.!?]*${pattern.source}[^.!?]*[.!?]?`, 'i'));
+        if (sentenceMatch && sentenceMatch[0].length >= 20) {
+          return `(inferred) ${sentenceMatch[0].trim()}`;
+        }
+      }
+    }
+
     return null;
+  }
+
+  /**
+   * Sanitize tool output for debug logging.
+   * WHY: Raw JSON output from tools is ugly and unhelpful in logs.
+   */
+  private sanitizeOutputForLog(output: string | undefined, maxLength: number = 500): string {
+    if (!output) return '(no output)';
+    
+    // If it looks like JSON, try to extract just the message/content
+    if (output.trim().startsWith('{') || output.trim().startsWith('[')) {
+      try {
+        // Try to parse and extract meaningful content
+        const lines = output.split('\n').filter(line => {
+          const trimmed = line.trim();
+          // Skip lines that are pure JSON structure
+          return !trimmed.startsWith('{') && 
+                 !trimmed.startsWith('}') && 
+                 !trimmed.startsWith('[') &&
+                 !trimmed.startsWith(']') &&
+                 !trimmed.startsWith('"type"') &&
+                 !trimmed.startsWith('"subtype"') &&
+                 trimmed.length > 0;
+        });
+        if (lines.length > 0) {
+          return lines.slice(0, 10).join('\n').substring(0, maxLength);
+        }
+      } catch {
+        // Fall through to default handling
+      }
+      return '(JSON output - see verbose logs)';
+    }
+    
+    return output.substring(0, maxLength) + (output.length > maxLength ? '...' : '');
   }
 
   /**

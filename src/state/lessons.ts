@@ -83,6 +83,12 @@ export class LessonsManager {
   private dirty = false;
   private repoLessonsDirty = false;
   private syncTargets: LessonsSyncTarget[] = ['claude-md'];  // Default sync targets
+  
+  // Track new lessons added this session
+  // WHY: Distinguishes "22 lessons learned" (existing) from "22 lessons (5 new)"
+  // Helps users understand if progress is being made vs. just carrying old lessons
+  private initialLessonCount = 0;
+  private newLessonsThisSession = 0;
 
   constructor(owner: string, repo: string, branch: string) {
     this.localStorePath = getLocalLessonsPath(owner, repo, branch);
@@ -153,6 +159,10 @@ export class LessonsManager {
     const globalCount = this.store.global.length;
     const fileCount = Object.keys(this.store.files).length;
     const fileLessonCount = Object.values(this.store.files).reduce((sum, arr) => sum + arr.length, 0);
+
+    // Track initial count to distinguish new lessons this session
+    this.initialLessonCount = globalCount + fileLessonCount;
+    this.newLessonsThisSession = 0;  // Reset for this session
 
     if (globalCount > 0 || fileLessonCount > 0) {
       console.log(`Loaded lessons: ${globalCount} global, ${fileLessonCount} file-specific (${fileCount} files)`);
@@ -436,7 +446,12 @@ export class LessonsManager {
 
       const fullMarkdown = this.toMarkdown();
       await writeFile(prrLessonsPath, fullMarkdown, 'utf-8');
-      console.log(`Saved ${this.getTotalCount()} lessons to .prr/lessons.md`);
+      const total = this.getTotalCount();
+      const newCount = this.newLessonsThisSession;
+      const saveMsg = newCount > 0 
+        ? `Saved ${total} lessons to .prr/lessons.md (${newCount} new this run)`
+        : `Saved ${total} lessons to .prr/lessons.md (no new lessons)`;
+      console.log(saveMsg);
       success = true;
     } catch (error) {
       console.warn('Failed to save .prr/lessons.md:', error);
@@ -586,10 +601,12 @@ export class LessonsManager {
       const existingIndex = this.store.global.findIndex(l => l.startsWith(prefix));
 
       if (existingIndex !== -1) {
-        // Replace with newer
+        // Replace with newer (not a new lesson, just an update)
         this.store.global[existingIndex] = lesson;
       } else {
+        // Truly new lesson
         this.store.global.push(lesson);
+        this.newLessonsThisSession++;
       }
       this.dirty = true;
       this.repoLessonsDirty = true;
@@ -610,6 +627,7 @@ export class LessonsManager {
     if (key) {
       const existingIndex = lessons.findIndex(l => l.startsWith(`Fix for ${key}`));
       if (existingIndex !== -1) {
+        // Replace with newer (not a new lesson, just an update)
         lessons[existingIndex] = lesson;
         this.dirty = true;
         this.repoLessonsDirty = true;
@@ -618,7 +636,9 @@ export class LessonsManager {
     }
 
     if (!lessons.includes(lesson)) {
+      // Truly new lesson
       lessons.push(lesson);
+      this.newLessonsThisSession++;
       this.dirty = true;
       this.repoLessonsDirty = true;
     }
@@ -660,14 +680,31 @@ export class LessonsManager {
   }
 
   /**
+   * Get count of new lessons added this session.
+   * WHY: Helps users understand if progress is being made.
+   * "22 lessons" is ambiguous - "22 lessons (5 new)" shows activity.
+   */
+  getNewLessonsCount(): number {
+    return this.newLessonsThisSession;
+  }
+
+  /**
+   * Get count of lessons that existed before this session started.
+   */
+  getExistingLessonsCount(): number {
+    return this.initialLessonCount;
+  }
+
+  /**
    * Get count by scope
    */
-  getCounts(): { global: number; fileSpecific: number; files: number } {
+  getCounts(): { global: number; fileSpecific: number; files: number; newThisSession: number } {
     const fileSpecific = Object.values(this.store.files).reduce((sum, arr) => sum + arr.length, 0);
     return {
       global: this.store.global.length,
       fileSpecific,
       files: Object.keys(this.store.files).length,
+      newThisSession: this.newLessonsThisSession,
     };
   }
 

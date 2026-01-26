@@ -791,7 +791,10 @@ Layer 5: In every runner (cursor.ts, llm-api.ts, etc.)
 
 ### 15. Merge Conflict Resolution
 
-**The Problem**: Merge conflicts block progress. prr needs to handle them automatically to keep the fix loop running.
+**The Problem**: Merge conflicts block the entire fix loop. Previously, prr would bail out with "resolve manually" whenever conflicts were detected - frustrating because:
+1. The same LLM tools that fix review comments can resolve merge conflicts
+2. Users had to manually resolve, then re-run prr
+3. Interrupted runs often left conflict markers that blocked the next run
 
 **Solution**: Unified `resolveConflictsWithLLM()` method with two-stage approach:
 
@@ -800,28 +803,43 @@ Layer 5: In every runner (cursor.ts, llm-api.ts, etc.)
 │                     Conflict Resolution Flow                             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
+│  Trigger Points (all call resolveConflictsWithLLM):                      │
+│    1. Initial conflict check (previous interrupted merge/rebase)         │
+│    2. Pull conflicts (branch diverged from remote)                       │
+│    3. Stash pop conflicts (interrupted run with local changes)           │
+│    4. Base branch merge (PR conflicts with main/master)                  │
+│                                                                          │
 │  Stage 1: Lock Files (handleLockFileConflicts)                           │
-│    └─ bun.lock, package-lock.json, yarn.lock, etc.                       │
+│    └─ bun.lock, package-lock.json, yarn.lock, Cargo.lock, etc.           │
 │    └─ Delete and regenerate via package manager                          │
-│    └─ WHY: LLMs can't merge lock files correctly                         │
+│    └─ WHY: LLMs can't merge lock files - they're machine-generated       │
 │                                                                          │
 │  Stage 2: Code Files (LLM-powered)                                       │
-│    └─ Attempt 1: Use fixer tool (Cursor, Claude Code, etc.)              │
-│    └─ Attempt 2: Direct LLM API fallback                                 │
-│    └─ Check for conflict markers (<<<<<<<) after each attempt            │
+│    └─ Attempt 1: Use fixer tool (Cursor, Claude Code, Aider, etc.)       │
+│    └─ Attempt 2: Direct LLM API fallback for remaining conflicts         │
+│    └─ Check BOTH git status AND file contents for conflict markers       │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**WHY unified method?** Conflict resolution code was duplicated in multiple places:
+**WHY unified method?** Conflict resolution code was duplicated in 4 places with slight variations:
 - Initial conflict detection after clone
-- Pull conflicts
-- Stash pop conflicts
-- Base branch merge conflicts
+- Pull conflicts when syncing with remote
+- Stash pop conflicts from interrupted runs
+- Base branch merge conflicts for PR updates
 
-Now all share `resolveConflictsWithLLM()` for consistent behavior.
+The old code had ~250 lines duplicated. Now all share `resolveConflictsWithLLM()` for:
+- Consistent behavior across all conflict scenarios
+- Single place to improve/fix conflict resolution logic
+- Easier testing and maintenance
 
-**Lock file handling**:
+**WHY check early (before fix loop)?**
+- Conflict markers (`<<<<<<<`) in files will cause fixer tools to fail confusingly
+- They might try to "fix" the conflict markers as if they were code issues
+- Better to detect and resolve conflicts upfront
+
+**Lock file handling** (`handleLockFileConflicts`):
+
 ```typescript
 // 1. Delete conflicted lock files
 fs.unlinkSync(lockFilePath);
@@ -831,6 +849,8 @@ const ALLOWED_COMMANDS = {
   'bun install': ['bun', 'install'],
   'npm install': ['npm', 'install'],
   'yarn install': ['yarn', 'install'],
+  'pnpm install': ['pnpm', 'install'],
+  'cargo generate-lockfile': ['cargo', 'generate-lockfile'],
   // ... etc
 };
 
@@ -839,35 +859,113 @@ spawn(executable, args, { shell: false });
 ```
 
 **WHY delete/regenerate lock files?**
-- Lock files are auto-generated from manifest (package.json)
-- Merging them manually is error-prone
-- Fresh generation is deterministic and correct
+- Lock files are auto-generated from manifest (package.json, Cargo.toml)
+- LLMs don't understand the lock file format semantics
+- Attempting to merge them produces invalid or incorrect results
+- Fresh generation from already-merged manifest is deterministic and correct
 
 **WHY whitelist commands?**
 - Security: only run known-safe commands
 - Prevent arbitrary code execution from repo content
+- A malicious repo could try to trick prr into running dangerous commands
+
+**WHY disable install scripts?**
+```typescript
+safeEnv.npm_config_ignore_scripts = 'true';
+safeEnv.YARN_ENABLE_SCRIPTS = '0';
+safeEnv.BUN_INSTALL_DISABLE_POSTINSTALL = '1';
+safeEnv.PNPM_DISABLE_SCRIPTS = 'true';
+```
+- Package managers run arbitrary scripts during install (postinstall, preinstall)
+- These scripts come from dependencies and could be malicious
+- We only need the lock file regenerated, not full install
+
+**WHY spawn without shell?**
+- `spawn(cmd, args, { shell: false })` prevents shell injection
+- With `shell: true`, special characters in paths could be interpreted as shell commands
+- A crafted filename like `; rm -rf /` could execute arbitrary commands
 
 **Code file resolution**:
+
 ```typescript
-// Attempt 1: Fixer tool
+// Attempt 1: Fixer tool (Cursor, Claude Code, etc.)
+const conflictPrompt = this.buildConflictResolutionPrompt(codeFiles, baseBranch);
 const runResult = await this.runner.run(workdir, conflictPrompt);
 
-// Check for remaining conflict markers
-const markerConflicts = await findFilesWithConflictMarkers(workdir, files);
+// Check for remaining conflict markers - BOTH sources!
+const gitConflicts = (await git.status()).conflicted || [];
+const markerConflicts = await findFilesWithConflictMarkers(workdir, codeFiles);
+const remaining = [...new Set([...gitConflicts, ...markerConflicts])];
 
 // Attempt 2: Direct LLM API (if conflicts remain)
-for (const file of remainingConflicts) {
+for (const file of remaining) {
+  const content = fs.readFileSync(file, 'utf-8');
+  if (!content.includes('<<<<<<<')) continue;  // Already resolved
+  
   const result = await this.llm.resolveConflict(file, content, branch);
   if (result.resolved) {
     fs.writeFileSync(file, result.content);
+    await git.add(file);
   }
 }
 ```
 
 **WHY two attempts?**
-- Fixer tools are good at agentic changes but sometimes miss conflict markers
-- Direct LLM API gives precise control for targeted resolution
+- Fixer tools are good at agentic changes with full workspace context
+- But they sometimes miss conflict markers or make partial fixes
+- Direct LLM API gives precise control for targeted, per-file resolution
 - Second attempt catches what first attempt missed
+
+**WHY check both git status AND file contents?**
+- Git might mark a file as resolved (not in `status.conflicted`)
+- But the file might still contain `<<<<<<<` markers if the tool staged it prematurely
+- `findFilesWithConflictMarkers()` scans actual file contents
+- Double-check catches false positives from tools that stage before fully resolving
+
+**Conflict prompt** (`buildConflictResolutionPrompt`):
+
+```typescript
+return `MERGE CONFLICT RESOLUTION
+
+The following files have merge conflicts that need to be resolved:
+${fileList}
+
+These conflicts occurred while merging '${baseBranch}' into the current branch.
+
+INSTRUCTIONS:
+1. Open each conflicted file
+2. Look for conflict markers: <<<<<<<, =======, >>>>>>>
+3. For each conflict:
+   - Understand what both sides are trying to do
+   - Choose the correct resolution that preserves the intent of both changes
+   - Remove all conflict markers
+...
+`;
+```
+
+**WHY "preserve intent of both"?**
+- Naive resolution picks one side blindly
+- Smart resolution merges both changes when possible
+- The prompt guides the LLM to think about what each side was trying to accomplish
+
+**Caller handling after resolution**:
+
+```typescript
+// If success: complete the merge
+if (resolution.success) {
+  await markConflictsResolved(git, codeFiles);
+  await completeMerge(git, `Merge branch '${baseBranch}'`);
+} else {
+  // If failure: abort and let human handle
+  console.log('Remaining conflicts:', resolution.remainingConflicts);
+  await abortMerge(git);
+}
+```
+
+**WHY abort on failure (not partial commit)?**
+- Partial conflict resolution leaves repo in bad state
+- Better to abort and preserve the conflict markers for human review
+- User can see exactly what couldn't be resolved
 
 ### 9. Commit Message Generation
 
