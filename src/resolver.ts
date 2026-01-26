@@ -42,6 +42,11 @@ export class PRResolver {
   private modelFailuresInCycle = 0;  // Failures since last model/tool rotation
   private modelsTriedThisToolRound = 0;  // Models tried on current tool before switching
   private static readonly MAX_MODELS_PER_TOOL_ROUND = 2;  // Switch tools after this many models
+  
+  // Bail-out tracking: detect stalemates where no progress is made
+  // WHY: Prevents infinite loops when agents disagree or can't fix issues
+  private progressThisCycle = 0;  // Verified fixes in current tool/model cycle
+  private bailedOut = false;  // True if we've triggered bail-out
 
   constructor(config: Config, options: CLIOptions) {
     this.config = config;
@@ -193,6 +198,8 @@ export class PRResolver {
    * Strategy: Try MAX_MODELS_PER_TOOL_ROUND models on current tool, then switch tools
    * WHY: Different tools have different strengths; cycling through tools faster
    * gives each tool a chance before we exhaust all options on one tool
+   * 
+   * Returns false if we should bail out (too many cycles with no progress).
    */
   private tryRotation(): boolean {
     // Track which tools we've fully exhausted (tried all models)
@@ -203,6 +210,27 @@ export class PRResolver {
       const models = this.getModelsForRunner(this.runners.find(r => r.name === runnerName)!);
       const currentIndex = this.modelIndices.get(runnerName) || 0;
       return currentIndex >= models.length - 1;  // On last model or beyond
+    };
+    
+    // Helper: Check if we should bail out after completing a cycle
+    const checkBailOut = (): boolean => {
+      // A cycle just completed - check if we made progress
+      if (this.progressThisCycle === 0) {
+        const cycles = this.stateManager.incrementNoProgressCycles();
+        console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
+        
+        if (cycles >= this.options.maxStaleCycles) {
+          console.log(chalk.red(`\n  🛑 Bail-out triggered: ${cycles} cycles with no progress (max: ${this.options.maxStaleCycles})`));
+          return true;  // Signal bail-out
+        }
+      } else {
+        // Made progress - reset counter
+        this.stateManager.resetNoProgressCycles();
+      }
+      
+      // Reset for next cycle
+      this.progressThisCycle = 0;
+      return false;
     };
     
     // If we've tried enough models on this tool, switch to next tool
@@ -235,8 +263,12 @@ export class PRResolver {
         return true;
       }
       
-      // All tools exhausted - reset all model indices and start fresh round
+      // All tools exhausted - check bail-out before starting fresh round
       if (exhaustedTools.size >= this.runners.length) {
+        if (checkBailOut()) {
+          return false;  // Bail out - don't reset
+        }
+        
         console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
         for (const runner of this.runners) {
           this.modelIndices.set(runner.name, 0);
@@ -270,7 +302,11 @@ export class PRResolver {
         }
       } while (this.currentRunnerIndex !== startingRunner);
       
-      // All tools exhausted - reset and start fresh
+      // All tools exhausted - check bail-out before starting fresh round
+      if (checkBailOut()) {
+        return false;  // Bail out - don't reset
+      }
+      
       console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
       for (const runner of this.runners) {
         this.modelIndices.set(runner.name, 0);
@@ -280,9 +316,13 @@ export class PRResolver {
       return true;
     }
     
-    // Only one tool and it's exhausted - reset it
+    // Only one tool and it's exhausted - check bail-out before reset
     const models = this.getModelsForRunner(this.runner);
     if (models.length > 0) {
+      if (checkBailOut()) {
+        return false;  // Bail out - don't reset
+      }
+      
       console.log(chalk.yellow('\n  Tool exhausted, restarting model rotation...'));
       this.modelIndices.set(this.runner.name, 0);
       this.stateManager.setModelIndex(this.runner.name, 0);
@@ -291,6 +331,92 @@ export class PRResolver {
     }
     
     return false;
+  }
+
+  /**
+   * Execute graceful bail-out when stalemate detected.
+   * 
+   * WHY bail-out exists: Prevents infinite loops when:
+   * - Agents disagree (fixer says fixed, verifier says not)
+   * - Issues are genuinely beyond automation capability
+   * - Conflicting requirements in review comments
+   * 
+   * WHAT happens:
+   * 1. Record the bail-out with details for human follow-up
+   * 2. Commit/push whatever WAS successfully fixed
+   * 3. Print clear summary of what remains
+   * 4. Exit the fix loop (caller handles commit/push)
+   */
+  private async executeBailOut(
+    unresolvedIssues: UnresolvedIssue[],
+    comments: ReviewComment[],
+  ): Promise<void> {
+    this.bailedOut = true;
+    
+    const cyclesCompleted = this.stateManager.getNoProgressCycles();
+    const toolsExhausted = this.runners.map(r => r.name);
+    
+    // Count what was fixed vs what remains
+    const issuesFixed = comments.filter(c => 
+      this.stateManager.isCommentVerifiedFixed(c.id)
+    ).length;
+    
+    // Build remaining issues summary
+    const remainingIssues = unresolvedIssues.map(issue => ({
+      commentId: issue.comment.id,
+      filePath: issue.comment.path,
+      line: issue.comment.line,
+      summary: issue.comment.body.split('\n')[0].substring(0, 100),
+    }));
+    
+    // Record bail-out in state
+    this.stateManager.recordBailOut(
+      'no-progress-cycles',
+      cyclesCompleted,
+      remainingIssues,
+      issuesFixed,
+      toolsExhausted
+    );
+    
+    await this.stateManager.save();
+    
+    // Print bail-out summary
+    console.log(chalk.red('\n' + '═'.repeat(60)));
+    console.log(chalk.red.bold('  BAIL-OUT: Stalemate Detected'));
+    console.log(chalk.red('═'.repeat(60)));
+    
+    console.log(chalk.yellow(`\n  Reason: ${cyclesCompleted} complete cycle(s) with zero verified fixes`));
+    console.log(chalk.gray(`  Max allowed: ${this.options.maxStaleCycles} (--max-stale-cycles)`));
+    
+    console.log(chalk.cyan('\n  Progress Summary:'));
+    console.log(chalk.green(`    ✓ Fixed: ${issuesFixed} issues`));
+    console.log(chalk.red(`    ✗ Remaining: ${unresolvedIssues.length} issues`));
+    console.log(chalk.gray(`    📚 Lessons learned: ${this.lessonsManager.getTotalCount()}`));
+    
+    console.log(chalk.cyan('\n  Tools Exhausted:'));
+    for (const tool of toolsExhausted) {
+      const models = this.getModelsForRunner(this.runners.find(r => r.name === tool)!);
+      console.log(chalk.gray(`    • ${tool}: ${models.length} models tried`));
+    }
+    
+    if (unresolvedIssues.length > 0) {
+      console.log(chalk.cyan('\n  Remaining Issues (need human attention):'));
+      for (const issue of unresolvedIssues.slice(0, 5)) {
+        console.log(chalk.yellow(`    • ${issue.comment.path}:${issue.comment.line || '?'}`));
+        console.log(chalk.gray(`      "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
+      }
+      if (unresolvedIssues.length > 5) {
+        console.log(chalk.gray(`    ... and ${unresolvedIssues.length - 5} more`));
+      }
+    }
+    
+    console.log(chalk.red('\n' + '═'.repeat(60)));
+    console.log(chalk.gray('\n  Next steps:'));
+    console.log(chalk.gray('    1. Review the lessons learned in .pr-resolver-state.json'));
+    console.log(chalk.gray('    2. Check if remaining issues have conflicting requirements'));
+    console.log(chalk.gray('    3. Consider increasing --max-stale-cycles if issues seem solvable'));
+    console.log(chalk.gray('    4. Manually fix remaining issues or dismiss with comments'));
+    console.log('');
   }
 
   private async trySingleIssueFix(
@@ -1715,20 +1841,44 @@ Start your response with \`\`\` and end with \`\`\`.`;
               if (singleIssueFixed) {
                 this.consecutiveFailures = 0;
                 this.modelFailuresInCycle = 0;
+                this.progressThisCycle++;  // Track progress for bail-out
               }
             } else if (!isOddFailure) {
               // Try rotating model or tool
-              if (this.tryRotation()) {
+              const rotated = this.tryRotation();
+              
+              // Check if bail-out was triggered by tryRotation()
+              if (this.stateManager.getNoProgressCycles() >= this.options.maxStaleCycles) {
+                // Bail-out triggered - try direct LLM one last time before giving up
+                console.log(chalk.yellow('\n  🧠 Last resort: trying direct LLM API fix before bail-out...'));
+                const directFixed = await this.tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
+                if (directFixed) {
+                  this.consecutiveFailures = 0;
+                  this.modelFailuresInCycle = 0;
+                  this.progressThisCycle++;
+                  this.stateManager.resetNoProgressCycles();  // Made progress, reset
+                } else {
+                  // Direct LLM also failed - execute bail-out
+                  await this.executeBailOut(unresolvedIssues, comments);
+                  break;  // Exit fix loop
+                }
+              } else if (rotated) {
                 console.log(chalk.cyan('  Starting fresh with batch mode...'));
               } else {
-                // All models and tools exhausted
+                // Rotation failed but not at bail-out threshold yet
                 console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
                 const directFixed = await this.tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
                 if (directFixed) {
                   this.consecutiveFailures = 0;
                   this.modelFailuresInCycle = 0;
+                  this.progressThisCycle++;
                 }
               }
+            }
+            
+            // Check if we bailed out (break would have been triggered above)
+            if (this.bailedOut) {
+              break;  // Propagate break from bail-out
             }
             
             // After single-issue or rotation attempts, filter out any newly verified items
@@ -1928,6 +2078,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // Note: currentModel already defined at start of iteration
           if (verifiedCount > 0) {
             this.stateManager.recordModelFix(this.runner.name, currentModel, verifiedCount);
+            // Track progress for bail-out cycle detection
+            this.progressThisCycle += verifiedCount;
           }
           if (failedCount > 0) {
             this.stateManager.recordModelFailure(this.runner.name, currentModel, failedCount);
@@ -1975,21 +2127,46 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 if (singleIssueFixed) {
                   this.consecutiveFailures = 0;
                   this.modelFailuresInCycle = 0;
+                  this.progressThisCycle++;  // Track progress for bail-out
                 }
               }
               else if (!isOddFailure) {
                 // Even failure = single-issue also failed, try rotation
-                if (this.tryRotation()) {
+                const rotated = this.tryRotation();
+                
+                // Check if bail-out was triggered by tryRotation()
+                if (this.stateManager.getNoProgressCycles() >= this.options.maxStaleCycles) {
+                  // Bail-out triggered - try direct LLM one last time before giving up
+                  console.log(chalk.yellow('\n  🧠 Last resort: trying direct LLM API fix before bail-out...'));
+                  const directFixed = await this.tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
+                  if (directFixed) {
+                    this.consecutiveFailures = 0;
+                    this.modelFailuresInCycle = 0;
+                    this.progressThisCycle++;
+                    this.stateManager.resetNoProgressCycles();  // Made progress, reset
+                  } else {
+                    // Direct LLM also failed - execute bail-out
+                    await this.executeBailOut(unresolvedIssues, comments);
+                    break;  // Exit fix loop
+                  }
+                } else if (rotated) {
                   console.log(chalk.cyan('  Starting fresh with batch mode...'));
                 } else {
-                  // All models and tools exhausted, try direct LLM as last resort
+                  // Rotation failed but not at bail-out threshold yet
+                  // Try direct LLM as fallback
                   console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
                   const directFixed = await this.tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
                   if (directFixed) {
                     this.consecutiveFailures = 0;
                     this.modelFailuresInCycle = 0;
+                    this.progressThisCycle++;
                   }
                 }
+              }
+              
+              // Check if we bailed out
+              if (this.bailedOut) {
+                break;  // Propagate break from bail-out
               }
             } else {
               // Made progress, reset failure counters
@@ -2105,16 +2282,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
         }
       }
 
-      // Export lessons to CLAUDE.md for team sharing
-      // WHY: Both Cursor and Claude Code read CLAUDE.md, so lessons benefit all users
-      // The file can be committed and pushed to share across the team
+      // Export lessons to repo files for team sharing
+      // WHY: Different AI tools read different files (CLAUDE.md, CONVENTIONS.md, etc.)
+      // Auto-detects which formats the repo uses and writes to all of them
       if (this.lessonsManager.hasNewLessonsForRepo()) {
-        spinner.start('Exporting lessons to CLAUDE.md...');
+        spinner.start('Exporting lessons...');
         const saved = await this.lessonsManager.saveToRepo();
         if (saved) {
-          spinner.succeed('Lessons exported to CLAUDE.md (Cursor & Claude Code will read them)');
+          spinner.succeed('Lessons exported (commit to share with team)');
         } else {
-          spinner.warn('Could not export lessons to CLAUDE.md');
+          spinner.warn('Could not export lessons to repo');
         }
       }
 

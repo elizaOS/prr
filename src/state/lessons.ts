@@ -23,25 +23,66 @@ function getLocalLessonsPath(owner: string, repo: string, branch: string): strin
 }
 
 /**
- * Get path to CLAUDE.md file in repo root.
- * WHY: Both Cursor and Claude Code now read CLAUDE.md for project context.
- * By writing lessons here, they're immediately available to both tools.
+ * Sync targets - files where we inject a lessons section.
+ * WHY: Different AI tools read different files.
+ * We preserve existing content and only update our delimited section.
  */
-function getClaudeMdPath(workdir: string): string {
-  return join(workdir, 'CLAUDE.md');
+export type LessonsSyncTarget = 'claude-md' | 'conventions-md' | 'cursor-rules';
+
+interface SyncTargetConfig {
+  path: (workdir: string) => string;
+  description: string;
+  tools: string[];
+  createHeader?: string;  // Header for new files
 }
 
-// Delimiter for prr lessons section in CLAUDE.md
+const SYNC_TARGETS: Record<LessonsSyncTarget, SyncTargetConfig> = {
+  'claude-md': {
+    path: (workdir) => join(workdir, 'CLAUDE.md'),
+    description: 'CLAUDE.md',
+    tools: ['Cursor', 'Claude Code'],
+    createHeader: '# Project Configuration\n\n',
+  },
+  'conventions-md': {
+    path: (workdir) => join(workdir, 'CONVENTIONS.md'),
+    description: 'CONVENTIONS.md',
+    tools: ['Aider'],
+    createHeader: '# Coding Conventions\n\n',
+  },
+  'cursor-rules': {
+    path: (workdir) => join(workdir, '.cursor', 'rules', 'prr-lessons.mdc'),
+    description: '.cursor/rules/',
+    tools: ['Cursor'],
+    createHeader: '',  // No header for Cursor rules
+  },
+};
+
+/**
+ * Get path to our canonical lessons file.
+ * WHY: .prr/lessons.md is fully managed by prr - we control the entire file.
+ */
+function getPrrLessonsPath(workdir: string): string {
+  return join(workdir, '.prr', 'lessons.md');
+}
+
+// Delimiter for prr lessons section in OTHER files (CLAUDE.md, etc.)
+// WHY: We only update our section, preserving user's existing content
 const PRR_SECTION_START = '<!-- PRR_LESSONS_START -->';
 const PRR_SECTION_END = '<!-- PRR_LESSONS_END -->';
+
+// Size limits for synced files (CLAUDE.md, etc.) to prevent bloat
+// Our canonical .prr/lessons.md has no limits
+const MAX_GLOBAL_LESSONS_FOR_SYNC = 15;
+const MAX_FILE_LESSONS_FOR_SYNC = 5;
+const MAX_FILES_FOR_SYNC = 20;
 
 export class LessonsManager {
   private store: LessonsStore;
   private localStorePath: string;
-  private claudeMdPath: string | null = null;
   private workdir: string | null = null;
   private dirty = false;
   private repoLessonsDirty = false;
+  private syncTargets: LessonsSyncTarget[] = ['claude-md'];  // Default sync targets
 
   constructor(owner: string, repo: string, branch: string) {
     this.localStorePath = getLocalLessonsPath(owner, repo, branch);
@@ -61,16 +102,51 @@ export class LessonsManager {
    */
   setWorkdir(workdir: string): void {
     this.workdir = workdir;
-    this.claudeMdPath = getClaudeMdPath(workdir);
+    // Auto-detect which sync targets to use based on existing files
+    this.autoDetectSyncTargets();
+  }
+
+  /**
+   * Set which files to sync lessons to.
+   * WHY: Different teams use different AI tools.
+   */
+  setSyncTargets(targets: LessonsSyncTarget[]): void {
+    this.syncTargets = targets;
+  }
+
+  /**
+   * Auto-detect sync targets based on existing files in repo.
+   * WHY: If user already has CONVENTIONS.md or .cursor/rules/, sync there too.
+   */
+  private autoDetectSyncTargets(): void {
+    if (!this.workdir) return;
+
+    const detected: LessonsSyncTarget[] = [];
+
+    // Always sync to CLAUDE.md (Cursor + Claude Code both read it)
+    detected.push('claude-md');
+
+    // Check for Aider's CONVENTIONS.md or config
+    if (existsSync(join(this.workdir, 'CONVENTIONS.md')) ||
+        existsSync(join(this.workdir, '.aider.conf.yml'))) {
+      detected.push('conventions-md');
+    }
+
+    // Check for Cursor native rules directory
+    if (existsSync(join(this.workdir, '.cursor', 'rules'))) {
+      detected.push('cursor-rules');
+    }
+
+    this.syncTargets = [...new Set(detected)];  // Dedupe
   }
 
   async load(): Promise<void> {
-    // Load local (machine-specific) lessons
+    // Load local (machine-specific) lessons first
     await this.loadLocalLessons();
 
-    // Load and merge lessons from CLAUDE.md (shared)
-    if (this.claudeMdPath) {
-      await this.loadClaudeMdLessons();
+    // Load and merge lessons from repo's .prr/lessons.md (canonical source)
+    if (this.workdir) {
+      await this.loadPrrLessons();
     }
 
     // Report loaded lessons
@@ -109,25 +185,18 @@ export class LessonsManager {
   }
 
   /**
-   * Load lessons from CLAUDE.md's prr section and merge with local lessons.
-   * WHY: Both Cursor and Claude Code read CLAUDE.md, so lessons here benefit both tools.
+   * Load lessons from repo's .prr/lessons.md (canonical source).
+   * WHY: This is the file we fully control - team shares lessons via this file.
    */
-  private async loadClaudeMdLessons(): Promise<void> {
-    if (!this.claudeMdPath || !existsSync(this.claudeMdPath)) {
-      return;
-    }
+  private async loadPrrLessons(): Promise<void> {
+    if (!this.workdir) return;
+
+    const prrLessonsPath = getPrrLessonsPath(this.workdir);
+    if (!existsSync(prrLessonsPath)) return;
 
     try {
-      const content = await readFile(this.claudeMdPath, 'utf-8');
-
-      // Extract prr lessons section
-      const prrSection = this.extractPrrSection(content);
-      if (!prrSection) {
-        return;
-      }
-
-      const repoLessons = this.parseMarkdownLessons(prrSection);
-
+      const content = await readFile(prrLessonsPath, 'utf-8');
+      const repoLessons = this.parseMarkdownLessons(content);
       let merged = 0;
 
       // Merge global lessons
@@ -139,28 +208,28 @@ export class LessonsManager {
       }
 
       // Merge file-specific lessons
-      for (const [filePath, lessons] of Object.entries(repoLessons.files)) {
-        if (!this.store.files[filePath]) {
-          this.store.files[filePath] = [];
+      for (const [path, lessons] of Object.entries(repoLessons.files)) {
+        if (!this.store.files[path]) {
+          this.store.files[path] = [];
         }
         for (const lesson of lessons) {
-          if (!this.store.files[filePath].includes(lesson)) {
-            this.store.files[filePath].push(lesson);
+          if (!this.store.files[path].includes(lesson)) {
+            this.store.files[path].push(lesson);
             merged++;
           }
         }
       }
 
       if (merged > 0) {
-        console.log(`Merged ${merged} lessons from CLAUDE.md`);
+        console.log(`Merged ${merged} lessons from .prr/lessons.md`);
       }
     } catch (error) {
-      console.warn('Failed to load CLAUDE.md lessons:', error);
+      console.warn('Failed to load .prr/lessons.md:', error);
     }
   }
 
   /**
-   * Extract the prr lessons section from CLAUDE.md content.
+   * Extract the prr lessons section from a file's content.
    */
   private extractPrrSection(content: string): string | null {
     const startIdx = content.indexOf(PRR_SECTION_START);
@@ -341,56 +410,149 @@ export class LessonsManager {
   }
 
   /**
-   * Save lessons to CLAUDE.md for sharing.
-   * WHY: Both Cursor and Claude Code read CLAUDE.md, so lessons here benefit both tools.
-   *
-   * This preserves any existing CLAUDE.md content and only updates the prr section.
-   * The file can then be committed and pushed to share with the team.
+   * Save lessons to repo files.
+   * 
+   * Two-tier approach:
+   * 1. .prr/lessons.md - FULL lessons (we control this file completely)
+   * 2. CLAUDE.md, etc. - COMPACTED lessons in a delimited section (preserves user content)
+   * 
+   * WHY: .prr/ is our directory, but CLAUDE.md may have user content we shouldn't touch.
    */
   async saveToRepo(): Promise<boolean> {
-    if (!this.claudeMdPath || !this.workdir) {
+    if (!this.workdir) {
       console.warn('Cannot save to repo: workdir not set');
       return false;
     }
 
+    let success = false;
+
+    // 1. Save FULL lessons to .prr/lessons.md (canonical source)
     try {
-      const lessonsMarkdown = this.toMarkdown();
-      const prrSection = `${PRR_SECTION_START}\n${lessonsMarkdown}\n${PRR_SECTION_END}`;
-
-      let finalContent: string;
-
-      if (existsSync(this.claudeMdPath)) {
-        // Read existing CLAUDE.md
-        const existingContent = await readFile(this.claudeMdPath, 'utf-8');
-
-        // Check if prr section already exists
-        const startIdx = existingContent.indexOf(PRR_SECTION_START);
-        const endIdx = existingContent.indexOf(PRR_SECTION_END);
-
-        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          // Replace existing prr section
-          finalContent =
-            existingContent.slice(0, startIdx) +
-            prrSection +
-            existingContent.slice(endIdx + PRR_SECTION_END.length);
-        } else {
-          // Append prr section to end
-          finalContent = existingContent.trimEnd() + '\n\n' + prrSection + '\n';
-        }
-      } else {
-        // Create new CLAUDE.md with just prr section
-        finalContent = `# Project Configuration\n\n${prrSection}\n`;
+      const prrLessonsPath = getPrrLessonsPath(this.workdir);
+      const dir = dirname(prrLessonsPath);
+      if (!existsSync(dir)) {
+        await mkdir(dir, { recursive: true });
       }
 
-      await writeFile(this.claudeMdPath, finalContent, 'utf-8');
-
-      console.log(`Saved lessons to CLAUDE.md (for Cursor & Claude Code)`);
-      this.repoLessonsDirty = false;
-      return true;
+      const fullMarkdown = this.toMarkdown();
+      await writeFile(prrLessonsPath, fullMarkdown, 'utf-8');
+      console.log(`Saved ${this.getTotalCount()} lessons to .prr/lessons.md`);
+      success = true;
     } catch (error) {
-      console.warn('Failed to save lessons to CLAUDE.md:', error);
-      return false;
+      console.warn('Failed to save .prr/lessons.md:', error);
     }
+
+    // 2. Sync COMPACTED lessons to other files (CLAUDE.md, etc.)
+    const compactedMarkdown = this.toCompactedMarkdown();
+    const prrSection = `${PRR_SECTION_START}\n${compactedMarkdown}\n${PRR_SECTION_END}`;
+
+    const syncedTo: string[] = [];
+
+    for (const target of this.syncTargets) {
+      const config = SYNC_TARGETS[target];
+      const filePath = config.path(this.workdir);
+
+      try {
+        // Ensure directory exists
+        const dir = dirname(filePath);
+        if (!existsSync(dir)) {
+          await mkdir(dir, { recursive: true });
+        }
+
+        let finalContent: string;
+
+        if (existsSync(filePath)) {
+          // Read existing file and update only our section
+          const existingContent = await readFile(filePath, 'utf-8');
+          const startIdx = existingContent.indexOf(PRR_SECTION_START);
+          const endIdx = existingContent.indexOf(PRR_SECTION_END);
+
+          if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+            // Replace existing prr section
+            finalContent =
+              existingContent.slice(0, startIdx) +
+              prrSection +
+              existingContent.slice(endIdx + PRR_SECTION_END.length);
+          } else {
+            // Append prr section to end
+            finalContent = existingContent.trimEnd() + '\n\n' + prrSection + '\n';
+          }
+        } else {
+          // Create new file with header + our section
+          finalContent = (config.createHeader || '') + prrSection + '\n';
+        }
+
+        await writeFile(filePath, finalContent, 'utf-8');
+        syncedTo.push(config.description);
+      } catch (error) {
+        // Silently skip files that can't be written
+      }
+    }
+
+    if (syncedTo.length > 0) {
+      console.log(`Synced to: ${syncedTo.join(', ')}`);
+    }
+
+    this.repoLessonsDirty = false;
+    return success;
+  }
+
+  /**
+   * Generate compacted markdown for syncing to other files.
+   * WHY: CLAUDE.md should stay readable - don't bloat with hundreds of lessons.
+   */
+  private toCompactedMarkdown(): string {
+    const lines: string[] = [
+      '## PRR Lessons Learned',
+      '',
+      '> Auto-synced from `.prr/lessons.md` - edit there for full history.',
+      '',
+    ];
+
+    // Compact global lessons (most recent N)
+    const globalLessons = this.store.global.slice(-MAX_GLOBAL_LESSONS_FOR_SYNC);
+    if (globalLessons.length > 0) {
+      lines.push('### Global');
+      lines.push('');
+      for (const lesson of globalLessons) {
+        lines.push(`- ${lesson}`);
+      }
+      if (this.store.global.length > MAX_GLOBAL_LESSONS_FOR_SYNC) {
+        lines.push(`- _(${this.store.global.length - MAX_GLOBAL_LESSONS_FOR_SYNC} more in .prr/lessons.md)_`);
+      }
+      lines.push('');
+    }
+
+    // Compact file-specific lessons (top N files, M lessons each)
+    const sortedFiles = Object.entries(this.store.files)
+      .filter(([, lessons]) => lessons.length > 0)
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, MAX_FILES_FOR_SYNC);
+
+    if (sortedFiles.length > 0) {
+      lines.push('### By File');
+      lines.push('');
+
+      for (const [filePath, lessons] of sortedFiles) {
+        const recentLessons = lessons.slice(-MAX_FILE_LESSONS_FOR_SYNC);
+        lines.push(`**${filePath}**`);
+        for (const lesson of recentLessons) {
+          lines.push(`- ${lesson}`);
+        }
+        if (lessons.length > MAX_FILE_LESSONS_FOR_SYNC) {
+          lines.push(`- _(${lessons.length - MAX_FILE_LESSONS_FOR_SYNC} more)_`);
+        }
+        lines.push('');
+      }
+
+      const totalFiles = Object.keys(this.store.files).length;
+      if (totalFiles > MAX_FILES_FOR_SYNC) {
+        lines.push(`_(${totalFiles - MAX_FILES_FOR_SYNC} more files in .prr/lessons.md)_`);
+        lines.push('');
+      }
+    }
+
+    return lines.join('\n');
   }
 
   /**

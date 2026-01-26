@@ -15,7 +15,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
-import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance, DismissedIssue } from './types.js';
+import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance, DismissedIssue, BailOutRecord } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../logger.js';
 
@@ -569,5 +569,88 @@ export class StateManager {
         }
         return (b.stats.fixes + b.stats.failures) - (a.stats.fixes + a.stats.failures);
       });
+  }
+  
+  // No-progress cycle tracking for bail-out mechanism
+  // WHY: Detect stalemates where all tools/models have been tried with zero progress
+  
+  /**
+   * Get the current count of no-progress cycles.
+   */
+  getNoProgressCycles(): number {
+    return this.state?.noProgressCycles ?? 0;
+  }
+  
+  /**
+   * Increment the no-progress cycle counter.
+   * Called when a full rotation through all tools/models yields zero fixes.
+   */
+  incrementNoProgressCycles(): number {
+    if (!this.state) {
+      throw new Error('State not loaded. Call load() first.');
+    }
+    if (!this.state.noProgressCycles) {
+      this.state.noProgressCycles = 0;
+    }
+    this.state.noProgressCycles++;
+    return this.state.noProgressCycles;
+  }
+  
+  /**
+   * Reset the no-progress cycle counter.
+   * Called when any progress is made (verified fixes > 0).
+   */
+  resetNoProgressCycles(): void {
+    if (!this.state) return;
+    this.state.noProgressCycles = 0;
+  }
+  
+  /**
+   * Record a bail-out event with details for human follow-up.
+   * 
+   * WHY: Document exactly what was tried and what remains so:
+   * 1. Humans know where to pick up
+   * 2. We can analyze patterns in bail-outs
+   * 3. Future runs can learn from past failures
+   */
+  recordBailOut(
+    reason: BailOutRecord['reason'],
+    cyclesCompleted: number,
+    remainingIssues: BailOutRecord['remainingIssues'],
+    issuesFixed: number,
+    toolsExhausted: string[]
+  ): void {
+    if (!this.state) {
+      throw new Error('State not loaded. Call load() first.');
+    }
+    
+    this.state.bailOutRecord = {
+      timestamp: new Date().toISOString(),
+      reason,
+      cyclesCompleted,
+      remainingIssues,
+      partialProgress: {
+        issuesFixed,
+        issuesRemaining: remainingIssues.length,
+        lessonsLearned: this.state.lessonsLearned.length,
+      },
+      toolsExhausted,
+    };
+  }
+  
+  /**
+   * Get the last bail-out record if any.
+   */
+  getBailOutRecord(): BailOutRecord | undefined {
+    return this.state?.bailOutRecord;
+  }
+  
+  /**
+   * Clear bail-out record (e.g., when resuming with different settings).
+   */
+  clearBailOutRecord(): void {
+    if (this.state) {
+      this.state.bailOutRecord = undefined;
+    }
   }
 }

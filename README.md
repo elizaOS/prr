@@ -255,77 +255,82 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 
 ## Team Lessons Sharing
 
-prr learns from each fix attempt and stores "lessons learned" to avoid repeating mistakes. These lessons are written to `CLAUDE.md` which both **Cursor** and **Claude Code** read automatically.
+prr learns from each fix attempt and stores "lessons learned" to avoid repeating mistakes.
 
-### Lesson Storage Locations
+### Two-Tier Storage
 
-| Location | Purpose |
-|----------|---------|
-| `~/.prr/lessons/<owner>/<repo>/<branch>.json` | Machine-local lessons (auto-saved) |
-| `<repo>/CLAUDE.md` | Shared lessons (readable by Cursor & Claude Code) |
+| Location | What | Who Controls |
+|----------|------|--------------|
+| `.prr/lessons.md` | **Full history** - all lessons, no limits | prr (completely) |
+| `CLAUDE.md` | **Synced summary** - recent lessons only | prr (section only) |
+| `CONVENTIONS.md` | **Synced summary** - if Aider detected | prr (section only) |
 
-### How It Works
+**Key insight**: `.prr/lessons.md` is our canonical file (we rewrite it freely). Other files like `CLAUDE.md` may have user content, so we only update a delimited section.
 
-1. **Automatic Learning**: When fixes are rejected or fail verification, prr records why
-2. **Prompt Injection**: Lessons are included in future fix prompts to prevent repeating mistakes
-3. **Export to CLAUDE.md**: After each run, lessons are exported to a dedicated section in `CLAUDE.md`
-4. **Team Sync**: Commit the `CLAUDE.md` file to share lessons across your team
+### Auto-Sync Targets
 
-### CLAUDE.md Format
+prr auto-detects which tools you use and syncs to their config files:
 
-prr adds a clearly-delimited section to `CLAUDE.md`:
+| Target | File | When Synced |
+|--------|------|-------------|
+| Cursor + Claude Code | `CLAUDE.md` | Always |
+| Aider | `CONVENTIONS.md` | If `.aider.conf.yml` or `CONVENTIONS.md` exists |
+| Cursor (native) | `.cursor/rules/prr-lessons.mdc` | If `.cursor/rules/` exists |
 
+### Compaction for Synced Files
+
+Synced files get a **compacted** version to prevent bloat:
+- **15 global lessons** (most recent)
+- **20 files** with the most lessons  
+- **5 lessons per file** (most recent)
+
+The full history stays in `.prr/lessons.md`.
+
+### Format Example
+
+`.prr/lessons.md` (full, we control completely):
 ```markdown
-# Project Configuration
-
-<!-- Your existing CLAUDE.md content is preserved -->
-
-<!-- PRR_LESSONS_START -->
 # PRR Lessons Learned
 
 ## Global Lessons
-
 - When fixing TypeScript strict null checks, always add explicit null guards
 - Avoid changing import styles - match existing patterns
+- ... (all lessons, no limit)
 
 ## File-Specific Lessons
-
 ### src/components/Button.tsx
+- Line 45: This component expects nullable props
+- ... (all lessons for this file)
+```
 
-- Line 45: This component expects nullable props - use optional chaining
+`CLAUDE.md` (synced section, preserves user content):
+```markdown
+# Project Configuration
+
+<!-- User's existing content stays here -->
+
+<!-- PRR_LESSONS_START -->
+## PRR Lessons Learned
+
+> Auto-synced from `.prr/lessons.md` - edit there for full history.
+
+### Global
+- When fixing TypeScript strict null checks, always add explicit null guards
+- _(5 more in .prr/lessons.md)_
+
+### By File
+**src/components/Button.tsx**
+- Line 45: This component expects nullable props
 <!-- PRR_LESSONS_END -->
 ```
 
-### Why CLAUDE.md?
+### Why This Approach?
 
-Both **Cursor** and **Claude Code** now read `CLAUDE.md` for project context:
-- Lessons are immediately available to your AI coding tools
-- No symlinks or manual copying required
-- Existing `CLAUDE.md` content is preserved
-- Delimited section allows prr to update just its lessons
-
-### Sharing with Your Team
-
-```bash
-# After a prr run (with --keep-workdir), lessons are in CLAUDE.md
-cd ~/.prr/work/<hash>
-
-# Copy to your repo root
-cp CLAUDE.md /path/to/your/repo/CLAUDE.md
-
-# Or commit directly from workdir
-git add CLAUDE.md
-git commit -m "chore: update prr lessons learned"
-git push
-```
-
-### Integrating with Aider
-
-If you also use Aider, include CLAUDE.md in your `.aider.conf.yml`:
-
-```yaml
-read: CLAUDE.md
-```
+1. **Full history preserved**: `.prr/lessons.md` keeps everything
+2. **User content safe**: CLAUDE.md's existing content isn't touched
+3. **Multi-tool support**: Works with Cursor, Claude Code, Aider
+4. **No bloat**: Synced files get only recent/relevant lessons
+5. **Team sync**: `git pull` gives everyone the latest
 
 ## Requirements
 
