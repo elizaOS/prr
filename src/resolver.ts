@@ -13,7 +13,7 @@ import { GitHubAPI } from './github/api.js';
 import { parsePRUrl } from './github/types.js';
 import { LLMClient } from './llm/client.js';
 import { StateManager } from './state/manager.js';
-import { LessonsManager } from './state/lessons.js';
+import { LessonsManager, formatLessonForDisplay } from './state/lessons.js';
 import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
@@ -1436,6 +1436,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
                       spinner.text = 'Push rejected, pulling and retrying...';
                     },
                     githubToken: this.config.githubToken,
+                    onConflict: async (conflictedFiles) => {
+                      // Resolve rebase conflicts using LLM
+                      spinner.text = 'Resolving rebase conflicts...';
+                      const resolution = await this.resolveConflictsWithLLM(
+                        git,
+                        conflictedFiles,
+                        `origin/${this.prInfo.branch}`
+                      );
+                      return resolution.success;
+                    },
                   });
                   spinner.succeed('Pushed to remote');
                 } else if (!this.options.noPush) {
@@ -1579,7 +1589,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
             if (allLessons.global.length > 0) {
               console.log(chalk.gray('    Global:'));
               for (const lesson of allLessons.global.slice(-5)) {
-                console.log(chalk.gray(`      • ${lesson.substring(0, 100)}...`));
+                const display = formatLessonForDisplay(lesson);
+                console.log(chalk.gray(`      • ${display.substring(0, 100)}...`));
               }
             }
             
@@ -1588,7 +1599,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
               if (fileLessons && fileLessons.length > 0) {
                 console.log(chalk.gray(`    ${filePath}:`));
                 for (const lesson of fileLessons.slice(-3)) {
-                  console.log(chalk.gray(`      • ${lesson.substring(0, 100)}...`));
+                  const display = formatLessonForDisplay(lesson);
+                  console.log(chalk.gray(`      • ${display.substring(0, 100)}...`));
                 }
               }
             }
@@ -2117,6 +2129,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 spinner.text = 'Push rejected, pulling and retrying...';
               },
               githubToken: this.config.githubToken,
+              onConflict: async (conflictedFiles) => {
+                // Resolve rebase conflicts using LLM
+                spinner.text = 'Resolving rebase conflicts...';
+                const resolution = await this.resolveConflictsWithLLM(
+                  git,
+                  conflictedFiles,
+                  `origin/${this.prInfo.branch}`
+                );
+                return resolution.success;
+              },
             });
             spinner.succeed('Pushed to remote');
 

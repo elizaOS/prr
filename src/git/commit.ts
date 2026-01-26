@@ -180,6 +180,15 @@ export async function push(git: SimpleGit, branch: string, force = false, github
 }
 
 /**
+ * Result of pushWithRetry
+ */
+export interface PushWithRetryResult {
+  success: boolean;
+  error?: string;
+  conflictedFiles?: string[];  // Files with conflicts if rebase failed
+}
+
+/**
  * Push with auto-retry on rejection.
  * If push is rejected because remote has newer commits, fetches and rebases, then retries.
  * 
@@ -187,20 +196,40 @@ export async function push(git: SimpleGit, branch: string, force = false, github
  * Auto-retry makes the workflow smoother without manual intervention.
  * 
  * WHY rebase instead of merge: Keeps history clean. Our fix commits go on top.
+ * 
+ * NEW: onConflict callback allows caller to resolve conflicts (e.g., with LLM).
+ * If provided and conflicts occur, calls callback. If callback returns true (resolved),
+ * continues the rebase and retries push.
  */
 export async function pushWithRetry(
   git: SimpleGit, 
   branch: string, 
-  options?: { force?: boolean; onPullNeeded?: () => void; githubToken?: string }
-): Promise<void> {
-  const result = await push(git, branch, options?.force, options?.githubToken);
-  
-  if (result.success) {
-    return;
+  options?: { 
+    force?: boolean; 
+    onPullNeeded?: () => void; 
+    githubToken?: string;
+    onConflict?: (conflictedFiles: string[]) => Promise<boolean>;  // Returns true if conflicts resolved
+    maxRetries?: number;  // Max push retries (default 3)
   }
+): Promise<void> {
+  const maxRetries = options?.maxRetries ?? 3;
+  let attempts = 0;
   
-  if (result.rejected) {
-    debug('Push rejected, attempting fetch + rebase + retry');
+  while (attempts < maxRetries) {
+    attempts++;
+    const result = await push(git, branch, options?.force, options?.githubToken);
+    
+    if (result.success) {
+      return;
+    }
+    
+    if (!result.rejected) {
+      // Non-rejected failure (auth, network, etc.) - don't retry
+      throw new Error(result.error || 'Push failed');
+    }
+    
+    // Push was rejected - remote has newer commits
+    debug(`Push rejected (attempt ${attempts}/${maxRetries}), attempting fetch + rebase + retry`);
     options?.onPullNeeded?.();
     
     // Fetch and rebase to handle divergent branches
@@ -212,34 +241,74 @@ export async function pushWithRetry(
       // Then rebase our commits on top of remote
       await git.rebase([`origin/${branch}`]);
       debug('Rebase successful, retrying push');
+      // Loop continues to retry push
     } catch (syncError) {
       const syncMsg = syncError instanceof Error ? syncError.message : String(syncError);
+      debug('Rebase failed', { error: syncMsg, attempt: attempts });
       
-      // If rebase failed, try to abort it
+      // Check if it's a conflict
+      if (syncMsg.includes('CONFLICT') || syncMsg.includes('conflict')) {
+        // Get conflicted files
+        const status = await git.status();
+        const conflictedFiles = status.conflicted || [];
+        
+        // If we have a conflict handler, try to use it
+        if (options?.onConflict && conflictedFiles.length > 0) {
+          debug('Calling onConflict handler', { files: conflictedFiles });
+          
+          try {
+            const resolved = await options.onConflict(conflictedFiles);
+            
+            if (resolved) {
+              // Conflicts resolved - stage files and continue rebase
+              debug('Conflicts resolved by handler, continuing rebase');
+              await git.add('.');
+              
+              try {
+                await git.rebase(['--continue']);
+                debug('Rebase continued successfully');
+                // Loop continues to retry push
+                continue;
+              } catch (continueError) {
+                // Rebase continue failed - check if more conflicts or done
+                const continueMsg = continueError instanceof Error ? continueError.message : String(continueError);
+                if (continueMsg.includes('No changes') || continueMsg.includes('nothing to commit')) {
+                  // Rebase is actually done
+                  debug('Rebase complete (no more changes)');
+                  continue;
+                }
+                // More conflicts - could loop but for now bail
+                debug('Rebase continue failed', { error: continueMsg });
+              }
+            }
+          } catch (handlerError) {
+            debug('onConflict handler failed', { error: handlerError });
+          }
+        }
+        
+        // Handler didn't resolve or no handler - abort rebase
+        try {
+          await git.rebase(['--abort']);
+        } catch {
+          // Ignore abort errors
+        }
+        
+        throw new Error(`Push rejected and rebase has conflicts in: ${conflictedFiles.join(', ')}. Manual resolution needed.\nOriginal: ${result.error}`);
+      }
+      
+      // Non-conflict rebase failure - abort and throw
       try {
         await git.rebase(['--abort']);
       } catch {
         // Ignore abort errors
       }
       
-      // Check if it's a conflict
-      if (syncMsg.includes('CONFLICT') || syncMsg.includes('conflict')) {
-        throw new Error(`Push rejected and rebase has conflicts. Manual resolution needed.\nOriginal: ${result.error}`);
-      }
-      
       throw new Error(`Push rejected and sync failed: ${syncMsg}\nOriginal: ${result.error}`);
     }
-    
-    // Retry push
-    const retryResult = await push(git, branch, options?.force, options?.githubToken);
-    if (!retryResult.success) {
-      throw new Error(`Push failed after rebase: ${retryResult.error}`);
-    }
-    return;
   }
   
-  // Non-rejected failure
-  throw new Error(result.error || 'Push failed');
+  // Exhausted retries
+  throw new Error(`Push failed after ${maxRetries} attempts. Remote may be receiving concurrent pushes.`);
 }
 
 export async function getCurrentBranch(git: SimpleGit): Promise<string> {

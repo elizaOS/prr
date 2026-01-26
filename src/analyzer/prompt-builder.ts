@@ -1,4 +1,5 @@
 import type { UnresolvedIssue, FixPrompt } from './types.js';
+import { formatLessonForDisplay } from '../state/lessons.js';
 
 export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string[]): FixPrompt {
   // Guard: Return empty prompt if no issues
@@ -65,10 +66,11 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
     lessonsSection.push(`  ⚠ Previous Attempts (${lessonsLearned.length}):`);
     // Show all lessons - these are critical for debugging progress
     for (const lesson of lessonsLearned) {
-      // Wrap long lessons
-      const wrapped = lesson.length > 80 
-        ? lesson.substring(0, 77) + '...'
-        : lesson;
+      // Strip redundant prefix, show just the useful content
+      const displayLesson = formatLessonForDisplay(lesson);
+      const wrapped = displayLesson.length > 80 
+        ? displayLesson.substring(0, 77) + '...'
+        : displayLesson;
       lessonsSection.push(`    • ${wrapped}`);
     }
   }
@@ -80,7 +82,8 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
     parts.push('## Previous Attempts (DO NOT REPEAT THESE MISTAKES)\n');
     parts.push('The following approaches have already been tried and FAILED. Do NOT repeat them:\n');
     for (const lesson of lessonsLearned) {
-      parts.push(`- ${lesson}`);
+      // Strip redundant prefix, show just the useful content
+      parts.push(`- ${formatLessonForDisplay(lesson)}`);
     }
     parts.push('');
   }

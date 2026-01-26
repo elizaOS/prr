@@ -3,6 +3,28 @@ import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 
+/**
+ * Format a lesson for display by stripping the redundant prefix.
+ * Internal format: "Fix for path/file.ext:line rejected: actual lesson content"
+ * Display format: "actual lesson content"
+ * 
+ * WHY: The prefix is needed internally for scoping (extracting file path),
+ * but when showing to users/LLMs, only the actual lesson matters.
+ */
+export function formatLessonForDisplay(lesson: string): string {
+  // Strip "Fix for path:line rejected: " prefix if present
+  const match = lesson.match(/^Fix for [^:]+(?::\S+)? rejected: (.+)$/);
+  if (match) {
+    return match[1];
+  }
+  // Also handle "tool made no changes" format
+  const noChangesMatch = lesson.match(/^Fix for [^:]+(?::\S+)? - (.+)$/);
+  if (noChangesMatch) {
+    return noChangesMatch[1];
+  }
+  return lesson;
+}
+
 export interface LessonsStore {
   owner: string;
   repo: string;
