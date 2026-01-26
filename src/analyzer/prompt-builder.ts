@@ -114,6 +114,18 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   parts.push('4. Do NOT change working code that is not mentioned in the review');
   parts.push('5. Preserve existing code structure, variable names, and formatting');
   parts.push('6. If an issue is unclear, make the smallest reasonable fix');
+  parts.push('');
+  parts.push('## CRITICAL: If You Make Zero Changes\n');
+  parts.push('If you decide NOT to make any file changes, you MUST explain why in your output.');
+  parts.push('Output a line starting with "NO_CHANGES:" followed by a detailed explanation.\n');
+  parts.push('Valid reasons include:');
+  parts.push('- Issue is already fixed (cite specific code)');
+  parts.push('- Cannot determine correct fix (explain what is unclear)');
+  parts.push('- Issue is not actually a problem (explain why)');
+  parts.push('- Code already handles this correctly (cite specific implementation)\n');
+  parts.push('Example:');
+  parts.push('NO_CHANGES: Issue 1 is already fixed - Line 45 has null check: if (value === null) return;\n');
+  parts.push('DO NOT make zero changes without this explanation. The system requires documentation of why no changes were made.');
 
   return {
     prompt: parts.join('\n'),

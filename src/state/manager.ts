@@ -15,7 +15,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
-import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance } from './types.js';
+import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance, DismissedIssue } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../logger.js';
 
@@ -65,6 +65,11 @@ export class StateManager {
           }
           if (this.state.totalTokenUsage) {
             loadOverallTokenUsage(this.state.totalTokenUsage);
+          }
+
+          // Initialize new fields for backward compatibility
+          if (!this.state.dismissedIssues) {
+            this.state.dismissedIssues = [];
           }
         }
       } catch (error) {
@@ -223,11 +228,84 @@ export class StateManager {
     if (!this.state) {
       throw new Error('State not loaded. Call load() first.');
     }
-    
+
     this.state.verifiedFixed = [];
     this.state.verifiedComments = [];
   }
-  
+
+  /**
+   * Add a dismissed issue with reason.
+   *
+   * WHY: Document issues that don't need fixing so there can be a dialog
+   * between generator and judge. This helps the generator learn to avoid
+   * false positives.
+   */
+  addDismissedIssue(
+    commentId: string,
+    reason: string,
+    category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate',
+    filePath: string,
+    line: number | null,
+    commentBody: string
+  ): void {
+    if (!this.state) {
+      throw new Error('State not loaded. Call load() first.');
+    }
+
+    if (!this.state.dismissedIssues) {
+      this.state.dismissedIssues = [];
+    }
+
+    // Remove existing record if any (we'll add a fresh one)
+    this.state.dismissedIssues = this.state.dismissedIssues.filter(d => d.commentId !== commentId);
+
+    this.state.dismissedIssues.push({
+      commentId,
+      reason,
+      dismissedAt: new Date().toISOString(),
+      dismissedAtIteration: this.state.iterations.length,
+      category,
+      filePath,
+      line,
+      commentBody,
+    });
+  }
+
+  /**
+   * Get dismissed issues, optionally filtered by category.
+   */
+  getDismissedIssues(category?: string): Array<{
+    commentId: string;
+    reason: string;
+    dismissedAt: string;
+    dismissedAtIteration: number;
+    category: string;
+    filePath: string;
+    line: number | null;
+    commentBody: string;
+  }> {
+    if (!this.state?.dismissedIssues) {
+      return [];
+    }
+
+    if (!category) {
+      return [...this.state.dismissedIssues];
+    }
+
+    return this.state.dismissedIssues.filter(d => d.category === category);
+  }
+
+  /**
+   * Check if a comment was dismissed.
+   */
+  isCommentDismissed(commentId: string): boolean {
+    if (!this.state?.dismissedIssues) {
+      return false;
+    }
+
+    return this.state.dismissedIssues.some(d => d.commentId === commentId);
+  }
+
   /**
    * Get comment IDs that were verified more than N iterations ago (stale verifications)
    */

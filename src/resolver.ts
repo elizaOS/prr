@@ -391,7 +391,37 @@ export class PRResolver {
           }
         } else {
           // Tool ran but made no changes at all
-          console.log(chalk.gray(`    - No changes made (tool may not understand the task)`));
+          // Parse fixer output for NO_CHANGES explanation
+          const noChangesExplanation = this.parseNoChangesExplanation(result.output || '');
+
+          if (noChangesExplanation) {
+            console.log(chalk.gray(`    - No changes made`));
+            console.log(chalk.cyan(`      Fixer's reason: ${noChangesExplanation}`));
+            this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${noChangesExplanation}`);
+
+            // If fixer says it's already fixed, dismiss this issue
+            const lowerExplanation = noChangesExplanation.toLowerCase();
+            const isAlreadyFixed = lowerExplanation.includes('already') ||
+                                   lowerExplanation.includes('exists') ||
+                                   lowerExplanation.includes('has') ||
+                                   lowerExplanation.includes('implements');
+
+            if (isAlreadyFixed) {
+              this.stateManager.addDismissedIssue(
+                issue.comment.id,
+                `Fixer tool (single-issue mode) reported: ${noChangesExplanation}`,
+                'already-fixed',
+                issue.comment.path,
+                issue.comment.line,
+                issue.comment.body
+              );
+            }
+          } else {
+            console.log(chalk.gray(`    - No changes made (tool may not understand the task)`));
+            warn(`      ⚠️  Fixer did not provide NO_CHANGES: explanation`);
+            this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes without explanation, may need clearer instructions`);
+          }
+
           debug('Fixer made no changes', {
             targetFile: issue.comment.path,
             targetLine: issue.comment.line,
@@ -400,9 +430,8 @@ export class PRResolver {
             promptSent: focusedPrompt.substring(0, 500) + '...',
             toolOutput: result.output?.substring(0, 1000),
             toolError: result.error,
+            explanation: noChangesExplanation,
           });
-          // Add lesson about the failed attempt
-          this.lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes, may need clearer instructions`);
         }
       } else {
         console.log(chalk.red(`    ✗ Failed: ${result.error}`));
@@ -512,7 +541,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
             const hasTrailingNewline = fileContent.endsWith('\n');
             fs.writeFileSync(filePath, fixedCode + (hasTrailingNewline ? '\n' : ''), 'utf-8');
             console.log(chalk.green(`    ✓ Written: ${issue.comment.path}`));
-            
+
             // Verify the fix before counting it as successful
             // WHY: Direct LLM writes code but we need to verify it addresses the issue
             // Without this, the fix could be wrong and get undone by next fixer iteration
@@ -523,7 +552,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               issue.comment.path,
               diff
             );
-            
+
             if (verification.fixed) {
               console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}`));
               this.stateManager.markCommentVerifiedFixed(issue.comment.id);
@@ -534,6 +563,19 @@ Start your response with \`\`\` and end with \`\`\`.`;
               // Reset the file - the fix wasn't correct
               await git.checkout([issue.comment.path]);
             }
+          } else {
+            // LLM returned the same code - no changes needed
+            console.log(chalk.gray(`    - No changes needed for ${issue.comment.path}`));
+            console.log(chalk.cyan(`      Direct LLM indicated file is already correct`));
+            // Document this dismissal
+            this.stateManager.addDismissedIssue(
+              issue.comment.id,
+              `Direct LLM API returned unchanged code, indicating the issue is already addressed or not applicable`,
+              'already-fixed',
+              issue.comment.path,
+              issue.comment.line,
+              issue.comment.body
+            );
           }
         }
       } catch (e) {
@@ -1194,7 +1236,30 @@ Start your response with \`\`\` and end with \`\`\`.`;
         if (unresolvedIssues.length > 0) {
           console.log(chalk.yellow(`→ ${formatNumber(unresolvedIssues.length)} issues remaining to fix`));
         }
-        
+
+        // Report dismissed issues (issues that don't need fixing)
+        const dismissedIssues = this.stateManager.getDismissedIssues();
+        if (dismissedIssues.length > 0) {
+          const byCategory = dismissedIssues.reduce((acc, issue) => {
+            acc[issue.category] = (acc[issue.category] || 0) + 1;
+            return acc;
+          }, {} as Record<string, number>);
+
+          console.log(chalk.gray(`\n  Issues dismissed (no fix needed): ${formatNumber(dismissedIssues.length)} total`));
+          for (const [category, count] of Object.entries(byCategory)) {
+            console.log(chalk.gray(`    • ${category}: ${formatNumber(count)}`));
+          }
+
+          // Show details for a few dismissed issues
+          if (dismissedIssues.length <= 3) {
+            console.log(chalk.gray('\n  Dismissal reasons:'));
+            for (const issue of dismissedIssues) {
+              console.log(chalk.gray(`    • ${issue.filePath}:${issue.line || '?'} [${issue.category}]`));
+              console.log(chalk.gray(`      ${issue.reason}`));
+            }
+          }
+        }
+
         debug('Unresolved issues', unresolvedIssues.map(i => ({
           id: i.comment.id,
           path: i.comment.path,
@@ -1321,7 +1386,38 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // Final audit passed - all issues verified fixed
             spinner.succeed('Final audit passed - all issues verified fixed!');
             console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
-            
+
+            // Report summary of dismissed issues
+            const dismissedIssues = this.stateManager.getDismissedIssues();
+            if (dismissedIssues.length > 0) {
+              console.log(chalk.cyan(`\n📋 Dismissed Issues Summary (${formatNumber(dismissedIssues.length)} total)`));
+              console.log(chalk.gray('These issues were determined not to need fixing:\n'));
+
+              const byCategory = dismissedIssues.reduce((acc, issue) => {
+                if (!acc[issue.category]) {
+                  acc[issue.category] = [];
+                }
+                acc[issue.category].push(issue);
+                return acc;
+              }, {} as Record<string, typeof dismissedIssues>);
+
+              for (const [category, issues] of Object.entries(byCategory)) {
+                console.log(chalk.cyan(`  ${category.toUpperCase()} (${formatNumber(issues.length)})`));
+                for (const issue of issues) {
+                  console.log(chalk.gray(`    • ${issue.filePath}:${issue.line || '?'}`));
+                  console.log(chalk.gray(`      Reason: ${issue.reason}`));
+                  if (issue.commentBody.length <= 80) {
+                    console.log(chalk.gray(`      Comment: ${issue.commentBody}`));
+                  } else {
+                    console.log(chalk.gray(`      Comment: ${issue.commentBody.substring(0, 77)}...`));
+                  }
+                }
+                console.log('');
+              }
+
+              console.log(chalk.yellow('💡 Tip: These dismissal reasons can help improve issue generation to reduce false positives.'));
+            }
+
             // Check if we have uncommitted changes that need to be committed
             if (await hasChanges(git)) {
               debugStep('COMMIT PHASE (all resolved)');
@@ -1556,7 +1652,46 @@ Start your response with \`\`\` and end with \`\`\`.`;
           if (!(await hasChanges(git))) {
             const currentModel = this.getCurrentModel();
             console.log(chalk.yellow(`\nNo changes made by ${this.runner.name}${currentModel ? ` (${currentModel})` : ''}`));
-            this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes - trying different approach`);
+
+            // Parse fixer output for NO_CHANGES explanation
+            const noChangesExplanation = this.parseNoChangesExplanation(result.output);
+
+            if (noChangesExplanation) {
+              // Fixer provided an explanation for why it made no changes
+              console.log(chalk.cyan(`  Fixer's explanation: ${noChangesExplanation}`));
+              this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes: ${noChangesExplanation}`);
+
+              // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
+              const lowerExplanation = noChangesExplanation.toLowerCase();
+              const isAlreadyFixed = lowerExplanation.includes('already') ||
+                                     lowerExplanation.includes('exists') ||
+                                     lowerExplanation.includes('has') ||
+                                     lowerExplanation.includes('implements');
+
+              if (isAlreadyFixed) {
+                // Fixer claims issues are already fixed - document this
+                console.log(chalk.gray(`  → Fixer believes issues are already addressed`));
+                for (const issue of unresolvedIssues) {
+                  this.stateManager.addDismissedIssue(
+                    issue.comment.id,
+                    `Fixer tool (${this.runner.name}) reported: ${noChangesExplanation}`,
+                    'already-fixed',
+                    issue.comment.path,
+                    issue.comment.line,
+                    issue.comment.body
+                  );
+                }
+              } else {
+                // Fixer couldn't fix for other reasons (unclear instructions, etc.) - document but don't dismiss
+                console.log(chalk.gray(`  → This will be recorded for feedback loop`));
+              }
+            } else {
+              // Fixer made zero changes WITHOUT explaining why - this is a problem
+              warn('⚠️  Fixer made zero changes without providing NO_CHANGES: explanation');
+              warn('   This breaks the feedback loop - the fixer should document why it made no changes');
+              this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes without explanation - tool may not understand the NO_CHANGES instruction`);
+            }
+
             // Track no-changes for performance stats
             this.stateManager.recordModelNoChanges(this.runner.name, currentModel);
             
@@ -1648,12 +1783,21 @@ Start your response with \`\`\` and end with \`\`\`.`;
             }
           }
 
-          // Mark unchanged files as failed immediately
+          // Mark unchanged files as failed immediately and document as dismissed
+          // NOTE: No validation needed here - we're providing an explicit, meaningful reason
           for (const issue of unchangedIssues) {
             this.stateManager.addVerificationResult(issue.comment.id, {
               passed: false,
               reason: 'File was not modified',
             });
+            this.stateManager.addDismissedIssue(
+              issue.comment.id,
+              'File was not modified by the fixer tool, so issue could not have been addressed',
+              'file-unchanged',
+              issue.comment.path,
+              issue.comment.line,
+              issue.comment.body
+            );
             failedCount++;
           }
 
@@ -2117,6 +2261,66 @@ IMPORTANT:
 After resolving, the files should have NO conflict markers remaining.`;
   }
 
+  /**
+   * Parse fixer tool output to extract NO_CHANGES explanation.
+   *
+   * WHY: When the fixer makes zero changes, it MUST explain why.
+   * This enables us to dismiss issues appropriately and document the reasoning.
+   *
+   * Format expected in output: "NO_CHANGES: <detailed explanation>"
+   */
+  private parseNoChangesExplanation(output: string): string | null {
+    if (!output) {
+      return null;
+    }
+
+    // Look for "NO_CHANGES:" line in output
+    const lines = output.split('\n');
+    for (const line of lines) {
+      const match = line.match(/NO_CHANGES:\s*(.+)/i);
+      if (match && match[1]) {
+        const explanation = match[1].trim();
+        // Validate the explanation is meaningful
+        if (explanation.length >= 20) {
+          return explanation;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Validate that an explanation is meaningful enough to justify dismissing an issue.
+   *
+   * WHY: We can ONLY dismiss an issue if we have a clear, documented reason.
+   * Without a proper explanation, we can't create the generator-judge feedback loop.
+   * If validation fails, we must treat it as a bug/error and NOT dismiss.
+   */
+  private validateDismissalExplanation(explanation: string, commentPath: string, commentLine: number | null): boolean {
+    const MIN_EXPLANATION_LENGTH = 20; // Minimum characters for a meaningful explanation
+
+    if (!explanation || explanation.trim().length === 0) {
+      warn(`No explanation provided for dismissing ${commentPath}:${commentLine || '?'} - treating as unresolved`);
+      return false;
+    }
+
+    if (explanation.length < MIN_EXPLANATION_LENGTH) {
+      warn(`Explanation too short (${explanation.length} chars) for ${commentPath}:${commentLine || '?'}: "${explanation}" - treating as unresolved`);
+      return false;
+    }
+
+    // Check for vague/useless explanations
+    const vague = ['fixed', 'done', 'looks good', 'ok', 'resolved', 'already handled'];
+    const lower = explanation.toLowerCase();
+    if (vague.some(v => lower === v || lower === v + '.')) {
+      warn(`Vague explanation for ${commentPath}:${commentLine || '?'}: "${explanation}" - treating as unresolved`);
+      return false;
+    }
+
+    return true;
+  }
+
   private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<UnresolvedIssue[]> {
     const unresolved: UnresolvedIssue[] = [];
     let alreadyResolved = 0;
@@ -2191,7 +2395,28 @@ After resolving, the files should have NO conflict markers remaining.`;
             explanation: result.explanation,
           });
         } else {
-          this.stateManager.markCommentVerifiedFixed(comment.id);
+          // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
+          if (this.validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
+            // Valid explanation - document why it doesn't need fixing
+            this.stateManager.markCommentVerifiedFixed(comment.id);
+            this.stateManager.addDismissedIssue(
+              comment.id,
+              result.explanation,
+              'already-fixed',
+              comment.path,
+              comment.line,
+              comment.body
+            );
+          } else {
+            // Invalid/missing explanation - treat as unresolved (potential bug)
+            warn(`Cannot dismiss without valid explanation - marking as unresolved`);
+            unresolved.push({
+              comment,
+              codeSnippet,
+              stillExists: true,
+              explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
+            });
+          }
         }
       }
     } else {
@@ -2238,8 +2463,28 @@ After resolving, the files should have NO conflict markers remaining.`;
             explanation: result.explanation,
           });
         } else {
-          // Mark as fixed in state
-          this.stateManager.markCommentVerifiedFixed(comment.id);
+          // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
+          if (this.validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
+            // Valid explanation - document why it doesn't need fixing
+            this.stateManager.markCommentVerifiedFixed(comment.id);
+            this.stateManager.addDismissedIssue(
+              comment.id,
+              result.explanation,
+              'already-fixed',
+              comment.path,
+              comment.line,
+              comment.body
+            );
+          } else {
+            // Invalid/missing explanation - treat as unresolved (potential bug)
+            warn(`Cannot dismiss without valid explanation - marking as unresolved`);
+            unresolved.push({
+              comment,
+              codeSnippet,
+              stillExists: true,
+              explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
+            });
+          }
         }
       }
     }

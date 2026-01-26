@@ -195,13 +195,28 @@ INSTRUCTIONS:
 
 Is this SPECIFIC issue STILL PRESENT in the code?
 
+CRITICAL - Your explanation will be recorded for feedback between the issue generator and judge:
+- If you say NO (not present), you MUST provide a DETAILED explanation citing the SPECIFIC code that resolves the issue
+- Your explanation helps the generator learn to avoid false positives
+- Empty or vague explanations are NOT acceptable - be specific and cite actual code
+
 Respond with EXACTLY one of these formats:
 YES: <quote the problematic code or explain what's still missing>
-NO: <cite the specific code that resolves this issue>`;
+NO: <cite the SPECIFIC code/line that resolves this issue and explain HOW it addresses the comment>
+
+Examples of GOOD explanations:
+NO: Line 45 now has null check: if (value === null) return;
+NO: TypeScript type 'NonNullable<T>' at line 23 prevents null from being passed
+NO: Function already implements this at lines 67-70: try { ... } catch (error) { logger.error(error); }
+
+Examples of BAD explanations (NEVER do this):
+NO: Fixed
+NO: Already done
+NO: Looks good`;
 
     const response = await this.complete(prompt);
     const content = response.content.trim();
-    
+
     const exists = content.toUpperCase().startsWith('YES');
     const explanation = content.replace(/^(YES|NO):\s*/i, '').trim();
 
@@ -227,15 +242,27 @@ NO: <cite the specific code that resolves this issue>`;
       '',
       'RULES:',
       '- Be STRICT: partial fixes, workarounds, or tangentially related changes do NOT count as fixed',
-      '- If the comment asks for X and the code does Y, that is NOT fixed unless Y fully addresses X', 
+      '- If the comment asks for X and the code does Y, that is NOT fixed unless Y fully addresses X',
       '- When in doubt, say YES (issue still exists) - false negatives are worse than false positives',
+      '',
+      'CRITICAL - Your explanations will be recorded for feedback between the issue generator and judge:',
+      '- For NO (not present), you MUST cite the SPECIFIC code that resolves the issue',
+      '- Your explanations help the generator learn to avoid false positives',
+      '- Empty or vague explanations like "Fixed" or "Looks good" are NOT acceptable',
+      '- Be specific and cite actual code/line numbers',
       '',
       'For EACH issue, respond with a line in this exact format:',
       'ISSUE_ID: YES|NO: cite specific code or explain what is missing/fixed',
       '',
-      'Example responses:',
+      'Example GOOD responses:',
       'issue_1: YES: Line 45 still has `user.email` without null check',
-      'issue_2: NO: Line 23 now has `if (input === null) return;`',
+      'issue_2: NO: Line 23 now has `if (input === null) return;` guard',
+      'issue_3: NO: TypeScript NonNullable<T> at line 67 prevents null',
+      '',
+      'Example BAD responses (NEVER do this):',
+      'issue_1: NO: Fixed',
+      'issue_2: NO: Done',
+      'issue_3: NO: Already implemented',
       '',
       '---',
       '',
