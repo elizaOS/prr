@@ -1631,7 +1631,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               console.log(chalk.gray('  (Only use in CI/CD or isolated environments)'));
               debug('Bailing out due to permission error', { tool: this.runner.name, error: result.error });
               // Don't record as lesson - this is an environment/config issue, not a code issue
-              return { success: false, explanation: result.error };
+              return;
             }
             
             // AUTH ERRORS: Also bail out - retrying won't help
@@ -1639,7 +1639,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
               console.log(chalk.red('\n⛔ AUTHENTICATION ERROR: API key or auth issue'));
               console.log(chalk.yellow('  Check your API keys and authentication.'));
               debug('Bailing out due to auth error', { tool: this.runner.name, error: result.error });
-              return { success: false, explanation: result.error };
+              return;
             }
             
             // DON'T record transient tool failures as lessons
