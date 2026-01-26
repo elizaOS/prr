@@ -5,7 +5,21 @@ import { join } from 'path';
 dotenv.config();
 
 export type LLMProvider = 'anthropic' | 'openai';
-export type FixerTool = 'cursor' | 'opencode';
+
+/**
+ * Supported CLI tools for fixing code issues.
+ *
+ * WHY multiple tools?
+ * - Different teams/developers have different preferences
+ * - Some tools work better in certain environments
+ * - Users should be able to use their preferred LLM interface
+ *
+ * Current support:
+ * - cursor: Cursor IDE's CLI agent (most popular)
+ * - claude-code: Anthropic's official CLI (native Claude integration)
+ * - opencode: Alternative open-source option
+ */
+export type FixerTool = 'cursor' | 'opencode' | 'claude-code';
 
 // Default bot usernames to look for in PR reviews
 // These are matched as substrings (case-insensitive)
@@ -78,8 +92,8 @@ export function loadConfig(): Config {
 }
 
 export function validateTool(tool: string): FixerTool {
-  if (tool !== 'cursor' && tool !== 'opencode') {
-    throw new Error(`Invalid tool: ${tool}. Must be 'cursor' or 'opencode'`);
+  if (tool !== 'cursor' && tool !== 'opencode' && tool !== 'claude-code') {
+    throw new Error(`Invalid tool: ${tool}. Must be 'cursor', 'opencode', or 'claude-code'`);
   }
   return tool;
 }

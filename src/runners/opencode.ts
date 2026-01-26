@@ -5,6 +5,12 @@ import type { Runner, RunnerResult } from './types.js';
 
 const exec = promisify(execCallback);
 
+/**
+ * Runner for OpenCode CLI
+ *
+ * WHY: OpenCode provides an alternative/open-source option for users who
+ * prefer not to use commercial tools or want different features.
+ */
 export class OpencodeRunner implements Runner {
   name = 'opencode';
 
@@ -19,7 +25,8 @@ export class OpencodeRunner implements Runner {
 
   async run(workdir: string, prompt: string): Promise<RunnerResult> {
     return new Promise((resolve) => {
-      // opencode takes the prompt as an argument
+      // WHY: opencode takes the prompt as a direct argument (simpler than Cursor's
+      // --message flag approach). Working directory is set via cwd in spawn options.
       const args = [prompt];
 
       console.log(`Running: opencode [prompt] in ${workdir}`);

@@ -39,7 +39,7 @@ export function createCLI(): Command {
     .description('Automatically resolve LLM review bot comments on PRs')
     .version(CAT_BANNER, '-V, --version', 'output the version number')
     .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
-    .option('-t, --tool <tool>', 'LLM tool to use for fixing (cursor or opencode)', 'cursor')
+    .option('-t, --tool <tool>', 'LLM tool to use for fixing (auto-detects if not specified)', 'cursor')
     .option('--auto-push', 'Automatically push after fixes are verified', false)
     .option('--keep-workdir', 'Keep work directory after completion', false)
     .option('--max-fix-iterations <n>', 'Maximum fix iterations per push cycle', '10')

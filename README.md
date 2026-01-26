@@ -16,7 +16,7 @@ CLI tool to automatically resolve LLM review bot comments on PRs using LLM-power
 
 - Fetches GitHub Copilot review comments from PRs
 - Uses LLM to detect which issues still exist in the code
-- Generates fix prompts and runs Cursor CLI or opencode to fix issues
+- Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
 - Tracks "lessons learned" to prevent flip-flopping between solutions
 - Batched commits to avoid flooding git history
@@ -54,7 +54,8 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 # PRR_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-xxxx
 
-# Default fixer tool
+# Default fixer tool (cursor, claude-code, or opencode)
+# If not set, prr will auto-detect which tool is installed
 PRR_TOOL=cursor
 
 # Bot usernames to look for (comma-separated, matched as substrings)
@@ -78,7 +79,7 @@ Add custom bots via `PRR_BOT_USERS` env var (comma-separated, matched as substri
 ## Usage
 
 ```bash
-# Basic usage - fix locally, don't push
+# Basic usage - auto-detects installed CLI tool
 prr https://github.com/owner/repo/pull/123
 
 # Shorthand syntax
@@ -88,7 +89,7 @@ prr owner/repo#123
 prr https://github.com/owner/repo/pull/123 --auto-push
 
 # Use specific fixer tool
-prr https://github.com/owner/repo/pull/123 --tool opencode
+prr https://github.com/owner/repo/pull/123 --tool claude-code
 
 # Dry run - show issues without fixing
 prr https://github.com/owner/repo/pull/123 --dry-run
@@ -107,6 +108,47 @@ prr https://github.com/owner/repo/pull/123 \
   --verbose
 ```
 
+## CLI Tool Detection
+
+**WHY auto-detection?** Most developers have only one LLM CLI tool installed. Auto-detection means you can just run `prr` without needing to configure which tool you have - it figures it out automatically and works out of the box.
+
+prr automatically detects which CLI tool you have installed:
+
+### Auto-detection (default)
+
+If you don't specify `--tool` or `PRR_TOOL`, prr checks in this order:
+1. `cursor` (Cursor CLI)
+2. `claude` or `cc` (Claude Code CLI)
+3. `opencode` (OpenCode CLI)
+
+It uses the first one it finds and tells you:
+```
+Auto-detected CLI tool: claude-code
+```
+
+**WHY this order?**
+- **cursor** first: Most widely adopted, battle-tested
+- **claude-code** second: Anthropic's native tool, often better Claude integration
+- **opencode** third: Newer/less common, but fully supported
+
+### Explicit selection
+
+Use `--tool <name>` or `PRR_TOOL=<name>` to force a specific tool:
+
+```bash
+prr pr-url --tool claude-code
+# or
+PRR_TOOL=claude-code prr pr-url
+```
+
+**WHY specify explicitly?**
+- You have multiple tools installed and want to control which one is used
+- You want consistent behavior across different environments
+- You want clearer error messages if the expected tool is missing
+- You're comparing behavior across different tools
+
+**Note:** Explicit mode will error if the tool isn't available (no fallback). This is intentional - it respects your explicit choice rather than silently using something else.
+
 ## How It Works
 
 1. **Fetch Comments**: Gets all LLM review bot comments from the PR via GitHub GraphQL API (supports Copilot, CodeRabbit, Sourcery, etc.)
@@ -117,7 +159,7 @@ prr https://github.com/owner/repo/pull/123 \
    - All unresolved issues with code context
    - "Lessons learned" from previous attempts to prevent flip-flopping
 
-4. **Run Fixer**: Executes Cursor CLI or opencode with the prompt in the cloned repo
+4. **Run Fixer**: Executes Cursor CLI, Claude Code, or opencode with the prompt in the cloned repo
 
 5. **Verify Fixes**: For each changed file, asks the verification LLM: "Does this diff address the concern?" Updates state accordingly.
 
@@ -149,10 +191,27 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 }
 ```
 
+## Choosing a CLI Tool
+
+You need at least one of these installed:
+
+| Tool | Command | Best For |
+|------|---------|----------|
+| **Cursor CLI** | `cursor` | Users already using Cursor IDE, most battle-tested |
+| **Claude Code** | `claude` or `cc` | Native Anthropic experience, often better Claude model integration |
+| **OpenCode** | `opencode` | Alternative open-source option |
+
+**WHY the difference?** Each tool uses Claude (or other LLMs) differently:
+- **Cursor**: Part of the Cursor IDE ecosystem, well-integrated if you're already using it
+- **Claude Code**: Official Anthropic CLI, direct access to latest Claude features
+- **OpenCode**: Community-driven alternative with different UX/features
+
+**Don't know which to choose?** Install Claude Code (`claude`) if you're new - it's Anthropic's official tool and works well out of the box.
+
 ## Requirements
 
 - Node.js >= 18
-- `cursor` CLI (if using Cursor) or `opencode` CLI (if using opencode)
+- At least one CLI tool (see table above)
 - GitHub personal access token with `repo` scope
 - Anthropic or OpenAI API key for verification
 

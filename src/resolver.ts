@@ -19,6 +19,7 @@ import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges } from './gi
 import { squashCommit, push, buildCommitMessage } from './git/commit.js';
 import { CursorRunner } from './runners/cursor.js';
 import { OpencodeRunner } from './runners/opencode.js';
+import { ClaudeCodeRunner } from './runners/claude-code.js';
 
 export class PRResolver {
   private config: Config;
@@ -273,23 +274,68 @@ export class PRResolver {
     }
   }
 
+  /**
+   * Sets up the CLI runner tool for fixing issues.
+   *
+   * WHY auto-detection: Most users only have one LLM CLI tool installed.
+   * Auto-detection removes friction - users don't need to know/remember which
+   * tool they have or configure it explicitly. They can just run `prr` and
+   * it works.
+   *
+   * WHY explicit mode: When users have multiple tools or want consistency
+   * across environments, they can lock in a specific tool. This also provides
+   * clearer error messages when the expected tool isn't available.
+   *
+   * WHY this order: cursor, claude-code, opencode
+   * - cursor: Most common in the wild, well-established
+   * - claude-code: Native Anthropic tool, often better for Claude-specific workflows
+   * - opencode: Newer/less common, but still supported
+   */
   private async setupRunner(): Promise<Runner> {
     const runners: Record<string, Runner> = {
       cursor: new CursorRunner(),
+      'claude-code': new ClaudeCodeRunner(),
       opencode: new OpencodeRunner(),
     };
 
-    const runner = runners[this.options.tool];
-    if (!runner) {
-      throw new Error(`Unknown tool: ${this.options.tool}`);
+    // WHY: Check if user explicitly specified a tool via CLI flag or env var.
+    // Default is 'cursor', so we only consider it "explicit" if PRR_TOOL is set
+    // or if --tool was passed (meaning it differs from default or env was set).
+    const isExplicitlySet = process.env.PRR_TOOL || this.options.tool !== 'cursor';
+
+    if (isExplicitlySet) {
+      // WHY: When user explicitly requests a tool, fail fast with clear error
+      // rather than silently falling back. This respects their intent and makes
+      // configuration issues obvious.
+      const runner = runners[this.options.tool];
+      if (!runner) {
+        throw new Error(`Unknown tool: ${this.options.tool}`);
+      }
+
+      const available = await runner.isAvailable();
+      if (!available) {
+        throw new Error(`Tool '${this.options.tool}' is not installed or not in PATH`);
+      }
+
+      return runner;
     }
 
-    const available = await runner.isAvailable();
-    if (!available) {
-      throw new Error(`Tool '${this.options.tool}' is not installed or not in PATH`);
+    // WHY: Auto-detect mode tries each tool in priority order. This provides
+    // zero-config experience - just install any supported tool and run prr.
+    // We iterate the object to maintain the priority order defined above.
+    for (const [name, runner] of Object.entries(runners)) {
+      const available = await runner.isAvailable();
+      if (available) {
+        console.log(chalk.gray(`Auto-detected CLI tool: ${name}`));
+        return runner;
+      }
     }
 
-    return runner;
+    // WHY: Only reach here if no tools found at all. Error message guides
+    // users to install at least one supported tool.
+    throw new Error(
+      'No LLM CLI tools found. Please install one of: cursor, claude-code (claude or cc), or opencode'
+    );
   }
 
   private async findUnresolvedIssues(comments: BotComment[]): Promise<UnresolvedIssue[]> {

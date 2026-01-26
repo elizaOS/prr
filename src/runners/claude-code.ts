@@ -6,37 +6,50 @@ import type { Runner, RunnerResult } from './types.js';
 const exec = promisify(execCallback);
 
 /**
- * Runner for Cursor CLI (Cursor IDE's agent mode)
+ * Runner for Claude Code CLI (Anthropic's official CLI tool)
  *
- * WHY: Cursor is widely used and has mature CLI integration. Many developers
- * already have it installed, making it a natural default choice.
+ * WHY: Claude Code is Anthropic's native CLI agent tool, often providing
+ * better integration with Claude models and more consistent behavior than
+ * third-party wrappers.
  */
-export class CursorRunner implements Runner {
-  name = 'cursor';
+export class ClaudeCodeRunner implements Runner {
+  name = 'claude-code';
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which cursor');
-      return true;
+      // WHY: Claude Code can be installed as either 'claude' or 'cc' depending
+      // on installation method and user preference. We check both to maximize
+      // compatibility - try the full name first since it's more explicit.
+      try {
+        await exec('which claude');
+        return true;
+      } catch {
+        await exec('which cc');
+        return true;
+      }
     } catch {
       return false;
     }
   }
 
   async run(workdir: string, prompt: string): Promise<RunnerResult> {
-    return new Promise((resolve) => {
-      // WHY: Cursor uses 'agent' subcommand with --message flag. This is
-      // different from Claude Code/opencode which take prompt as direct arg.
-      // The --directory flag ensures Cursor operates in the correct workspace.
-      const args = [
-        'agent',
-        '--message', prompt,
-        '--directory', workdir,
-      ];
+    return new Promise(async (resolve) => {
+      // WHY: We need to determine which specific command variant is available
+      // since isAvailable() only tells us *if* it's available, not *which* one.
+      let command = 'claude';
+      try {
+        await exec('which claude');
+      } catch {
+        command = 'cc';
+      }
 
-      console.log(`Running: cursor ${args.slice(0, 3).join(' ')} [prompt] --directory ${workdir}`);
+      // WHY: Claude Code accepts the task prompt directly as a CLI argument,
+      // similar to opencode. This is simpler than Cursor's --message flag approach.
+      const args = [prompt];
 
-      const child = spawn('cursor', args, {
+      console.log(`Running: ${command} [prompt] in ${workdir}`);
+
+      const child = spawn(command, args, {
         cwd: workdir,
         stdio: ['inherit', 'pipe', 'pipe'],
         env: { ...process.env },
