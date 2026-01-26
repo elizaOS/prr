@@ -93,19 +93,21 @@ export class ClaudeCodeRunner implements Runner {
         args.push('--model', options.model);
       }
 
-      // Read prompt from file and pass via -p
-      const promptContent = readFileSync(promptFile, 'utf-8');
-      args.push('-p', promptContent);
-
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt]\n`);
       debug('Claude Code command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
 
+      // Pass prompt via stdin to avoid E2BIG error with large prompts
       const child = spawn(this.binaryPath, args, {
         cwd: workdir,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
       });
+
+      // Write prompt to stdin
+      const promptContent = readFileSync(promptFile, 'utf-8');
+      child.stdin?.write(promptContent);
+      child.stdin?.end();
 
       let stdout = '';
       let stderr = '';
