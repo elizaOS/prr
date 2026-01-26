@@ -34,7 +34,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 - Fetches review comments from PRs (humans, bots, or any reviewer)
 - Uses LLM to detect which issues still exist in the code
-- Generates fix prompts and runs Cursor CLI or opencode to fix issues
+- Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
 - Tracks "lessons learned" to prevent flip-flopping between solutions
@@ -84,6 +84,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 # OPENAI_API_KEY=sk-xxxx
 
 # Default fixer tool (rotates automatically when stuck)
+# If not set, prr will auto-detect which tool is installed
 PRR_TOOL=cursor
 ```
 
@@ -95,7 +96,7 @@ PRR_TOOL=cursor
 ## Usage
 
 ```bash
-# Basic usage - fix locally, don't push
+# Basic usage - auto-detects installed CLI tool
 prr https://github.com/owner/repo/pull/123
 
 # Shorthand syntax
@@ -105,7 +106,7 @@ prr owner/repo#123
 prr https://github.com/owner/repo/pull/123 --auto-push
 
 # Use specific fixer tool
-prr https://github.com/owner/repo/pull/123 --tool opencode
+prr https://github.com/owner/repo/pull/123 --tool claude-code
 
 # Dry run - show issues without fixing
 prr https://github.com/owner/repo/pull/123 --dry-run

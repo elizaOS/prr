@@ -2006,10 +2006,27 @@ Start your response with \`\`\` and end with \`\`\`.`;
     }
   }
 
+  /**
+   * Sets up the CLI runner tool for fixing issues.
+   *
+   * WHY auto-detection: Most users only have one LLM CLI tool installed.
+   * Auto-detection removes friction - users don't need to know/remember which
+   * tool they have or configure it explicitly. They can just run `prr` and
+   * it works.
+   *
+   * WHY explicit mode: When users have multiple tools or want consistency
+   * across environments, they can lock in a specific tool. This also provides
+   * clearer error messages when the expected tool isn't available.
+   *
+   * WHY this order: cursor, claude-code, opencode
+   * - cursor: Most common in the wild, well-established
+   * - claude-code: Native Anthropic tool, often better for Claude-specific workflows
+   * - opencode: Newer/less common, but still supported
+   */
   private async setupRunner(): Promise<Runner> {
     // Auto-detect all available and ready runners
     const detected = await detectAvailableRunners(this.options.verbose);
-    
+
     if (detected.length === 0) {
       throw new Error('No fix tools available! Install one of: cursor, claude-code, aider, opencode, codex, llm-api');
     }
@@ -2019,7 +2036,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
     // Find preferred runner or use first available
     let primaryRunner: Runner;
-    
+
     if (this.options.tool) {
       const preferred = detected.find(d => d.runner.name === this.options.tool);
       if (preferred) {
@@ -2043,7 +2060,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
     // Build list of all ready runners for rotation
     this.runners = detected.map(d => d.runner);
-    
+
     // Move primary to front
     const primaryIndex = this.runners.findIndex(r => r.name === primaryRunner.name);
     if (primaryIndex > 0) {
@@ -2054,7 +2071,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
     // Initialize model indices and show info
     const primaryModels = this.getModelsForRunner(primaryRunner);
     const initialModel = this.options.toolModel || primaryModels[0];
-    
+
     console.log(chalk.cyan(`\nPrimary fixer: ${primaryRunner.displayName}`));
     if (initialModel) {
       console.log(chalk.gray(`  Starting model: ${initialModel}`));

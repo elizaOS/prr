@@ -13,7 +13,7 @@ export interface Config {
   llmModel: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
-  defaultTool: FixerTool;
+  defaultTool?: FixerTool;
   workdirBase: string;
   anthropicThinkingBudget?: number;  // Extended thinking token budget
 }
@@ -32,7 +32,7 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
 
 export function loadConfig(): Config {
   const llmProvider = getEnvOrDefault('PRR_LLM_PROVIDER', 'anthropic') as LLMProvider;
-  
+
   if (llmProvider !== 'anthropic' && llmProvider !== 'openai') {
     throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'anthropic' or 'openai'`);
   }

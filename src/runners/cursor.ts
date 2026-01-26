@@ -146,6 +146,12 @@ function parseAndPrioritizeModels(output: string): string[] {
   return selected.slice(0, 6);
 }
 
+/**
+ * Runner for Cursor CLI (Cursor IDE's agent mode)
+ *
+ * WHY: Cursor is widely used and has mature CLI integration. Many developers
+ * already have it installed, making it a natural default choice.
+ */
 export class CursorRunner implements Runner {
   name = 'cursor';
   displayName = 'Cursor Agent';
@@ -243,7 +249,7 @@ export class CursorRunner implements Runner {
       // --workspace: Working directory
       // --model: Model to use (e.g., claude-opus-4-5, claude-sonnet-4-5)
       // prompt: Positional argument at the end
-      
+
       const args: string[] = [
         '--print',
         '--output-format', 'stream-json',

@@ -57,10 +57,10 @@ async function main(): Promise<void> {
     // Load configuration
     const config = loadConfig();
 
-    // Override tool from CLI if specified
-    if (options.tool) {
-      // Already set from CLI
-    } else {
+    // Note: If neither options.tool nor config.defaultTool is set,
+    // the resolver will auto-detect the available CLI tool.
+    // We only set options.tool from config if it's explicitly configured.
+    if (!options.tool && config.defaultTool) {
       options.tool = config.defaultTool;
     }
 

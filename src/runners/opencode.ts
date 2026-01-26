@@ -29,6 +29,12 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
   });
 }
 
+/**
+ * Runner for OpenCode CLI
+ *
+ * WHY: OpenCode provides an alternative/open-source option for users who
+ * prefer not to use commercial tools or want different features.
+ */
 export class OpencodeRunner implements Runner {
   name = 'opencode';
   displayName = 'OpenCode';
@@ -76,7 +82,7 @@ export class OpencodeRunner implements Runner {
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
       const args: string[] = [];
-      
+
       // Validate and add model if specified
       if (options?.model) {
         if (!isValidModel(options.model)) {

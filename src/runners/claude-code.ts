@@ -75,7 +75,7 @@ export class ClaudeCodeRunner implements Runner {
       debug('Empty prompt - skipping claude-code run');
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
-    
+
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
@@ -83,7 +83,7 @@ export class ClaudeCodeRunner implements Runner {
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
       const args: string[] = ['--print'];
-      
+
       // Validate and add model if specified
       if (options?.model) {
         if (!isValidModel(options.model)) {
@@ -92,7 +92,7 @@ export class ClaudeCodeRunner implements Runner {
         }
         args.push('--model', options.model);
       }
-      
+
       // Read prompt from file and pass via -p
       const promptContent = readFileSync(promptFile, 'utf-8');
       args.push('-p', promptContent);
