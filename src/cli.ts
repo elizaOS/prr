@@ -18,6 +18,7 @@ export interface CLIOptions {
   keepWorkdir: boolean;
   maxFixIterations: number;
   maxPushIterations: number;
+  maxStaleCycles: number;
   pollInterval: number;
   dryRun: boolean;
   noCommit: boolean;
@@ -65,6 +66,7 @@ export function createCLI(): Command {
     .option('--keep-workdir', 'Keep work directory after completion', true)
     .option('--max-fix-iterations <n>', 'Maximum fix iterations per push cycle (0 = unlimited)', '0')
     .option('--max-push-iterations <n>', 'Maximum push/re-review cycles (0 = unlimited)', '0')
+    .option('--max-stale-cycles <n>', 'Bail out after N complete tool/model cycles with zero progress (default: 1)', '1')
     .option('--poll-interval <seconds>', 'Seconds to wait for bot re-review (auto-push mode)', '120')
     .option('--dry-run', 'Show unresolved issues without fixing', false)
     .option('--no-commit', 'Make changes but do not commit (for testing)')
@@ -130,6 +132,7 @@ export function parseArgs(program: Command): ParsedArgs {
       keepWorkdir: opts.keepWorkdir ?? true,
       maxFixIterations: parseInt(opts.maxFixIterations, 10),
       maxPushIterations: parseInt(opts.maxPushIterations, 10),
+      maxStaleCycles: parseInt(opts.maxStaleCycles, 10) || 1,
       pollInterval: parseInt(opts.pollInterval, 10),
       dryRun: opts.dryRun,
       noCommit: !opts.commit,                 // --no-commit sets opts.commit=false

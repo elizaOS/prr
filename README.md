@@ -255,27 +255,32 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 
 ## Team Lessons Sharing
 
-prr learns from each fix attempt and stores "lessons learned" to avoid repeating mistakes. These lessons can be shared across your team.
+prr learns from each fix attempt and stores "lessons learned" to avoid repeating mistakes. These lessons are written to `CLAUDE.md` which both **Cursor** and **Claude Code** read automatically.
 
 ### Lesson Storage Locations
 
 | Location | Purpose |
 |----------|---------|
 | `~/.prr/lessons/<owner>/<repo>/<branch>.json` | Machine-local lessons (auto-saved) |
-| `<repo>/.prr/lessons.md` | Shared lessons (commit to share) |
+| `<repo>/CLAUDE.md` | Shared lessons (readable by Cursor & Claude Code) |
 
 ### How It Works
 
 1. **Automatic Learning**: When fixes are rejected or fail verification, prr records why
 2. **Prompt Injection**: Lessons are included in future fix prompts to prevent repeating mistakes
-3. **Export to Repo**: After each run, lessons are exported to `.prr/lessons.md` in the workdir
-4. **Team Sync**: Commit the `.prr/lessons.md` file to share lessons across your team
+3. **Export to CLAUDE.md**: After each run, lessons are exported to a dedicated section in `CLAUDE.md`
+4. **Team Sync**: Commit the `CLAUDE.md` file to share lessons across your team
 
-### Lesson File Format
+### CLAUDE.md Format
 
-The `.prr/lessons.md` file is human-readable markdown:
+prr adds a clearly-delimited section to `CLAUDE.md`:
 
 ```markdown
+# Project Configuration
+
+<!-- Your existing CLAUDE.md content is preserved -->
+
+<!-- PRR_LESSONS_START -->
 # PRR Lessons Learned
 
 ## Global Lessons
@@ -288,48 +293,38 @@ The `.prr/lessons.md` file is human-readable markdown:
 ### src/components/Button.tsx
 
 - Line 45: This component expects nullable props - use optional chaining
-- The onClick handler must check for disabled state before firing
+<!-- PRR_LESSONS_END -->
 ```
 
-### Why Markdown?
+### Why CLAUDE.md?
 
-This follows conventions from other AI coding tools:
-- **Cursor**: `.cursor/rules/` with `.mdc` files
-- **Claude Code**: `CLAUDE.md` or `.claude/rules/`
-- **Aider**: `CONVENTIONS.md`
-
-Markdown is:
-- Human-readable and editable
-- Diff-friendly for code review
-- Can be extended with manual notes
-- Works with version control
+Both **Cursor** and **Claude Code** now read `CLAUDE.md` for project context:
+- Lessons are immediately available to your AI coding tools
+- No symlinks or manual copying required
+- Existing `CLAUDE.md` content is preserved
+- Delimited section allows prr to update just its lessons
 
 ### Sharing with Your Team
 
 ```bash
-# After a prr run, the lessons file is in your workdir
+# After a prr run (with --keep-workdir), lessons are in CLAUDE.md
 cd ~/.prr/work/<hash>
 
 # Copy to your repo root
-cp .prr/lessons.md /path/to/your/repo/.prr/lessons.md
+cp CLAUDE.md /path/to/your/repo/CLAUDE.md
 
-# Or if using --keep-workdir and wanting to commit from there
-git add .prr/lessons.md
+# Or commit directly from workdir
+git add CLAUDE.md
 git commit -m "chore: update prr lessons learned"
 git push
 ```
 
-### Integrating with Other Tools
+### Integrating with Aider
 
-If you use multiple AI coding tools, you can symlink or merge lesson files:
+If you also use Aider, include CLAUDE.md in your `.aider.conf.yml`:
 
-```bash
-# Symlink for Claude Code
-ln -s .prr/lessons.md CLAUDE.md
-
-# Or include in your CONVENTIONS.md for Aider
-echo "## PRR Lessons" >> CONVENTIONS.md
-cat .prr/lessons.md >> CONVENTIONS.md
+```yaml
+read: CLAUDE.md
 ```
 
 ## Requirements

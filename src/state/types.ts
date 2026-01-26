@@ -68,6 +68,33 @@ export interface ModelStats {
 
 export type ModelPerformance = Record<string, ModelStats>;  // "tool/model" -> stats
 
+/**
+ * Track bail-out events and reasons.
+ * 
+ * WHY: Document why automation stopped so humans can pick up where it left off.
+ * This enables:
+ * 1. Clear handoff to human reviewers
+ * 2. Pattern recognition (what types of issues stall automation?)
+ * 3. Feedback loop improvement (what lessons failed to help?)
+ */
+export interface BailOutRecord {
+  timestamp: string;
+  reason: 'no-progress-cycles' | 'max-iterations' | 'user-interrupt' | 'all-dismissed';
+  cyclesCompleted: number;
+  remainingIssues: Array<{
+    commentId: string;
+    filePath: string;
+    line: number | null;
+    summary: string;  // First line of comment
+  }>;
+  partialProgress: {
+    issuesFixed: number;
+    issuesRemaining: number;
+    lessonsLearned: number;
+  };
+  toolsExhausted: string[];  // Which tools were tried
+}
+
 export interface ResolverState {
   pr: string;
   branch: string;
@@ -86,6 +113,9 @@ export interface ResolverState {
   modelIndices?: Record<string, number>; // runner name -> current model index
   // Model performance tracking - which models work well for this project
   modelPerformance?: ModelPerformance;   // "tool/model" -> stats
+  // Bail-out tracking - document when/why automation stopped
+  bailOutRecord?: BailOutRecord;         // Last bail-out event
+  noProgressCycles?: number;             // Cycles completed with zero progress (persisted for resume)
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms
   totalTokenUsage?: TokenUsageRecord[];   // token usage per phase
@@ -104,6 +134,7 @@ export function createInitialState(pr: string, branch: string, headSha: string):
     verifiedComments: [],
     dismissedIssues: [],
     modelPerformance: {},
+    noProgressCycles: 0,
     totalTimings: {},
     totalTokenUsage: [],
   };

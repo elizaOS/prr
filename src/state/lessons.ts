@@ -23,28 +23,22 @@ function getLocalLessonsPath(owner: string, repo: string, branch: string): strin
 }
 
 /**
- * Get path to shared lessons file in repo.
- * WHY: This file can be committed and shared across machines/users.
- *
- * Location follows conventions from other AI tools:
- * - Cursor: .cursor/rules/
- * - Claude Code: CLAUDE.md or .claude/
- * - Aider: CONVENTIONS.md
- *
- * We use .prr/lessons.md which is:
- * 1. Tool-specific (won't conflict with other tools)
- * 2. Human-readable markdown
- * 3. In a hidden directory (like .cursor, .claude)
- * 4. Can be .gitignored if user prefers not to share
+ * Get path to CLAUDE.md file in repo root.
+ * WHY: Both Cursor and Claude Code now read CLAUDE.md for project context.
+ * By writing lessons here, they're immediately available to both tools.
  */
-function getRepoLessonsPath(workdir: string): string {
-  return join(workdir, '.prr', 'lessons.md');
+function getClaudeMdPath(workdir: string): string {
+  return join(workdir, 'CLAUDE.md');
 }
+
+// Delimiter for prr lessons section in CLAUDE.md
+const PRR_SECTION_START = '<!-- PRR_LESSONS_START -->';
+const PRR_SECTION_END = '<!-- PRR_LESSONS_END -->';
 
 export class LessonsManager {
   private store: LessonsStore;
   private localStorePath: string;
-  private repoStorePath: string | null = null;
+  private claudeMdPath: string | null = null;
   private workdir: string | null = null;
   private dirty = false;
   private repoLessonsDirty = false;
@@ -67,16 +61,16 @@ export class LessonsManager {
    */
   setWorkdir(workdir: string): void {
     this.workdir = workdir;
-    this.repoStorePath = getRepoLessonsPath(workdir);
+    this.claudeMdPath = getClaudeMdPath(workdir);
   }
 
   async load(): Promise<void> {
     // Load local (machine-specific) lessons
     await this.loadLocalLessons();
 
-    // Load and merge repo (shared) lessons
-    if (this.repoStorePath) {
-      await this.loadRepoLessons();
+    // Load and merge lessons from CLAUDE.md (shared)
+    if (this.claudeMdPath) {
+      await this.loadClaudeMdLessons();
     }
 
     // Report loaded lessons
@@ -115,17 +109,24 @@ export class LessonsManager {
   }
 
   /**
-   * Load lessons from repo's .prr/lessons.md file and merge with local lessons.
-   * WHY: Team members can share lessons across machines.
+   * Load lessons from CLAUDE.md's prr section and merge with local lessons.
+   * WHY: Both Cursor and Claude Code read CLAUDE.md, so lessons here benefit both tools.
    */
-  private async loadRepoLessons(): Promise<void> {
-    if (!this.repoStorePath || !existsSync(this.repoStorePath)) {
+  private async loadClaudeMdLessons(): Promise<void> {
+    if (!this.claudeMdPath || !existsSync(this.claudeMdPath)) {
       return;
     }
 
     try {
-      const content = await readFile(this.repoStorePath, 'utf-8');
-      const repoLessons = this.parseMarkdownLessons(content);
+      const content = await readFile(this.claudeMdPath, 'utf-8');
+
+      // Extract prr lessons section
+      const prrSection = this.extractPrrSection(content);
+      if (!prrSection) {
+        return;
+      }
+
+      const repoLessons = this.parseMarkdownLessons(prrSection);
 
       let merged = 0;
 
@@ -151,11 +152,25 @@ export class LessonsManager {
       }
 
       if (merged > 0) {
-        console.log(`Merged ${merged} lessons from repo .prr/lessons.md`);
+        console.log(`Merged ${merged} lessons from CLAUDE.md`);
       }
     } catch (error) {
-      console.warn('Failed to load repo lessons file:', error);
+      console.warn('Failed to load CLAUDE.md lessons:', error);
     }
+  }
+
+  /**
+   * Extract the prr lessons section from CLAUDE.md content.
+   */
+  private extractPrrSection(content: string): string | null {
+    const startIdx = content.indexOf(PRR_SECTION_START);
+    const endIdx = content.indexOf(PRR_SECTION_END);
+
+    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+      return null;
+    }
+
+    return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
   }
 
   /**
@@ -326,33 +341,54 @@ export class LessonsManager {
   }
 
   /**
-   * Save lessons to the repo's .prr/lessons.md file for sharing.
-   * WHY: Team coordination - multiple developers can learn from each other's experiences.
+   * Save lessons to CLAUDE.md for sharing.
+   * WHY: Both Cursor and Claude Code read CLAUDE.md, so lessons here benefit both tools.
    *
-   * Call this explicitly when you want to export lessons to the repo.
+   * This preserves any existing CLAUDE.md content and only updates the prr section.
    * The file can then be committed and pushed to share with the team.
    */
   async saveToRepo(): Promise<boolean> {
-    if (!this.repoStorePath || !this.workdir) {
+    if (!this.claudeMdPath || !this.workdir) {
       console.warn('Cannot save to repo: workdir not set');
       return false;
     }
 
     try {
-      // Ensure .prr directory exists in repo
-      const dir = dirname(this.repoStorePath);
-      if (!existsSync(dir)) {
-        await mkdir(dir, { recursive: true });
+      const lessonsMarkdown = this.toMarkdown();
+      const prrSection = `${PRR_SECTION_START}\n${lessonsMarkdown}\n${PRR_SECTION_END}`;
+
+      let finalContent: string;
+
+      if (existsSync(this.claudeMdPath)) {
+        // Read existing CLAUDE.md
+        const existingContent = await readFile(this.claudeMdPath, 'utf-8');
+
+        // Check if prr section already exists
+        const startIdx = existingContent.indexOf(PRR_SECTION_START);
+        const endIdx = existingContent.indexOf(PRR_SECTION_END);
+
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          // Replace existing prr section
+          finalContent =
+            existingContent.slice(0, startIdx) +
+            prrSection +
+            existingContent.slice(endIdx + PRR_SECTION_END.length);
+        } else {
+          // Append prr section to end
+          finalContent = existingContent.trimEnd() + '\n\n' + prrSection + '\n';
+        }
+      } else {
+        // Create new CLAUDE.md with just prr section
+        finalContent = `# Project Configuration\n\n${prrSection}\n`;
       }
 
-      const markdown = this.toMarkdown();
-      await writeFile(this.repoStorePath, markdown, 'utf-8');
+      await writeFile(this.claudeMdPath, finalContent, 'utf-8');
 
-      console.log(`Saved lessons to repo: ${this.repoStorePath}`);
+      console.log(`Saved lessons to CLAUDE.md (for Cursor & Claude Code)`);
       this.repoLessonsDirty = false;
       return true;
     } catch (error) {
-      console.warn('Failed to save lessons to repo:', error);
+      console.warn('Failed to save lessons to CLAUDE.md:', error);
       return false;
     }
   }

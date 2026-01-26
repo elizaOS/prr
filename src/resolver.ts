@@ -2105,16 +2105,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
         }
       }
 
-      // Export lessons to repo for team sharing
-      // WHY: Lessons learned should be shared across the team/machines
-      // The .prr/lessons.md file can be committed and pushed
+      // Export lessons to CLAUDE.md for team sharing
+      // WHY: Both Cursor and Claude Code read CLAUDE.md, so lessons benefit all users
+      // The file can be committed and pushed to share across the team
       if (this.lessonsManager.hasNewLessonsForRepo()) {
-        spinner.start('Exporting lessons to repo...');
+        spinner.start('Exporting lessons to CLAUDE.md...');
         const saved = await this.lessonsManager.saveToRepo();
         if (saved) {
-          spinner.succeed('Lessons exported to .prr/lessons.md (commit to share with team)');
+          spinner.succeed('Lessons exported to CLAUDE.md (Cursor & Claude Code will read them)');
         } else {
-          spinner.warn('Could not export lessons to repo');
+          spinner.warn('Could not export lessons to CLAUDE.md');
         }
       }
 
