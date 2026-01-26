@@ -1,7 +1,18 @@
+/**
+ * Error types for runner failures
+ * - 'permission': Tool lacks write permissions (bail out immediately - don't waste tokens)
+ * - 'auth': Authentication/API key issues
+ * - 'timeout': Process timed out
+ * - 'tool': General tool failure (retry with different model/tool)
+ */
+export type RunnerErrorType = 'permission' | 'auth' | 'timeout' | 'tool';
+
 export interface RunnerResult {
   success: boolean;
   output: string;
   error?: string;
+  /** Type of error - used to determine retry strategy */
+  errorType?: RunnerErrorType;
 }
 
 export interface RunnerOptions {

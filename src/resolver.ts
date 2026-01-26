@@ -1621,6 +1621,27 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           if (!result.success) {
             console.log(chalk.red(`\n${this.runner.name} failed (${formatDuration(fixerTime)}):`, result.error));
+            
+            // PERMISSION ERRORS: Bail out immediately - don't waste tokens
+            // WHY: If the tool can't write files, retrying won't help. User needs to fix permissions.
+            if (result.errorType === 'permission') {
+              console.log(chalk.red('\n⛔ PERMISSION ERROR: Fixer tool cannot write to files'));
+              console.log(chalk.yellow('  This wastes tokens - bailing out immediately.'));
+              console.log(chalk.cyan('  To fix: Set PRR_CLAUDE_SKIP_PERMISSIONS=1 to bypass permission prompts'));
+              console.log(chalk.gray('  (Only use in CI/CD or isolated environments)'));
+              debug('Bailing out due to permission error', { tool: this.runner.name, error: result.error });
+              // Don't record as lesson - this is an environment/config issue, not a code issue
+              return { success: false, explanation: result.error };
+            }
+            
+            // AUTH ERRORS: Also bail out - retrying won't help
+            if (result.errorType === 'auth') {
+              console.log(chalk.red('\n⛔ AUTHENTICATION ERROR: API key or auth issue'));
+              console.log(chalk.yellow('  Check your API keys and authentication.'));
+              debug('Bailing out due to auth error', { tool: this.runner.name, error: result.error });
+              return { success: false, explanation: result.error };
+            }
+            
             // DON'T record transient tool failures as lessons
             // WHY: "connection stalled", "model unavailable" aren't actionable for future fixes
             // Only code-related lessons (fix rejected, wrong approach) are useful

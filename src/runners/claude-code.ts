@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
-import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
+import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
 import { debug } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
@@ -16,6 +16,38 @@ function isValidModel(model: string): boolean {
 
 // Claude Code CLI binary names
 const CLAUDE_BINARIES = ['claude', 'claude-code'];
+
+// Permission error patterns to detect
+// These indicate claude-code is blocked from writing and we should bail out immediately
+const PERMISSION_ERROR_PATTERNS = [
+  /requested permissions? to write/i,
+  /haven't granted it yet/i,
+  /permission.*denied/i,
+  /Unable to write.*permission/i,
+  /persistent permission error/i,
+];
+
+/**
+ * Check if output contains permission errors
+ * Returns true if claude-code is blocked from making changes due to permissions
+ */
+function hasPermissionError(output: string): boolean {
+  return PERMISSION_ERROR_PATTERNS.some(pattern => pattern.test(output));
+}
+
+/**
+ * Check if --dangerously-skip-permissions should be used
+ * Controlled via PRR_CLAUDE_SKIP_PERMISSIONS env var
+ * 
+ * WARNING: This bypasses all permission prompts. Only use in:
+ * - CI/CD pipelines
+ * - Containerized/isolated environments
+ * - Automated workflows where you trust the prompts
+ */
+function shouldSkipPermissions(): boolean {
+  const envValue = process.env.PRR_CLAUDE_SKIP_PERMISSIONS;
+  return envValue === '1' || envValue === 'true';
+}
 
 export class ClaudeCodeRunner implements Runner {
   name = 'claude-code';
@@ -84,6 +116,14 @@ export class ClaudeCodeRunner implements Runner {
       // Build args array safely (no shell interpolation)
       const args: string[] = ['--print'];
 
+      // Add --dangerously-skip-permissions if enabled via env var
+      // This allows fully non-interactive operation (CI/CD, automated workflows)
+      const skipPermissions = shouldSkipPermissions();
+      if (skipPermissions) {
+        args.push('--dangerously-skip-permissions');
+        debug('Using --dangerously-skip-permissions mode');
+      }
+
       // Validate and add model if specified
       if (options?.model) {
         if (!isValidModel(options.model)) {
@@ -94,8 +134,9 @@ export class ClaudeCodeRunner implements Runner {
       }
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-      console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt]\n`);
-      debug('Claude Code command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
+      const permInfo = skipPermissions ? ' [skip-permissions]' : '';
+      console.log(`\nRunning: ${this.binaryPath}${modelInfo}${permInfo} [prompt]\n`);
+      debug('Claude Code command', { binary: this.binaryPath, workdir, model: options?.model, skipPermissions, promptLength: prompt.length });
 
       // Pass prompt via stdin to avoid E2BIG error with large prompts
       const child = spawn(this.binaryPath, args, {
@@ -127,16 +168,37 @@ export class ClaudeCodeRunner implements Runner {
       child.on('close', (code) => {
         try { unlinkSync(promptFile); } catch { }
 
+        // Check for permission errors in output (even on success exit code)
+        // This catches cases where claude-code "succeeded" but couldn't actually write
+        const combinedOutput = stdout + stderr;
+        if (hasPermissionError(combinedOutput)) {
+          debug('Permission error detected in output', { exitCode: code });
+          resolve({
+            success: false,
+            output: stdout,
+            error: 'Permission denied - claude-code cannot write to files. Set PRR_CLAUDE_SKIP_PERMISSIONS=1 to bypass permission prompts.',
+            errorType: 'permission',
+          });
+          return;
+        }
+
         if (code === 0) {
           resolve({ success: true, output: stdout });
         } else {
-          resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
+          // Determine error type for non-permission failures
+          let errorType: RunnerErrorType = 'tool';
+          const errorText = (stderr || '').toLowerCase();
+          if (errorText.includes('api key') || errorText.includes('unauthorized') || errorText.includes('authentication')) {
+            errorType = 'auth';
+          }
+          resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}`, errorType });
         }
       });
 
       child.on('error', (err) => {
         try { unlinkSync(promptFile); } catch { }
-        resolve({ success: false, output: stdout, error: err.message });
+        // Spawn errors (e.g., EACCES on binary) are tool errors
+        resolve({ success: false, output: stdout, error: err.message, errorType: 'tool' });
       });
     });
   }
