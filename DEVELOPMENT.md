@@ -167,6 +167,12 @@ OUTER LOOP (push cycles):
 - Verification is cached forever - stale entries persist
 - Lenient prompts lead to "looks good to me" without evidence
 
+**Why not trust GitHub's `isResolved` status?**
+- GitHub marks threads as "outdated" when file changes, NOT "fixed"
+- Humans mark resolved without verifying the fix
+- Bot reviewers (CodeRabbit) don't always update status after PR updates
+- We need ground truth: "Is the issue ACTUALLY addressed in the code?"
+
 **Our solution**: Multi-layer verification with final audit:
 
 ```text
@@ -196,11 +202,68 @@ Layer 3: Final audit (before declaring done)
 
 **Why re-enter fix loop on audit failure?** Early versions would exit after printing failed audit results. Now we populate unresolvedIssues and continue fixing.
 
-### 3. Model & Tool Rotation
+**Verification Cache Design** (`verifiedComments` in state):
+
+```typescript
+// WHY: Store WHEN verification happened, not just that it happened
+// Enables expiry logic and re-verification after many iterations
+{
+  commentId: "comment_id_1",
+  verifiedAt: "2026-01-23T10:30:00Z",
+  verifiedAtIteration: 5
+}
+```
+
+**Why iteration number in cache?**
+- If 20 iterations passed since verification, code may have changed
+- `findUnresolvedIssues` can check staleness: `currentIteration - verifiedAtIteration > threshold`
+- Stale verifications get re-checked instead of blindly trusted
+- `--reverify` flag forces re-verification of ALL cached items
+
+### 3. Model & Tool Rotation with Single-Issue Focus
 
 **The Problem**: AI tools get stuck. They'll make the same mistake repeatedly.
 
-**Solution**: Rotate through different models and tools with family interleaving:
+**Solution**: Multi-layer escalation strategy with model rotation, tool rotation, and single-issue focus:
+
+```text
+Escalation on consecutive failures:
+  1st fail (odd):  Try SINGLE-ISSUE MODE with current tool/model
+  2nd fail (even): Rotate to NEXT MODEL (different family)
+  3rd fail (odd):  Try single-issue with new model
+  4th fail (even): Rotate tool after MAX_MODELS_PER_TOOL_ROUND
+  ... continue until all tools/models exhausted ...
+  Final: Direct LLM API as last resort
+```
+
+**Single-Issue Focus Mode** (`trySingleIssueFix`):
+
+```typescript
+// WHY: Batch prompts with 10+ issues can overwhelm the LLM
+// WHY: Randomize to avoid hammering the same hard issue repeatedly
+const shuffled = [...issues].sort(() => Math.random() - 0.5);
+const toTry = shuffled.slice(0, 3);  // Try up to 3 random issues
+
+for (const issue of toTry) {
+  const prompt = buildSingleIssuePrompt(issue);  // Focused context
+  const result = await runner.run(workdir, prompt);
+  // ... verify and track ...
+}
+```
+
+**WHY single-issue mode?**
+- Batch prompts can exceed context or confuse LLMs
+- Single issue = smaller context = faster, cheaper
+- LLM can focus without distraction from other issues
+- If one issue is genuinely hard, others might be easy
+
+**WHY randomize?**
+- Prevents hammering the same "first" issue over and over
+- Hard issues get naturally skipped sometimes
+- Easy issues get more chances to be fixed
+- Observed: same issue failing 10+ times in a row without randomization
+
+**Model rotation** (interleaved by family):
 
 ```text
 Model rotation (interleaved by family):
@@ -259,12 +322,65 @@ Lessons store: ~/.prr/lessons/<owner>/<repo>/<branch>.json
 
 The LLM analyzes: original issue + attempted diff + rejection reason → actionable guidance.
 
+**Failure Analysis Flow** (`analyzeFailure`):
+```typescript
+// WHY: "rejected: [reason]" isn't helpful; we need specific guidance
+setTokenPhase('Analyze failure');
+
+const prompt = `The fix for this issue was rejected:
+  File: ${issue.comment.path}:${issue.comment.line}
+  Original issue: ${issue.comment.body}
+  Attempted changes: ${diff}
+  Rejection reason: ${verifyResult.reason}
+  
+  Generate a 1-2 sentence lesson that will help the next fix attempt succeed.`;
+
+const lesson = await this.llm.analyze(prompt);
+this.lessonsManager.addFileLesson(issue.comment.path, lesson);
+```
+
+**Why not just add the rejection reason as a lesson?**
+- Rejection reasons are often generic: "This doesn't fully address the concern"
+- LLM analysis contextualizes: "The null check was added to line 45, but the issue mentions line 47 where the value is also used"
+- Actionable guidance prevents the same mistake
+
 **Why prune stale lessons?** Transient failures pollute the lessons store:
 - "Connection stalled" - not actionable, will retry
 - "Cannot use this model" - transient config issue
 - "Process exited with code X" - doesn't help future attempts
 
-On startup, `pruneStaleLessons()` removes these patterns.
+On startup, `pruneTransientLessons()` removes these patterns:
+```typescript
+const transientPatterns = [
+  /failed: Cannot use this model/i,
+  /failed: Connection/i,
+  /failed: timeout/i,
+  /failed: ECONNREFUSED/i,
+  /tool made no changes, may need clearer/i,
+  // ... etc
+];
+```
+
+**New vs Existing Lessons Tracking** (`LessonsManager`):
+
+```typescript
+// WHY: "22 lessons" is ambiguous
+// "22 lessons (5 new)" shows progress is being made
+private initialLessonCount = 0;     // Count at load time
+private newLessonsThisSession = 0;  // Added this run
+
+// Only incremented for TRULY new lessons (not updates)
+if (!lessons.includes(lesson)) {
+  lessons.push(lesson);
+  this.newLessonsThisSession++;
+}
+```
+
+**WHY track new lessons separately?**
+- Resuming a run shows "Loaded 50 lessons" - user wonders if stuck
+- "50 lessons (3 new this run)" clarifies progress is happening
+- Helps distinguish "system is working" from "system is spinning"
+- Displayed in summary: `📚 Lessons: 50 total (3 new this session)`
 
 **Why file-scoped?** Lessons about `auth.ts` aren't relevant when fixing `api.ts`. Reduces prompt noise.
 
@@ -364,6 +480,11 @@ for (const issue of issues) {
 
 **The Problem**: Review comment is attached at line 50, but the issue is about lines 100-150.
 
+**Why is `comment.line` unreliable?**
+- GitHub attaches comments to "the line you clicked" - often the start of a function
+- Bot reviewers add comments at one place but describe bugs at another
+- The `line` field is where the comment was POSTED, not where the BUG IS
+
 **Solution**: Parse LOCATIONS metadata from comment body:
 
 ```markdown
@@ -372,7 +493,22 @@ packages/rust/src/runtime.rs#L100-L150
 LOCATIONS END -->
 ```
 
-**Why?** Bot reviewers (CodeRabbit, etc.) attach comments at convenient lines but reference code elsewhere. We need the actual code to verify fixes.
+**Implementation** (`getCodeSnippet`):
+```typescript
+// First check for LOCATIONS in comment body
+if (commentBody) {
+  const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
+  if (locationsMatch) {
+    // Parse line range from location URL
+    const lineMatch = location.match(/#L(\d+)(?:-L(\d+))?/);
+    // Use these lines instead of comment.line
+  }
+}
+
+// Fallback: use comment.line ± context
+```
+
+**Why this matters**: Without correct code snippets, the fixer LLM doesn't see the actual bug. Early versions had 10+ failed iterations because the LLM was looking at the wrong code.
 
 ### 7. Git Authentication
 
@@ -1317,6 +1453,48 @@ prr <url> --max-context 100000
 prr <url> --verbose
 ```
 
+## Direct LLM API Runner Design
+
+The `LLMAPIRunner` (`runners/llm-api.ts`) is special - it calls LLM APIs directly instead of CLI tools.
+
+**WHY a direct API runner?**
+- Final fallback when all CLI tools fail
+- No binary dependencies - just API keys
+- Can use different models than CLI tools expose
+- Useful for debugging (full control over prompt/response)
+
+**Search/Replace Format** (not full file rewrites):
+
+```xml
+<change path="relative/path/to/file.ext">
+<search>
+exact lines to find (include context for uniqueness)
+</search>
+<replace>
+the replacement lines
+</replace>
+</change>
+```
+
+**WHY search/replace instead of full file?**
+- LLMs love to "improve" code beyond what's needed
+- Full file output = risk of losing unrelated changes
+- Search/replace = minimal, surgical edits
+- Easier to verify what changed
+- Legacy `<file>` format still supported but deprecated
+
+**Path Security**:
+```typescript
+// WHY: Prevent directory traversal attacks
+const { safe, fullPath } = this.isPathSafe(workdir, filePath);
+if (!safe) {
+  debug('Skipping file outside workdir', { filePath });
+  continue;
+}
+```
+
+**WHY check paths?** A malicious review comment could trick the LLM into writing to `../../../etc/passwd`.
+
 ## Adding a New Runner
 
 1. Create `src/runners/<name>.ts`:
@@ -1342,6 +1520,12 @@ export const ALL_RUNNERS: Runner[] = [
 
 3. Update `src/config.ts` FixerTool type if needed
 
+**Security Checklist for New Runners**:
+- [ ] Use `spawn(binary, args)` NOT `spawn('sh', ['-c', cmd])`
+- [ ] Validate model names with `isValidModel()` before passing to CLI
+- [ ] Pass prompts via temp file or stdin, NOT shell interpolation
+- [ ] Check file paths stay within workdir
+
 ## Token/Cost Tracking
 
 Tokens are tracked per phase:
@@ -1349,6 +1533,38 @@ Tokens are tracked per phase:
 - `Verify fixes` - checking if diffs address issues  
 - `Resolve conflicts` - direct LLM conflict resolution
 - `Direct LLM fix` - fallback fixer
+
+**Session vs Overall Stats** (`logger.ts`):
+
+```typescript
+// WHY: Distinguish "what happened this run" from "cumulative history"
+// Users often resume runs - they need to see both perspectives
+
+sessionTimings: Record<string, number>    // This run only
+overallTimings: Record<string, number>    // Loaded from state + this run
+
+sessionTokenUsage: TokenUsageRecord[]     // This run only  
+overallTokenUsage: TokenUsageRecord[]     // Cumulative across runs
+```
+
+**WHY track separately?**
+- "5 minutes" could mean: this run took 5 min, OR total across 3 runs is 5 min
+- Users want to know: "How long was THIS run?" vs "How much have I spent total?"
+- Session stats reset on each run; overall persists in state file
+- At end of run, both are printed so user knows the full picture
+
+**Output format**:
+```text
+⏱ Timing Summary (this session):
+  Fetch PR info: 1.2s
+  Analyze issues: 15.3s
+  ...
+
+📊 Overall (across all sessions):
+  Fetch PR info: 4.5s (3 runs)
+  Analyze issues: 45.2s (3 runs)
+  ...
+```
 
 Cost estimate uses rough rates:
 - Input: ~$3/M tokens
@@ -1360,9 +1576,44 @@ On Ctrl+C (SIGINT):
 1. `resolver.gracefulShutdown()` called
 2. State saved with `interrupted: true`, `interruptPhase: "fixing"`
 3. Timing/token summaries printed
-4. Exit with signal-specific code (130 for SIGINT)
+4. Exit with signal-specific code
 
-On resume:
+**Signal-Specific Exit Codes** (`index.ts`):
+
+```typescript
+// WHY: Unix convention - 128 + signal number
+// WHY: Scripts can detect HOW the process ended
+const signalCodes: Record<string, number> = {
+  'SIGINT': 130,   // 128 + 2 (Ctrl+C)
+  'SIGTERM': 143,  // 128 + 15 (kill command)
+  'SIGHUP': 129,   // 128 + 1 (terminal closed)
+  'SIGQUIT': 131,  // 128 + 3 (Ctrl+\)
+};
+```
+
+**WHY signal-specific codes?**
+- `exit 130` tells calling scripts "user interrupted, not an error"
+- `exit 143` tells calling scripts "process was terminated externally"
+- Allows CI/automation to distinguish user intent vs failures
+- Standard Unix practice - `exit 1` is ambiguous
+
+**Force Exit on Double Signal**:
+```typescript
+if (isShuttingDown) {
+  // Second Ctrl+C = user really wants out NOW
+  console.log('Force exit.');
+  process.exit(1);
+}
+```
+
+**WHY?** Sometimes shutdown hangs (network, file locks). Double Ctrl+C lets user force quit.
+
+**On resume**:
 1. `wasInterrupted()` returns true
 2. Can skip re-analysis of already-verified fixes
 3. Caller must call `clearInterrupted()` after handling
+
+**WHY explicit `clearInterrupted()`?**
+- Early versions auto-cleared on load - lost information
+- Caller needs to KNOW it was interrupted before clearing
+- Pattern: load → check `wasInterrupted()` → handle → `clearInterrupted()`

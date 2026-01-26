@@ -32,26 +32,36 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ## Features
 
+### Core Loop
 - Fetches review comments from PRs (humans, bots, or any reviewer)
 - Uses LLM to detect which issues still exist in the code
 - Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
-- Tracks "lessons learned" to prevent flip-flopping between solutions
-- **LLM-powered failure analysis**: Learns from rejected fixes to avoid repeating mistakes
+
+### Smart Retry Strategies
+- **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
+- **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
+- **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
+- **Stalemate detection & bail-out**: Detects when agents disagree, bails out after N cycles with zero progress
+
+### Git Integration
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
 - **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
-- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically (remote sync, pull, stash, base branch)
+- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
+
+### Robustness
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
 - **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
-- **Stalemate detection & bail-out**: Detects when agents disagree, bails out gracefully after N cycles with zero progress
+- **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
+- **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
 
 ## Installation
 
@@ -177,6 +187,28 @@ prr https://github.com/owner/repo/pull/123 \
 │  8. COMMIT    → Squash into one clean commit                │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Escalation Strategy
+
+When fixes fail, prr escalates through multiple strategies:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  BATCH MODE           → Try all issues at once              │
+│      ↓ fail                                                 │
+│  SINGLE-ISSUE MODE    → Focus on 1-3 random issues          │
+│      ↓ fail                                                 │
+│  ROTATE MODEL         → Try different model family          │
+│      ↓ fail                                                 │
+│  ROTATE TOOL          → Switch to next fixer tool           │
+│      ↓ fail                                                 │
+│  DIRECT LLM API       → Last resort, direct API call        │
+│      ↓ fail                                                 │
+│  BAIL OUT             → Commit partial progress, exit       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+*Why single-issue mode?* Batch prompts with 10+ issues can overwhelm LLMs. Single-issue = smaller context = better focus. Issues are **randomized** so hard issues don't block easy ones.
 
 ### Why Each Step Matters
 
