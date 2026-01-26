@@ -253,6 +253,85 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 
 **Why not just store tool/model names?** Indices are resilient to model list changes. If we add new models, existing indices still work.
 
+## Team Lessons Sharing
+
+prr learns from each fix attempt and stores "lessons learned" to avoid repeating mistakes. These lessons can be shared across your team.
+
+### Lesson Storage Locations
+
+| Location | Purpose |
+|----------|---------|
+| `~/.prr/lessons/<owner>/<repo>/<branch>.json` | Machine-local lessons (auto-saved) |
+| `<repo>/.prr/lessons.md` | Shared lessons (commit to share) |
+
+### How It Works
+
+1. **Automatic Learning**: When fixes are rejected or fail verification, prr records why
+2. **Prompt Injection**: Lessons are included in future fix prompts to prevent repeating mistakes
+3. **Export to Repo**: After each run, lessons are exported to `.prr/lessons.md` in the workdir
+4. **Team Sync**: Commit the `.prr/lessons.md` file to share lessons across your team
+
+### Lesson File Format
+
+The `.prr/lessons.md` file is human-readable markdown:
+
+```markdown
+# PRR Lessons Learned
+
+## Global Lessons
+
+- When fixing TypeScript strict null checks, always add explicit null guards
+- Avoid changing import styles - match existing patterns
+
+## File-Specific Lessons
+
+### src/components/Button.tsx
+
+- Line 45: This component expects nullable props - use optional chaining
+- The onClick handler must check for disabled state before firing
+```
+
+### Why Markdown?
+
+This follows conventions from other AI coding tools:
+- **Cursor**: `.cursor/rules/` with `.mdc` files
+- **Claude Code**: `CLAUDE.md` or `.claude/rules/`
+- **Aider**: `CONVENTIONS.md`
+
+Markdown is:
+- Human-readable and editable
+- Diff-friendly for code review
+- Can be extended with manual notes
+- Works with version control
+
+### Sharing with Your Team
+
+```bash
+# After a prr run, the lessons file is in your workdir
+cd ~/.prr/work/<hash>
+
+# Copy to your repo root
+cp .prr/lessons.md /path/to/your/repo/.prr/lessons.md
+
+# Or if using --keep-workdir and wanting to commit from there
+git add .prr/lessons.md
+git commit -m "chore: update prr lessons learned"
+git push
+```
+
+### Integrating with Other Tools
+
+If you use multiple AI coding tools, you can symlink or merge lesson files:
+
+```bash
+# Symlink for Claude Code
+ln -s .prr/lessons.md CLAUDE.md
+
+# Or include in your CONVENTIONS.md for Aider
+echo "## PRR Lessons" >> CONVENTIONS.md
+cat .prr/lessons.md >> CONVENTIONS.md
+```
+
 ## Requirements
 
 **Runtime:**

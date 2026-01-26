@@ -750,7 +750,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
       });
 
       // Initialize lessons manager (branch-permanent storage)
+      // WHY: Lessons help the fixer avoid repeating mistakes
       this.lessonsManager = new LessonsManager(owner, repo, this.prInfo.branch);
+      this.lessonsManager.setWorkdir(this.workdir); // Enable repo-based lesson sharing
       await this.lessonsManager.load();
       const lessonCounts = this.lessonsManager.getCounts();
       debug('Loaded lessons', lessonCounts);
@@ -2100,6 +2102,19 @@ Start your response with \`\`\` and end with \`\`\`.`;
           console.log(chalk.yellow('\nNo changes to commit'));
           debug('Git status shows no changes');
           break;
+        }
+      }
+
+      // Export lessons to repo for team sharing
+      // WHY: Lessons learned should be shared across the team/machines
+      // The .prr/lessons.md file can be committed and pushed
+      if (this.lessonsManager.hasNewLessonsForRepo()) {
+        spinner.start('Exporting lessons to repo...');
+        const saved = await this.lessonsManager.saveToRepo();
+        if (saved) {
+          spinner.succeed('Lessons exported to .prr/lessons.md (commit to share with team)');
+        } else {
+          spinner.warn('Could not export lessons to repo');
         }
       }
 
