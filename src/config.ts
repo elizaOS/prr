@@ -38,7 +38,7 @@ export interface Config {
   llmModel: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
-  defaultTool: FixerTool;
+  defaultTool?: FixerTool;
   workdirBase: string;
   botUsers: string[];
 }
@@ -64,7 +64,7 @@ function parseBotUsers(envValue: string | undefined): string[] {
 
 export function loadConfig(): Config {
   const llmProvider = getEnvOrDefault('PRR_LLM_PROVIDER', 'anthropic') as LLMProvider;
-  
+
   if (llmProvider !== 'anthropic' && llmProvider !== 'openai') {
     throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'anthropic' or 'openai'`);
   }
@@ -76,7 +76,7 @@ export function loadConfig(): Config {
       'PRR_LLM_MODEL',
       llmProvider === 'anthropic' ? 'claude-sonnet-4-20250514' : 'gpt-4o'
     ),
-    defaultTool: getEnvOrDefault('PRR_TOOL', 'cursor') as FixerTool,
+    defaultTool: process.env.PRR_TOOL ? validateTool(process.env.PRR_TOOL) : undefined,
     workdirBase: join(homedir(), '.prr', 'work'),
     botUsers: parseBotUsers(process.env.PRR_BOT_USERS),
   };

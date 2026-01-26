@@ -299,22 +299,25 @@ export class PRResolver {
     };
 
     // WHY: Check if user explicitly specified a tool via CLI flag or env var.
-    // Default is 'cursor', so we only consider it "explicit" if PRR_TOOL is set
-    // or if --tool was passed (meaning it differs from default or env was set).
-    const isExplicitlySet = process.env.PRR_TOOL || this.options.tool !== 'cursor';
+    // If tool is undefined, it means auto-detect mode.
+    const isExplicitlySet = this.options.tool !== undefined || process.env.PRR_TOOL !== undefined;
 
     if (isExplicitlySet) {
       // WHY: When user explicitly requests a tool, fail fast with clear error
       // rather than silently falling back. This respects their intent and makes
       // configuration issues obvious.
-      const runner = runners[this.options.tool];
+      const toolName = this.options.tool || this.config.defaultTool;
+      if (!toolName) {
+        throw new Error('Tool was marked as explicitly set but no tool name was provided');
+      }
+      const runner = runners[toolName];
       if (!runner) {
-        throw new Error(`Unknown tool: ${this.options.tool}`);
+        throw new Error(`Unknown tool: ${toolName}`);
       }
 
       const available = await runner.isAvailable();
       if (!available) {
-        throw new Error(`Tool '${this.options.tool}' is not installed or not in PATH`);
+        throw new Error(`Tool '${toolName}' is not installed or not in PATH`);
       }
 
       return runner;

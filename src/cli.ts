@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import type { FixerTool } from './config.js';
 
 export interface CLIOptions {
-  tool: FixerTool;
+  tool?: FixerTool;
   autoPush: boolean;
   keepWorkdir: boolean;
   maxFixIterations: number;
@@ -39,7 +39,7 @@ export function createCLI(): Command {
     .description('Automatically resolve LLM review bot comments on PRs')
     .version(CAT_BANNER, '-V, --version', 'output the version number')
     .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
-    .option('-t, --tool <tool>', 'LLM tool to use for fixing (auto-detects if not specified)', 'cursor')
+    .option('-t, --tool <tool>', 'LLM tool to use for fixing (auto-detects if not specified)')
     .option('--auto-push', 'Automatically push after fixes are verified', false)
     .option('--keep-workdir', 'Keep work directory after completion', false)
     .option('--max-fix-iterations <n>', 'Maximum fix iterations per push cycle', '10')
@@ -65,7 +65,7 @@ export function parseArgs(program: Command): ParsedArgs {
   return {
     prUrl: args[0],
     options: {
-      tool: opts.tool as FixerTool,
+      tool: opts.tool as FixerTool | undefined,
       autoPush: opts.autoPush,
       keepWorkdir: opts.keepWorkdir,
       maxFixIterations: parseInt(opts.maxFixIterations, 10),
