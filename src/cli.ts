@@ -28,6 +28,7 @@ export interface CLIOptions {
   reverify: boolean;
   maxContextChars: number;
   noBell: boolean;
+  mergeBase: boolean;
 }
 
 export interface ParsedArgs {
@@ -75,7 +76,8 @@ export function createCLI(): Command {
     .option('--no-batch', 'Disable batched LLM calls (slower, but more reliable for complex issues)')
     .option('--reverify', 'Ignore verification cache, re-check all "fixed" issues from scratch', false)
     .option('--max-context <chars>', 'Max characters per LLM batch (default: 400000)', '400000')
-    .option('--no-bell', 'Disable terminal bell on completion');
+    .option('--no-bell', 'Disable terminal bell on completion')
+    .option('--merge-base', 'Auto-merge base branch (main/master) into PR when conflicts detected', false);
 
   return program;
 }
@@ -142,6 +144,7 @@ export function parseArgs(program: Command): ParsedArgs {
       reverify: opts.reverify ?? false,
       maxContextChars: parseInt(opts.maxContext, 10) || 400_000,
       noBell: !opts.bell,                     // --no-bell sets opts.bell=false
+      mergeBase: opts.mergeBase ?? false,     // Default: don't auto-merge base branch
     },
   };
 }
