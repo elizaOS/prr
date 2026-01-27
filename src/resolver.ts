@@ -52,6 +52,12 @@ export class PRResolver {
   // Bot response timing data - used to schedule smart waits after pushing
   // WHY: Instead of fixed pollInterval, wait based on observed bot response times
   private botTimings: BotResponseTiming[] = [];
+  
+  // Expected bot response time - when we predict bot reviews will arrive
+  // WHY: Work on existing issues while waiting, then pull new issues when ready
+  private expectedBotResponseTime: Date | null = null;
+  private lastCommentFetchTime: Date | null = null;
+  
   private rapidFailureCount = 0;
   private lastFailureTime = 0;
   private static readonly MAX_RAPID_FAILURES = 3;
@@ -881,8 +887,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
       // WHY: Helps user understand how long to wait for bot reviews after pushing
       // Also stored for smart wait scheduling after pushes
       debugStep('ANALYZING BOT TIMING');
+      let lastCommitTime: Date | null = null;
       try {
         spinner.start('Analyzing bot response timing...');
+        
+        // Get commits to find last commit time
+        const commits = await this.github.getPRCommits(owner, repo, number);
+        if (commits.length > 0) {
+          lastCommitTime = commits[commits.length - 1].committedDate;
+        }
+        
         this.botTimings = await this.github.analyzeBotResponseTiming(owner, repo, number);
         spinner.stop();
         
@@ -897,6 +911,21 @@ Start your response with \`\`\` and end with \`\`\`.`;
           const maxWait = Math.max(...this.botTimings.map(t => t.maxResponseMs));
           const recommendedWait = Math.ceil(maxWait / 1000 / 30) * 30; // Round up to nearest 30s
           console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s`));
+          
+          // Calculate when we expect bot reviews to arrive
+          if (lastCommitTime) {
+            this.expectedBotResponseTime = this.calculateExpectedBotResponseTime(lastCommitTime);
+            if (this.expectedBotResponseTime) {
+              const now = new Date();
+              const msUntilExpected = this.expectedBotResponseTime.getTime() - now.getTime();
+              if (msUntilExpected > 0) {
+                console.log(chalk.cyan(`   📅 Expecting new bot reviews in ~${formatDuration(msUntilExpected)}`));
+                console.log(chalk.gray('      Will check for new issues while working...'));
+              } else {
+                console.log(chalk.cyan('   📅 Bot reviews may already be available'));
+              }
+            }
+          }
         } else {
           console.log(chalk.gray('No bot response timing data available yet'));
         }
@@ -1597,7 +1626,37 @@ Start your response with \`\`\` and end with \`\`\`.`;
         // we'd try to commit already-committed fixes on subsequent iterations.
         const alreadyCommitted = new Set<string>();
 
+        // Track existing comment IDs to detect new ones
+        const existingCommentIds = new Set(comments.map(c => c.id));
+        
         while (fixIteration < maxFixIterations && !allFixed) {
+          // Check for new bot reviews if expected time has passed
+          // WHY: Work on existing issues while waiting for bot reviews, then pull in new ones
+          const newReviewResult = await this.checkForNewBotReviews(owner, repo, number, existingCommentIds);
+          if (newReviewResult) {
+            console.log(chalk.cyan(`\n📬 ${newReviewResult.message}`));
+            
+            // Add new comments to tracking
+            for (const comment of newReviewResult.newComments) {
+              existingCommentIds.add(comment.id);
+              comments.push(comment);
+              
+              console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
+              
+              // Analyze if this new comment needs fixing
+              const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
+              // Quick check - assume new comments need attention unless obviously resolved
+              unresolvedIssues.push({
+                comment,
+                codeSnippet,
+                stillExists: true,
+                explanation: 'New comment from bot review',
+              });
+            }
+            
+            console.log(chalk.cyan(`   Added ${newReviewResult.newComments.length} new issue(s) to workflow\n`));
+          }
+          
           // Filter out issues that were verified during THIS session (by single-issue mode, etc.)
           // WHY: trySingleIssueFix marks items as verified but 'continue' skips normal filtering
           // IMPORTANT: Don't use isCommentVerifiedFixed here - it would remove stale items
@@ -2152,6 +2211,17 @@ Start your response with \`\`\` and end with \`\`\`.`;
                     await pushWithRetry(git, this.prInfo.branch, { githubToken: this.config.githubToken });
                     const pushTime = endTimer('Push iteration fixes');
                     console.log(chalk.green(`  Pushed to origin/${this.prInfo.branch} (${formatDuration(pushTime)})`));
+                    
+                    // Update expected bot response time for the new commit
+                    // WHY: After pushing, bots will review - schedule when to check for new issues
+                    const pushTime_now = new Date();
+                    this.expectedBotResponseTime = this.calculateExpectedBotResponseTime(pushTime_now);
+                    if (this.expectedBotResponseTime) {
+                      const msUntil = this.expectedBotResponseTime.getTime() - Date.now();
+                      debug('Updated expected bot response time after push', { 
+                        expectedIn: formatDuration(msUntil) 
+                      });
+                    }
                   } catch (err) {
                     const pushError = err instanceof Error ? err.message : String(err);
                     console.log(chalk.yellow(`  Push failed (will retry): ${pushError}`));
@@ -3242,6 +3312,99 @@ After resolving, the files should have NO conflict markers remaining.`;
       console.log(chalk.gray('Comment:'), issue.comment.body.substring(0, 200));
       console.log(chalk.gray('Analysis:'), issue.explanation);
       console.log('');
+    }
+  }
+
+  /**
+   * Calculate when we expect bot reviews to arrive based on last commit time.
+   * 
+   * WHY: Instead of blocking/waiting for bot reviews, we can work on existing
+   * issues and check for new reviews when we expect them to be ready.
+   * 
+   * @param lastCommitTime When the last commit was made
+   * @returns Expected time when bot reviews should be available
+   */
+  private calculateExpectedBotResponseTime(lastCommitTime: Date): Date | null {
+    if (this.botTimings.length === 0) {
+      // No timing data - can't predict
+      return null;
+    }
+    
+    // Use average response time + 20% buffer
+    const avgResponseMs = Math.round(
+      this.botTimings.reduce((sum, t) => sum + t.avgResponseMs, 0) / this.botTimings.length
+    );
+    const bufferMs = Math.ceil(avgResponseMs * 0.2);
+    const expectedMs = avgResponseMs + bufferMs;
+    
+    return new Date(lastCommitTime.getTime() + expectedMs);
+  }
+
+  /**
+   * Check if it's time to re-fetch PR comments for new bot reviews.
+   * Returns true if we should check for new comments.
+   */
+  private shouldCheckForNewComments(): boolean {
+    if (!this.expectedBotResponseTime) {
+      return false;
+    }
+    
+    const now = new Date();
+    return now >= this.expectedBotResponseTime;
+  }
+
+  /**
+   * Check for new comments and integrate them into the workflow.
+   * 
+   * WHY: Bots may post new reviews while we're working on existing issues.
+   * Instead of waiting, we work and periodically pull in new issues.
+   * 
+   * @returns Array of new issues to add to the workflow, or null if no new comments
+   */
+  private async checkForNewBotReviews(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    existingCommentIds: Set<string>
+  ): Promise<{ newComments: ReviewComment[]; message: string } | null> {
+    if (!this.shouldCheckForNewComments()) {
+      return null;
+    }
+    
+    debug('Checking for new bot reviews (expected time reached)');
+    
+    try {
+      const freshComments = await this.github.getReviewComments(owner, repo, prNumber);
+      const newComments = freshComments.filter(c => !existingCommentIds.has(c.id));
+      
+      // Update last fetch time
+      this.lastCommentFetchTime = new Date();
+      
+      if (newComments.length > 0) {
+        // Calculate next expected response time (in case more reviews coming)
+        // Use max observed + buffer for the next check
+        if (this.botTimings.length > 0) {
+          const maxResponseMs = Math.max(...this.botTimings.map(t => t.maxResponseMs));
+          this.expectedBotResponseTime = new Date(Date.now() + maxResponseMs);
+        } else {
+          this.expectedBotResponseTime = null;  // No more predictions
+        }
+        
+        return {
+          newComments,
+          message: `Found ${newComments.length} new review comment(s) from bots`,
+        };
+      } else {
+        // No new comments - push expected time back
+        // Check again in 30 seconds
+        this.expectedBotResponseTime = new Date(Date.now() + 30 * 1000);
+        return null;
+      }
+    } catch (err) {
+      debug('Failed to check for new comments', { error: err });
+      // On error, try again in 30 seconds
+      this.expectedBotResponseTime = new Date(Date.now() + 30 * 1000);
+      return null;
     }
   }
 
