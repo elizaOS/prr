@@ -5,7 +5,7 @@ import { join } from 'path';
 dotenv.config();
 
 export type LLMProvider = 'anthropic' | 'openai';
-export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'llm-api';
+export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'llm-api' | 'auto';
 
 export interface Config {
   githubToken: string;
@@ -58,7 +58,7 @@ export function loadConfig(): Config {
       'PRR_LLM_MODEL',
       llmProvider === 'anthropic' ? 'claude-sonnet-4-5-20250929' : 'gpt-5.2'
     ),
-    defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'cursor')),
+    defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'auto')),
     workdirBase: join(homedir(), '.prr', 'work'),
     anthropicThinkingBudget: thinkingBudget,
   };
@@ -81,8 +81,8 @@ export function isValidModelName(model: string): boolean {
 }
 
 export function validateTool(tool: string): FixerTool {
-  if (!['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'].includes(tool as FixerTool)) {
-    throw new Error(`Invalid tool: ${tool}. Must be one of: cursor, opencode, claude-code, aider, codex, llm-api`);
+  if (!['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api', 'auto'].includes(tool as FixerTool)) {
+    throw new Error(`Invalid tool: ${tool}. Must be one of: cursor, opencode, claude-code, aider, codex, llm-api, auto`);
   }
   return tool as FixerTool;
 }

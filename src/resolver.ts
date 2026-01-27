@@ -2288,27 +2288,33 @@ Start your response with \`\`\` and end with \`\`\`.`;
     // Print summary
     printRunnerSummary(detected);
 
-    // Find preferred runner or use first available
+    // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
     let primaryRunner: Runner;
+    
+    // Determine which tool to use: CLI option takes precedence, then config (PRR_TOOL env var)
+    // 'auto' or undefined means use first available tool
+    const preferredTool = this.options.tool || this.config.defaultTool;
+    const isAutoSelect = !preferredTool || preferredTool === 'auto';
 
-    if (this.options.tool) {
-      const preferred = detected.find(d => d.runner.name === this.options.tool);
+    if (!isAutoSelect) {
+      const preferred = detected.find(d => d.runner.name === preferredTool);
       if (preferred) {
         primaryRunner = preferred.runner;
       } else {
         // Check if it exists but isn't ready
-        const runner = getRunnerByName(this.options.tool);
+        const runner = getRunnerByName(preferredTool);
         if (runner) {
           const status = await runner.checkStatus();
           if (status.installed && !status.ready) {
             warn(`${runner.displayName} is installed but not ready: ${status.error}`);
           } else {
-            warn(`${this.options.tool} not available, using ${detected[0].runner.displayName}`);
+            warn(`${preferredTool} not available, using ${detected[0].runner.displayName}`);
           }
         }
         primaryRunner = detected[0].runner;
       }
     } else {
+      // Auto-select: use first available tool
       primaryRunner = detected[0].runner;
     }
 

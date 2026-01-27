@@ -12,7 +12,7 @@ import chalk from 'chalk';
 import { validateTool, isValidModelName, type FixerTool } from './config.js';
 
 export interface CLIOptions {
-  tool: FixerTool;
+  tool: FixerTool | undefined;  // undefined = use PRR_TOOL env var or default
   toolModel: string | undefined;
   autoPush: boolean;
   keepWorkdir: boolean;
@@ -57,7 +57,7 @@ export function createCLI(): Command {
     .description('Automatically resolve PR review comments')
     .version(CAT_BANNER, '-V, --version', 'output the version number')
     .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
-    .option('-t, --tool <tool>', 'LLM tool to use for fixing (cursor, opencode, claude-code, aider, codex, llm-api)', 'cursor')
+    .option('-t, --tool <tool>', 'LLM tool to use for fixing (auto, cursor, opencode, claude-code, aider, codex, llm-api)')
     .option('-m, --model <model>', 'Model for fixer tool (e.g., claude-4-opus-thinking, claude-4-sonnet-thinking, o3)', (value) => {
       validateModelName(value);
       return value;
@@ -109,7 +109,8 @@ export function parseArgs(program: Command): ParsedArgs {
   // Model name already validated by option parser
   const toolModel = opts.model;
   
-  const validatedTool = validateTool(opts.tool);
+  // Tool is optional - if not specified, resolver will use PRR_TOOL env var or default
+  const validatedTool = opts.tool ? validateTool(opts.tool) : undefined;
   
   // WHY this pattern: Commander.js handles --no-X specially.
   // It does NOT create opts.noX = true.
