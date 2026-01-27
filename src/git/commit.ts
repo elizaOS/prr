@@ -382,13 +382,28 @@ export async function commitIteration(
  */
 export async function scanCommittedFixes(git: SimpleGit, branch: string): Promise<string[]> {
   try {
-    // Get commits only on this branch with prr-fix markers (Trap 1)
-    // Using origin/main..branch range to get commits unique to this branch
-    const log = await git.log([
-      `origin/main..${branch}`,
-      '--grep=prr-fix:',
-      '--format=%B%n---COMMIT_END---'
-    ]);
+    // Find the base branch - try common names
+    const baseBranches = ['origin/main', 'origin/master', 'origin/develop'];
+    let baseBranch: string | null = null;
+    
+    for (const candidate of baseBranches) {
+      try {
+        await git.raw(['rev-parse', '--verify', candidate]);
+        baseBranch = candidate;
+        break;
+      } catch {
+        // Branch doesn't exist, try next
+      }
+    }
+    
+    // If no common base branch found, fall back to searching all history
+    // This is less precise but won't fail
+    const logArgs: string[] = baseBranch 
+      ? [`${baseBranch}..${branch}`, '--grep=prr-fix:', '--format=%B%n---COMMIT_END---']
+      : ['--grep=prr-fix:', '--format=%B%n---COMMIT_END---', '-n', '100'];  // Limit to last 100 commits
+    
+    debug('scanCommittedFixes', { baseBranch, branch, logArgs });
+    const log = await git.log(logArgs);
     
     const commentIds: string[] = [];
     
