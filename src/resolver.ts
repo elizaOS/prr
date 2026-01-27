@@ -1618,7 +1618,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
           }
           
           debug('Fix prompt length', prompt.length);
-          debug('Lessons learned count', lessonsIncluded);
+          const newLessonsCount = this.lessonsManager.getNewLessonsCount();
+          debug('Lessons in prompt', { total: lessonsIncluded, newThisSession: newLessonsCount });
 
           // Guard: Don't run fixer with empty prompt
           // WHY: Empty prompt = nothing to fix, fixer will fail or do nothing
