@@ -1,3 +1,17 @@
+export interface BotResponseTiming {
+  botName: string;
+  responseCount: number;
+  minResponseMs: number;
+  avgResponseMs: number;
+  maxResponseMs: number;
+  responseTimes: Array<{
+    commitSha: string;
+    commitTime: Date;
+    responseTime: Date;
+    delayMs: number;
+  }>;
+}
+
 export interface PRInfo {
   owner: string;
   repo: string;

@@ -6,7 +6,7 @@ import { join } from 'path';
 
 import type { Config } from './config.js';
 import type { CLIOptions } from './cli.js';
-import type { ReviewComment, PRInfo } from './github/types.js';
+import type { ReviewComment, PRInfo, BotResponseTiming } from './github/types.js';
 import type { UnresolvedIssue } from './analyzer/types.js';
 import type { Runner } from './runners/types.js';
 
@@ -100,6 +100,52 @@ export class PRResolver {
       const rateStr = total > 0 ? ` (${successColor(pct + '%')} success)` : '';
       console.log(`  ${key}: ${parts.join(', ')}${rateStr}`);
     }
+  }
+
+  /**
+   * Print final results summary AFTER profiling output.
+   * WHY: Profiling info pushes important results off screen. This ensures
+   * the most important info (what got fixed) is visible at the end.
+   */
+  private printFinalSummary(): void {
+    if (!this.stateManager) return;
+    
+    // Get counts
+    const verifiedFixed = this.stateManager.getState()?.verifiedFixed || [];
+    const dismissedIssues = this.stateManager.getDismissedIssues();
+    const totalProcessed = verifiedFixed.length + dismissedIssues.length;
+    
+    if (totalProcessed === 0) return;
+    
+    console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
+    console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
+    console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
+    
+    // Fixed issues
+    if (verifiedFixed.length > 0) {
+      console.log(chalk.green(`  ✓ ${formatNumber(verifiedFixed.length)} issue${verifiedFixed.length === 1 ? '' : 's'} fixed and verified`));
+    }
+    
+    // Dismissed issues by category
+    if (dismissedIssues.length > 0) {
+      const byCategory = dismissedIssues.reduce((acc, issue) => {
+        acc[issue.category] = (acc[issue.category] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+      
+      const categoryParts = Object.entries(byCategory)
+        .map(([cat, count]) => `${count} ${cat}`)
+        .join(', ');
+      
+      console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
+    }
+    
+    // If bailed out, show that
+    if (this.bailedOut) {
+      console.log(chalk.yellow(`  ⚠ Some issues could not be resolved (bail-out triggered)`));
+    }
+    
+    console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
   }
 
   /**
@@ -737,6 +783,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
         printTimingSummary();
         printTokenSummary();
         this.printModelPerformance();
+        this.printFinalSummary();
       } catch (e) {
         console.log(chalk.red('✗ Failed to save state:', e));
       }
@@ -824,6 +871,35 @@ Start your response with \`\`\` and end with \`\`\`.`;
                           prStatus.botsWithEyesReaction.length > 0;
       if (!hasActivity) {
         console.log(chalk.green('✓'), 'PR is idle - safe to proceed');
+      }
+
+      // Analyze bot response timing
+      // WHY: Helps user understand how long to wait for bot reviews after pushing
+      debugStep('ANALYZING BOT TIMING');
+      try {
+        spinner.start('Analyzing bot response timing...');
+        const botTimings = await this.github.analyzeBotResponseTiming(owner, repo, number);
+        spinner.stop();
+        
+        if (botTimings.length > 0) {
+          console.log(chalk.cyan('\n📊 Bot Response Timing (observed on this PR):'));
+          for (const timing of botTimings) {
+            const minSec = Math.round(timing.minResponseMs / 1000);
+            const avgSec = Math.round(timing.avgResponseMs / 1000);
+            const maxSec = Math.round(timing.maxResponseMs / 1000);
+            console.log(chalk.gray(
+              `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${timing.responseCount})`
+            ));
+          }
+          // Recommend wait time based on max observed
+          const maxWait = Math.max(...botTimings.map(t => t.maxResponseMs));
+          const recommendedWait = Math.ceil(maxWait / 1000 / 30) * 30; // Round up to nearest 30s
+          console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s`));
+        } else {
+          console.log(chalk.gray('No bot response timing data available yet'));
+        }
+      } catch (err) {
+        debug('Bot timing analysis failed (non-critical)', { error: err });
       }
 
       // Check CodeRabbit status on startup
@@ -2308,6 +2384,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
       printTokenSummary();
       this.printModelPerformance();
       
+      // Final results summary - AFTER profiling so it's visible
+      this.printFinalSummary();
+      
       // Ring terminal bell 3 times to notify user completion
       // WHY: Long-running processes need audio notification when done
       if (!this.options.noBell) {
@@ -2321,6 +2400,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
       printTimingSummary();
       printTokenSummary();
       this.printModelPerformance();
+      this.printFinalSummary();  // Show results even on error
       spinner.fail('Error');
       
       // Clean up workdir on error if not keeping it

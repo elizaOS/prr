@@ -1,6 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import { graphql } from '@octokit/graphql';
-import type { PRInfo, ReviewThread, ReviewComment, PRStatus } from './types.js';
+import type { PRInfo, ReviewThread, ReviewComment, PRStatus, BotResponseTiming } from './types.js';
 import { debug } from '../logger.js';
 
 export class GitHubAPI {
@@ -543,6 +543,181 @@ export class GitHubAPI {
     
     debug('No .coderabbit.yaml found and no definitive PR comments');
     return 'unknown';
+  }
+
+  /**
+   * Get PR commits with timestamps.
+   * Used to analyze bot response timing.
+   */
+  async getPRCommits(owner: string, repo: string, prNumber: number): Promise<Array<{
+    sha: string;
+    message: string;
+    authoredDate: Date;
+    committedDate: Date;
+  }>> {
+    debug('Fetching PR commits', { owner, repo, prNumber });
+    
+    const commits = await this.octokit.paginate(
+      this.octokit.pulls.listCommits,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    
+    return commits.map(c => ({
+      sha: c.sha,
+      message: c.commit.message,
+      authoredDate: new Date(c.commit.author?.date || c.commit.committer?.date || 0),
+      committedDate: new Date(c.commit.committer?.date || c.commit.author?.date || 0),
+    }));
+  }
+
+  /**
+   * Analyze bot response timing on a PR.
+   * 
+   * WHY: Understanding how long bots take to respond helps us know:
+   * 1. How long to wait after pushing before checking for reviews
+   * 2. Whether we should trigger manual review or wait for auto
+   * 3. If a bot seems stuck/slow
+   * 
+   * This analyzes:
+   * - Time between commits and bot comments/reviews
+   * - Time between @coderabbitai mentions and bot responses
+   */
+  async analyzeBotResponseTiming(
+    owner: string, 
+    repo: string, 
+    prNumber: number
+  ): Promise<BotResponseTiming[]> {
+    debug('Analyzing bot response timing', { owner, repo, prNumber });
+    
+    // Get commits with timestamps
+    const commits = await this.getPRCommits(owner, repo, prNumber);
+    if (commits.length === 0) {
+      debug('No commits found');
+      return [];
+    }
+    
+    // Get all issue comments (includes bot summary comments)
+    const issueComments = await this.octokit.paginate(
+      this.octokit.issues.listComments,
+      { owner, repo, issue_number: prNumber, per_page: 100 }
+    );
+    
+    // Get reviews (includes bot reviews)
+    const { data: reviews } = await this.octokit.pulls.listReviews({
+      owner,
+      repo,
+      pull_number: prNumber,
+      per_page: 100,
+    });
+    
+    // Identify bot comments/reviews and their timestamps
+    const botActivity: Array<{
+      botName: string;
+      timestamp: Date;
+      type: 'comment' | 'review';
+      commitSha?: string;  // For reviews that reference a specific commit
+    }> = [];
+    
+    // Collect bot issue comments
+    for (const comment of issueComments) {
+      const author = comment.user?.login || '';
+      const isBot = author.includes('[bot]') || author.toLowerCase().includes('bot');
+      if (isBot && comment.created_at) {
+        botActivity.push({
+          botName: author,
+          timestamp: new Date(comment.created_at),
+          type: 'comment',
+        });
+      }
+    }
+    
+    // Collect bot reviews (these have commit_id!)
+    for (const review of reviews) {
+      const author = review.user?.login || '';
+      const isBot = author.includes('[bot]') || author.toLowerCase().includes('bot');
+      if (isBot && review.submitted_at) {
+        botActivity.push({
+          botName: author,
+          timestamp: new Date(review.submitted_at),
+          type: 'review',
+          commitSha: review.commit_id || undefined,
+        });
+      }
+    }
+    
+    if (botActivity.length === 0) {
+      debug('No bot activity found');
+      return [];
+    }
+    
+    // Group by bot
+    const botGroups = new Map<string, typeof botActivity>();
+    for (const activity of botActivity) {
+      const group = botGroups.get(activity.botName) || [];
+      group.push(activity);
+      botGroups.set(activity.botName, group);
+    }
+    
+    // Calculate response times for each bot
+    const results: BotResponseTiming[] = [];
+    
+    for (const [botName, activities] of botGroups) {
+      const responseTimes: BotResponseTiming['responseTimes'] = [];
+      
+      for (const activity of activities) {
+        // Find which commit this activity is responding to
+        let targetCommit: typeof commits[0] | undefined;
+        
+        if (activity.commitSha) {
+          // Review references a specific commit
+          targetCommit = commits.find(c => c.sha === activity.commitSha);
+        } else {
+          // Comment - find the most recent commit before this comment
+          // that doesn't already have a response from this bot
+          const activityTime = activity.timestamp.getTime();
+          const respondedShas = new Set(responseTimes.map(rt => rt.commitSha));
+          
+          targetCommit = commits
+            .filter(c => c.committedDate.getTime() < activityTime && !respondedShas.has(c.sha))
+            .sort((a, b) => b.committedDate.getTime() - a.committedDate.getTime())[0];
+        }
+        
+        if (targetCommit) {
+          const delayMs = activity.timestamp.getTime() - targetCommit.committedDate.getTime();
+          // Only count positive delays (bot responded after commit) and reasonable times (< 1 hour)
+          if (delayMs > 0 && delayMs < 60 * 60 * 1000) {
+            responseTimes.push({
+              commitSha: targetCommit.sha,
+              commitTime: targetCommit.committedDate,
+              responseTime: activity.timestamp,
+              delayMs,
+            });
+          }
+        }
+      }
+      
+      if (responseTimes.length > 0) {
+        const delays = responseTimes.map(rt => rt.delayMs);
+        results.push({
+          botName,
+          responseCount: responseTimes.length,
+          minResponseMs: Math.min(...delays),
+          avgResponseMs: Math.round(delays.reduce((a, b) => a + b, 0) / delays.length),
+          maxResponseMs: Math.max(...delays),
+          responseTimes,
+        });
+      }
+    }
+    
+    debug('Bot response timing analyzed', results.map(r => ({
+      bot: r.botName,
+      count: r.responseCount,
+      min: r.minResponseMs,
+      avg: r.avgResponseMs,
+      max: r.maxResponseMs,
+    })));
+    
+    return results;
   }
 
   /**
