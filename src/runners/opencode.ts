@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'child_process';
 import { writeFileSync, unlinkSync, createReadStream } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
-import { debug } from '../logger.js';
+import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
 // Validate model name to prevent injection (defense in depth)
@@ -78,6 +78,7 @@ export class OpencodeRunner implements Runner {
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('opencode', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -135,6 +136,7 @@ export class OpencodeRunner implements Runner {
         } catch {
           // Ignore cleanup errors
         }
+        debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length });
 
         if (code === 0) {
           resolve({

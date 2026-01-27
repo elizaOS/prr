@@ -4,7 +4,7 @@ import { exec as execCallback } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
-import { debug } from '../logger.js';
+import { debug, debugPrompt, debugResponse } from '../logger.js';
 
 const exec = promisify(execCallback);
 
@@ -65,6 +65,7 @@ export class AiderRunner implements Runner {
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('aider', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -114,6 +115,7 @@ export class AiderRunner implements Runner {
 
       child.on('close', (code) => {
         try { unlinkSync(promptFile); } catch { }
+        debugResponse('aider', stdout, { exitCode: code, stderrLength: stderr.length });
 
         if (code === 0) {
           resolve({ success: true, output: stdout });

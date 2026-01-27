@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
-import { debug } from '../logger.js';
+import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
 const execFile = promisify(execFileCallback);
@@ -239,6 +239,7 @@ export class CursorRunner implements Runner {
     }
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('cursor-agent', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -362,6 +363,9 @@ export class CursorRunner implements Runner {
         }
 
         console.log('\n'); // Clean line after streaming output
+        
+        // Log response to debug file
+        debugResponse('cursor-agent', stdout, { exitCode: code, stderrLength: stderr.length });
 
         if (code === 0) {
           resolve({

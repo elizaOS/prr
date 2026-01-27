@@ -15,7 +15,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { Config, LLMProvider } from '../config.js';
-import { debug, trackTokens } from '../logger.js';
+import { debug, trackTokens, debugPrompt, debugResponse } from '../logger.js';
 
 export interface LLMResponse {
   content: string;
@@ -57,6 +57,10 @@ export class LLMClient {
       hasSystemPrompt: !!systemPrompt,
     });
     
+    // Log full prompt to debug file
+    const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
+    debugPrompt(`llm-${this.provider}`, fullPrompt, { model: this.model });
+    
     const response = this.provider === 'anthropic' 
       ? await this.completeAnthropic(prompt, systemPrompt)
       : await this.completeOpenAI(prompt, systemPrompt);
@@ -64,6 +68,12 @@ export class LLMClient {
     debug('LLM response', {
       responseLength: response.content.length,
       usage: response.usage,
+    });
+    
+    // Log full response to debug file
+    debugResponse(`llm-${this.provider}`, response.content, { 
+      model: this.model, 
+      usage: response.usage 
     });
     
     // Track token usage

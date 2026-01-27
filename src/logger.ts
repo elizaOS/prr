@@ -1,9 +1,22 @@
 import chalk from 'chalk';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 
 let verboseEnabled = false;
+let debugLogDir: string | null = null;
+let debugLogCounter = 0;
 
 export function setVerbose(enabled: boolean): void {
   verboseEnabled = enabled;
+  
+  // If verbose and PRR_DEBUG_PROMPTS is set, enable prompt/response logging to files
+  if (enabled && process.env.PRR_DEBUG_PROMPTS === '1') {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    debugLogDir = join(homedir(), '.prr', 'debug', timestamp);
+    mkdirSync(debugLogDir, { recursive: true });
+    console.log(chalk.gray(`  Debug logs will be written to: ${debugLogDir}`));
+  }
 }
 
 // Safe stringify that handles BigInt, circular refs, and custom toJSON errors
@@ -78,6 +91,62 @@ export function warn(message: string): void {
 
 export function error(message: string): void {
   console.log(chalk.red('✗'), message);
+}
+
+/**
+ * Log a prompt to a debug file.
+ * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
+ * Files are written to ~/.prr/debug/<timestamp>/
+ */
+export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
+  if (!debugLogDir) return;
+  
+  debugLogCounter++;
+  const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-prompt.txt`;
+  const filepath = join(debugLogDir, filename);
+  
+  let content = `=== ${label} ===\n`;
+  content += `Timestamp: ${new Date().toISOString()}\n`;
+  if (metadata) {
+    content += `Metadata: ${JSON.stringify(metadata, null, 2)}\n`;
+  }
+  content += `Length: ${prompt.length} chars\n`;
+  content += `${'='.repeat(50)}\n\n`;
+  content += prompt;
+  
+  writeFileSync(filepath, content, 'utf-8');
+  debug(`Prompt logged to ${filename}`, { length: prompt.length });
+}
+
+/**
+ * Log a response to a debug file.
+ * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
+ */
+export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
+  if (!debugLogDir) return;
+  
+  debugLogCounter++;
+  const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-response.txt`;
+  const filepath = join(debugLogDir, filename);
+  
+  let content = `=== ${label} ===\n`;
+  content += `Timestamp: ${new Date().toISOString()}\n`;
+  if (metadata) {
+    content += `Metadata: ${JSON.stringify(metadata, null, 2)}\n`;
+  }
+  content += `Length: ${response.length} chars\n`;
+  content += `${'='.repeat(50)}\n\n`;
+  content += response;
+  
+  writeFileSync(filepath, content, 'utf-8');
+  debug(`Response logged to ${filename}`, { length: response.length });
+}
+
+/**
+ * Get the current debug log directory (for informational purposes)
+ */
+export function getDebugLogDir(): string | null {
+  return debugLogDir;
 }
 
 // Timing utilities - session and overall tracking

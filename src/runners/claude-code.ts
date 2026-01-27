@@ -4,7 +4,7 @@ import { exec as execCallback } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
-import { debug } from '../logger.js';
+import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
 const exec = promisify(execCallback);
@@ -136,6 +136,7 @@ export class ClaudeCodeRunner implements Runner {
     const promptFile = join(workdir, '.prr-prompt.txt');
     writeFileSync(promptFile, prompt, 'utf-8');
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('claude-code', prompt, { workdir, model: options?.model, skipPermissions });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -191,6 +192,9 @@ export class ClaudeCodeRunner implements Runner {
 
       child.on('close', (code) => {
         try { unlinkSync(promptFile); } catch { }
+        
+        // Log response to debug file
+        debugResponse('claude-code', stdout, { exitCode: code, stderrLength: stderr.length });
 
         // Check for permission errors in output (even on success exit code)
         // This catches cases where claude-code "succeeded" but couldn't actually write
