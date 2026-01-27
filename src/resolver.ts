@@ -6,7 +6,7 @@ import { join } from 'path';
 
 import type { Config } from './config.js';
 import type { CLIOptions } from './cli.js';
-import type { ReviewComment, PRInfo, BotResponseTiming } from './github/types.js';
+import type { ReviewComment, PRInfo, BotResponseTiming, PRStatus } from './github/types.js';
 import type { UnresolvedIssue } from './analyzer/types.js';
 import type { Runner } from './runners/types.js';
 
@@ -48,6 +48,10 @@ export class PRResolver {
   // WHY: Prevents infinite loops when agents disagree or can't fix issues
   private progressThisCycle = 0;  // Verified fixes in current tool/model cycle
   private bailedOut = false;  // True if we've triggered bail-out
+  
+  // Bot response timing data - used to schedule smart waits after pushing
+  // WHY: Instead of fixed pollInterval, wait based on observed bot response times
+  private botTimings: BotResponseTiming[] = [];
   private rapidFailureCount = 0;
   private lastFailureTime = 0;
   private static readonly MAX_RAPID_FAILURES = 3;
@@ -875,24 +879,22 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
       // Analyze bot response timing
       // WHY: Helps user understand how long to wait for bot reviews after pushing
+      // Also stored for smart wait scheduling after pushes
       debugStep('ANALYZING BOT TIMING');
       try {
         spinner.start('Analyzing bot response timing...');
-        const botTimings = await this.github.analyzeBotResponseTiming(owner, repo, number);
+        this.botTimings = await this.github.analyzeBotResponseTiming(owner, repo, number);
         spinner.stop();
         
-        if (botTimings.length > 0) {
+        if (this.botTimings.length > 0) {
           console.log(chalk.cyan('\n📊 Bot Response Timing (observed on this PR):'));
-          for (const timing of botTimings) {
-            const minSec = Math.round(timing.minResponseMs / 1000);
-            const avgSec = Math.round(timing.avgResponseMs / 1000);
-            const maxSec = Math.round(timing.maxResponseMs / 1000);
+          for (const timing of this.botTimings) {
             console.log(chalk.gray(
               `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${timing.responseCount})`
             ));
           }
           // Recommend wait time based on max observed
-          const maxWait = Math.max(...botTimings.map(t => t.maxResponseMs));
+          const maxWait = Math.max(...this.botTimings.map(t => t.maxResponseMs));
           const recommendedWait = Math.ceil(maxWait / 1000 / 30) * 30; // Round up to nearest 30s
           console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s`));
         } else {
@@ -2312,14 +2314,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // Check CodeRabbit status and trigger if needed
             // WHY: Some repos configure CodeRabbit to require manual trigger (@coderabbitai review)
             // We check if it has reviewed the current commit and trigger only if needed
+            let latestHeadSha = this.prInfo.headSha;
             try {
               spinner.start('Checking CodeRabbit status...');
               
               // Get the latest HEAD sha after push
               const latestPR = await this.github.getPRInfo(owner, repo, number);
+              latestHeadSha = latestPR.headSha;
               
               const result = await this.github.triggerCodeRabbitIfNeeded(
-                owner, repo, number, this.prInfo.branch, latestPR.headSha
+                owner, repo, number, this.prInfo.branch, latestHeadSha
               );
               
               if (result.mode === 'none') {
@@ -2337,10 +2341,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
               spinner.warn('Could not check CodeRabbit (continuing anyway)');
             }
 
-            // Wait for re-review
+            // Wait for re-review using smart timing based on observed bot response times
             if (pushIteration < maxPushIterations) {
-              console.log(chalk.gray(`\nWaiting ${this.options.pollInterval}s for re-review...`));
-              await this.sleep(this.options.pollInterval * 1000);
+              await this.waitForBotReviews(owner, repo, number, latestHeadSha);
             }
           } else if (this.options.noPush) {
             warn('NO-PUSH MODE: Changes committed locally but not pushed.');
@@ -3239,6 +3242,130 @@ After resolving, the files should have NO conflict markers remaining.`;
       console.log(chalk.gray('Comment:'), issue.comment.body.substring(0, 200));
       console.log(chalk.gray('Analysis:'), issue.explanation);
       console.log('');
+    }
+  }
+
+  /**
+   * Calculate smart wait time after pushing based on observed bot response times.
+   * 
+   * WHY: Instead of a fixed poll interval, we use actual observed data:
+   * 1. Bot response timing (min/avg/max from earlier commits on this PR)
+   * 2. PR status (are bots actively reviewing? are checks running?)
+   * 
+   * This avoids both:
+   * - Waiting too long when bots are fast
+   * - Not waiting long enough and missing reviews
+   * 
+   * Returns recommended wait time in seconds.
+   */
+  private async calculateSmartWaitTime(
+    owner: string, 
+    repo: string, 
+    prNumber: number,
+    headSha: string
+  ): Promise<{ waitSeconds: number; reason: string }> {
+    const defaultWait = this.options.pollInterval;
+    
+    // Check PR status to see what's pending
+    let prStatus: PRStatus | undefined;
+    try {
+      prStatus = await this.github.getPRStatus(owner, repo, prNumber, headSha);
+    } catch (err) {
+      debug('Could not fetch PR status for smart wait', { error: err });
+    }
+    
+    // If bots are actively reviewing (eyes reaction or in-progress), wait longer
+    const activelyReviewing = (prStatus?.activelyReviewingBots?.length ?? 0) > 0 || 
+                               (prStatus?.botsWithEyesReaction?.length ?? 0) > 0;
+    
+    // If checks are running, factor that in too
+    const checksRunning = (prStatus?.inProgressChecks?.length ?? 0) > 0 ||
+                          (prStatus?.pendingChecks?.length ?? 0) > 0;
+    
+    // Use bot timing data if available
+    if (this.botTimings.length > 0) {
+      // Use max observed + 20% buffer for safety
+      const maxObserved = Math.max(...this.botTimings.map(t => t.maxResponseMs));
+      const avgObserved = Math.round(
+        this.botTimings.reduce((sum, t) => sum + t.avgResponseMs, 0) / this.botTimings.length
+      );
+      
+      // If actively reviewing, use max + buffer
+      // Otherwise use average + smaller buffer
+      let waitMs: number;
+      let reason: string;
+      
+      if (activelyReviewing) {
+        waitMs = Math.ceil(maxObserved * 1.2);  // Max + 20% buffer
+        reason = `bot actively reviewing (max observed: ${formatDuration(maxObserved)})`;
+      } else if (checksRunning) {
+        waitMs = Math.ceil((avgObserved + maxObserved) / 2);  // Midpoint of avg and max
+        reason = `CI checks running (avg: ${formatDuration(avgObserved)})`;
+      } else {
+        waitMs = Math.ceil(avgObserved * 1.1);  // Avg + 10% buffer
+        reason = `based on avg response time (${formatDuration(avgObserved)})`;
+      }
+      
+      // Clamp to reasonable bounds (min 30s, max 5 min)
+      const minWaitMs = 30 * 1000;
+      const maxWaitMs = 5 * 60 * 1000;
+      waitMs = Math.max(minWaitMs, Math.min(maxWaitMs, waitMs));
+      
+      return { waitSeconds: Math.ceil(waitMs / 1000), reason };
+    }
+    
+    // No timing data - use status-based heuristics
+    if (activelyReviewing) {
+      return { waitSeconds: Math.max(defaultWait, 90), reason: 'bot actively reviewing (no timing data)' };
+    }
+    
+    if (checksRunning) {
+      return { waitSeconds: Math.max(defaultWait, 60), reason: 'CI checks running (no timing data)' };
+    }
+    
+    // Default: use configured poll interval
+    return { waitSeconds: defaultWait, reason: 'default poll interval (no timing data)' };
+  }
+
+  /**
+   * Wait for bot reviews after push with smart timing and progress feedback.
+   */
+  private async waitForBotReviews(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    headSha: string
+  ): Promise<void> {
+    const { waitSeconds, reason } = await this.calculateSmartWaitTime(owner, repo, prNumber, headSha);
+    
+    console.log(chalk.gray(`\nWaiting ${waitSeconds}s for re-review (${reason})...`));
+    
+    // Show countdown with periodic status checks
+    const checkInterval = 15;  // Check every 15 seconds
+    let remaining = waitSeconds;
+    
+    while (remaining > 0) {
+      const sleepTime = Math.min(remaining, checkInterval);
+      await this.sleep(sleepTime * 1000);
+      remaining -= sleepTime;
+      
+      if (remaining > 0 && remaining % 30 === 0) {
+        // Every 30s, check if bot has responded early
+        try {
+          const status = await this.github.getPRStatus(owner, repo, prNumber, headSha);
+          const stillActive = (status.activelyReviewingBots?.length ?? 0) > 0 ||
+                              (status.botsWithEyesReaction?.length ?? 0) > 0;
+          
+          if (!stillActive && status.ciState !== 'pending') {
+            console.log(chalk.green('  Bot reviews appear complete, proceeding...'));
+            return;
+          } else {
+            console.log(chalk.gray(`  Still waiting... (${remaining}s remaining)`));
+          }
+        } catch {
+          // Ignore status check errors during wait
+        }
+      }
     }
   }
 
