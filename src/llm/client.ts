@@ -296,6 +296,7 @@ NO: Looks good`;
 
     const response = await this.complete(parts.join('\n'));
     const results = new Map<string, { exists: boolean; explanation: string }>();
+    const allowedIds = new Set(issues.map(issue => issue.id.toLowerCase()));
 
     // Parse responses
     const lines = response.content.split('\n');
@@ -306,6 +307,10 @@ NO: Looks good`;
         const [, id, yesNo, explanation] = match;
         const normalizedId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
         const resultId = normalizedId.length > 0 ? `issue_${normalizedId}` : normalizedId;
+        if (!allowedIds.has(resultId)) {
+          debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
+          continue;
+        }
         results.set(resultId, {
           exists: yesNo.toUpperCase() === 'YES',
           explanation: explanation.trim(),

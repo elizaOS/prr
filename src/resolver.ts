@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { readFile } from 'fs/promises';
+import { homedir } from 'os';
 import { join } from 'path';
 
 import type { Config } from './config.js';
@@ -47,6 +48,11 @@ export class PRResolver {
   // WHY: Prevents infinite loops when agents disagree or can't fix issues
   private progressThisCycle = 0;  // Verified fixes in current tool/model cycle
   private bailedOut = false;  // True if we've triggered bail-out
+  private rapidFailureCount = 0;
+  private lastFailureTime = 0;
+  private static readonly MAX_RAPID_FAILURES = 3;
+  private static readonly RAPID_FAILURE_MS = 2000;
+  private static readonly RAPID_FAILURE_WINDOW_MS = 10_000;
 
   constructor(config: Config, options: CLIOptions) {
     this.config = config;
@@ -1638,7 +1644,12 @@ Start your response with \`\`\` and end with \`\`\`.`;
           spinner.stop();
           
           debug('Executing runner', { tool: this.runner.name, workdir: this.workdir, model: this.options.toolModel });
-          const result = await this.runner.run(this.workdir, prompt, { model: this.getCurrentModel() });
+          const codexAddDirs = [...(this.options.codexAddDir ?? [])];
+
+          const result = await this.runner.run(this.workdir, prompt, {
+            model: this.getCurrentModel(),
+            codexAddDirs,
+          });
           const fixerTime = endTimer('Run fixer');
           debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
@@ -1664,6 +1675,26 @@ Start your response with \`\`\` and end with \`\`\`.`;
               console.log(chalk.yellow('  Check your API keys and authentication.'));
               debug('Bailing out due to auth error', { tool: this.runner.name, error: result.error });
               return;
+            }
+
+            const now = Date.now();
+            const isRapidFailure = fixerTime > 0 && fixerTime <= PRResolver.RAPID_FAILURE_MS;
+            if (isRapidFailure) {
+              if (now - this.lastFailureTime > PRResolver.RAPID_FAILURE_WINDOW_MS) {
+                this.rapidFailureCount = 0;
+              }
+              this.rapidFailureCount++;
+              this.lastFailureTime = now;
+
+              if (this.rapidFailureCount >= PRResolver.MAX_RAPID_FAILURES) {
+                console.log(chalk.red('\n⛔ FAST-FAIL: Repeated rapid tool failures detected'));
+                console.log(chalk.yellow(`  ${this.runner.name} failed ${this.rapidFailureCount} times within ${formatDuration(PRResolver.RAPID_FAILURE_WINDOW_MS)}.`));
+                console.log(chalk.yellow('  Aborting to avoid a tight retry loop.'));
+                debug('Bailing out due to rapid failures', { tool: this.runner.name, error: result.error, duration: fixerTime });
+                return;
+              }
+            } else {
+              this.rapidFailureCount = 0;
             }
             
             // DON'T record transient tool failures as lessons
@@ -2624,6 +2655,10 @@ After resolving, the files should have NO conflict markers remaining.`;
     for (const lockFile of lockFiles) {
       const info = getLockFileInfo(lockFile);
       if (info) {
+        if (!ALLOWED_COMMANDS[info.regenerateCmd]) {
+          console.log(chalk.yellow(`    ⚠ Skipping ${lockFile}: command not allowed (${info.regenerateCmd})`));
+          continue;
+        }
         // Delete the lock file
         const fullPath = path.join(resolvedWorkdir, lockFile);
         // Verify the file path is still within workdir after join

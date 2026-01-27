@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 
@@ -62,23 +63,29 @@ export class AiderRunner implements Runner {
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
     
-    const promptFile = join(workdir, '.prr-prompt.txt');
-    writeFileSync(promptFile, prompt, 'utf-8');
+    // Validate model before writing sensitive prompt to disk
+    if (options?.model && !isValidModel(options.model)) {
+      return { success: false, output: '', error: `Invalid model name: ${options.model}` };
+    }
+
+    const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
+    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('aider', prompt, { workdir, model: options?.model });
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
       const args: string[] = ['--yes-always'];
       
-      // Validate and add model if specified
+      // Add model if specified
       if (options?.model) {
-        if (!isValidModel(options.model)) {
-          // Clean up the temp prompt file before returning
-          try { unlinkSync(promptFile); } catch { /* ignore unlink errors */ }
-          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
-          return;
-        }
         args.push('--model', options.model);
       }
       
@@ -114,7 +121,7 @@ export class AiderRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        try { unlinkSync(promptFile); } catch { }
+        cleanupPromptFile();
         debugResponse('aider', stdout, { exitCode: code, stderrLength: stderr.length });
 
         if (code === 0) {
@@ -125,7 +132,7 @@ export class AiderRunner implements Runner {
       });
 
       child.on('error', (err) => {
-        try { unlinkSync(promptFile); } catch { }
+        cleanupPromptFile();
         resolve({ success: false, output: stdout, error: err.message });
       });
     });

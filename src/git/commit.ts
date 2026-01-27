@@ -57,6 +57,7 @@ export interface PushResult {
  */
 export async function push(git: SimpleGit, branch: string, force = false, githubToken?: string): Promise<PushResult> {
   const PUSH_TIMEOUT_MS = 30_000; // 30 seconds (reduced from 60)
+  const redactAuth = (text: string) => text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
   
   // Get the workdir from the git instance
   const workdir = (git as any)._baseDir || process.cwd();
@@ -100,12 +101,12 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     // Log output as it comes in (git push progress goes to stderr)
     gitProcess.stdout?.on('data', (data) => { 
       stdout += data.toString(); 
-      debug('git push stdout', data.toString().trim());
+      debug('git push stdout', redactAuth(data.toString().trim()));
     });
     gitProcess.stderr?.on('data', (data) => { 
       stderr += data.toString();
       // Show progress (git push writes progress to stderr)
-      const line = data.toString().trim();
+      const line = redactAuth(data.toString().trim());
       if (line && !line.includes('Username') && !line.includes('Password')) {
         debug('git push progress', line);
       }
@@ -124,7 +125,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
         `  - Network issue (check connectivity)`,
         `  - Auth issue (token missing/expired)`,
         `  - Git waiting for interactive input`,
-        stderr ? `stderr: ${stderr}` : '',
+        stderr ? `stderr: ${redactAuth(stderr)}` : '',
       ].filter(Boolean).join('\n');
       resolve({ success: false, error: errMsg });
     }, PUSH_TIMEOUT_MS);
@@ -153,7 +154,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
           (stderr.includes('fetch first') || stderr.includes('non-fast-forward'));
         
         if (isRejected) {
-          debug('Push rejected - remote has newer commits', { stderr });
+          debug('Push rejected - remote has newer commits', { stderr: redactAuth(stderr) });
           resolve({ 
             success: false, 
             rejected: true,
@@ -162,7 +163,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
         } else {
           resolve({ 
             success: false,
-            error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${stderr}`,
+            error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactAuth(stderr)}`,
           });
         }
       }

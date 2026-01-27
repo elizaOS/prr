@@ -87,7 +87,7 @@ GITHUB_TOKEN=ghp_xxxx
 
 # LLM for verification (anthropic or openai)
 PRR_LLM_PROVIDER=anthropic
-PRR_LLM_MODEL=claude-sonnet-4.5
+PRR_LLM_MODEL=claude-sonnet-4-5-20250929
 ANTHROPIC_API_KEY=sk-ant-xxxx
 
 # Or use OpenAI
@@ -549,7 +549,8 @@ sudo mv cursor-agent /usr/local/bin/
 cursor-agent login
 
 # Verify installation and list available models
-cursor-agent models
+agent models
+# Or: cursor-agent --list-models
 ```
 
 If you're unsure which platform you're on, check `uname -s` and `uname -m`. For manual downloads, see <https://www.cursor.com/download>.
@@ -558,9 +559,9 @@ This opens a browser window to authenticate with your Cursor account. You only n
 
 Without logging in first, you'll see authentication errors when prr tries to run the fixer.
 
-**Dynamic Model Discovery**: prr automatically discovers available models by running `cursor-agent models` on startup. No hardcoded model lists to maintain.
+**Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `cursor-agent models` or `curl https://api.cursor.com/v0/models` for the canonical list. Examples:
+Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. Examples:
 
 | Model | Notes |
 |-------|-------|
@@ -568,15 +569,17 @@ Model names change over time — use `cursor-agent models` or `curl https://api.
 | `claude-4-opus-thinking` | Claude Opus (thinking) |
 | `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
 | `o3` | OpenAI reasoning |
-| `gpt-5.2` | GPT-5.2 |
-| `Grok` | Grok |
+| `gpt-5` | GPT-5 |
+| `grok-2` | Grok 2 |
+| `grok-3-beta` | Grok 3 Beta |
+| `grok-3-mini` | Grok 3 Mini |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 
 ```text
-Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3 (OpenAI)
-Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → Grok (Other)
+Round 1: claude-4-sonnet-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
+Round 2: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → grok-3-mini (Other)
 ... then next tool ...
 ```
 

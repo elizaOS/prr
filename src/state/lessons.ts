@@ -393,7 +393,8 @@ export class LessonsManager {
       /failed: ETIMEDOUT/i,                  // Connection timeout
       /failed: rate limit/i,                 // Rate limiting
       /failed: 5\d{2}/i,                     // 5xx server errors
-      /failed: 4\d{2}/i,                     // 4xx client errors (except useful ones)
+      /failed: 408/i,                        // Request timeout (transient)
+      /failed: 429/i,                        // Rate limit (transient)
       /tool made no changes, may need clearer/i,  // Generic "no changes" - not actionable
     ];
 
@@ -530,7 +531,9 @@ export class LessonsManager {
       console.log(`Synced to: ${syncedTo.join(', ')}`);
     }
 
-    this.repoLessonsDirty = false;
+    if (success) {
+      this.repoLessonsDirty = false;
+    }
     return success;
   }
 
@@ -605,10 +608,19 @@ export class LessonsManager {
    */
   addLesson(lesson: string): void {
     // Extract file path from lesson
-    const fileMatch = lesson.match(/^Fix for ([^:]+):/);
-    
-    if (fileMatch) {
-      const filePath = fileMatch[1];
+    let filePath: string | null = null;
+    if (lesson.startsWith('Fix for ')) {
+      const remainder = lesson.slice('Fix for '.length);
+      const matches = Array.from(remainder.matchAll(/:(\d+)(?::\d+)?(?=\s|$)/g));
+      if (matches.length > 0) {
+        const lastMatch = matches[matches.length - 1];
+        if (typeof lastMatch.index === 'number') {
+          filePath = remainder.slice(0, lastMatch.index);
+        }
+      }
+    }
+
+    if (filePath) {
       this.addFileLesson(filePath, lesson);
     } else {
       this.addGlobalLesson(lesson);

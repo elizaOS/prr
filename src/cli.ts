@@ -14,6 +14,7 @@ import { validateTool, isValidModelName, type FixerTool } from './config.js';
 export interface CLIOptions {
   tool: FixerTool | undefined;  // undefined = use PRR_TOOL env var or default
   toolModel: string | undefined;
+  codexAddDir: string[];
   autoPush: boolean;
   keepWorkdir: boolean;
   maxFixIterations: number;
@@ -36,6 +37,15 @@ export interface ParsedArgs {
   options: CLIOptions;
 }
 
+function parseIntOrExit(value: string, optionLabel: string): number {
+  const parsed = parseInt(value, 10);
+  if (Number.isNaN(parsed)) {
+    console.error(chalk.red(`Invalid numeric option ${optionLabel}: "${value}"`));
+    process.exit(1);
+  }
+  return parsed;
+}
+
 const CAT_BANNER = `
     /\\_____/\\
     /  o   o  \\
@@ -51,6 +61,10 @@ const CAT_BANNER = `
 
 export function createCLI(): Command {
   const program = new Command();
+  const collectCodexDir = (value: string, previous: string[] = []): string[] => {
+    previous.push(value);
+    return previous;
+  };
 
   program
     .name('prr')
@@ -62,6 +76,7 @@ export function createCLI(): Command {
       validateModelName(value);
       return value;
     })
+    .option('--codex-add-dir <dir>', 'Additional writable directory for Codex (repeatable)', collectCodexDir, [])
     .option('--auto-push', 'Push and wait for bot re-review in a loop (full automation)', true)
     .option('--no-auto-push', 'Disable auto-push (just push once)')
     .option('--keep-workdir', 'Keep work directory after completion', true)
@@ -131,19 +146,20 @@ export function parseArgs(program: Command): ParsedArgs {
     options: {
       tool: validatedTool,
       toolModel,
+      codexAddDir: opts.codexAddDir ?? [],
       autoPush: opts.autoPush ?? true,        // Default: full automation
       keepWorkdir: opts.keepWorkdir ?? true,
-      maxFixIterations: parseInt(opts.maxFixIterations, 10),
-      maxPushIterations: parseInt(opts.maxPushIterations, 10),
-      maxStaleCycles: parseInt(opts.maxStaleCycles, 10) || 1,
-      pollInterval: parseInt(opts.pollInterval, 10),
+      maxFixIterations: parseIntOrExit(opts.maxFixIterations, '--max-fix-iterations'),
+      maxPushIterations: parseIntOrExit(opts.maxPushIterations, '--max-push-iterations'),
+      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') || 1,
+      pollInterval: parseIntOrExit(opts.pollInterval, '--poll-interval'),
       dryRun: opts.dryRun,
       noCommit: !opts.commit,                 // --no-commit sets opts.commit=false
       noPush: !opts.push,                     // --no-push sets opts.push=false
       verbose: opts.verbose ?? true,
       noBatch: !opts.batch,                   // --no-batch sets opts.batch=false
       reverify: opts.reverify ?? false,
-      maxContextChars: parseInt(opts.maxContext, 10) || 400_000,
+      maxContextChars: parseIntOrExit(opts.maxContext, '--max-context') || 400_000,
       noBell: !opts.bell,                     // --no-bell sets opts.bell=false
       mergeBase: opts.mergeBase ?? false,     // Default: don't auto-merge base branch
     },

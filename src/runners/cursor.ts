@@ -2,6 +2,7 @@ import { spawn, execFile as execFileCallback } from 'child_process';
 import { promisify } from 'util';
 import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
@@ -23,10 +24,10 @@ const CURSOR_AGENT_BINARY = 'cursor-agent';
 
 // Fallback model list if dynamic discovery fails
 const FALLBACK_MODELS = [
-  'claude-sonnet-4-5',
-  'gpt-5.2',
-  'claude-opus-4-5',
-  'gpt-5.2-codex',
+  'claude-4-sonnet-thinking',
+  'gpt-4o',
+  'claude-4-opus-thinking',
+  'gpt-4o-mini',
   'o3',
 ];
 
@@ -232,14 +233,26 @@ export class CursorRunner implements Runner {
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
     
+    // Validate model before writing sensitive prompt to disk
+    if (options?.model && !isValidModel(options.model)) {
+      return { success: false, output: '', error: `Invalid model name: ${options.model}` };
+    }
+
     // Write prompt to a temp file for reference
-    const promptFile = join(workdir, '.prr-prompt.txt');
+    const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
     if (!isSafePath(promptFile)) {
       return { success: false, output: '', error: `Invalid prompt file path: ${promptFile}` };
     }
-    writeFileSync(promptFile, prompt, 'utf-8');
+    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('cursor-agent', prompt, { workdir, model: options?.model });
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -249,7 +262,7 @@ export class CursorRunner implements Runner {
       // --stream-partial-output: Stream partial text as it's generated
       // --workspace: Working directory
       // --model: Model to use (e.g., claude-opus-4-5, claude-sonnet-4-5)
-      // prompt: Positional argument at the end
+      // prompt: Passed via stdin to avoid E2BIG
 
       const args: string[] = [
         '--print',
@@ -258,19 +271,10 @@ export class CursorRunner implements Runner {
         '--workspace', workdir,
       ];
       
-      // Validate and add model if specified
+      // Add model if specified
       if (options?.model) {
-        if (!isValidModel(options.model)) {
-          // Clean up the temp prompt file before returning
-          try { unlinkSync(promptFile); } catch { /* ignore unlink errors */ }
-          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
-          return;
-        }
         args.push('--model', options.model);
       }
-      
-      // Pass prompt content directly as positional argument
-      args.push(prompt);
       
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: ${CURSOR_AGENT_BINARY}${modelInfo} --workspace ${workdir} [prompt]\n`);
@@ -281,10 +285,14 @@ export class CursorRunner implements Runner {
       // By using spawn without shell: true, arguments are passed directly to the process.
       const child = spawn(CURSOR_AGENT_BINARY, args, {
         cwd: workdir,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
         shell: false, // Explicit: prevent shell injection via paths/arguments
       });
+      
+      // Pass prompt via stdin to avoid E2BIG for large prompts
+      child.stdin?.write(prompt);
+      child.stdin?.end();
 
       let stdout = '';
       let stderr = '';
@@ -356,11 +364,7 @@ export class CursorRunner implements Runner {
           pending = '';
         }
         // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
+        cleanupPromptFile();
 
         console.log('\n'); // Clean line after streaming output
         
@@ -383,11 +387,7 @@ export class CursorRunner implements Runner {
 
       child.on('error', (err) => {
         // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
+        cleanupPromptFile();
 
         resolve({
           success: false,

@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { writeFileSync, unlinkSync, createReadStream } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
@@ -74,22 +75,30 @@ export class OpencodeRunner implements Runner {
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
     
+    // Validate model before writing sensitive prompt to disk
+    if (options?.model && !isValidModel(options.model)) {
+      return { success: false, output: '', error: `Invalid model name: ${options.model}` };
+    }
+
     // Write prompt to a temp file to avoid command line length limits
-    const promptFile = join(workdir, '.prr-prompt.txt');
-    writeFileSync(promptFile, prompt, 'utf-8');
+    const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
+    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('opencode', prompt, { workdir, model: options?.model });
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
       const args: string[] = [];
 
-      // Validate and add model if specified
+      // Add model if specified
       if (options?.model) {
-        if (!isValidModel(options.model)) {
-          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
-          return;
-        }
         args.push('--model', options.model);
       }
 
@@ -131,11 +140,7 @@ export class OpencodeRunner implements Runner {
 
       child.on('close', (code) => {
         // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
+        cleanupPromptFile();
         debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length });
 
         if (code === 0) {
@@ -154,11 +159,7 @@ export class OpencodeRunner implements Runner {
 
       child.on('error', (err) => {
         // Clean up prompt file
-        try {
-          unlinkSync(promptFile);
-        } catch {
-          // Ignore cleanup errors
-        }
+        cleanupPromptFile();
 
         resolve({
           success: false,

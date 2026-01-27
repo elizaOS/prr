@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
 import { createReadStream, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
@@ -21,6 +22,7 @@ export class CodexRunner implements Runner {
   name = 'codex';
   displayName = 'OpenAI Codex';
   private binaryPath: string = 'codex';
+  private scriptAvailable?: boolean;
 
   async isAvailable(): Promise<boolean> {
     for (const binary of CODEX_BINARIES) {
@@ -67,74 +69,155 @@ export class CodexRunner implements Runner {
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
     
-    const promptFile = join(workdir, '.prr-prompt.txt');
-    writeFileSync(promptFile, prompt, 'utf-8');
+    // Validate model before writing sensitive prompt to disk
+    if (options?.model && !isValidModel(options.model)) {
+      return { success: false, output: '', error: `Invalid model name: ${options.model}` };
+    }
+
+    const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
+    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('codex', prompt, { workdir, model: options?.model });
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
+    
+    // Build args array safely (no shell interpolation)
+    const args: string[] = [];
+    
+    // Add model if specified
+    if (options?.model) {
+      args.push('--model', options.model);
+    }
+    
+    // Use "-" prompt to read from stdin (avoids command injection)
+    if (options?.codexAddDirs && options.codexAddDirs.length > 0) {
+      for (const dir of options.codexAddDirs) {
+        if (!dir) continue;
+        args.push('--add-dir', dir);
+      }
+    }
+    args.push('-');
 
-    return new Promise((resolve) => {
-      // Build args array safely (no shell interpolation)
-      const args: string[] = [];
-      
-      // Validate and add model if specified
-      if (options?.model) {
-        if (!isValidModel(options.model)) {
-          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
+    const runOnce = (useScript: boolean): Promise<RunnerResult> => {
+      return new Promise((resolve) => {
+        const modelInfo = options?.model ? ` (model: ${options.model})` : '';
+        const scriptInfo = useScript ? ' via script' : '';
+        console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt via stdin]${scriptInfo}\n`);
+        debug('Codex command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length, useScript });
+
+        let child: ReturnType<typeof spawn>;
+        if (useScript) {
+          const codexCommand = [this.binaryPath, ...args].map(shellEscape).join(' ');
+          child = spawn('script', ['-q', '/dev/null', '-c', `stty -echo; ${codexCommand}`], {
+            cwd: workdir,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              CI: '1',
+              // Avoid "dumb" which breaks Codex TUI; prefer existing TERM or fallback.
+              TERM: process.env.TERM && process.env.TERM !== 'dumb' ? process.env.TERM : 'xterm-256color',
+              NO_COLOR: '1',
+              FORCE_COLOR: '0',
+            },
+          });
+        } else {
+          child = spawn(this.binaryPath, args, {
+            cwd: workdir,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: { ...process.env },
+          });
+        }
+        
+        // Pipe prompt file to stdin (safe - no shell interpolation)
+        const promptStream = createReadStream(promptFile);
+        if (!child.stdin) {
+          const error = 'Codex process stdin is unavailable';
+          debug(error);
+          promptStream.destroy();
+          resolve({ success: false, output: '', error });
           return;
         }
-        args.push('--model', options.model);
+        promptStream.pipe(child.stdin);
+        promptStream.on('error', (err) => {
+          debug('Error reading prompt file', { error: err.message });
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        child.stdout?.on('data', (data) => {
+          const str = sanitizeOutput(data.toString(), useScript);
+          stdout += str;
+          process.stdout.write(str);
+        });
+
+        child.stderr?.on('data', (data) => {
+          const str = sanitizeOutput(data.toString(), useScript);
+          stderr += str;
+          process.stderr.write(str);
+        });
+
+        child.on('close', (code) => {
+          debugResponse('codex', stdout, { exitCode: code, stderrLength: stderr.length });
+
+          if (code === 0) {
+            resolve({ success: true, output: stdout });
+          } else {
+            resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
+          }
+        });
+
+        child.on('error', (err) => {
+          resolve({ success: false, output: stdout, error: err.message });
+        });
+      });
+    };
+
+    try {
+      let result = await runOnce(false);
+      if (!result.success && isStdinNotTerminal(result.error) && (await this.isScriptAvailable())) {
+        debug('Retrying codex with script PTY wrapper due to non-tty stdin');
+        result = await runOnce(true);
       }
-      
-      // Use "-" prompt to read from stdin (avoids command injection)
-      args.push('-');
-
-      const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-      console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt via stdin]\n`);
-      debug('Codex command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length });
-
-      const child = spawn(this.binaryPath, args, {
-        cwd: workdir,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
-      });
-      
-      // Pipe prompt file to stdin (safe - no shell interpolation)
-      const promptStream = createReadStream(promptFile);
-      promptStream.pipe(child.stdin);
-      promptStream.on('error', (err) => {
-        debug('Error reading prompt file', { error: err.message });
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout?.on('data', (data) => {
-        const str = data.toString();
-        stdout += str;
-        process.stdout.write(str);
-      });
-
-      child.stderr?.on('data', (data) => {
-        const str = data.toString();
-        stderr += str;
-        process.stderr.write(str);
-      });
-
-      child.on('close', (code) => {
-        try { unlinkSync(promptFile); } catch { }
-        debugResponse('codex', stdout, { exitCode: code, stderrLength: stderr.length });
-
-        if (code === 0) {
-          resolve({ success: true, output: stdout });
-        } else {
-          resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
-        }
-      });
-
-      child.on('error', (err) => {
-        try { unlinkSync(promptFile); } catch { }
-        resolve({ success: false, output: stdout, error: err.message });
-      });
-    });
+      return result;
+    } finally {
+      cleanupPromptFile();
+    }
   }
+
+  private async isScriptAvailable(): Promise<boolean> {
+    if (this.scriptAvailable !== undefined) {
+      return this.scriptAvailable;
+    }
+    try {
+      await exec('which script');
+      this.scriptAvailable = true;
+    } catch {
+      this.scriptAvailable = false;
+    }
+    return this.scriptAvailable;
+  }
+}
+
+function isStdinNotTerminal(error?: string): boolean {
+  return Boolean(error && /stdin is not a terminal/i.test(error));
+}
+
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function sanitizeOutput(value: string, useScript: boolean): string {
+  if (!useScript) {
+    return value;
+  }
+  return value
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '') // OSC
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI
+    .replace(/\x1b[@-_]/g, ''); // 2-char sequences
 }

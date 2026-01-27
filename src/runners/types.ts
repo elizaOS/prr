@@ -17,6 +17,7 @@ export interface RunnerResult {
 
 export interface RunnerOptions {
   model?: string;
+  codexAddDirs?: string[];
 }
 
 export interface RunnerStatus {

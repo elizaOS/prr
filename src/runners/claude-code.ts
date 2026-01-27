@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
@@ -87,6 +88,16 @@ export class ClaudeCodeRunner implements Runner {
       return { installed: false, ready: false, error: 'Not installed (install: npm i -g @anthropic-ai/claude-code)' };
     }
 
+    // Claude Code refuses --dangerously-skip-permissions when running as root.
+    // Treat it as not ready so auto-rotation skips it.
+    if (shouldSkipPermissions() && isRunningAsRoot()) {
+      return {
+        installed: true,
+        ready: false,
+        error: 'Claude Code refuses --dangerously-skip-permissions when running as root. Run prr as a non-root user, or use a different fixer tool (e.g., --tool=aider).',
+      };
+    }
+
     // Check version
     let version: string | undefined;
     try {
@@ -133,10 +144,21 @@ export class ClaudeCodeRunner implements Runner {
       };
     }
 
-    const promptFile = join(workdir, '.prr-prompt.txt');
-    writeFileSync(promptFile, prompt, 'utf-8');
+    if (options?.model && !isValidModel(options.model)) {
+      return { success: false, output: '', error: `Invalid model name: ${options.model}` };
+    }
+
+    const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
+    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('claude-code', prompt, { workdir, model: options?.model, skipPermissions });
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -149,12 +171,8 @@ export class ClaudeCodeRunner implements Runner {
         debug('Using --dangerously-skip-permissions mode');
       }
 
-      // Validate and add model if specified
+      // Add model if specified
       if (options?.model) {
-        if (!isValidModel(options.model)) {
-          resolve({ success: false, output: '', error: `Invalid model name: ${options.model}` });
-          return;
-        }
         args.push('--model', options.model);
       }
 
@@ -191,7 +209,7 @@ export class ClaudeCodeRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        try { unlinkSync(promptFile); } catch { }
+        cleanupPromptFile();
         
         // Log response to debug file
         debugResponse('claude-code', stdout, { exitCode: code, stderrLength: stderr.length });
@@ -201,10 +219,13 @@ export class ClaudeCodeRunner implements Runner {
         const combinedOutput = stdout + stderr;
         if (hasPermissionError(combinedOutput)) {
           debug('Permission error detected in output', { exitCode: code });
+          const permissionMessage = skipPermissions
+            ? 'Permission denied - claude-code cannot write to files (--dangerously-skip-permissions was used but still failed).'
+            : 'Permission denied - claude-code cannot write to files. Set PRR_CLAUDE_SKIP_PERMISSIONS=1 to bypass permission prompts.';
           resolve({
             success: false,
             output: stdout,
-            error: 'Permission denied - claude-code cannot write to files. Set PRR_CLAUDE_SKIP_PERMISSIONS=1 to bypass permission prompts.',
+            error: permissionMessage,
             errorType: 'permission',
           });
           return;
@@ -224,7 +245,7 @@ export class ClaudeCodeRunner implements Runner {
       });
 
       child.on('error', (err) => {
-        try { unlinkSync(promptFile); } catch { }
+        cleanupPromptFile();
         // Spawn errors (e.g., EACCES on binary) are tool errors
         resolve({ success: false, output: stdout, error: err.message, errorType: 'tool' });
       });
