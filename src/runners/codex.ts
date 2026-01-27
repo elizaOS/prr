@@ -113,23 +113,35 @@ export class CodexRunner implements Runner {
         let child: ReturnType<typeof spawn>;
         if (useScript) {
           const codexCommand = [this.binaryPath, ...args].map(shellEscape).join(' ');
-          child = spawn('script', ['-q', '/dev/null', '-c', `stty -echo; ${codexCommand}`], {
+          // Use script to provide a PTY, with environment vars to minimize TUI behavior
+          child = spawn('script', ['-q', '/dev/null', '-c', `stty -echo 2>/dev/null; ${codexCommand}`], {
             cwd: workdir,
             stdio: ['pipe', 'pipe', 'pipe'],
             env: {
               ...process.env,
               CI: '1',
-              // Avoid "dumb" which breaks Codex TUI; prefer existing TERM or fallback.
-              TERM: process.env.TERM && process.env.TERM !== 'dumb' ? process.env.TERM : 'xterm-256color',
+              // Use xterm-256color which supports cursor queries
+              TERM: 'xterm-256color',
+              // Disable colors to reduce TUI complexity
               NO_COLOR: '1',
               FORCE_COLOR: '0',
+              // Try to hint non-interactive mode
+              DEBIAN_FRONTEND: 'noninteractive',
+              // Some tools check these
+              NONINTERACTIVE: '1',
+              PRR_RUNNER: '1',
             },
           });
         } else {
           child = spawn(this.binaryPath, args, {
             cwd: workdir,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env },
+            env: { 
+              ...process.env,
+              CI: '1',
+              NO_COLOR: '1',
+              FORCE_COLOR: '0',
+            },
           });
         }
         
@@ -179,20 +191,33 @@ export class CodexRunner implements Runner {
     };
 
     try {
-      let result = await runOnce(false);
+      // Always try with script wrapper first if available
+      // WHY: Codex's TUI requires a proper PTY for cursor position queries
+      // Running without script almost always fails with "cursor position could not be read"
+      const useScriptFirst = await this.isScriptAvailable();
       
-      // Check for TTY issues that need retry with script wrapper
-      // WHY: Some errors like "cursor position" appear in output but Codex still exits 0
-      const hasTTYIssue = isStdinNotTerminal(result.error) || 
-                          isCursorPositionError(result.output) || 
-                          isCursorPositionError(result.error);
+      let result = await runOnce(useScriptFirst);
       
-      if (hasTTYIssue && (await this.isScriptAvailable())) {
-        debug('Retrying codex with script PTY wrapper due to TTY issue', { 
-          success: result.success,
-          hasCursorError: isCursorPositionError(result.output) || isCursorPositionError(result.error)
-        });
-        result = await runOnce(true);
+      // If script wrapper failed with TTY issues, try without (unlikely to help but worth a shot)
+      if (!result.success && useScriptFirst) {
+        const hasTTYIssue = isStdinNotTerminal(result.error) || 
+                            isCursorPositionError(result.output) || 
+                            isCursorPositionError(result.error);
+        if (hasTTYIssue) {
+          debug('Script wrapper failed with TTY issue, trying direct spawn');
+          result = await runOnce(false);
+        }
+      }
+      
+      // If direct spawn failed with TTY issues and we didn't try script yet, try it
+      if (!useScriptFirst && (await this.isScriptAvailable())) {
+        const hasTTYIssue = isStdinNotTerminal(result.error) || 
+                            isCursorPositionError(result.output) || 
+                            isCursorPositionError(result.error);
+        if (hasTTYIssue) {
+          debug('Direct spawn failed with TTY issue, trying script wrapper');
+          result = await runOnce(true);
+        }
       }
       
       return result;
