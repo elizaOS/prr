@@ -180,16 +180,21 @@ export class CodexRunner implements Runner {
 
     try {
       let result = await runOnce(false);
-      // Retry with script PTY wrapper for various TTY issues
-      if (!result.success && (await this.isScriptAvailable())) {
-        const needsRetry = isStdinNotTerminal(result.error) || 
-                           isCursorPositionError(result.output) || 
-                           isCursorPositionError(result.error);
-        if (needsRetry) {
-          debug('Retrying codex with script PTY wrapper due to TTY issue');
-          result = await runOnce(true);
-        }
+      
+      // Check for TTY issues that need retry with script wrapper
+      // WHY: Some errors like "cursor position" appear in output but Codex still exits 0
+      const hasTTYIssue = isStdinNotTerminal(result.error) || 
+                          isCursorPositionError(result.output) || 
+                          isCursorPositionError(result.error);
+      
+      if (hasTTYIssue && (await this.isScriptAvailable())) {
+        debug('Retrying codex with script PTY wrapper due to TTY issue', { 
+          success: result.success,
+          hasCursorError: isCursorPositionError(result.output) || isCursorPositionError(result.error)
+        });
+        result = await runOnce(true);
       }
+      
       return result;
     } finally {
       cleanupPromptFile();
@@ -217,7 +222,10 @@ function isStdinNotTerminal(error?: string): boolean {
 function isCursorPositionError(output?: string): boolean {
   // Codex throws this when it can't query terminal cursor position
   // WHY: Codex uses TUI elements that need cursor position, which fails in non-interactive terminals
-  return Boolean(output && /cursor position could not be read/i.test(output));
+  // Strip ANSI escape codes before checking (output may have formatting)
+  if (!output) return false;
+  const cleaned = output.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f]/g, ' ');
+  return /cursor.{0,10}position.{0,10}could.{0,10}not.{0,10}be.{0,10}read/i.test(cleaned);
 }
 
 function shellEscape(value: string): string {
