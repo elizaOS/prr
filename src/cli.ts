@@ -31,6 +31,8 @@ export interface CLIOptions {
   noBell: boolean;
   mergeBase: boolean;
   incrementalCommits: boolean;
+  noHandoffPrompt: boolean;
+  noAfterAction: boolean;
 }
 
 export interface ParsedArgs {
@@ -95,7 +97,9 @@ export function createCLI(): Command {
     .option('--no-bell', 'Disable terminal bell on completion')
     .option('--incremental-commits', 'Commit after each fix iteration (default: true)', true)
     .option('--no-incremental-commits', 'Batch all fixes into single commit at end')
-    .option('--merge-base', 'Auto-merge base branch (main/master) into PR when conflicts detected', false);
+    .option('--merge-base', 'Auto-merge base branch (main/master) into PR when conflicts detected', false)
+    .option('--no-handoff-prompt', 'Disable developer handoff prompt in final output')
+    .option('--no-after-action', 'Disable after action report in final output');
 
   return program;
 }
@@ -166,6 +170,8 @@ export function parseArgs(program: Command): ParsedArgs {
       noBell: !opts.bell,                     // --no-bell sets opts.bell=false
       incrementalCommits: opts.incrementalCommits ?? true,  // Default: true
       mergeBase: opts.mergeBase ?? false,     // Default: don't auto-merge base branch
+      noHandoffPrompt: !opts.handoffPrompt,   // --no-handoff-prompt sets opts.handoffPrompt=false
+      noAfterAction: !opts.afterAction,       // --no-after-action sets opts.afterAction=false
     },
   };
 }

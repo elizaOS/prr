@@ -63,6 +63,10 @@ export class PRResolver {
   private exitReason: string = 'unknown';
   private exitDetails: string = '';
   
+  // Final state for after action report
+  private finalUnresolvedIssues: UnresolvedIssue[] = [];
+  private finalComments: ReviewComment[] = [];
+  
   private rapidFailureCount = 0;
   private lastFailureTime = 0;
   private static readonly MAX_RAPID_FAILURES = 3;
@@ -199,6 +203,159 @@ export class PRResolver {
       default:
         return { label: this.exitReason || 'Unknown', icon: '?', color: chalk.gray };
     }
+  }
+
+  /**
+   * Print developer handoff prompt for remaining issues.
+   * This gives a prompt that can be used with any LLM tool to continue the work.
+   */
+  private printHandoffPrompt(unresolvedIssues: UnresolvedIssue[]): void {
+    if (this.options.noHandoffPrompt || unresolvedIssues.length === 0) return;
+    
+    console.log(chalk.cyan('\n┌─────────────────────────────────────────────────────────────┐'));
+    console.log(chalk.cyan('│              DEVELOPER HANDOFF PROMPT                       │'));
+    console.log(chalk.cyan('└─────────────────────────────────────────────────────────────┘'));
+    console.log(chalk.gray('\nCopy this prompt to continue with a different tool:\n'));
+    
+    console.log(chalk.white('─'.repeat(60)));
+    console.log(chalk.white(`Fix the following ${unresolvedIssues.length} code review issue(s):\n`));
+    
+    for (let i = 0; i < unresolvedIssues.length; i++) {
+      const issue = unresolvedIssues[i];
+      console.log(chalk.white(`${i + 1}. File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}`));
+      console.log(chalk.white(`   Issue: ${issue.comment.body.split('\n')[0].substring(0, 100)}${issue.comment.body.length > 100 ? '...' : ''}`));
+      if (issue.comment.body.split('\n').length > 1) {
+        const secondLine = issue.comment.body.split('\n')[1].trim();
+        if (secondLine) {
+          console.log(chalk.white(`          ${secondLine.substring(0, 80)}${secondLine.length > 80 ? '...' : ''}`));
+        }
+      }
+      console.log('');
+    }
+    
+    console.log(chalk.white('For each issue, make the minimum necessary code change to address'));
+    console.log(chalk.white('the reviewer\'s concern while maintaining code quality and tests.'));
+    console.log(chalk.white('─'.repeat(60)));
+    console.log(chalk.gray('\n(Disable with --no-handoff-prompt)'));
+  }
+
+  /**
+   * Print after action report for remaining issues.
+   * Provides analysis of what was attempted and possible resolutions.
+   */
+  private async printAfterActionReport(
+    unresolvedIssues: UnresolvedIssue[],
+    comments: ReviewComment[]
+  ): Promise<void> {
+    if (this.options.noAfterAction || unresolvedIssues.length === 0) return;
+    
+    console.log(chalk.cyan('\n┌─────────────────────────────────────────────────────────────┐'));
+    console.log(chalk.cyan('│                 AFTER ACTION REPORT                         │'));
+    console.log(chalk.cyan('└─────────────────────────────────────────────────────────────┘'));
+    
+    
+    for (let i = 0; i < unresolvedIssues.length; i++) {
+      const issue = unresolvedIssues[i];
+      const issueNum = i + 1;
+      
+      console.log(chalk.yellow(`\n━━━ Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'} ━━━`));
+      
+      // Original issue
+      console.log(chalk.cyan('\n  📝 Original Issue:'));
+      const issueLines = issue.comment.body.split('\n').slice(0, 4);
+      for (const line of issueLines) {
+        console.log(chalk.gray(`     ${line.substring(0, 70)}${line.length > 70 ? '...' : ''}`));
+      }
+      if (issue.comment.body.split('\n').length > 4) {
+        console.log(chalk.gray('     ...'));
+      }
+      
+      // Analysis / why it's hard
+      console.log(chalk.cyan('\n  🔍 Analysis:'));
+      if (issue.explanation) {
+        console.log(chalk.gray(`     ${issue.explanation}`));
+      }
+      
+      // Check model performance for this file
+      const fileModels = this.stateManager?.getModelsBySuccessRate() || [];
+      const relevantAttempts = fileModels.filter(m => m.stats.fixes > 0 || m.stats.failures > 0);
+      if (relevantAttempts.length > 0) {
+        console.log(chalk.gray(`     Tools attempted: ${relevantAttempts.map(m => m.key.split('/')[0]).join(', ')}`));
+      }
+      
+      // Learnings related to this file
+      const fileSpecificLessons = this.lessonsManager?.getLessonsForFiles([issue.comment.path]) || [];
+      if (fileSpecificLessons.length > 0) {
+        console.log(chalk.cyan('\n  📚 Relevant Learnings:'));
+        for (const lesson of fileSpecificLessons.slice(0, 2)) {
+          console.log(chalk.gray(`     • ${lesson.substring(0, 80)}${lesson.length > 80 ? '...' : ''}`));
+        }
+      }
+      
+      // Possible resolutions
+      console.log(chalk.cyan('\n  💡 Possible Resolutions:'));
+      const resolutions = this.suggestResolutions(issue);
+      for (const resolution of resolutions) {
+        console.log(chalk.gray(`     • ${resolution}`));
+      }
+    }
+    
+    // Summary
+    console.log(chalk.cyan('\n━━━ Summary ━━━'));
+    const fixedCount = comments.filter(c => this.stateManager?.isCommentVerifiedFixed(c.id)).length;
+    const dismissedCount = this.stateManager?.getDismissedIssues().length || 0;
+    console.log(chalk.gray(`  Total issues: ${comments.length}`));
+    console.log(chalk.green(`  Fixed: ${fixedCount}`));
+    console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));
+    console.log(chalk.yellow(`  Remaining: ${unresolvedIssues.length}`));
+    
+    console.log(chalk.gray('\n(Disable with --no-after-action)'));
+  }
+
+  /**
+   * Suggest possible resolutions for an unresolved issue.
+   */
+  private suggestResolutions(issue: UnresolvedIssue): string[] {
+    const resolutions: string[] = [];
+    const body = issue.comment.body.toLowerCase();
+    const path = issue.comment.path.toLowerCase();
+    
+    // Generic suggestions based on issue content
+    if (body.includes('type') || body.includes('typescript')) {
+      resolutions.push('Review TypeScript types and interfaces in the file');
+    }
+    if (body.includes('test') || body.includes('coverage')) {
+      resolutions.push('Add or update tests for the affected code');
+    }
+    if (body.includes('error') || body.includes('exception') || body.includes('handle')) {
+      resolutions.push('Review error handling and edge cases');
+    }
+    if (body.includes('performance') || body.includes('slow') || body.includes('optimize')) {
+      resolutions.push('Profile the code and consider caching or algorithmic improvements');
+    }
+    if (body.includes('security') || body.includes('injection') || body.includes('sanitize')) {
+      resolutions.push('Review security implications and add input validation');
+    }
+    if (body.includes('refactor') || body.includes('clean') || body.includes('simplify')) {
+      resolutions.push('Break down into smaller functions or extract common patterns');
+    }
+    
+    // File-type specific suggestions
+    if (path.endsWith('.tsx') || path.endsWith('.jsx')) {
+      resolutions.push('Check React component props and state management');
+    }
+    if (path.includes('test')) {
+      resolutions.push('Verify test assertions match expected behavior');
+    }
+    
+    // Always include these
+    if (resolutions.length === 0) {
+      resolutions.push('Manually review the code and reviewer comment');
+    }
+    resolutions.push('Try a different LLM model with more context');
+    resolutions.push('Break the issue into smaller, incremental changes');
+    
+    return resolutions.slice(0, 4); // Max 4 suggestions
   }
 
   /**
@@ -459,6 +616,10 @@ export class PRResolver {
     this.bailedOut = true;
     this.exitReason = 'bail_out';
     this.exitDetails = `Stalemate after ${this.stateManager.getNoProgressCycles()} cycles with no progress - ${unresolvedIssues.length} issue(s) remain`;
+    
+    // Store final state for after action report
+    this.finalUnresolvedIssues = [...unresolvedIssues];
+    this.finalComments = [...comments];
     
     const cyclesCompleted = this.stateManager.getNoProgressCycles();
     const toolsExhausted = this.runners.map(r => r.name);
@@ -1650,6 +1811,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
           this.printUnresolvedIssues(unresolvedIssues);
           this.exitReason = 'dry_run';
           this.exitDetails = `Dry run mode - showed ${unresolvedIssues.length} issue(s) without fixing`;
+          
+          // Store final state for after action report
+          this.finalUnresolvedIssues = [...unresolvedIssues];
+          this.finalComments = [...comments];
           break;
         }
 
@@ -2385,6 +2550,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
           console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(this.options.maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
           this.exitReason = 'max_iterations';
           this.exitDetails = `Hit max fix iterations (${this.options.maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
+          
+          // Store final state for after action report
+          this.finalUnresolvedIssues = [...unresolvedIssues];
+          this.finalComments = [...comments];
         }
 
         // Commit changes if we have any
@@ -2499,6 +2668,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
           debug('Git status shows no changes');
           this.exitReason = 'no_changes';
           this.exitDetails = 'No changes to commit (fixer made no modifications)';
+          
+          // Store final state for after action report (unresolvedIssues might still exist)
+          this.finalUnresolvedIssues = [...unresolvedIssues];
+          this.finalComments = [...comments];
           break;
         }
       }
@@ -2529,6 +2702,12 @@ Start your response with \`\`\` and end with \`\`\`.`;
       printTokenSummary();
       this.printModelPerformance();
       
+      // Developer handoff prompt and after action report (if there are remaining issues)
+      if (this.finalUnresolvedIssues.length > 0) {
+        this.printHandoffPrompt(this.finalUnresolvedIssues);
+        await this.printAfterActionReport(this.finalUnresolvedIssues, this.finalComments);
+      }
+      
       // Final results summary - AFTER profiling so it's visible
       this.printFinalSummary();
       
@@ -2545,6 +2724,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
       printTimingSummary();
       printTokenSummary();
       this.printModelPerformance();
+      
+      // Developer handoff prompt and after action report on error too
+      if (this.finalUnresolvedIssues.length > 0) {
+        this.printHandoffPrompt(this.finalUnresolvedIssues);
+        await this.printAfterActionReport(this.finalUnresolvedIssues, this.finalComments);
+      }
+      
       this.printFinalSummary();  // Show results even on error
       spinner.fail('Error');
       
