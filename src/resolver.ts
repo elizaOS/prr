@@ -58,6 +58,11 @@ export class PRResolver {
   private expectedBotResponseTime: Date | null = null;
   private lastCommentFetchTime: Date | null = null;
   
+  // Exit reason tracking - explains why the session ended
+  // WHY: Users need to know at a glance why we stopped (success, bail-out, limits, etc.)
+  private exitReason: string = 'unknown';
+  private exitDetails: string = '';
+  
   private rapidFailureCount = 0;
   private lastFailureTime = 0;
   private static readonly MAX_RAPID_FAILURES = 3;
@@ -123,17 +128,21 @@ export class PRResolver {
     // Get counts
     const verifiedFixed = this.stateManager.getState()?.verifiedFixed || [];
     const dismissedIssues = this.stateManager.getDismissedIssues();
-    const totalProcessed = verifiedFixed.length + dismissedIssues.length;
-    
-    if (totalProcessed === 0) return;
     
     console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
     console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
     console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
     
+    // Exit reason - most important info
+    const exitReasonDisplay = this.getExitReasonDisplay();
+    console.log(exitReasonDisplay.color(`\n  ${exitReasonDisplay.icon} Exit: ${exitReasonDisplay.label}`));
+    if (this.exitDetails) {
+      console.log(chalk.gray(`     ${this.exitDetails}`));
+    }
+    
     // Fixed issues
     if (verifiedFixed.length > 0) {
-      console.log(chalk.green(`  ✓ ${formatNumber(verifiedFixed.length)} issue${verifiedFixed.length === 1 ? '' : 's'} fixed and verified`));
+      console.log(chalk.green(`\n  ✓ ${formatNumber(verifiedFixed.length)} issue${verifiedFixed.length === 1 ? '' : 's'} fixed and verified`));
     }
     
     // Dismissed issues by category
@@ -150,12 +159,46 @@ export class PRResolver {
       console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
     }
     
-    // If bailed out, show that
-    if (this.bailedOut) {
-      console.log(chalk.yellow(`  ⚠ Some issues could not be resolved (bail-out triggered)`));
+    console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
+  }
+
+  /**
+   * Get display properties for the current exit reason.
+   */
+  private getExitReasonDisplay(): { label: string; icon: string; color: typeof chalk.green } {
+    switch (this.exitReason) {
+      case 'all_fixed':
+      case 'all_resolved':
+      case 'audit_passed':
+        return { label: 'All issues resolved', icon: '✓', color: chalk.green };
+      
+      case 'bail_out':
+        return { label: 'Bail-out (stalemate)', icon: '⚠', color: chalk.red };
+      
+      case 'max_iterations':
+        return { label: 'Max iterations reached', icon: '⏱', color: chalk.yellow };
+      
+      case 'no_comments':
+        return { label: 'No review comments found', icon: '○', color: chalk.green };
+      
+      case 'dry_run':
+        return { label: 'Dry run completed', icon: '👁', color: chalk.blue };
+      
+      case 'no_commit_mode':
+        return { label: 'Stopped (no-commit mode)', icon: '⏸', color: chalk.yellow };
+      
+      case 'no_push_mode':
+        return { label: 'Stopped (no-push mode)', icon: '⏸', color: chalk.yellow };
+      
+      case 'committed_locally':
+        return { label: 'Committed locally (not pushed)', icon: '📝', color: chalk.blue };
+      
+      case 'no_changes':
+        return { label: 'No changes made', icon: '○', color: chalk.yellow };
+      
+      default:
+        return { label: this.exitReason || 'Unknown', icon: '?', color: chalk.gray };
     }
-    
-    console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
   }
 
   /**
@@ -414,6 +457,8 @@ export class PRResolver {
     comments: ReviewComment[],
   ): Promise<void> {
     this.bailedOut = true;
+    this.exitReason = 'bail_out';
+    this.exitDetails = `Stalemate after ${this.stateManager.getNoProgressCycles()} cycles with no progress - ${unresolvedIssues.length} issue(s) remain`;
     
     const cyclesCompleted = this.stateManager.getNoProgressCycles();
     const toolsExhausted = this.runners.map(r => r.name);
@@ -1331,6 +1376,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
         if (comments.length === 0) {
           console.log(chalk.green('\nNo review comments found. Nothing to do!'));
+          this.exitReason = 'no_comments';
+          this.exitDetails = 'No review comments found on the PR';
           break;
         }
 
@@ -1498,6 +1545,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // Final audit passed - all issues verified fixed
             spinner.succeed('Final audit passed - all issues verified fixed!');
             console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
+            this.exitReason = 'audit_passed';
+            this.exitDetails = 'Final audit passed - all issues verified fixed';
 
             // Report summary of dismissed issues
             const dismissedIssues = this.stateManager.getDismissedIssues();
@@ -1599,6 +1648,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
         // Dry run - just show issues
         if (this.options.dryRun) {
           this.printUnresolvedIssues(unresolvedIssues);
+          this.exitReason = 'dry_run';
+          this.exitDetails = `Dry run mode - showed ${unresolvedIssues.length} issue(s) without fixing`;
           break;
         }
 
@@ -1608,6 +1659,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
         if (unresolvedIssues.length === 0) {
           debug('No unresolved issues - skipping fix loop');
           console.log(chalk.green('\n✓ All issues resolved - nothing to fix'));
+          this.exitReason = 'all_resolved';
+          this.exitDetails = 'All issues were already resolved before fix loop';
           break;
         }
 
@@ -1717,6 +1770,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 // Now it's actually empty (all verified)
                 debug('All comments now verified - breaking');
                 console.log(chalk.green('\n✓ All issues resolved'));
+                this.exitReason = 'all_fixed';
+                this.exitDetails = 'All issues fixed and verified';
                 break;
               }
               // Continue with the re-populated list
@@ -1724,6 +1779,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
             } else {
               debug('No issues to fix at start of iteration - breaking');
               console.log(chalk.green('\n✓ All issues resolved'));
+              this.exitReason = 'all_fixed';
+              this.exitDetails = 'All issues fixed and verified';
               break;
             }
           }
@@ -2234,6 +2291,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           // Check if all fixed
           allFixed = failedCount === 0;
+          
+          if (allFixed && !this.exitReason.startsWith('all')) {
+            this.exitReason = 'all_fixed';
+            this.exitDetails = 'All issues fixed and verified in fix loop';
+          }
 
           if (!allFixed) {
             // Track consecutive failures for strategy switching
@@ -2321,6 +2383,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
         if (!allFixed && this.options.maxFixIterations > 0) {
           console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(this.options.maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
+          this.exitReason = 'max_iterations';
+          this.exitDetails = `Hit max fix iterations (${this.options.maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
         }
 
         // Commit changes if we have any
@@ -2344,6 +2408,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
           if (this.options.noCommit) {
             warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
             console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            this.exitReason = 'no_commit_mode';
+            this.exitDetails = 'No-commit mode enabled - changes left uncommitted in workdir';
             break;
           }
           
@@ -2418,15 +2484,21 @@ Start your response with \`\`\` and end with \`\`\`.`;
           } else if (this.options.noPush) {
             warn('NO-PUSH MODE: Changes committed locally but not pushed.');
             console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            this.exitReason = 'no_push_mode';
+            this.exitDetails = 'No-push mode enabled - changes committed locally only';
             break;
           } else {
             console.log(chalk.blue('\nChanges committed locally. Use --auto-push to push automatically.'));
             console.log(chalk.gray(`Workdir: ${this.workdir}`));
+            this.exitReason = 'committed_locally';
+            this.exitDetails = 'Changes committed locally - use --auto-push to push';
             break;
           }
         } else {
           console.log(chalk.yellow('\nNo changes to commit'));
           debug('Git status shows no changes');
+          this.exitReason = 'no_changes';
+          this.exitDetails = 'No changes to commit (fixer made no modifications)';
           break;
         }
       }
