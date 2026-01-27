@@ -177,6 +177,21 @@ export class CodexRunner implements Runner {
         child.on('close', (code) => {
           debugResponse('codex', stdout, { exitCode: code, stderrLength: stderr.length });
 
+          // Check for cursor position error even on "success" - Codex exits 0 but is broken
+          // WHY: Codex's TUI requires PTY cursor queries. When it can't get cursor position,
+          // it prints an error but may still exit 0. This is an environment issue, not fixable by retry.
+          const hasCursorError = isCursorPositionError(stdout) || isCursorPositionError(stderr);
+          if (hasCursorError) {
+            debug('Codex cursor position error detected - environment issue, bail out');
+            resolve({ 
+              success: false, 
+              output: stdout, 
+              error: 'Codex cursor position error: TTY/PTY environment issue. The Codex CLI requires an interactive terminal.',
+              errorType: 'environment'
+            });
+            return;
+          }
+
           if (code === 0) {
             resolve({ success: true, output: stdout });
           } else {
@@ -195,29 +210,40 @@ export class CodexRunner implements Runner {
       // WHY: Codex's TUI requires a proper PTY for cursor position queries
       // Running without script almost always fails with "cursor position could not be read"
       const useScriptFirst = await this.isScriptAvailable();
+      debug('Codex PTY strategy', { 
+        useScriptFirst, 
+        scriptAvailable: this.scriptAvailable,
+        isTTY: process.stdin.isTTY,
+        term: process.env.TERM,
+      });
       
       let result = await runOnce(useScriptFirst);
+      debug('Codex first attempt result', { 
+        useScript: useScriptFirst,
+        success: result.success, 
+        errorType: result.errorType,
+        outputLength: result.output?.length,
+      });
       
-      // If script wrapper failed with TTY issues, try without (unlikely to help but worth a shot)
-      if (!result.success && useScriptFirst) {
-        const hasTTYIssue = isStdinNotTerminal(result.error) || 
-                            isCursorPositionError(result.output) || 
-                            isCursorPositionError(result.error);
-        if (hasTTYIssue) {
-          debug('Script wrapper failed with TTY issue, trying direct spawn');
-          result = await runOnce(false);
-        }
+      // If we already detected an environment error, don't retry - it won't help
+      if (result.errorType === 'environment') {
+        debug('Codex environment error - not retrying');
+        return result;
       }
       
-      // If direct spawn failed with TTY issues and we didn't try script yet, try it
-      if (!useScriptFirst && (await this.isScriptAvailable())) {
-        const hasTTYIssue = isStdinNotTerminal(result.error) || 
-                            isCursorPositionError(result.output) || 
-                            isCursorPositionError(result.error);
-        if (hasTTYIssue) {
-          debug('Direct spawn failed with TTY issue, trying script wrapper');
-          result = await runOnce(true);
-        }
+      // If script wrapper failed with "stdin not terminal", try direct spawn
+      // Note: cursor position errors are caught in runOnce and return early above
+      if (!result.success && useScriptFirst && isStdinNotTerminal(result.error)) {
+        debug('Script wrapper failed with stdin not terminal, trying direct spawn');
+        result = await runOnce(false);
+        debug('Codex direct spawn result', { success: result.success, errorType: result.errorType });
+      }
+      
+      // If direct spawn failed with "stdin not terminal" and script is available, try it
+      if (!result.success && !useScriptFirst && isStdinNotTerminal(result.error) && (await this.isScriptAvailable())) {
+        debug('Direct spawn failed with stdin not terminal, trying script wrapper');
+        result = await runOnce(true);
+        debug('Codex script wrapper result', { success: result.success, errorType: result.errorType });
       }
       
       return result;
