@@ -180,9 +180,15 @@ export class CodexRunner implements Runner {
 
     try {
       let result = await runOnce(false);
-      if (!result.success && isStdinNotTerminal(result.error) && (await this.isScriptAvailable())) {
-        debug('Retrying codex with script PTY wrapper due to non-tty stdin');
-        result = await runOnce(true);
+      // Retry with script PTY wrapper for various TTY issues
+      if (!result.success && (await this.isScriptAvailable())) {
+        const needsRetry = isStdinNotTerminal(result.error) || 
+                           isCursorPositionError(result.output) || 
+                           isCursorPositionError(result.error);
+        if (needsRetry) {
+          debug('Retrying codex with script PTY wrapper due to TTY issue');
+          result = await runOnce(true);
+        }
       }
       return result;
     } finally {
@@ -206,6 +212,12 @@ export class CodexRunner implements Runner {
 
 function isStdinNotTerminal(error?: string): boolean {
   return Boolean(error && /stdin is not a terminal/i.test(error));
+}
+
+function isCursorPositionError(output?: string): boolean {
+  // Codex throws this when it can't query terminal cursor position
+  // WHY: Codex uses TUI elements that need cursor position, which fails in non-interactive terminals
+  return Boolean(output && /cursor position could not be read/i.test(output));
 }
 
 function shellEscape(value: string): string {
