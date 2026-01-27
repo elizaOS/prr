@@ -10,12 +10,13 @@ let debugLogCounter = 0;
 export function setVerbose(enabled: boolean): void {
   verboseEnabled = enabled;
   
-  // If verbose and PRR_DEBUG_PROMPTS is set, enable prompt/response logging to files
-  if (enabled && process.env.PRR_DEBUG_PROMPTS === '1') {
+  // If verbose mode, enable prompt/response logging to files
+  // Can be disabled with PRR_DEBUG_PROMPTS=0
+  if (enabled && process.env.PRR_DEBUG_PROMPTS !== '0') {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     debugLogDir = join(homedir(), '.prr', 'debug', timestamp);
     mkdirSync(debugLogDir, { recursive: true });
-    console.log(chalk.gray(`  Debug logs will be written to: ${debugLogDir}`));
+    console.log(chalk.gray(`  Debug logs: ${debugLogDir}`));
   }
 }
 
