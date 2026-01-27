@@ -30,6 +30,7 @@ export interface CLIOptions {
   maxContextChars: number;
   noBell: boolean;
   mergeBase: boolean;
+  incrementalCommits: boolean;
 }
 
 export interface ParsedArgs {
@@ -92,6 +93,8 @@ export function createCLI(): Command {
     .option('--reverify', 'Ignore verification cache, re-check all "fixed" issues from scratch', false)
     .option('--max-context <chars>', 'Max characters per LLM batch (default: 400000)', '400000')
     .option('--no-bell', 'Disable terminal bell on completion')
+    .option('--incremental-commits', 'Commit after each fix iteration (default: true)', true)
+    .option('--no-incremental-commits', 'Batch all fixes into single commit at end')
     .option('--merge-base', 'Auto-merge base branch (main/master) into PR when conflicts detected', false);
 
   return program;
@@ -161,6 +164,7 @@ export function parseArgs(program: Command): ParsedArgs {
       reverify: opts.reverify ?? false,
       maxContextChars: parseIntOrExit(opts.maxContext, '--max-context') || 400_000,
       noBell: !opts.bell,                     // --no-bell sets opts.bell=false
+      incrementalCommits: opts.incrementalCommits ?? true,  // Default: true
       mergeBase: opts.mergeBase ?? false,     // Default: don't auto-merge base branch
     },
   };

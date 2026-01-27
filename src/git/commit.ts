@@ -323,6 +323,96 @@ export async function getLastCommitHash(git: SimpleGit): Promise<string> {
 }
 
 /**
+ * Commit verified fixes from an iteration with prr-fix markers for recovery.
+ * 
+ * WHY markers: On restart, we scan git log for these markers to recover which
+ * fixes were verified, even if the state file is lost or corrupted.
+ * 
+ * WHY check status first: Prevents "nothing to commit" errors. Also handles
+ * case where changes were already committed or the fixer made no changes.
+ * 
+ * Returns null if no changes to commit.
+ */
+export async function commitIteration(
+  git: SimpleGit,
+  verifiedCommentIds: string[],
+  iterationNumber: number
+): Promise<CommitResult | null> {
+  // Check if there are changes to commit (Trap 2)
+  const status = await git.status();
+  const hasChanges = status.modified.length || status.created.length || status.deleted.length;
+  
+  if (!hasChanges || verifiedCommentIds.length === 0) {
+    return null; // Nothing to commit
+  }
+
+  await stageAll(git);
+
+  // Build commit message with prr-fix markers (normalized to lowercase - Trap 6)
+  const markers = verifiedCommentIds
+    .map(id => `prr-fix:${id.toLowerCase()}`)
+    .join('\n');
+  
+  const message = [
+    `fix(prr): address ${verifiedCommentIds.length} review comment(s)`,
+    '',
+    `Iteration ${iterationNumber}`,
+    '',
+    markers,
+  ].join('\n');
+
+  // Skip pre-commit hooks for automated commits (Trap 10)
+  const result = await git.commit(message, { '--no-verify': null });
+
+  return {
+    hash: result.commit,
+    message,
+    filesChanged: result.summary.changes,
+  };
+}
+
+/**
+ * Scan git log for prr-fix markers to recover verification state.
+ * 
+ * WHY: Git commits are durable. On restart, we can recover which fixes were
+ * already verified by scanning the commit history for our markers.
+ * 
+ * Scope to branch commits (Trap 1): Only search commits that are on this branch
+ * since it diverged from main, avoiding false positives from merged commits.
+ */
+export async function scanCommittedFixes(git: SimpleGit, branch: string): Promise<string[]> {
+  try {
+    // Get commits only on this branch with prr-fix markers (Trap 1)
+    // Using origin/main..branch range to get commits unique to this branch
+    const log = await git.log([
+      `origin/main..${branch}`,
+      '--grep=prr-fix:',
+      '--format=%B%n---COMMIT_END---'
+    ]);
+    
+    const commentIds: string[] = [];
+    
+    // Parse all prr-fix:ID markers from commit messages
+    if (log.all && log.all.length > 0) {
+      for (const commit of log.all) {
+        const fullMessage = commit.message || commit.body || '';
+        // Match prr-fix: followed by non-whitespace (normalize to lowercase)
+        const matches = fullMessage.matchAll(/prr-fix:(\S+)/gi);
+        for (const match of matches) {
+          commentIds.push(match[1].toLowerCase());
+        }
+      }
+    }
+    
+    // Dedupe in case the same fix was committed multiple times
+    return [...new Set(commentIds)];
+  } catch (error) {
+    debug('scanCommittedFixes error', { error: String(error) });
+    return []; // No commits or error - safe to continue
+  }
+}
+
+/**
  * Strip markdown/HTML formatting from text for use in commit messages
  */
 export function stripMarkdownForCommit(text: string): string {

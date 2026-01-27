@@ -19,7 +19,7 @@ import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
 import type { SimpleGit } from 'simple-git';
-import { squashCommit, pushWithRetry } from './git/commit.js';
+import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from './git/commit.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from './logger.js';
 
@@ -933,6 +933,19 @@ Start your response with \`\`\` and end with \`\`\`.`;
       spinner.succeed('Repository ready');
       debug('Repository cloned/updated at', this.workdir);
 
+      // Recover verification state from git history (Phase 2)
+      // WHY: Git commits are durable. Recover which fixes were already verified.
+      debugStep('RECOVERING STATE FROM GIT');
+      const committedFixes = await scanCommittedFixes(git, this.prInfo.branch);
+      if (committedFixes.length > 0) {
+        console.log(chalk.cyan(`Recovered ${formatNumber(committedFixes.length)} previously committed fix(es) from git history`));
+        for (const commentId of committedFixes) {
+          this.stateManager.markCommentVerifiedFixed(commentId);
+        }
+        await this.stateManager.save();
+        debug('Recovered verifications from git', { count: committedFixes.length });
+      }
+
       // Check for conflicts and sync with remote
       // WHY CHECK EARLY: Conflict markers in files will cause fixer tools to fail confusingly.
       // Better to detect and resolve conflicts upfront before entering the fix loop.
@@ -1500,6 +1513,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
         // WHY: findUnresolvedIssues already handles stale verifications correctly.
         // We only need to filter items that got verified DURING this fix loop.
         const verifiedThisSession = new Set<string>();
+        
+        // Track which fixes have already been committed (Trap 3)
+        // WHY: verifiedThisSession accumulates across iterations. Without this,
+        // we'd try to commit already-committed fixes on subsequent iterations.
+        const alreadyCommitted = new Set<string>();
 
         while (fixIteration < maxFixIterations && !allFixed) {
           // Filter out issues that were verified during THIS session (by single-issue mode, etc.)
@@ -2034,6 +2052,37 @@ Start your response with \`\`\` and end with \`\`\`.`;
           await this.stateManager.save();
           await this.lessonsManager.save();
           debug('State and lessons saved');
+
+          // Commit this iteration's verified fixes (Phase 1)
+          // Only commit NEW fixes - filter out already-committed ones (Trap 3)
+          if (verifiedCount > 0 && this.options.incrementalCommits) {
+            const newlyVerified = Array.from(verifiedThisSession).filter(id => !alreadyCommitted.has(id));
+            
+            if (newlyVerified.length > 0) {
+              const commitResult = await commitIteration(git, newlyVerified, fixIteration);
+              if (commitResult) {
+                // Mark these as committed so we don't try again
+                for (const id of newlyVerified) {
+                  alreadyCommitted.add(id);
+                }
+                console.log(chalk.green(`  Committed ${newlyVerified.length} fix(es) [${commitResult.hash.slice(0, 7)}]`));
+                
+                // Push immediately if auto-push enabled (Phase 3)
+                if (this.options.autoPush && !this.options.noPush) {
+                  try {
+                    startTimer('Push iteration fixes');
+                    await pushWithRetry(git, this.prInfo.branch, { githubToken: this.config.githubToken });
+                    const pushTime = endTimer('Push iteration fixes');
+                    console.log(chalk.green(`  Pushed to origin/${this.prInfo.branch} (${formatDuration(pushTime)})`));
+                  } catch (err) {
+                    const pushError = err instanceof Error ? err.message : String(err);
+                    console.log(chalk.yellow(`  Push failed (will retry): ${pushError}`));
+                    debug('Push error', { error: pushError });
+                  }
+                }
+              }
+            }
+          }
 
           // Check if all fixed
           allFixed = failedCount === 0;
