@@ -25,6 +25,29 @@ export interface LLMResponse {
   };
 }
 
+/**
+ * Batch check result with optional model recommendation
+ */
+export interface BatchCheckResult {
+  issues: Map<string, { exists: boolean; explanation: string }>;
+  /** Recommended models to use for fixing, in order of preference */
+  recommendedModels?: string[];
+  /** Reasoning behind the model recommendation */
+  modelRecommendationReasoning?: string;
+}
+
+/**
+ * Context for model recommendation (optional)
+ */
+export interface ModelRecommendationContext {
+  /** Available models to choose from */
+  availableModels?: string[];
+  /** Historical model performance summary (e.g., "sonnet: 5 fixes, 2 failures") */
+  modelHistory?: string;
+  /** Previous attempts on these issues (e.g., "sonnet failed: lesson was X") */
+  attemptHistory?: string;
+}
+
 export class LLMClient {
   private provider: LLMProvider;
   private model: string;
@@ -240,10 +263,11 @@ NO: Looks good`;
       filePath: string;
       line: number | null;
       codeSnippet: string;
-    }>
-  ): Promise<Map<string, { exists: boolean; explanation: string }>> {
+    }>,
+    modelContext?: ModelRecommendationContext
+  ): Promise<BatchCheckResult> {
     if (issues.length === 0) {
-      return new Map();
+      return { issues: new Map() };
     }
 
     // Build batch prompt
@@ -294,11 +318,48 @@ NO: Looks good`;
     parts.push('');
     parts.push('Now analyze each issue STRICTLY and respond with one line per issue:');
 
+    // Add model recommendation section if context is provided
+    if (modelContext?.availableModels?.length) {
+      parts.push('');
+      parts.push('---');
+      parts.push('');
+      parts.push('## Model Recommendation');
+      parts.push('');
+      parts.push('After analyzing the issues above, recommend which AI models should attempt to fix them.');
+      parts.push(`Available models (in order): ${modelContext.availableModels.join(', ')}`);
+      parts.push('');
+      parts.push('Consider:');
+      parts.push('- Issue complexity: security/refactoring issues need capable models, typos/style can use fast models');
+      parts.push('- Issue count and diversity: many issues or multi-file changes need capable models');
+      parts.push('- Previous attempts: if a model already failed, try a different one');
+      parts.push('');
+      
+      if (modelContext.modelHistory) {
+        parts.push('## Model Performance on This Codebase');
+        parts.push(modelContext.modelHistory);
+        parts.push('');
+      }
+      
+      if (modelContext.attemptHistory) {
+        parts.push('## Previous Attempts on These Issues');
+        parts.push(modelContext.attemptHistory);
+        parts.push('');
+      }
+      
+      parts.push('End your response with this line:');
+      parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | brief reasoning');
+      parts.push('');
+      parts.push('Examples:');
+      parts.push('MODEL_RECOMMENDATION: claude-sonnet-4-5, gpt-5.2 | Complex security issues, skip mini models');
+      parts.push('MODEL_RECOMMENDATION: gpt-5-mini, claude-haiku | Simple style/formatting fixes only');
+      parts.push('MODEL_RECOMMENDATION: claude-opus-4-5 | Multi-file refactoring requires strongest model');
+    }
+
     const response = await this.complete(parts.join('\n'));
     const results = new Map<string, { exists: boolean; explanation: string }>();
     const allowedIds = new Set(issues.map(issue => issue.id.toLowerCase()));
 
-    // Parse responses
+    // Parse issue responses
     const lines = response.content.split('\n');
     for (const line of lines) {
       // Match patterns like "issue_123: YES: explanation" or "ISSUE_123: NO: explanation"
@@ -318,7 +379,69 @@ NO: Looks good`;
       }
     }
 
-    return results;
+    // Parse model recommendation if we asked for it
+    let recommendedModels: string[] | undefined;
+    let modelRecommendationReasoning: string | undefined;
+    
+    if (modelContext?.availableModels?.length) {
+      const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
+      if (modelMatch) {
+        const modelList = modelMatch[1];
+        const reasoning = modelMatch[2]?.trim();
+        
+        // Parse model list, filter to only valid available models
+        const availableSet = new Set(modelContext.availableModels.map(m => m.toLowerCase()));
+        recommendedModels = modelList
+          .split(',')
+          .map(m => m.trim())
+          .filter(m => {
+            // Check if this model (or a close match) is in available models
+            const lower = m.toLowerCase();
+            if (availableSet.has(lower)) return true;
+            // Also accept if it's a substring match (e.g., "sonnet" matches "claude-sonnet-4-5")
+            for (const avail of modelContext.availableModels!) {
+              if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
+                return true;
+              }
+            }
+            return false;
+          })
+          .map(m => {
+            // Normalize to exact available model name
+            const lower = m.toLowerCase();
+            for (const avail of modelContext.availableModels!) {
+              if (avail.toLowerCase() === lower) return avail;
+              if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
+                return avail;
+              }
+            }
+            return m;
+          });
+        
+        modelRecommendationReasoning = reasoning || undefined;
+        
+        if (recommendedModels.length > 0) {
+          debug('LLM model recommendation', { 
+            recommendedModels, 
+            reasoning: modelRecommendationReasoning,
+            rawMatch: modelMatch[1]
+          });
+        } else {
+          debug('LLM model recommendation parsed but no valid models found', { 
+            rawMatch: modelMatch[1],
+            available: modelContext.availableModels
+          });
+        }
+      } else {
+        debug('No MODEL_RECOMMENDATION found in response');
+      }
+    }
+
+    return {
+      issues: results,
+      recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
+      modelRecommendationReasoning,
+    };
   }
 
   /**

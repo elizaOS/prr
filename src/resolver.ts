@@ -12,7 +12,7 @@ import type { Runner } from './runners/types.js';
 
 import { GitHubAPI } from './github/api.js';
 import { parsePRUrl } from './github/types.js';
-import { LLMClient } from './llm/client.js';
+import { LLMClient, type ModelRecommendationContext } from './llm/client.js';
 import { StateManager } from './state/manager.js';
 import { LessonsManager, formatLessonForDisplay } from './state/lessons.js';
 import { buildFixPrompt } from './analyzer/prompt-builder.js';
@@ -43,6 +43,13 @@ export class PRResolver {
   private modelFailuresInCycle = 0;  // Failures since last model/tool rotation
   private modelsTriedThisToolRound = 0;  // Models tried on current tool before switching
   private static readonly MAX_MODELS_PER_TOOL_ROUND = 2;  // Switch tools after this many models
+  
+  // Smart model selection: LLM recommends models based on issue analysis
+  // WHY: Instead of blind rotation, let the LLM recommend models based on issue complexity
+  // and historical performance. Still rotate within recommendations for different perspectives.
+  private recommendedModels?: string[];
+  private recommendedModelIndex = 0;
+  private modelRecommendationReasoning?: string;
   
   // Bail-out tracking: detect stalemates where no progress is made
   // WHY: Prevents infinite loops when agents disagree or can't fix issues
@@ -369,6 +376,13 @@ export class PRResolver {
   /**
    * Get the current model for the active runner
    * Returns undefined if using CLI default or user-specified model
+   * 
+   * Smart model selection (default):
+   * - Uses LLM-recommended models first (if available)
+   * - Falls back to rotation when recommendations exhausted
+   * 
+   * Legacy rotation (--model-rotation):
+   * - Uses DEFAULT_MODEL_ROTATIONS in order
    */
   private getCurrentModel(): string | undefined {
     // If user specified a model via CLI, always use that
@@ -376,6 +390,15 @@ export class PRResolver {
       return this.options.toolModel;
     }
     
+    // Smart model selection: use LLM recommendations first
+    if (!this.options.modelRotation && this.recommendedModels?.length) {
+      const model = this.recommendedModels[this.recommendedModelIndex];
+      if (model && this.isModelAvailableForRunner(model)) {
+        return model;
+      }
+    }
+    
+    // Fall back to legacy rotation
     const models = this.getModelsForRunner(this.runner);
     if (models.length === 0) {
       return undefined;  // Let the tool use its default
@@ -383,6 +406,47 @@ export class PRResolver {
     
     const index = this.modelIndices.get(this.runner.name) || 0;
     return models[index];
+  }
+  
+  /**
+   * Check if a model is available for the current runner
+   */
+  private isModelAvailableForRunner(model: string): boolean {
+    const available = this.getModelsForRunner(this.runner);
+    const lowerModel = model.toLowerCase();
+    return available.some(m => {
+      const lowerAvail = m.toLowerCase();
+      return lowerAvail === lowerModel || 
+             lowerAvail.includes(lowerModel) || 
+             lowerModel.includes(lowerAvail);
+    });
+  }
+  
+  /**
+   * Advance to next recommended model, or fall back to rotation
+   * Returns true if we have more models to try
+   */
+  private advanceModel(): boolean {
+    // If using smart selection and we have recommendations
+    if (!this.options.modelRotation && this.recommendedModels?.length) {
+      this.recommendedModelIndex++;
+      
+      // Still have recommendations to try?
+      if (this.recommendedModelIndex < this.recommendedModels.length) {
+        const nextModel = this.recommendedModels[this.recommendedModelIndex];
+        const prevModel = this.recommendedModels[this.recommendedModelIndex - 1];
+        console.log(chalk.yellow(`\n  🔄 Next recommended model: ${prevModel} → ${nextModel}`));
+        return true;
+      }
+      
+      // Exhausted recommendations, clear and fall back to rotation
+      console.log(chalk.gray(`  Exhausted ${this.recommendedModels.length} recommended models, falling back to rotation`));
+      this.recommendedModels = undefined;
+      this.recommendedModelIndex = 0;
+    }
+    
+    // Fall back to legacy rotation
+    return this.rotateModel();
   }
 
   /**
@@ -543,8 +607,8 @@ export class PRResolver {
       return false;
     }
     
-    // Try rotating model within current tool
-    if (this.rotateModel()) {
+    // Try next model within current tool (uses recommendations first if available)
+    if (this.advanceModel()) {
       this.modelFailuresInCycle = 0;
       return true;
     }
@@ -3468,8 +3532,31 @@ After resolving, the files should have NO conflict markers remaining.`;
         };
       });
 
-      const results = await this.llm.batchCheckIssuesExist(batchInput);
+      // Build model context for smart model selection (unless --model-rotation is set)
+      let modelContext: ModelRecommendationContext | undefined;
+      if (!this.options.modelRotation) {
+        const availableModels = this.getModelsForRunner(this.runner);
+        modelContext = {
+          availableModels,
+          modelHistory: this.stateManager.getModelHistorySummary?.() || undefined,
+          attemptHistory: undefined,  // TODO: Track per-issue attempts
+        };
+      }
+
+      const batchResult = await this.llm.batchCheckIssuesExist(batchInput, modelContext);
+      const results = batchResult.issues;
       debug('Batch analysis results', { count: results.size });
+      
+      // Store model recommendation for use in fix loop
+      if (batchResult.recommendedModels?.length) {
+        this.recommendedModels = batchResult.recommendedModels;
+        this.recommendedModelIndex = 0;
+        this.modelRecommendationReasoning = batchResult.modelRecommendationReasoning;
+        console.log(chalk.cyan(`  📊 Model recommendation: ${this.recommendedModels.join(', ')}`));
+        if (this.modelRecommendationReasoning) {
+          console.log(chalk.gray(`     (${this.modelRecommendationReasoning})`));
+        }
+      }
 
       // Process results
       for (let i = 0; i < toCheck.length; i++) {

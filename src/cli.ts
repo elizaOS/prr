@@ -33,6 +33,8 @@ export interface CLIOptions {
   incrementalCommits: boolean;
   noHandoffPrompt: boolean;
   noAfterAction: boolean;
+  /** Use legacy model rotation instead of smart LLM-based model selection */
+  modelRotation: boolean;
 }
 
 export interface ParsedArgs {
@@ -99,7 +101,8 @@ export function createCLI(): Command {
     .option('--no-incremental-commits', 'Batch all fixes into single commit at end')
     .option('--merge-base', 'Auto-merge base branch (main/master) into PR when conflicts detected', false)
     .option('--no-handoff-prompt', 'Disable developer handoff prompt in final output')
-    .option('--no-after-action', 'Disable after action report in final output');
+    .option('--no-after-action', 'Disable after action report in final output')
+    .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false);
 
   return program;
 }
@@ -172,6 +175,7 @@ export function parseArgs(program: Command): ParsedArgs {
       mergeBase: opts.mergeBase ?? false,     // Default: don't auto-merge base branch
       noHandoffPrompt: !opts.handoffPrompt,   // --no-handoff-prompt sets opts.handoffPrompt=false
       noAfterAction: !opts.afterAction,       // --no-after-action sets opts.afterAction=false
+      modelRotation: opts.modelRotation ?? false,  // Default: use smart model selection
     },
   };
 }

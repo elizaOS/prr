@@ -571,6 +571,41 @@ export class StateManager {
       });
   }
   
+  /**
+   * Get a formatted summary of model performance for LLM context.
+   * Used for smart model selection - helps LLM recommend appropriate models.
+   * 
+   * WHY: LLM can make better model recommendations when it knows what's worked
+   * on this codebase before.
+   */
+  getModelHistorySummary(): string | undefined {
+    const models = this.getModelsBySuccessRate();
+    if (models.length === 0) {
+      return undefined;
+    }
+    
+    const lines: string[] = [];
+    for (const { key, stats, successRate } of models) {
+      const total = stats.fixes + stats.failures;
+      if (total === 0) continue;  // Skip models with no attempts
+      
+      const rate = (successRate * 100).toFixed(0);
+      let line = `${key}: ${stats.fixes} fixes, ${stats.failures} failures (${rate}% success)`;
+      
+      // Add additional context if available
+      if (stats.noChanges > 0) {
+        line += `, ${stats.noChanges} no-changes`;
+      }
+      if (stats.errors > 0) {
+        line += `, ${stats.errors} errors`;
+      }
+      
+      lines.push(line);
+    }
+    
+    return lines.length > 0 ? lines.join('\n') : undefined;
+  }
+  
   // No-progress cycle tracking for bail-out mechanism
   // WHY: Detect stalemates where all tools/models have been tried with zero progress
   
