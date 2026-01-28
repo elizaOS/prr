@@ -2053,6 +2053,23 @@ Start your response with \`\`\` and end with \`\`\`.`;
               debug('Bailing out due to auth error', { tool: this.runner.name, error: result.error });
               return;
             }
+            
+            // ENVIRONMENT ERRORS: Tool environment issue (e.g., TTY/cursor position)
+            // WHY: These are infrastructure issues that won't fix themselves with retries.
+            // The tool needs a different environment (real TTY, GUI, etc.)
+            if (result.errorType === 'environment') {
+              console.log(chalk.red('\n⛔ ENVIRONMENT ERROR: Tool requires different runtime environment'));
+              console.log(chalk.yellow('  This tool may require an interactive terminal or GUI.'));
+              if (result.error) {
+                console.log(chalk.cyan(`  ${result.error}`));
+              }
+              console.log(chalk.yellow('\n  Suggestions:'));
+              console.log(chalk.yellow('    - Try a different tool: --tool cursor or --tool claude-code'));
+              console.log(chalk.yellow('    - Run prr in an interactive terminal (not CI/cron)'));
+              console.log(chalk.yellow('    - Use --tool llm-api as a fallback (direct LLM without TUI)'));
+              debug('Bailing out due to environment error', { tool: this.runner.name, error: result.error });
+              return;
+            }
 
             const now = Date.now();
             const isRapidFailure = fixerTime > 0 && fixerTime <= PRResolver.RAPID_FAILURE_MS;

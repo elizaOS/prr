@@ -4,8 +4,9 @@
  * - 'auth': Authentication/API key issues
  * - 'timeout': Process timed out
  * - 'tool': General tool failure (retry with different model/tool)
+ * - 'environment': Tool environment issue (e.g., TTY/cursor position) - bail out, won't fix with retries
  */
-export type RunnerErrorType = 'permission' | 'auth' | 'timeout' | 'tool';
+export type RunnerErrorType = 'permission' | 'auth' | 'timeout' | 'tool' | 'environment';
 
 export interface RunnerResult {
   success: boolean;

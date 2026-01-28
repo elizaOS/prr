@@ -22,7 +22,6 @@ export class CodexRunner implements Runner {
   name = 'codex';
   displayName = 'OpenAI Codex';
   private binaryPath: string = 'codex';
-  private scriptAvailable?: boolean;
 
   async isAvailable(): Promise<boolean> {
     for (const binary of CODEX_BINARIES) {
@@ -74,10 +73,12 @@ export class CodexRunner implements Runner {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 
+    // Write prompt to temp file for stdin piping
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
     writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('codex', prompt, { workdir, model: options?.model });
+    
     const cleanupPromptFile = () => {
       try {
         unlinkSync(promptFile);
@@ -86,183 +87,131 @@ export class CodexRunner implements Runner {
       }
     };
     
-    // Build args array safely (no shell interpolation)
-    const args: string[] = [];
+    // Build args for `codex exec` - the non-interactive mode
+    // WHY: Interactive mode requires TTY for cursor position queries, which fails in automation.
+    // `codex exec` is designed for non-interactive/CI use and doesn't need a TTY.
+    const args: string[] = ['exec'];
+    
+    // Full auto mode: automatic approval, workspace write sandbox
+    args.push('--full-auto');
+    
+    // Set working directory
+    args.push('-C', workdir);
     
     // Add model if specified
     if (options?.model) {
       args.push('--model', options.model);
     }
     
-    // Use "-" prompt to read from stdin (avoids command injection)
+    // Add extra directories if specified
     if (options?.codexAddDirs && options.codexAddDirs.length > 0) {
       for (const dir of options.codexAddDirs) {
         if (!dir) continue;
         args.push('--add-dir', dir);
       }
     }
+    
+    // Read prompt from stdin
     args.push('-');
 
-    const runOnce = (useScript: boolean): Promise<RunnerResult> => {
-      return new Promise((resolve) => {
-        const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-        const scriptInfo = useScript ? ' via script' : '';
-        console.log(`\nRunning: ${this.binaryPath}${modelInfo} [prompt via stdin]${scriptInfo}\n`);
-        debug('Codex command', { binary: this.binaryPath, workdir, model: options?.model, promptLength: prompt.length, useScript });
+    return new Promise((resolve) => {
+      const modelInfo = options?.model ? ` (model: ${options.model})` : '';
+      console.log(`\nRunning: ${this.binaryPath} exec${modelInfo} --full-auto [prompt via stdin]\n`);
+      debug('Codex exec command', { 
+        binary: this.binaryPath, 
+        args: args.filter(a => a !== '-'), // Don't log the stdin marker
+        workdir, 
+        model: options?.model, 
+        promptLength: prompt.length,
+      });
 
-        let child: ReturnType<typeof spawn>;
-        if (useScript) {
-          const codexCommand = [this.binaryPath, ...args].map(shellEscape).join(' ');
-          // Use script to provide a PTY, with environment vars to minimize TUI behavior
-          child = spawn('script', ['-q', '/dev/null', '-c', `stty -echo 2>/dev/null; ${codexCommand}`], {
-            cwd: workdir,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              CI: '1',
-              // Use xterm-256color which supports cursor queries
-              TERM: 'xterm-256color',
-              // Disable colors to reduce TUI complexity
-              NO_COLOR: '1',
-              FORCE_COLOR: '0',
-              // Try to hint non-interactive mode
-              DEBIAN_FRONTEND: 'noninteractive',
-              // Some tools check these
-              NONINTERACTIVE: '1',
-              PRR_RUNNER: '1',
-            },
+      const child = spawn(this.binaryPath, args, {
+        cwd: workdir,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { 
+          ...process.env,
+          // Hint that we're in CI/automation
+          CI: '1',
+          NO_COLOR: '1',
+          FORCE_COLOR: '0',
+        },
+      });
+      
+      // Pipe prompt to stdin
+      const promptStream = createReadStream(promptFile);
+      if (!child.stdin) {
+        const error = 'Codex process stdin is unavailable';
+        debug(error);
+        promptStream.destroy();
+        cleanupPromptFile();
+        resolve({ success: false, output: '', error });
+        return;
+      }
+      promptStream.pipe(child.stdin);
+      promptStream.on('error', (err) => {
+        debug('Error reading prompt file', { error: err.message });
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout?.on('data', (data) => {
+        const str = data.toString();
+        stdout += str;
+        process.stdout.write(str);
+      });
+
+      child.stderr?.on('data', (data) => {
+        const str = data.toString();
+        stderr += str;
+        process.stderr.write(str);
+      });
+
+      child.on('close', (code) => {
+        cleanupPromptFile();
+        debugResponse('codex', stdout, { exitCode: code, stderrLength: stderr.length });
+
+        // Safety check: detect cursor position error even in exec mode (shouldn't happen, but just in case)
+        const hasCursorError = isCursorPositionError(stdout) || isCursorPositionError(stderr);
+        if (hasCursorError) {
+          debug('Codex cursor position error detected in exec mode - unexpected environment issue');
+          resolve({ 
+            success: false, 
+            output: stdout, 
+            error: 'Codex cursor position error: TTY/PTY environment issue. This is unexpected in exec mode.',
+            errorType: 'environment'
           });
-        } else {
-          child = spawn(this.binaryPath, args, {
-            cwd: workdir,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: { 
-              ...process.env,
-              CI: '1',
-              NO_COLOR: '1',
-              FORCE_COLOR: '0',
-            },
-          });
-        }
-        
-        // Pipe prompt file to stdin (safe - no shell interpolation)
-        const promptStream = createReadStream(promptFile);
-        if (!child.stdin) {
-          const error = 'Codex process stdin is unavailable';
-          debug(error);
-          promptStream.destroy();
-          resolve({ success: false, output: '', error });
           return;
         }
-        promptStream.pipe(child.stdin);
-        promptStream.on('error', (err) => {
-          debug('Error reading prompt file', { error: err.message });
-        });
 
-        let stdout = '';
-        let stderr = '';
-
-        child.stdout?.on('data', (data) => {
-          const str = sanitizeOutput(data.toString(), useScript);
-          stdout += str;
-          process.stdout.write(str);
-        });
-
-        child.stderr?.on('data', (data) => {
-          const str = sanitizeOutput(data.toString(), useScript);
-          stderr += str;
-          process.stderr.write(str);
-        });
-
-        child.on('close', (code) => {
-          debugResponse('codex', stdout, { exitCode: code, stderrLength: stderr.length });
-
-          if (code === 0) {
-            resolve({ success: true, output: stdout });
+        if (code === 0) {
+          resolve({ success: true, output: stdout });
+        } else {
+          // Check for common error patterns
+          const combinedOutput = stdout + stderr;
+          if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || `Authentication error`, errorType: 'auth' });
+          } else if (/permission denied|cannot write|read-only/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || `Permission error`, errorType: 'permission' });
           } else {
             resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
           }
-        });
-
-        child.on('error', (err) => {
-          resolve({ success: false, output: stdout, error: err.message });
-        });
+        }
       });
-    };
 
-    try {
-      // Always try with script wrapper first if available
-      // WHY: Codex's TUI requires a proper PTY for cursor position queries
-      // Running without script almost always fails with "cursor position could not be read"
-      const useScriptFirst = await this.isScriptAvailable();
-      
-      let result = await runOnce(useScriptFirst);
-      
-      // If script wrapper failed with TTY issues, try without (unlikely to help but worth a shot)
-      if (!result.success && useScriptFirst) {
-        const hasTTYIssue = isStdinNotTerminal(result.error) || 
-                            isCursorPositionError(result.output) || 
-                            isCursorPositionError(result.error);
-        if (hasTTYIssue) {
-          debug('Script wrapper failed with TTY issue, trying direct spawn');
-          result = await runOnce(false);
-        }
-      }
-      
-      // If direct spawn failed with TTY issues and we didn't try script yet, try it
-      if (!useScriptFirst && (await this.isScriptAvailable())) {
-        const hasTTYIssue = isStdinNotTerminal(result.error) || 
-                            isCursorPositionError(result.output) || 
-                            isCursorPositionError(result.error);
-        if (hasTTYIssue) {
-          debug('Direct spawn failed with TTY issue, trying script wrapper');
-          result = await runOnce(true);
-        }
-      }
-      
-      return result;
-    } finally {
-      cleanupPromptFile();
-    }
+      child.on('error', (err) => {
+        cleanupPromptFile();
+        resolve({ success: false, output: stdout, error: err.message });
+      });
+    });
   }
-
-  private async isScriptAvailable(): Promise<boolean> {
-    if (this.scriptAvailable !== undefined) {
-      return this.scriptAvailable;
-    }
-    try {
-      await exec('which script');
-      this.scriptAvailable = true;
-    } catch {
-      this.scriptAvailable = false;
-    }
-    return this.scriptAvailable;
-  }
-}
-
-function isStdinNotTerminal(error?: string): boolean {
-  return Boolean(error && /stdin is not a terminal/i.test(error));
 }
 
 function isCursorPositionError(output?: string): boolean {
   // Codex throws this when it can't query terminal cursor position
-  // WHY: Codex uses TUI elements that need cursor position, which fails in non-interactive terminals
-  // Strip ANSI escape codes before checking (output may have formatting)
+  // WHY: Interactive mode uses TUI elements that need cursor position
+  // This shouldn't happen in exec mode, but we check as a safety measure
   if (!output) return false;
   const cleaned = output.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/[\x00-\x1f]/g, ' ');
   return /cursor.{0,10}position.{0,10}could.{0,10}not.{0,10}be.{0,10}read/i.test(cleaned);
-}
-
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function sanitizeOutput(value: string, useScript: boolean): string {
-  if (!useScript) {
-    return value;
-  }
-  return value
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '') // OSC
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '') // CSI
-    .replace(/\x1b[@-_]/g, ''); // 2-char sequences
 }
