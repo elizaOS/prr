@@ -92,8 +92,10 @@ export class CodexRunner implements Runner {
     // `codex exec` is designed for non-interactive/CI use and doesn't need a TTY.
     const args: string[] = ['exec'];
     
-    // Full auto mode: automatic approval, workspace write sandbox
-    args.push('--full-auto');
+    // Bypass sandbox and approvals - prr controls the execution environment
+    // WHY: Codex's landlock sandbox can fail in some environments (containers, etc.)
+    // prr already isolates work in a cloned workdir, so external sandboxing is sufficient
+    args.push('--dangerously-bypass-approvals-and-sandbox');
     
     // Set working directory
     args.push('-C', workdir);
@@ -116,7 +118,7 @@ export class CodexRunner implements Runner {
 
     return new Promise((resolve) => {
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
-      console.log(`\nRunning: ${this.binaryPath} exec${modelInfo} --full-auto [prompt via stdin]\n`);
+      console.log(`\nRunning: ${this.binaryPath} exec${modelInfo} [prompt via stdin]\n`);
       debug('Codex exec command', { 
         binary: this.binaryPath, 
         args: args.filter(a => a !== '-'), // Don't log the stdin marker
