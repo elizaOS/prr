@@ -209,11 +209,17 @@ export class GitHubAPI {
 
   async getReviewThreads(owner: string, repo: string, prNumber: number): Promise<ReviewThread[]> {
     debug('Fetching review threads via GraphQL', { owner, repo, prNumber });
+    
+    // GraphQL query with pagination support
     const query = `
-      query($owner: String!, $repo: String!, $pr: Int!) {
+      query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
         repository(owner: $owner, name: $repo) {
           pullRequest(number: $pr) {
-            reviewThreads(first: 100) {
+            reviewThreads(first: 100, after: $cursor) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
               nodes {
                 id
                 isResolved
@@ -241,6 +247,10 @@ export class GitHubAPI {
       repository: {
         pullRequest: {
           reviewThreads: {
+            pageInfo: {
+              hasNextPage: boolean;
+              endCursor: string | null;
+            };
             nodes: Array<{
               id: string;
               isResolved: boolean;
@@ -261,33 +271,53 @@ export class GitHubAPI {
       };
     }
 
-    const response = await this.graphqlWithAuth<GraphQLResponse>(query, {
-      owner,
-      repo,
-      pr: prNumber,
-    });
+    // Paginate through all review threads
+    const allThreads: ReviewThread[] = [];
+    let cursor: string | null = null;
+    let pageCount = 0;
 
-    const threadCount = response.repository.pullRequest.reviewThreads.nodes.length;
-    debug(`Found ${threadCount} review threads`);
+    do {
+      pageCount++;
+      const response = await this.graphqlWithAuth<GraphQLResponse>(query, {
+        owner,
+        repo,
+        pr: prNumber,
+        cursor,
+      });
 
-    return response.repository.pullRequest.reviewThreads.nodes.map((thread) => ({
-      id: thread.id,
-      path: thread.path,
-      line: thread.line,
-      diffSide: thread.diffSide,
-      isResolved: thread.isResolved,
-      comments: thread.comments.nodes.map((comment) => ({
-        id: comment.id,
-        threadId: thread.id,
-        author: comment.author?.login || 'unknown',
-        body: comment.body,
-        path: thread.path,
-        line: thread.line,
-        diffSide: thread.diffSide,
-        createdAt: comment.createdAt,
-        isResolved: thread.isResolved,
-      })),
-    }));
+      const { pageInfo, nodes } = response.repository.pullRequest.reviewThreads;
+      debug(`Fetched page ${pageCount} with ${nodes.length} threads`, { 
+        hasNextPage: pageInfo.hasNextPage,
+        cursor: pageInfo.endCursor?.slice(0, 20),
+      });
+
+      // Map threads from this page
+      for (const thread of nodes) {
+        allThreads.push({
+          id: thread.id,
+          path: thread.path,
+          line: thread.line,
+          diffSide: thread.diffSide,
+          isResolved: thread.isResolved,
+          comments: thread.comments.nodes.map((comment) => ({
+            id: comment.id,
+            threadId: thread.id,
+            author: comment.author?.login || 'unknown',
+            body: comment.body,
+            path: thread.path,
+            line: thread.line,
+            diffSide: thread.diffSide,
+            createdAt: comment.createdAt,
+            isResolved: thread.isResolved,
+          })),
+        });
+      }
+
+      cursor = pageInfo.hasNextPage ? pageInfo.endCursor : null;
+    } while (cursor);
+
+    debug(`Found ${allThreads.length} review threads total (${pageCount} pages)`);
+    return allThreads;
   }
 
   async getReviewComments(owner: string, repo: string, prNumber: number): Promise<ReviewComment[]> {
