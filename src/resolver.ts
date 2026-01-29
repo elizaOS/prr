@@ -3543,7 +3543,11 @@ After resolving, the files should have NO conflict markers remaining.`;
         };
       }
 
-      const batchResult = await this.llm.batchCheckIssuesExist(batchInput, modelContext);
+      const batchResult = await this.llm.batchCheckIssuesExist(
+        batchInput, 
+        modelContext,
+        this.options.maxContextChars
+      );
       const results = batchResult.issues;
       debug('Batch analysis results', { count: results.size });
       

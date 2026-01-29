@@ -256,6 +256,14 @@ NO: Looks good`;
     return { exists, explanation };
   }
 
+  /**
+   * Batch check if issues still exist, with dynamic batching for large issue sets.
+   * 
+   * WHY BATCHING: 100 issues × 3KB each = 300KB prompt, which exceeds model limits.
+   * We split into multiple batches based on maxContextChars.
+   * 
+   * @param maxContextChars - Maximum characters per batch (default 150k, ~37k tokens, safe for most models)
+   */
   async batchCheckIssuesExist(
     issues: Array<{
       id: string;
@@ -264,14 +272,15 @@ NO: Looks good`;
       line: number | null;
       codeSnippet: string;
     }>,
-    modelContext?: ModelRecommendationContext
+    modelContext?: ModelRecommendationContext,
+    maxContextChars: number = 150_000
   ): Promise<BatchCheckResult> {
     if (issues.length === 0) {
       return { issues: new Map() };
     }
 
-    // Build batch prompt
-    const parts: string[] = [
+    // Build the static prompt header (used for each batch)
+    const headerParts: string[] = [
       'You are a STRICT code reviewer verifying whether review comments have been properly addressed.',
       '',
       'RULES:',
@@ -301,144 +310,205 @@ NO: Looks good`;
       '---',
       '',
     ];
+    
+    const headerSize = headerParts.join('\n').length;
+    const footerSize = 200; // Reserve space for closing instructions
+    const modelRecSize = modelContext?.availableModels?.length ? 1500 : 0; // Reserve for model recommendation
+    const availableForIssues = maxContextChars - headerSize - footerSize - modelRecSize;
+
+    // Build issue text for sizing
+    const buildIssueText = (issue: typeof issues[0]): string => {
+      // Truncate long comments and code to keep batches reasonable
+      const maxCommentLen = 800;
+      const maxCodeLen = 1500;
+      const truncatedComment = issue.comment.length > maxCommentLen
+        ? issue.comment.substring(0, maxCommentLen) + '...'
+        : issue.comment;
+      const truncatedCode = issue.codeSnippet.length > maxCodeLen
+        ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+        : issue.codeSnippet;
+
+      return [
+        `## Issue ${issue.id}`,
+        `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+        `Comment: ${truncatedComment}`,
+        '',
+        'Current code:',
+        '```',
+        truncatedCode,
+        '```',
+        '',
+      ].join('\n');
+    };
+
+    // Build batches dynamically based on content size
+    const batches: Array<{ issues: typeof issues; issueTexts: string[] }> = [];
+    let currentBatch: typeof issues = [];
+    let currentTexts: string[] = [];
+    let currentSize = 0;
 
     for (const issue of issues) {
-      parts.push(`## Issue ${issue.id}`);
-      parts.push(`File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`);
-      parts.push(`Comment: ${issue.comment}`);
-      parts.push('');
-      parts.push('Current code:');
-      parts.push('```');
-      parts.push(issue.codeSnippet);
-      parts.push('```');
-      parts.push('');
+      const issueText = buildIssueText(issue);
+      const issueSize = issueText.length;
+
+      // If adding this issue would exceed limit, start a new batch
+      if (currentSize + issueSize > availableForIssues && currentBatch.length > 0) {
+        batches.push({ issues: currentBatch, issueTexts: currentTexts });
+        currentBatch = [];
+        currentTexts = [];
+        currentSize = 0;
+      }
+
+      currentBatch.push(issue);
+      currentTexts.push(issueText);
+      currentSize += issueSize;
     }
 
-    parts.push('---');
-    parts.push('');
-    parts.push('Now analyze each issue STRICTLY and respond with one line per issue:');
-
-    // Add model recommendation section if context is provided
-    if (modelContext?.availableModels?.length) {
-      parts.push('');
-      parts.push('---');
-      parts.push('');
-      parts.push('## Model Recommendation');
-      parts.push('');
-      parts.push('After analyzing the issues above, recommend which AI models should attempt to fix them.');
-      parts.push(`Available models (in order): ${modelContext.availableModels.join(', ')}`);
-      parts.push('');
-      parts.push('Consider:');
-      parts.push('- Issue complexity: security/refactoring issues need capable models, typos/style can use fast models');
-      parts.push('- Issue count and diversity: many issues or multi-file changes need capable models');
-      parts.push('- Previous attempts: if a model already failed, try a different one');
-      parts.push('');
-      
-      if (modelContext.modelHistory) {
-        parts.push('## Model Performance on This Codebase');
-        parts.push(modelContext.modelHistory);
-        parts.push('');
-      }
-      
-      if (modelContext.attemptHistory) {
-        parts.push('## Previous Attempts on These Issues');
-        parts.push(modelContext.attemptHistory);
-        parts.push('');
-      }
-      
-      parts.push('End your response with this line:');
-      parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | brief reasoning');
-      parts.push('');
-      parts.push('Examples:');
-      parts.push('MODEL_RECOMMENDATION: claude-sonnet-4-5, gpt-5.2 | Complex security issues, skip mini models');
-      parts.push('MODEL_RECOMMENDATION: gpt-5-mini, claude-haiku | Simple style/formatting fixes only');
-      parts.push('MODEL_RECOMMENDATION: claude-opus-4-5 | Multi-file refactoring requires strongest model');
+    // Don't forget the last batch
+    if (currentBatch.length > 0) {
+      batches.push({ issues: currentBatch, issueTexts: currentTexts });
     }
 
-    const response = await this.complete(parts.join('\n'));
-    const results = new Map<string, { exists: boolean; explanation: string }>();
-    const allowedIds = new Set(issues.map(issue => issue.id.toLowerCase()));
+    debug('Batch check batches', { 
+      total: issues.length,
+      batches: batches.length, 
+      sizes: batches.map(b => ({ issues: b.issues.length, chars: b.issueTexts.join('').length })),
+      maxContextChars,
+    });
 
-    // Parse issue responses
-    const lines = response.content.split('\n');
-    for (const line of lines) {
-      // Match patterns like "issue_123: YES: explanation" or "ISSUE_123: NO: explanation"
-      const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
-      if (match) {
-        const [, id, yesNo, explanation] = match;
-        const normalizedId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
-        const resultId = normalizedId.length > 0 ? `issue_${normalizedId}` : normalizedId;
-        if (!allowedIds.has(resultId)) {
-          debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
-          continue;
-        }
-        results.set(resultId, {
-          exists: yesNo.toUpperCase() === 'YES',
-          explanation: explanation.trim(),
-        });
-      }
-    }
-
-    // Parse model recommendation if we asked for it
+    // Process all batches
+    const allResults = new Map<string, { exists: boolean; explanation: string }>();
     let recommendedModels: string[] | undefined;
     let modelRecommendationReasoning: string | undefined;
-    
-    if (modelContext?.availableModels?.length) {
-      const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
-      if (modelMatch) {
-        const modelList = modelMatch[1];
-        const reasoning = modelMatch[2]?.trim();
+
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const { issues: batchIssues, issueTexts } = batches[batchIdx];
+      const isFirstBatch = batchIdx === 0;
+      
+      debug(`Processing batch ${batchIdx + 1}/${batches.length}`, { 
+        issueCount: batchIssues.length,
+        chars: issueTexts.join('').length + headerSize + footerSize
+      });
+
+      // Build prompt for this batch
+      const parts = [
+        ...headerParts,
+        ...issueTexts,
+        '---',
+        '',
+        'Now analyze each issue STRICTLY and respond with one line per issue:',
+      ];
+
+      // Only ask for model recommendation in first batch
+      if (isFirstBatch && modelContext?.availableModels?.length) {
+        parts.push('');
+        parts.push('---');
+        parts.push('');
+        parts.push('## Model Recommendation');
+        parts.push('');
+        parts.push('After analyzing the issues above, recommend which AI models should attempt to fix them.');
+        parts.push(`Available models (in order): ${modelContext.availableModels.join(', ')}`);
+        parts.push('');
+        parts.push('Consider:');
+        parts.push('- Issue complexity: security/refactoring issues need capable models, typos/style can use fast models');
+        parts.push('- Issue count and diversity: many issues or multi-file changes need capable models');
+        parts.push('- Previous attempts: if a model already failed, try a different one');
+        parts.push('');
         
-        // Parse model list, filter to only valid available models
-        const availableSet = new Set(modelContext.availableModels.map(m => m.toLowerCase()));
-        recommendedModels = modelList
-          .split(',')
-          .map(m => m.trim())
-          .filter(m => {
-            // Check if this model (or a close match) is in available models
-            const lower = m.toLowerCase();
-            if (availableSet.has(lower)) return true;
-            // Also accept if it's a substring match (e.g., "sonnet" matches "claude-sonnet-4-5")
-            for (const avail of modelContext.availableModels!) {
-              if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
-                return true;
-              }
-            }
-            return false;
-          })
-          .map(m => {
-            // Normalize to exact available model name
-            const lower = m.toLowerCase();
-            for (const avail of modelContext.availableModels!) {
-              if (avail.toLowerCase() === lower) return avail;
-              if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
-                return avail;
-              }
-            }
-            return m;
-          });
+        if (modelContext.modelHistory) {
+          parts.push('## Model Performance on This Codebase');
+          parts.push(modelContext.modelHistory);
+          parts.push('');
+        }
         
-        modelRecommendationReasoning = reasoning || undefined;
+        if (modelContext.attemptHistory) {
+          parts.push('## Previous Attempts on These Issues');
+          parts.push(modelContext.attemptHistory);
+          parts.push('');
+        }
         
-        if (recommendedModels.length > 0) {
-          debug('LLM model recommendation', { 
-            recommendedModels, 
-            reasoning: modelRecommendationReasoning,
-            rawMatch: modelMatch[1]
-          });
-        } else {
-          debug('LLM model recommendation parsed but no valid models found', { 
-            rawMatch: modelMatch[1],
-            available: modelContext.availableModels
+        parts.push('End your response with this line:');
+        parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | brief reasoning');
+        parts.push('');
+        parts.push('Examples:');
+        parts.push('MODEL_RECOMMENDATION: claude-sonnet-4-5, gpt-5.2 | Complex security issues, skip mini models');
+        parts.push('MODEL_RECOMMENDATION: gpt-5-mini, claude-haiku | Simple style/formatting fixes only');
+      }
+
+      const response = await this.complete(parts.join('\n'));
+      const allowedIds = new Set(batchIssues.map(issue => issue.id.toLowerCase()));
+
+      // Parse issue responses
+      const lines = response.content.split('\n');
+      for (const line of lines) {
+        const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
+        if (match) {
+          const [, id, yesNo, explanation] = match;
+          const normalizedId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+          const resultId = normalizedId.length > 0 ? `issue_${normalizedId}` : normalizedId;
+          if (!allowedIds.has(resultId)) {
+            debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
+            continue;
+          }
+          allResults.set(resultId, {
+            exists: yesNo.toUpperCase() === 'YES',
+            explanation: explanation.trim(),
           });
         }
-      } else {
-        debug('No MODEL_RECOMMENDATION found in response');
+      }
+
+      // Parse model recommendation only from first batch
+      if (isFirstBatch && modelContext?.availableModels?.length) {
+        const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
+        if (modelMatch) {
+          const modelList = modelMatch[1];
+          const reasoning = modelMatch[2]?.trim();
+          
+          const availableSet = new Set(modelContext.availableModels.map(m => m.toLowerCase()));
+          recommendedModels = modelList
+            .split(',')
+            .map(m => m.trim())
+            .filter(m => {
+              const lower = m.toLowerCase();
+              if (availableSet.has(lower)) return true;
+              for (const avail of modelContext.availableModels!) {
+                if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
+                  return true;
+                }
+              }
+              return false;
+            })
+            .map(m => {
+              const lower = m.toLowerCase();
+              for (const avail of modelContext.availableModels!) {
+                if (avail.toLowerCase() === lower) return avail;
+                if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
+                  return avail;
+                }
+              }
+              return m;
+            });
+          
+          modelRecommendationReasoning = reasoning || undefined;
+          
+          if (recommendedModels.length > 0) {
+            debug('LLM model recommendation', { 
+              recommendedModels, 
+              reasoning: modelRecommendationReasoning,
+            });
+          }
+        }
       }
     }
 
+    debug('Batch check complete', { 
+      parsed: allResults.size, 
+      expected: issues.length,
+      batches: batches.length,
+    });
+
     return {
-      issues: results,
+      issues: allResults,
       recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
       modelRecommendationReasoning,
     };
