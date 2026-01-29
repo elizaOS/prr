@@ -144,8 +144,14 @@ export async function getDiffForFile(git: SimpleGit, file: string): Promise<stri
   try {
     return await git.diff(['HEAD', '--', file]);
   } catch {
-    // File might be new (untracked)
-    return await git.diff(['--no-index', '/dev/null', file]).catch(() => '');
+    // File might be new (untracked), try --no-index diff
+    try {
+      return await git.diff(['--no-index', '/dev/null', file]);
+    } catch (err) {
+      // Log error but return empty - file may not exist or have permission issues
+      debug('Failed to get diff for file', { file, error: err instanceof Error ? err.message : String(err) });
+      return '';
+    }
   }
 }
 

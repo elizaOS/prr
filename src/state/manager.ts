@@ -15,7 +15,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
-import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance, DismissedIssue, BailOutRecord } from './types.js';
+import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance, DismissedIssue, BailOutRecord, IssueAttempt, IssueAttempts } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../logger.js';
 
@@ -604,6 +604,83 @@ export class StateManager {
     }
     
     return lines.length > 0 ? lines.join('\n') : undefined;
+  }
+
+  // ============================================================================
+  // Per-issue attempt tracking
+  // WHY: Tell the LLM what's already been tried on each issue so it can make
+  // better model recommendations (e.g., skip models that already failed).
+  // ============================================================================
+
+  /**
+   * Record a fix attempt on an issue.
+   */
+  recordIssueAttempt(
+    commentId: string,
+    tool: string,
+    model: string | undefined,
+    result: 'fixed' | 'failed' | 'no-changes' | 'error',
+    lessonLearned?: string,
+    rejectionCount?: number
+  ): void {
+    if (!this.state) throw new Error('State not loaded');
+    if (!this.state.issueAttempts) {
+      this.state.issueAttempts = {};
+    }
+    if (!this.state.issueAttempts[commentId]) {
+      this.state.issueAttempts[commentId] = [];
+    }
+    
+    this.state.issueAttempts[commentId].push({
+      commentId,
+      tool,
+      model,
+      timestamp: new Date().toISOString(),
+      result,
+      lessonLearned,
+      rejectionCount,
+    });
+  }
+
+  /**
+   * Get attempt history for a set of issues, formatted for LLM context.
+   * 
+   * WHY: The LLM needs to see what's been tried so it can recommend different models.
+   * Format is human-readable for the prompt.
+   */
+  getAttemptHistoryForIssues(commentIds: string[]): string | undefined {
+    if (!this.state?.issueAttempts) return undefined;
+    
+    const lines: string[] = [];
+    
+    for (const commentId of commentIds) {
+      const attempts = this.state.issueAttempts[commentId];
+      if (!attempts || attempts.length === 0) continue;
+      
+      // Summarize attempts for this issue
+      const summaries = attempts.map(a => {
+        const modelKey = a.model ? `${a.tool}/${a.model}` : a.tool;
+        let summary = `${modelKey}: ${a.result}`;
+        if (a.rejectionCount && a.rejectionCount > 0) {
+          summary += ` (${a.rejectionCount} rejections)`;
+        }
+        if (a.lessonLearned) {
+          summary += ` [lesson: ${a.lessonLearned.substring(0, 50)}...]`;
+        }
+        return summary;
+      });
+      
+      lines.push(`Issue ${commentId}: ${summaries.join(', ')}`);
+    }
+    
+    return lines.length > 0 ? lines.join('\n') : undefined;
+  }
+
+  /**
+   * Get all attempts for a specific issue.
+   */
+  getIssueAttempts(commentId: string): IssueAttempt[] {
+    return this.state?.issueAttempts?.[commentId] ?? [];
   }
   
   // No-progress cycle tracking for bail-out mechanism

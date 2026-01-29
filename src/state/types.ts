@@ -69,6 +69,26 @@ export interface ModelStats {
 export type ModelPerformance = Record<string, ModelStats>;  // "tool/model" -> stats
 
 /**
+ * Track individual fix attempts per issue.
+ * 
+ * WHY: The LLM model selector needs to know what's been tried on each issue:
+ * - "Model X already tried this and failed" → try a different model
+ * - "Model Y failed with a lesson learned" → use that lesson
+ * - "3 models failed on this issue" → might need strongest model or human review
+ */
+export interface IssueAttempt {
+  commentId: string;            // Which issue was attempted
+  tool: string;                 // e.g., "cursor", "claude-code"
+  model?: string;               // e.g., "claude-sonnet-4-5"
+  timestamp: string;            // ISO timestamp
+  result: 'fixed' | 'failed' | 'no-changes' | 'error';
+  lessonLearned?: string;       // If a lesson was extracted from this attempt
+  rejectionCount?: number;      // How many times the fix was rejected
+}
+
+export type IssueAttempts = Record<string, IssueAttempt[]>;  // commentId -> attempts
+
+/**
  * Track bail-out events and reasons.
  * 
  * WHY: Document why automation stopped so humans can pick up where it left off.
@@ -113,6 +133,8 @@ export interface ResolverState {
   modelIndices?: Record<string, number>; // runner name -> current model index
   // Model performance tracking - which models work well for this project
   modelPerformance?: ModelPerformance;   // "tool/model" -> stats
+  // Per-issue attempt tracking - what's been tried on each issue
+  issueAttempts?: IssueAttempts;         // commentId -> attempts
   // Bail-out tracking - document when/why automation stopped
   bailOutRecord?: BailOutRecord;         // Last bail-out event
   noProgressCycles?: number;             // Cycles completed with zero progress (persisted for resume)
@@ -134,6 +156,7 @@ export function createInitialState(pr: string, branch: string, headSha: string):
     verifiedComments: [],
     dismissedIssues: [],
     modelPerformance: {},
+    issueAttempts: {},
     noProgressCycles: 0,
     totalTimings: {},
     totalTokenUsage: [],

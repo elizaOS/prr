@@ -2476,6 +2476,28 @@ Start your response with \`\`\` and end with \`\`\`.`;
             this.stateManager.recordModelFailure(this.runner.name, currentModel, failedCount);
           }
           
+          // Record per-issue attempts for LLM model recommendation context
+          // WHY: LLM needs to know what's been tried on each issue to recommend different models
+          for (const issue of changedIssues) {
+            const wasFixed = verifiedThisSession.has(issue.comment.id);
+            this.stateManager.recordIssueAttempt(
+              issue.comment.id,
+              this.runner.name,
+              currentModel,
+              wasFixed ? 'fixed' : 'failed',
+              undefined,  // lessonLearned - could extract from lessonsManager later
+              undefined   // rejectionCount - could track in future
+            );
+          }
+          for (const issue of unchangedIssues) {
+            this.stateManager.recordIssueAttempt(
+              issue.comment.id,
+              this.runner.name,
+              currentModel,
+              'no-changes'
+            );
+          }
+          
           spinner.succeed(`Verified: ${formatNumber(verifiedCount)}/${formatNumber(totalIssues)} fixed (${progressPct}%), ${formatNumber(failedCount)} remaining (${formatDuration(verifyTime)})`);
           
           // Show iteration summary
@@ -3536,10 +3558,12 @@ After resolving, the files should have NO conflict markers remaining.`;
       let modelContext: ModelRecommendationContext | undefined;
       if (!this.options.modelRotation) {
         const availableModels = this.getModelsForRunner(this.runner);
+        // Get attempt history for these specific issues
+        const commentIds = toCheck.map(item => item.comment.id);
         modelContext = {
           availableModels,
           modelHistory: this.stateManager.getModelHistorySummary?.() || undefined,
-          attemptHistory: undefined,  // TODO: Track per-issue attempts
+          attemptHistory: this.stateManager.getAttemptHistoryForIssues(commentIds),
         };
       }
 

@@ -278,14 +278,16 @@ export class GitHubAPI {
 
     do {
       pageCount++;
-      const response = await this.graphqlWithAuth<GraphQLResponse>(query, {
+      const response: GraphQLResponse = await this.graphqlWithAuth<GraphQLResponse>(query, {
         owner,
         repo,
         pr: prNumber,
         cursor,
       });
 
-      const { pageInfo, nodes } = response.repository.pullRequest.reviewThreads;
+      const reviewThreads = response.repository.pullRequest.reviewThreads;
+      const pageInfo = reviewThreads.pageInfo;
+      const nodes = reviewThreads.nodes;
       debug(`Fetched page ${pageCount} with ${nodes.length} threads`, { 
         hasNextPage: pageInfo.hasNextPage,
         cursor: pageInfo.endCursor?.slice(0, 20),
