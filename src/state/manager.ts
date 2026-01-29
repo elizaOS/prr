@@ -318,6 +318,20 @@ export class StateManager {
       .map(v => v.commentId);
   }
 
+  /**
+   * Get all verified comment IDs.
+   */
+  getVerifiedComments(): string[] {
+    if (!this.state) return [];
+    
+    // Combine legacy and new records
+    const fromLegacy = this.state.verifiedFixed || [];
+    const fromNew = this.state.verifiedComments?.map(v => v.commentId) || [];
+    
+    // Return unique IDs
+    return [...new Set([...fromLegacy, ...fromNew])];
+  }
+
   addLesson(lesson: string): void {
     if (!this.state) {
       throw new Error('State not loaded. Call load() first.');

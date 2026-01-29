@@ -186,6 +186,28 @@ export async function checkForConflicts(git: SimpleGit, branch: string): Promise
 }
 
 /**
+ * Quick check if remote has new commits without full conflict detection.
+ * 
+ * WHY: During fix iterations, we want to detect if someone pushed to the PR
+ * so we can pull and re-verify instead of wasting cycles on stale code.
+ * 
+ * @returns Number of commits we're behind, or 0 if up-to-date
+ */
+export async function checkRemoteAhead(git: SimpleGit, branch: string): Promise<{ behind: number; ahead: number }> {
+  debug('Quick check for remote commits', { branch });
+  
+  // Fetch latest refs (lightweight operation)
+  await git.fetch('origin', branch);
+  
+  const status = await git.status();
+  
+  return {
+    behind: status.behind || 0,
+    ahead: status.ahead || 0,
+  };
+}
+
+/**
  * Pull latest changes from remote, handling divergent branches and local changes.
  * 
  * WHY rebase: Keeps history clean. prr's commits should go on top of remote changes.

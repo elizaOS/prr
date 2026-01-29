@@ -17,7 +17,7 @@ import { StateManager } from './state/manager.js';
 import { LessonsManager, formatLessonForDisplay } from './state/lessons.js';
 import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
-import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
+import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
 import type { SimpleGit } from 'simple-git';
 import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from './git/commit.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
@@ -2015,6 +2015,54 @@ Start your response with \`\`\` and end with \`\`\`.`;
           }
           
           fixIteration++;
+          
+          // Check for new commits pushed to the PR (every iteration)
+          // WHY: Detect external pushes early so we don't waste cycles on stale code
+          const remoteStatus = await checkRemoteAhead(git, this.prInfo.branch);
+          if (remoteStatus.behind > 0) {
+            console.log(chalk.yellow(`\n⚠ Remote has ${remoteStatus.behind} new commit(s) - pulling...`));
+            
+            const pullResult = await pullLatest(git, this.prInfo.branch);
+            if (!pullResult.success) {
+              console.log(chalk.red(`  Failed to pull: ${pullResult.error}`));
+              if (pullResult.error?.includes('conflict')) {
+                // Conflicts need manual resolution - bail out
+                console.log(chalk.red('  Conflicts detected. Please resolve manually and restart.'));
+                this.exitReason = 'error';
+                this.exitDetails = 'Pull conflicts require manual resolution';
+                break;
+              }
+              // Other pull errors - continue but warn
+              console.log(chalk.yellow('  Continuing with potentially stale code...'));
+            } else {
+              console.log(chalk.green(`  ✓ Pulled ${remoteStatus.behind} commit(s)`));
+              
+              // Invalidate verification cache - code has changed
+              // WHY: Previous "fixed" status may no longer be valid
+              const previouslyVerified = this.stateManager.getVerifiedComments().length;
+              if (previouslyVerified > 0) {
+                console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
+                this.stateManager.clearVerificationCache();
+              }
+              
+              // Re-fetch code snippets for unresolved issues
+              // WHY: Code at those lines may have changed
+              console.log(chalk.gray(`  Refreshing code snippets for ${unresolvedIssues.length} issues...`));
+              for (const issue of unresolvedIssues) {
+                issue.codeSnippet = await this.getCodeSnippet(
+                  issue.comment.path,
+                  issue.comment.line,
+                  issue.comment.body
+                );
+              }
+              
+              // Update PR info with new head SHA
+              const updatedPR = await this.github.getPRInfo(owner, repo, number);
+              this.prInfo.headSha = updatedPR.headSha;
+              debug('Updated PR head SHA', { oldSha: this.prInfo.headSha, newSha: updatedPR.headSha });
+            }
+          }
+          
           const iterLabel = this.options.maxFixIterations ? `${fixIteration}/${maxFixIterations}` : `${fixIteration}`;
           const currentModel = this.getCurrentModel();
           const modelInfo = currentModel ? chalk.gray(` [${this.runner.name}/${currentModel}]`) : chalk.gray(` [${this.runner.name}]`);
