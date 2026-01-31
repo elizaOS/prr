@@ -5,6 +5,49 @@ import { loadConfig } from './config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { PRResolver } from './resolver.js';
 
+let resolver: PRResolver | null = null;
+let isShuttingDown = false;
+
+async function handleShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) {
+    // Second signal - force exit
+    console.log(chalk.red('\nForce exit.'));
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  
+  if (resolver) {
+    await resolver.gracefulShutdown();
+  }
+  
+  // Compute signal-specific exit code (128 + signal number)
+  // SIGINT (2) -> 130, SIGTERM (15) -> 143
+  const signalCodes: Record<string, number> = {
+    'SIGINT': 130,   // 128 + 2
+    'SIGTERM': 143,  // 128 + 15
+    'SIGHUP': 129,   // 128 + 1
+    'SIGQUIT': 131,  // 128 + 3
+  };
+  const exitCode = signalCodes[signal] ?? 128;
+  
+  process.exit(exitCode);
+}
+
+// Set up signal handlers
+process.on('SIGINT', () => {
+  handleShutdown('SIGINT').catch(err => {
+    console.error('Error during shutdown:', err);
+    process.exit(1);
+  });
+});
+process.on('SIGTERM', () => {
+  handleShutdown('SIGTERM').catch(err => {
+    console.error('Error during shutdown:', err);
+    process.exit(1);
+  });
+});
+
 async function main(): Promise<void> {
   try {
     // Parse CLI arguments
@@ -22,7 +65,7 @@ async function main(): Promise<void> {
     }
 
     // Create and run resolver
-    const resolver = new PRResolver(config, options);
+    resolver = new PRResolver(config, options);
     await resolver.run(prUrl);
 
   } catch (error) {

@@ -1,7 +1,7 @@
 {
   "name": "prr",
   "version": "1.0.0",
-  "description": "CLI tool to automatically resolve LLM review bot comments on PRs",
+  "description": "CLI tool to automatically resolve PR review comments",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -9,9 +9,12 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "bun dist/index.js",
+    "build:bun": "bunx tsc",
+    "start": "node dist/index.js",
+    "start:bun": "bun dist/index.js",
     "dev": "bun --watch src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:bun": "bunx tsc --noEmit"
   },
   "keywords": [
     "github",
@@ -39,6 +42,7 @@
     "typescript": "^5.7.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "bun": ">=1.0.0"
   }
 }

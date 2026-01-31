@@ -1,9 +1,151 @@
-import { spawn } from 'child_process';
+import { spawn, execFile as execFileCallback } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
-import type { Runner, RunnerResult } from './types.js';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
+import { debug, debugPrompt, debugResponse } from '../logger.js';
+import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
+
+// Validate model name to prevent injection (defense in depth)
+// Allows forward slashes for provider-prefixed names like "anthropic/claude-..."
+function isValidModel(model: string): boolean {
+  return isValidModelName(model);
+}
+
+function isSafePath(value: string): boolean {
+  return value.length > 0 && !/[\0\r\n]/.test(value);
+}
+
+// Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
+const CURSOR_AGENT_BINARY = 'cursor-agent';
+
+// Fallback model list if dynamic discovery fails
+const FALLBACK_MODELS = [
+  'claude-4-sonnet-thinking',
+  'gpt-4o',
+  'claude-4-opus-thinking',
+  'gpt-4o-mini',
+  'o3',
+];
+
+/**
+ * Model family priority for sorting discovered models
+ * WHY: We want to try Claude first (best reasoning), then GPT (good coding),
+ * then Gemini, then others. Within families, prefer thinking variants and higher tiers.
+ */
+const MODEL_FAMILY_PRIORITY: Array<{ pattern: RegExp; priority: number; subPriority?: (model: string) => number }> = [
+  // Claude models - highest priority
+  { 
+    pattern: /^(?:claude-\d+-)?(opus|sonnet|haiku)/i, 
+    priority: 1,
+    subPriority: (m) => {
+      if (m.includes('opus')) return 1;
+      if (m.includes('sonnet')) return 2;
+      if (m.includes('haiku')) return 3;
+      return 10;
+    }
+  },
+  // GPT models - second priority  
+  { 
+    pattern: /^(gpt-|o\d)/i, 
+    priority: 2,
+    subPriority: (m) => {
+      if (/^o\d/i.test(m)) return 1;
+      // Prefer higher versions, codex variants, and high tiers
+      if (m.includes('5.2') && m.includes('codex') && m.includes('high')) return 1;
+      if (m.includes('5.2') && m.includes('codex')) return 2;
+      if (m.includes('5.2') && m.includes('high')) return 3;
+      if (m.includes('5.2')) return 4;
+      if (m.includes('5.1')) return 5;
+      return 10;
+    }
+  },
+  // Gemini models - third priority
+  { 
+    pattern: /^gemini-/i, 
+    priority: 3,
+    subPriority: (m) => m.includes('pro') ? 1 : 2
+  },
+  // Others (grok, etc) - lowest priority
+  { pattern: /.*/, priority: 99 },
+];
+
+/**
+ * Parse `cursor-agent models` output and return prioritized model list
+ */
+function parseAndPrioritizeModels(output: string): string[] {
+  const models: string[] = [];
+  const lines = output.split('\n');
+  
+  for (const line of lines) {
+    // Format: "model-id - Model Description" or "model-id - Description (current, default)"
+    const match = line.match(/^([a-zA-Z0-9._-]+)\s+-\s+/);
+    if (match) {
+      const modelId = match[1];
+      // Skip 'auto' and 'composer-1' as they're meta-models
+      if (modelId !== 'auto' && modelId !== 'composer-1') {
+        models.push(modelId);
+      }
+    }
+  }
+  
+  // Sort by family priority
+  models.sort((a, b) => {
+    let aPriority = 99, bPriority = 99;
+    let aSubPriority = 99, bSubPriority = 99;
+    
+    for (const { pattern, priority, subPriority } of MODEL_FAMILY_PRIORITY) {
+      if (pattern.test(a) && priority < aPriority) {
+        aPriority = priority;
+        aSubPriority = subPriority?.(a) ?? 99;
+      }
+      if (pattern.test(b) && priority < bPriority) {
+        bPriority = priority;
+        bSubPriority = subPriority?.(b) ?? 99;
+      }
+    }
+    
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    if (aSubPriority !== bSubPriority) return aSubPriority - bSubPriority;
+    return a.localeCompare(b);
+  });
+  
+  // Group models by family
+  const byFamily: Record<string, string[]> = {
+    claude: [],
+    gpt: [],
+    gemini: [],
+    other: [],
+  };
+  
+  for (const model of models) {
+    if (/^(?:claude-\d+-)?(opus|sonnet|haiku)/i.test(model)) byFamily.claude.push(model);
+    else if (/^(gpt-|o\d)/i.test(model)) byFamily.gpt.push(model);
+    else if (/^gemini-/i.test(model)) byFamily.gemini.push(model);
+    else byFamily.other.push(model);
+  }
+  
+  // Interleave families: switch providers before trying another model from same provider
+  // WHY: If Claude sonnet can't solve it, GPT might have better luck than Claude opus
+  // Different providers have different strengths/weaknesses
+  const selected: string[] = [];
+  const familyOrder = ['claude', 'gpt', 'gemini', 'other'];
+  const maxPerFamily = 2;
+  
+  for (let round = 0; round < maxPerFamily; round++) {
+    for (const family of familyOrder) {
+      if (byFamily[family][round]) {
+        selected.push(byFamily[family][round]);
+      }
+    }
+  }
+  
+  // Limit to reasonable size
+  return selected.slice(0, 6);
+}
 
 /**
  * Runner for Cursor CLI (Cursor IDE's agent mode)
@@ -13,51 +155,222 @@ const exec = promisify(execCallback);
  */
 export class CursorRunner implements Runner {
   name = 'cursor';
+  displayName = 'Cursor Agent';
+  
+  // Dynamically discovered models (populated on checkStatus)
+  supportedModels?: string[];
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which cursor');
+      await execFile('which', [CURSOR_AGENT_BINARY]);
+      debug(`Found Cursor Agent CLI: ${CURSOR_AGENT_BINARY}`);
       return true;
     } catch {
+      debug('Cursor Agent CLI not found (install: Linux curl https://cursor.com/install -fsS | bash; Intel Mac curl https://cursor.com/install -fsS | bash)');
       return false;
     }
   }
 
-  async run(workdir: string, prompt: string): Promise<RunnerResult> {
+  async checkStatus(): Promise<RunnerStatus> {
+    // Check if installed
+    const installed = await this.isAvailable();
+    if (!installed) {
+      return { installed: false, ready: false, error: 'cursor-agent not installed (install: Linux curl https://cursor.com/install -fsS | bash; Intel Mac curl https://cursor.com/install -fsS | bash)' };
+    }
+
+    // Check version
+    let version: string | undefined;
+    try {
+      const { stdout } = await execFile(CURSOR_AGENT_BINARY, ['--version']);
+      version = stdout.trim();
+    } catch {
+      // Version check failed, but might still work
+    }
+
+    // Check if logged in and get available models
+    try {
+      const { stdout } = await execFile(CURSOR_AGENT_BINARY, ['models']);
+      if (stdout.includes('Available models') || stdout.includes('auto')) {
+        // Parse and prioritize models dynamically
+        // WHY: Model names change over time, dynamic discovery keeps us current
+        const discoveredModels = parseAndPrioritizeModels(stdout);
+        if (discoveredModels.length > 0) {
+          this.supportedModels = discoveredModels;
+          debug('Discovered Cursor models', { models: discoveredModels });
+        } else {
+          // Fallback if parsing failed
+          this.supportedModels = FALLBACK_MODELS;
+          debug('Using fallback Cursor models (parsing failed)');
+        }
+        return { installed: true, ready: true, version };
+      }
+      if (stdout.includes('login') || stdout.includes('auth') || stdout.includes('unauthorized')) {
+        return { installed: true, ready: false, version, error: 'Not logged in (run: cursor-agent login)' };
+      }
+      // Command worked but unexpected output - use fallback
+      this.supportedModels = FALLBACK_MODELS;
+      return { installed: true, ready: true, version };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      if (error.includes('login') || error.includes('auth')) {
+        return { installed: true, ready: false, version, error: 'Not logged in (run: cursor-agent login)' };
+      }
+      // Use fallback models on error
+      this.supportedModels = FALLBACK_MODELS;
+      return { installed: true, ready: false, version, error };
+    }
+  }
+
+  async run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult> {
+    if (!isSafePath(workdir)) {
+      return { success: false, output: '', error: `Invalid workdir path: ${workdir}` };
+    }
+    
+    // Guard: Don't run with empty prompt
+    // WHY: Empty prompt means nothing to fix - cursor-agent will error
+    if (!prompt || prompt.trim().length === 0) {
+      debug('Empty prompt - skipping cursor run');
+      return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
+    }
+    
+    // Validate model before writing sensitive prompt to disk
+    if (options?.model && !isValidModel(options.model)) {
+      return { success: false, output: '', error: `Invalid model name: ${options.model}` };
+    }
+
+    // Write prompt to a temp file for reference
+    const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
+    if (!isSafePath(promptFile)) {
+      return { success: false, output: '', error: `Invalid prompt file path: ${promptFile}` };
+    }
+    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
+    debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('cursor-agent', prompt, { workdir, model: options?.model });
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
+
     return new Promise((resolve) => {
-      // WHY: Cursor uses 'agent' subcommand with --message flag. This is
-      // different from Claude Code/opencode which take prompt as direct arg.
-      // The --directory flag ensures Cursor operates in the correct workspace.
-      const args = [
-        'agent',
-        '--message', prompt,
-        '--directory', workdir,
+      // Build args array safely (no shell interpolation)
+      // cursor-agent options:
+      // --print: Output to console (for scripts)
+      // --output-format stream-json: Stream JSON chunks for live output
+      // --stream-partial-output: Stream partial text as it's generated
+      // --workspace: Working directory
+      // --model: Model to use (e.g., claude-opus-4-5, claude-sonnet-4-5)
+      // prompt: Passed via stdin to avoid E2BIG
+
+      const args: string[] = [
+        '--print',
+        '--output-format', 'stream-json',
+        '--stream-partial-output',
+        '--workspace', workdir,
       ];
+      
+      // Add model if specified
+      if (options?.model) {
+        args.push('--model', options.model);
+      }
+      
+      const modelInfo = options?.model ? ` (model: ${options.model})` : '';
+      console.log(`\nRunning: ${CURSOR_AGENT_BINARY}${modelInfo} --workspace ${workdir} [prompt]\n`);
+      debug('Cursor command', { binary: CURSOR_AGENT_BINARY, workdir, model: options?.model, promptLength: prompt.length });
 
-      console.log(`Running: cursor ${args.slice(0, 3).join(' ')} [prompt] --directory ${workdir}`);
-
-      const child = spawn('cursor', args, {
+      // SECURITY: Use spawn with argument array (no shell) to prevent shell injection.
+      // Paths like workdir could contain special characters from repo names or PR numbers.
+      // By using spawn without shell: true, arguments are passed directly to the process.
+      const child = spawn(CURSOR_AGENT_BINARY, args, {
         cwd: workdir,
-        stdio: ['inherit', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
+        shell: false, // Explicit: prevent shell injection via paths/arguments
       });
+      
+      // Pass prompt via stdin to avoid E2BIG for large prompts
+      child.stdin?.write(prompt);
+      child.stdin?.end();
 
       let stdout = '';
       let stderr = '';
+      let lastContent = '';
+      let pending = '';
+
+      const handleLine = (line: string) => {
+        try {
+          const json = JSON.parse(line);
+          // Handle different event types from stream-json
+          if (json.type === 'text' && json.content) {
+            // Incremental text output
+            process.stdout.write(json.content);
+            lastContent += json.content;
+          } else if (json.type === 'tool_use') {
+            // Tool being used
+            console.log(`\n🔧 ${json.name || 'tool'}: ${json.input?.path || json.input?.command || ''}`);
+          } else if (json.type === 'tool_result') {
+            // Tool result - usually verbose, skip or summarize
+            if (json.is_error) {
+              console.log(`   ❌ Error: ${json.content?.slice(0, 100)}...`);
+            }
+          } else if (json.type === 'message_start' || json.type === 'content_block_start') {
+            // Message starting, ignore
+          } else if (json.type === 'message_stop' || json.type === 'content_block_stop') {
+            // Message ended
+            if (lastContent) {
+              process.stdout.write('\n');
+              lastContent = '';
+            }
+          } else if (json.content) {
+            // Fallback: if there's content, print it
+            process.stdout.write(json.content);
+          }
+        } catch {
+          // Not JSON, print raw (might be plain text mode)
+          if (line.trim() && !line.includes('"type"')) {
+            process.stdout.write(line + '\n');
+          }
+        }
+      };
 
       child.stdout?.on('data', (data) => {
         const str = data.toString();
         stdout += str;
-        process.stdout.write(str);
+        pending += str;
+        
+        // Parse stream-json output and display nicely
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? '';
+        const nonEmpty = lines.filter((l: string) => l.trim());
+        for (const line of nonEmpty) {
+          handleLine(line);
+        }
       });
 
       child.stderr?.on('data', (data) => {
         const str = data.toString();
         stderr += str;
-        process.stderr.write(str);
+        // Show stderr but filter out noise
+        if (!str.includes('Debugger') && !str.includes('DevTools')) {
+          process.stderr.write(str);
+        }
       });
 
       child.on('close', (code) => {
+        if (pending.trim()) {
+          handleLine(pending);
+          pending = '';
+        }
+        // Clean up prompt file
+        cleanupPromptFile();
+
+        console.log('\n'); // Clean line after streaming output
+        
+        // Log response to debug file
+        debugResponse('cursor-agent', stdout, { exitCode: code, stderrLength: stderr.length });
+
         if (code === 0) {
           resolve({
             success: true,
@@ -73,6 +386,9 @@ export class CursorRunner implements Runner {
       });
 
       child.on('error', (err) => {
+        // Clean up prompt file
+        cleanupPromptFile();
+
         resolve({
           success: false,
           output: stdout,

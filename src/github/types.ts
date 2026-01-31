@@ -1,12 +1,43 @@
+export interface BotResponseTiming {
+  botName: string;
+  responseCount: number;
+  minResponseMs: number;
+  avgResponseMs: number;
+  maxResponseMs: number;
+  responseTimes: Array<{
+    commitSha: string;
+    commitTime: Date;
+    responseTime: Date;
+    delayMs: number;
+  }>;
+}
+
 export interface PRInfo {
   owner: string;
   repo: string;
   number: number;
   branch: string;
+  baseBranch: string;
+  headSha: string;
   cloneUrl: string;
+  mergeable: boolean | null;  // null = GitHub is still calculating
+  mergeableState: string;     // 'clean', 'dirty', 'blocked', 'unstable', 'unknown'
 }
 
-export interface ReviewComment {
+export interface PRStatus {
+  // CI checks
+  ciState: 'pending' | 'success' | 'failure' | 'error';
+  inProgressChecks: string[];
+  pendingChecks: string[];
+  totalChecks: number;
+  completedChecks: number;
+  // Bot reviews
+  pendingReviewers: string[];
+  activelyReviewingBots: string[];  // Bots that posted "reviewing" but no final review yet
+  botsWithEyesReaction: string[];   // Bots that reacted with 👀 (working on it)
+}
+
+export interface ThreadComment {
   id: string;
   threadId: string;
   author: string;
@@ -24,10 +55,10 @@ export interface ReviewThread {
   line: number | null;
   diffSide: 'LEFT' | 'RIGHT' | null;
   isResolved: boolean;
-  comments: ReviewComment[];
+  comments: ThreadComment[];
 }
 
-export interface BotComment {
+export interface ReviewComment {
   id: string;
   threadId: string;
   author: string;
