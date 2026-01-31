@@ -545,8 +545,8 @@ export async function completeMerge(git: SimpleGit, message: string): Promise<{ 
     await git.commit(message);
     return { success: true };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { success: false, error: message };
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { success: false, error: errorMessage };
   }
 }
 

@@ -97,7 +97,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 
 # Default fixer tool (rotates automatically when stuck)
 # If not set, prr will auto-detect which tool is installed
-PRR_TOOL=cursor
+# PRR_TOOL=cursor
 ```
 
 ### Why These Defaults?

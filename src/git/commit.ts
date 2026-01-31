@@ -439,7 +439,8 @@ export function stripMarkdownForCommit(text: string): string {
     // Remove markdown links [text](url) -> text
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     // Remove common review comment prefixes/emoji patterns
-    .replace(/^(?:⚠️|🔴|🟡|🟢|✅|❌|💡|📝|🐛)+\s*/g, '')
+    // NOTE: Using alternation instead of character class because emojis like ⚠️ have combining characters
+    .replace(/^(?:⚠️|🔴|🟡|🟢|✅|❌|💡|📝|🐛)+\s*/gu, '')
     // Collapse whitespace
     .replace(/\s+/g, ' ')
     .trim();

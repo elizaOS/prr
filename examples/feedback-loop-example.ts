@@ -240,8 +240,9 @@ async function main() {
   }
 }
 
-// Run if executed directly
-if (require.main === module) {
+// Run if executed directly (ESM compatible)
+import { fileURLToPath } from 'url';
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main();
 }
 
