@@ -20,10 +20,19 @@ export function setVerbose(enabled: boolean): void {
   }
 }
 
-// Safe stringify that handles BigInt, circular refs, and custom toJSON errors
-function safeStringify(value: unknown): string {
+/**
+ * Safely stringify a value to JSON, handling edge cases.
+ * 
+ * WHY: JSON.stringify throws on BigInt values and can throw on objects
+ * with custom toJSON methods that error. This provides a safe fallback.
+ * 
+ * @param value - The value to stringify
+ * @param pretty - If true, format with 2-space indentation
+ * @returns JSON string or string representation if JSON fails
+ */
+function safeStringify(value: unknown, pretty = false): string {
   try {
-    return JSON.stringify(value);
+    return pretty ? JSON.stringify(value, null, 2) : JSON.stringify(value);
   } catch {
     // Fallback for values that can't be JSON serialized (BigInt, circular, etc.)
     return String(value);
@@ -109,7 +118,7 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
   if (metadata) {
-    content += `Metadata: ${JSON.stringify(metadata, null, 2)}\n`;
+    content += `Metadata: ${safeStringify(metadata, true)}\n`;
   }
   content += `Length: ${prompt.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
@@ -133,7 +142,7 @@ export function debugResponse(label: string, response: string, metadata?: Record
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
   if (metadata) {
-    content += `Metadata: ${JSON.stringify(metadata, null, 2)}\n`;
+    content += `Metadata: ${safeStringify(metadata, true)}\n`;
   }
   content += `Length: ${response.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
