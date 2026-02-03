@@ -1483,83 +1483,97 @@ Start your response with \`\`\` and end with \`\`\`.`;
         info(`Branch is ${conflictStatus.aheadBy} commits ahead of remote`);
       }
 
-      // Check if PR has merge conflicts with base branch
+      // Check if PR has merge conflicts with base branch and ensure we're up-to-date
+      // WHY: Always try to merge base branch when --merge-base is enabled (default).
+      // Don't rely solely on GitHub's mergeable status which can be null (calculating) or stale.
       debugStep('CHECKING PR MERGE STATUS');
-      if (this.prInfo.mergeable === false || this.prInfo.mergeableState === 'dirty') {
+      
+      const githubSaysConflicts = this.prInfo.mergeable === false || this.prInfo.mergeableState === 'dirty';
+      const githubStillCalculating = this.prInfo.mergeable === null;
+      
+      if (githubSaysConflicts) {
         console.log(chalk.yellow(`⚠ PR has conflicts with ${this.prInfo.baseBranch}`));
+      } else if (githubStillCalculating) {
+        console.log(chalk.gray(`  GitHub is still calculating merge status - will try local merge...`));
+      }
+      
+      // Always try to merge base branch when --merge-base is enabled (default)
+      // This ensures we're working with up-to-date code even if GitHub says "mergeable"
+      if (this.options.mergeBase) {
+        startTimer('Merge base branch');
+        console.log(chalk.cyan(`  Syncing with origin/${this.prInfo.baseBranch}...`));
         
-        // Auto-resolve conflicts by default (unless --no-merge-base is set)
-        // WHY auto-resolve: Fixing review comments on stale pre-merge code is wasteful
-        // The code after merge may be different, making fixes incorrect
-        if (this.options.mergeBase) {
-          startTimer('Resolve conflicts');
-          console.log(chalk.cyan(`  Attempting to merge origin/${this.prInfo.baseBranch} into ${this.prInfo.branch}...`));
+        // Fetch latest base branch first
+        await git.fetch('origin', this.prInfo.baseBranch);
+        
+        const mergeResult = await mergeBaseBranch(git, this.prInfo.baseBranch);
+        
+        if (!mergeResult.success) {
+          // Merge failed - use LLM tool to resolve conflicts
+          console.log(chalk.yellow('  Merge has conflicts, resolving...'));
           
-          const mergeResult = await mergeBaseBranch(git, this.prInfo.baseBranch);
+          // Start the merge to get conflict markers in files
+          const { conflictedFiles, error } = await startMergeForConflictResolution(
+            git,
+            this.prInfo.baseBranch,
+            `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`
+          );
           
-          if (!mergeResult.success) {
-            // Merge failed - use LLM tool to resolve conflicts
-            console.log(chalk.yellow('  Auto-merge failed, resolving conflicts...'));
-            
-            // Start the merge to get conflict markers in files
-            const { conflictedFiles, error } = await startMergeForConflictResolution(
-              git,
-              this.prInfo.baseBranch,
-              `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`
-            );
-            
-            if (error && conflictedFiles.length === 0) {
-              console.log(chalk.red(`✗ Failed to start merge: ${error}`));
-              return;
-            }
-            
-            if (conflictedFiles.length === 0) {
-              console.log(chalk.yellow('  No conflicts detected after merge attempt'));
-            } else {
-              // Use the shared conflict resolution method
-              const resolution = await this.resolveConflictsWithLLM(
-                git,
-                conflictedFiles,
-                this.prInfo.baseBranch
-              );
-              
-              if (!resolution.success) {
-                console.log(chalk.yellow('\n⚠ Could not resolve all merge conflicts automatically'));
-                console.log(chalk.yellow('  Remaining conflicts:'));
-                for (const file of resolution.remainingConflicts) {
-                  console.log(chalk.yellow(`    - ${file}`));
-                }
-                console.log(chalk.cyan('\n  Aborting merge and resetting to PR branch...'));
-                
-                // Abort merge and reset to clean state on PR branch
-                await abortMerge(git);
-                await git.reset(['--hard', `origin/${this.prInfo.branch}`]);
-                await git.clean('f', ['-d']);
-                
-                endTimer('Resolve conflicts');
-                console.log(chalk.green(`  ✓ Reset to ${this.prInfo.branch} - ready to fix review comments`));
-                console.log(chalk.gray('  (PR still has conflicts with base branch - human can resolve later)'));
-                
-                // Continue to fix review comments instead of returning
-              } else {
-                // All conflicts resolved - stage files and complete the merge
-                const codeFiles = conflictedFiles.filter(f => !isLockFile(f));
-                await markConflictsResolved(git, codeFiles);
-                const commitResult = await completeMerge(git, `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`);
-                
-                if (!commitResult.success) {
-                  console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
-                  return;
-                }
-                
-                console.log(chalk.green(`✓ Conflicts resolved and merged ${this.prInfo.baseBranch}`));
-              }
-            }
-          } else {
-            console.log(chalk.green(`✓ Successfully merged ${this.prInfo.baseBranch} into ${this.prInfo.branch}`));
+          if (error && conflictedFiles.length === 0) {
+            console.log(chalk.red(`✗ Failed to start merge: ${error}`));
+            return;
           }
           
-          // Push the merge if auto-push enabled
+          if (conflictedFiles.length === 0) {
+            console.log(chalk.green(`✓ Already up-to-date with ${this.prInfo.baseBranch}`));
+          } else {
+            // Use the shared conflict resolution method
+            const resolution = await this.resolveConflictsWithLLM(
+              git,
+              conflictedFiles,
+              this.prInfo.baseBranch
+            );
+            
+            if (!resolution.success) {
+              console.log(chalk.yellow('\n⚠ Could not resolve all merge conflicts automatically'));
+              console.log(chalk.yellow('  Remaining conflicts:'));
+              for (const file of resolution.remainingConflicts) {
+                console.log(chalk.yellow(`    - ${file}`));
+              }
+              console.log(chalk.cyan('\n  Aborting merge and resetting to PR branch...'));
+              
+              // Abort merge and reset to clean state on PR branch
+              await abortMerge(git);
+              await git.reset(['--hard', `origin/${this.prInfo.branch}`]);
+              await git.clean('f', ['-d']);
+              
+              endTimer('Merge base branch');
+              console.log(chalk.green(`  ✓ Reset to ${this.prInfo.branch} - ready to fix review comments`));
+              console.log(chalk.gray('  (PR still has conflicts with base branch - human can resolve later)'));
+              
+              // Continue to fix review comments instead of returning
+            } else {
+              // All conflicts resolved - stage files and complete the merge
+              const codeFiles = conflictedFiles.filter(f => !isLockFile(f));
+              await markConflictsResolved(git, codeFiles);
+              const commitResult = await completeMerge(git, `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`);
+              
+              if (!commitResult.success) {
+                console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
+                return;
+              }
+              
+              console.log(chalk.green(`✓ Conflicts resolved and merged ${this.prInfo.baseBranch}`));
+            }
+          }
+        } else if (mergeResult.alreadyUpToDate) {
+          console.log(chalk.green(`✓ Already up-to-date with ${this.prInfo.baseBranch}`));
+        } else {
+          console.log(chalk.green(`✓ Merged latest ${this.prInfo.baseBranch} into ${this.prInfo.branch}`));
+        }
+        
+        // Push the merge if there were changes and auto-push enabled
+        if (mergeResult.success && !mergeResult.alreadyUpToDate) {
           if (!this.options.noPush && !this.options.noCommit) {
             spinner.start('Pushing merge commit...');
             await git.push('origin', this.prInfo.branch);
@@ -1567,16 +1581,16 @@ Start your response with \`\`\` and end with \`\`\`.`;
           } else {
             console.log(chalk.yellow('  Merge commit created locally. Use --push to push it.'));
           }
-          endTimer('Resolve conflicts');
-        } else {
-          // Not merging base - just warn and continue with review comments
-          console.log(chalk.gray(`  Skipping base branch merge (use --merge-base to auto-merge ${this.prInfo.baseBranch})`));
-          console.log(chalk.gray('  Continuing to fix review comments...'));
         }
-      } else if (this.prInfo.mergeable === null) {
-        console.log(chalk.gray('  GitHub is still calculating merge status...'));
+        endTimer('Merge base branch');
       } else {
-        console.log(chalk.green(`✓ PR is mergeable with ${this.prInfo.baseBranch}`));
+        // --no-merge-base was explicitly set
+        if (githubSaysConflicts) {
+          console.log(chalk.gray(`  Skipping base branch merge (--no-merge-base set)`));
+          console.log(chalk.gray('  Continuing to fix review comments on current branch state...'));
+        } else {
+          console.log(chalk.green(`✓ PR is mergeable with ${this.prInfo.baseBranch}`));
+        }
       }
 
       // Main loop

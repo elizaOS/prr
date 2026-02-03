@@ -432,6 +432,7 @@ export async function cleanupGitState(git: SimpleGit): Promise<void> {
 
 export interface MergeBaseResult {
   success: boolean;
+  alreadyUpToDate?: boolean;
   conflictedFiles?: string[];
   error?: string;
 }
@@ -455,15 +456,37 @@ export async function mergeBaseBranch(
       await git.fetch(['origin', `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
     }
     
+    // Check if we're already up-to-date before trying merge
+    const headSha = await git.revparse(['HEAD']);
+    const baseSha = await git.revparse([`origin/${baseBranch}`]);
+    const mergeBase = await git.raw(['merge-base', 'HEAD', `origin/${baseBranch}`]).then(s => s.trim());
+    
+    if (baseSha.trim() === mergeBase) {
+      debug('Already up-to-date with base branch');
+      return { success: true, alreadyUpToDate: true };
+    }
+    
     // Try to merge
     debug('Attempting merge');
-    await git.merge([`origin/${baseBranch}`, '--no-edit']);
+    const result = await git.merge([`origin/${baseBranch}`, '--no-edit']);
+    
+    // Check if merge result indicates already up-to-date
+    const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+    if (resultStr.includes('Already up to date') || resultStr.includes('Already up-to-date')) {
+      debug('Merge says already up-to-date');
+      return { success: true, alreadyUpToDate: true };
+    }
     
     debug('Merge successful');
-    return { success: true };
+    return { success: true, alreadyUpToDate: false };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     debug('Merge failed', { error: message });
+    
+    // "Already up to date" can come as an error in some git versions
+    if (message.includes('Already up to date') || message.includes('Already up-to-date')) {
+      return { success: true, alreadyUpToDate: true };
+    }
     
     // Check for conflicts
     const status = await git.status();
