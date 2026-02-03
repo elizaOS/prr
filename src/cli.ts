@@ -37,6 +37,12 @@ export interface CLIOptions {
   modelRotation: boolean;
   /** Don't sync lessons to CLAUDE.md (only use .prr/lessons.md) */
   noClaudeMd: boolean;
+  /** Cleanup mode: remove prr section from CLAUDE.md */
+  cleanClaudeMd: boolean;
+  /** Cleanup mode: remove state file from git */
+  cleanState: boolean;
+  /** Cleanup mode: run both cleanups */
+  cleanAll: boolean;
 }
 
 export interface ParsedArgs {
@@ -106,7 +112,11 @@ export function createCLI(): Command {
     .option('--no-handoff-prompt', 'Disable developer handoff prompt in final output')
     .option('--no-after-action', 'Disable after action report in final output')
     .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false)
-    .option('--no-claude-md', 'Don\'t sync lessons to CLAUDE.md (only use .prr/lessons.md)');
+    .option('--no-claude-md', 'Don\'t sync lessons to CLAUDE.md (only use .prr/lessons.md)')
+    // Cleanup-only modes (run and exit)
+    .option('--clean-claude-md', 'Remove prr section from CLAUDE.md (or delete if only prr content) and exit')
+    .option('--clean-state', 'Remove .pr-resolver-state.json from git tracking and exit')
+    .option('--clean-all', 'Run both --clean-claude-md and --clean-state, then exit');
 
   return program;
 }
@@ -181,6 +191,10 @@ export function parseArgs(program: Command): ParsedArgs {
       noAfterAction: !opts.afterAction,       // --no-after-action sets opts.afterAction=false
       modelRotation: opts.modelRotation ?? false,  // Default: use smart model selection
       noClaudeMd: !opts.claudeMd,             // --no-claude-md sets opts.claudeMd=false
+      // Cleanup modes
+      cleanClaudeMd: opts.cleanClaudeMd ?? false,
+      cleanState: opts.cleanState ?? false,
+      cleanAll: opts.cleanAll ?? false,
     },
   };
 }
