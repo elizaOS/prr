@@ -312,6 +312,7 @@ export class LessonsManager {
 
     let normalized = kept.join(' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
+    normalized = normalized.replace(/`+$/g, '').trim();
     normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
     normalized = normalized.replace(/\s*-\s*\(inferred\)[^\s]*/gi, '').trim();
     normalized = normalized.replace(/\s*-\s*:\s*(?:string|number|boolean|unknown|any)\s*;?/gi, ' - ').trim();
@@ -416,6 +417,7 @@ export class LessonsManager {
 
   private sanitizeFilePathHeader(filePath: string): string {
     let cleaned = filePath.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim();
+    cleaned = cleaned.replace(/\s*-\s*\(inferred\).*$/i, '').trim();
     cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*\w+$/i, '').trim();
     cleaned = cleaned.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml)\b$/i, '').trim();
     cleaned = cleaned.replace(/^.*?([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?).*$/i, '$1').trim();
