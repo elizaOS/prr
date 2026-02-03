@@ -2979,6 +2979,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
         spinner.succeed('Workdir cleaned up');
       } else {
         console.log(chalk.gray(`\nWorkdir preserved: ${this.workdir}`));
+        console.log(chalk.gray(`  To clean up: rm -rf ${this.workdir}`));
+        console.log(chalk.gray(`  To clean all: rm -rf ~/.prr/work`));
       }
 
       endTimer('Total');
