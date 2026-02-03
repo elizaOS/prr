@@ -306,6 +306,11 @@ export class LessonsManager {
     let normalized = kept.join(' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
     normalized = normalized.replace(/\s*\(inferred\).*$/, '').trim();
+    normalized = normalized.replace(/\s*-\s*\(inferred\).*$/, '').trim();
+    normalized = normalized.replace(/made no changes\s*:/i, 'made no changes');
+    normalized = normalized.replace(/\bDo NOT repeat them\b:?/i, '').trim();
+    normalized = this.canonicalizeToolAttempts(normalized);
+    normalized = normalized.replace(/\s*:\s*$/, '').trim();
     normalized = normalized.replace(/\s+-\s*$/, '').trim();
     return normalized.length > 0 ? normalized : null;
   }
@@ -314,8 +319,28 @@ export class LessonsManager {
     return lesson.toLowerCase().replace(/\s+/g, ' ').trim();
   }
 
+  private canonicalizeToolAttempts(lesson: string): string {
+    const toolPattern = '\\b(?:claude-code|codex|llm-api|cursor|opencode|aider)\\b';
+    const attemptPattern = new RegExp(
+      `${toolPattern}\\s+with\\s+.+?\\s+made no changes(?:\\s+without explanation)?(?:\\s*-\\s*trying different approach)?`,
+      'gi'
+    );
+    return lesson.replace(attemptPattern, (match) => {
+      const withoutExplanation = /without explanation/i.test(match);
+      const tryingDifferent = /trying different approach/i.test(match);
+      let canonical = 'tool made no changes';
+      if (withoutExplanation) canonical += ' without explanation';
+      if (tryingDifferent) canonical += ' - trying different approach';
+      return canonical;
+    });
+  }
+
   private sanitizeFilePathHeader(filePath: string): string {
     let cleaned = filePath.replace(/^\*\*|\*\*$/g, '').trim();
+    const fixForMatch = cleaned.match(/^Fix for\s+(.+?)(?:\s+(?:rejected:|-)\s+.*)?$/i);
+    if (fixForMatch) {
+      cleaned = fixForMatch[1].trim();
+    }
     cleaned = cleaned.replace(/\s+-\s+.*$/, '');
     cleaned = cleaned.replace(/\s*\(inferred\).*$/, '').trim();
     return cleaned;
