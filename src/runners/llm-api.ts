@@ -233,10 +233,11 @@ Working directory: ${workdir}`;
             debug('Search text not found even with normalized whitespace', { filePath });
             continue;
           }
-          const patternParts = searchNormalized.split(new RegExp(`\\s{1,${MAX_WHITESPACE}}`))
+          const whitespaceToken = `\\s{1,${MAX_WHITESPACE}}`;
+          const patternParts = searchNormalized.split(new RegExp(whitespaceToken))
             .map(part => escapeRegExp(part))
             .filter(Boolean);
-          const whitespacePattern = patternParts.join(`\\s{1,${MAX_WHITESPACE}}`);
+          const whitespacePattern = patternParts.join(whitespaceToken);
           const whitespaceRegex = new RegExp(whitespacePattern, 'm');
           const newContent = originalContent.replace(whitespaceRegex, replaceText.trim());
           if (newContent === originalContent) {
