@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
@@ -111,6 +111,13 @@ export class LessonsManager {
   // Helps users understand if progress is being made vs. just carrying old lessons
   private initialLessonCount = 0;
   private newLessonsThisSession = 0;
+  
+  // Track which sync target files existed before we touched them
+  // WHY: If CLAUDE.md didn't exist, we should clean it up on exit
+  private originalSyncTargetState: Map<LessonsSyncTarget, boolean> = new Map();
+  
+  // Whether to skip CLAUDE.md syncing (--no-claude-md)
+  private skipClaudeMd = false;
 
   constructor(owner: string, repo: string, branch: string) {
     this.localStorePath = getLocalLessonsPath(owner, repo, branch);
@@ -122,6 +129,17 @@ export class LessonsManager {
       global: [],
       files: {},
     };
+  }
+  
+  /**
+   * Set whether to skip CLAUDE.md syncing.
+   * WHY: Some users don't want prr to create/modify CLAUDE.md
+   */
+  setSkipClaudeMd(skip: boolean): void {
+    this.skipClaudeMd = skip;
+    if (skip) {
+      this.syncTargets = this.syncTargets.filter(t => t !== 'claude-md');
+    }
   }
 
   /**
@@ -145,23 +163,34 @@ export class LessonsManager {
   /**
    * Auto-detect sync targets based on existing files in repo.
    * WHY: If user already has CONVENTIONS.md or .cursor/rules/, sync there too.
+   * Also records which files existed before we touched them.
    */
   private autoDetectSyncTargets(): void {
     if (!this.workdir) return;
 
     const detected: LessonsSyncTarget[] = [];
 
-    // Always sync to CLAUDE.md (Cursor + Claude Code both read it)
-    detected.push('claude-md');
+    // Check CLAUDE.md - only add if not skipped
+    if (!this.skipClaudeMd) {
+      const claudeMdPath = join(this.workdir, 'CLAUDE.md');
+      const claudeMdExists = existsSync(claudeMdPath);
+      this.originalSyncTargetState.set('claude-md', claudeMdExists);
+      detected.push('claude-md');
+    }
 
     // Check for Aider's CONVENTIONS.md or config
-    if (existsSync(join(this.workdir, 'CONVENTIONS.md')) ||
-        existsSync(join(this.workdir, '.aider.conf.yml'))) {
+    const conventionsMdPath = join(this.workdir, 'CONVENTIONS.md');
+    const conventionsMdExists = existsSync(conventionsMdPath);
+    this.originalSyncTargetState.set('conventions-md', conventionsMdExists);
+    if (conventionsMdExists || existsSync(join(this.workdir, '.aider.conf.yml'))) {
       detected.push('conventions-md');
     }
 
     // Check for Cursor native rules directory
-    if (existsSync(join(this.workdir, '.cursor', 'rules'))) {
+    const cursorRulesPath = join(this.workdir, '.cursor', 'rules');
+    const cursorRulesExists = existsSync(cursorRulesPath);
+    this.originalSyncTargetState.set('cursor-rules', cursorRulesExists);
+    if (cursorRulesExists) {
       detected.push('cursor-rules');
     }
 
@@ -891,9 +920,17 @@ export class LessonsManager {
     for (const target of this.syncTargets) {
       const config = SYNC_TARGETS[target];
       const filePath = config.path(this.workdir);
+      const existedBefore = this.originalSyncTargetState.get(target) ?? false;
 
       try {
-        // Ensure directory exists
+        // Only sync to files that already existed, unless it's a prr-owned directory
+        // WHY: Don't create CLAUDE.md if it didn't exist - user might not want it
+        if (!existsSync(filePath) && !existedBefore) {
+          // Skip creating new files for sync targets
+          continue;
+        }
+
+        // Ensure directory exists (only if file already exists or we're updating)
         const dir = dirname(filePath);
         if (!existsSync(dir)) {
           await mkdir(dir, { recursive: true });
@@ -917,9 +954,12 @@ export class LessonsManager {
             // Append prr section to end
             finalContent = existingContent.trimEnd() + '\n\n' + prrSection + '\n';
           }
-        } else {
-          // Create new file with header + our section
+        } else if (existedBefore) {
+          // File was deleted during the run - recreate with just our section
           finalContent = (config.createHeader || '') + prrSection + '\n';
+        } else {
+          // Skip - don't create new files
+          continue;
         }
 
         await writeFile(filePath, finalContent, 'utf-8');
@@ -938,6 +978,58 @@ export class LessonsManager {
       this.repoLessonsDirty = false;
     }
     return success;
+  }
+
+  /**
+   * Clean up sync target files that we created (didn't exist before).
+   * Also removes our section from files that existed before.
+   * 
+   * WHY: If CLAUDE.md didn't exist before prr ran, we shouldn't leave it behind.
+   * If it did exist, we should remove our section to leave it clean.
+   */
+  async cleanupSyncTargets(): Promise<void> {
+    if (!this.workdir) return;
+
+    for (const target of this.syncTargets) {
+      const config = SYNC_TARGETS[target];
+      const filePath = config.path(this.workdir);
+      const existedBefore = this.originalSyncTargetState.get(target) ?? false;
+
+      try {
+        if (!existsSync(filePath)) continue;
+
+        if (!existedBefore) {
+          // We created this file - delete it
+          await unlink(filePath);
+          console.log(`Removed ${config.description} (created by prr)`);
+        } else {
+          // File existed before - remove only our section
+          const content = await readFile(filePath, 'utf-8');
+          const startIdx = content.indexOf(PRR_SECTION_START);
+          const endIdx = content.indexOf(PRR_SECTION_END);
+
+          if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+            // Remove our section (and any trailing newlines we added)
+            let newContent = content.slice(0, startIdx) + content.slice(endIdx + PRR_SECTION_END.length);
+            // Clean up extra newlines
+            newContent = newContent.replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+            
+            await writeFile(filePath, newContent, 'utf-8');
+            console.log(`Removed prr section from ${config.description}`);
+          }
+        }
+      } catch (error) {
+        // Non-fatal
+        console.warn(`Could not clean up ${config.description}:`, error);
+      }
+    }
+  }
+
+  /**
+   * Check if a sync target file existed before prr touched it.
+   */
+  didSyncTargetExist(target: LessonsSyncTarget): boolean {
+    return this.originalSyncTargetState.get(target) ?? false;
   }
 
   /**

@@ -35,6 +35,8 @@ export interface CLIOptions {
   noAfterAction: boolean;
   /** Use legacy model rotation instead of smart LLM-based model selection */
   modelRotation: boolean;
+  /** Don't sync lessons to CLAUDE.md (only use .prr/lessons.md) */
+  noClaudeMd: boolean;
 }
 
 export interface ParsedArgs {
@@ -103,7 +105,8 @@ export function createCLI(): Command {
     .option('--no-merge-base', 'Skip auto-merging base branch even if conflicts exist')
     .option('--no-handoff-prompt', 'Disable developer handoff prompt in final output')
     .option('--no-after-action', 'Disable after action report in final output')
-    .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false);
+    .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false)
+    .option('--no-claude-md', 'Don\'t sync lessons to CLAUDE.md (only use .prr/lessons.md)');
 
   return program;
 }
@@ -177,6 +180,7 @@ export function parseArgs(program: Command): ParsedArgs {
       noHandoffPrompt: !opts.handoffPrompt,   // --no-handoff-prompt sets opts.handoffPrompt=false
       noAfterAction: !opts.afterAction,       // --no-after-action sets opts.afterAction=false
       modelRotation: opts.modelRotation ?? false,  // Default: use smart model selection
+      noClaudeMd: !opts.claudeMd,             // --no-claude-md sets opts.claudeMd=false
     },
   };
 }
