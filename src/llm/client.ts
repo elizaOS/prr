@@ -316,26 +316,16 @@ NO: Looks good`;
     const modelRecSize = modelContext?.availableModels?.length ? 1500 : 0; // Reserve for model recommendation
     const availableForIssues = maxContextChars - headerSize - footerSize - modelRecSize;
 
-    // Build issue text for sizing
+    // Build issue text - NO truncation, batching handles size limits
     const buildIssueText = (issue: typeof issues[0]): string => {
-      // Truncate long comments and code to keep batches reasonable
-      const maxCommentLen = 800;
-      const maxCodeLen = 1500;
-      const truncatedComment = issue.comment.length > maxCommentLen
-        ? issue.comment.substring(0, maxCommentLen) + '...'
-        : issue.comment;
-      const truncatedCode = issue.codeSnippet.length > maxCodeLen
-        ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
-        : issue.codeSnippet;
-
       return [
         `## Issue ${issue.id}`,
         `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
-        `Comment: ${truncatedComment}`,
+        `Comment: ${issue.comment}`,
         '',
         'Current code:',
         '```',
-        truncatedCode,
+        issue.codeSnippet,
         '```',
         '',
       ].join('\n');
@@ -679,28 +669,18 @@ NO: Looks good`;
 
   /**
    * Build the text representation of an issue for the audit prompt
+   * NO truncation - batching handles size limits
    */
   private buildIssueText(
     index: number,
     issue: { filePath: string; line: number | null; comment: string; codeSnippet: string }
   ): string {
-    // Truncate long comments and code to keep batches reasonable
-    const maxCommentLen = 800;
-    const maxCodeLen = 1500;
-    
-    const truncatedComment = issue.comment.length > maxCommentLen
-      ? issue.comment.substring(0, maxCommentLen) + '...'
-      : issue.comment;
-    const truncatedCode = issue.codeSnippet.length > maxCodeLen
-      ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
-      : issue.codeSnippet;
-
     return [
       `[${index}] File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
-      `Comment: ${truncatedComment}`,
+      `Comment: ${issue.comment}`,
       'Code:',
       '```',
-      truncatedCode,
+      issue.codeSnippet,
       '```',
       '',
     ].join('\n');
@@ -758,7 +738,7 @@ File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
 Review Comment: ${issue.comment}
 
 ATTEMPTED FIX (diff):
-${diff.substring(0, 1500)}
+${diff}
 
 REJECTION REASON:
 ${rejectionReason}
@@ -997,11 +977,8 @@ RESOLVED:
     // Show feedback with emphasis on extracting the actual change
     for (const issue of fixedIssues.slice(0, 10)) { // Limit to avoid huge prompts
       const fileName = issue.filePath.split('/').pop();
-      // Extract just the key issue, truncate long comments
-      const shortComment = issue.comment.length > 200 
-        ? issue.comment.substring(0, 200) + '...'
-        : issue.comment;
-      parts.push(`[${fileName}] ${shortComment}`);
+      // Include full comment for accurate commit message generation
+      parts.push(`[${fileName}] ${issue.comment}`);
       parts.push('');
     }
 
