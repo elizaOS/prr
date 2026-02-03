@@ -1,5 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { dirname, resolve, relative, sep } from 'path';
+import { dirname, resolve, relative, sep, isAbsolute } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
@@ -189,7 +189,7 @@ Working directory: ${workdir}`;
     const fullPath = resolve(workdir, filePath);
     const relativePath = relative(workdirResolved, fullPath);
     const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
-    const isOutside = hasParentTraversal || (fullPath !== workdirResolved && !fullPath.startsWith(workdirResolved + sep));
+    const isOutside = hasParentTraversal || isAbsolute(relativePath);
     return { safe: !isOutside, fullPath };
   }
 
@@ -228,8 +228,11 @@ Working directory: ${workdir}`;
             debug('Search text not found even with normalized whitespace', { filePath });
             continue;
           }
-          const patternParts = searchNormalized.split(/\s+/).map(part => escapeRegExp(part)).filter(Boolean);
-          const whitespacePattern = patternParts.join('\\s{1,1000}');
+          const maxWhitespace = 1000;
+          const patternParts = searchNormalized.split(new RegExp(`\\s{1,${maxWhitespace}}`))
+            .map(part => escapeRegExp(part))
+            .filter(Boolean);
+          const whitespacePattern = patternParts.join(`\\s{1,${maxWhitespace}}`);
           const whitespaceRegex = new RegExp(whitespacePattern, 'm');
           const newContent = originalContent.replace(whitespaceRegex, replaceText.trim());
           if (newContent === originalContent) {

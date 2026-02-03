@@ -180,7 +180,7 @@
 - Fix for src/runners/cursor.ts:null rejected: The fix does not address the E2BIG risk—the diff shows only comments updated and temp file handling added, but the prompt is still passed as a positional argument via `args.push()` rather than being sent via stdin as required by the review.
 - Fix for src/runners/cursor.ts:null - When adding a helper function to fix a vulnerability, verify it's actually called at the injection point and remove any duplicate definitions.
 - Fix for src/runners/cursor.ts:null rejected: Similar to the previous fix, this only adds the `shellEscape` function definition but doesn't demonstrate it being used to escape `workdir` and `promptFile` paths in the actual shell command on line 89. The function is dead code without application.
-- llm-api with claude-haiku-4-5-20251001 made no changes: Issue 1 cannot be fixed by editing source files. The review comment addresses the **PR title** which is git/GitHub metadata (commit message or GitHub PR title field), not content in README.md. PR titles are set via git commit messages or the GitHub PR web interface, not by modifying source code files in the repository. The README.md title "# prr (PR Resolver)" is the correct project name and should remain unchanged.
+- llm-api with claude-haiku-4-5-20251001 made no changes: Issue 1 cannot be fixed by editing source files. The review comment criticizes the **PR title** ("Fix push and other things?"), which is git/GitHub metadata (commit message or GitHub PR title field), not repository content. PR titles are set via git commit messages or the GitHub PR web interface, not by modifying source code files in the working directory. The README.md title (`# prr (PR Resolver)`) is correct as the project title and should remain unchanged. Source file edits cannot modify PR metadata.
 - Fix for src/runners/cursor.ts:null rejected: Identical issue to the previous fix - duplicate function definition and the `shellEscape` function is defined but not actually applied to escape `workdir` or `promptFile` in the shell command.
 - Fix for src/resolver.ts:null rejected: The diff modifies imports unrelated to the issue; it should change unresolvedIssues to comments in the fixedIssues filter at lines 1593-1599
 - Fix for src/runners/cursor.ts:null - When the review specifies removing a specific code line and adding stdin-based I/O, prioritize those structural changes first—don't fix unrelated bugs in the same file.
@@ -217,11 +217,13 @@
 - Fix for README.md:null rejected: The fix only adds a clarification comment and a generic link, but does not provide the platform-specific instructions (Linux, Intel Mac) that the review explicitly requested
 - Fix for README.md:null rejected: The code change only reformats table formatting, but does not update the README example to match the canonical date-stamped model name from config.ts or add clarifying comments
 - Fix for src/runners/cursor.ts:null - When a review specifies multiple implementation changes (remove X, set Y, write to Z), the fix must address ALL three—not just add related code. Check each requirement separately.
-- codex with gpt-5.2-codex made no changes: Issue 1 is already addressed in `README.md:1` which has the descriptive title “# prr (PR Resolver) — add model rotation, lessons management, and new runner support.” Issue 2 is already addressed in `src/runners/llm-api.ts:187` where `isPathSafe` uses `hasParentTraversal` and the simplified outside-workdir check without the old `relativePath.startsWith('..')`/`startsWith(sep + '..')` logic.
+- codex with gpt-5.2-codex made no changes: Issue 1 already fixed in `src/runners/llm-api.ts:187-193` where `hasParentTraversal` uses `relativePath.split(sep).some(segment => segment === '..')` and `isOutside` checks `fullPath !== workdirResolved && !fullPath.startsWith(workdirResolved + sep)`; Issue 2 already fixed in `src/runners/llm-api.ts:232` where `whitespacePattern` uses bounded `\\s{1,1000}`; Issue 3 already fixed in `src/config.ts:157-165` where `tool === 'auto'` is handled before the hardcoded list, aligning validation with the error message.
 - codex with gpt-5-mini made no changes: I did not change `README.md` because the current file already has a more descriptive title: `# prr (PR Resolver) - model rotation, lessons, and runner support` (see `README.md:1`), which matches the requested clarity in the review comment.
 - codex with gpt-5-mini made no changes: Both requested issues are already fixed in the repository; no edits required.
 - codex with gpt-5.2 made no changes: Both reported issues are already fixed in this workspace.
 - codex with gpt-5-mini made no changes: Both issues are already fixed in the repo — no edits required.
+- llm-api with claude-haiku-4-5-20251001 made no changes: Issue 1 cannot be fixed by editing source files. The review comment addresses the **PR title** which is git/GitHub metadata (commit message or GitHub PR title field), not content in README.md. PR titles are set via git commit messages or the GitHub PR web interface, not by modifying source code files in the repository. The README.md title "# prr (PR Resolver)" is the correct project name and should remain unchanged.
+- Fix for src/runners/llm-api.ts:null rejected: The diff only removes the unused `join` import but doesn't address the ReDoS vulnerability in the whitespace regex pattern mentioned in the review
 
 ## File-Specific Lessons
 
@@ -284,6 +286,7 @@
 ### src/logger.ts
 
 - Fix for src/logger.ts:null - tool made no changes without explanation, may need clearer instructions
+- Fix for src/logger.ts:196 rejected: The diff doesn't address the review comment about variable naming inconsistency; it only removes an unused import and inlines the secs variable, which changes the code structure but doesn't fix the stated naming issue
 
 ### src/resolver.ts
 
