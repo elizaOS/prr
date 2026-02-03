@@ -410,6 +410,7 @@ export class LessonsManager {
     if (fixForMatch) {
       cleaned = fixForMatch[1].trim();
     }
+    cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*[a-z]+$/gi, '').trim();
     cleaned = cleaned.replace(/\s*-\s*\(inferred\)[^\n]*$/gi, '').trim();
     cleaned = cleaned.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
     cleaned = cleaned.replace(/\s*\(inferred\)[^\n]*$/gi, '').trim();

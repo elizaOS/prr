@@ -192,11 +192,8 @@ Working directory: ${workdir}`;
     // Detect any parent-traversal segments in the relative path
     const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
 
-    // Explicitly allow the workdir itself
-    if (fullPath === workdirResolved) return { safe: true, fullPath };
-
     // If the path contains parent traversal, or it does not reside under the workdir, mark as outside
-    const isOutside = hasParentTraversal || !fullPath.startsWith(workdirResolved + sep);
+    const isOutside = hasParentTraversal || (relativePath !== '' && !fullPath.startsWith(workdirResolved + sep));
     return { safe: !isOutside, fullPath };
   }
 
