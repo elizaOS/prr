@@ -408,19 +408,19 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
     
     // If no common base branch found, fall back to searching all history
     // This is less precise but won't fail
-    const logArgs: string[] = baseBranch 
-      ? [`${baseBranch}..${branch}`, '--grep=prr-fix:', '--format=%B%n---COMMIT_END---']
-      : ['--grep=prr-fix:', '--format=%B%n---COMMIT_END---', '-n', '100'];  // Limit to last 100 commits
+    const logOptions = baseBranch
+      ? { from: baseBranch, to: branch, grep: 'prr-fix:', format: { body: '%B' } }
+      : { maxCount: 100, grep: 'prr-fix:', format: { body: '%B' } };
     
-    debug('scanCommittedFixes', { baseBranch, branch, logArgs });
-    const log = await git.log(logArgs);
+    debug('scanCommittedFixes', { baseBranch, branch, logOptions });
+    const log = await git.log(logOptions);
     
     const commentIds: string[] = [];
     
     // Parse all prr-fix:ID markers from commit messages
     if (log.all && log.all.length > 0) {
       for (const commit of log.all) {
-        const fullMessage = commit.message || commit.body || '';
+        const fullMessage = commit.body || commit.message || '';
         // Match prr-fix: followed by non-whitespace (normalize to lowercase)
         const matches = fullMessage.matchAll(/prr-fix:(\S+)/gi);
         for (const match of matches) {

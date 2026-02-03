@@ -238,7 +238,7 @@ export async function pullLatest(
       deleted: status.deleted.length,
     });
     try {
-      await git.stash(['push', '-m', 'prr-auto-stash-before-pull']);
+      await git.stash(['push', '-u', '-m', 'prr-auto-stash-before-pull']);
       didStash = true;
       console.log(`  Stashed ${status.modified.length + status.created.length + status.deleted.length} local changes`);
     } catch (stashError) {
@@ -314,6 +314,7 @@ export async function pullLatest(
           console.log('  Merged remote changes');
         } catch (mergeError) {
           const mergeMsg = mergeError instanceof Error ? mergeError.message : String(mergeError);
+          await abortMerge(git);
           await restoreStashOnFailure();
           return { success: false, error: `Failed to sync with remote: ${mergeMsg}` };
         }

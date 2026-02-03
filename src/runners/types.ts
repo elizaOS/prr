@@ -62,10 +62,10 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Cursor: Uses short model names (from `cursor --list-models`)
   // WHY these names: Cursor has its own model aliases, not full API names
   'cursor': [
-    'claude-sonnet-4-5',               // Claude 4.5 Sonnet - balanced
-    'gpt-5.2',                         // GPT-5.2 - best for coding/agentic
-    'claude-opus-4-5',                 // Claude 4.5 Opus - most capable
-    'o3',                              // OpenAI o3 - fast reasoning
+    'claude-3.7-sonnet',               // Claude 3.7 Sonnet - balanced
+    'gpt-4.5-preview',                 // GPT-4.5 preview - coding/agentic
+    'claude-3-opus',                   // Claude 3 Opus - most capable
+    'o3-mini',                         // OpenAI o3-mini - fast reasoning
   ],
   // Claude Code: Claude 4.5 models only (uses full API names)
   'claude-code': [
@@ -75,9 +75,9 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   ],
   // Aider: Supports many providers (provider-prefixed)
   'aider': [
-    'anthropic/claude-sonnet-4-5-20250929',
+    'anthropic/claude-3-7-sonnet-20250219',
     'openai/gpt-5.2',
-    'anthropic/claude-opus-4-5-20251101',
+    'anthropic/claude-3-5-haiku-20241022',
     'openai/gpt-5-mini',
   ],
   // OpenCode: Mix of providers

@@ -1,5 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { join, dirname, resolve, relative, sep } from 'path';
+import { dirname, resolve, relative, sep } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
@@ -189,13 +189,14 @@ Working directory: ${workdir}`;
     const fullPath = resolve(workdir, filePath);
     const relativePath = relative(workdirResolved, fullPath);
     const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
-    const isOutside = hasParentTraversal || (fullPath !== workdirResolved && !fullPath.startsWith(workdirResolved + sep));
+    const isOutside = hasParentTraversal;
     return { safe: !isOutside, fullPath };
   }
 
   private async applyFileChanges(workdir: string, response: string): Promise<string[]> {
     const filesModified = new Set<string>();
     const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const MAX_WHITESPACE = 1000;
     
     // Parse <change path="..."><search>...</search><replace>...</replace></change> blocks
     const changePattern = /<change\s+path="([^"]+)">\s*<search>([\s\S]*?)<\/search>\s*<replace>([\s\S]*?)<\/replace>\s*<\/change>/g;
@@ -228,8 +229,10 @@ Working directory: ${workdir}`;
             debug('Search text not found even with normalized whitespace', { filePath });
             continue;
           }
-          const patternParts = searchNormalized.split(/\s+/).map(part => escapeRegExp(part)).filter(Boolean);
-          const whitespacePattern = patternParts.join('\\s{1,1000}');
+          const patternParts = searchNormalized.split(new RegExp(`\\s{1,${MAX_WHITESPACE}}`))
+            .map(part => escapeRegExp(part))
+            .filter(Boolean);
+          const whitespacePattern = patternParts.join(`\\s{1,${MAX_WHITESPACE}}`);
           const whitespaceRegex = new RegExp(whitespacePattern, 'm');
           const newContent = originalContent.replace(whitespaceRegex, replaceText.trim());
           if (newContent === originalContent) {

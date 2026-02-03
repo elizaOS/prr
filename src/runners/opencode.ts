@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { writeFileSync, unlinkSync, createReadStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -23,7 +23,7 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error(`Command failed with code ${code}`));
+        reject(new Error('Command failed'));
       }
     });
     child.on('error', () => {
