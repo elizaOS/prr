@@ -420,7 +420,7 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
     // Parse all prr-fix:ID markers from commit messages
     if (log.all && log.all.length > 0) {
       for (const commit of log.all) {
-        const fullMessage = commit.body || commit.message || '';
+        const fullMessage = commit.body || '';
         // Match prr-fix: followed by non-whitespace (normalize to lowercase)
         const matches = fullMessage.matchAll(/prr-fix:(\S+)/gi);
         for (const match of matches) {

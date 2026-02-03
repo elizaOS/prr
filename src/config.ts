@@ -161,7 +161,7 @@ export function validateTool(tool: string): FixerTool {
     // NOTE: 'auto' is a meta-value for auto-detection; resolve before running as a real tool.
     return tool;
   }
-  if (!REAL_FIXER_TOOLS.includes(tool as FixerTool)) {
+  if (!REAL_FIXER_TOOLS.includes(tool as typeof REAL_FIXER_TOOLS[number])) {
     throw new Error(`Invalid tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')} (or 'auto' for detection)`);
   }
   return tool as FixerTool;
