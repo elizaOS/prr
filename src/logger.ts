@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -189,9 +189,8 @@ export function formatDuration(ms: number): string {
   } else {
     const mins = Math.floor(ms / 60000);
     // Use Math.floor to prevent rounding to 60 seconds
-    const secs = Math.floor((ms % 60000) / 1000);
     // Pad seconds with leading zero for consistency (e.g., "1m 05s")
-    const secsStr = secs.toString().padStart(2, '0');
+    const secsStr = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
     return `${mins}m ${secsStr}s`;
   }
 }

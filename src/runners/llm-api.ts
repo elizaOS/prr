@@ -1,5 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { join, dirname, resolve, relative, sep } from 'path';
+import { dirname, resolve, relative, sep } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
