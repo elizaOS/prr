@@ -189,7 +189,7 @@ Working directory: ${workdir}`;
     const fullPath = resolve(workdir, filePath);
     const relativePath = relative(workdirResolved, fullPath);
     const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
-    const isOutside = hasParentTraversal;
+    const isOutside = hasParentTraversal || (fullPath !== workdirResolved && !fullPath.startsWith(workdirResolved + sep));
     return { safe: !isOutside, fullPath };
   }
 
