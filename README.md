@@ -1,4 +1,4 @@
-# prr (PR Resolver)
+# prr (PR Resolver) - model rotation, lessons, and runner support
 
 ```text
     /\_____/\
