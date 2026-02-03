@@ -43,6 +43,10 @@ export interface CLIOptions {
   cleanState: boolean;
   /** Cleanup mode: run both cleanups */
   cleanAll: boolean;
+  /** Disable distributed locking */
+  noLock: boolean;
+  /** Clear lock file and exit */
+  clearLock: boolean;
 }
 
 export interface ParsedArgs {
@@ -116,7 +120,10 @@ export function createCLI(): Command {
     // Cleanup-only modes (run and exit)
     .option('--clean-claude-md', 'Remove prr section from CLAUDE.md (or delete if only prr content) and exit')
     .option('--clean-state', 'Remove .pr-resolver-state.json from git tracking and exit')
-    .option('--clean-all', 'Run both --clean-claude-md and --clean-state, then exit');
+    .option('--clean-all', 'Run both --clean-claude-md and --clean-state, then exit')
+    // Distributed locking for multi-instance coordination
+    .option('--no-lock', 'Disable distributed locking (allow parallel instances on same PR)')
+    .option('--clear-lock', 'Clear the lock file and exit (use if a previous instance crashed)');
 
   return program;
 }
@@ -195,6 +202,9 @@ export function parseArgs(program: Command): ParsedArgs {
       cleanClaudeMd: opts.cleanClaudeMd ?? false,
       cleanState: opts.cleanState ?? false,
       cleanAll: opts.cleanAll ?? false,
+      // Distributed locking
+      noLock: !opts.lock,           // --no-lock sets opts.lock=false
+      clearLock: opts.clearLock ?? false,
     },
   };
 }

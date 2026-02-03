@@ -16,6 +16,7 @@ import { parsePRUrl } from './github/types.js';
 import { LLMClient, type ModelRecommendationContext } from './llm/client.js';
 import { StateManager } from './state/manager.js';
 import { LessonsManager, formatLessonForDisplay } from './state/lessons.js';
+import { LockManager } from './state/lock.js';
 import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
@@ -31,6 +32,7 @@ export class PRResolver {
   private llm: LLMClient;
   private stateManager!: StateManager;
   private lessonsManager!: LessonsManager;
+  private lockManager!: LockManager;
   private runner!: Runner;
   private runners!: Runner[];
   private currentRunnerIndex = 0;
@@ -1093,7 +1095,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
       console.log(chalk.blue(`\nProcessing PR: ${owner}/${repo}#${number}\n`));
       
       // Handle cleanup-only modes
-      const isCleanupMode = this.options.cleanClaudeMd || this.options.cleanState || this.options.cleanAll;
+      const isCleanupMode = this.options.cleanClaudeMd || this.options.cleanState || this.options.cleanAll || this.options.clearLock;
       if (isCleanupMode) {
         await this.runCleanupMode(prUrl, owner, repo, number);
         return;
@@ -1276,6 +1278,19 @@ Start your response with \`\`\` and end with \`\`\`.`;
       this.lessonsManager.setWorkdir(this.workdir); // Enable repo-based lesson sharing
       await this.lessonsManager.load();
       
+      // Initialize lock manager for multi-instance coordination
+      // WHY: Prevents duplicate work when multiple prr instances run on same PR
+      this.lockManager = new LockManager(this.workdir, { enabled: !this.options.noLock });
+      if (this.lockManager.isEnabled()) {
+        const lockStatus = await this.lockManager.getStatus();
+        if (lockStatus.isLocked && !lockStatus.isOurs) {
+          console.log(chalk.yellow(`⚠ Another prr instance is working on this PR`));
+          console.log(chalk.gray(`  Instance: ${lockStatus.holder?.instanceId} on ${lockStatus.holder?.hostname}`));
+          console.log(chalk.gray(`  Claimed issues: ${lockStatus.claimedIssues.length}`));
+          console.log(chalk.gray(`  We will avoid those issues`));
+        }
+      }
+
       // Prune lessons for deleted files
       // WHY: Lessons about files that no longer exist are useless clutter
       const prunedDeletedFiles = this.lessonsManager.pruneDeletedFiles(this.workdir);
@@ -4115,6 +4130,13 @@ After resolving, the files should have NO conflict markers remaining.`;
       } catch (err) {
         debug('Could not update .gitignore', { error: err instanceof Error ? err.message : String(err) });
       }
+    }
+    
+    // Clear lock file
+    if (this.options.clearLock) {
+      const lockManager = new LockManager(this.workdir, { enabled: true });
+      await lockManager.clearLock(git);
+      console.log(chalk.green('✓ Cleared lock file'));
     }
     
     // Commit and push if changes were made
