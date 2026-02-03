@@ -7,22 +7,22 @@
 
 ### Global
 
-- Fix for src/resolver.ts:null rejected: The change adds a constructor but does not address the batch processing ID format mismatch issue. The prompt still sends numeric IDs ("0", "1", "2") while examples show "issue_123" format, creating inconsistency that could confuse the LLM parser.
-- Fix for src/git/clone.ts:null - tool made no changes without explanation, trying different approach
-- Fix for src/resolver.ts:null - When validating shell command safety, validate the lock file existence AND legitimacy before executing, not just the command string itself.
 - Fix for src/resolver.ts:null rejected: The timeout reduction addresses one concern, but ignores the main security issues: no validation of working directory safety, no protection against shell injection, no use of Node.js APIs instead of execSync, and no process monitoring improvements.
 - codex with gpt-5.2-codex made no changes without explanation - trying different approach
 - Fix for README.md:null rejected: The fix only adds a clarification comment and a generic link, but does not provide the platform-specific instructions (Linux, Intel Mac) that the review explicitly requested
 - Fix for README.md:null rejected: The code change only reformats table formatting, but does not update the README example to match the canonical date-stamped model name from config.ts or add clarifying comments
 - Fix for src/runners/cursor.ts:null - When a review specifies multiple implementation changes (remove X, set Y, write to Z), the fix must address ALL three—not just add related code. Check each requirement separately.
-- codex with gpt-5.2-codex made no changes: Issue 1 already fixed in `src/runners/llm-api.ts:187-193` where `hasParentTraversal` uses `relativePath.split(sep).some(segment => segment === '..')` and `isOutside` checks `fullPath !== workdirResolved && !fullPath.startsWith(workdirResolved + sep)`; Issue 2 already fixed in `src/runners/llm-api.ts:232` where `whitespacePattern` uses bounded `\\s{1,1000}`; Issue 3 already fixed in `src/config.ts:157-165` where `tool === 'auto'` is handled before the hardcoded list, aligning validation with the error message.
+- codex with gpt-5.2-codex made no changes: Issue 1 is already fixed in `src/runners/llm-api.ts:228-236`. The whitespace regex is bounded via `const maxWhitespace = 1000;` and `const whitespacePattern = patternParts.join(\`\\s{1,${maxWhitespace}}\`);`, so it no longer uses unbounded `\\s+`.
 - codex with gpt-5-mini made no changes: I did not change `README.md` because the current file already has a more descriptive title: `# prr (PR Resolver) - model rotation, lessons, and runner support` (see `README.md:1`), which matches the requested clarity in the review comment.
 - codex with gpt-5-mini made no changes: Both requested issues are already fixed in the repository; no edits required.
 - codex with gpt-5.2 made no changes: Both reported issues are already fixed in this workspace.
 - codex with gpt-5-mini made no changes: Both issues are already fixed in the repo — no edits required.
 - llm-api with claude-haiku-4-5-20251001 made no changes: Issue 1 cannot be fixed by editing source files. The review comment addresses the **PR title** which is git/GitHub metadata (commit message or GitHub PR title field), not content in README.md. PR titles are set via git commit messages or the GitHub PR web interface, not by modifying source code files in the repository. The README.md title "# prr (PR Resolver)" is the correct project name and should remain unchanged.
-- Fix for src/runners/llm-api.ts:null rejected: The diff only removes the unused `join` import but doesn't address the ReDoS vulnerability in the whitespace regex pattern mentioned in the review
-- _(104 more in .prr/lessons.md)_
+- Fix for src/runners/llm-api.ts:null rejected: The diff does not match the review comment - it shows the same change as the first fix instead of implementing the ReDoS mitigation for the whitespace pattern on line 232. The suggested change to use `\s{1,1000}` is not present in the diff.
+- codex with gpt-5.2 made no changes: Issue 1 is already fixed in `src/runners/llm-api.ts:231-236` — the whitespace-normalized matching uses a bounded pattern with `const maxWhitespace = 1000;`, splitting on `new RegExp(\`\\\\s{1,${maxWhitespace}}\`)` and joining with ``\\s{1,${maxWhitespace}}``. There is no unbounded `\\s+` in the whitespace-normalized matcher at line 232, so applying the suggested change would be redundant.
+- codex with gpt-5-mini made no changes: The ReDoS concern is already addressed in `src/runners/llm-api.ts` — the code bounds whitespace when building the normalized-search regex. See `src/runners/llm-api.ts:231-236` where `const maxWhitespace = 1000` is used and the pattern uses `\\s{1,${maxWhitespace}}` (the code splits on `new RegExp('\\s{1,1000}')` and joins with `\\s{1,1000}`), preventing an unbounded `\s+` match. No change required.
+- codex with gpt-5-mini made no changes: Issue 1 is already fixed in the code — `src/runners/llm-api.ts:231` sets a bounded whitespace limit and constructs the regex with `\\s{1,${maxWhitespace}}` (see `const maxWhitespace = 1000;`, `searchNormalized.split(new RegExp(\`\\\\s{1,${maxWhitespace}}\`))`, and `patternParts.join(\`\\\\s{1,${maxWhitespace}}\`)`). This replaces any unbounded `\s+` with a bounded `\s{1,1000}`, mitigating the ReDoS concern, so no code change is required.
+- _(107 more in .prr/lessons.md)_
 
 ### By File
 
