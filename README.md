@@ -1,4 +1,4 @@
-# prr (PR Resolver) — add model rotation, lessons management, and new runner support
+# prr (PR Resolver) — Add model rotation, lessons management, and new runner support
 
 ```text
     /\_____/\
