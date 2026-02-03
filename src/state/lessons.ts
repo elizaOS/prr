@@ -313,6 +313,7 @@ export class LessonsManager {
     let normalized = kept.join(' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
     normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
+    normalized = normalized.replace(/\s*-\s*:\s*(?:string|number|boolean|unknown|any)\s*;?/gi, ' - ').trim();
     if (/\b(?:public|private|protected)\b\s+[A-Za-z_$][\w$]*\s*(?::[^;]+)?\s*(?:=|;)/i.test(normalized)) {
       return null;
     }
@@ -326,11 +327,36 @@ export class LessonsManager {
     normalized = normalized.replace(/made no changes\s*:/i, 'made no changes');
     normalized = normalized.replace(/\bDo NOT repeat them\b:?/i, '').trim();
     normalized = this.canonicalizeToolAttempts(normalized);
+    const fixForMatch = normalized.match(/^(Fix for\s+[^-]+)(?:\s+-\s+)?(.+)$/i);
+    if (fixForMatch) {
+      const prefix = fixForMatch[1].trim();
+      const remainder = fixForMatch[2]?.trim();
+      if (!remainder) {
+        return null;
+      }
+      if (/made no changes/i.test(remainder)) {
+        const isFixer = /fixer made no changes/i.test(remainder);
+        const withoutExplanation = /without explanation/i.test(remainder);
+        const tryingDifferent = /trying different approach/i.test(remainder);
+        let message = isFixer ? 'fixer made no changes' : 'tool made no changes';
+        if (withoutExplanation) message += ' without explanation';
+        if (tryingDifferent) message += ' - trying different approach';
+        normalized = `${prefix} - ${message}`;
+      }
+    }
     const toolAttemptMatch = normalized.match(/^(?:\d+-)?(?:claude-code|codex|llm-api|cursor|opencode|aider)\b.*\bmade no changes\b.*$/i);
     if (toolAttemptMatch) {
       const withoutExplanation = /without explanation/i.test(normalized);
       const tryingDifferent = /trying different approach/i.test(normalized);
       normalized = 'tool made no changes';
+      if (withoutExplanation) normalized += ' without explanation';
+      if (tryingDifferent) normalized += ' - trying different approach';
+    }
+    if (!/^Fix for\s+/i.test(normalized) && /\b(?:fixer|tool) made no changes\b/i.test(normalized)) {
+      const isFixer = /fixer made no changes/i.test(normalized);
+      const withoutExplanation = /without explanation/i.test(normalized);
+      const tryingDifferent = /trying different approach/i.test(normalized);
+      normalized = isFixer ? 'fixer made no changes' : 'tool made no changes';
       if (withoutExplanation) normalized += ' without explanation';
       if (tryingDifferent) normalized += ' - trying different approach';
     }
