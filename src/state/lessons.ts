@@ -410,6 +410,10 @@ export class LessonsManager {
     if (fixForMatch) {
       cleaned = fixForMatch[1].trim();
     }
+    const inferredHeaderMatch = cleaned.match(/^(.*?:\d+)\s*-\s*\(inferred\).*$/i);
+    if (inferredHeaderMatch) {
+      cleaned = inferredHeaderMatch[1].trim();
+    }
     cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*`?[a-z]+`?$/gi, '').trim();
     cleaned = cleaned.replace(/\s*-\s*\(inferred\)[^\n]*$/gi, '').trim();
     cleaned = cleaned.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
@@ -772,7 +776,8 @@ export class LessonsManager {
 
     // Prune file-specific lessons for deleted files
     for (const filePath of Object.keys(this.store.files)) {
-      const fullPath = join(workdir, filePath);
+      const pathOnly = filePath.replace(/:\d+(?::\d+)?$/, '');
+      const fullPath = join(workdir, pathOnly);
       if (!existsSync(fullPath)) {
         pruned += this.store.files[filePath].length;
         delete this.store.files[filePath];
@@ -900,7 +905,8 @@ export class LessonsManager {
         await writeFile(filePath, finalContent, 'utf-8');
         syncedTo.push(config.description);
       } catch (error) {
-        // Silently skip files that can't be written
+        // Log but don't fail - sync targets are best-effort
+        console.warn(`Failed to sync lessons to ${config.description}:`, error);
       }
     }
 

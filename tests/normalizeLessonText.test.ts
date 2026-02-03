@@ -7,83 +7,50 @@ import { LessonManager } from '../src/state/lessons';
 
 describe('normalizeLessonText', () => {
   // Test removal of code fences and markdown
-  it('should remove markdown code fences', () => {
-    // Placeholder - implementation depends on how to access private method
-    expect(true).toBe(true);
-  });
+  it.todo('should remove markdown code fences');
 
   // Test removal of headers
-  it('should remove markdown headers', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove markdown headers');
 
   // Test removal of bold lines
-  it('should remove bold/emphasis markers', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove bold/emphasis markers');
 
   // Test list numbering and bullets
-  it('should remove list markers', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove list markers');
 
   // Test comment token removal
-  it('should remove comment tokens (//, /*, *)', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove comment tokens (//, /*, *)');
 
   // Test access modifier removal
-  it('should remove access modifiers (public/private/protected)', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove access modifiers (public/private/protected)');
 
   // Test declaration keyword removal
-  it('should remove declaration keywords', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove declaration keywords');
 
   // Test (inferred) removal
-  it('should remove (inferred) prefix', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove (inferred) prefix');
 
   // Test file extension stripping
-  it('should strip file extensions (.ts, .js, .md, .json, .yml)', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should strip file extensions (.ts, .js, .md, .json, .yml)');
 
   // Test trailing type/line-number patterns
-  it('should remove trailing type/line-number patterns like "a:123"', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should remove trailing type/line-number patterns like "a:123"');
 
   // Test "made no changes" normalization
-  it('should normalize "made no changes" variants', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should normalize "made no changes" variants');
 
   // Test "chars truncated" returns null
-  it('should return null for "chars truncated" patterns', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should return null for "chars truncated" patterns');
 
   // Test "Fix for" pattern returns null
-  it('should return null for "Fix for" patterns', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should return null for "Fix for" patterns');
 
   // Test numeric-only returns null
-  it('should return null for numeric-only strings', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should return null for numeric-only strings');
 
   // Test edge cases
-  it('should handle combined/edge inputs', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should handle combined/edge inputs');
 
   // Test trimming and cleanup
-  it('should trim and cleanup trailing colons/dashes', () => {
-    expect(true).toBe(true);
-  });
+  it.todo('should trim and cleanup trailing colons/dashes');
 });

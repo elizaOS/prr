@@ -368,7 +368,7 @@ export async function commitIteration(
 ): Promise<CommitResult | null> {
   // Check if there are changes to commit (Trap 2)
   const status = await git.status();
-  const hasChanges = status.modified.length || status.created.length || status.deleted.length;
+  const hasChanges = !status.isClean();
   
   if (!hasChanges || verifiedCommentIds.length === 0) {
     return null; // Nothing to commit

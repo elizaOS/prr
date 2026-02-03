@@ -67,6 +67,11 @@ export class LLMAPIRunner implements Runner {
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
     
+    const available = await this.isAvailable();
+    if (!available) {
+      return { success: false, output: '', error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
+    }
+
     debug('LLM API runner starting', { provider: this.provider, workdir, promptLength: prompt.length });
 
     const { anthropic, openai } = this.getClient();
@@ -280,7 +285,8 @@ Working directory: ${workdir}`;
           await mkdir(dir, { recursive: true });
         }
 
-        writeFileSync(fullPath, content.trim() + '\n', 'utf-8');
+        const normalizedContent = content.endsWith('\n') ? content : `${content}\n`;
+        writeFileSync(fullPath, normalizedContent, 'utf-8');
         filesModified.add(filePath);
         debug('Created new file', { filePath });
       } catch (error) {
@@ -313,7 +319,8 @@ Working directory: ${workdir}`;
           await mkdir(dir, { recursive: true });
         }
 
-        writeFileSync(fullPath, content.trim() + '\n', 'utf-8');
+        const normalizedContent = content.endsWith('\n') ? content : `${content}\n`;
+        writeFileSync(fullPath, normalizedContent, 'utf-8');
         filesModified.add(filePath);
         debug('Wrote file (legacy format)', { filePath });
       } catch (error) {
