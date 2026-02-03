@@ -1600,10 +1600,84 @@ Start your response with \`\`\` and end with \`\`\`.`;
         })));
 
         if (comments.length === 0) {
-          console.log(chalk.green('\nNo review comments found. Nothing to do!'));
-          this.exitReason = 'no_comments';
-          this.exitDetails = 'No review comments found on the PR';
-          break;
+          // Check if there are unresolved conflicts
+          const hasConflicts = this.prInfo.mergeable === false || this.prInfo.mergeableState === 'dirty';
+          
+          if (hasConflicts && !this.options.mergeBase) {
+            // No comments but conflicts exist - auto-resolve since there's nothing else to do
+            console.log(chalk.yellow('\nNo review comments found, but PR has merge conflicts.'));
+            console.log(chalk.cyan(`  Auto-resolving conflicts with ${this.prInfo.baseBranch}...`));
+            
+            startTimer('Auto-resolve conflicts');
+            const mergeResult = await mergeBaseBranch(git, this.prInfo.baseBranch);
+            
+            if (!mergeResult.success) {
+              // Need LLM to resolve
+              console.log(chalk.yellow('  Fast-forward merge failed, resolving conflicts with LLM...'));
+              
+              const { conflictedFiles, error } = await startMergeForConflictResolution(
+                git,
+                this.prInfo.baseBranch,
+                `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`
+              );
+              
+              if (error && conflictedFiles.length === 0) {
+                console.log(chalk.red(`✗ Failed to start merge: ${error}`));
+                this.exitReason = 'error';
+                this.exitDetails = `Failed to merge ${this.prInfo.baseBranch}: ${error}`;
+                break;
+              }
+              
+              if (conflictedFiles.length > 0) {
+                const resolution = await this.resolveConflictsWithLLM(git, conflictedFiles, this.prInfo.baseBranch);
+                
+                if (!resolution.success) {
+                  console.log(chalk.red('\n✗ Could not resolve all merge conflicts automatically'));
+                  for (const file of resolution.remainingConflicts) {
+                    console.log(chalk.red(`    - ${file}`));
+                  }
+                  await abortMerge(git);
+                  this.exitReason = 'error';
+                  this.exitDetails = 'Could not auto-resolve merge conflicts';
+                  break;
+                }
+                
+                // Complete the merge
+                const commitResult = await completeMerge(git, `Merge branch '${this.prInfo.baseBranch}' into ${this.prInfo.branch}`);
+                if (!commitResult.success) {
+                  console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
+                  this.exitReason = 'error';
+                  this.exitDetails = `Failed to complete merge: ${commitResult.error}`;
+                  break;
+                }
+              }
+            }
+            
+            console.log(chalk.green('  ✓ Conflicts resolved'));
+            endTimer('Auto-resolve conflicts');
+            
+            // Push the merge commit
+            if (!this.options.noPush && !this.options.noCommit) {
+              console.log(chalk.gray(`  Pushing merge commit...`));
+              await pushWithRetry(git, this.prInfo.branch, { githubToken: this.config.githubToken });
+              console.log(chalk.green(`  ✓ Pushed to origin/${this.prInfo.branch}`));
+            }
+            
+            this.exitReason = 'no_comments';
+            this.exitDetails = `No review comments, but conflicts with ${this.prInfo.baseBranch} were resolved`;
+            break;
+          } else if (hasConflicts && this.options.mergeBase) {
+            // Conflicts should have been resolved above
+            console.log(chalk.green('\nNo review comments found. Conflicts were resolved above.'));
+            this.exitReason = 'no_comments';
+            this.exitDetails = 'No review comments on the PR (conflicts resolved)';
+            break;
+          } else {
+            console.log(chalk.green('\nNo review comments found. Nothing to do!'));
+            this.exitReason = 'no_comments';
+            this.exitDetails = 'No review comments found on the PR';
+            break;
+          }
         }
 
         // Check which issues still exist
