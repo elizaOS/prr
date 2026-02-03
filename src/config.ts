@@ -20,6 +20,7 @@ export type LLMProvider = 'anthropic' | 'openai';
 export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'llm-api' | 'auto';
 
 const REAL_FIXER_TOOLS = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'] as const;
+export type RealFixerTool = typeof REAL_FIXER_TOOLS[number];
 
 /**
  * Application configuration loaded from environment.
@@ -158,11 +159,17 @@ export function isValidModelName(model: string): boolean {
  */
 export function validateTool(tool: string): FixerTool {
   if (tool === 'auto') {
-    // NOTE: 'auto' is a meta-value for auto-detection; resolve before running as a real tool.
+    // NOTE: 'auto' is a meta-value for auto-detection; resolve before storing or running as a real tool.
     return tool;
   }
-  if (!REAL_FIXER_TOOLS.includes(tool as typeof REAL_FIXER_TOOLS[number])) {
-    throw new Error(`Invalid tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')} (or 'auto' for detection)`);
+
+  // If not 'auto', ensure it's one of the real fixer tools and cast appropriately.
+  return validateRealTool(tool) as FixerTool;
+}
+
+export function validateRealTool(tool: string): RealFixerTool {
+  if (!REAL_FIXER_TOOLS.includes(tool as RealFixerTool)) {
+    throw new Error(`Invalid tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')}`);
   }
-  return tool as FixerTool;
+  return tool as RealFixerTool;
 }
