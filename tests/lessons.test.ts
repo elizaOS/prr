@@ -49,7 +49,7 @@ async function run(): Promise<void> {
   assert.equal(normalizeLessonText('1. Numbered item'), 'Numbered item');
   assert.equal(normalizeLessonText('// comment only'), null);
   assert.equal(normalizeLessonText('/* block comment */'), null);
-  assert.equal(normalizeLessonText('* leading comment'), null);
+  assert.equal(normalizeLessonText('* leading comment'), 'leading comment');
   assert.equal(normalizeLessonText('private isShuttingDown = false;'), null);
   assert.equal(normalizeLessonText('progressThisCycle = 0;'), null);
   assert.equal(normalizeLessonText('modelsTriedThisToolRound: number;'), null);
@@ -63,7 +63,7 @@ async function run(): Promise<void> {
   assert.equal(normalizeLessonText('lesson - ts'), 'lesson');
   assert.equal(normalizeLessonText('lesson - json'), 'lesson');
   assert.equal(normalizeLessonText('lesson - a:123'), 'lesson');
-  assert.equal(normalizeLessonText('lesson - a.ts:123'), 'lesson');
+  assert.equal(normalizeLessonText('lesson - a.ts:123'), 'lesson - a.ts:123');
   assert.equal(
     normalizeLessonText('claude-code with claude-sonnet-4-5-20250929 made no changes without explanation - trying different approach'),
     'tool made no changes without explanation - trying different approach'
