@@ -1478,9 +1478,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
       if (this.prInfo.mergeable === false || this.prInfo.mergeableState === 'dirty') {
         console.log(chalk.yellow(`⚠ PR has conflicts with ${this.prInfo.baseBranch}`));
         
-        // Only merge base branch if explicitly requested (--merge-base flag)
-        // WHY opt-in: Auto-merging main/master can introduce unexpected changes
-        // and some teams prefer rebase or manual conflict resolution
+        // Auto-resolve conflicts by default (unless --no-merge-base is set)
+        // WHY auto-resolve: Fixing review comments on stale pre-merge code is wasteful
+        // The code after merge may be different, making fixes incorrect
         if (this.options.mergeBase) {
           startTimer('Resolve conflicts');
           console.log(chalk.cyan(`  Attempting to merge origin/${this.prInfo.baseBranch} into ${this.prInfo.branch}...`));
