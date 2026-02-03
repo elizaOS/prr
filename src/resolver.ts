@@ -2310,17 +2310,64 @@ Start your response with \`\`\` and end with \`\`\`.`;
                                      lowerExplanation.includes('implements');
 
               if (isAlreadyFixed) {
-                // Fixer claims issues are already fixed - document this
-                console.log(chalk.gray(`  → Fixer believes issues are already addressed`));
-                for (const issue of unresolvedIssues) {
-                  this.stateManager.addDismissedIssue(
-                    issue.comment.id,
-                    `Fixer tool (${this.runner.name}) reported: ${noChangesExplanation}`,
-                    'already-fixed',
-                    issue.comment.path,
-                    issue.comment.line,
-                    issue.comment.body
-                  );
+                // Fixer claims issues are already fixed - VERIFY the claim
+                console.log(chalk.gray(`  → Fixer believes issues are already addressed - verifying...`));
+                
+                // Run verification on all unresolved issues to check fixer's claim
+                const verifyResults = await this.llm.batchCheckIssuesExist(
+                  unresolvedIssues.map((issue, idx) => ({
+                    id: `issue_${idx + 1}`,
+                    comment: issue.comment.body,
+                    filePath: issue.comment.path,
+                    line: issue.comment.line,
+                    codeSnippet: issue.codeSnippet,
+                  }))
+                );
+                
+                let verifiedAsFixed = 0;
+                const stillUnresolved: typeof unresolvedIssues = [];
+                
+                for (let i = 0; i < unresolvedIssues.length; i++) {
+                  const issue = unresolvedIssues[i];
+                  const result = verifyResults.issues.get(`issue_${i + 1}`);
+                  
+                  if (result && !result.exists) {
+                    // Issue verified as fixed!
+                    verifiedAsFixed++;
+                    this.stateManager.markCommentVerifiedFixed(issue.comment.id);
+                    verifiedThisSession.add(issue.comment.id);
+                    console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}:${issue.comment.line} - ${result.explanation}`));
+                  } else {
+                    // Issue still exists despite fixer's claim
+                    stillUnresolved.push(issue);
+                    if (result) {
+                      console.log(chalk.yellow(`    ○ Still exists: ${issue.comment.path}:${issue.comment.line} - ${result.explanation}`));
+                    }
+                  }
+                }
+                
+                if (verifiedAsFixed > 0) {
+                  console.log(chalk.green(`  → Verified ${verifiedAsFixed}/${unresolvedIssues.length} issues as already fixed`));
+                  this.stateManager.recordModelFix(this.runner.name, currentModel, verifiedAsFixed);
+                  this.progressThisCycle += verifiedAsFixed;
+                  
+                  // Update unresolved list
+                  unresolvedIssues.splice(0, unresolvedIssues.length, ...stillUnresolved);
+                  
+                  if (unresolvedIssues.length === 0) {
+                    console.log(chalk.green('\n✓ All issues verified as already fixed'));
+                    this.exitReason = 'all_fixed';
+                    this.exitDetails = 'All issues verified as already fixed';
+                    break;
+                  }
+                  
+                  // Some verified, some remain - continue with remaining
+                  this.consecutiveFailures = 0;
+                  continue;
+                } else {
+                  // Fixer's claim was wrong - none actually fixed
+                  console.log(chalk.yellow(`  → Fixer's claim not verified - issues still exist`));
+                  // Fall through to normal rotation logic
                 }
               } else {
                 // Fixer couldn't fix for other reasons (unclear instructions, etc.) - document but don't dismiss
