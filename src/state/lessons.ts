@@ -314,6 +314,11 @@ export class LessonsManager {
     normalized = normalized.replace(/\s+/g, ' ').trim();
     normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
     normalized = normalized.replace(/\s*-\s*:\s*(?:string|number|boolean|unknown|any)\s*;?/gi, ' - ').trim();
+    normalized = normalized.replace(/made no changes\s*trying/gi, 'made no changes - trying');
+    normalized = normalized.replace(/\balready includes all runners\b/gi, '').trim();
+    if (/\b[A-Za-z_$][\w$]*\s*(?::[^=;]+)?\s*(?:=|;)/.test(normalized)) {
+      return null;
+    }
     if (/\b(?:public|private|protected)\b\s+[A-Za-z_$][\w$]*\s*(?::[^;]+)?\s*(?:=|;)/i.test(normalized)) {
       return null;
     }
@@ -368,7 +373,8 @@ export class LessonsManager {
     normalized = normalized.replace(/\s+-\s*$/, '').trim();
     normalized = normalized.replace(/\s*(?:-\s*)?:\s*(?:string|number|boolean|unknown|any)\s*;?$/i, '').trim();
     if (/\bchars\s+truncated\b/i.test(normalized)) return null;
-    if (/^Fix for [^:]+:(?:null|undefined|\d+)$/i.test(normalized)) return null;
+    if (/^Fix for [^:]+:(?:null|undefined)\b/i.test(normalized)) return null;
+    if (/^Fix for [^:]+:\d+$/i.test(normalized)) return null;
     if (/^Fix for [^:]+$/i.test(normalized)) return null;
     if (/^\d+\.?$/.test(normalized)) return null;
     return normalized.length > 0 ? normalized : null;
@@ -406,6 +412,7 @@ export class LessonsManager {
 
   private sanitizeFilePathHeader(filePath: string): string {
     let cleaned = filePath.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim();
+    cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*\w+$/i, '').trim();
     cleaned = cleaned.replace(/^.*?([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?).*$/i, '$1').trim();
     cleaned = cleaned.replace(/^(.*?:\d+)\s*-\s*\(inferred\).*$/i, '$1').trim();
     const inferredSuffixMatch = cleaned.match(/^(.*?\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?)[\s-]*\(\s*inferred\s*\).*$/i);

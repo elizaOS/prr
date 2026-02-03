@@ -71,6 +71,10 @@
 - Fix for CLAUDE.md rejected: The diff removes duplicates and consolidates entries but does not show explicit removal of the parsing artifact pattern " - ts" from section headers; the malformed headers may still contain these suffixes despite the overall cleanup
 - Fix for src/runners/llm-api.ts rejected: The diff provided does not contain any changes to line 232 or the regex pattern mentioned in the review comment. The diff only shows the same path safety logic changes as fix_PRRC_kwDOQ_Yy5c6kTeOq.
 - Fix for src/runners/llm-api.ts rejected: The diff provided does not show the import statement change. The diff only shows the same path safety logic changes, and there is no modification to remove the unused `join` import from the path module imports.
+- Fix for src/runners/llm-api.ts rejected: The code change reverses the simplification—it replaces the simplified logic with the more complex condition that the review criticized as problematic, making the condition less safe by reintroducing the flawed logic.
+- Fix for .prr/lessons.md rejected: The diff only removes duplicate/malformed entries from the lessons file itself but does not fix the root cause—the lessons extraction/serialization logic that generates these code fragments. The corrupted entries will recur on next generation.
+- Fix for .prr/lessons.md rejected: The diff removes duplicate and malformed entries from `.prr/lessons.md` but does not modify the underlying compaction/deduplication logic in the code. The malformed headers and duplicates will be regenerated until the source function (compactLessons, dedupeLessons, etc.) is fixed.
+- Fix for CLAUDE.md rejected: The diff cleans up CLAUDE.md by removing duplicate entries and reorganizing sections, but does not implement sanitization logic to strip parsing artifacts like " - ts" from headers. The malformed headers will recur when lessons are regenerated.
 
 ## File-Specific Lessons
 
