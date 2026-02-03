@@ -188,8 +188,8 @@ Working directory: ${workdir}`;
     const workdirResolved = resolve(workdir);
     const fullPath = resolve(workdir, filePath);
     const relativePath = relative(workdirResolved, fullPath);
-    const isOutside = relativePath.startsWith('..') || relativePath.startsWith(sep + '..') || 
-      !(fullPath === workdirResolved || fullPath.startsWith(workdirResolved + sep));
+    const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
+    const isOutside = hasParentTraversal;
     return { safe: !isOutside, fullPath };
   }
 
@@ -229,7 +229,7 @@ Working directory: ${workdir}`;
             continue;
           }
           const patternParts = searchNormalized.split(/\s+/).map(part => escapeRegExp(part)).filter(Boolean);
-          const whitespacePattern = patternParts.join('\\s+');
+          const whitespacePattern = patternParts.join('\\s{1,1000}');
           const whitespaceRegex = new RegExp(whitespacePattern, 'm');
           const newContent = originalContent.replace(whitespaceRegex, replaceText.trim());
           if (newContent === originalContent) {

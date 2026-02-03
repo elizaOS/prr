@@ -26,7 +26,9 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
         reject(new Error(`Command failed with code ${code}`));
       }
     });
-    child.on('error', reject);
+    child.on('error', () => {
+      reject(new Error('Failed to start command'));
+    });
   });
 }
 
@@ -82,9 +84,6 @@ export class OpencodeRunner implements Runner {
 
     // Write prompt to a temp file to avoid command line length limits
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
-    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
-    debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('opencode', prompt, { workdir, model: options?.model });
     const cleanupPromptFile = () => {
       try {
         unlinkSync(promptFile);
@@ -92,6 +91,15 @@ export class OpencodeRunner implements Runner {
         // Ignore cleanup errors
       }
     };
+    try {
+      writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
+    } catch (error) {
+      cleanupPromptFile();
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, output: '', error: `Failed to write prompt file: ${errorMessage}` };
+    }
+    debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('opencode', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)

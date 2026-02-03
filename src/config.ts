@@ -155,7 +155,10 @@ export function isValidModelName(model: string): boolean {
  * @throws Error if tool is not a valid option
  */
 export function validateTool(tool: string): FixerTool {
-  if (!['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api', 'auto'].includes(tool as FixerTool)) {
+  if (tool === 'auto') {
+    return tool;
+  }
+  if (!['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'].includes(tool as FixerTool)) {
     throw new Error(`Invalid tool: ${tool}. Must be one of: cursor, opencode, claude-code, aider, codex, llm-api, auto`);
   }
   return tool as FixerTool;
