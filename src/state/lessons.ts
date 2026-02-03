@@ -210,6 +210,12 @@ export class LessonsManager {
             this.dirty = true;
           }
           
+          // Strip model names from lessons (we track model stats separately)
+          const sanitizedModels = this.sanitizeModelNames();
+          if (sanitizedModels > 0) {
+            console.log(`Sanitized ${sanitizedModels} lessons (removed model names)`);
+          }
+          
           // Prune lessons with relative references (Issue 1, Issue 2, etc.)
           const prunedRelative = this.pruneRelativeLessons();
           if (prunedRelative > 0) {
@@ -430,6 +436,43 @@ export class LessonsManager {
     }
 
     return pruned;
+  }
+
+  /**
+   * Strip tool/model names from lessons - we track model performance separately.
+   * WHY: Lessons like "codex with gpt-5-mini made no changes: ..." duplicate
+   * the model stats we already track. The actual content is what matters.
+   */
+  private sanitizeModelNames(): number {
+    let sanitized = 0;
+
+    // Pattern to match tool/model prefixes like "llm-api with claude-haiku-4-5-20251001 made no changes: "
+    // or "codex with gpt-5.2 made no changes: "
+    const modelPrefixPattern = /^(?:llm-api|codex|cursor|claude-code|aider|opencode)\s+(?:with\s+[\w.-]+\s+)?made no changes:\s*/i;
+
+    // Sanitize global lessons
+    this.store.global = this.store.global.map(lesson => {
+      const sanitizedLesson = lesson.replace(modelPrefixPattern, 'Fixer made no changes: ');
+      if (sanitizedLesson !== lesson) {
+        sanitized++;
+        this.dirty = true;
+      }
+      return sanitizedLesson;
+    });
+
+    // Sanitize file-specific lessons
+    for (const filePath of Object.keys(this.store.files)) {
+      this.store.files[filePath] = this.store.files[filePath].map(lesson => {
+        const sanitizedLesson = lesson.replace(modelPrefixPattern, 'Fixer made no changes: ');
+        if (sanitizedLesson !== lesson) {
+          sanitized++;
+          this.dirty = true;
+        }
+        return sanitizedLesson;
+      });
+    }
+
+    return sanitized;
   }
 
   /**

@@ -2312,7 +2312,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
             if (noChangesExplanation) {
               // Fixer provided an explanation for why it made no changes
               console.log(chalk.cyan(`  Fixer's explanation: ${noChangesExplanation}`));
-              this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes: ${noChangesExplanation}`);
+              // Note: Don't include tool/model names - that's tracked separately in modelStats
+              this.lessonsManager.addGlobalLesson(`Fixer made no changes: ${noChangesExplanation}`);
 
               // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
               const lowerExplanation = noChangesExplanation.toLowerCase();
@@ -2389,7 +2390,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
               // Fixer made zero changes WITHOUT explaining why
               console.log(chalk.yellow(`  Fixer didn't explain why no changes were made`));
               console.log(chalk.gray(`  → Will try different model/tool approach`));
-              this.lessonsManager.addGlobalLesson(`${this.runner.name}${currentModel ? ` with ${currentModel}` : ''} made no changes without explanation - trying different approach`);
+              // Note: Don't include tool/model - tracked separately in modelStats
+              this.lessonsManager.addGlobalLesson(`Fixer made no changes without explanation - trying different approach`);
             }
 
             // Track no-changes for performance stats
