@@ -9,30 +9,6 @@
 
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
-
-**Issues 4, 7, 8, 12 (README.
-- Fix for src/resolver.ts:null - (inferred) : string;
-  private isShuttingDown = false;
-  private consecutiveFailures = 0;
-  
-  // Model rotation: track current model index for each runner
-  private modelIndices: Map<string, number> = new Map();
-  private modelFailuresInCycle = 0;  // Failures since last model/tool rotation
-  private modelsTriedThisToolRound = 0;  // Models tried on current tool before switching
-  private static readonly MAX_MODELS_PER_TOOL_ROUND = 2;  // Switch tools after this many models
-  
-  // Bail-out tracking: detect stalemates where no progress is made
-  // WHY: Prevents infinite loops when agents disagree or can't fix issues
-  private progressThisCycle = 0;  // Verified fixes in current tool/model cycle
-  private bailedOut = false;  // True if we've triggered bail-out
-
-```
-
-## Previous Failed Attempts (DO NOT REPEAT)
-- claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
-- claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
-
-**Issues 4, 7, 8, 12 (README.
 - Fix for DEVELOPMENT.md:null - tool made no changes without explanation, trying different approach
 - Fix for src/resolver.ts:null rejected: The diff only adds an import for `rm` from 'fs/promises' but doesn't show any actual code changes that use it to replace the `execSync` calls. The security vulnerabilities around command execution, validation, timeout, and sandboxing remain unaddressed.
 - Fix for src/resolver.ts:null rejected: The diff is identical to the first fix (only adds the `rm` import) and doesn't address the batch processing issue at all. The issue ID format inconsistency between numeric indices ("0", "1", "2") and the prompted format ("issue_123") is not resolved.
@@ -86,7 +62,6 @@
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/cli.ts:null - tool made no changes without explanation, trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 - Fix for src/resolver.ts:null - (inferred) : string;
@@ -100,76 +75,29 @@
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-**Issues 4, 7, 8, 12 (README.
 - Fix for README.md:null - (inferred) 2-codex made no changes: (inferred) Do NOT repeat them:
-
-
 
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-
-
-**Issues 4, 7, 8, 12 (README.
 - codex with gpt-5.2 made no changes: (inferred) Do NOT repeat them:
 
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/resolver.ts:null - (inferred) 2 made no changes: (inferred) Do NOT repeat them:
 
-
-
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-
-
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/git/commit.ts:null - (inferred) ts:null - (inferred) ts:null - (inferred) 2 made no changes: (inferred) Do NOT repeat them:
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
-
-
-
-
-
-
 
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/resolver.ts:null rejected: The diff shown is identical to the first fix (timeout change only) and does not address the batch processing ID format issue at all. The fix should either change IDs to "issue_0" format or update prompt examples to use plain numbers.
 - llm-api with claude-sonnet-4-5-20250929 made no changes without explanation - trying different approach
 - Fix for src/resolver.ts:null - Complete the fix by replacing the actual `execSync` calls with `rm()` API, not just importing it.
@@ -304,15 +232,10 @@
 - Fix for src/runners/claude-code.ts:211 rejected: The diff is identical to the previous fixes and does not address the misleading error message. The error message should be updated to reflect whether skip-permissions is already enabled, but no such change is present.
 - Fix for src/runners/claude-code.ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 
-
-
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-
-
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/runners/claude-code.ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
@@ -321,25 +244,10 @@
 
 - Fix for src/runners/claude-code.ts:null - (inferred) ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 
-
-
-
-
-
-
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
-
-
 
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-
-
-
-
-
-
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/runners/claude-code.ts:null - (inferred) ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
@@ -385,8 +293,6 @@
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-## Instructions
-1.
 - Fix for src/state/manager.ts:117 - (inferred) ts:117 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners

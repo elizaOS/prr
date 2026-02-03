@@ -561,25 +561,23 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. Examples:
+Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. Examples (availability depends on your account/plan):
 
 | Model | Notes |
 |-------|-------|
 | `auto` | Let Cursor pick |
 | `claude-4-opus-thinking` | Claude Opus (thinking) |
 | `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
-| `o3` | OpenAI reasoning |
-| `gpt-5` | GPT-5 |
+| `o3-mini` | OpenAI reasoning |
+| `gpt-5.2` | GPT-5.2 |
 | `grok-2` | Grok 2 |
-| `grok-3-beta` | Grok 3 Beta |
-| `grok-3-mini` | Grok 3 Mini |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 
 ```text
-Round 1: claude-4-sonnet-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
-Round 2: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → grok-3-mini (Other)
+Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3-mini (OpenAI)
+Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → grok-2 (Other)
 ... then next tool ...
 ```
 

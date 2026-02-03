@@ -162,7 +162,7 @@ export function validateTool(tool: string): FixerTool {
     return tool;
   }
   if (!REAL_FIXER_TOOLS.includes(tool as FixerTool)) {
-    throw new Error(`Invalid tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')}, auto`);
+    throw new Error(`Invalid tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')} (or 'auto' for detection)`);
   }
   return tool as FixerTool;
 }

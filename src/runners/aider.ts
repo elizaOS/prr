@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
 import { exec as execCallback } from 'child_process';
-import { writeFileSync, unlinkSync, readFileSync } from 'fs';
+import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
@@ -89,9 +89,8 @@ export class AiderRunner implements Runner {
         args.push('--model', options.model);
       }
       
-      // Read prompt from file and pass via --message
-      const promptContent = readFileSync(promptFile, 'utf-8');
-      args.push('--message', promptContent);
+      // Pass prompt file directly to avoid OS arg limits
+      args.push('--message-file', promptFile);
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: aider${modelInfo} [prompt]\n`);

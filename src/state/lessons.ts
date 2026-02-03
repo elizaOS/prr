@@ -274,6 +274,57 @@ export class LessonsManager {
     return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
   }
 
+  private normalizeLessonText(lesson: string): string | null {
+    const lines = lesson.split('\n');
+    const kept: string[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith('```') || trimmed.startsWith('#') || trimmed.startsWith('**')) continue;
+      if (/^\d+\.$/.test(trimmed)) continue;
+      if (/^(?:\/\/|\/\*|\*)/.test(trimmed)) continue;
+      if (/^(?:public|private|protected)\s/.test(trimmed)) continue;
+      if (/^(?:class|interface|type|enum|const|let|var|import|export)\b/.test(trimmed)) continue;
+      kept.push(trimmed);
+    }
+
+    if (kept.length === 0) return null;
+
+    let normalized = kept.join(' ');
+    normalized = normalized.replace(/\s+/g, ' ').trim();
+    normalized = normalized.replace(/\s*\(inferred\).*$/, '').trim();
+    normalized = normalized.replace(/\s+-\s*$/, '').trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private lessonKey(lesson: string): string {
+    return lesson.toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  private sanitizeFilePathHeader(filePath: string): string {
+    let cleaned = filePath.replace(/^\*\*|\*\*$/g, '').trim();
+    cleaned = cleaned.replace(/\s+-\s+.*$/, '');
+    cleaned = cleaned.replace(/\s*\(inferred\).*$/, '').trim();
+    return cleaned;
+  }
+
+  private sanitizeLessonsList(lessons: string[]): string[] {
+    const result: string[] = [];
+    const seen = new Set<string>();
+
+    for (const lesson of lessons) {
+      const normalized = this.normalizeLessonText(lesson);
+      if (!normalized) continue;
+      const key = this.lessonKey(normalized);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(normalized);
+    }
+
+    return result;
+  }
+
   /**
    * Parse markdown lessons file into structured data.
    *
@@ -296,6 +347,8 @@ export class LessonsManager {
     const lines = content.split('\n');
     let currentSection: 'none' | 'global' | 'file' = 'none';
     let currentFile: string | null = null;
+    const globalSeen = new Set<string>();
+    const fileSeen = new Map<string, Set<string>>();
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -314,9 +367,14 @@ export class LessonsManager {
 
       // File path header (### path/to/file.ts)
       if (currentSection === 'file' && trimmed.startsWith('### ')) {
-        currentFile = trimmed.slice(4).trim();
-        if (!result.files[currentFile]) {
-          result.files[currentFile] = [];
+        const cleanedFilePath = this.sanitizeFilePathHeader(trimmed.slice(4).trim());
+        if (!cleanedFilePath) {
+          currentFile = null;
+          continue;
+        }
+        currentFile = cleanedFilePath;
+        if (!result.files[cleanedFilePath]) {
+          result.files[cleanedFilePath] = [];
         }
         continue;
       }
@@ -324,11 +382,21 @@ export class LessonsManager {
       // Lesson item (- Lesson text)
       if (trimmed.startsWith('- ')) {
         const lesson = trimmed.slice(2).trim();
-        if (lesson.length > 0) {
-          if (currentSection === 'global') {
-            result.global.push(lesson);
-          } else if (currentSection === 'file' && currentFile) {
-            result.files[currentFile].push(lesson);
+        const normalized = this.normalizeLessonText(lesson);
+        if (!normalized) continue;
+        if (currentSection === 'global') {
+          const key = this.lessonKey(normalized);
+          if (!globalSeen.has(key)) {
+            globalSeen.add(key);
+            result.global.push(normalized);
+          }
+        } else if (currentSection === 'file' && currentFile) {
+          const seen = fileSeen.get(currentFile) || new Set<string>();
+          const key = this.lessonKey(normalized);
+          if (!seen.has(key)) {
+            seen.add(key);
+            fileSeen.set(currentFile, seen);
+            result.files[currentFile].push(normalized);
           }
         }
       }
@@ -352,17 +420,20 @@ export class LessonsManager {
     ];
 
     // Global lessons
-    if (this.store.global.length > 0) {
+    const globalLessons = this.sanitizeLessonsList(this.store.global);
+    if (globalLessons.length > 0) {
       lines.push('## Global Lessons');
       lines.push('');
-      for (const lesson of this.store.global) {
+      for (const lesson of globalLessons) {
         lines.push(`- ${lesson}`);
       }
       lines.push('');
     }
 
     // File-specific lessons
-    const fileEntries = Object.entries(this.store.files).filter(([, lessons]) => lessons.length > 0);
+    const fileEntries = Object.entries(this.store.files)
+      .map(([filePath, lessons]) => [this.sanitizeFilePathHeader(filePath), this.sanitizeLessonsList(lessons)] as const)
+      .filter(([filePath, lessons]) => filePath.length > 0 && lessons.length > 0);
     if (fileEntries.length > 0) {
       lines.push('## File-Specific Lessons');
       lines.push('');
@@ -550,7 +621,7 @@ export class LessonsManager {
     ];
 
     // Compact global lessons (most recent N)
-    const globalLessons = this.store.global.slice(-MAX_GLOBAL_LESSONS_FOR_SYNC);
+    const globalLessons = this.sanitizeLessonsList(this.store.global).slice(-MAX_GLOBAL_LESSONS_FOR_SYNC);
     if (globalLessons.length > 0) {
       lines.push('### Global');
       lines.push('');
@@ -565,6 +636,7 @@ export class LessonsManager {
 
     // Compact file-specific lessons (top N files, M lessons each)
     const sortedFiles = Object.entries(this.store.files)
+      .map(([filePath, lessons]) => [this.sanitizeFilePathHeader(filePath), this.sanitizeLessonsList(lessons)] as const)
       .filter(([, lessons]) => lessons.length > 0)
       .sort((a, b) => b[1].length - a[1].length)
       .slice(0, MAX_FILES_FOR_SYNC);
@@ -607,47 +679,51 @@ export class LessonsManager {
    * Format: "Fix for path/file.ext:line rejected: reason"
    */
   addLesson(lesson: string): void {
+    const normalizedLesson = this.normalizeLessonText(lesson);
+    if (!normalizedLesson) return;
+
     // Extract file path from lesson
     let filePath: string | null = null;
-    if (lesson.startsWith('Fix for ')) {
-      const remainder = lesson.slice('Fix for '.length);
-      const matches = Array.from(remainder.matchAll(/:(\d+)(?::\d+)?(?=\s|$)/g));
-      if (matches.length > 0) {
-        const lastMatch = matches[matches.length - 1];
-        if (typeof lastMatch.index === 'number') {
-          filePath = remainder.slice(0, lastMatch.index);
-        }
+    if (normalizedLesson.startsWith('Fix for ')) {
+      const remainder = normalizedLesson.slice('Fix for '.length);
+      const delimiterMatch = remainder.match(/\s(?:rejected:|-)\s/);
+      const locationPart = delimiterMatch ? remainder.slice(0, delimiterMatch.index).trim() : remainder.trim();
+      const locationMatch = locationPart.match(/:(\d+)(?::\d+)?$/);
+      if (locationMatch && typeof locationMatch.index === 'number') {
+        filePath = locationPart.slice(0, locationMatch.index);
       }
     }
 
     if (filePath) {
-      this.addFileLesson(filePath, lesson);
+      const cleanedFilePath = this.sanitizeFilePathHeader(filePath);
+      if (cleanedFilePath.length > 0) {
+        this.addFileLesson(cleanedFilePath, normalizedLesson);
+      } else {
+        this.addGlobalLesson(normalizedLesson);
+      }
     } else {
-      this.addGlobalLesson(lesson);
+      this.addGlobalLesson(normalizedLesson);
     }
   }
 
   addGlobalLesson(lesson: string): void {
-    // Deduplicate
-    if (!this.store.global.includes(lesson)) {
-      // Check for similar lesson (same prefix)
-      const prefix = lesson.substring(0, 50);
-      const existingIndex = this.store.global.findIndex(l => l.startsWith(prefix));
+    const normalizedLesson = this.normalizeLessonText(lesson);
+    if (!normalizedLesson) return;
 
-      if (existingIndex !== -1) {
-        // Replace with newer (not a new lesson, just an update)
-        this.store.global[existingIndex] = lesson;
-      } else {
-        // Truly new lesson
-        this.store.global.push(lesson);
-        this.newLessonsThisSession++;
-      }
-      this.dirty = true;
-      this.repoLessonsDirty = true;
-    }
+    // Deduplicate
+    const key = this.lessonKey(normalizedLesson);
+    const existingIndex = this.store.global.findIndex(l => this.lessonKey(l) === key);
+    if (existingIndex !== -1) return;
+    this.store.global.push(normalizedLesson);
+    this.newLessonsThisSession++;
+    this.dirty = true;
+    this.repoLessonsDirty = true;
   }
 
   addFileLesson(filePath: string, lesson: string): void {
+    const normalizedLesson = this.normalizeLessonText(lesson);
+    if (!normalizedLesson) return;
+
     if (!this.store.files[filePath]) {
       this.store.files[filePath] = [];
     }
@@ -655,23 +731,21 @@ export class LessonsManager {
     const lessons = this.store.files[filePath];
 
     // Deduplicate by file:line key
-    const keyMatch = lesson.match(/^Fix for ([^:]+:\S+)/);
+    const keyMatch = normalizedLesson.match(/^Fix for ([^:]+:\S+)/);
     const key = keyMatch ? keyMatch[1] : null;
 
     if (key) {
       const existingIndex = lessons.findIndex(l => l.startsWith(`Fix for ${key}`));
       if (existingIndex !== -1) {
-        // Replace with newer (not a new lesson, just an update)
-        lessons[existingIndex] = lesson;
-        this.dirty = true;
-        this.repoLessonsDirty = true;
+        // Keep first occurrence to preserve stable ordering
         return;
       }
     }
 
-    if (!lessons.includes(lesson)) {
+    const lessonKey = this.lessonKey(normalizedLesson);
+    if (lessons.findIndex(l => this.lessonKey(l) === lessonKey) === -1) {
       // Truly new lesson
-      lessons.push(lesson);
+      lessons.push(normalizedLesson);
       this.newLessonsThisSession++;
       this.dirty = true;
       this.repoLessonsDirty = true;

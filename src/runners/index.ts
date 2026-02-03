@@ -43,7 +43,16 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
   }
 
   for (const runner of ALL_RUNNERS) {
-    const status = await runner.checkStatus();
+    let status: RunnerStatus;
+    try {
+      status = await runner.checkStatus();
+    } catch (err) {
+      status = {
+        installed: false,
+        ready: false,
+        error: `checkStatus failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
     
     if (verbose) {
       const icon = status.ready ? chalk.green('✓') : status.installed ? chalk.yellow('○') : chalk.gray('✗');

@@ -30,15 +30,10 @@
 - Fix for src/runners/claude-code.ts:211 rejected: The diff is identical to the previous fixes and does not address the misleading error message. The error message should be updated to reflect whether skip-permissions is already enabled, but no such change is present.
 - Fix for src/runners/claude-code.ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 
-
-
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-
-
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/runners/claude-code.ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
@@ -87,34 +82,13 @@
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-## Instructions
-1.
-- Fix for src/state/manager.ts:117 - (inferred) ts:117 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
-- claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
-- claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
-
 **src/runners/claude-code.ts:null - (inferred) ts**
 - Fix for src/runners/claude-code.ts:null - (inferred) ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 
-
-
-
-
-
-
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
-
-
 
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-
-
-
-
-
-
-**Issues 4, 7, 8, 12 (README.
 - Fix for src/runners/claude-code.ts:null - (inferred) ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
