@@ -18,7 +18,7 @@ import { LessonsManager, formatLessonForDisplay } from './state/lessons.js';
 import { buildFixPrompt } from './analyzer/prompt-builder.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/clone.js';
-import type { SimpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from './git/commit.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from './logger.js';
@@ -3841,17 +3841,36 @@ After resolving, the files should have NO conflict markers remaining.`;
   }
 
   /**
-   * Ensure .pr-resolver-state.json is in .gitignore to prevent accidental commits.
+   * Ensure .pr-resolver-state.json is in .gitignore and not tracked in git.
    * 
    * WHY: State files contain internal tracking (model stats, attempts, etc.) that
    * shouldn't clutter the PR's git history. Auto-adding to .gitignore is safe since
    * it's clearly a tool-generated file.
+   * 
+   * If the file was accidentally committed, we remove it from git tracking.
    */
   private async ensureStateFileIgnored(): Promise<void> {
     const gitignorePath = join(this.workdir, '.gitignore');
     const stateFileName = '.pr-resolver-state.json';
+    const stateFilePath = join(this.workdir, stateFileName);
     
     try {
+      // First, check if the state file is tracked in git (accidentally committed)
+      const git = simpleGit(this.workdir);
+      try {
+        // git ls-files returns the file if it's tracked, empty if not
+        const tracked = await git.raw(['ls-files', stateFileName]);
+        if (tracked.trim()) {
+          // File is tracked - remove it from git (but keep local copy)
+          console.log(chalk.yellow(`  ⚠ ${stateFileName} was committed to git - removing from tracking...`));
+          await git.raw(['rm', '--cached', stateFileName]);
+          console.log(chalk.green(`  ✓ Removed ${stateFileName} from git tracking (local file preserved)`));
+          debug('Removed state file from git tracking', { stateFileName });
+        }
+      } catch {
+        // ls-files failed - file not tracked, which is good
+      }
+      
       let gitignoreContent = '';
       try {
         gitignoreContent = await readFile(gitignorePath, 'utf-8');
