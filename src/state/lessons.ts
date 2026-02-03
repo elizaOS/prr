@@ -426,6 +426,49 @@ export class LessonsManager {
     return pruned;
   }
 
+  /**
+   * Remove lessons for files that no longer exist in the repo.
+   * WHY: Lessons about deleted files/functions are useless and clutter the context.
+   * 
+   * @param workdir - Working directory to check file existence
+   * @returns Number of lessons pruned
+   */
+  pruneDeletedFiles(workdir: string): number {
+    let pruned = 0;
+
+    // Prune file-specific lessons for deleted files
+    for (const filePath of Object.keys(this.store.files)) {
+      const fullPath = join(workdir, filePath);
+      if (!existsSync(fullPath)) {
+        pruned += this.store.files[filePath].length;
+        delete this.store.files[filePath];
+        this.dirty = true;
+      }
+    }
+
+    // Prune global lessons that reference specific deleted files
+    // Pattern: "Fix for path/to/file.ts:123 ..."
+    const originalGlobalCount = this.store.global.length;
+    this.store.global = this.store.global.filter(lesson => {
+      const fileMatch = lesson.match(/^Fix for ([^:]+)(?::\d+)?/);
+      if (fileMatch) {
+        const filePath = fileMatch[1];
+        const fullPath = join(workdir, filePath);
+        if (!existsSync(fullPath)) {
+          return false; // File doesn't exist, prune this lesson
+        }
+      }
+      return true; // Keep lesson
+    });
+    
+    if (this.store.global.length < originalGlobalCount) {
+      pruned += originalGlobalCount - this.store.global.length;
+      this.dirty = true;
+    }
+
+    return pruned;
+  }
+
   async save(): Promise<void> {
     // Save local lessons (machine-specific JSON)
     if (this.dirty) {

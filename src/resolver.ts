@@ -1266,6 +1266,15 @@ Start your response with \`\`\` and end with \`\`\`.`;
       this.lessonsManager = new LessonsManager(owner, repo, this.prInfo.branch);
       this.lessonsManager.setWorkdir(this.workdir); // Enable repo-based lesson sharing
       await this.lessonsManager.load();
+      
+      // Prune lessons for deleted files
+      // WHY: Lessons about files that no longer exist are useless clutter
+      const prunedDeletedFiles = this.lessonsManager.pruneDeletedFiles(this.workdir);
+      if (prunedDeletedFiles > 0) {
+        console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
+        await this.lessonsManager.save();
+      }
+      
       const lessonCounts = this.lessonsManager.getCounts();
       debug('Loaded lessons', lessonCounts);
 
