@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import ora from 'ora';
-import { readFile } from 'fs/promises';
+import { readFile, writeFile } from 'fs/promises';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -1309,6 +1309,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
       );
       spinner.succeed('Repository ready');
       debug('Repository cloned/updated at', this.workdir);
+
+      // Ensure state file is in .gitignore to prevent accidental commits
+      await this.ensureStateFileIgnored();
 
       // Recover verification state from git history (Phase 2)
       // WHY: Git commits are durable. Recover which fixes were already verified.
@@ -3810,6 +3813,50 @@ After resolving, the files should have NO conflict markers remaining.`;
     await this.stateManager.save();
     await this.lessonsManager.save();
     return unresolved;
+  }
+
+  /**
+   * Ensure .pr-resolver-state.json is in .gitignore to prevent accidental commits.
+   * 
+   * WHY: State files contain internal tracking (model stats, attempts, etc.) that
+   * shouldn't clutter the PR's git history. Auto-adding to .gitignore is safe since
+   * it's clearly a tool-generated file.
+   */
+  private async ensureStateFileIgnored(): Promise<void> {
+    const gitignorePath = join(this.workdir, '.gitignore');
+    const stateFileName = '.pr-resolver-state.json';
+    
+    try {
+      let gitignoreContent = '';
+      try {
+        gitignoreContent = await readFile(gitignorePath, 'utf-8');
+      } catch {
+        // .gitignore doesn't exist, we'll create it
+      }
+      
+      // Check if already ignored (exact match or with leading /)
+      const lines = gitignoreContent.split('\n');
+      const isIgnored = lines.some(line => {
+        const trimmed = line.trim();
+        return trimmed === stateFileName || 
+               trimmed === `/${stateFileName}` ||
+               trimmed === `**/${stateFileName}`;
+      });
+      
+      if (!isIgnored) {
+        // Add to .gitignore
+        const newContent = gitignoreContent.endsWith('\n') || gitignoreContent === ''
+          ? `${gitignoreContent}# prr state file (auto-generated)\n${stateFileName}\n`
+          : `${gitignoreContent}\n\n# prr state file (auto-generated)\n${stateFileName}\n`;
+        
+        await writeFile(gitignorePath, newContent, 'utf-8');
+        console.log(chalk.gray(`  Added ${stateFileName} to .gitignore`));
+        debug('Added state file to .gitignore', { gitignorePath });
+      }
+    } catch (err) {
+      // Non-fatal - just log and continue
+      debug('Could not update .gitignore', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   private async getCodeSnippet(path: string, line: number | null, commentBody?: string): Promise<string> {
