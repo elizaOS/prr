@@ -74,14 +74,28 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   
   // Check if remote URL has token, inject if missing
   // WHY: Token may be stripped or repo cloned without it
+  let originalRemoteUrl: string | null = null;
+  let updatedRemote = false;
+  const restoreRemote = () => {
+    if (!updatedRemote || !originalRemoteUrl) return;
+    try {
+      execFileSync('git', ['remote', 'set-url', 'origin', originalRemoteUrl], { cwd: workdir });
+    } catch (e) {
+      debug('Failed to restore remote URL', { error: String(e) });
+    } finally {
+      updatedRemote = false;
+    }
+  };
   try {
     const remoteUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf8' }).trim();
+    originalRemoteUrl = remoteUrl;
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
     
     if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {
       // Inject token into URL
       const authUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
       execFileSync('git', ['remote', 'set-url', 'origin', authUrl], { cwd: workdir });
+      updatedRemote = true;
       debug('Injected token into remote URL for push');
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
@@ -126,6 +140,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const timeout = setTimeout(() => {
       killed = true;
       gitProcess.kill('SIGKILL');
+      restoreRemote();
       // Include the command in error for debugging
       const errMsg = [
         `Push timed out after 30 seconds.`,
@@ -144,6 +159,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const sigintHandler = () => {
       killed = true;
       gitProcess.kill('SIGKILL');
+      restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
     };
@@ -152,6 +168,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('close', (code) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
+      restoreRemote();
       
       if (killed) return; // Already handled by timeout/sigint
       
@@ -182,6 +199,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('error', (err) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
+      restoreRemote();
       resolve({ 
         success: false,
         error: `Git push failed: ${err.message}\nCommand: ${fullCommand}\nWorkdir: ${workdir}`,

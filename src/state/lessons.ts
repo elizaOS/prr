@@ -291,19 +291,6 @@ export class LessonsManager {
   }
 
   /**
-   * Extract the prr lessons section from a file's content.
-   */
-  private extractPrrSection(content: string): string | null {
-    const startIdx = content.indexOf(PRR_SECTION_START);
-    const endIdx = content.indexOf(PRR_SECTION_END);
-
-    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-      return null;
-    }
-
-    return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
-  }
-
   private normalizeLessonText(lesson: string): string | null {
     const lines = lesson.split('\n');
     const kept: string[] = [];
@@ -326,6 +313,9 @@ export class LessonsManager {
     let normalized = kept.join(' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
     normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
+    if (/\b(?:public|private|protected)\b\s+[A-Za-z_$][\w$]*\s*(?::[^;]+)?\s*(?:=|;)/i.test(normalized)) {
+      return null;
+    }
     normalized = normalized.replace(/\s*-\s*-\s*/g, ' - ').trim();
     normalized = normalized.replace(/\s*-\s*[a-z]{1,5}:\d+$/i, '').trim();
     normalized = normalized.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml)\b$/i, '').trim();
@@ -394,6 +384,7 @@ export class LessonsManager {
     if (fixForMatch) {
       cleaned = fixForMatch[1].trim();
     }
+    cleaned = cleaned.replace(/\s*-\s*\(inferred\)[^\n]*$/gi, '').trim();
     cleaned = cleaned.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
     cleaned = cleaned.replace(/\s*\(inferred\)[^\n]*$/gi, '').trim();
     cleaned = cleaned.replace(/\s+-+\s+.*$/, '');
@@ -403,6 +394,7 @@ export class LessonsManager {
     cleaned = cleaned.replace(/\s+(?:rejected:|failed:).*/i, '').trim();
     cleaned = cleaned.replace(/:(?:null|undefined)$/i, '');
     cleaned = cleaned.replace(/\s*\(inferred\).*$/, '').trim();
+    cleaned = cleaned.replace(/\s*-\s*$/, '').trim();
     const headerMatch = cleaned.match(/([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java))(?:[:](\d+)(?::\d+)?)?/i);
     if (headerMatch) {
       const pathPart = headerMatch[1];

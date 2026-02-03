@@ -43,6 +43,23 @@ async function run(): Promise<void> {
   assert.ok(saved.includes('Fix for README.md rejected:'));
   assert.ok(saved.includes('### src/state/manager.ts:117'));
   assert.ok(saved.includes('### src/llm/client.ts:319'));
+
+  const normalizeLessonText = (input: string) => (manager as any).normalizeLessonText(input) as string | null;
+  assert.equal(normalizeLessonText('```ts\nconst x = 1;\n```\n# Header\n**Bold**\n- Keep this'), 'Keep this');
+  assert.equal(normalizeLessonText('1. Numbered item'), 'Numbered item');
+  assert.equal(normalizeLessonText('// comment only'), null);
+  assert.equal(normalizeLessonText('private isShuttingDown = false;'), null);
+  assert.equal(normalizeLessonText('const foo = 1;'), null);
+  assert.equal(normalizeLessonText('use this (inferred)'), 'use this');
+  assert.equal(normalizeLessonText('lesson - ts'), 'lesson');
+  assert.equal(normalizeLessonText('lesson - a:123'), 'lesson');
+  assert.equal(
+    normalizeLessonText('claude-code with claude-sonnet-4-5-20250929 made no changes without explanation - trying different approach'),
+    'tool made no changes without explanation - trying different approach'
+  );
+  assert.equal(normalizeLessonText('tool made no changes, tool made no changes'), 'tool made no changes');
+  assert.equal(normalizeLessonText('chars truncated'), null);
+  assert.equal(normalizeLessonText('Fix for src/file.ts:123'), null);
 }
 
 run().catch(error => {

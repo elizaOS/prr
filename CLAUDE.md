@@ -77,12 +77,12 @@
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-**src/state/manager.ts:117 - (inferred) ts**
+**src/state/manager.ts:117**
 - Fix for src/state/manager.ts:117 - (inferred) ts:117 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
 - claude-code with claude-opus-4-5-20251101 made no changes: (inferred) ts:8` already includes all runners
 
-**src/runners/claude-code.ts:null - (inferred) ts**
+**src/runners/claude-code.ts**
 - Fix for src/runners/claude-code.ts:null - (inferred) ts:232 - (inferred) - codex with gpt-5-mini made no changes: (inferred) Do NOT repeat them:
 
 - claude-code with claude-sonnet-4-5-20250929 made no changes - trying different approach
@@ -128,13 +128,13 @@
 **src/config.ts**
 - Fix for src/config.ts:61 - tool made no changes without explanation, trying different approach
 
-**src/state/lessons.ts:625 - (inferred) ts**
+**src/state/lessons.ts:625**
 - Fix for src/state/lessons.ts:625 - (inferred) ts:537 - (inferred) Since the fix is already in place and the code matches the proposed solution, no changes are needed.
 
-**FIXER_EXPLANATION_REQUIREMENT.md:78 - (inferred) md**
+**FIXER_EXPLANATION_REQUIREMENT.md:78**
 - Fix for FIXER_EXPLANATION_REQUIREMENT.md:78 - (inferred) md:78 - (inferred) md` file already have the correct template literal syntax with backticks.
 
-**src/llm/client.ts:319 - (inferred) ts**
+**src/llm/client.ts:319**
 - Fix for src/llm/client.ts:319 - (inferred) ts:319 - (inferred) The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
 
 _(1 more files in .prr/lessons.md)_
