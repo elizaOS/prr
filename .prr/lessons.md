@@ -193,3 +193,7 @@
 ### src/git/commit.ts:108
 
 - Fix for src/git/commit.ts:108 - Implement the `restoreRemote()` helper function first, then call it in all four exit paths (timeout, SIGINT, close, error handlers).
+
+### tests/normalizeLessonText.test.ts:88
+
+- Fix for tests/normalizeLessonText.test.ts:88 - The fix must replace the actual test bodies with `it.todo(...)` or real assertions—removing imports alone doesn't address the no-op test cases.

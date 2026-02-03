@@ -122,6 +122,6 @@
 **src/state/lessons.ts:359**
 - Fix for src/state/lessons.ts:359 rejected: The diff removes extractPrrSection but adds unrelated normalization logic instead of adding direct unit tests for normalizeLessonText as requested in the review comment
 
-_(1 more files in .prr/lessons.md)_
+_(2 more files in .prr/lessons.md)_
 
 <!-- PRR_LESSONS_END -->

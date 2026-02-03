@@ -406,6 +406,10 @@ export class LessonsManager {
 
   private sanitizeFilePathHeader(filePath: string): string {
     let cleaned = filePath.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim();
+    const inferredSuffixMatch = cleaned.match(/^(.*?\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?)[\s-]*\(\s*inferred\s*\).*$/i);
+    if (inferredSuffixMatch) {
+      cleaned = inferredSuffixMatch[1].trim();
+    }
     const fixForMatch = cleaned.match(/^Fix for\s+(.+?)(?:\s+(?:rejected:|-)\s+.*)?$/i);
     if (fixForMatch) {
       cleaned = fixForMatch[1].trim();
