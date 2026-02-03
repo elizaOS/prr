@@ -60,7 +60,17 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   const redactAuth = (text: string) => text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
   
   // Get the workdir from the git instance
-  const workdir = (git as any)._baseDir || process.cwd();
+  // WHY multiple fallbacks: simple-git internal _baseDir may be undefined in some versions
+  // Use git rev-parse as the most reliable source
+  let workdir: string;
+  try {
+    // Most reliable: ask git itself for the repo root
+    workdir = (await git.revparse(['--show-toplevel'])).trim();
+  } catch {
+    // Fallback to internal property or cwd
+    workdir = (git as any)._baseDir || process.cwd();
+    debug('Using fallback workdir', { workdir, method: (git as any)._baseDir ? '_baseDir' : 'cwd' });
+  }
   
   // Check if remote URL has token, inject if missing
   // WHY: Token may be stripped or repo cloned without it
