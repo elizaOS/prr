@@ -313,9 +313,13 @@ export class LessonsManager {
     let normalized = kept.join(' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
     normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
+    normalized = normalized.replace(/\s*-\s*\(inferred\)[^\s]*/gi, '').trim();
     normalized = normalized.replace(/\s*-\s*:\s*(?:string|number|boolean|unknown|any)\s*;?/gi, ' - ').trim();
     normalized = normalized.replace(/made no changes\s*trying/gi, 'made no changes - trying');
     normalized = normalized.replace(/\balready includes all runners\b/gi, '').trim();
+    if (/\b:\s*(?:string|number|boolean|unknown|any)\s*;/.test(normalized)) {
+      return null;
+    }
     if (/\b[A-Za-z_$][\w$]*\s*(?::[^=;]+)?\s*(?:=|;)/.test(normalized)) {
       return null;
     }
@@ -413,6 +417,7 @@ export class LessonsManager {
   private sanitizeFilePathHeader(filePath: string): string {
     let cleaned = filePath.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim();
     cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*\w+$/i, '').trim();
+    cleaned = cleaned.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml)\b$/i, '').trim();
     cleaned = cleaned.replace(/^.*?([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?).*$/i, '$1').trim();
     cleaned = cleaned.replace(/^(.*?:\d+)\s*-\s*\(inferred\).*$/i, '$1').trim();
     const inferredSuffixMatch = cleaned.match(/^(.*?\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?)[\s-]*\(\s*inferred\s*\).*$/i);
