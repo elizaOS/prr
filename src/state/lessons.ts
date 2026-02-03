@@ -406,6 +406,7 @@ export class LessonsManager {
 
   private sanitizeFilePathHeader(filePath: string): string {
     let cleaned = filePath.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim();
+    cleaned = cleaned.replace(/^(.*?:\d+)\s*-\s*\(inferred\).*$/i, '$1').trim();
     const inferredSuffixMatch = cleaned.match(/^(.*?\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?)[\s-]*\(\s*inferred\s*\).*$/i);
     if (inferredSuffixMatch) {
       cleaned = inferredSuffixMatch[1].trim();

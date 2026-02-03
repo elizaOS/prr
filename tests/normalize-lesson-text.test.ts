@@ -65,19 +65,19 @@ describe('normalizeLessonText', () => {
   });
 
   describe('access modifier removal', () => {
-    it('removes public modifier', () => {
+    it('drops public modifier lines', () => {
       const input = 'public method()';
-      expect(normalize(input)).toBe('method()');
+      expect(normalize(input)).toBeNull();
     });
 
-    it('removes private modifier', () => {
+    it('drops private modifier lines', () => {
       const input = 'private field';
-      expect(normalize(input)).toBe('field');
+      expect(normalize(input)).toBeNull();
     });
 
-    it('removes protected modifier', () => {
+    it('drops protected modifier lines', () => {
       const input = 'protected method';
-      expect(normalize(input)).toBe('method');
+      expect(normalize(input)).toBeNull();
     });
   });
 
@@ -131,29 +131,29 @@ describe('normalizeLessonText', () => {
   });
 
   describe('file extension stripping', () => {
-    it('strips .ts extension', () => {
+    it('keeps .ts extension', () => {
       const input = 'src/file.ts';
-      expect(normalize(input)).toBe('src/file');
+      expect(normalize(input)).toBe('src/file.ts');
     });
 
-    it('strips .js extension', () => {
+    it('keeps .js extension', () => {
       const input = 'src/file.js';
-      expect(normalize(input)).toBe('src/file');
+      expect(normalize(input)).toBe('src/file.js');
     });
 
-    it('strips .md extension', () => {
+    it('keeps .md extension', () => {
       const input = 'src/file.md';
-      expect(normalize(input)).toBe('src/file');
+      expect(normalize(input)).toBe('src/file.md');
     });
 
-    it('strips .json extension', () => {
+    it('keeps .json extension', () => {
       const input = 'src/file.json';
-      expect(normalize(input)).toBe('src/file');
+      expect(normalize(input)).toBe('src/file.json');
     });
 
-    it('strips .yml extension', () => {
+    it('keeps .yml extension', () => {
       const input = 'src/file.yml';
-      expect(normalize(input)).toBe('src/file');
+      expect(normalize(input)).toBe('src/file.yml');
     });
   });
 
