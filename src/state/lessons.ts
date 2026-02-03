@@ -204,10 +204,16 @@ export class LessonsManager {
           this.store = loaded;
 
           // Prune transient/stale lessons on load
-          const pruned = this.pruneTransientLessons();
-          if (pruned > 0) {
-            console.log(`Pruned ${pruned} stale/transient lessons`);
+          const prunedTransient = this.pruneTransientLessons();
+          if (prunedTransient > 0) {
+            console.log(`Pruned ${prunedTransient} stale/transient lessons`);
             this.dirty = true;
+          }
+          
+          // Prune lessons with relative references (Issue 1, Issue 2, etc.)
+          const prunedRelative = this.pruneRelativeLessons();
+          if (prunedRelative > 0) {
+            console.log(`Pruned ${prunedRelative} lessons with relative references`);
           }
         }
       } catch (error) {
@@ -421,6 +427,63 @@ export class LessonsManager {
       if (this.store.files[filePath].length === 0) {
         delete this.store.files[filePath];
       }
+    }
+
+    return pruned;
+  }
+
+  /**
+   * Remove lessons that contain relative/temporary references.
+   * WHY: Lessons like "Issue 1 is already fixed" are useless because "Issue 1"
+   * changes between runs. These need absolute anchors (file:line).
+   */
+  private pruneRelativeLessons(): number {
+    // Patterns that indicate a relative reference (useless across runs)
+    const relativePatterns = [
+      /\bIssue\s*\d+\b/i,          // "Issue 1", "issue 2"
+      /\bissue_\d+\b/i,            // "issue_1", "issue_2"
+      /\b#\d+\s+(?:is|has|was)/i,  // "#1 is already fixed"
+      /\bfirst\s+issue\b/i,        // "first issue"
+      /\bsecond\s+issue\b/i,       // "second issue"
+    ];
+
+    let pruned = 0;
+
+    // Prune global lessons with relative refs (but keep if they also have file:line)
+    const originalGlobalCount = this.store.global.length;
+    this.store.global = this.store.global.filter(lesson => {
+      // If it has an absolute anchor (file:line), keep it even with relative refs
+      if (/\w+\.(ts|js|py|rs|go|java|tsx|jsx):\d+/.test(lesson)) {
+        return true;
+      }
+      // Otherwise, prune if it has relative references
+      const hasRelativeRef = relativePatterns.some(pattern => pattern.test(lesson));
+      return !hasRelativeRef;
+    });
+    pruned += originalGlobalCount - this.store.global.length;
+
+    // File-specific lessons already have absolute anchors, but prune pure relative refs
+    for (const filePath of Object.keys(this.store.files)) {
+      const originalCount = this.store.files[filePath].length;
+      this.store.files[filePath] = this.store.files[filePath].filter(lesson => {
+        // Check if the lesson is ONLY about a relative ref with no actual content
+        const relativeOnly = relativePatterns.some(pattern => {
+          const match = lesson.match(pattern);
+          if (!match) return false;
+          // If the lesson is mostly just "Issue X is fixed", prune it
+          return lesson.length < 100 && pattern.test(lesson);
+        });
+        return !relativeOnly || /\w+\.(ts|js|py|rs|go|java|tsx|jsx):\d+/.test(lesson);
+      });
+      pruned += originalCount - this.store.files[filePath].length;
+
+      if (this.store.files[filePath].length === 0) {
+        delete this.store.files[filePath];
+      }
+    }
+
+    if (pruned > 0) {
+      this.dirty = true;
     }
 
     return pruned;
