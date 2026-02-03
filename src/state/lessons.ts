@@ -290,7 +290,6 @@ export class LessonsManager {
     }
   }
 
-  /**
   private normalizeLessonText(lesson: string): string | null {
     const lines = lesson.split('\n');
     const kept: string[] = [];
@@ -304,6 +303,7 @@ export class LessonsManager {
       if (/^\d+\.$/.test(trimmed)) continue;
       if (/^(?:\/\/|\/\*|\*)/.test(trimmed)) continue;
       if (/^(?:public|private|protected)\s/.test(trimmed)) continue;
+      if (/^[A-Za-z_$][\w$]*\s*(?::[^=;]+)?\s*(?:=|;)/.test(trimmed)) continue;
       if (/^(?:class|interface|type|enum|const|let|var|import|export)\b/.test(trimmed)) continue;
       kept.push(trimmed);
     }

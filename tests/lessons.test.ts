@@ -48,18 +48,32 @@ async function run(): Promise<void> {
   assert.equal(normalizeLessonText('```ts\nconst x = 1;\n```\n# Header\n**Bold**\n- Keep this'), 'Keep this');
   assert.equal(normalizeLessonText('1. Numbered item'), 'Numbered item');
   assert.equal(normalizeLessonText('// comment only'), null);
+  assert.equal(normalizeLessonText('/* block comment */'), null);
+  assert.equal(normalizeLessonText('* leading comment'), null);
   assert.equal(normalizeLessonText('private isShuttingDown = false;'), null);
+  assert.equal(normalizeLessonText('progressThisCycle = 0;'), null);
+  assert.equal(normalizeLessonText('modelsTriedThisToolRound: number;'), null);
+  assert.equal(normalizeLessonText('public name: string;'), null);
   assert.equal(normalizeLessonText('const foo = 1;'), null);
+  assert.equal(normalizeLessonText('export type Foo = {}'), null);
+  assert.equal(normalizeLessonText('class Foo {}'), null);
+  assert.equal(normalizeLessonText('interface Foo {}'), null);
+  assert.equal(normalizeLessonText('import foo from "bar"'), null);
   assert.equal(normalizeLessonText('use this (inferred)'), 'use this');
   assert.equal(normalizeLessonText('lesson - ts'), 'lesson');
+  assert.equal(normalizeLessonText('lesson - json'), 'lesson');
   assert.equal(normalizeLessonText('lesson - a:123'), 'lesson');
+  assert.equal(normalizeLessonText('lesson - a.ts:123'), 'lesson');
   assert.equal(
     normalizeLessonText('claude-code with claude-sonnet-4-5-20250929 made no changes without explanation - trying different approach'),
     'tool made no changes without explanation - trying different approach'
   );
+  assert.equal(normalizeLessonText('2-codex with gpt-5-mini made no changes'), 'tool made no changes');
   assert.equal(normalizeLessonText('tool made no changes, tool made no changes'), 'tool made no changes');
   assert.equal(normalizeLessonText('chars truncated'), null);
   assert.equal(normalizeLessonText('Fix for src/file.ts:123'), null);
+  assert.equal(normalizeLessonText('Fix for src/file.ts:null'), null);
+  assert.equal(normalizeLessonText('Fix for src/file.ts:undefined'), null);
 }
 
 run().catch(error => {
