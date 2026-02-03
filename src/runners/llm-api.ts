@@ -1,5 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from 'fs';
-import { dirname, resolve, relative, sep, isAbsolute } from 'path';
+import { dirname, resolve, relative, sep } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug } from '../logger.js';
@@ -189,7 +189,7 @@ Working directory: ${workdir}`;
     const fullPath = resolve(workdir, filePath);
     const relativePath = relative(workdirResolved, fullPath);
     const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
-    const isOutside = hasParentTraversal || isAbsolute(relativePath);
+    const isOutside = hasParentTraversal;
     return { safe: !isOutside, fullPath };
   }
 
