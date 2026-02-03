@@ -268,14 +268,11 @@ export class PRResolver {
       
       console.log(chalk.yellow(`\n━━━ Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'} ━━━`));
       
-      // Original issue
+      // Original issue - show full text for useful context
       console.log(chalk.cyan('\n  📝 Original Issue:'));
-      const issueLines = issue.comment.body.split('\n').slice(0, 4);
+      const issueLines = issue.comment.body.split('\n');
       for (const line of issueLines) {
-        console.log(chalk.gray(`     ${line.substring(0, 70)}${line.length > 70 ? '...' : ''}`));
-      }
-      if (issue.comment.body.split('\n').length > 4) {
-        console.log(chalk.gray('     ...'));
+        console.log(chalk.gray(`     ${line}`));
       }
       
       // Analysis / why it's hard
@@ -295,8 +292,8 @@ export class PRResolver {
       const fileSpecificLessons = this.lessonsManager?.getLessonsForFiles([issue.comment.path]) || [];
       if (fileSpecificLessons.length > 0) {
         console.log(chalk.cyan('\n  📚 Relevant Learnings:'));
-        for (const lesson of fileSpecificLessons.slice(0, 2)) {
-          console.log(chalk.gray(`     • ${lesson.substring(0, 80)}${lesson.length > 80 ? '...' : ''}`));
+        for (const lesson of fileSpecificLessons.slice(0, 3)) {
+          console.log(chalk.gray(`     • ${lesson}`));
         }
       }
       
