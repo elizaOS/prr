@@ -230,11 +230,12 @@ export class PRResolver {
     for (let i = 0; i < unresolvedIssues.length; i++) {
       const issue = unresolvedIssues[i];
       console.log(chalk.white(`${i + 1}. File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}`));
-      console.log(chalk.white(`   Issue: ${issue.comment.body.split('\n')[0].substring(0, 100)}${issue.comment.body.length > 100 ? '...' : ''}`));
-      if (issue.comment.body.split('\n').length > 1) {
-        const secondLine = issue.comment.body.split('\n')[1].trim();
-        if (secondLine) {
-          console.log(chalk.white(`          ${secondLine.substring(0, 80)}${secondLine.length > 80 ? '...' : ''}`));
+      // Print full issue body - handoff needs complete context to be useful
+      const issueLines = issue.comment.body.split('\n');
+      console.log(chalk.white(`   Issue: ${issueLines[0]}`));
+      for (let j = 1; j < issueLines.length; j++) {
+        if (issueLines[j].trim()) {
+          console.log(chalk.white(`          ${issueLines[j]}`));
         }
       }
       console.log('');
