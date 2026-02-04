@@ -2742,7 +2742,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
             const newlyVerified = Array.from(verifiedThisSession).filter(id => !alreadyCommitted.has(id));
             
             if (newlyVerified.length > 0) {
-              const commitResult = await commitIteration(git, newlyVerified, fixIteration);
+              // Get issue details for meaningful commit messages
+              // WHY: "fix(prr): address 6 review comment(s)" is garbage - describe WHAT changed
+              const fixedIssueDetails = changedIssues
+                .filter(issue => newlyVerified.includes(issue.comment.id))
+                .map(issue => ({ filePath: issue.comment.path, comment: issue.comment.body }));
+              
+              const commitResult = await commitIteration(git, newlyVerified, fixIteration, fixedIssueDetails);
               if (commitResult) {
                 // Mark these as committed so we don't try again
                 for (const id of newlyVerified) {

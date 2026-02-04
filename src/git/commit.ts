@@ -364,7 +364,8 @@ export async function getLastCommitHash(git: SimpleGit): Promise<string> {
 export async function commitIteration(
   git: SimpleGit,
   verifiedCommentIds: string[],
-  iterationNumber: number
+  iterationNumber: number,
+  fixedIssues?: Array<{ filePath: string; comment: string }>
 ): Promise<CommitResult | null> {
   // Check if there are changes to commit (Trap 2)
   const status = await git.status();
@@ -381,8 +382,12 @@ export async function commitIteration(
     .map(id => `prr-fix:${id.toLowerCase()}`)
     .join('\n');
   
+  // Generate a meaningful commit message from the fixed issues
+  // WHY: "fix(prr): address 6 review comment(s)" says NOTHING about what changed
+  const firstLine = generateCommitFirstLine(fixedIssues || [], status.files.map(f => f.path));
+  
   const message = [
-    `fix(prr): address ${verifiedCommentIds.length} review comment(s)`,
+    firstLine,
     '',
     `Iteration ${iterationNumber}`,
     '',
@@ -453,6 +458,153 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
 }
 
 /**
+ * Generate a meaningful first line for a commit message.
+ * 
+ * WHY: Generic messages like "fix(prr): address 6 review comment(s)" are useless.
+ * Commit history should describe WHAT changed, not that a tool was used.
+ * 
+ * Strategy:
+ * 1. Extract common directory/module from changed files → use as scope
+ * 2. Extract keywords from review comments → describe the change
+ * 3. Fall back to file-based description if no comments provided
+ */
+function generateCommitFirstLine(
+  fixedIssues: Array<{ filePath: string; comment: string }>,
+  changedFiles: string[]
+): string {
+  // Get unique file paths from issues or git status
+  const filePaths = fixedIssues.length > 0
+    ? [...new Set(fixedIssues.map(i => i.filePath))]
+    : changedFiles;
+  
+  // Determine scope from common path component
+  const scope = extractScope(filePaths);
+  
+  // Try to extract meaningful description from comments
+  const description = extractDescription(fixedIssues, filePaths);
+  
+  // Build first line (max 72 chars for git conventions)
+  const firstLine = scope 
+    ? `fix(${scope}): ${description}`
+    : `fix: ${description}`;
+  
+  // Truncate if too long while keeping it meaningful
+  if (firstLine.length > 72) {
+    return firstLine.slice(0, 69) + '...';
+  }
+  
+  return firstLine;
+}
+
+/**
+ * Extract a meaningful scope from file paths.
+ * Examples:
+ *   ['src/api/voice/route.ts', 'src/api/voice/helper.ts'] → 'voice-api'
+ *   ['packages/client/src/auth.ts'] → 'client'
+ *   ['src/utils.ts'] → 'utils'
+ */
+function extractScope(filePaths: string[]): string | null {
+  if (filePaths.length === 0) return null;
+  
+  // Find common directory patterns
+  const dirCounts = new Map<string, number>();
+  
+  for (const path of filePaths) {
+    const parts = path.split('/');
+    
+    // Look for meaningful directory names
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dir = parts[i];
+      // Skip generic directories
+      if (['src', 'lib', 'app', 'packages', 'components', 'routes'].includes(dir)) continue;
+      
+      // Prefer api/route-style names
+      if (dir === 'api' && parts[i + 1]) {
+        const apiScope = `${parts[i + 1]}-api`;
+        dirCounts.set(apiScope, (dirCounts.get(apiScope) || 0) + 1);
+      } else {
+        dirCounts.set(dir, (dirCounts.get(dir) || 0) + 1);
+      }
+    }
+    
+    // Also consider file name without extension for single-file changes
+    if (filePaths.length === 1) {
+      const fileName = parts[parts.length - 1].replace(/\.[^.]+$/, '');
+      if (fileName && fileName.length < 15) {
+        return fileName;
+      }
+    }
+  }
+  
+  // Return most common scope
+  let bestScope: string | null = null;
+  let bestCount = 0;
+  for (const [dir, count] of dirCounts) {
+    if (count > bestCount) {
+      bestCount = count;
+      bestScope = dir;
+    }
+  }
+  
+  return bestScope;
+}
+
+/**
+ * Extract a description from review comments.
+ * Looks for action keywords and nouns.
+ */
+function extractDescription(
+  fixedIssues: Array<{ filePath: string; comment: string }>,
+  filePaths: string[]
+): string {
+  // Fallback description based on files
+  const fileBasedDesc = filePaths.length > 0
+    ? `update ${filePaths[0].split('/').pop()?.replace(/\.[^.]+$/, '') || 'code'}`
+    : 'improve code quality';
+  
+  if (fixedIssues.length === 0) {
+    return fileBasedDesc;
+  }
+  
+  // Combine all comments and look for key patterns
+  const allText = fixedIssues.map(i => i.comment.toLowerCase()).join(' ');
+  
+  // Common improvement patterns to look for
+  const patterns: Array<{ regex: RegExp; desc: string }> = [
+    { regex: /add(ing)?\s+(uuid\s+)?validation/i, desc: 'add validation' },
+    { regex: /add(ing)?\s+error\s+handling/i, desc: 'add error handling' },
+    { regex: /add(ing)?\s+type\s+(safety|check)/i, desc: 'add type safety' },
+    { regex: /add(ing)?\s+null\s+check/i, desc: 'add null checks' },
+    { regex: /add(ing)?\s+auth(entication|orization)/i, desc: 'add auth checks' },
+    { regex: /missing\s+(type|return|validation)/i, desc: 'add missing types' },
+    { regex: /remove\s+(unused|dead)/i, desc: 'remove unused code' },
+    { regex: /duplicate/i, desc: 'remove duplicate code' },
+    { regex: /extract\s+(to|into)/i, desc: 'extract shared code' },
+    { regex: /simplif(y|ied)/i, desc: 'simplify implementation' },
+    { regex: /refactor/i, desc: 'refactor for clarity' },
+    { regex: /performance|optimi[zs]/i, desc: 'improve performance' },
+    { regex: /security|vulnerab/i, desc: 'fix security issue' },
+    { regex: /race\s+condition/i, desc: 'fix race condition' },
+    { regex: /memory\s+leak/i, desc: 'fix memory leak' },
+    { regex: /exception|error\s+handling/i, desc: 'improve error handling' },
+  ];
+  
+  for (const { regex, desc } of patterns) {
+    if (regex.test(allText)) {
+      return desc;
+    }
+  }
+  
+  // Try to extract specific noun phrases
+  const nounMatch = allText.match(/(?:add|fix|improve|update|handle)\s+(\w+(?:\s+\w+)?)/);
+  if (nounMatch && nounMatch[1].length < 30) {
+    return `${allText.includes('fix') ? 'fix' : 'improve'} ${nounMatch[1]}`;
+  }
+  
+  return fileBasedDesc;
+}
+
+/**
  * Strip markdown/HTML formatting from text for use in commit messages
  */
 export function stripMarkdownForCommit(text: string): string {
@@ -471,13 +623,23 @@ export function stripMarkdownForCommit(text: string): string {
     .trim();
 }
 
-export function buildCommitMessage(issuesFixed: string[], lessonsLearned: string[]): string {
-  const lines: string[] = ['fix: address review comments', ''];
+export function buildCommitMessage(
+  issuesFixed: Array<{ filePath: string; comment: string }>,
+  lessonsLearned: string[]
+): string {
+  // Generate a meaningful first line
+  const firstLine = generateCommitFirstLine(issuesFixed, issuesFixed.map(i => i.filePath));
+  const lines: string[] = [firstLine, ''];
 
   if (issuesFixed.length > 0) {
-    lines.push('Issues addressed:');
+    lines.push('Changes:');
     for (const issue of issuesFixed) {
-      lines.push(`- ${issue}`);
+      const fileName = issue.filePath.split('/').pop() || issue.filePath;
+      // Truncate long comments for commit body
+      const truncatedComment = issue.comment.length > 80 
+        ? issue.comment.slice(0, 77) + '...' 
+        : issue.comment;
+      lines.push(`- ${fileName}: ${truncatedComment}`);
     }
     lines.push('');
   }
