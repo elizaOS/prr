@@ -498,9 +498,12 @@ function generateCommitFirstLine(
 
 /**
  * Extract a meaningful scope from file paths.
+ * 
+ * WHY: The repo context is implicit - don't include redundant repo/package names.
  * Examples:
- *   ['src/api/voice/route.ts', 'src/api/voice/helper.ts'] → 'voice-api'
- *   ['packages/client/src/auth.ts'] → 'client'
+ *   ['src/api/voice/route.ts'] → 'voice-api'
+ *   ['packages/client/src/auth.ts'] → 'auth' (not 'client' - that's the package)
+ *   ['packages/plugin-babylon/src/memory.ts'] → 'memory' (not 'plugin-babylon')
  *   ['src/utils.ts'] → 'utils'
  */
 function extractScope(filePaths: string[]): string | null {
@@ -512,25 +515,40 @@ function extractScope(filePaths: string[]): string | null {
   for (const path of filePaths) {
     const parts = path.split('/');
     
+    // Skip generic top-level directories (monorepo structure, framework dirs)
+    const skipDirs = ['src', 'lib', 'app', 'packages', 'plugins', 'apps', 'components', 'routes', 'dist', 'build'];
+    
     // Look for meaningful directory names
     for (let i = 0; i < parts.length - 1; i++) {
       const dir = parts[i];
-      // Skip generic directories
-      if (['src', 'lib', 'app', 'packages', 'components', 'routes'].includes(dir)) continue;
       
-      // Prefer api/route-style names
+      // Skip generic directories
+      if (skipDirs.includes(dir)) continue;
+      
+      // Strip redundant prefixes (plugin-, package-, @scope/)
+      let cleanDir = dir;
+      cleanDir = cleanDir.replace(/^plugin-/, '');
+      cleanDir = cleanDir.replace(/^package-/, '');
+      cleanDir = cleanDir.replace(/^@[^/]+\//, ''); // @scope/name → name
+      
+      // Skip if it's still too generic after cleaning
+      if (cleanDir.length < 3 || skipDirs.includes(cleanDir)) continue;
+      
+      // For api routes, look at the next level (e.g., api/voice → voice-api)
       if (dir === 'api' && parts[i + 1]) {
         const apiScope = `${parts[i + 1]}-api`;
         dirCounts.set(apiScope, (dirCounts.get(apiScope) || 0) + 1);
-      } else {
-        dirCounts.set(dir, (dirCounts.get(dir) || 0) + 1);
+        continue; // Don't also count 'api' itself
       }
+      
+      dirCounts.set(cleanDir, (dirCounts.get(cleanDir) || 0) + 1);
     }
     
-    // Also consider file name without extension for single-file changes
+    // For single-file changes, consider the file name itself
     if (filePaths.length === 1) {
       const fileName = parts[parts.length - 1].replace(/\.[^.]+$/, '');
-      if (fileName && fileName.length < 15) {
+      // Use file name if it's meaningful and not too long
+      if (fileName && fileName.length < 15 && fileName !== 'index' && fileName !== 'main') {
         return fileName;
       }
     }
