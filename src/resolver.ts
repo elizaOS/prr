@@ -1561,23 +1561,27 @@ Start your response with \`\`\` and end with \`\`\`.`;
             );
             
             if (!resolution.success) {
-              console.log(chalk.yellow('\n⚠ Could not resolve all merge conflicts automatically'));
-              console.log(chalk.yellow('  Remaining conflicts:'));
+              console.log(chalk.red('\n✗ Could not resolve all merge conflicts automatically'));
+              console.log(chalk.red('  Remaining conflicts:'));
               for (const file of resolution.remainingConflicts) {
-                console.log(chalk.yellow(`    - ${file}`));
+                console.log(chalk.red(`    - ${file}`));
               }
-              console.log(chalk.cyan('\n  Aborting merge and resetting to PR branch...'));
+              console.log(chalk.yellow('\n  These conflicts must be resolved before prr can continue.'));
+              console.log(chalk.gray('  Options:'));
+              console.log(chalk.gray('    1. Resolve conflicts manually and re-run prr'));
+              console.log(chalk.gray('    2. Use --no-merge-base to skip base branch merge (not recommended)'));
               
-              // Abort merge and reset to clean state on PR branch
+              // Abort merge and reset to clean state
               await abortMerge(git);
               await git.reset(['--hard', `origin/${this.prInfo.branch}`]);
               await git.clean('f', ['-d']);
               
               endTimer('Merge base branch');
-              console.log(chalk.green(`  ✓ Reset to ${this.prInfo.branch} - ready to fix review comments`));
-              console.log(chalk.gray('  (PR still has conflicts with base branch - human can resolve later)'));
               
-              // Continue to fix review comments instead of returning
+              // Exit instead of continuing - don't work on unmerged code
+              this.exitReason = 'merge_conflicts';
+              this.exitDetails = `Could not auto-resolve ${resolution.remainingConflicts.length} conflict(s) with ${this.prInfo.baseBranch}`;
+              return;
             } else {
               // All conflicts resolved - stage files and complete the merge
               const codeFiles = conflictedFiles.filter(f => !isLockFile(f));
