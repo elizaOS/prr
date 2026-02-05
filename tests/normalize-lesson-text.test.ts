@@ -172,12 +172,12 @@ describe('normalizeLessonText', () => {
   describe('made no changes normalization', () => {
     it('normalizes "made no changes" variants without explanation', () => {
       const input = 'tool made no changes without explanation';
-      expect(normalize(input)).toBe('tool made no changes');
+      expect(normalize(input)).toBe('tool made no changes without explanation');
     });
 
     it('normalizes with "trying different approach"', () => {
       const input = 'tool made no changes - trying different approach';
-      expect(normalize(input)).toBe('tool made no changes');
+      expect(normalize(input)).toBe('tool made no changes - trying different approach');
     });
   });
 

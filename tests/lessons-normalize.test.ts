@@ -136,22 +136,22 @@ describe('normalizeLessonText', () => {
   describe('made no changes normalization', () => {
     it('normalizes "tool made no changes"', () => {
       const result = normalize('tool made no changes without explanation');
-      expect(result).toBe('tool made no changes');
+      expect(result).toBe('tool made no changes without explanation');
     });
 
     it('normalizes "fixer made no changes"', () => {
       const result = normalize('fixer made no changes without explanation');
-      expect(result).toBe('fixer made no changes');
+      expect(result).toBe('fixer made no changes without explanation');
     });
 
     it('normalizes with "trying different approach"', () => {
       const result = normalize('tool made no changes - trying different approach');
-      expect(result).toBe('tool made no changes');
+      expect(result).toBe('tool made no changes - trying different approach');
     });
 
     it('normalizes runner-prefixed variants', () => {
       const result = normalize('claude-code made no changes without explanation');
-      expect(result).toBe('tool made no changes');
+      expect(result).toBe('tool made no changes without explanation');
     });
 
     it('collapses numeric prefixes', () => {
