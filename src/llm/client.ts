@@ -786,21 +786,31 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       filePath: string;
       diff: string;
     }>
-  ): Promise<Map<string, { fixed: boolean; explanation: string }>> {
+  ): Promise<Map<string, { fixed: boolean; explanation: string; lesson?: string }>> {
     if (fixes.length === 0) {
       return new Map();
     }
 
     // Build batch prompt
+    // WHY: Combine verification + lesson extraction in one call to save N LLM calls
     const parts: string[] = [
       'Verify whether each of the following code changes adequately addresses the review comment.',
       '',
-      'For EACH fix, respond with a line in this exact format:',
+      'For EACH fix, respond with these lines:',
       'FIX_ID: YES|NO: brief explanation',
+      'LESSON: <actionable guidance for next attempt> (ONLY if NO)',
       '',
       'Example responses:',
       'fix_123: YES: The null check was added as requested',
+      '',
       'fix_456: NO: The validation is incomplete, missing edge case',
+      'LESSON: Must validate both null AND empty string as mentioned in comment',
+      '',
+      'Guidelines for lessons (when fix = NO):',
+      '- Be specific and actionable (not vague like "fix was incomplete")',
+      '- Reference what the comment asked for vs what was done',
+      '- Keep under 150 characters',
+      '- Focus on what needs to be added/changed',
       '',
       '---',
       '',
@@ -824,20 +834,35 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     debug('Batch verifying fixes', { count: fixes.length });
     const response = await this.complete(parts.join('\n'));
-    const results = new Map<string, { fixed: boolean; explanation: string }>();
+    const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
-    // Parse responses
+    // Parse responses - now including lessons
     const lines = response.content.split('\n');
+    let currentId: string | null = null;
+    
     for (const line of lines) {
       // Match patterns like "fix_123: YES: explanation" or "FIX_123: NO: explanation"
-      const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
-      if (match) {
-        const [, id, yesNo, explanation] = match;
+      const verifyMatch = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
+      if (verifyMatch) {
+        const [, id, yesNo, explanation] = verifyMatch;
         const cleanId = id.trim().toLowerCase().replace(/^fix[_\s]*/i, '');
+        currentId = cleanId;
         results.set(cleanId, {
           fixed: yesNo.toUpperCase() === 'YES',
           explanation: explanation.trim(),
         });
+        continue;
+      }
+      
+      // Match lesson line: "LESSON: actionable guidance"
+      const lessonMatch = line.match(/^LESSON:\s*(.+)$/i);
+      if (lessonMatch && currentId) {
+        const lesson = lessonMatch[1].trim();
+        const existing = results.get(currentId);
+        if (existing && !existing.fixed) {
+          // Only attach lesson to NO responses
+          existing.lesson = lesson.length > 150 ? lesson.substring(0, 147) + '...' : lesson;
+        }
       }
     }
 

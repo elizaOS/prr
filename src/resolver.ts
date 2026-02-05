@@ -2673,9 +2673,12 @@ Start your response with \`\`\` and end with \`\`\`.`;
                   verifiedThisSession.add(issue.comment.id);  // Track for session filtering
                 } else {
                   failedCount++;
-                  this.lessonsManager.addLesson(
-                    `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${result.explanation}`
-                  );
+                  // Use the lesson from batch verification if available
+                  // WHY: Saves N separate LLM calls for failure analysis
+                  const lessonText = result.lesson 
+                    ? result.lesson
+                    : `Fix for ${issue.comment.path}:${issue.comment.line} rejected: ${result.explanation}`;
+                  this.lessonsManager.addLesson(lessonText);
                 }
               }
             }
