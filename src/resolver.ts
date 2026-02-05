@@ -1951,8 +1951,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
                     comment: comment.body,
                   }));
                 
-                spinner.start('Generating commit message...');
-                const commitMsg = await this.llm.generateCommitMessage(fixedIssues);
+                // Generate commit message locally (no LLM call needed)
+                // WHY: Pattern matching is fast, free, and works well for commit messages
+                const { buildCommitMessage } = await import('./git/commit.js');
+                const commitMsg = buildCommitMessage(fixedIssues, []);
                 debug('Generated commit message', commitMsg);
                 
                 spinner.text = 'Committing changes...';
@@ -2912,8 +2914,10 @@ Start your response with \`\`\` and end with \`\`\`.`;
             break;
           }
           
-          spinner.start('Generating commit message...');
-          const commitMsg = await this.llm.generateCommitMessage(fixedIssues);
+          // Generate commit message locally (no LLM call needed)
+          // WHY: Pattern matching is fast, free, and works well for commit messages
+          const { buildCommitMessage } = await import('./git/commit.js');
+          const commitMsg = buildCommitMessage(fixedIssues, []);
           debug('Generated commit message', commitMsg);
           
           spinner.text = 'Committing changes...';
