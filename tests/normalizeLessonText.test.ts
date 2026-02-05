@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LessonManager } from '../src/state/lessons';
+import { LessonsManager } from '../src/state/lessons';
 
 // Access the private method through a helper or by importing the module differently
 // Since normalizeLessonText is private, we need to test it indirectly or extract it
