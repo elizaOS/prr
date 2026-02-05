@@ -878,6 +878,22 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     conflictedContent: string,
     baseBranch: string
   ): Promise<{ resolved: boolean; content: string; explanation: string }> {
+    // Check if file is too large for reliable conflict resolution
+    // WHY: Files >50KB cause token limit issues and response truncation
+    const MAX_SAFE_SIZE = 50000; // 50KB
+    if (conflictedContent.length > MAX_SAFE_SIZE) {
+      debug('File too large for automatic conflict resolution', { 
+        filePath, 
+        size: conflictedContent.length,
+        maxSize: MAX_SAFE_SIZE 
+      });
+      return {
+        resolved: false,
+        content: conflictedContent,
+        explanation: `File too large (${Math.round(conflictedContent.length / 1024)}KB) for automatic resolution. Please resolve manually.`,
+      };
+    }
+
     const prompt = `You are resolving a Git merge conflict.
 
 FILE: ${filePath}
@@ -896,8 +912,9 @@ INSTRUCTIONS:
 2. Merge the changes intelligently - combine both when possible, don't just pick one side
 3. Remove ALL conflict markers (<<<<<<<, =======, >>>>>>>)
 4. Ensure the result is valid, working code
+5. CRITICAL: Output the COMPLETE file - do not truncate or omit any sections
 
-Respond in this EXACT format:
+Respond in this EXACT format (no other text before or after):
 
 EXPLANATION: <brief explanation of how you merged the changes>
 
@@ -911,16 +928,27 @@ RESOLVED:
     const response = await this.complete(prompt);
     const content = response.content;
     
-    // Parse the response
+    // Parse the response with better error reporting
     const explanationMatch = content.match(/EXPLANATION:\s*(.+?)(?=\n\nRESOLVED:|$)/s);
     const resolvedMatch = content.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
     
     if (!resolvedMatch) {
-      debug('Failed to parse LLM conflict resolution response');
+      debug('Failed to parse LLM conflict resolution response', {
+        responseLength: content.length,
+        hasExplanation: !!explanationMatch,
+        responsePreview: content.substring(0, 500),
+      });
+      
+      // Check if response was truncated
+      const seemsTruncated = !content.trim().endsWith('```') && content.length > 10000;
+      const reason = seemsTruncated 
+        ? 'LLM response appears truncated (file may be too large)'
+        : 'LLM response did not follow expected format';
+      
       return {
         resolved: false,
         content: conflictedContent,
-        explanation: 'Failed to parse LLM response',
+        explanation: reason,
       };
     }
 

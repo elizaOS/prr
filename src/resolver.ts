@@ -1567,9 +1567,15 @@ Start your response with \`\`\` and end with \`\`\`.`;
                 console.log(chalk.red(`    - ${file}`));
               }
               console.log(chalk.yellow('\n  These conflicts must be resolved before prr can continue.'));
-              console.log(chalk.gray('  Options:'));
-              console.log(chalk.gray('    1. Resolve conflicts manually and re-run prr'));
-              console.log(chalk.gray('    2. Use --no-merge-base to skip base branch merge (not recommended)'));
+              console.log(chalk.yellow('  (Large files >50KB cannot be auto-resolved due to token limits)'));
+              console.log(chalk.gray('\n  To resolve manually:'));
+              console.log(chalk.gray(`    1. Checkout the branch: git checkout ${this.prInfo.branch}`));
+              console.log(chalk.gray(`    2. Merge base branch: git merge ${this.prInfo.baseBranch}`));
+              console.log(chalk.gray(`    3. Resolve conflicts in your editor`));
+              console.log(chalk.gray(`    4. Commit: git commit`));
+              console.log(chalk.gray(`    5. Re-run prr`));
+              console.log(chalk.gray('\n  Alternative:'));
+              console.log(chalk.gray('    Use --no-merge-base to skip base branch merge (not recommended)'));
               
               // Abort merge and reset to clean state
               await abortMerge(git);
@@ -3314,6 +3320,29 @@ After resolving, the files should have NO conflict markers remaining.`;
       console.log(chalk.cyan(`\n  Attempt 2: Using direct ${this.config.llmProvider} API to resolve ${remainingConflicts.length} remaining conflicts...`));
       
       const fs = await import('fs');
+      const MAX_FILE_SIZE = 50000; // 50KB - same as in llm/client.ts
+      
+      // Pre-check file sizes to warn about large files
+      const largeFiles: string[] = [];
+      for (const file of remainingConflicts) {
+        if (isLockFile(file)) continue;
+        const fullPath = join(this.workdir, file);
+        try {
+          const stats = fs.statSync(fullPath);
+          if (stats.size > MAX_FILE_SIZE) {
+            largeFiles.push(`${file} (${Math.round(stats.size / 1024)}KB)`);
+          }
+        } catch {
+          // Ignore stat errors
+        }
+      }
+      
+      if (largeFiles.length > 0) {
+        console.log(chalk.yellow('  ⚠ Large files detected (will need manual resolution):'));
+        for (const file of largeFiles) {
+          console.log(chalk.yellow(`    - ${file}`));
+        }
+      }
       
       for (const conflictFile of remainingConflicts) {
         // Skip lock files in case they slipped through
@@ -3349,6 +3378,17 @@ After resolving, the files should have NO conflict markers remaining.`;
             await git.add(conflictFile);
           } else {
             console.log(chalk.red(`    ✗ ${conflictFile}: ${result.explanation}`));
+            
+            // Provide helpful manual resolution instructions for large files
+            if (result.explanation.includes('too large')) {
+              const fileSize = Math.round(conflictedContent.length / 1024);
+              console.log(chalk.yellow(`      File is ${fileSize}KB - too large for automatic resolution`));
+              console.log(chalk.gray(`      To resolve manually:`));
+              console.log(chalk.gray(`        1. Open: ${fullPath}`));
+              console.log(chalk.gray(`        2. Search for: <<<<<<<`));
+              console.log(chalk.gray(`        3. Merge changes and remove conflict markers`));
+              console.log(chalk.gray(`        4. Save and run: git add ${conflictFile}`));
+            }
           }
         } catch (e) {
           console.log(chalk.red(`    ✗ ${conflictFile}: Error - ${e}`));
