@@ -242,9 +242,10 @@ export async function pushWithRetry(
   }
 ): Promise<void> {
   const maxRetries = options?.maxRetries ?? 3;
+  const maxAttempts = maxRetries + 1;
   let attempts = 0;
   
-  while (attempts < maxRetries) {
+  while (attempts < maxAttempts) {
     attempts++;
     const result = await push(git, branch, options?.force, options?.githubToken);
     
@@ -256,9 +257,12 @@ export async function pushWithRetry(
       // Non-rejected failure (auth, network, etc.) - don't retry
       throw new Error(result.error || 'Push failed');
     }
+    if (attempts >= maxAttempts) {
+      break;
+    }
     
     // Push was rejected - remote has newer commits
-    debug(`Push rejected (attempt ${attempts}/${maxRetries}), attempting fetch + rebase + retry`);
+    debug(`Push rejected (attempt ${attempts}/${maxAttempts}), attempting fetch + rebase + retry`);
     options?.onPullNeeded?.();
     
     // Fetch and rebase to handle divergent branches
@@ -337,7 +341,7 @@ export async function pushWithRetry(
   }
   
   // Exhausted retries
-  throw new Error(`Push failed after ${maxRetries} attempts. Remote may be receiving concurrent pushes.`);
+  throw new Error(`Push failed after ${maxAttempts} attempts. Remote may be receiving concurrent pushes.`);
 }
 
 export async function getCurrentBranch(git: SimpleGit): Promise<string> {

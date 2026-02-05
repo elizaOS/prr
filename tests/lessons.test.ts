@@ -60,7 +60,7 @@ async function run(): Promise<void> {
   assert.equal(normalizeLessonText('interface Foo {}'), null);
   assert.equal(normalizeLessonText('import foo from "bar"'), null);
   assert.equal(normalizeLessonText('Fix for src/resolver.ts - : string; tool made no changes - trying different approach tool made no changes  already includes all runners'), null);
-  assert.equal(normalizeLessonText('Fixer made no changes  already includes all runners'), 'fixer made no changes');
+  assert.equal(normalizeLessonText('Fixer made no changes  already includes all runners'), 'fixer made no changes - already includes all runners');
   assert.equal(normalizeLessonText('use this (inferred)'), 'use this');
   assert.equal(normalizeLessonText('lesson - ts'), 'lesson');
   assert.equal(normalizeLessonText('lesson - json'), 'lesson');

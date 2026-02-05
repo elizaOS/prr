@@ -1,17 +1,17 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { StateManager } from '../src/state/manager';
+import { LessonsManager } from '../src/state/lessons';
 
 describe('normalizeLessonText', () => {
   // Create an instance to access the private method via reflection
-  let stateManager: StateManager;
+  let lessonsManager: LessonsManager;
 
   beforeEach(() => {
-    stateManager = new StateManager();
+    lessonsManager = new LessonsManager('owner', 'repo', 'branch');
   });
 
   // Helper to call private method
   function normalize(lesson: string): string | null {
-    return (stateManager as any).normalizeLessonText(lesson);
+    return (lessonsManager as any).normalizeLessonText(lesson);
   }
 
   describe('code fence removal', () => {
@@ -172,12 +172,12 @@ describe('normalizeLessonText', () => {
   describe('made no changes normalization', () => {
     it('normalizes "made no changes" variants without explanation', () => {
       const input = 'tool made no changes without explanation';
-      expect(normalize(input)).toBe('tool made no changes');
+      expect(normalize(input)).toBe('tool made no changes without explanation');
     });
 
     it('normalizes with "trying different approach"', () => {
       const input = 'tool made no changes - trying different approach';
-      expect(normalize(input)).toBe('tool made no changes');
+      expect(normalize(input)).toBe('tool made no changes - trying different approach');
     });
   });
 
