@@ -56,46 +56,47 @@ export interface Runner {
  * Start with the balanced model (sonnet), escalate to powerful (opus),
  * try alternative provider (GPT), then fast/cheap options (mini).
  * 
- * Updated January 2026 with latest model versions from official docs.
+ * Updated January 28, 2026 with Claude Opus 4.6 and GPT-5.3 releases.
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Cursor: Uses short model names (from `cursor --list-models`)
   // WHY these names: Cursor has its own model aliases, not full API names
   'cursor': [
-    'claude-3.7-sonnet',               // Claude 3.7 Sonnet - balanced
-    'gpt-4.5-preview',                 // GPT-4.5 preview - coding/agentic
-    'claude-3-opus',                   // Claude 3 Opus - most capable
+    'claude-4-sonnet',                 // Claude 4.5 Sonnet - balanced, fast
+    'claude-4-opus',                   // Claude 4.6 Opus - most intelligent
+    'gpt-5.3',                         // GPT-5.3 - latest OpenAI
     'o3-mini',                         // OpenAI o3-mini - fast reasoning
   ],
-  // Claude Code: Claude 4.5 models only (uses full API names)
+  // Claude Code: Claude 4+ models (uses full API names)
   'claude-code': [
-    'claude-sonnet-4-5-20250929',      // Claude 4.5 Sonnet
-    'claude-opus-4-5-20251101',        // Claude 4.5 Opus
-    'claude-haiku-4-5-20251001',       // Claude 4.5 Haiku - fast
+    'claude-sonnet-4-5-20250929',     // Claude 4.5 Sonnet - best speed/intelligence
+    'claude-opus-4-6',                // Claude 4.6 Opus - NEW! Most intelligent
+    'claude-haiku-4-5-20251001',      // Claude 4.5 Haiku - fastest
   ],
   // Aider: Supports many providers (provider-prefixed)
   'aider': [
-    'anthropic/claude-3-7-sonnet-20250219',
-    'openai/gpt-5.2',
-    'anthropic/claude-3-5-haiku-20241022',
-    'openai/gpt-5-mini',
+    'anthropic/claude-sonnet-4-5-20250929',
+    'anthropic/claude-opus-4-6',     // NEW! Claude 4.6 Opus
+    'openai/gpt-5.3',                // NEW! GPT-5.3
+    'anthropic/claude-haiku-4-5-20251001',
   ],
   // OpenCode: Mix of providers
   'opencode': [
     'claude-sonnet-4-5-20250929',
-    'gpt-5.2',
-    'gpt-5-mini',
+    'claude-opus-4-6',               // NEW! Claude 4.6 Opus
+    'gpt-5.3',                       // NEW! GPT-5.3
+    'gpt-5.3-mini',                  // GPT-5.3 mini variant
   ],
   // Codex: OpenAI models (use codex-optimized variants)
   'codex': [
-    'gpt-5.2-codex',                   // Best for coding tasks
-    'gpt-5.2',                         // Fallback to standard
-    'gpt-5-mini',                      // Fast option
+    'gpt-5.3-codex',                 // NEW! GPT-5.3 Codex - best for coding
+    'gpt-5.3',                       // NEW! GPT-5.3 standard
+    'gpt-5.2-codex',                 // Fallback to 5.2 Codex
   ],
   // LLM API: Direct Anthropic API calls (uses full API names)
   'llm-api': [
-    'claude-sonnet-4-5-20250929',
-    'claude-opus-4-5-20251101',
-    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-5-20250929',   // Claude 4.5 Sonnet - balanced
+    'claude-opus-4-6',               // NEW! Claude 4.6 Opus - most intelligent
+    'claude-haiku-4-5-20251001',    // Claude 4.5 Haiku - fastest
   ],
 };

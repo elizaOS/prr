@@ -47,6 +47,8 @@ export interface CLIOptions {
   noLock: boolean;
   /** Clear lock file and exit */
   clearLock: boolean;
+  /** Check installed tools and exit */
+  checkTools: boolean;
 }
 
 export interface ParsedArgs {
@@ -123,7 +125,9 @@ export function createCLI(): Command {
     .option('--clean-all', 'Run both --clean-claude-md and --clean-state, then exit')
     // Distributed locking for multi-instance coordination
     .option('--no-lock', 'Disable distributed locking (allow parallel instances on same PR)')
-    .option('--clear-lock', 'Clear the lock file and exit (use if a previous instance crashed)');
+    .option('--clear-lock', 'Clear the lock file and exit (use if a previous instance crashed)')
+    // Tool/version checking
+    .option('--check-tools', 'Check installed AI coding tools and show upgrade instructions, then exit');
 
   return program;
 }
@@ -147,7 +151,8 @@ export function parseArgs(program: Command): ParsedArgs {
   const args = program.args;
   const opts = program.opts();
 
-  if (args.length === 0) {
+  // PR URL is optional for --check-tools mode
+  if (args.length === 0 && !opts.checkTools) {
     program.help();
     process.exit(1);
   }
@@ -173,7 +178,7 @@ export function parseArgs(program: Command): ParsedArgs {
   //
   // This is non-obvious and caused bugs. See DEVELOPMENT.md for details.
   return {
-    prUrl: args[0],
+    prUrl: args[0] || '',  // Empty string for --check-tools mode
     options: {
       tool: validatedTool,
       toolModel,
@@ -205,6 +210,8 @@ export function parseArgs(program: Command): ParsedArgs {
       // Distributed locking
       noLock: !opts.lock,           // --no-lock sets opts.lock=false
       clearLock: opts.clearLock ?? false,
+      // Tool checking
+      checkTools: opts.checkTools ?? false,
     },
   };
 }

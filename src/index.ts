@@ -4,6 +4,7 @@ import chalk from 'chalk';
 import { loadConfig } from './config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { PRResolver } from './resolver.js';
+import { printToolStatus, checkPrrUpdate } from './upgrade.js';
 
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;
@@ -53,6 +54,13 @@ async function main(): Promise<void> {
     // Parse CLI arguments
     const program = createCLI();
     const { prUrl, options } = parseArgs(program);
+
+    // Handle --check-tools mode (exit after showing status)
+    if (options.checkTools) {
+      await printToolStatus();
+      await checkPrrUpdate();
+      return;
+    }
 
     // Load configuration
     const config = loadConfig();
