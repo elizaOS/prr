@@ -347,8 +347,10 @@ export class LessonsManager {
     normalized = normalized.replace(/\s*-\s*\(inferred\)[^\s]*/gi, '').trim();
     normalized = normalized.replace(/\s*-\s*:\s*(?:string|number|boolean|unknown|any)\s*;?/gi, ' - ').trim();
     normalized = normalized.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+    normalized = normalized.replace(/made no changes\s*(?=already)/gi, 'made no changes - ');
     normalized = normalized.replace(/made no changes\s+already/gi, 'made no changes - already');
     normalized = normalized.replace(/made no changes\s*trying/gi, 'made no changes - trying');
+    const alreadyIncludesMatch = normalized.match(/\balready includes[^.]*$/i);
     if (/\b:\s*(?:string|number|boolean|unknown|any)\s*;/.test(normalized)) {
       return null;
     }
@@ -359,6 +361,7 @@ export class LessonsManager {
       return null;
     }
     normalized = normalized.replace(/\s*-\s*-\s*/g, ' - ').trim();
+    normalized = normalized.replace(/\s*--+\s*/g, ' - ').trim();
     normalized = normalized.replace(/\s*-\s*[a-z]{1,5}:\d+$/i, '').trim();
     normalized = normalized.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml)\b$/i, '').trim();
     normalized = normalized.replace(/(?<![\w.-])[a-z]{1,5}:\d+`?/gi, '').trim();
@@ -382,6 +385,9 @@ export class LessonsManager {
         let message = isFixer ? 'fixer made no changes' : 'tool made no changes';
         if (withoutExplanation) message += ' without explanation';
         if (tryingDifferent) message += ' - trying different approach';
+        if (alreadyIncludesMatch && !/already includes/i.test(message)) {
+          message += ` - ${alreadyIncludesMatch[0].trim()}`;
+        }
         normalized = `${prefix} - ${message}`;
       }
     }
@@ -392,6 +398,9 @@ export class LessonsManager {
       normalized = 'tool made no changes';
       if (withoutExplanation) normalized += ' without explanation';
       if (tryingDifferent) normalized += ' - trying different approach';
+      if (alreadyIncludesMatch && !/already includes/i.test(normalized)) {
+        normalized += ` - ${alreadyIncludesMatch[0].trim()}`;
+      }
     }
     if (!/^Fix for\s+/i.test(normalized) && /\b(?:fixer|tool) made no changes\b/i.test(normalized)) {
       const isFixer = /fixer made no changes/i.test(normalized);
@@ -400,6 +409,9 @@ export class LessonsManager {
       normalized = isFixer ? 'fixer made no changes' : 'tool made no changes';
       if (withoutExplanation) normalized += ' without explanation';
       if (tryingDifferent) normalized += ' - trying different approach';
+      if (alreadyIncludesMatch && !/already includes/i.test(normalized)) {
+        normalized += ` - ${alreadyIncludesMatch[0].trim()}`;
+      }
     }
     normalized = normalized.replace(/\b(?:\d+-)?(?:claude-code|codex|llm-api|cursor|opencode|aider)\b\s+made no changes(?:\s+without explanation)?(?:\s*-\s*trying different approach)?/gi, 'tool made no changes');
     normalized = normalized.replace(/\b\d+\s+made no changes(?:\s+without explanation)?(?:\s*-\s*trying different approach)?/gi, 'tool made no changes');
@@ -451,6 +463,7 @@ export class LessonsManager {
     let cleaned = filePath.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim();
     cleaned = cleaned.replace(/\s*-\s*\(inferred\).*$/i, '').trim();
     cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*\w+$/i, '').trim();
+    cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*ts\b/i, '').trim();
     cleaned = cleaned.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml)\b$/i, '').trim();
     cleaned = cleaned.replace(/^.*?([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?).*$/i, '$1').trim();
     cleaned = cleaned.replace(/^(.*?:\d+)\s*-\s*\(inferred\).*$/i, '$1').trim();
@@ -965,7 +978,8 @@ export class LessonsManager {
     for (const target of this.syncTargets) {
       const config = SYNC_TARGETS[target];
       const filePath = config.path(this.workdir);
-      const existedBefore = this.originalSyncTargetState.get(target) ?? false;
+      const existedBefore = this.originalSyncTargetState.get(target);
+      const createdByPrr = existedBefore === false;
 
       try {
         // Only sync to files that already existed, unless it's a prr-owned directory
@@ -1038,12 +1052,13 @@ export class LessonsManager {
     for (const target of this.syncTargets) {
       const config = SYNC_TARGETS[target];
       const filePath = config.path(this.workdir);
-      const existedBefore = this.originalSyncTargetState.get(target) ?? false;
+      const existedBefore = this.originalSyncTargetState.get(target);
+      const createdByPrr = existedBefore === false;
 
       try {
         if (!existsSync(filePath)) continue;
 
-        if (!existedBefore) {
+        if (createdByPrr) {
           // We created this file - delete it
           await unlink(filePath);
           console.log(`Removed ${config.description} (created by prr)`);
@@ -1193,6 +1208,12 @@ export class LessonsManager {
   addFileLesson(filePath: string, lesson: string): void {
     const normalizedLesson = this.normalizeLessonText(lesson);
     if (!normalizedLesson) return;
+    const lessonFilePath = this.extractLessonFilePath(normalizedLesson);
+    const cleanedLessonPath = lessonFilePath ? this.sanitizeFilePathHeader(lessonFilePath) : null;
+    if (!cleanedLessonPath || cleanedLessonPath !== filePath) {
+      this.addGlobalLesson(normalizedLesson);
+      return;
+    }
 
     if (!this.store.files[filePath]) {
       this.store.files[filePath] = [];

@@ -426,7 +426,11 @@ NO: Looks good`;
       }
 
       const response = await this.complete(parts.join('\n'));
-      const allowedIds = new Set(batchIssues.map(issue => issue.id.toLowerCase()));
+      const normalizeIssueId = (raw: string): string => {
+        const normalized = raw.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+        return normalized ? `issue_${normalized}` : normalized;
+      };
+      const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
 
       // Parse issue responses
       const lines = response.content.split('\n');
@@ -434,8 +438,7 @@ NO: Looks good`;
         const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
         if (match) {
           const [, id, yesNo, explanation] = match;
-          const normalizedId = id.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
-          const resultId = normalizedId.length > 0 ? `issue_${normalizedId}` : normalizedId;
+          const resultId = normalizeIssueId(id);
           if (!allowedIds.has(resultId)) {
             debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
             continue;
@@ -650,9 +653,9 @@ NO: Looks good`;
       unfixed
     });
 
-    // CRITICAL: If we couldn't parse most responses, that's a failure - don't silently pass
-    if (parsed < issues.length * 0.5) {
-      debug('WARNING: Failed to parse most audit responses - marking unparsed as needing review');
+    // Fail-safe: mark any unparsed issue as still existing
+    if (parsed < issues.length) {
+      debug('WARNING: Some audit responses could not be parsed - marking unparsed as needing review');
       // Mark any unparsed issues as potentially unfixed (fail-safe)
       for (const issue of issues) {
         if (!allResults.has(issue.id)) {
