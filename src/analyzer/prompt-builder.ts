@@ -1,6 +1,23 @@
 import type { UnresolvedIssue, FixPrompt } from './types.js';
 import { formatLessonForDisplay } from '../state/lessons.js';
 
+/**
+ * Estimate token count for a string.
+ * WHY: Anthropic has 200k token limit. We need to detect when prompts are too large.
+ * Rough estimate: 1 token ≈ 4 characters (conservative for English text)
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Maximum number of issues to include in a single fix prompt.
+ * WHY: Large prompts (100+ issues) can exceed LLM token limits (200k).
+ * With truncation (2k per comment + 500 lines per snippet), 50 issues ≈ 100k chars ≈ 25k tokens.
+ * This leaves room for lessons and boilerplate while staying under limits.
+ */
+const MAX_ISSUES_PER_PROMPT = 50;
+
 export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string[]): FixPrompt {
   // Guard: Return empty prompt if no issues
   // WHY: Prevents confusing "Fixing 0 issues" output and wasted fixer runs
@@ -14,26 +31,37 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
     };
   }
 
+  // Limit issues per prompt to prevent token overflow
+  // WHY: 124 issues at once = 202k tokens which exceeds Anthropic's 200k limit
+  const originalCount = issues.length;
+  const limitedIssues = issues.slice(0, MAX_ISSUES_PER_PROMPT);
+  const wasLimited = originalCount > MAX_ISSUES_PER_PROMPT;
+
   const parts: string[] = [];
 
   parts.push('# Code Review Issues to Fix\n');
-  parts.push('Please address the following code review issues.\n');
+  if (wasLimited) {
+    parts.push(`Processing first ${limitedIssues.length} of ${originalCount} issues (batched to prevent token overflow).\n`);
+    parts.push('Please address the following code review issues.\n');
+  } else {
+    parts.push('Please address the following code review issues.\n');
+  }
 
   // Build a short summary for console output
-  const fileSet = new Set(issues.map(i => i.comment.path));
+  const fileSet = new Set(limitedIssues.map(i => i.comment.path));
   const files = Array.from(fileSet);
   const filesSummary = files.length <= 3 
     ? files.map(f => f.split('/').pop()).join(', ')  // Just filename
     : `${files.slice(0, 2).map(f => f.split('/').pop()).join(', ')} +${files.length - 2} more`;
   
-  const authors = Array.from(new Set(issues.map(i => i.comment.author)));
+  const authors = Array.from(new Set(limitedIssues.map(i => i.comment.author)));
   const authorsSummary = authors.length <= 2 
     ? authors.join(', ') 
     : `${authors.slice(0, 2).join(', ')} +${authors.length - 2} more`;
 
   // Group issues by type of comment (look for keywords)
   const issueTypes: string[] = [];
-  const bodies = issues.map(i => i.comment.body.toLowerCase());
+  const bodies = limitedIssues.map(i => i.comment.body.toLowerCase());
   if (bodies.some(b => b.includes('error') || b.includes('bug') || b.includes('fix'))) issueTypes.push('bugs');
   if (bodies.some(b => b.includes('type') || b.includes('typescript'))) issueTypes.push('types');
   if (bodies.some(b => b.includes('test'))) issueTypes.push('tests');
@@ -43,20 +71,24 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   
   const typesStr = issueTypes.length > 0 ? ` (${issueTypes.join(', ')})` : '';
 
-  const summary = `Fixing ${issues.length} issue${issues.length > 1 ? 's' : ''} in ${filesSummary}${typesStr}`;
+  const summaryIssueCount = wasLimited ? `${limitedIssues.length}/${originalCount}` : `${limitedIssues.length}`;
+  const summary = `Fixing ${summaryIssueCount} issue${limitedIssues.length > 1 ? 's' : ''} in ${filesSummary}${typesStr}`;
   
   // Build detailed summary lines
   const detailedLines: string[] = [];
+  if (wasLimited) {
+    detailedLines.push(`  ⚠ Batched: Processing ${limitedIssues.length} of ${originalCount} issues (prompt size limit)`);
+  }
   detailedLines.push(`  From: ${authorsSummary}`);
   detailedLines.push(`  Files: ${files.length} (${files.map(f => f.split('/').pop()).slice(0, 5).join(', ')}${files.length > 5 ? '...' : ''})`);
   
   // Show first few issue previews
-  const previews = issues.slice(0, 3).map((issue, i) => {
+  const previews = limitedIssues.slice(0, 3).map((issue, i) => {
     const preview = issue.comment.body.split('\n')[0].substring(0, 60);
     return `  ${i + 1}. ${preview}${issue.comment.body.length > 60 ? '...' : ''}`;
   });
-  if (issues.length > 3) {
-    previews.push(`  ... and ${issues.length - 3} more`);
+  if (limitedIssues.length > 3) {
+    previews.push(`  ... and ${limitedIssues.length - 3} more`);
   }
 
   // Add lessons learned section to detailed summary
@@ -90,18 +122,41 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
 
   parts.push('## Issues to Fix\n');
 
-  for (let i = 0; i < issues.length; i++) {
-    const issue = issues[i];
+  for (let i = 0; i < limitedIssues.length; i++) {
+    const issue = limitedIssues[i];
     parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}\n`);
     parts.push(`**Review Comment** (${issue.comment.author}):`);
     parts.push('```');
-    parts.push(issue.comment.body);
+    
+    // Truncate very long comments to prevent prompt overflow
+    // WHY: Some automated tools generate 10k+ char comments with HTML/details
+    // Keep first 2000 chars which is enough context for the fix
+    const MAX_COMMENT_CHARS = 2000;
+    if (issue.comment.body.length > MAX_COMMENT_CHARS) {
+      parts.push(issue.comment.body.substring(0, MAX_COMMENT_CHARS));
+      parts.push('\n... (comment truncated for brevity - see PR for full text)');
+    } else {
+      parts.push(issue.comment.body);
+    }
+    
     parts.push('```\n');
     
     if (issue.codeSnippet) {
       parts.push('**Current Code:**');
       parts.push('```');
-      parts.push(issue.codeSnippet);
+      
+      // Truncate very large code snippets to prevent prompt overflow
+      // WHY: Sometimes entire files are included (10k+ lines)
+      // Keep first 500 lines which is usually more than enough for context
+      const MAX_SNIPPET_LINES = 500;
+      const snippetLines = issue.codeSnippet.split('\n');
+      if (snippetLines.length > MAX_SNIPPET_LINES) {
+        parts.push(snippetLines.slice(0, MAX_SNIPPET_LINES).join('\n'));
+        parts.push(`\n... (${snippetLines.length - MAX_SNIPPET_LINES} more lines omitted)`);
+      } else {
+        parts.push(issue.codeSnippet);
+      }
+      
       parts.push('```\n');
     }
 
@@ -130,12 +185,24 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   parts.push('NO_CHANGES: Issue 1 is already fixed - Line 45 has null check: if (value === null) return;\n');
   parts.push('DO NOT make zero changes without this explanation. The system requires documentation of why no changes were made.');
 
+  const fullPrompt = parts.join('\n');
+  const estimatedTokens = estimateTokens(fullPrompt);
+  
+  // Safety check: Warn if prompt is approaching token limits
+  // WHY: Anthropic has 200k token limit, we want to stay well under
+  const MAX_SAFE_TOKENS = 180000; // Leave 20k buffer for model response
+  if (estimatedTokens > MAX_SAFE_TOKENS) {
+    console.warn(`⚠ Warning: Fix prompt is very large (${estimatedTokens.toLocaleString()} tokens)`);
+    console.warn(`  This may fail with some LLM providers (200k token limit)`);
+    console.warn(`  Consider using --max-fix-iterations to process fewer issues per batch`);
+  }
+
   return {
-    prompt: parts.join('\n'),
+    prompt: fullPrompt,
     summary,
     detailedSummary,
     lessonsIncluded: lessonsLearned.length,
-    issues,
+    issues: limitedIssues,  // Return only the issues included in the prompt
   };
 }
 
