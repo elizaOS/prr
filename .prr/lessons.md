@@ -96,6 +96,7 @@
 
 - Fix for src/runners/opencode.ts:93 - tool made no changes without explanation - trying different approach
 - Fix for src/runners/opencode.ts:94 - When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
+- Fix for src/runners/opencode.ts:94 - Register cleanup callback before attempting file writes, not after—move `onExit(cleanupPromptFile)` before the try-catch block.
 
 ### src/runners/cursor.ts
 

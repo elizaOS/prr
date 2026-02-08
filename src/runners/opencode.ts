@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { writeFileSync, unlinkSync, createReadStream } from 'fs';
+import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';

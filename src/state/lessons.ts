@@ -523,7 +523,8 @@ export class LessonsManager {
         await writeFile(filePath, finalContent, 'utf-8');
         syncedTo.push(config.description);
       } catch (error) {
-        // Silently skip files that can't be written
+        // Log but don't fail - sync targets are best-effort
+        console.warn(`Failed to sync lessons to ${config.description}:`, error);
       }
     }
 

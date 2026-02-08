@@ -69,7 +69,21 @@ export class AiderRunner implements Runner {
     }
 
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
-    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
+
+    try {
+      writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
+    } catch (error) {
+      cleanupPromptFile();
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, output: '', error: `Failed to write prompt file: ${errorMessage}` };
+    }
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('aider', prompt, { workdir, model: options?.model });
     const cleanupPromptFile = () => {

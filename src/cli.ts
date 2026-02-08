@@ -187,7 +187,7 @@ export function parseArgs(program: Command): ParsedArgs {
       keepWorkdir: opts.keepWorkdir ?? true,
       maxFixIterations: parseIntOrExit(opts.maxFixIterations, '--max-fix-iterations'),
       maxPushIterations: parseIntOrExit(opts.maxPushIterations, '--max-push-iterations'),
-      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') || 1,
+      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') ?? 1,
       pollInterval: parseIntOrExit(opts.pollInterval, '--poll-interval'),
       dryRun: opts.dryRun,
       noCommit: !opts.commit,                 // --no-commit sets opts.commit=false
@@ -195,7 +195,7 @@ export function parseArgs(program: Command): ParsedArgs {
       verbose: opts.verbose ?? true,
       noBatch: !opts.batch,                   // --no-batch sets opts.batch=false
       reverify: opts.reverify ?? false,
-      maxContextChars: parseIntOrExit(opts.maxContext, '--max-context') || 400_000,
+      maxContextChars: parseIntOrExit(opts.maxContext, '--max-context') ?? 400_000,
       noBell: !opts.bell,                     // --no-bell sets opts.bell=false
       incrementalCommits: opts.incrementalCommits ?? true,  // Default: true
       mergeBase: opts.mergeBase ?? true,      // Default: auto-merge base branch when conflicts exist
