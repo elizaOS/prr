@@ -49,15 +49,7 @@ process.on('SIGTERM', () => {
   });
 });
 
-let resolver: PRResolver | null = null;
-let isShuttingDown = false;
-
-async function handleShutdown(signal: string): Promise<void> {
-  if (isShuttingDown) {
-    // Second signal - force exit
-    console.log(chalk.red('\nForce exit.'));
-    process.exit(1);
-  }
+async function main(): Promise<void> {
   
   isShuttingDown = true;
   

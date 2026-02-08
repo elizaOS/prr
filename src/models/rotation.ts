@@ -112,7 +112,7 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
       const familyAvail = familyOf(lowerAvail);
       const familyModel = familyOf(lowerModel);
       return familyAvail === familyModel && familyAvail.length > 0 &&
-        (lowerAvail.startsWith(lowerModel) || lowerModel.startsWith(lowerAvail));
+        (lowerAvail === lowerModel || (familyAvail === familyModel && (lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-'))));
     }
     
     return false;
@@ -181,7 +181,7 @@ export function rotateModel(ctx: RotationContext, stateContext: StateContext): b
  * Does NOT reset model index - we continue where we left off when we come back
  * WHY: Interleaving tools is more effective than exhausting all models on one tool
  */
-export function switchToNextRunner(ctx: RotationContext, stateContext: StateContext): boolean {
+export function switchToNextRunner(ctx: RotationContext, stateContext: StateContext, options?: CLIOptions): boolean {
   if (ctx.runners.length <= 1) return false;
   
   const previousRunner = ctx.runner.name;
@@ -195,7 +195,7 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
   // We'll continue from where we left off on this tool
   ctx.modelsTriedThisToolRound = 0;
   
-  const newModel = getCurrentModel(ctx, { toolModel: undefined, modelRotation: false } as CLIOptions);
+  const newModel = getCurrentModel(ctx, { toolModel: undefined, modelRotation: false } as Partial<CLIOptions> as CLIOptions);
   const modelInfo = newModel ? ` (${newModel})` : '';
   console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`));
   return true;
@@ -267,7 +267,8 @@ export function tryRotation(
     this.exitDetails = result.exitDetails;
     this.finalUnresolvedIssues = result.finalUnresolvedIssues;
     this.finalComments = result.finalComments;
-  
+  }
+
   // Helper: Check if we should bail out after completing a cycle
   const checkBailOut = (): boolean => {
     // A cycle just completed - check if we made progress

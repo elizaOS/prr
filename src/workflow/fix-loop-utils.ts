@@ -5,7 +5,8 @@
 
 import chalk from 'chalk';
 import { debug } from '../logger.js';
-import { checkRemoteAhead, pullLatest } from '../git/clone.js';
+import { checkRemoteAhead } from '../git/git-conflicts.js';
+import { pullLatest } from '../git/git-pull.js';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -190,11 +191,6 @@ export async function checkAndPullRemoteCommits(
   exitDetails?: string;
   updatedHeadSha?: string;
 }> {
-  import chalk from 'chalk';
-import { debug } from '../logger.js';
-import { checkRemoteAhead } from '../git/git-conflicts.js';
-import { pullLatest } from '../git/git-pull.js';
-  
   // Check for new commits pushed to the PR (every iteration)
   // WHY: Detect external pushes early so we don't waste cycles on stale code
   const remoteStatus = await checkRemoteAhead(git, branch);

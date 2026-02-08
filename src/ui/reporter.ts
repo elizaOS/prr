@@ -111,10 +111,10 @@ export function printFinalSummary(
   exitReason: string | null,
   exitDetails: string | null
 ): void {
-  if (!stateContext) return;
+  if (!stateContext?.state) return;
   
   // Get counts
-  const verifiedFixed = getState(stateContext).verifiedFixed || [];
+  const verifiedFixed = stateContext.state.verifiedFixed || [];
   const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
   
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));

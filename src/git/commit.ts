@@ -50,11 +50,12 @@ export interface PushResult {
  * spawn directly lets us SIGKILL the process on timeout or Ctrl+C.
  * 
  * SECURITY NOTE: This function temporarily injects auth token into git remote URL.
- * The token is restored in cleanup handlers (timeout, SIGINT, error, success).</search>
-</change>
-
-<change path="src/workflow/fix-loop-utils.ts">
-<search>  const chalk = require('chalk');</search>
+ import chalk from 'chalk';
+ * 
+</search>
+<replace>
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ *</search>
 <replace>import chalk from 'chalk';
  * 
  * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,
@@ -70,10 +71,13 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   // Get the workdir from the git instance
   const workdir = (git as any)._baseDir || process.cwd();
   
+  let originalRemoteUrl: string | null = null;
+  
   // Check if remote URL has token, inject if missing
   // WHY: Token may be stripped or repo cloned without it
   try {
     const remoteUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf8' }).trim();
+    originalRemoteUrl = remoteUrl;
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
     
     if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {

@@ -94,6 +94,7 @@ export async function checkAndMergeBaseBranch(
           
           // Abort merge and reset to clean state
           await abortMerge(git);
+          await git.fetch('origin', prInfo.branch);
           await git.reset(['--hard', `origin/${prInfo.branch}`]);
           await git.clean('f', ['-d']);
           
@@ -108,7 +109,16 @@ export async function checkAndMergeBaseBranch(
         } else {
           // All conflicts resolved - stage files and complete the merge
           const codeFiles = conflictedFiles.filter((f: string) => !isLockFile(f));
-          await markConflictsResolved(git, codeFiles);
+           const lockFiles = conflictedFiles.filter((f: string) => isLockFile(f));
+
+           // Lock files should be regenerated — accept theirs to unblock the merge
+           if (lockFiles.length > 0) {
+             await git.checkout(['--theirs', '--', ...lockFiles]);
+             await git.add(lockFiles);
+             console.log(chalk.gray(`  ℹ ${lockFiles.length} lock file(s) accepted from ${prInfo.baseBranch} — consider regenerating`));
+           }
+
+           await markConflictsResolved(git, codeFiles);
           const commitResult = await completeMerge(git, `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`);
           
           if (!commitResult.success) {
@@ -117,12 +127,19 @@ export async function checkAndMergeBaseBranch(
           }
           
           console.log(chalk.green(`✓ Conflicts resolved and merged ${prInfo.baseBranch}`));
+          mergeResult.success = true;
+          mergeResult.alreadyUpToDate = false;
           
           // Push the resolved merge commit
           if (!options.noPush && !options.noCommit) {
-            spinner.start('Pushing merge commit...');
-            await git.push('origin', prInfo.branch);
-            spinner.succeed('Pushed merge commit');
+            try {
+              spinner.start('Pushing merge commit...');
+              await git.push('origin', prInfo.branch);
+              spinner.succeed('Pushed merge commit');
+            } catch (pushErr) {
+              spinner.fail('Failed to push merge commit');
+              console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
+            }
           }
         }
       }
@@ -132,12 +149,17 @@ export async function checkAndMergeBaseBranch(
       console.log(chalk.green(`✓ Merged latest ${prInfo.baseBranch} into ${prInfo.branch}`));
     }
     
-    // Push the merge if there were changes and auto-push enabled
+    // Push the merge if there were changes and auto-push enabled  
     if (mergeResult.success && !mergeResult.alreadyUpToDate) {
       if (!options.noPush && !options.noCommit) {
-        spinner.start('Pushing merge commit...');
-        await git.push('origin', prInfo.branch);
-        spinner.succeed('Pushed merge commit');
+        try {
+          spinner.start('Pushing merge commit...');
+          await git.push('origin', prInfo.branch);
+          spinner.succeed('Pushed merge commit');
+        } catch (pushErr) {
+          spinner.fail('Failed to push merge commit');
+          console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
+        }
       } else {
         console.log(chalk.yellow('  Merge commit created locally. Use --push to push it.'));
       }
