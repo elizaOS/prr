@@ -198,7 +198,19 @@ export async function markConflictsResolved(git: SimpleGit, files: string[]): Pr
 export async function completeMerge(git: SimpleGit, message: string): Promise<{ success: boolean; error?: string }> {
   debug('Completing merge commit');
   try {
-    await git.commit(message);
+    // Check if we're in a rebase or merge
+    const { existsSync } = await import('fs');
+    const { join } = await import('path');
+    const gitDir = await git.revparse(['--git-dir']);
+    const inRebase = existsSync(join(gitDir, 'rebase-merge')) || existsSync(join(gitDir, 'rebase-apply'));
+    
+    if (inRebase) {
+      debug('In rebase - continuing rebase');
+      await git.rebase(['--continue']);
+    } else {
+      debug('In merge - committing');
+      await git.commit(message);
+    }
     return { success: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

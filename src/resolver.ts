@@ -106,7 +106,32 @@ export class PRResolver {
   isRunning(): boolean { return !this.isShuttingDown; }
   async run(prUrl: string): Promise<void> {
     const state: ResolverProc.RunState = { prInfo: this.prInfo, botTimings: this.botTimings, expectedBotResponseTime: this.expectedBotResponseTime, workdir: this.workdir, stateContext: this.stateContext, lessonsContext: this.lessonsContext, lockConfig: this.lockConfig, runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices, rapidFailureCount: this.rapidFailureCount, lastFailureTime: this.lastFailureTime, consecutiveFailures: this.consecutiveFailures, modelFailuresInCycle: this.modelFailuresInCycle, progressThisCycle: this.progressThisCycle, exitReason: this.exitReason, exitDetails: this.exitDetails, finalUnresolvedIssues: this.finalUnresolvedIssues, finalComments: this.finalComments };
-    const callbacks: ResolverProc.RunCallbacks = { setupRunner: () => this.setupRunner(), ensureStateFileIgnored: (workdir) => this.ensureStateFileIgnored(workdir), resolveConflictsWithLLM: (git, files, source) => this.resolveConflictsWithLLM(git, files, source), getRotationContext: () => this.getRotationContext(), getCurrentModel: () => this.getCurrentModel(), findUnresolvedIssues: (comments, totalCount) => this.findUnresolvedIssues(comments, totalCount), getCodeSnippet: (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody), printUnresolvedIssues: (issues) => this.printUnresolvedIssues(issues), parseNoChangesExplanation: (output) => this.parseNoChangesExplanation(output), trySingleIssueFix: (issues, git, verified) => this.trySingleIssueFix(issues, git, verified), tryRotation: () => this.tryRotation(), tryDirectLLMFix: (issues, git, verified) => this.tryDirectLLMFix(issues, git, verified), executeBailOut: (issues, comments) => this.executeBailOut(issues, comments), checkForNewBotReviews: (o, r, n, ids) => this.checkForNewBotReviews(o, r, n, ids), calculateExpectedBotResponseTime: (lastCommitTime) => this.calculateExpectedBotResponseTime(lastCommitTime), waitForBotReviews: (o, r, n, sha) => this.waitForBotReviews(o, r, n, sha), cleanupCreatedSyncTargets: (git) => this.cleanupCreatedSyncTargets(git), printModelPerformance: () => this.printModelPerformance(), printHandoffPrompt: (issues) => this.printHandoffPrompt(issues), printAfterActionReport: (issues, comments) => this.printAfterActionReport(issues, comments), printFinalSummary: () => this.printFinalSummary(), ringBell: (times) => this.ringBell(times), runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n) };
+    const callbacks: ResolverProc.RunCallbacks = { 
+      setupRunner: () => this.setupRunner(), 
+      ensureStateFileIgnored: (workdir) => this.ensureStateFileIgnored(workdir), 
+      resolveConflictsWithLLM: (git, files, source) => this.resolveConflictsWithLLM(git, files, source), 
+      syncResolverState: (s) => Object.assign(this, s),
+      getRotationContext: () => this.getRotationContext(), 
+      getCurrentModel: () => this.getCurrentModel(), 
+      findUnresolvedIssues: (comments, totalCount) => this.findUnresolvedIssues(comments, totalCount), 
+      getCodeSnippet: (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody), 
+      printUnresolvedIssues: (issues) => this.printUnresolvedIssues(issues), 
+      parseNoChangesExplanation: (output) => this.parseNoChangesExplanation(output), 
+      trySingleIssueFix: (issues, git, verified) => this.trySingleIssueFix(issues, git, verified), 
+      tryRotation: () => this.tryRotation(), 
+      tryDirectLLMFix: (issues, git, verified) => this.tryDirectLLMFix(issues, git, verified), 
+      executeBailOut: (issues, comments) => this.executeBailOut(issues, comments), 
+      checkForNewBotReviews: (o, r, n, ids) => this.checkForNewBotReviews(o, r, n, ids), 
+      calculateExpectedBotResponseTime: (lastCommitTime) => this.calculateExpectedBotResponseTime(lastCommitTime), 
+      waitForBotReviews: (o, r, n, sha) => this.waitForBotReviews(o, r, n, sha), 
+      cleanupCreatedSyncTargets: (git) => this.cleanupCreatedSyncTargets(git), 
+      printModelPerformance: () => this.printModelPerformance(), 
+      printHandoffPrompt: (issues) => this.printHandoffPrompt(issues), 
+      printAfterActionReport: (issues, comments) => this.printAfterActionReport(issues, comments), 
+      printFinalSummary: () => this.printFinalSummary(), 
+      ringBell: (times) => this.ringBell(times), 
+      runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n) 
+    };
     const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
     Object.assign(this, result);
   }

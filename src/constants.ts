@@ -21,7 +21,7 @@ export const MAX_PROMPT_TOKENS = 180000;
  * Maximum characters for LLM context (default for --max-context).
  * ~400k chars ≈ 100k tokens (4 chars per token estimate).
  */
-export const DEFAULT_MAX_CONTEXT_CHARS = 400000;
+export const DEFAULT_MAX_CONTEXT_CHARS = 400_000;
 
 /**
  * Maximum characters per batch for issue existence checking.

@@ -75,15 +75,11 @@ export async function pullLatest(
         
         // Check for rebase conflicts
         if (rebaseMsg.includes('CONFLICT') || rebaseMsg.includes('conflict')) {
-          // Abort the rebase and restore state
-          try {
-            await git.rebase(['--abort']);
-            debug('Aborted failed rebase');
-          } catch {
-            // Ignore abort errors
-          }
+          // Don't abort - leave conflicts for programmatic resolution
+          // WHY: If we abort, git status shows no conflicts and we can't resolve them
+          debug('Rebase has conflicts - leaving in conflicted state for resolution');
           await restoreStashOnFailure();
-          return { success: false, error: `Rebase conflicts detected. Manual resolution needed.` };
+          return { success: false, error: `Rebase conflicts detected` };
         }
         
         // Other rebase failure - abort and fall back to merge
