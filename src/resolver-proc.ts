@@ -138,6 +138,11 @@ export {
   executePushIteration,
 } from './workflow/push-iteration-loop.js';
 
+// Graceful shutdown
+export {
+  executeGracefulShutdown,
+} from './workflow/graceful-shutdown.js';
+
 // Main loop setup
 export {
   processCommentsAndPrepareFixLoop,

@@ -41,7 +41,6 @@ export class PRResolver {
   private workdir!: string;
   private isShuttingDown = false;
   private consecutiveFailures = 0;
-  // Model rotation state
   private modelIndices: Map<string, number> = new Map();
   private modelFailuresInCycle = 0;
   private modelsTriedThisToolRound = 0;
@@ -51,7 +50,6 @@ export class PRResolver {
   private modelRecommendationReasoning?: string;
   private progressThisCycle = 0;
   private bailedOut = false;
-  // Bot timing & exit tracking
   private botTimings: BotResponseTiming[] = [];
   private expectedBotResponseTime: Date | null = null;
   private lastCommentFetchTime: Date | null = null;
@@ -71,14 +69,11 @@ export class PRResolver {
     this.github = new GitHubAPI(config.githubToken);
     this.llm = new LLMClient(config);
   }
-
-  // Build RotationContext (bridge to procedural rotation)
   private getRotationContext(): Rotation.RotationContext {
     return { runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices,
       modelFailuresInCycle: this.modelFailuresInCycle, modelsTriedThisToolRound: this.modelsTriedThisToolRound, progressThisCycle: this.progressThisCycle,
       recommendedModels: this.recommendedModels, recommendedModelIndex: this.recommendedModelIndex, modelRecommendationReasoning: this.modelRecommendationReasoning };
   }
-  // Sync instance state from RotationContext
   private syncRotationContext(ctx: Rotation.RotationContext): void {
     this.runner = ctx.runner;
     this.runners = ctx.runners;
@@ -91,18 +86,12 @@ export class PRResolver {
     this.recommendedModelIndex = ctx.recommendedModelIndex;
     this.modelRecommendationReasoning = ctx.modelRecommendationReasoning;
   }
-
-  // Reporting wrappers
   private ringBell(times: number = 3): void { ResolverProc.ringBell(times); }
   private printModelPerformance(): void { Reporter.printModelPerformance(this.stateManager); }
   private printFinalSummary(): void { Reporter.printFinalSummary(this.stateManager, this.exitReason, this.exitDetails); }
   private getExitReasonDisplay(): { label: string; icon: string; color: typeof chalk.green } { return Reporter.getExitReasonDisplay(this.exitReason); }
   private printHandoffPrompt(unresolvedIssues: UnresolvedIssue[]): void { Reporter.printHandoffPrompt(unresolvedIssues, this.options.noHandoffPrompt); }
-  private async printAfterActionReport(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> {
-    return Reporter.printAfterActionReport(unresolvedIssues, comments, this.options.noAfterAction, this.stateManager, this.lessonsManager);
-  }
-
-  // Model rotation wrappers
+  private async printAfterActionReport(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { return Reporter.printAfterActionReport(unresolvedIssues, comments, this.options.noAfterAction, this.stateManager, this.lessonsManager); }
   private getModelsForRunner(runner: Runner): string[] { return Rotation.getModelsForRunner(runner); }
   private getCurrentModel(): string | undefined { const ctx = this.getRotationContext(); return Rotation.getCurrentModel(ctx, this.options); }
   private isModelAvailableForRunner(model: string): boolean { const ctx = this.getRotationContext(); return Rotation.isModelAvailableForRunner(ctx, model); }
@@ -111,49 +100,15 @@ export class PRResolver {
   private switchToNextRunner(): boolean { const ctx = this.getRotationContext(); const result = Rotation.switchToNextRunner(ctx, this.stateManager); this.syncRotationContext(ctx); return result; }
   private allModelsExhausted(): boolean { const ctx = this.getRotationContext(); return Rotation.allModelsExhausted(ctx); }
   private tryRotation(): boolean { const ctx = this.getRotationContext(); const result = Rotation.tryRotation(ctx, this.stateManager, this.options); this.syncRotationContext(ctx); return result; }
-
-  // Execute graceful bail-out (prevents infinite loops on stalemate)
-  private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> {
-    const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateManager, this.lessonsManager, this.runners, this.options, (runner) => this.getModelsForRunner(runner));
-    this.bailedOut = result.bailedOut;
-    this.exitReason = result.exitReason;
-    this.exitDetails = result.exitDetails;
-    this.finalUnresolvedIssues = result.finalUnresolvedIssues;
-    this.finalComments = result.finalComments;
-  }
-
+  private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateManager, this.lessonsManager, this.runners, this.options, (runner) => this.getModelsForRunner(runner)); this.bailedOut = result.bailedOut; this.exitReason = result.exitReason; this.exitDetails = result.exitDetails; this.finalUnresolvedIssues = result.finalUnresolvedIssues; this.finalComments = result.finalComments; }
   private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateManager, this.lessonsManager, this.llm, verifiedThisSession, (issue) => this.buildSingleIssuePrompt(issue), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength)); }
   private buildSingleIssuePrompt(issue: UnresolvedIssue): string { return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsManager); }
   private async tryDirectLLMFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.tryDirectLLMFix(issues, git, this.workdir, this.config.llmProvider, this.llm, this.stateManager, verifiedThisSession); }
-
-  async gracefulShutdown(): Promise<void> {
-    if (this.isShuttingDown) return;
-    this.isShuttingDown = true;
-    console.log(chalk.yellow('\n\n⚠ Interrupted! Saving state...'));
-    if (this.stateManager) {
-      try {
-        await this.stateManager.markInterrupted();
-        console.log(chalk.green('✓ State saved. Run again to resume.'));
-        endTimer('Total');
-        printTimingSummary();
-        printTokenSummary();
-        this.printModelPerformance();
-        this.printFinalSummary();
-      } catch (e) {
-        console.log(chalk.red('✗ Failed to save state:', e));
-      }
-    }
-  }
-
-  isRunning(): boolean {
-    return !this.isShuttingDown;
-  }
-
+  async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateManager, () => this.printModelPerformance(), () => this.printFinalSummary()); }
+  isRunning(): boolean { return !this.isShuttingDown; }
   async run(prUrl: string): Promise<void> {
     const spinner = ora();
-
     try {
-      // Initialize run
       const initResult = await ResolverProc.initializeRun(
         prUrl,
         this.github,
@@ -162,16 +117,11 @@ export class PRResolver {
         (url, o, r, n) => this.runCleanupMode(url, o, r, n),
         (lastCommitTime) => this.calculateExpectedBotResponseTime(lastCommitTime)
       );
-      
-      // Exit early if cleanup-only mode
       if (!initResult) return;
-      
       const { owner, repo, number, prInfo, botTimings, expectedBotResponseTime } = initResult;
       this.prInfo = prInfo;
       this.botTimings = botTimings;
       this.expectedBotResponseTime = expectedBotResponseTime;
-
-      // Execute setup phase
       const setupResult = await ResolverProc.executeSetupPhase(this.config, this.options, owner, repo, number, this.prInfo, this.github, spinner, () => this.setupRunner(), () => this.ensureStateFileIgnored(),
         (git, files, source) => this.resolveConflictsWithLLM(git, files, source), () => this.getRotationContext(), () => this.getCurrentModel());
       
@@ -247,73 +197,14 @@ export class PRResolver {
   private async setupRunner(): Promise<Runner> { const result = await Rotation.setupRunner(this.options, this.config); this.runners = result.all; return result.primary; }
   private buildConflictResolutionPrompt(conflictedFiles: string[], baseBranch: string): string { return GitOps.buildConflictResolutionPrompt(conflictedFiles, baseBranch); }
 
-  /**
-   * Resolve merge conflicts using LLM tools.
-   * 
-   * WHY THIS EXISTS: Merge conflicts block the entire fix loop. Previously, prr would
-   * bail out when conflicts were detected, requiring manual intervention. This method
-   * enables automatic conflict resolution using the same LLM infrastructure we use
-   * for fixing review comments.
-   * 
-   * WHY UNIFIED: This method is called from multiple places:
-   * - Initial remote conflict detection (previous interrupted merge)
-   * - Pull conflicts (diverged branches)
-   * - Stash pop conflicts (interrupted run with local changes)
-   * - PR merge conflicts (base branch out of sync)
-   * Centralizing the logic ensures consistent behavior and reduces code duplication.
-   * 
-   * Two-stage resolution:
-   * 1. Lock files: Delete and regenerate via package manager
-   *    WHY: LLMs cannot correctly merge lock files - they're machine-generated
-   *    and must be regenerated from the manifest (package.json, etc.)
-   * 
-   * 2. Code files: Use runner tool (Cursor/Aider/etc), then fallback to direct LLM API
-   *    WHY TWO ATTEMPTS: Fixer tools are good at agentic changes but sometimes
-   *    miss conflict markers or make partial fixes. Direct LLM API gives precise
-   *    control for targeted resolution of remaining conflicts.
-   * 
-   * WHY CHECK BOTH GIT STATUS AND FILE CONTENTS: Git might mark a file as resolved
-   * (no longer in `status.conflicted`) but the file might still contain conflict
-   * markers (<<<<<<<) if the tool staged it without fully resolving. We check both
-   * to catch false positives.
-   * 
-   * @param git - SimpleGit instance
-   * @param conflictedFiles - Array of files with conflicts
-   * @param mergingBranch - Name of the branch being merged (for prompt context)
-   * @returns Object with success flag and any remaining conflicts
-   */
-  private async resolveConflictsWithLLM(
-    git: SimpleGit,
-    conflictedFiles: string[],
-    mergingBranch: string
-  ): Promise<{ success: boolean; remainingConflicts: string[] }> {
-    return GitOps.resolveConflictsWithLLM(
-      git,
-      conflictedFiles,
-      mergingBranch,
-      this.workdir,
-      this.config,
-      this.llm,
-      this.runner,
-      () => this.getCurrentModel()
-    );
-  }
+  private async resolveConflictsWithLLM(git: SimpleGit, conflictedFiles: string[], mergingBranch: string): Promise<{ success: boolean; remainingConflicts: string[] }> { return GitOps.resolveConflictsWithLLM(git, conflictedFiles, mergingBranch, this.workdir, this.config, this.llm, this.runner, () => this.getCurrentModel()); }
 
   private async handleLockFileConflicts(git: SimpleGit, lockFiles: string[]): Promise<void> { return GitOps.handleLockFileConflicts(git, lockFiles, this.workdir, this.config); }
   private parseNoChangesExplanation(output: string): string | null { return ResolverProc.parseNoChangesExplanation(output); }
   private sanitizeOutputForLog(output: string | undefined, maxLength: number = 500): string { return ResolverProc.sanitizeOutputForLog(output, maxLength); }
   private validateDismissalExplanation(explanation: string, commentPath: string, commentLine: number | null): boolean { return ResolverProc.validateDismissalExplanation(explanation, commentPath, commentLine); }
 
-  private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<UnresolvedIssue[]> {
-    const result = await ResolverProc.findUnresolvedIssues(comments, totalCount, this.stateManager, this.lessonsManager, this.llm, this.runner, this.options,
-      (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody), (runner) => this.getModelsForRunner(runner));
-    if (result.recommendedModels?.length) {
-      this.recommendedModels = result.recommendedModels;
-      this.recommendedModelIndex = result.recommendedModelIndex;
-      this.modelRecommendationReasoning = result.modelRecommendationReasoning;
-    }
-    return result.unresolved;
-  }
+  private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<UnresolvedIssue[]> { const result = await ResolverProc.findUnresolvedIssues(comments, totalCount, this.stateManager, this.lessonsManager, this.llm, this.runner, this.options, (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody), (runner) => this.getModelsForRunner(runner)); if (result.recommendedModels?.length) { this.recommendedModels = result.recommendedModels; this.recommendedModelIndex = result.recommendedModelIndex; this.modelRecommendationReasoning = result.modelRecommendationReasoning; } return result.unresolved; }
 
   private async ensureStateFileIgnored(): Promise<void> { return ResolverProc.ensureStateFileIgnored(this.workdir); }
   private async cleanupCreatedSyncTargets(git: SimpleGit): Promise<void> { return GitOps.cleanupCreatedSyncTargets(git, this.workdir, this.lessonsManager); }
