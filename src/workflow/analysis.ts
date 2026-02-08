@@ -153,10 +153,7 @@ export async function runFinalAudit(
   debugStep('FINAL AUDIT');
   setTokenPhase('Final audit');
   
-  // Clear verification cache so audit results are authoritative
-  // This prevents stale "verified fixed" entries from persisting
-  ;
-  debug('Cleared verification cache before final audit');
+  debug('Starting final audit (verification cache not cleared - results are additive)');
   
   spinner.start('Running final audit on all issues...');
   

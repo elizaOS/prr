@@ -30,7 +30,7 @@ When files exceed 50KB, `prr` automatically switches to chunked strategy:
 4. **Reconstruct**: Merge all resolved chunks back into original file structure
 
 **Example:**
-```
+```text
 File: 150KB source file with 8 conflicts
 ├─ Conflict 1 (lines 100-150) + context → Resolved ✓
 ├─ Conflict 2 (lines 340-380) + context → Resolved ✓

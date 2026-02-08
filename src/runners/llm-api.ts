@@ -72,6 +72,14 @@ export class LLMAPIRunner implements Runner {
       return { success: false, output: '', error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
     }
     
+    const available = await this.isAvailable();
+    if (!available) {
+      return { success: false, output: '', error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
+    }
+    const available = await this.isAvailable();
+    if (!available) {
+      return { success: false, output: '', error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
+    }
     debug('LLM API runner starting', { provider: this.provider, workdir, promptLength: prompt.length });
 
     const { anthropic, openai } = this.getClient();
@@ -243,7 +251,7 @@ Working directory: ${workdir}`;
             .filter(Boolean);
           const whitespacePattern = patternParts.join(whitespaceToken);
           const whitespaceRegex = new RegExp(whitespacePattern, 'm');
-          const newContent = originalContent.replace(whitespaceRegex, replaceText.trim());
+          const newContent = originalContent.replace(whitespaceRegex, () => replaceText.trim());
           if (newContent === originalContent) {
             debug('Search text found only with normalized whitespace but replacement failed', { filePath, searchLength: searchNormalized.length });
             continue;

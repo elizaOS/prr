@@ -90,7 +90,7 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
 /**
  * Default LLM model for OpenAI provider.
  */
-export const DEFAULT_OPENAI_MODEL = 'gpt-5.3';
+export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // MODEL ROTATION & TOOL SWITCHING

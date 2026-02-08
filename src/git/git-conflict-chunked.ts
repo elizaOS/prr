@@ -76,7 +76,7 @@ export function extractConflictChunks(
         i = endLine;
       } else {
         // Malformed conflict (no closing marker)
-        debug('Malformed conflict marker - no closing >>>>>>>>', { startLine });
+        debug('Malformed conflict marker - no closing >>>>>>>', { startLine });
         i++;
       }
     } else {

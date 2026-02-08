@@ -11,7 +11,7 @@ import { LLMClient, type ModelRecommendationContext } from './llm/client.js';
 import type { StateContext } from './state/state-context.js';
 import type { LessonsContext } from './state/lessons-context.js';
 import type { LockConfig } from './state/lock-functions.js';
-import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
+import { ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/git-clone-index.js';
 import type { SimpleGit } from 'simple-git';
 import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from './git/git-commit-index.js';
@@ -133,7 +133,27 @@ export class PRResolver {
       runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n) 
     };
     const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
-    Object.assign(this, result);
+    // Explicitly sync only the mutable run-state fields
+    this.prInfo = result.prInfo;
+    this.botTimings = result.botTimings;
+    this.expectedBotResponseTime = result.expectedBotResponseTime;
+    this.workdir = result.workdir;
+    this.stateContext = result.stateContext;
+    this.lessonsContext = result.lessonsContext;
+    this.lockConfig = result.lockConfig;
+    this.runner = result.runner;
+    this.runners = result.runners;
+    this.currentRunnerIndex = result.currentRunnerIndex;
+    this.modelIndices = result.modelIndices;
+    this.rapidFailureCount = result.rapidFailureCount;
+    this.lastFailureTime = result.lastFailureTime;
+    this.consecutiveFailures = result.consecutiveFailures;
+    this.modelFailuresInCycle = result.modelFailuresInCycle;
+    this.progressThisCycle = result.progressThisCycle;
+    this.exitReason = result.exitReason;
+    this.exitDetails = result.exitDetails;
+    this.finalUnresolvedIssues = result.finalUnresolvedIssues;
+    this.finalComments = result.finalComments;
   }
 
   private async setupRunner(): Promise<Runner> { const result = await Rotation.setupRunner(this.options, this.config); this.runners = result.all; return result.primary; }
