@@ -17,6 +17,21 @@ import OpenAI from 'openai';
 import type { Config, LLMProvider } from '../config.js';
 import { debug, trackTokens, debugPrompt, debugResponse } from '../logger.js';
 
+/**
+ * Strip unpaired UTF-16 surrogates from a string
+ * 
+ * Lone surrogates (U+D800–U+DFFF without a valid pair) are invalid in JSON
+ * and cause API errors like "no low surrogate in string". They can appear
+ * when reading binary files or files with encoding issues.
+ * 
+ * Replaces lone surrogates with U+FFFD (replacement character).
+ */
+function sanitizeForJson(text: string): string {
+  // Match lone high surrogates (not followed by low) and lone low surrogates (not preceded by high)
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+}
+
 export interface LLMResponse {
   content: string;
   usage?: {
@@ -75,6 +90,14 @@ export class LLMClient {
   }
 
   async complete(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
+    // Sanitize inputs: strip unpaired UTF-16 surrogates that cause JSON serialization
+    // errors (Anthropic API returns 400 "no low surrogate in string"). These can appear
+    // in code snippets read from binary or corrupted files.
+    prompt = sanitizeForJson(prompt);
+    if (systemPrompt) {
+      systemPrompt = sanitizeForJson(systemPrompt);
+    }
+
     debug(`LLM request to ${this.provider}/${this.model}`, {
       promptLength: prompt.length,
       hasSystemPrompt: !!systemPrompt,
