@@ -1264,108 +1264,33 @@ Start your response with \`\`\` and end with \`\`\`.`;
           );
 
           const totalIssues = unresolvedIssues.length;
-          const verifyTime = endTimer('Verify fixes');
-          const progressPct = Math.round((verifiedCount / totalIssues) * 100);
-          const lessonsAfterVerify = this.lessonsManager.getTotalCount();
-          const newLessons = lessonsAfterVerify - lessonsBeforeFix;
+          endTimer('Verify fixes');
           
-          // Track model performance for this iteration
-          // WHY: Know which models work well for this project
-          // Note: currentModel already defined at start of iteration
-          if (verifiedCount > 0) {
-            this.stateManager.recordModelFix(this.runner.name, currentModel, verifiedCount);
-            // Track progress for bail-out cycle detection
-            this.progressThisCycle += verifiedCount;
-          }
-          if (failedCount > 0) {
-            this.stateManager.recordModelFailure(this.runner.name, currentModel, failedCount);
-          }
+          // Handle iteration cleanup
+          const cleanupResult = await ResolverProc.handleIterationCleanup(
+            verifiedCount,
+            failedCount,
+            totalIssues,
+            changedIssues,
+            unchangedIssues,
+            this.runner,
+            currentModel,
+            this.stateManager,
+            this.lessonsManager,
+            verifiedThisSession,
+            alreadyCommitted,
+            lessonsBeforeFix,
+            fixIteration,
+            git,
+            this.prInfo.branch,
+            this.config.githubToken,
+            this.options,
+            (pushTime) => this.calculateExpectedBotResponseTime(pushTime)
+          );
           
-          // Record per-issue attempts for LLM model recommendation context
-          // WHY: LLM needs to know what's been tried on each issue to recommend different models
-          for (const issue of changedIssues) {
-            const wasFixed = verifiedThisSession.has(issue.comment.id);
-            this.stateManager.recordIssueAttempt(
-              issue.comment.id,
-              this.runner.name,
-              currentModel,
-              wasFixed ? 'fixed' : 'failed',
-              undefined,  // lessonLearned - could extract from lessonsManager later
-              undefined   // rejectionCount - could track in future
-            );
-          }
-          for (const issue of unchangedIssues) {
-            this.stateManager.recordIssueAttempt(
-              issue.comment.id,
-              this.runner.name,
-              currentModel,
-              'no-changes'
-            );
-          }
-          
-          spinner.succeed(`Verified: ${formatNumber(verifiedCount)}/${formatNumber(totalIssues)} fixed (${progressPct}%), ${formatNumber(failedCount)} remaining (${formatDuration(verifyTime)})`);
-          
-          // Show iteration summary
-          console.log(chalk.gray(`\n  Iteration ${fixIteration} summary:`));
-          console.log(chalk.gray(`    • Fixed: ${formatNumber(verifiedCount)} issues`));
-          console.log(chalk.gray(`    • Failed: ${formatNumber(failedCount)} issues`));
-          if (newLessons > 0) {
-            console.log(chalk.yellow(`    • New lessons: +${newLessons} (total: ${lessonsAfterVerify})`));
-          } else {
-            console.log(chalk.gray(`    • Lessons: ${lessonsAfterVerify} (no new)`));
-          }
-          
-          debug('Verification summary', { verifiedCount, failedCount, totalIssues, newLessons, totalLessons: lessonsAfterVerify, duration: verifyTime });
-          await this.stateManager.save();
-          await this.lessonsManager.save();
-          debug('State and lessons saved');
-
-          // Commit this iteration's verified fixes (Phase 1)
-          // Only commit NEW fixes - filter out already-committed ones (Trap 3)
-          if (verifiedCount > 0 && this.options.incrementalCommits) {
-            const newlyVerified = Array.from(verifiedThisSession).filter(id => !alreadyCommitted.has(id));
-            
-            if (newlyVerified.length > 0) {
-              // Get issue details for meaningful commit messages
-              // WHY: "fix(prr): address 6 review comment(s)" is garbage - describe WHAT changed
-              const fixedIssueDetails = changedIssues
-                .filter(issue => newlyVerified.includes(issue.comment.id))
-                .map(issue => ({ filePath: issue.comment.path, comment: issue.comment.body }));
-              
-              const commitResult = await commitIteration(git, newlyVerified, fixIteration, fixedIssueDetails);
-              if (commitResult) {
-                // Mark these as committed so we don't try again
-                for (const id of newlyVerified) {
-                  alreadyCommitted.add(id);
-                }
-                console.log(chalk.green(`  Committed ${newlyVerified.length} fix(es) [${commitResult.hash.slice(0, 7)}]`));
-                
-                // Push immediately if auto-push enabled (Phase 3)
-                if (this.options.autoPush && !this.options.noPush) {
-                  try {
-                    startTimer('Push iteration fixes');
-                    await pushWithRetry(git, this.prInfo.branch, { githubToken: this.config.githubToken });
-                    const pushTime = endTimer('Push iteration fixes');
-                    console.log(chalk.green(`  Pushed to origin/${this.prInfo.branch} (${formatDuration(pushTime)})`));
-                    
-                    // Update expected bot response time for the new commit
-                    // WHY: After pushing, bots will review - schedule when to check for new issues
-                    const pushTime_now = new Date();
-                    this.expectedBotResponseTime = this.calculateExpectedBotResponseTime(pushTime_now);
-                    if (this.expectedBotResponseTime) {
-                      const msUntil = this.expectedBotResponseTime.getTime() - Date.now();
-                      debug('Updated expected bot response time after push', { 
-                        expectedIn: formatDuration(msUntil) 
-                      });
-                    }
-                  } catch (err) {
-                    const pushError = err instanceof Error ? err.message : String(err);
-                    console.log(chalk.yellow(`  Push failed (will retry): ${pushError}`));
-                    debug('Push error', { error: pushError });
-                  }
-                }
-              }
-            }
+          this.progressThisCycle += cleanupResult.progressMade;
+          if (cleanupResult.expectedBotResponseTime !== undefined) {
+            this.expectedBotResponseTime = cleanupResult.expectedBotResponseTime;
           }
 
           // Check if all fixed

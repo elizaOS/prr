@@ -102,6 +102,11 @@ export {
   verifyFixes,
 } from './workflow/fix-verification.js';
 
+// Iteration cleanup
+export {
+  handleIterationCleanup,
+} from './workflow/iteration-cleanup.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,
