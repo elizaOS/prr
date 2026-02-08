@@ -528,47 +528,7 @@ export class PRResolver {
   }
 
   private buildSingleIssuePrompt(issue: UnresolvedIssue): string {
-    // Get file-scoped lessons (automatically includes global + this file's lessons)
-    const lessons = this.lessonsManager.getLessonsForFiles([issue.comment.path])
-      .slice(-5); // Last 5 relevant lessons
-    
-    let prompt = `# SINGLE ISSUE FIX
-
-Focus on fixing ONLY this one issue. Make minimal, targeted changes.
-
-## Issue
-File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}
-
-Review Comment:
-${issue.comment.body}
-
-`;
-
-    if (issue.codeSnippet) {
-      prompt += `Current Code:
-\`\`\`
-${issue.codeSnippet}
-\`\`\`
-
-`;
-    }
-
-    if (lessons.length > 0) {
-      prompt += `## Previous Failed Attempts (DO NOT REPEAT)
-${lessons.map(l => `- ${l}`).join('\n')}
-
-`;
-    }
-
-    prompt += `## Instructions
-1. EDIT the file ${issue.comment.path} to fix this issue
-2. Make the minimal change required - do NOT rewrite the whole file
-3. Do not modify any other files
-4. You MUST make a change - if unsure, make your best attempt
-
-IMPORTANT: Actually edit the file. Do not just explain what to do.`;
-
-    return prompt;
+    return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsManager);
   }
 
   private async tryDirectLLMFix(
@@ -3745,19 +3705,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
    * @returns Expected time when bot reviews should be available
    */
   private calculateExpectedBotResponseTime(lastCommitTime: Date): Date | null {
-    if (this.botTimings.length === 0) {
-      // No timing data - can't predict
-      return null;
-    }
-    
-    // Use average response time + 20% buffer
-    const avgResponseMs = Math.round(
-      this.botTimings.reduce((sum, t) => sum + t.avgResponseMs, 0) / this.botTimings.length
-    );
-    const bufferMs = Math.ceil(avgResponseMs * 0.2);
-    const expectedMs = avgResponseMs + bufferMs;
-    
-    return new Date(lastCommitTime.getTime() + expectedMs);
+    return ResolverProc.calculateExpectedBotResponseTime(this.botTimings, lastCommitTime);
   }
 
   /**
@@ -3765,12 +3713,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
    * Returns true if we should check for new comments.
    */
   private shouldCheckForNewComments(): boolean {
-    if (!this.expectedBotResponseTime) {
-      return false;
-    }
-    
-    const now = new Date();
-    return now >= this.expectedBotResponseTime;
+    return ResolverProc.shouldCheckForNewComments(this.expectedBotResponseTime);
   }
 
   /**
