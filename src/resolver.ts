@@ -853,70 +853,19 @@ Start your response with \`\`\` and end with \`\`\`.`;
             this.exitReason = 'audit_passed';
             this.exitDetails = 'Final audit passed - all issues verified fixed';
 
-            // Check if we have uncommitted changes that need to be committed
-            if (await hasChanges(git)) {
-              debugStep('COMMIT PHASE (all resolved)');
-              
-              // Export lessons to repo BEFORE commit so they're included
-              if (this.lessonsManager.hasNewLessonsForRepo()) {
-                spinner.start('Exporting lessons to repo...');
-                await this.lessonsManager.saveToRepo();
-                spinner.succeed('Lessons exported');
-              }
-              
-              if (this.options.noCommit) {
-                warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
-                console.log(chalk.gray(`Workdir: ${this.workdir}`));
-              } else {
-                // Get all comments that were fixed for commit message
-                const fixedIssues = comments
-                  .filter((comment) => this.stateManager.isCommentVerifiedFixed(comment.id))
-                  .map((comment) => ({
-                    filePath: comment.path,
-                    comment: comment.body,
-                  }));
-                
-                // Generate commit message locally (no LLM call needed)
-                // WHY: Pattern matching is fast, free, and works well for commit messages
-                const { buildCommitMessage } = await import('./git/commit.js');
-                const commitMsg = buildCommitMessage(fixedIssues, []);
-                debug('Generated commit message', commitMsg);
-                
-                spinner.text = 'Committing changes...';
-                const commit = await squashCommit(git, commitMsg);
-                spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${formatNumber(commit.filesChanged)} files)`);
-                debug('Commit created', commit);
-                
-                if (this.options.autoPush && !this.options.noPush) {
-                  // Log command BEFORE spinner so user can copy it if needed
-                  console.log(chalk.gray(`  Running: git push origin ${this.prInfo.branch}`));
-                  console.log(chalk.gray(`  Workdir: ${this.workdir}`));
-                  spinner.start('Pushing changes...');
-                  await pushWithRetry(git, this.prInfo.branch, {
-                    onPullNeeded: () => {
-                      spinner.text = 'Push rejected, pulling and retrying...';
-                    },
-                    githubToken: this.config.githubToken,
-                    onConflict: async (conflictedFiles) => {
-                      // Resolve rebase conflicts using LLM
-                      spinner.text = 'Resolving rebase conflicts...';
-                      const resolution = await this.resolveConflictsWithLLM(
-                        git,
-                        conflictedFiles,
-                        `origin/${this.prInfo.branch}`
-                      );
-                      return resolution.success;
-                    },
-                  });
-                  spinner.succeed('Pushed to remote');
-                } else if (!this.options.noPush) {
-                  console.log(chalk.blue('\nChanges committed locally. Use --auto-push to push automatically.'));
-                } else {
-                  warn('NO-PUSH MODE: Changes committed locally but not pushed.');
-                }
-                console.log(chalk.gray(`Workdir: ${this.workdir}`));
-              }
-            }
+            // Commit and push changes
+            await ResolverProc.commitAndPushChanges(
+              git,
+              this.prInfo,
+              comments,
+              this.stateManager,
+              this.lessonsManager,
+              this.options,
+              this.config,
+              this.workdir,
+              spinner,
+              (git, files, source) => this.resolveConflictsWithLLM(git, files, source)
+            );
             break;
           }
         }

@@ -78,6 +78,11 @@ export {
   runFinalAudit,
 } from './workflow/analysis.js';
 
+// Commit workflows
+export {
+  commitAndPushChanges,
+} from './workflow/commit.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,
