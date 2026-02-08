@@ -94,9 +94,10 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'gpt-5.2-codex',                 // Fallback to 5.2 Codex
   ],
   // LLM API: Direct Anthropic API calls (uses full API names)
+  // NOTE: Haiku intentionally excluded — 0% fix success rate across 147 attempts.
+  // Haiku is used for verification (via LLMClient) but is too weak for code fixing.
   'llm-api': [
     'claude-sonnet-4-5-20250929',   // Claude 4.5 Sonnet - balanced
-    'claude-opus-4-6',               // NEW! Claude 4.6 Opus - most intelligent
-    'claude-haiku-4-5-20251001',    // Claude 4.5 Haiku - fastest
+    'claude-opus-4-6',               // Claude 4.6 Opus - most intelligent
   ],
 };

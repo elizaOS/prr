@@ -28,6 +28,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../git/git-clone-index.js';
 import { formatNumber, debugStep, endTimer } from '../logger.js';
+import * as ResolverProc from '../resolver-proc.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
@@ -101,8 +102,6 @@ export async function executePushIteration(
   updatedProgressThisCycle: number;
   updatedHeadSha?: string;
 }> {
-  const ResolverProc = await import('../resolver-proc.js');
-  
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
     console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
@@ -216,7 +215,7 @@ export async function executePushIteration(
     if (!allFixed) {
       // Post-verification handling
       const postVerif = await ResolverProc.handlePostVerification(verifiedCount, allFixed, unresolvedIssues, comments, verifiedThisSession, git, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
-        stateContext, lessonsContext, options, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+        stateContext, lessonsContext, options, runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
       
       consecutiveFailures = postVerif.updatedConsecutiveFailures;
       modelFailuresInCycle = postVerif.updatedModelFailuresInCycle;

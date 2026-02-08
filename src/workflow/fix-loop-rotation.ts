@@ -22,6 +22,8 @@ import * as Performance from '../state/state-performance.js';
 import * as Bailout from '../state/state-bailout.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
+import chalk from 'chalk';
+import { debug } from '../logger.js';
 
 /**
  * Execute rotation strategy after failure (either "no changes" or "verification failed")
@@ -47,6 +49,7 @@ export async function handleRotationStrategy(
   lessonsContext: LessonsContext,
   options: CLIOptions,
   verifiedThisSession: Set<string>,
+  currentRunnerName: string,
   trySingleIssueFix: (
     issues: UnresolvedIssue[],
     git: SimpleGit,
@@ -70,9 +73,6 @@ export async function handleRotationStrategy(
   updatedProgressThisCycle: number;
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
-  const chalk = (await import('chalk')).default;
-  const { debug } = await import('../logger.js');
-
   const isOddFailure = consecutiveFailures % 2 === 1;
   let shouldBreak = false;
   let shouldContinue = false;
@@ -84,9 +84,13 @@ export async function handleRotationStrategy(
     console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
     const singleIssueFixed = await trySingleIssueFix(unresolvedIssues, git, verifiedThisSession);
     if (singleIssueFixed) {
-      newConsecutiveFailures = 0;
-      newModelFailuresInCycle = 0;
-      newProgressThisCycle++;  // Track progress for bail-out
+      // Track progress for bail-out detection, but do NOT reset consecutiveFailures.
+      // WHY: Resetting consecutiveFailures to 0 here causes a rotation stall bug:
+      // the next batch failure sets it back to 1 (odd), which triggers single-issue
+      // again, and if that succeeds, it resets to 0 again — the model NEVER rotates.
+      // By keeping consecutiveFailures at its current value, the next batch failure
+      // will make it even, which triggers model rotation.
+      newProgressThisCycle++;
     }
   } else if (!isOddFailure) {
     // Try rotating model or tool
@@ -94,16 +98,25 @@ export async function handleRotationStrategy(
     
     // Check if bail-out was triggered by tryRotation()
     if (Bailout.getNoProgressCycles(stateContext) >= options.maxStaleCycles) {
-      // Bail-out triggered - try direct LLM one last time before giving up
-      console.log(chalk.yellow('\n  🧠 Last resort: trying direct LLM API fix before bail-out...'));
-      const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
-      if (directFixed) {
-        newConsecutiveFailures = 0;
-        newModelFailuresInCycle = 0;
-        newProgressThisCycle++;
-        Bailout.resetNoProgressCycles(stateContext);  // Made progress, reset
+      // Skip direct LLM if we're already running as llm-api - it already failed
+      const alreadyOnLLMApi = currentRunnerName === 'llm-api';
+      if (alreadyOnLLMApi) {
+        debug('Skipping direct LLM last resort - already running as llm-api runner');
+        console.log(chalk.yellow('\n  🛑 Already using direct LLM API - skipping redundant retry'));
       } else {
-        // Direct LLM also failed - execute bail-out
+        // Bail-out triggered - try direct LLM one last time before giving up
+        console.log(chalk.yellow('\n  🧠 Last resort: trying direct LLM API fix before bail-out...'));
+        const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
+        if (directFixed) {
+          newConsecutiveFailures = 0;
+          newModelFailuresInCycle = 0;
+          newProgressThisCycle++;
+          Bailout.resetNoProgressCycles(stateContext);  // Made progress, reset
+        }
+      }
+      
+      // If still no progress (LLM skipped or failed), execute bail-out
+      if (newProgressThisCycle <= progressThisCycle) {
         await executeBailOut(unresolvedIssues, comments);
         shouldBreak = true;  // Signal caller to exit fix loop
         return {
@@ -119,12 +132,18 @@ export async function handleRotationStrategy(
       console.log(chalk.cyan('  Starting fresh with batch mode...'));
     } else {
       // Rotation failed but not at bail-out threshold yet
-      console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
-      const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
-      if (directFixed) {
-        newConsecutiveFailures = 0;
-        newModelFailuresInCycle = 0;
-        newProgressThisCycle++;
+      // Skip if already on llm-api - same strategy won't help
+      if (currentRunnerName === 'llm-api') {
+        debug('Skipping direct LLM fallback - already running as llm-api runner');
+        console.log(chalk.yellow('\n  ⏭ Already using direct LLM API - skipping redundant fallback'));
+      } else {
+        console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
+        const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
+        if (directFixed) {
+          newConsecutiveFailures = 0;
+          newModelFailuresInCycle = 0;
+          newProgressThisCycle++;
+        }
       }
     }
   }

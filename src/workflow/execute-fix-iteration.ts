@@ -24,6 +24,10 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import type { CLIOptions } from '../cli.js';
+import ora from 'ora';
+import { debug, debugStep, startTimer, endTimer, formatDuration } from '../logger.js';
+import { hasChanges } from '../git/git-clone-index.js';
+import * as ResolverProc from '../resolver-proc.js';
 
 /**
  * Execute one fix iteration (prompt build + fixer run + result handling)
@@ -74,16 +78,7 @@ export async function executeFixIteration(
   exitDetails?: string;
   lessonsBeforeFix: number;
 }> {
-  const {
-    debug,
-    debugStep,
-    startTimer,
-    endTimer,
-    formatDuration,
-  } = await import('../logger.js');
-  const { hasChanges } = await import('../git/git-clone-index.js');
-  const ResolverProc = await import('../resolver-proc.js');
-  const spinner = (await import('ora')).default();
+  const spinner = ora();
 
   // Build fix prompt
   debugStep('GENERATING FIX PROMPT');
@@ -212,7 +207,7 @@ export async function executeFixIteration(
     
     // Execute rotation strategy
     const rotationResult = await ResolverProc.handleRotationStrategy(updatedUnresolvedIssues, comments, git, updatedConsecutiveFailures, updatedModelFailuresInCycle, updatedProgressThisCycle,
-      stateContext, lessonsContext, options, verifiedThisSession, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+      stateContext, lessonsContext, options, verifiedThisSession, runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
     
     return {
       shouldContinue: !rotationResult.shouldBreak,

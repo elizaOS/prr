@@ -20,6 +20,7 @@ import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
+import * as ResolverProc from '../resolver-proc.js';
 
 /**
  * Handle post-verification state updates and rotation
@@ -44,6 +45,7 @@ export async function handlePostVerification(
   stateContext: StateContext,
   lessonsContext: LessonsContext,
   options: CLIOptions,
+  currentRunnerName: string,
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
   tryRotation: () => boolean,
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
@@ -55,8 +57,6 @@ export async function handlePostVerification(
   updatedProgressThisCycle: number;
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
-  const ResolverProc = await import('../resolver-proc.js');
-
   if (!allFixed) {
     // Track consecutive failures for strategy switching
     if (verifiedCount === 0) {
@@ -65,7 +65,7 @@ export async function handlePostVerification(
       
       // Execute rotation strategy
       const rotationResult = await ResolverProc.handleRotationStrategy(unresolvedIssues, comments, git, updatedConsecutiveFailures, updatedModelFailuresInCycle, progressThisCycle,
-        stateContext, lessonsContext, options, verifiedThisSession, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+        stateContext, lessonsContext, options, verifiedThisSession, currentRunnerName, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
       
       return {
         shouldBreak: rotationResult.shouldBreak,
