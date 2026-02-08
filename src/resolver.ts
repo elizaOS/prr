@@ -694,205 +694,42 @@ Start your response with \`\`\` and end with \`\`\`.`;
       debug('Using runner', this.runner.name);
       
       // Restore tool/model rotation state from previous session
-      // WHY: Resume where we left off if interrupted, don't restart from first model
-      const savedRunnerIndex = this.stateManager.getCurrentRunnerIndex();
-      const savedModelIndices = this.stateManager.getModelIndices();
-      
-      if (savedRunnerIndex > 0 && savedRunnerIndex < this.runners.length) {
-        this.currentRunnerIndex = savedRunnerIndex;
-        this.runner = this.runners[savedRunnerIndex];
-        console.log(chalk.gray(`  Resuming at tool: ${this.runner.displayName} (from previous session)`));
-      }
-      
-      if (Object.keys(savedModelIndices).length > 0) {
-        for (const [runnerName, index] of Object.entries(savedModelIndices)) {
-          this.modelIndices.set(runnerName, index);
-        }
-        const currentModel = this.getCurrentModel();
-        if (currentModel) {
-          console.log(chalk.gray(`  Resuming at model: ${currentModel} (from previous session)`));
-        }
+      const rotationState = ResolverProc.restoreRunnerRotationState(
+        this.stateManager,
+        this.runners,
+        this.modelIndices,
+        () => this.getCurrentModel()
+      );
+      if (rotationState.runner) {
+        this.currentRunnerIndex = rotationState.runnerIndex;
+        this.runner = rotationState.runner;
       }
 
       // Clone or update repo
-      // If we have verified fixes from a previous run, preserve local changes
       const hasVerifiedFixes = state.verifiedFixed.length > 0;
-      debugStep('CLONING/UPDATING REPOSITORY');
-      spinner.start('Setting up repository...');
-      const { git } = await cloneOrUpdate(
-        this.prInfo.cloneUrl,
-        this.prInfo.branch,
+      const git = await ResolverProc.cloneOrUpdateRepository(
+        this.prInfo,
         this.workdir,
         this.config.githubToken,
-        { preserveChanges: hasVerifiedFixes }
+        hasVerifiedFixes,
+        spinner
       );
-      spinner.succeed('Repository ready');
-      debug('Repository cloned/updated at', this.workdir);
 
       // Ensure state file is in .gitignore to prevent accidental commits
       await this.ensureStateFileIgnored();
 
-      // Recover verification state from git history (Phase 2)
-      // WHY: Git commits are durable. Recover which fixes were already verified.
-      debugStep('RECOVERING STATE FROM GIT');
-      const committedFixes = await scanCommittedFixes(git, this.prInfo.branch);
-      if (committedFixes.length > 0) {
-        console.log(chalk.cyan(`Recovered ${formatNumber(committedFixes.length)} previously committed fix(es) from git history`));
-        for (const commentId of committedFixes) {
-          this.stateManager.markCommentVerifiedFixed(commentId);
-        }
-        await this.stateManager.save();
-        debug('Recovered verifications from git', { count: committedFixes.length });
-      }
+      // Recover verification state from git history
+      await ResolverProc.recoverVerificationState(git, this.prInfo.branch, this.stateManager);
 
       // Check for conflicts and sync with remote
-      // WHY CHECK EARLY: Conflict markers in files will cause fixer tools to fail confusingly.
-      // Better to detect and resolve conflicts upfront before entering the fix loop.
-      // 
-      // SCENARIOS HANDLED:
-      // 1. Previous interrupted merge/rebase left conflict markers in files
-      // 2. User manually started a merge but didn't complete it
-      // 3. Previous prr run was interrupted mid-conflict-resolution
-      debugStep('CHECKING FOR CONFLICTS');
-      spinner.start('Checking for conflicts with remote...');
-      const conflictStatus = await checkForConflicts(git, this.prInfo.branch);
-      spinner.stop();
-
-      if (conflictStatus.hasConflicts) {
-        // WHY AUTO-RESOLVE: Previously, prr would bail out here with "resolve manually".
-        // This was frustrating because the same LLM tools that fix review comments can
-        // also resolve merge conflicts. Auto-resolution keeps the workflow seamless.
-        console.log(chalk.yellow('⚠ Merge conflicts detected from previous operation'));
-        console.log(chalk.cyan('  Attempting to resolve conflicts automatically...'));
-        
-        startTimer('Resolve remote conflicts');
-        const resolution = await this.resolveConflictsWithLLM(
-          git,
-          conflictStatus.conflictedFiles,
-          `origin/${this.prInfo.branch}`
-        );
-        
-        if (!resolution.success) {
-          console.log(chalk.red('\n✗ Could not resolve all merge conflicts automatically'));
-          console.log(chalk.red('  Remaining conflicts:'));
-          for (const file of resolution.remainingConflicts) {
-            console.log(chalk.red(`    - ${file}`));
-          }
-          console.log(chalk.yellow('\n  Please resolve conflicts manually before running prr.'));
-          await abortMerge(git);
-          endTimer('Resolve remote conflicts');
-          return;
-        }
-        
-        // All conflicts resolved - complete the merge
-        const commitResult = await completeMerge(git, `Merge remote-tracking branch 'origin/${this.prInfo.branch}'`);
-        
-        if (!commitResult.success) {
-          console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
-          await abortMerge(git);
-          endTimer('Resolve remote conflicts');
-          return;
-        }
-        
-        console.log(chalk.green('✓ Conflicts resolved and merge completed'));
-        endTimer('Resolve remote conflicts');
-      }
-
-      if (conflictStatus.behindBy > 0) {
-        console.log(chalk.yellow(`⚠ Branch is ${conflictStatus.behindBy} commits behind remote`));
-        spinner.start('Pulling latest changes...');
-        const pullResult = await pullLatest(git, this.prInfo.branch);
-        
-        if (!pullResult.success) {
-          spinner.fail('Failed to pull');
-          console.log(chalk.red(`  Error: ${pullResult.error}`));
-          
-          if (pullResult.error?.includes('conflict')) {
-            // Get conflicted files from git status
-            const status = await git.status();
-            const conflictedFiles = status.conflicted || [];
-            
-            if (conflictedFiles.length > 0) {
-              console.log(chalk.cyan('  Attempting to resolve pull conflicts automatically...'));
-              
-              startTimer('Resolve pull conflicts');
-              const resolution = await this.resolveConflictsWithLLM(
-                git,
-                conflictedFiles,
-                `origin/${this.prInfo.branch}`
-              );
-              
-              if (!resolution.success) {
-                console.log(chalk.red('\n✗ Could not resolve pull conflicts automatically'));
-                console.log(chalk.red('  Remaining conflicts:'));
-                for (const file of resolution.remainingConflicts) {
-                  console.log(chalk.red(`    - ${file}`));
-                }
-                console.log(chalk.yellow('\n  Please resolve conflicts manually before running prr.'));
-                await abortMerge(git);
-                endTimer('Resolve pull conflicts');
-                return;
-              }
-              
-              // All conflicts resolved - complete the merge/rebase
-              const commitResult = await completeMerge(git, `Merge remote-tracking branch 'origin/${this.prInfo.branch}'`);
-              
-              if (!commitResult.success) {
-                console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
-                await abortMerge(git);
-                endTimer('Resolve pull conflicts');
-                return;
-              }
-              
-              console.log(chalk.green('✓ Pull conflicts resolved and merge completed'));
-              endTimer('Resolve pull conflicts');
-            } else {
-              console.log(chalk.yellow('  Please resolve conflicts manually before running prr.'));
-              await abortMerge(git);
-              return;
-            }
-          } else {
-            return;
-          }
-        }
-        
-        if (pullResult.stashConflicts && pullResult.stashConflicts.length > 0) {
-          spinner.warn('Pulled with stash conflicts');
-          console.log(chalk.cyan(`  Stash conflicts in: ${pullResult.stashConflicts.join(', ')}`));
-          console.log(chalk.cyan('  Attempting to resolve stash conflicts automatically...'));
-          
-          startTimer('Resolve stash conflicts');
-          const resolution = await this.resolveConflictsWithLLM(
-            git,
-            pullResult.stashConflicts,
-            'stashed changes'
-          );
-          
-          if (!resolution.success) {
-            console.log(chalk.red('\n✗ Could not resolve stash conflicts automatically'));
-            console.log(chalk.red('  Remaining conflicts:'));
-            for (const file of resolution.remainingConflicts) {
-              console.log(chalk.red(`    - ${file}`));
-            }
-            console.log(chalk.yellow('\n  Resolve conflicts and commit, then re-run prr.'));
-            endTimer('Resolve stash conflicts');
-            return;
-          }
-          
-          // Stage and commit the resolved stash conflicts
-          await git.add('.');
-          await git.commit('Resolve stash conflicts after pull');
-          console.log(chalk.green('✓ Stash conflicts resolved'));
-          endTimer('Resolve stash conflicts');
-        }
-        
-        spinner.succeed('Pulled latest changes');
-      } else {
-        console.log(chalk.green('✓ Branch is up to date with remote'));
-      }
-
-      if (conflictStatus.aheadBy > 0) {
-        info(`Branch is ${conflictStatus.aheadBy} commits ahead of remote`);
+      const syncResult = await ResolverProc.checkAndSyncWithRemote(
+        git,
+        this.prInfo.branch,
+        spinner,
+        (git, files, source) => this.resolveConflictsWithLLM(git, files, source)
+      );
+      if (!syncResult.success) {
+        return; // Exit if conflicts couldn't be resolved
       }
 
       // Check if PR has merge conflicts with base branch and ensure we're up-to-date

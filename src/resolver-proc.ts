@@ -53,6 +53,14 @@ export {
   setupWorkdirAndManagers,
 } from './workflow/startup.js';
 
+// Repository workflows
+export {
+  restoreRunnerRotationState,
+  cloneOrUpdateRepository,
+  recoverVerificationState,
+  checkAndSyncWithRemote,
+} from './workflow/repository.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,
