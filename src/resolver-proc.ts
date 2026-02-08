@@ -91,6 +91,12 @@ export {
   checkAndPullRemoteCommits,
 } from './workflow/fix-loop-utils.js';
 
+// Fixer error handling
+export {
+  handleFixerError,
+  handleNoChanges,
+} from './workflow/fixer-errors.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,

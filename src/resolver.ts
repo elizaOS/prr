@@ -1044,72 +1044,23 @@ Start your response with \`\`\` and end with \`\`\`.`;
           debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
           if (!result.success) {
-            console.log(chalk.red(`\n${this.runner.name} failed (${formatDuration(fixerTime)}):`, result.error));
+            const errorResult = ResolverProc.handleFixerError(
+              result,
+              this.runner,
+              fixerTime,
+              this.rapidFailureCount,
+              this.lastFailureTime,
+              this.stateManager,
+              () => this.getCurrentModel()
+            );
             
-            // PERMISSION ERRORS: Bail out immediately - don't waste tokens
-            // WHY: If the tool can't write files, retrying won't help. User needs to fix permissions.
-            if (result.errorType === 'permission') {
-              console.log(chalk.red('\n⛔ PERMISSION ERROR: Fixer tool cannot write to files'));
-              console.log(chalk.yellow('  Bailing out - retrying won\'t help.'));
-              if (result.error) {
-                console.log(chalk.cyan(`  ${result.error}`));
-              }
-              debug('Bailing out due to permission error', { tool: this.runner.name, error: result.error });
-              // Don't record as lesson - this is an environment/config issue, not a code issue
-              return;
+            this.rapidFailureCount = errorResult.rapidFailureCount;
+            this.lastFailureTime = errorResult.lastFailureTime;
+            
+            if (errorResult.shouldExit) {
+              return; // Exit on critical errors
             }
             
-            // AUTH ERRORS: Also bail out - retrying won't help
-            if (result.errorType === 'auth') {
-              console.log(chalk.red('\n⛔ AUTHENTICATION ERROR: API key or auth issue'));
-              console.log(chalk.yellow('  Check your API keys and authentication.'));
-              debug('Bailing out due to auth error', { tool: this.runner.name, error: result.error });
-              return;
-            }
-            
-            // ENVIRONMENT ERRORS: Tool environment issue (e.g., TTY/cursor position)
-            // WHY: These are infrastructure issues that won't fix themselves with retries.
-            // The tool needs a different environment (real TTY, GUI, etc.)
-            if (result.errorType === 'environment') {
-              console.log(chalk.red('\n⛔ ENVIRONMENT ERROR: Tool requires different runtime environment'));
-              console.log(chalk.yellow('  This tool may require an interactive terminal or GUI.'));
-              if (result.error) {
-                console.log(chalk.cyan(`  ${result.error}`));
-              }
-              console.log(chalk.yellow('\n  Suggestions:'));
-              console.log(chalk.yellow('    - Try a different tool: --tool cursor or --tool claude-code'));
-              console.log(chalk.yellow('    - Run prr in an interactive terminal (not CI/cron)'));
-              console.log(chalk.yellow('    - Use --tool llm-api as a fallback (direct LLM without TUI)'));
-              debug('Bailing out due to environment error', { tool: this.runner.name, error: result.error });
-              return;
-            }
-
-            const now = Date.now();
-            const isRapidFailure = fixerTime > 0 && fixerTime <= PRResolver.RAPID_FAILURE_MS;
-            if (isRapidFailure) {
-              if (now - this.lastFailureTime > PRResolver.RAPID_FAILURE_WINDOW_MS) {
-                this.rapidFailureCount = 0;
-              }
-              this.rapidFailureCount++;
-              this.lastFailureTime = now;
-
-              if (this.rapidFailureCount >= PRResolver.MAX_RAPID_FAILURES) {
-                console.log(chalk.red('\n⛔ FAST-FAIL: Repeated rapid tool failures detected'));
-                console.log(chalk.yellow(`  ${this.runner.name} failed ${this.rapidFailureCount} times within ${formatDuration(PRResolver.RAPID_FAILURE_WINDOW_MS)}.`));
-                console.log(chalk.yellow('  Aborting to avoid a tight retry loop.'));
-                debug('Bailing out due to rapid failures', { tool: this.runner.name, error: result.error, duration: fixerTime });
-                return;
-              }
-            } else {
-              this.rapidFailureCount = 0;
-            }
-            
-            // DON'T record transient tool failures as lessons
-            // WHY: "connection stalled", "model unavailable" aren't actionable for future fixes
-            // Only code-related lessons (fix rejected, wrong approach) are useful
-            debug('Tool failure (not recorded as lesson)', { tool: this.runner.name, error: result.error });
-            // Track model error for performance stats
-            this.stateManager.recordModelError(this.runner.name, this.getCurrentModel());
             await this.stateManager.save();
             continue;
           }
