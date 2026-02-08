@@ -293,83 +293,21 @@ export class PRResolver {
     unresolvedIssues: UnresolvedIssue[],
     comments: ReviewComment[],
   ): Promise<void> {
-    this.bailedOut = true;
-    this.exitReason = 'bail_out';
-    this.exitDetails = `Stalemate after ${this.stateManager.getNoProgressCycles()} cycles with no progress - ${unresolvedIssues.length} issue(s) remain`;
-    
-    // Store final state for after action report
-    this.finalUnresolvedIssues = [...unresolvedIssues];
-    this.finalComments = [...comments];
-    
-    const cyclesCompleted = this.stateManager.getNoProgressCycles();
-    const toolsExhausted = this.runners.map(r => r.name);
-    
-    // Count what was fixed vs what remains
-    const issuesFixed = comments.filter(c => 
-      this.stateManager.isCommentVerifiedFixed(c.id)
-    ).length;
-    
-    // Build remaining issues summary
-    const remainingIssues = unresolvedIssues.map(issue => ({
-      commentId: issue.comment.id,
-      filePath: issue.comment.path,
-      line: issue.comment.line,
-      summary: issue.comment.body.split('\n')[0].substring(0, 100),
-    }));
-    
-    // Record bail-out in state
-    this.stateManager.recordBailOut(
-      'no-progress-cycles',
-      cyclesCompleted,
-      remainingIssues,
-      issuesFixed,
-      toolsExhausted
+    const result = await ResolverProc.executeBailOut(
+      unresolvedIssues,
+      comments,
+      this.stateManager,
+      this.lessonsManager,
+      this.runners,
+      this.options,
+      (runner) => this.getModelsForRunner(runner)
     );
     
-    await this.stateManager.save();
-    
-    // Print bail-out summary
-    console.log(chalk.red('\n' + '═'.repeat(60)));
-    console.log(chalk.red.bold('  BAIL-OUT: Stalemate Detected'));
-    console.log(chalk.red('═'.repeat(60)));
-    
-    console.log(chalk.yellow(`\n  Reason: ${cyclesCompleted} complete cycle(s) with zero verified fixes`));
-    console.log(chalk.gray(`  Max allowed: ${this.options.maxStaleCycles} (--max-stale-cycles)`));
-    
-    console.log(chalk.cyan('\n  Progress Summary:'));
-    console.log(chalk.green(`    ✓ Fixed: ${issuesFixed} issues`));
-    console.log(chalk.red(`    ✗ Remaining: ${unresolvedIssues.length} issues`));
-    const totalLessons = this.lessonsManager.getTotalCount();
-    const newLessons = this.lessonsManager.getNewLessonsCount();
-    const lessonInfo = newLessons > 0 
-      ? `${totalLessons} total (${newLessons} new this run)` 
-      : `${totalLessons} (from previous runs)`;
-    console.log(chalk.gray(`    📚 Lessons: ${lessonInfo}`));
-    
-    console.log(chalk.cyan('\n  Tools Exhausted:'));
-    for (const tool of toolsExhausted) {
-      const models = this.getModelsForRunner(this.runners.find(r => r.name === tool)!);
-      console.log(chalk.gray(`    • ${tool}: ${models.length} models tried`));
-    }
-    
-    if (unresolvedIssues.length > 0) {
-      console.log(chalk.cyan('\n  Remaining Issues (need human attention):'));
-      for (const issue of unresolvedIssues.slice(0, 5)) {
-        console.log(chalk.yellow(`    • ${issue.comment.path}:${issue.comment.line || '?'}`));
-        console.log(chalk.gray(`      "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
-      }
-      if (unresolvedIssues.length > 5) {
-        console.log(chalk.gray(`    ... and ${unresolvedIssues.length - 5} more`));
-      }
-    }
-    
-    console.log(chalk.red('\n' + '═'.repeat(60)));
-    console.log(chalk.gray('\n  Next steps:'));
-    console.log(chalk.gray('    1. Review the lessons learned in .pr-resolver-state.json'));
-    console.log(chalk.gray('    2. Check if remaining issues have conflicting requirements'));
-    console.log(chalk.gray('    3. Consider increasing --max-stale-cycles if issues seem solvable'));
-    console.log(chalk.gray('    4. Manually fix remaining issues or dismiss with comments'));
-    console.log('');
+    this.bailedOut = result.bailedOut;
+    this.exitReason = result.exitReason;
+    this.exitDetails = result.exitDetails;
+    this.finalUnresolvedIssues = result.finalUnresolvedIssues;
+    this.finalComments = result.finalComments;
   }
 
   private async trySingleIssueFix(

@@ -560,4 +560,109 @@ export async function waitForBotReviews(
   }
 }
 
+/**
+ * Execute bail-out procedure when stalemate is detected
+ * Returns updated context with bail-out state
+ */
+export async function executeBailOut(
+  unresolvedIssues: UnresolvedIssue[],
+  comments: ReviewComment[],
+  stateManager: StateManager,
+  lessonsManager: LessonsManager,
+  runners: Runner[],
+  options: CLIOptions,
+  getModelsForRunner: (runner: Runner) => string[]
+): Promise<{
+  bailedOut: boolean;
+  exitReason: string;
+  exitDetails: string;
+  finalUnresolvedIssues: UnresolvedIssue[];
+  finalComments: ReviewComment[];
+}> {
+  const chalk = (await import('chalk')).default;
+  const { formatNumber } = await import('./logger.js');
+  
+  const exitReason = 'bail_out';
+  const cyclesCompleted = stateManager.getNoProgressCycles();
+  const exitDetails = `Stalemate after ${cyclesCompleted} cycles with no progress - ${unresolvedIssues.length} issue(s) remain`;
+  
+  const toolsExhausted = runners.map(r => r.name);
+  
+  // Count what was fixed vs what remains
+  const issuesFixed = comments.filter(c => 
+    stateManager.isCommentVerifiedFixed(c.id)
+  ).length;
+  
+  // Build remaining issues summary
+  const remainingIssues = unresolvedIssues.map(issue => ({
+    commentId: issue.comment.id,
+    filePath: issue.comment.path,
+    line: issue.comment.line,
+    summary: issue.comment.body.split('\n')[0].substring(0, 100),
+  }));
+  
+  // Record bail-out in state
+  stateManager.recordBailOut(
+    'no-progress-cycles',
+    cyclesCompleted,
+    remainingIssues,
+    issuesFixed,
+    toolsExhausted
+  );
+  
+  await stateManager.save();
+  
+  // Print bail-out summary
+  console.log(chalk.red('\n' + '═'.repeat(60)));
+  console.log(chalk.red.bold('  BAIL-OUT: Stalemate Detected'));
+  console.log(chalk.red('═'.repeat(60)));
+  
+  console.log(chalk.yellow(`\n  Reason: ${cyclesCompleted} complete cycle(s) with zero verified fixes`));
+  console.log(chalk.gray(`  Max allowed: ${options.maxStaleCycles} (--max-stale-cycles)`));
+  
+  console.log(chalk.cyan('\n  Progress Summary:'));
+  console.log(chalk.green(`    ✓ Fixed: ${issuesFixed} issues`));
+  console.log(chalk.red(`    ✗ Remaining: ${unresolvedIssues.length} issues`));
+  const totalLessons = lessonsManager.getTotalCount();
+  const newLessons = lessonsManager.getNewLessonsCount();
+  const lessonInfo = newLessons > 0 
+    ? `${totalLessons} total (${newLessons} new this run)` 
+    : `${totalLessons} (from previous runs)`;
+  console.log(chalk.gray(`    📚 Lessons: ${lessonInfo}`));
+  
+  console.log(chalk.cyan('\n  Tools Exhausted:'));
+  for (const tool of toolsExhausted) {
+    const runner = runners.find(r => r.name === tool)!;
+    const models = getModelsForRunner(runner);
+    console.log(chalk.gray(`    • ${tool}: ${models.length} models tried`));
+  }
+  
+  if (unresolvedIssues.length > 0) {
+    console.log(chalk.cyan('\n  Remaining Issues (need human attention):'));
+    for (const issue of unresolvedIssues.slice(0, 5)) {
+      console.log(chalk.yellow(`    • ${issue.comment.path}:${issue.comment.line || '?'}`));
+      console.log(chalk.gray(`      "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
+    }
+    if (unresolvedIssues.length > 5) {
+      console.log(chalk.gray(`    ... and ${unresolvedIssues.length - 5} more`));
+    }
+  }
+  
+  console.log(chalk.red('\n' + '═'.repeat(60)));
+  console.log(chalk.gray('\n  Next steps:'));
+  console.log(chalk.gray('    1. Review the lessons learned in .pr-resolver-state.json'));
+  console.log(chalk.gray('    2. Check if remaining issues have conflicting requirements'));
+  console.log(chalk.gray('    3. Consider increasing --max-stale-cycles if issues seem solvable'));
+  console.log(chalk.gray('    4. Manually fix remaining issues or dismiss with comments'));
+  console.log('');
+  
+  return {
+    bailedOut: true,
+    exitReason,
+    exitDetails,
+    finalUnresolvedIssues: [...unresolvedIssues],
+    finalComments: [...comments],
+  };
+}
+
 // More functions will be added here as we extract methods from PRResolver
