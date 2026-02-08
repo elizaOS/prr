@@ -640,180 +640,53 @@ Start your response with \`\`\` and end with \`\`\`.`;
       const prStatus = await this.github.getPRStatus(owner, repo, number, this.prInfo.headSha);
       spinner.stop();
       
-      // CI checks status
-      if (prStatus.inProgressChecks.length > 0) {
-        warn(`CI: ${prStatus.inProgressChecks.length} checks running: ${prStatus.inProgressChecks.join(', ')}`);
-      } else if (prStatus.pendingChecks.length > 0) {
-        warn(`CI: ${prStatus.pendingChecks.length} checks queued: ${prStatus.pendingChecks.join(', ')}`);
-      } else {
-        console.log(chalk.green('✓'), `CI: ${prStatus.completedChecks}/${prStatus.totalChecks} checks completed (${prStatus.ciState})`);
-      }
-
-      // Bot review status
-      if (prStatus.activelyReviewingBots.length > 0) {
-        warn(`Bots reviewing: ${prStatus.activelyReviewingBots.join(', ')}`);
-        info('These bots may still be analyzing - consider waiting for them to finish.');
-      }
-      
-      // Bots with 👀 reaction (looking at it)
-      if (prStatus.botsWithEyesReaction.length > 0) {
-        warn(`Bots looking (👀): ${prStatus.botsWithEyesReaction.join(', ')}`);
-      }
-      
-      // Pending reviewers
-      if (prStatus.pendingReviewers.length > 0) {
-        info(`Pending reviewers: ${prStatus.pendingReviewers.join(', ')}`);
-      }
-
-      // Overall status
-      const hasActivity = prStatus.inProgressChecks.length > 0 || 
-                          prStatus.pendingChecks.length > 0 || 
-                          prStatus.activelyReviewingBots.length > 0 ||
-                          prStatus.botsWithEyesReaction.length > 0;
-      if (!hasActivity) {
-        console.log(chalk.green('✓'), 'PR is idle - safe to proceed');
-      }
+      // Display PR status
+      ResolverProc.displayPRStatus(prStatus);
 
       // Analyze bot response timing
       // WHY: Helps user understand how long to wait for bot reviews after pushing
       // Also stored for smart wait scheduling after pushes
       debugStep('ANALYZING BOT TIMING');
-      let lastCommitTime: Date | null = null;
-      try {
-        spinner.start('Analyzing bot response timing...');
-        
-        // Get commits to find last commit time
-        const commits = await this.github.getPRCommits(owner, repo, number);
-        if (commits.length > 0) {
-          lastCommitTime = commits[commits.length - 1].committedDate;
-        }
-        
-        this.botTimings = await this.github.analyzeBotResponseTiming(owner, repo, number);
-        spinner.stop();
-        
-        if (this.botTimings.length > 0) {
-          console.log(chalk.cyan('\n📊 Bot Response Timing (observed on this PR):'));
-          for (const timing of this.botTimings) {
-            console.log(chalk.gray(
-              `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${timing.responseCount})`
-            ));
-          }
-          // Recommend wait time based on max observed
-          const maxWait = Math.max(...this.botTimings.map(t => t.maxResponseMs));
-          const recommendedWait = Math.ceil(maxWait / 1000 / 30) * 30; // Round up to nearest 30s
-          console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s`));
-          
-          // Calculate when we expect bot reviews to arrive
-          if (lastCommitTime) {
-            this.expectedBotResponseTime = this.calculateExpectedBotResponseTime(lastCommitTime);
-            if (this.expectedBotResponseTime) {
-              const now = new Date();
-              const msUntilExpected = this.expectedBotResponseTime.getTime() - now.getTime();
-              if (msUntilExpected > 0) {
-                console.log(chalk.cyan(`   📅 Expecting new bot reviews in ~${formatDuration(msUntilExpected)}`));
-                console.log(chalk.gray('      Will check for new issues while working...'));
-              } else {
-                console.log(chalk.cyan('   📅 Bot reviews may already be available'));
-              }
-            }
-          }
-        } else {
-          console.log(chalk.gray('No bot response timing data available yet'));
-        }
-      } catch (err) {
-        debug('Bot timing analysis failed (non-critical)', { error: err });
-      }
+      const timingResult = await ResolverProc.analyzeBotTimingAndDisplay(
+        this.github,
+        owner,
+        repo,
+        number,
+        spinner,
+        (lastCommitTime) => this.calculateExpectedBotResponseTime(lastCommitTime)
+      );
+      this.botTimings = timingResult.botTimings;
+      this.expectedBotResponseTime = timingResult.expectedBotResponseTime;
 
       // Check CodeRabbit status on startup
       // WHY: If CodeRabbit is in manual mode and hasn't reviewed the current commit,
       // we should trigger it early so reviews are ready when we need them
       debugStep('CHECKING CODERABBIT STATUS');
-      try {
-        spinner.start('Checking CodeRabbit status...');
-        const crResult = await this.github.triggerCodeRabbitIfNeeded(
-          owner, repo, number, this.prInfo.branch, this.prInfo.headSha
-        );
-        
-        if (crResult.mode === 'none') {
-          spinner.info('CodeRabbit: not configured for this repo');
-        } else if (crResult.reviewedCurrentCommit) {
-          spinner.succeed(`CodeRabbit: already reviewed ${this.prInfo.headSha.substring(0, 7)} ✓`);
-        } else if (crResult.triggered) {
-          spinner.succeed(`CodeRabbit: triggered review (${crResult.mode} mode)`);
-          info('CodeRabbit review requested - it will analyze while we work');
-        } else if (crResult.mode === 'auto') {
-          spinner.info(`CodeRabbit: auto mode - will review automatically`);
-        } else {
-          spinner.info(`CodeRabbit: ${crResult.reason}`);
-        }
-        debug('CodeRabbit startup check', crResult);
-      } catch (err) {
-        spinner.warn('Could not check CodeRabbit status (continuing anyway)');
-        debug('CodeRabbit startup check failed', { error: err });
-      }
-
-      // Setup workdir (includes branch in hash for repos with PRs on different target branches)
-      debugStep('SETTING UP WORKDIR');
-      const workdirInfo = getWorkdirInfo(this.config.workdirBase, owner, repo, number, this.prInfo.branch);
-      this.workdir = workdirInfo.path;
-      debug('Workdir info', workdirInfo);
-      
-      if (workdirInfo.exists) {
-        console.log(chalk.gray(`Reusing existing workdir: ${this.workdir}`));
-        console.log(chalk.gray(`  → ${workdirInfo.identifier}`));
-      } else {
-        console.log(chalk.gray(`Creating workdir: ${this.workdir}`));
-        console.log(chalk.gray(`  → ${workdirInfo.identifier}`));
-      }
-
-      await ensureWorkdir(this.workdir);
-
-      // Initialize state manager
-      debugStep('LOADING STATE');
-      this.stateManager = new StateManager(this.workdir);
-      this.stateManager.setPhase('init');
-      const state = await this.stateManager.load(
-        `${owner}/${repo}#${number}`, 
+      await ResolverProc.checkCodeRabbitStatus(
+        this.github,
+        owner,
+        repo,
+        number,
         this.prInfo.branch,
-        this.prInfo.headSha
+        this.prInfo.headSha,
+        spinner
       );
-      debug('Loaded state', {
-        iterations: state.iterations.length,
-        verifiedFixed: state.verifiedFixed.length,
-      });
 
-      // Initialize lessons manager (branch-permanent storage)
-      // WHY: Lessons help the fixer avoid repeating mistakes
-      this.lessonsManager = new LessonsManager(owner, repo, this.prInfo.branch);
-      if (this.options.noClaudeMd) {
-        this.lessonsManager.setSkipClaudeMd(true);
-      }
-      this.lessonsManager.setWorkdir(this.workdir); // Enable repo-based lesson sharing
-      await this.lessonsManager.load();
+      // Setup workdir and initialize managers
+      const managers = await ResolverProc.setupWorkdirAndManagers(
+        this.config,
+        this.options,
+        owner,
+        repo,
+        number,
+        this.prInfo
+      );
+      this.workdir = managers.workdir;
+      this.stateManager = managers.stateManager;
+      this.lessonsManager = managers.lessonsManager;
+      this.lockManager = managers.lockManager;
       
-      // Initialize lock manager for multi-instance coordination
-      // WHY: Prevents duplicate work when multiple prr instances run on same PR
-      this.lockManager = new LockManager(this.workdir, { enabled: !this.options.noLock });
-      if (this.lockManager.isEnabled()) {
-        const lockStatus = await this.lockManager.getStatus();
-        if (lockStatus.isLocked && !lockStatus.isOurs) {
-          console.log(chalk.yellow(`⚠ Another prr instance is working on this PR`));
-          console.log(chalk.gray(`  Instance: ${lockStatus.holder?.instanceId} on ${lockStatus.holder?.hostname}`));
-          console.log(chalk.gray(`  Claimed issues: ${lockStatus.claimedIssues.length}`));
-          console.log(chalk.gray(`  We will avoid those issues`));
-        }
-      }
-
-      // Prune lessons for deleted files
-      // WHY: Lessons about files that no longer exist are useless clutter
-      const prunedDeletedFiles = this.lessonsManager.pruneDeletedFiles(this.workdir);
-      if (prunedDeletedFiles > 0) {
-        console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
-        await this.lessonsManager.save();
-      }
-      
-      const lessonCounts = this.lessonsManager.getCounts();
-      debug('Loaded lessons', lessonCounts);
+      const state = this.stateManager.getState();
 
       // Setup runner
       debugStep('SETTING UP RUNNER');

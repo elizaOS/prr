@@ -8,18 +8,22 @@ Successfully refactored the PRResolver "god object" by extracting methods to spe
 
 ### Overall Reduction
 - **Starting**: resolver.ts was 4,503 lines
-- **Current**: resolver.ts is 3,669 lines
-- **Reduction**: -834 lines (-18.5%)
+- **Current**: resolver.ts is 3,527 lines
+- **Reduction**: -976 lines (-21.7%)
 
 ### Created/Extracted Modules
 
 | Module | Lines | Functions | Purpose |
 |--------|-------|-----------|---------|
-| `ui/reporter.ts` | 316 | 7 | UI and reporting functions (printModelPerformance, printFinalSummary, etc.) |
-| `models/rotation.ts` | 459 | 14 | Model and runner rotation logic (getCurrentModel, advanceModel, tryRotation, etc.) |
-| `git/operations.ts` | 504 | 4 | Git conflict resolution operations (resolveConflictsWithLLM, handleLockFileConflicts, etc.) |
-| `resolver-proc.ts` | 668 | 13 | Core procedural utilities (buildSingleIssuePrompt, executeBailOut, waitForBotReviews, etc.) |
-| **Total** | **1,947** | **38** | |
+| `ui/reporter.ts` | 316 | 7 | UI and reporting functions |
+| `models/rotation.ts` | 459 | 14 | Model and runner rotation logic |
+| `git/operations.ts` | 504 | 4 | Git conflict resolution operations |
+| `resolver-proc.ts` | 384 | 13 | Core procedural facade (re-exports from workflow modules) |
+| `workflow/utils.ts` | 300 | 9 | Pure utility functions |
+| `workflow/initialization.ts` | 182 | 3 | Setup and state initialization |
+| `workflow/issue-analysis.ts` | 304 | 2 | Issue finding and analysis |
+| `workflow/startup.ts` | 255 | 4 | Startup workflows (PR status, bot timing, CodeRabbit, workdir setup) |
+| **Total** | **2,704** | **56** | |
 
 ## Completed Work
 
