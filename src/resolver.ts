@@ -24,6 +24,10 @@ import { simpleGit, type SimpleGit } from 'simple-git';
 import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from './git/commit.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from './logger.js';
+import * as Reporter from './ui/reporter.js';
+import * as Rotation from './models/rotation.js';
+import * as GitOps from './git/operations.js';
+import * as ResolverProc from './resolver-proc.js';
 
 export class PRResolver {
   private config: Config;
@@ -91,13 +95,46 @@ export class PRResolver {
   }
 
   /**
+   * Build RotationContext from current instance state
+   * WHY: Bridge between class state and procedural rotation functions
+   */
+  private getRotationContext(): Rotation.RotationContext {
+    return {
+      runner: this.runner,
+      runners: this.runners,
+      currentRunnerIndex: this.currentRunnerIndex,
+      modelIndices: this.modelIndices,
+      modelFailuresInCycle: this.modelFailuresInCycle,
+      modelsTriedThisToolRound: this.modelsTriedThisToolRound,
+      progressThisCycle: this.progressThisCycle,
+      recommendedModels: this.recommendedModels,
+      recommendedModelIndex: this.recommendedModelIndex,
+      modelRecommendationReasoning: this.modelRecommendationReasoning,
+    };
+  }
+
+  /**
+   * Sync instance state from RotationContext after modification
+   */
+  private syncRotationContext(ctx: Rotation.RotationContext): void {
+    this.runner = ctx.runner;
+    this.runners = ctx.runners;
+    this.currentRunnerIndex = ctx.currentRunnerIndex;
+    this.modelIndices = ctx.modelIndices;
+    this.modelFailuresInCycle = ctx.modelFailuresInCycle;
+    this.modelsTriedThisToolRound = ctx.modelsTriedThisToolRound;
+    this.progressThisCycle = ctx.progressThisCycle;
+    this.recommendedModels = ctx.recommendedModels;
+    this.recommendedModelIndex = ctx.recommendedModelIndex;
+    this.modelRecommendationReasoning = ctx.modelRecommendationReasoning;
+  }
+
+  /**
    * Ring terminal bell to notify user
    * WHY: Long-running processes need audio notification when complete
    */
   private ringBell(times: number = 3): void {
-    for (let i = 0; i < times; i++) {
-      process.stdout.write('\x07'); // BEL character (ASCII 7)
-    }
+    ResolverProc.ringBell(times);
   }
 
   /**
@@ -106,29 +143,7 @@ export class PRResolver {
    * Helps users understand which models to prefer or avoid.
    */
   private printModelPerformance(): void {
-    if (!this.stateManager) return;
-    
-    const models = this.stateManager.getModelsBySuccessRate();
-    if (models.length === 0) return;
-    
-    console.log(chalk.cyan('\n📊 Model Performance:'));
-    
-    for (const { key, stats, successRate } of models) {
-      const total = stats.fixes + stats.failures;
-      if (total === 0 && stats.noChanges === 0 && stats.errors === 0) continue;
-      
-      const pct = total > 0 ? Math.round(successRate * 100) : 0;
-      const successColor = pct >= 70 ? chalk.green : pct >= 40 ? chalk.yellow : chalk.red;
-      
-      const parts: string[] = [];
-      if (stats.fixes > 0) parts.push(chalk.green(`${formatNumber(stats.fixes)} fixes`));
-      if (stats.failures > 0) parts.push(chalk.red(`${formatNumber(stats.failures)} failed`));
-      if (stats.noChanges > 0) parts.push(chalk.gray(`${formatNumber(stats.noChanges)} no-change`));
-      if (stats.errors > 0) parts.push(chalk.red(`${formatNumber(stats.errors)} errors`));
-      
-      const rateStr = total > 0 ? ` (${successColor(pct + '%')} success)` : '';
-      console.log(`  ${key}: ${parts.join(', ')}${rateStr}`);
-    }
+    Reporter.printModelPerformance(this.stateManager);
   }
 
   /**
@@ -137,82 +152,14 @@ export class PRResolver {
    * the most important info (what got fixed) is visible at the end.
    */
   private printFinalSummary(): void {
-    if (!this.stateManager) return;
-    
-    // Get counts
-    const verifiedFixed = this.stateManager.getState()?.verifiedFixed || [];
-    const dismissedIssues = this.stateManager.getDismissedIssues();
-    
-    console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
-    console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
-    console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
-    
-    // Exit reason - most important info
-    const exitReasonDisplay = this.getExitReasonDisplay();
-    console.log(exitReasonDisplay.color(`\n  ${exitReasonDisplay.icon} Exit: ${exitReasonDisplay.label}`));
-    if (this.exitDetails) {
-      console.log(chalk.gray(`     ${this.exitDetails}`));
-    }
-    
-    // Fixed issues
-    if (verifiedFixed.length > 0) {
-      console.log(chalk.green(`\n  ✓ ${formatNumber(verifiedFixed.length)} issue${verifiedFixed.length === 1 ? '' : 's'} fixed and verified`));
-    }
-    
-    // Dismissed issues by category
-    if (dismissedIssues.length > 0) {
-      const byCategory = dismissedIssues.reduce((acc, issue) => {
-        acc[issue.category] = (acc[issue.category] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-      
-      const categoryParts = Object.entries(byCategory)
-        .map(([cat, count]) => `${count} ${cat}`)
-        .join(', ');
-      
-      console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
-    }
-    
-    console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
+    Reporter.printFinalSummary(this.stateManager, this.exitReason, this.exitDetails);
   }
 
   /**
    * Get display properties for the current exit reason.
    */
   private getExitReasonDisplay(): { label: string; icon: string; color: typeof chalk.green } {
-    switch (this.exitReason) {
-      case 'all_fixed':
-      case 'all_resolved':
-      case 'audit_passed':
-        return { label: 'All issues resolved', icon: '✓', color: chalk.green };
-      
-      case 'bail_out':
-        return { label: 'Bail-out (stalemate)', icon: '⚠', color: chalk.red };
-      
-      case 'max_iterations':
-        return { label: 'Max iterations reached', icon: '⏱', color: chalk.yellow };
-      
-      case 'no_comments':
-        return { label: 'No review comments found', icon: '○', color: chalk.green };
-      
-      case 'dry_run':
-        return { label: 'Dry run completed', icon: '👁', color: chalk.blue };
-      
-      case 'no_commit_mode':
-        return { label: 'Stopped (no-commit mode)', icon: '⏸', color: chalk.yellow };
-      
-      case 'no_push_mode':
-        return { label: 'Stopped (no-push mode)', icon: '⏸', color: chalk.yellow };
-      
-      case 'committed_locally':
-        return { label: 'Committed locally (not pushed)', icon: '📝', color: chalk.blue };
-      
-      case 'no_changes':
-        return { label: 'No changes made', icon: '○', color: chalk.yellow };
-      
-      default:
-        return { label: this.exitReason || 'Unknown', icon: '?', color: chalk.gray };
-    }
+    return Reporter.getExitReasonDisplay(this.exitReason);
   }
 
   /**
@@ -220,34 +167,7 @@ export class PRResolver {
    * This gives a prompt that can be used with any LLM tool to continue the work.
    */
   private printHandoffPrompt(unresolvedIssues: UnresolvedIssue[]): void {
-    if (this.options.noHandoffPrompt || unresolvedIssues.length === 0) return;
-    
-    console.log(chalk.cyan('\n┌─────────────────────────────────────────────────────────────┐'));
-    console.log(chalk.cyan('│              DEVELOPER HANDOFF PROMPT                       │'));
-    console.log(chalk.cyan('└─────────────────────────────────────────────────────────────┘'));
-    console.log(chalk.gray('\nCopy this prompt to continue with a different tool:\n'));
-    
-    console.log(chalk.white('─'.repeat(60)));
-    console.log(chalk.white(`Fix the following ${unresolvedIssues.length} code review issue(s):\n`));
-    
-    for (let i = 0; i < unresolvedIssues.length; i++) {
-      const issue = unresolvedIssues[i];
-      console.log(chalk.white(`${i + 1}. File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}`));
-      // Print full issue body - handoff needs complete context to be useful
-      const issueLines = issue.comment.body.split('\n');
-      console.log(chalk.white(`   Issue: ${issueLines[0]}`));
-      for (let j = 1; j < issueLines.length; j++) {
-        if (issueLines[j].trim()) {
-          console.log(chalk.white(`          ${issueLines[j]}`));
-        }
-      }
-      console.log('');
-    }
-    
-    console.log(chalk.white('For each issue, make the minimum necessary code change to address'));
-    console.log(chalk.white('the reviewer\'s concern while maintaining code quality and tests.'));
-    console.log(chalk.white('─'.repeat(60)));
-    console.log(chalk.gray('\n(Disable with --no-handoff-prompt)'));
+    Reporter.printHandoffPrompt(unresolvedIssues, this.options.noHandoffPrompt);
   }
 
   /**
@@ -258,120 +178,20 @@ export class PRResolver {
     unresolvedIssues: UnresolvedIssue[],
     comments: ReviewComment[]
   ): Promise<void> {
-    if (this.options.noAfterAction || unresolvedIssues.length === 0) return;
-    
-    console.log(chalk.cyan('\n┌─────────────────────────────────────────────────────────────┐'));
-    console.log(chalk.cyan('│                 AFTER ACTION REPORT                         │'));
-    console.log(chalk.cyan('└─────────────────────────────────────────────────────────────┘'));
-    
-    
-    for (let i = 0; i < unresolvedIssues.length; i++) {
-      const issue = unresolvedIssues[i];
-      const issueNum = i + 1;
-      
-      console.log(chalk.yellow(`\n━━━ Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'} ━━━`));
-      
-      // Original issue - show full text for useful context
-      console.log(chalk.cyan('\n  📝 Original Issue:'));
-      const issueLines = issue.comment.body.split('\n');
-      for (const line of issueLines) {
-        console.log(chalk.gray(`     ${line}`));
-      }
-      
-      // Analysis / why it's hard
-      console.log(chalk.cyan('\n  🔍 Analysis:'));
-      if (issue.explanation) {
-        console.log(chalk.gray(`     ${issue.explanation}`));
-      }
-      
-      // Check model performance for this file
-      const fileModels = this.stateManager?.getModelsBySuccessRate() || [];
-      const relevantAttempts = fileModels.filter(m => m.stats.fixes > 0 || m.stats.failures > 0);
-      if (relevantAttempts.length > 0) {
-        console.log(chalk.gray(`     Tools attempted: ${relevantAttempts.map(m => m.key.split('/')[0]).join(', ')}`));
-      }
-      
-      // Learnings related to this file
-      const fileSpecificLessons = this.lessonsManager?.getLessonsForFiles([issue.comment.path]) || [];
-      if (fileSpecificLessons.length > 0) {
-        console.log(chalk.cyan('\n  📚 Relevant Learnings:'));
-        for (const lesson of fileSpecificLessons.slice(0, 3)) {
-          console.log(chalk.gray(`     • ${lesson}`));
-        }
-      }
-      
-      // Possible resolutions
-      console.log(chalk.cyan('\n  💡 Possible Resolutions:'));
-      const resolutions = this.suggestResolutions(issue);
-      for (const resolution of resolutions) {
-        console.log(chalk.gray(`     • ${resolution}`));
-      }
-    }
-    
-    // Summary
-    console.log(chalk.cyan('\n━━━ Summary ━━━'));
-    const fixedCount = comments.filter(c => this.stateManager?.isCommentVerifiedFixed(c.id)).length;
-    const dismissedCount = this.stateManager?.getDismissedIssues().length || 0;
-    console.log(chalk.gray(`  Total issues: ${comments.length}`));
-    console.log(chalk.green(`  Fixed: ${fixedCount}`));
-    console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));
-    console.log(chalk.yellow(`  Remaining: ${unresolvedIssues.length}`));
-    
-    console.log(chalk.gray('\n(Disable with --no-after-action)'));
-  }
-
-  /**
-   * Suggest possible resolutions for an unresolved issue.
-   */
-  private suggestResolutions(issue: UnresolvedIssue): string[] {
-    const resolutions: string[] = [];
-    const body = issue.comment.body.toLowerCase();
-    const path = issue.comment.path.toLowerCase();
-    
-    // Generic suggestions based on issue content
-    if (body.includes('type') || body.includes('typescript')) {
-      resolutions.push('Review TypeScript types and interfaces in the file');
-    }
-    if (body.includes('test') || body.includes('coverage')) {
-      resolutions.push('Add or update tests for the affected code');
-    }
-    if (body.includes('error') || body.includes('exception') || body.includes('handle')) {
-      resolutions.push('Review error handling and edge cases');
-    }
-    if (body.includes('performance') || body.includes('slow') || body.includes('optimize')) {
-      resolutions.push('Profile the code and consider caching or algorithmic improvements');
-    }
-    if (body.includes('security') || body.includes('injection') || body.includes('sanitize')) {
-      resolutions.push('Review security implications and add input validation');
-    }
-    if (body.includes('refactor') || body.includes('clean') || body.includes('simplify')) {
-      resolutions.push('Break down into smaller functions or extract common patterns');
-    }
-    
-    // File-type specific suggestions
-    if (path.endsWith('.tsx') || path.endsWith('.jsx')) {
-      resolutions.push('Check React component props and state management');
-    }
-    if (path.includes('test')) {
-      resolutions.push('Verify test assertions match expected behavior');
-    }
-    
-    // Always include these
-    if (resolutions.length === 0) {
-      resolutions.push('Manually review the code and reviewer comment');
-    }
-    resolutions.push('Try a different LLM model with more context');
-    resolutions.push('Break the issue into smaller, incremental changes');
-    
-    return resolutions.slice(0, 4); // Max 4 suggestions
+    return Reporter.printAfterActionReport(
+      unresolvedIssues,
+      comments,
+      this.options.noAfterAction,
+      this.stateManager,
+      this.lessonsManager
+    );
   }
 
   /**
    * Get the list of models available for a runner
    */
   private getModelsForRunner(runner: Runner): string[] {
-    // Use runner's own list if provided, otherwise use defaults
-    return runner.supportedModels || DEFAULT_MODEL_ROTATIONS[runner.name] || [];
+    return Rotation.getModelsForRunner(runner);
   }
 
   /**
@@ -386,41 +206,16 @@ export class PRResolver {
    * - Uses DEFAULT_MODEL_ROTATIONS in order
    */
   private getCurrentModel(): string | undefined {
-    // If user specified a model via CLI, always use that
-    if (this.options.toolModel) {
-      return this.options.toolModel;
-    }
-    
-    // Smart model selection: use LLM recommendations first
-    if (!this.options.modelRotation && this.recommendedModels?.length) {
-      const model = this.recommendedModels[this.recommendedModelIndex];
-      if (model && this.isModelAvailableForRunner(model)) {
-        return model;
-      }
-    }
-    
-    // Fall back to legacy rotation
-    const models = this.getModelsForRunner(this.runner);
-    if (models.length === 0) {
-      return undefined;  // Let the tool use its default
-    }
-    
-    const index = this.modelIndices.get(this.runner.name) || 0;
-    return models[index];
+    const ctx = this.getRotationContext();
+    return Rotation.getCurrentModel(ctx, this.options);
   }
   
   /**
    * Check if a model is available for the current runner
    */
   private isModelAvailableForRunner(model: string): boolean {
-    const available = this.getModelsForRunner(this.runner);
-    const lowerModel = model.toLowerCase();
-    return available.some(m => {
-      const lowerAvail = m.toLowerCase();
-      return lowerAvail === lowerModel || 
-             lowerAvail.includes(lowerModel) || 
-             lowerModel.includes(lowerAvail);
-    });
+    const ctx = this.getRotationContext();
+    return Rotation.isModelAvailableForRunner(ctx, model);
   }
   
   /**
@@ -428,26 +223,10 @@ export class PRResolver {
    * Returns true if we have more models to try
    */
   private advanceModel(): boolean {
-    // If using smart selection and we have recommendations
-    if (!this.options.modelRotation && this.recommendedModels?.length) {
-      this.recommendedModelIndex++;
-      
-      // Still have recommendations to try?
-      if (this.recommendedModelIndex < this.recommendedModels.length) {
-        const nextModel = this.recommendedModels[this.recommendedModelIndex];
-        const prevModel = this.recommendedModels[this.recommendedModelIndex - 1];
-        console.log(chalk.yellow(`\n  🔄 Next recommended model: ${prevModel} → ${nextModel}`));
-        return true;
-      }
-      
-      // Exhausted recommendations, clear and fall back to rotation
-      console.log(chalk.gray(`  Exhausted ${this.recommendedModels.length} recommended models, falling back to rotation`));
-      this.recommendedModels = undefined;
-      this.recommendedModelIndex = 0;
-    }
-    
-    // Fall back to legacy rotation
-    return this.rotateModel();
+    const ctx = this.getRotationContext();
+    const result = Rotation.advanceModel(ctx, this.stateManager, this.options);
+    this.syncRotationContext(ctx);
+    return result;
   }
 
   /**
@@ -455,29 +234,10 @@ export class PRResolver {
    * Returns true if rotated to a new model, false if we've cycled through all
    */
   private rotateModel(): boolean {
-    const models = this.getModelsForRunner(this.runner);
-    if (models.length <= 1) {
-      return false;  // No rotation possible
-    }
-    
-    const currentIndex = this.modelIndices.get(this.runner.name) || 0;
-    const nextIndex = (currentIndex + 1) % models.length;
-    
-    // Check if we've completed a full cycle
-    if (nextIndex === 0) {
-      return false;  // Cycled through all models
-    }
-    
-    const previousModel = models[currentIndex];
-    const nextModel = models[nextIndex];
-    this.modelIndices.set(this.runner.name, nextIndex);
-    
-    // Persist to state so we resume here if interrupted
-    this.stateManager.setModelIndex(this.runner.name, nextIndex);
-    
-    this.modelsTriedThisToolRound++;
-    console.log(chalk.yellow(`\n  🔄 Rotating model: ${previousModel} → ${nextModel}`));
-    return true;
+    const ctx = this.getRotationContext();
+    const result = Rotation.rotateModel(ctx, this.stateManager);
+    this.syncRotationContext(ctx);
+    return result;
   }
 
   /**
@@ -486,38 +246,18 @@ export class PRResolver {
    * WHY: Interleaving tools is more effective than exhausting all models on one tool
    */
   private switchToNextRunner(): boolean {
-    if (this.runners.length <= 1) return false;
-    
-    const previousRunner = this.runner.name;
-    this.currentRunnerIndex = (this.currentRunnerIndex + 1) % this.runners.length;
-    this.runner = this.runners[this.currentRunnerIndex];
-    
-    // Persist runner index so we resume here if interrupted
-    this.stateManager.setCurrentRunnerIndex(this.currentRunnerIndex);
-    
-    // Reset the per-tool-round counter, but DON'T reset model index
-    // We'll continue from where we left off on this tool
-    this.modelsTriedThisToolRound = 0;
-    
-    const newModel = this.getCurrentModel();
-    const modelInfo = newModel ? ` (${newModel})` : '';
-    console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${this.runner.name}${modelInfo}`));
-    return true;
+    const ctx = this.getRotationContext();
+    const result = Rotation.switchToNextRunner(ctx, this.stateManager);
+    this.syncRotationContext(ctx);
+    return result;
   }
 
   /**
    * Check if all tools have exhausted all their models
    */
   private allModelsExhausted(): boolean {
-    for (const runner of this.runners) {
-      const models = this.getModelsForRunner(runner);
-      const currentIndex = this.modelIndices.get(runner.name) || 0;
-      // If any runner has models left to try, we're not exhausted
-      if (currentIndex < models.length - 1) {
-        return false;
-      }
-    }
-    return true;
+    const ctx = this.getRotationContext();
+    return Rotation.allModelsExhausted(ctx);
   }
 
   /**
@@ -529,135 +269,10 @@ export class PRResolver {
    * Returns false if we should bail out (too many cycles with no progress).
    */
   private tryRotation(): boolean {
-    // Track which tools we've fully exhausted (tried all models)
-    const exhaustedTools = new Set<string>();
-    
-    // Check if current tool is exhausted
-    const checkToolExhausted = (runnerName: string): boolean => {
-      const models = this.getModelsForRunner(this.runners.find(r => r.name === runnerName)!);
-      const currentIndex = this.modelIndices.get(runnerName) || 0;
-      return currentIndex >= models.length - 1;  // On last model or beyond
-    };
-    
-    // Helper: Check if we should bail out after completing a cycle
-    const checkBailOut = (): boolean => {
-      // A cycle just completed - check if we made progress
-      if (this.progressThisCycle === 0) {
-        const cycles = this.stateManager.incrementNoProgressCycles();
-        console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
-        
-        if (cycles >= this.options.maxStaleCycles) {
-          console.log(chalk.red(`\n  🛑 Bail-out triggered: ${cycles} cycles with no progress (max: ${this.options.maxStaleCycles})`));
-          return true;  // Signal bail-out
-        }
-      } else {
-        // Made progress - reset counter
-        this.stateManager.resetNoProgressCycles();
-      }
-      
-      // Reset for next cycle
-      this.progressThisCycle = 0;
-      return false;
-    };
-    
-    // If we've tried enough models on this tool, switch to next tool
-    if (this.modelsTriedThisToolRound >= PRResolver.MAX_MODELS_PER_TOOL_ROUND && this.runners.length > 1) {
-      // Mark current tool if exhausted
-      if (checkToolExhausted(this.runner.name)) {
-        exhaustedTools.add(this.runner.name);
-      }
-      
-      // Find a tool that has models left to try
-      const startingRunner = this.currentRunnerIndex;
-      let foundTool = false;
-      
-      do {
-        this.switchToNextRunner();
-        
-        // Check if this tool has more models to try
-        if (!checkToolExhausted(this.runner.name)) {
-          // Start with current model on the new tool (don't skip index 0)
-          this.modelsTriedThisToolRound = 1;
-          this.modelFailuresInCycle = 0;
-          foundTool = true;
-          break;
-        } else {
-          exhaustedTools.add(this.runner.name);
-        }
-      } while (this.currentRunnerIndex !== startingRunner && exhaustedTools.size < this.runners.length);
-      
-      if (foundTool) {
-        return true;
-      }
-      
-      // All tools exhausted - check bail-out before starting fresh round
-      if (exhaustedTools.size >= this.runners.length) {
-        if (checkBailOut()) {
-          return false;  // Bail out - don't reset
-        }
-        
-        console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
-        for (const runner of this.runners) {
-          this.modelIndices.set(runner.name, 0);
-          this.stateManager.setModelIndex(runner.name, 0);
-        }
-        this.modelsTriedThisToolRound = 0;
-        return true;  // Will retry with first model on current tool
-      }
-      
-      return false;
-    }
-    
-    // Try next model within current tool (uses recommendations first if available)
-    if (this.advanceModel()) {
-      this.modelFailuresInCycle = 0;
-      return true;
-    }
-    
-    // Current tool exhausted its models, try switching to another tool
-    if (this.runners.length > 1) {
-      const startingRunner = this.currentRunnerIndex;
-      
-      do {
-        this.switchToNextRunner();
-        
-        if (!checkToolExhausted(this.runner.name)) {
-          // Start with current model on the new tool (don't skip index 0)
-          this.modelsTriedThisToolRound = 1;
-          this.modelFailuresInCycle = 0;
-          return true;
-        }
-      } while (this.currentRunnerIndex !== startingRunner);
-      
-      // All tools exhausted - check bail-out before starting fresh round
-      if (checkBailOut()) {
-        return false;  // Bail out - don't reset
-      }
-      
-      console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
-      for (const runner of this.runners) {
-        this.modelIndices.set(runner.name, 0);
-        this.stateManager.setModelIndex(runner.name, 0);
-      }
-      this.modelsTriedThisToolRound = 0;
-      return true;
-    }
-    
-    // Only one tool and it's exhausted - check bail-out before reset
-    const models = this.getModelsForRunner(this.runner);
-    if (models.length > 0) {
-      if (checkBailOut()) {
-        return false;  // Bail out - don't reset
-      }
-      
-      console.log(chalk.yellow('\n  Tool exhausted, restarting model rotation...'));
-      this.modelIndices.set(this.runner.name, 0);
-      this.stateManager.setModelIndex(this.runner.name, 0);
-      this.modelsTriedThisToolRound = 0;
-      return true;
-    }
-    
-    return false;
+    const ctx = this.getRotationContext();
+    const result = Rotation.tryRotation(ctx, this.stateManager, this.options);
+    this.syncRotationContext(ctx);
+    return result;
   }
 
   /**
@@ -3123,103 +2738,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
    * - opencode: Newer/less common, but still supported
    */
   private async setupRunner(): Promise<Runner> {
-    // Auto-detect all available and ready runners
-    const detected = await detectAvailableRunners(this.options.verbose);
-
-    if (detected.length === 0) {
-      throw new Error('No fix tools available! Install one of: cursor, claude-code, aider, opencode, codex, llm-api');
-    }
-
-    // Print summary
-    printRunnerSummary(detected);
-
-    // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
-    let primaryRunner: Runner;
-    
-    // Determine which tool to use: CLI option takes precedence, then config (PRR_TOOL env var)
-    // 'auto' or undefined means use first available tool
-    const preferredTool = this.options.tool || this.config.defaultTool;
-    const isAutoSelect = !preferredTool || preferredTool === 'auto';
-
-    if (!isAutoSelect) {
-      const preferred = detected.find(d => d.runner.name === preferredTool);
-      if (preferred) {
-        primaryRunner = preferred.runner;
-      } else {
-        // Check if it exists but isn't ready
-        const runner = getRunnerByName(preferredTool);
-        if (runner) {
-          const status = await runner.checkStatus();
-          if (status.installed && !status.ready) {
-            warn(`${runner.displayName} is installed but not ready: ${status.error}`);
-          } else {
-            warn(`${preferredTool} not available, using ${detected[0].runner.displayName}`);
-          }
-        }
-        primaryRunner = detected[0].runner;
-      }
-    } else {
-      // Auto-select: use first available tool
-      primaryRunner = detected[0].runner;
-    }
-
-    // Build list of all ready runners for rotation
-    this.runners = detected.map(d => d.runner);
-
-    // Move primary to front
-    const primaryIndex = this.runners.findIndex(r => r.name === primaryRunner.name);
-    if (primaryIndex > 0) {
-      this.runners.splice(primaryIndex, 1);
-      this.runners.unshift(primaryRunner);
-    }
-
-    // Initialize model indices and show info
-    const primaryModels = this.getModelsForRunner(primaryRunner);
-    const initialModel = this.options.toolModel || primaryModels[0];
-
-    console.log(chalk.cyan(`\nPrimary fixer: ${primaryRunner.displayName}`));
-    if (initialModel) {
-      console.log(chalk.gray(`  Starting model: ${initialModel}`));
-    }
-    if (primaryModels.length > 1 && !this.options.toolModel) {
-      console.log(chalk.gray(`  Model rotation: ${primaryModels.join(' → ')}`));
-    }
-    if (this.runners.length > 1) {
-      console.log(chalk.gray(`  Tool rotation: ${this.runners.map(r => r.displayName).join(' → ')}`));
-    }
-
-    return primaryRunner;
+    const result = await Rotation.setupRunner(this.options, this.config);
+    this.runners = result.all;
+    return result.primary;
   }
 
   private buildConflictResolutionPrompt(conflictedFiles: string[], baseBranch: string): string {
-    const fileList = conflictedFiles.map(f => `- ${f}`).join('\n');
-    
-    return `MERGE CONFLICT RESOLUTION
-
-The following files have merge conflicts that need to be resolved:
-
-${fileList}
-
-These conflicts occurred while merging '${baseBranch}' into the current branch.
-
-INSTRUCTIONS:
-1. Open each conflicted file
-2. Look for conflict markers: <<<<<<<, =======, >>>>>>>
-3. For each conflict:
-   - Understand what both sides are trying to do
-   - Choose the correct resolution that preserves the intent of both changes
-   - Remove all conflict markers
-4. Ensure the code compiles/runs correctly after resolution
-5. Save all files
-
-IMPORTANT:
-- Do NOT just pick one side blindly
-- Merge the changes intelligently, combining both when possible
-- Pay special attention to imports, function signatures, and data structures
-- For lock files (bun.lock, package-lock.json, yarn.lock), regenerate them by running the package manager install command
-- For configuration files, ensure all necessary entries from both sides are preserved
-
-After resolving, the files should have NO conflict markers remaining.`;
+    return GitOps.buildConflictResolutionPrompt(conflictedFiles, baseBranch);
   }
 
   /**
@@ -3258,6 +2783,24 @@ After resolving, the files should have NO conflict markers remaining.`;
    * @returns Object with success flag and any remaining conflicts
    */
   private async resolveConflictsWithLLM(
+    git: SimpleGit,
+    conflictedFiles: string[],
+    mergingBranch: string
+  ): Promise<{ success: boolean; remainingConflicts: string[] }> {
+    return GitOps.resolveConflictsWithLLM(
+      git,
+      conflictedFiles,
+      mergingBranch,
+      this.workdir,
+      this.config,
+      this.llm,
+      this.runner,
+      () => this.getCurrentModel()
+    );
+  }
+
+  // DEPRECATED: Replaced by GitOps.resolveConflictsWithLLM
+  private async _OLD_resolveConflictsWithLLM_BODY(
     git: SimpleGit,
     conflictedFiles: string[],
     mergingBranch: string
@@ -3432,6 +2975,11 @@ After resolving, the files should have NO conflict markers remaining.`;
    * block prr indefinitely. 60 seconds is generous for a lock file regeneration.
    */
   private async handleLockFileConflicts(git: SimpleGit, lockFiles: string[]): Promise<void> {
+    return GitOps.handleLockFileConflicts(git, lockFiles, this.workdir, this.config);
+  }
+
+  // DEPRECATED: Old body moved to GitOps.handleLockFileConflicts
+  private async _OLD_handleLockFileConflicts(git: SimpleGit, lockFiles: string[]): Promise<void> {
     console.log(chalk.cyan('\n  Handling lock files...'));
     const { spawn } = await import('child_process');
     const fs = await import('fs');
@@ -3596,7 +3144,7 @@ After resolving, the files should have NO conflict markers remaining.`;
         // File might not exist if regenerate failed, ignore
       }
     }
-  }
+  } // END _OLD_handleLockFileConflicts - this method is now just a wrapper
 
   /**
    * Parse fixer tool output to extract NO_CHANGES explanation.
@@ -3613,51 +3161,7 @@ After resolving, the files should have NO conflict markers remaining.`;
    * than losing the information.
    */
   private parseNoChangesExplanation(output: string): string | null {
-    if (!output) {
-      return null;
-    }
-
-    // Stage 1: Look for formal "NO_CHANGES:" line
-    const lines = output.split('\n');
-    for (const line of lines) {
-      const match = line.match(/NO_CHANGES:\s*(.+)/i);
-      if (match && match[1]) {
-        const explanation = match[1].trim();
-        if (explanation.length >= 20) {
-          return explanation;
-        }
-      }
-    }
-
-    // Stage 2: Infer explanation from common patterns
-    // WHY: LLMs often explain without using the exact format
-    const inferPatterns = [
-      // "already" patterns
-      /(?:this|the|issue|code|fix|implementation)\s+(?:is\s+)?already\s+(?:fixed|implemented|handled|present|exists|correct)/i,
-      /already\s+(?:has|have|contains?|includes?)\s+/i,
-      // "exists" patterns  
-      /(?:null\s+check|validation|handling|guard)\s+(?:already\s+)?exists/i,
-      /(?:the\s+)?(?:code|implementation)\s+already\s+/i,
-      // "no changes needed" patterns
-      /no\s+(?:changes?|modifications?|updates?)\s+(?:are\s+)?(?:needed|required|necessary)/i,
-      /(?:doesn't|does not|don't|do not)\s+(?:need|require)\s+(?:any\s+)?(?:changes?|fixes?)/i,
-      // "correct as is" patterns
-      /(?:code|implementation|current)\s+(?:is\s+)?(?:correct|fine|ok|appropriate)\s+(?:as\s+is|already)/i,
-    ];
-
-    // Look for sentences containing these patterns
-    for (const pattern of inferPatterns) {
-      const match = output.match(pattern);
-      if (match) {
-        // Extract the sentence containing the match
-        const sentenceMatch = output.match(new RegExp(`[^.!?]*${pattern.source}[^.!?]*[.!?]?`, 'i'));
-        if (sentenceMatch && sentenceMatch[0].length >= 20) {
-          return `(inferred) ${sentenceMatch[0].trim()}`;
-        }
-      }
-    }
-
-    return null;
+    return ResolverProc.parseNoChangesExplanation(output);
   }
 
   /**
@@ -3665,33 +3169,7 @@ After resolving, the files should have NO conflict markers remaining.`;
    * WHY: Raw JSON output from tools is ugly and unhelpful in logs.
    */
   private sanitizeOutputForLog(output: string | undefined, maxLength: number = 500): string {
-    if (!output) return '(no output)';
-    
-    // If it looks like JSON, try to extract just the message/content
-    if (output.trim().startsWith('{') || output.trim().startsWith('[')) {
-      try {
-        // Try to parse and extract meaningful content
-        const lines = output.split('\n').filter(line => {
-          const trimmed = line.trim();
-          // Skip lines that are pure JSON structure
-          return !trimmed.startsWith('{') && 
-                 !trimmed.startsWith('}') && 
-                 !trimmed.startsWith('[') &&
-                 !trimmed.startsWith(']') &&
-                 !trimmed.startsWith('"type"') &&
-                 !trimmed.startsWith('"subtype"') &&
-                 trimmed.length > 0;
-        });
-        if (lines.length > 0) {
-          return lines.slice(0, 10).join('\n').substring(0, maxLength);
-        }
-      } catch {
-        // Fall through to default handling
-      }
-      return '(JSON output - see verbose logs)';
-    }
-    
-    return output.substring(0, maxLength) + (output.length > maxLength ? '...' : '');
+    return ResolverProc.sanitizeOutputForLog(output, maxLength);
   }
 
   /**
@@ -3702,27 +3180,7 @@ After resolving, the files should have NO conflict markers remaining.`;
    * If validation fails, we must treat it as a bug/error and NOT dismiss.
    */
   private validateDismissalExplanation(explanation: string, commentPath: string, commentLine: number | null): boolean {
-    const MIN_EXPLANATION_LENGTH = 20; // Minimum characters for a meaningful explanation
-
-    if (!explanation || explanation.trim().length === 0) {
-      warn(`No explanation provided for dismissing ${commentPath}:${commentLine || '?'} - treating as unresolved`);
-      return false;
-    }
-
-    if (explanation.length < MIN_EXPLANATION_LENGTH) {
-      warn(`Explanation too short (${explanation.length} chars) for ${commentPath}:${commentLine || '?'}: "${explanation}" - treating as unresolved`);
-      return false;
-    }
-
-    // Check for vague/useless explanations
-    const vague = ['fixed', 'done', 'looks good', 'ok', 'resolved', 'already handled'];
-    const lower = explanation.toLowerCase();
-    if (vague.some(v => lower === v || lower === v + '.')) {
-      warn(`Vague explanation for ${commentPath}:${commentLine || '?'}: "${explanation}" - treating as unresolved`);
-      return false;
-    }
-
-    return true;
+    return ResolverProc.validateDismissalExplanation(explanation, commentPath, commentLine);
   }
 
   private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<UnresolvedIssue[]> {
@@ -3997,6 +3455,11 @@ After resolving, the files should have NO conflict markers remaining.`;
    * This removes such files from git tracking and deletes them.
    */
   private async cleanupCreatedSyncTargets(git: SimpleGit): Promise<void> {
+    return GitOps.cleanupCreatedSyncTargets(git, this.workdir, this.lessonsManager);
+  }
+
+  // DEPRECATED: Old body moved to GitOps.cleanupCreatedSyncTargets
+  private async _OLD_cleanupCreatedSyncTargets(git: SimpleGit): Promise<void> {
     if (!this.lessonsManager) return;
 
     // Check if CLAUDE.md was created by us (didn't exist before)
@@ -4269,15 +3732,7 @@ After resolving, the files should have NO conflict markers remaining.`;
   }
 
   private printUnresolvedIssues(issues: UnresolvedIssue[]): void {
-    console.log(chalk.blue('\n=== Unresolved Issues (Dry Run) ===\n'));
-
-    for (let i = 0; i < issues.length; i++) {
-      const issue = issues[i];
-      console.log(chalk.yellow(`Issue ${i + 1}: ${issue.comment.path}:${issue.comment.line || '?'}`));
-      console.log(chalk.gray('Comment:'), issue.comment.body.substring(0, 200));
-      console.log(chalk.gray('Analysis:'), issue.explanation);
-      console.log('');
-    }
+    Reporter.printUnresolvedIssues(issues);
   }
 
   /**
@@ -4498,6 +3953,6 @@ After resolving, the files should have NO conflict markers remaining.`;
   }
 
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return ResolverProc.sleep(ms);
   }
 }
