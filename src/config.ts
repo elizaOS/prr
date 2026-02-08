@@ -111,7 +111,7 @@ export function loadConfig(): Config {
     llmProvider,
     llmModel: getEnvOrDefault(
       'PRR_LLM_MODEL',
-      llmProvider === 'anthropic' ? 'claude-sonnet-4-5-20250929' : 'gpt-5.3'
+      llmProvider === 'anthropic' ? 'claude-sonnet-4-5-20250929' : 'gpt-5.2'
     ),
     defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'auto')),
     workdirBase: join(homedir(), '.prr', 'work'),

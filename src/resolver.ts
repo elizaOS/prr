@@ -11,7 +11,7 @@ import { LLMClient, type ModelRecommendationContext } from './llm/client.js';
 import type { StateContext } from './state/state-context.js';
 import type { LessonsContext } from './state/lessons-context.js';
 import type { LockConfig } from './state/lock-functions.js';
-import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
+import { ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/git-clone-index.js';
 import type { SimpleGit } from 'simple-git';
 import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from './git/git-commit-index.js';

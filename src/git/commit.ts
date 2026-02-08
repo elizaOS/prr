@@ -240,10 +240,9 @@ export async function pushWithRetry(
   }
 ): Promise<void> {
   const maxRetries = options?.maxRetries ?? 3;
-  let attempts = 0;
+  let retries = 0;
   
-  while (attempts < maxRetries) {
-    attempts++;
+  while (retries <= maxRetries) {
     const result = await push(git, branch, options?.force, options?.githubToken);
     
     if (result.success) {
@@ -335,7 +334,7 @@ export async function pushWithRetry(
   }
   
   // Exhausted retries
-  throw new Error(`Push failed after ${maxRetries} attempts. Remote may be receiving concurrent pushes.`);
+  throw new Error(`Push failed after ${maxRetries + 1} attempts. Remote may be receiving concurrent pushes.`);
 }
 
 export async function getCurrentBranch(git: SimpleGit): Promise<string> {
