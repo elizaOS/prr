@@ -3572,45 +3572,30 @@ Start your response with \`\`\` and end with \`\`\`.`;
     prNumber: number,
     existingCommentIds: Set<string>
   ): Promise<{ newComments: ReviewComment[]; message: string } | null> {
-    if (!this.shouldCheckForNewComments()) {
-      return null;
+    const result = await ResolverProc.checkForNewBotReviews(
+      this.expectedBotResponseTime,
+      this.botTimings,
+      this.github,
+      owner,
+      repo,
+      prNumber,
+      existingCommentIds
+    );
+    
+    // Update instance state
+    if (result.lastCommentFetchTime) {
+      this.lastCommentFetchTime = result.lastCommentFetchTime;
+    }
+    this.expectedBotResponseTime = result.updatedExpectedBotResponseTime;
+    
+    if (result.newComments) {
+      return {
+        newComments: result.newComments,
+        message: result.message!,
+      };
     }
     
-    debug('Checking for new bot reviews (expected time reached)');
-    
-    try {
-      const freshComments = await this.github.getReviewComments(owner, repo, prNumber);
-      const newComments = freshComments.filter(c => !existingCommentIds.has(c.id));
-      
-      // Update last fetch time
-      this.lastCommentFetchTime = new Date();
-      
-      if (newComments.length > 0) {
-        // Calculate next expected response time (in case more reviews coming)
-        // Use max observed + buffer for the next check
-        if (this.botTimings.length > 0) {
-          const maxResponseMs = Math.max(...this.botTimings.map(t => t.maxResponseMs));
-          this.expectedBotResponseTime = new Date(Date.now() + maxResponseMs);
-        } else {
-          this.expectedBotResponseTime = null;  // No more predictions
-        }
-        
-        return {
-          newComments,
-          message: `Found ${newComments.length} new review comment(s) from bots`,
-        };
-      } else {
-        // No new comments - push expected time back
-        // Check again in 30 seconds
-        this.expectedBotResponseTime = new Date(Date.now() + 30 * 1000);
-        return null;
-      }
-    } catch (err) {
-      debug('Failed to check for new comments', { error: err });
-      // On error, try again in 30 seconds
-      this.expectedBotResponseTime = new Date(Date.now() + 30 * 1000);
-      return null;
-    }
+    return null;
   }
 
   /**

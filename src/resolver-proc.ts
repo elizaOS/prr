@@ -665,4 +665,76 @@ export async function executeBailOut(
   };
 }
 
+/**
+ * Check for new bot reviews that arrived while working
+ * Returns new comments and updated timing state
+ */
+export async function checkForNewBotReviews(
+  expectedBotResponseTime: Date | null,
+  botTimings: BotResponseTiming[],
+  github: GitHubAPI,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  existingCommentIds: Set<string>
+): Promise<{
+  newComments: ReviewComment[] | null;
+  message: string | null;
+  lastCommentFetchTime: Date | null;
+  updatedExpectedBotResponseTime: Date | null;
+}> {
+  const { debug } = await import('./logger.js');
+  
+  if (!shouldCheckForNewComments(expectedBotResponseTime)) {
+    return {
+      newComments: null,
+      message: null,
+      lastCommentFetchTime: null,
+      updatedExpectedBotResponseTime: expectedBotResponseTime,
+    };
+  }
+  
+  debug('Checking for new bot reviews (expected time reached)');
+  
+  try {
+    const freshComments = await github.getReviewComments(owner, repo, prNumber);
+    const newComments = freshComments.filter(c => !existingCommentIds.has(c.id));
+    
+    const now = new Date();
+    
+    if (newComments.length > 0) {
+      // Calculate next expected response time (in case more reviews coming)
+      let nextExpectedTime: Date | null = null;
+      if (botTimings.length > 0) {
+        const maxResponseMs = Math.max(...botTimings.map(t => t.maxResponseMs));
+        nextExpectedTime = new Date(Date.now() + maxResponseMs);
+      }
+      
+      return {
+        newComments,
+        message: `Found ${newComments.length} new review comment(s) from bots`,
+        lastCommentFetchTime: now,
+        updatedExpectedBotResponseTime: nextExpectedTime,
+      };
+    } else {
+      // No new comments - push expected time back (check again in 30 seconds)
+      return {
+        newComments: null,
+        message: null,
+        lastCommentFetchTime: now,
+        updatedExpectedBotResponseTime: new Date(Date.now() + 30 * 1000),
+      };
+    }
+  } catch (err) {
+    debug('Failed to check for new comments', { error: err });
+    // On error, try again in 30 seconds
+    return {
+      newComments: null,
+      message: null,
+      lastCommentFetchTime: null,
+      updatedExpectedBotResponseTime: new Date(Date.now() + 30 * 1000),
+    };
+  }
+}
+
 // More functions will be added here as we extract methods from PRResolver
