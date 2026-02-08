@@ -15,9 +15,17 @@ import type { Ora } from 'ora';
 import type { SimpleGit } from 'simple-git';
 import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Handle commit and push after fixes are verified
@@ -41,8 +49,8 @@ export async function handleCommitAndPush(
   repo: string,
   number: number,
   comments: ReviewComment[],
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   options: CLIOptions,
   githubToken: string,
   github: GitHubAPI,
@@ -67,18 +75,18 @@ export async function handleCommitAndPush(
   exitDetails?: string;
 }> {
   const { debug, debugStep, warn } = await import('../logger.js');
-  const { squashCommit, pushWithRetry } = await import('../git/commit.js');
+  const { squashCommit, pushWithRetry } = await import('../git/git-commit-index.js');
   
   // Export lessons to repo BEFORE commit so they're included
   // WHY: Team gets lessons with the same push as fixes - single atomic update
-  if (lessonsManager.hasNewLessonsForRepo()) {
+  if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
     spinner.start('Exporting lessons to repo...');
-    await lessonsManager.saveToRepo();
+    await LessonsAPI.Save.saveToRepo(lessonsContext);
     spinner.succeed('Lessons exported');
   }
 
   const fixedIssues = comments
-    .filter((comment) => stateManager.isCommentVerifiedFixed(comment.id))
+    .filter((comment) => Verification.isVerified(stateContext, comment.id))
     .map((comment) => ({
       filePath: comment.path,
       comment: comment.body,
@@ -96,7 +104,7 @@ export async function handleCommitAndPush(
   
   // Generate commit message locally (no LLM call needed)
   // WHY: Pattern matching is fast, free, and works well for commit messages
-  const { buildCommitMessage } = await import('../git/commit.js');
+  const { buildCommitMessage } = await import('../git/git-commit-index.js');
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);
   

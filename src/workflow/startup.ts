@@ -6,11 +6,15 @@
 import type { Ora } from 'ora';
 import type { GitHubAPI } from '../github/api.js';
 import type { PRInfo, BotResponseTiming, PRStatus } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
-import type { LockManager } from '../state/lock.js';
+import type { StateContext } from '../state/state-context.js';
+import { createStateContext, setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import type { LessonsContext } from '../state/lessons-context.js';
+import type { LockConfig } from '../state/lock-functions.js';
+import * as Lock from '../state/lock-functions.js';
 import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Display PR status including CI checks, bot reviews, and overall activity
@@ -176,17 +180,15 @@ export async function setupWorkdirAndManagers(
   prInfo: PRInfo
 ): Promise<{
   workdir: string;
-  stateManager: StateManager;
-  lessonsManager: LessonsManager;
-  lockManager: LockManager;
+  stateContext: StateContext;
+  lessonsContext: LessonsContext;
+  lockConfig: LockConfig;
 }> {
   const chalk = require('chalk');
   const { debug } = require('../logger.js');
   const { debugStep } = require('../logger.js');
   const { getWorkdirInfo, ensureWorkdir } = require('../git/workdir.js');
-  const { StateManager } = require('../state/manager.js');
   const { LessonsManager } = require('../state/lessons.js');
-  const { LockManager } = require('../state/lock.js');
   
   // Setup workdir (includes branch in hash for repos with PRs on different target branches)
   debugStep('SETTING UP WORKDIR');
@@ -204,11 +206,12 @@ export async function setupWorkdirAndManagers(
 
   await ensureWorkdir(workdir);
 
-  // Initialize state manager
+  // Initialize state context
   debugStep('LOADING STATE');
-  const stateManager = new StateManager(workdir);
-  stateManager.setPhase('init');
-  const state = await stateManager.load(
+  const stateContext = createStateContext(workdir);
+  setPhase(stateContext, 'init');
+  const state = await State.loadState(
+    stateContext,
     `${owner}/${repo}#${prNumber}`, 
     prInfo.branch,
     prInfo.headSha
@@ -220,18 +223,18 @@ export async function setupWorkdirAndManagers(
 
   // Initialize lessons manager (branch-permanent storage)
   // WHY: Lessons help the fixer avoid repeating mistakes
-  const lessonsManager = new LessonsManager(owner, repo, prInfo.branch);
+  const lessonsContext = new LessonsManager(owner, repo, prInfo.branch);
   if (options.noClaudeMd) {
-    lessonsManager.setSkipClaudeMd(true);
+    lessonsContext.setSkipClaudeMd(true);
   }
-  lessonsManager.setWorkdir(workdir); // Enable repo-based lesson sharing
-  await lessonsManager.load();
+  lessonsContext.setWorkdir(workdir); // Enable repo-based lesson sharing
+  await lessonsContext.load();
   
-  // Initialize lock manager for multi-instance coordination
+  // Initialize lock config for multi-instance coordination
   // WHY: Prevents duplicate work when multiple prr instances run on same PR
-  const lockManager = new LockManager(workdir, { enabled: !options.noLock });
-  if (lockManager.isEnabled()) {
-    const lockStatus = await lockManager.getStatus();
+  const lockConfig = Lock.createLockConfig(workdir, { enabled: !options.noLock });
+  if (Lock.isLockEnabled(lockConfig)) {
+    const lockStatus = await Lock.getLockStatus(lockConfig);
     if (lockStatus.isLocked && !lockStatus.isOurs) {
       console.log(chalk.yellow(`⚠ Another prr instance is working on this PR`));
       console.log(chalk.gray(`  Instance: ${lockStatus.holder?.instanceId} on ${lockStatus.holder?.hostname}`));
@@ -242,14 +245,14 @@ export async function setupWorkdirAndManagers(
 
   // Prune lessons for deleted files
   // WHY: Lessons about files that no longer exist are useless clutter
-  const prunedDeletedFiles = lessonsManager.pruneDeletedFiles(workdir);
+  const prunedDeletedFiles = lessonsContext.pruneDeletedFiles(workdir);
   if (prunedDeletedFiles > 0) {
     console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
-    await lessonsManager.save();
+    await LessonsAPI.Save.save(lessonsContext);
   }
   
-  const lessonCounts = lessonsManager.getCounts();
+  const lessonCounts = LessonsAPI.Retrieve.getCounts(lessonsContext);
   debug('Loaded lessons', lessonCounts);
   
-  return { workdir, stateManager, lessonsManager, lockManager };
+  return { workdir, stateContext, lessonsContext, lockConfig };
 }

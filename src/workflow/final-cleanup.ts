@@ -16,9 +16,17 @@ import type { Ora } from 'ora';
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Execute final cleanup and reporting after fix loop completes
@@ -40,8 +48,8 @@ import type { CLIOptions } from '../cli.js';
 export async function executeFinalCleanup(
   git: SimpleGit,
   workdir: string,
-  lessonsManager: LessonsManager,
-  stateManager: StateManager,
+  lessonsContext: LessonsContext,
+  stateContext: StateContext,
   options: CLIOptions,
   spinner: Ora,
   finalUnresolvedIssues: UnresolvedIssue[],
@@ -60,9 +68,9 @@ export async function executeFinalCleanup(
 
   // Final lessons export (catches any lessons from last iteration not yet committed)
   // WHY: Lessons are also exported before each commit, but this catches edge cases
-  if (lessonsManager.hasNewLessonsForRepo()) {
+  if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
     spinner.start('Exporting final lessons...');
-    const saved = await lessonsManager.saveToRepo();
+    const saved = await LessonsAPI.Save.saveToRepo(lessonsContext);
     if (saved) {
       spinner.succeed('Lessons exported (run git add/commit to include)');
     } else {

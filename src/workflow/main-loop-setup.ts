@@ -16,8 +16,15 @@ import type { SimpleGit } from 'simple-git';
 import type { GitHubAPI } from '../github/api.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
@@ -43,8 +50,8 @@ export async function processCommentsAndPrepareFixLoop(
   repo: string,
   number: number,
   prInfo: PRInfo,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   llm: LLMClient,
   options: CLIOptions,
   config: Config,
@@ -111,7 +118,7 @@ export async function processCommentsAndPrepareFixLoop(
 
   // Check which issues still exist
   debugStep('ANALYZING ISSUES');
-  stateManager.setPhase('analyzing');
+  setPhase(stateContext, 'analyzing');
   setTokenPhase('Analyze issues');
   startTimer('Analyze issues');
   console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
@@ -119,7 +126,7 @@ export async function processCommentsAndPrepareFixLoop(
   const analyzeTime = endTimer('Analyze issues');
   
   // Analyze and report issues
-  ResolverProc.analyzeAndReportIssues(comments, unresolvedIssues, stateManager, analyzeTime);
+  ResolverProc.analyzeAndReportIssues(comments, unresolvedIssues, stateContext, analyzeTime);
 
   if (unresolvedIssues.length === 0) {
     // Check for new comments added during fix cycle
@@ -145,7 +152,7 @@ export async function processCommentsAndPrepareFixLoop(
   if (unresolvedIssues.length === 0) {
     const auditResult = await ResolverProc.runFinalAudit(
       llm,
-      stateManager,
+      stateContext,
       comments,
       options,
       spinner,
@@ -173,8 +180,8 @@ export async function processCommentsAndPrepareFixLoop(
         git,
         prInfo,
         comments,
-        stateManager,
-        lessonsManager,
+        stateContext,
+        lessonsContext,
         options,
         config,
         workdir,

@@ -11,8 +11,9 @@ import type { UnresolvedIssue } from './analyzer/types.js';
 import type { Runner } from './runners/types.js';
 import type { GitHubAPI } from './github/api.js';
 import type { LLMClient } from './llm/client.js';
-import type { StateManager } from './state/manager.js';
-import type { LessonsManager } from './state/lessons.js';
+import type { StateContext } from './state/state-context.js';
+import type { LessonsContext } from './state/lessons-context.js';
+import * as LessonsAPI from './state/lessons-index.js';
 
 // ============================================================================
 // RE-EXPORTS FROM WORKFLOW MODULES
@@ -355,8 +356,8 @@ export async function waitForBotReviews(
 export async function executeBailOut(
   unresolvedIssues: UnresolvedIssue[],
   comments: ReviewComment[],
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   runners: Runner[],
   options: CLIOptions,
   getModelsForRunner: (runner: Runner) => string[]
@@ -369,16 +370,19 @@ export async function executeBailOut(
 }> {
   const chalk = (await import('chalk')).default;
   const { formatNumber } = await import('./logger.js');
+  const Bailout = await import('./state/state-bailout.js');
+  const Verification = await import('./state/state-verification.js');
+  const State = await import('./state/state-core.js');
   
   const exitReason = 'bail_out';
-  const cyclesCompleted = stateManager.getNoProgressCycles();
+  const cyclesCompleted = Bailout.getNoProgressCycles(stateContext);
   const exitDetails = `Stalemate after ${cyclesCompleted} cycles with no progress - ${unresolvedIssues.length} issue(s) remain`;
   
   const toolsExhausted = runners.map(r => r.name);
   
   // Count what was fixed vs what remains
   const issuesFixed = comments.filter(c => 
-    stateManager.isCommentVerifiedFixed(c.id)
+    Verification.isVerified(stateContext, c.id)
   ).length;
   
   // Build remaining issues summary
@@ -390,7 +394,8 @@ export async function executeBailOut(
   }));
   
   // Record bail-out in state
-  stateManager.recordBailOut(
+  Bailout.recordBailOut(
+    stateContext,
     'no-progress-cycles',
     cyclesCompleted,
     remainingIssues,
@@ -398,7 +403,7 @@ export async function executeBailOut(
     toolsExhausted
   );
   
-  await stateManager.save();
+  await State.saveState(stateContext);
   
   // Print bail-out summary
   console.log(chalk.red('\n' + '═'.repeat(60)));
@@ -411,8 +416,8 @@ export async function executeBailOut(
   console.log(chalk.cyan('\n  Progress Summary:'));
   console.log(chalk.green(`    ✓ Fixed: ${issuesFixed} issues`));
   console.log(chalk.red(`    ✗ Remaining: ${unresolvedIssues.length} issues`));
-  const totalLessons = lessonsManager.getTotalCount();
-  const newLessons = lessonsManager.getNewLessonsCount();
+  const totalLessons = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
+  const newLessons = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
   const lessonInfo = newLessons > 0 
     ? `${totalLessons} total (${newLessons} new this run)` 
     : `${totalLessons} (from previous runs)`;

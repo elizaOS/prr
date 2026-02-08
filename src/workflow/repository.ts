@@ -6,14 +6,22 @@
 import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import * as Rotation from '../state/state-rotation.js';
 import type { Runner } from '../runners/types.js';
 
 /**
  * Restore runner and model rotation state from previous session
  */
 export function restoreRunnerRotationState(
-  stateManager: StateManager,
+  stateContext: StateContext,
   runners: Runner[],
   modelIndices: Map<string, number>,
   getCurrentModel: () => string | null | undefined
@@ -23,8 +31,8 @@ export function restoreRunnerRotationState(
 } {
   const chalk = require('chalk');
   
-  const savedRunnerIndex = stateManager.getCurrentRunnerIndex();
-  const savedModelIndices = stateManager.getModelIndices();
+  const savedRunnerIndex = Rotation.getCurrentRunnerIndex(stateContext);
+  const savedModelIndices = Rotation.getModelIndices(stateContext);
   
   let runner: Runner | null = null;
   let runnerIndex = 0;
@@ -83,7 +91,7 @@ export async function cloneOrUpdateRepository(
 export async function recoverVerificationState(
   git: SimpleGit,
   branch: string,
-  stateManager: StateManager
+  stateContext: StateContext
 ): Promise<void> {
   const chalk = require('chalk');
   const { debug } = require('../logger.js');
@@ -96,9 +104,9 @@ export async function recoverVerificationState(
   if (committedFixes.length > 0) {
     console.log(chalk.cyan(`Recovered ${formatNumber(committedFixes.length)} previously committed fix(es) from git history`));
     for (const commentId of committedFixes) {
-      stateManager.markCommentVerifiedFixed(commentId);
+      Verification.markVerified(stateContext, commentId);
     }
-    await stateManager.save();
+    await State.saveState(stateContext);
     debug('Recovered verifications from git', { count: committedFixes.length });
   }
 }

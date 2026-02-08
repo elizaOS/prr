@@ -5,7 +5,9 @@
 import chalk from 'chalk';
 import type { Runner } from '../runners/types.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../runners/index.js';
-import type { StateManager } from '../state/manager.js';
+import type { StateContext } from '../state/state-context.js';
+import * as Rotation from '../state/state-rotation.js';
+import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
 import { warn } from '../logger.js';
@@ -104,7 +106,7 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
  * Advance to next recommended model, or fall back to rotation
  * Returns true if we have more models to try
  */
-export function advanceModel(ctx: RotationContext, stateManager: StateManager, options: CLIOptions): boolean {
+export function advanceModel(ctx: RotationContext, stateContext: StateContext, options: CLIOptions): boolean {
   // If using smart selection and we have recommendations
   if (!options.modelRotation && ctx.recommendedModels?.length) {
     ctx.recommendedModelIndex++;
@@ -124,14 +126,14 @@ export function advanceModel(ctx: RotationContext, stateManager: StateManager, o
   }
   
   // Fall back to legacy rotation
-  return rotateModel(ctx, stateManager);
+  return rotateModel(ctx, stateContext);
 }
 
 /**
  * Rotate to the next model for the current runner
  * Returns true if rotated to a new model, false if we've cycled through all
  */
-export function rotateModel(ctx: RotationContext, stateManager: StateManager): boolean {
+export function rotateModel(ctx: RotationContext, stateContext: StateContext): boolean {
   const models = getModelsForRunner(ctx.runner);
   if (models.length <= 1) {
     return false;  // No rotation possible
@@ -150,7 +152,7 @@ export function rotateModel(ctx: RotationContext, stateManager: StateManager): b
   ctx.modelIndices.set(ctx.runner.name, nextIndex);
   
   // Persist to state so we resume here if interrupted
-  stateManager.setModelIndex(ctx.runner.name, nextIndex);
+  Rotation.setModelIndex(stateContext, ctx.runner.name, nextIndex);
   
   ctx.modelsTriedThisToolRound++;
   console.log(chalk.yellow(`\n  🔄 Rotating model: ${previousModel} → ${nextModel}`));
@@ -162,7 +164,7 @@ export function rotateModel(ctx: RotationContext, stateManager: StateManager): b
  * Does NOT reset model index - we continue where we left off when we come back
  * WHY: Interleaving tools is more effective than exhausting all models on one tool
  */
-export function switchToNextRunner(ctx: RotationContext, stateManager: StateManager): boolean {
+export function switchToNextRunner(ctx: RotationContext, stateContext: StateContext): boolean {
   if (ctx.runners.length <= 1) return false;
   
   const previousRunner = ctx.runner.name;
@@ -170,7 +172,7 @@ export function switchToNextRunner(ctx: RotationContext, stateManager: StateMana
   ctx.runner = ctx.runners[ctx.currentRunnerIndex];
   
   // Persist runner index so we resume here if interrupted
-  stateManager.setCurrentRunnerIndex(ctx.currentRunnerIndex);
+  Rotation.setCurrentRunnerIndex(stateContext, ctx.currentRunnerIndex);
   
   // Reset the per-tool-round counter, but DON'T reset model index
   // We'll continue from where we left off on this tool
@@ -207,7 +209,7 @@ export function allModelsExhausted(ctx: RotationContext): boolean {
  */
 export function tryRotation(
   ctx: RotationContext,
-  stateManager: StateManager,
+  stateContext: StateContext,
   options: CLIOptions
 ): boolean {
   // Track which tools we've fully exhausted (tried all models)
@@ -224,7 +226,7 @@ export function tryRotation(
   const checkBailOut = (): boolean => {
     // A cycle just completed - check if we made progress
     if (ctx.progressThisCycle === 0) {
-      const cycles = stateManager.incrementNoProgressCycles();
+      const cycles = Bailout.incrementNoProgressCycles(stateContext);
       console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
       
       if (cycles >= options.maxStaleCycles) {
@@ -233,7 +235,7 @@ export function tryRotation(
       }
     } else {
       // Made progress - reset counter
-      stateManager.resetNoProgressCycles();
+      Bailout.resetNoProgressCycles(stateContext);
     }
     
     // Reset for next cycle
@@ -253,7 +255,7 @@ export function tryRotation(
     let foundTool = false;
     
     do {
-      switchToNextRunner(ctx, stateManager);
+      switchToNextRunner(ctx, stateContext);
       
       // Check if this tool has more models to try
       if (!checkToolExhausted(ctx.runner.name)) {
@@ -280,7 +282,7 @@ export function tryRotation(
       console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
       for (const runner of ctx.runners) {
         ctx.modelIndices.set(runner.name, 0);
-        stateManager.setModelIndex(runner.name, 0);
+        Rotation.setModelIndex(stateContext, runner.name, 0);
       }
       ctx.modelsTriedThisToolRound = 0;
       return true;  // Will retry with first model on current tool
@@ -290,7 +292,7 @@ export function tryRotation(
   }
   
   // Try next model within current tool (uses recommendations first if available)
-  if (advanceModel(ctx, stateManager, options)) {
+  if (advanceModel(ctx, stateContext, options)) {
     ctx.modelFailuresInCycle = 0;
     return true;
   }
@@ -300,7 +302,7 @@ export function tryRotation(
     const startingRunner = ctx.currentRunnerIndex;
     
     do {
-      switchToNextRunner(ctx, stateManager);
+      switchToNextRunner(ctx, stateContext);
       
       if (!checkToolExhausted(ctx.runner.name)) {
         // Start with current model on the new tool (don't skip index 0)
@@ -318,7 +320,7 @@ export function tryRotation(
     console.log(chalk.yellow('\n  All tools exhausted their models, starting fresh round...'));
     for (const runner of ctx.runners) {
       ctx.modelIndices.set(runner.name, 0);
-      stateManager.setModelIndex(runner.name, 0);
+      Rotation.setModelIndex(stateContext, runner.name, 0);
     }
     ctx.modelsTriedThisToolRound = 0;
     return true;
@@ -333,7 +335,7 @@ export function tryRotation(
     
     console.log(chalk.yellow('\n  Tool exhausted, restarting model rotation...'));
     ctx.modelIndices.set(ctx.runner.name, 0);
-    stateManager.setModelIndex(ctx.runner.name, 0);
+    Rotation.setModelIndex(stateContext, ctx.runner.name, 0);
     ctx.modelsTriedThisToolRound = 0;
     return true;
   }

@@ -3,10 +3,14 @@
  */
 
 import type { CLIOptions } from '../cli.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
-import type { LockManager } from '../state/lock.js';
+import type { StateContext } from '../state/state-context.js';
+import { createStateContext, setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import type { LessonsContext } from '../state/lessons-context.js';
+import type { LockConfig } from '../state/lock-functions.js';
+import * as Lock from '../state/lock-functions.js';
 import type { Runner } from '../runners/types.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Ensure state file is added to .gitignore
@@ -76,22 +80,20 @@ export async function initializeManagers(
   headSha: string,
   options: CLIOptions
 ): Promise<{
-  stateManager: StateManager;
-  lessonsManager: LessonsManager;
-  lockManager: LockManager;
+  stateContext: StateContext;
+  lessonsContext: LessonsContext;
+  lockConfig: LockConfig;
   state: any;
 }> {
   const chalk = (await import('chalk')).default;
   const { debug, debugStep } = await import('../logger.js');
-  const { StateManager } = await import('../state/manager.js');
-  const { LessonsManager } = await import('../state/lessons.js');
-  const { LockManager } = await import('../state/lock.js');
   
-  // Initialize state manager
+  // Initialize state context
   debugStep('LOADING STATE');
-  const stateManager = new StateManager(workdir);
-  stateManager.setPhase('init');
-  const state = await stateManager.load(
+  const stateContext = createStateContext(workdir);
+  setPhase(stateContext, 'init');
+  const state = await State.loadState(
+    stateContext,
     `${owner}/${repo}#${prNumber}`, 
     branch,
     headSha
@@ -101,20 +103,20 @@ export async function initializeManagers(
     verifiedFixed: state.verifiedFixed.length,
   });
 
-  // Initialize lessons manager (branch-permanent storage)
+  // Initialize lessons context (branch-permanent storage)
   // WHY: Lessons help the fixer avoid repeating mistakes
-  const lessonsManager = new LessonsManager(owner, repo, branch);
+  const lessonsContext = LessonsAPI.createLessonsContext(owner, repo, branch, workdir);
   if (options.noClaudeMd) {
-    lessonsManager.setSkipClaudeMd(true);
+    LessonsAPI.setSkipClaudeMd(lessonsContext, true);
   }
-  lessonsManager.setWorkdir(workdir); // Enable repo-based lesson sharing
-  await lessonsManager.load();
+  LessonsAPI.setWorkdir(lessonsContext, workdir); // Enable repo-based lesson sharing
+  await LessonsAPI.Load.loadLessons(lessonsContext);
   
-  // Initialize lock manager for multi-instance coordination
+  // Initialize lock config for multi-instance coordination
   // WHY: Prevents duplicate work when multiple prr instances run on same PR
-  const lockManager = new LockManager(workdir, { enabled: !options.noLock });
-  if (lockManager.isEnabled()) {
-    const lockStatus = await lockManager.getStatus();
+  const lockConfig = Lock.createLockConfig(workdir, { enabled: !options.noLock });
+  if (Lock.isLockEnabled(lockConfig)) {
+    const lockStatus = await Lock.getLockStatus(lockConfig);
     if (lockStatus.isLocked && !lockStatus.isOurs) {
       console.log(chalk.yellow(`⚠ Another prr instance is working on this PR`));
       console.log(chalk.gray(`  Instance: ${lockStatus.holder?.instanceId} on ${lockStatus.holder?.hostname}`));
@@ -125,23 +127,23 @@ export async function initializeManagers(
 
   // Prune lessons for deleted files
   // WHY: Lessons about files that no longer exist are useless clutter
-  const prunedDeletedFiles = lessonsManager.pruneDeletedFiles(workdir);
+  const prunedDeletedFiles = LessonsAPI.Prune.pruneDeletedFiles(lessonsContext, workdir);
   if (prunedDeletedFiles > 0) {
     console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
-    await lessonsManager.save();
+    await LessonsAPI.Save.save(lessonsContext);
   }
   
-  const lessonCounts = lessonsManager.getCounts();
+  const lessonCounts = LessonsAPI.Retrieve.getCounts(lessonsContext);
   debug('Loaded lessons', lessonCounts);
   
-  return { stateManager, lessonsManager, lockManager, state };
+  return { stateContext, lessonsContext, lockConfig, state };
 }
 
 /**
  * Restore runner and model state from previous session
  */
 export async function restoreRunnerState(
-  stateManager: StateManager,
+  stateContext: StateContext,
   runners: Runner[],
   currentRunnerIndex: number,
   modelIndices: Map<string, number>,
@@ -152,11 +154,12 @@ export async function restoreRunnerState(
   modelIndices: Map<string, number>;
 }> {
   const chalk = (await import('chalk')).default;
+  const Rotation = await import('../state/state-rotation.js');
   
   // Restore tool/model rotation state from previous session
   // WHY: Resume where we left off if interrupted, don't restart from first model
-  const savedRunnerIndex = stateManager.getCurrentRunnerIndex();
-  const savedModelIndices = stateManager.getModelIndices();
+  const savedRunnerIndex = Rotation.getCurrentRunnerIndex(stateContext);
+  const savedModelIndices = Rotation.getModelIndices(stateContext);
   
   let newRunnerIndex = currentRunnerIndex;
   let runner = runners[currentRunnerIndex];

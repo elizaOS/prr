@@ -14,7 +14,14 @@ import type { SimpleGit } from 'simple-git';
 import type { GitHubAPI } from '../github/api.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import type { StateManager } from '../state/manager.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
 import type { CLIOptions } from '../cli.js';
 import type { Runner } from '../runners/types.js';
 
@@ -44,7 +51,7 @@ export async function executePreIterationChecks(
   unresolvedIssues: UnresolvedIssue[],
   existingCommentIds: Set<string>,
   verifiedThisSession: Set<string>,
-  stateManager: StateManager,
+  stateContext: StateContext,
   runner: Runner,
   options: CLIOptions,
   checkForNewBotReviews: (
@@ -83,7 +90,7 @@ export async function executePreIterationChecks(
   const emptyCheck = await ResolverProc.checkEmptyIssues(
     unresolvedIssues,
     comments,
-    stateManager,
+    stateContext,
     getCodeSnippet
   );
   if (emptyCheck.shouldBreak) {
@@ -99,7 +106,7 @@ export async function executePreIterationChecks(
     git,
     prInfo.branch,
     unresolvedIssues,
-    stateManager,
+    stateContext,
     github,
     owner,
     repo,
@@ -121,7 +128,7 @@ export async function executePreIterationChecks(
   console.log(chalk.blue(`\n--- Fix iteration ${iterLabel}${modelInfo} ---\n`));
 
   // Start new iteration in state
-  stateManager.startIteration();
+  Iterations.startIteration(stateContext);
 
   return {
     shouldBreak: false,

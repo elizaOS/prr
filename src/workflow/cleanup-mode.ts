@@ -19,7 +19,7 @@ import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { PRInfo } from '../github/types.js';
-import { LockManager } from '../state/lock.js';
+import * as Lock from '../state/lock-functions.js';
 
 /**
  * Run cleanup mode to remove prr artifacts from repository
@@ -193,8 +193,8 @@ export async function runCleanupMode(
   
   // Clear lock file
   if (options.clearLock) {
-    const lockManager = new LockManager(workdir, { enabled: true });
-    await lockManager.clearLock(git);
+    const lockConfig = Lock.createLockConfig(workdir, { enabled: true });
+    await Lock.clearLock(lockConfig, git);
     console.log(chalk.green('✓ Cleared lock file'));
   }
   

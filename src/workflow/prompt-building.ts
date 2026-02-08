@@ -9,9 +9,10 @@
 
 import chalk from 'chalk';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import type { LessonsManager } from '../state/lessons.js';
-import { formatLessonForDisplay } from '../state/lessons.js';
+import type { LessonsContext } from '../state/lessons-context.js';
+import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt } from '../analyzer/prompt-builder.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Build fix prompt with lessons and display summary
@@ -27,7 +28,7 @@ import { buildFixPrompt as buildPrompt } from '../analyzer/prompt-builder.js';
  */
 export function buildAndDisplayFixPrompt(
   unresolvedIssues: UnresolvedIssue[],
-  lessonsManager: LessonsManager,
+  lessonsContext: LessonsContext,
   verbose: boolean
 ): {
   prompt: string;
@@ -39,11 +40,11 @@ export function buildAndDisplayFixPrompt(
 } {
   const { debug } = require('../logger.js');
   
-  const lessonsBeforeFix = lessonsManager.getTotalCount();
+  const lessonsBeforeFix = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
   
   // Get lessons for all files being fixed
   const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];
-  const lessons = lessonsManager.getLessonsForFiles(affectedFiles);
+  const lessons = LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, affectedFiles);
   const { prompt, detailedSummary, lessonsIncluded } = buildPrompt(
     unresolvedIssues,
     lessons
@@ -53,8 +54,8 @@ export function buildAndDisplayFixPrompt(
   
   // In verbose mode, show lessons by scope
   if (verbose && lessons.length > 0) {
-    const allLessons = lessonsManager.getAllLessons();
-    const counts = lessonsManager.getCounts();
+    const allLessons = LessonsAPI.Retrieve.getAllLessons(lessonsContext);
+    const counts = LessonsAPI.Retrieve.getCounts(lessonsContext);
     const newLabel = counts.newThisSession > 0 ? ` (${counts.newThisSession} new this run)` : '';
     console.log(chalk.yellow(`  Lessons from previous attempts${newLabel}:`));
     
@@ -80,7 +81,7 @@ export function buildAndDisplayFixPrompt(
   }
   
   debug('Fix prompt length', prompt.length);
-  const newLessonsCount = lessonsManager.getNewLessonsCount();
+  const newLessonsCount = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
   debug('Lessons in prompt', { total: lessonsIncluded, newThisSession: newLessonsCount });
 
   // Guard: Don't run fixer with empty prompt

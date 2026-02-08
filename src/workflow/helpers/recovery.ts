@@ -10,10 +10,17 @@ import chalk from 'chalk';
 import { join } from 'path';
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
-import type { StateManager } from '../../state/manager.js';
-import type { LessonsManager } from '../../state/lessons.js';
+import type { StateContext } from '../../state/state-context.js';
+import { setPhase } from '../../state/state-context.js';
+import * as State from '../../state/state-core.js';
+import * as Verification from '../../state/state-verification.js';
+import * as Dismissed from '../../state/state-dismissed.js';
+import * as Iterations from '../../state/state-iterations.js';
+import * as Lessons from '../../state/state-lessons.js';
+import type { LessonsContext } from '../../state/lessons-context.js';
 import type { LLMClient } from '../../llm/client.js';
 import type { Runner } from '../../runners/types.js';
+import * as LessonsAPI from '../../state/lessons-index.js';
 
 /**
  * Try fixing issues one at a time (single-issue focus mode)
@@ -33,8 +40,8 @@ export async function trySingleIssueFix(
   git: SimpleGit,
   workdir: string,
   runner: Runner,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   llm: LLMClient,
   verifiedThisSession: Set<string> | undefined,
   buildSingleIssuePrompt: (issue: UnresolvedIssue) => string,
@@ -43,7 +50,7 @@ export async function trySingleIssueFix(
   sanitizeOutputForLog: (output: string | undefined, maxLength: number) => string
 ): Promise<boolean> {
   const { debug, setTokenPhase } = await import('../../logger.js');
-  const { getChangedFiles, getDiffForFile } = await import('../../git/clone.js');
+  const { getChangedFiles, getDiffForFile } = await import('../../git/git-clone-index.js');
 
   // Focus on one issue at a time to reduce context and improve success rate
   // Randomize which issues to try to avoid hammering the same hard issue
@@ -89,7 +96,7 @@ export async function trySingleIssueFix(
             line: issue.comment.line,
             diffLength: diff.length,
           });
-          stateManager.markCommentVerifiedFixed(issue.comment.id);
+          Verification.markVerified(stateContext, issue.comment.id);
           verifiedThisSession?.add(issue.comment.id);  // Track for session filtering
           anyFixed = true;
         } else {
@@ -115,7 +122,7 @@ export async function trySingleIssueFix(
             verification.explanation
           );
           console.log(chalk.gray(`    📝 Lesson: ${lesson}`));
-          lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
 
           // Reset ONLY this issue's file, not all changed files
           // WHY: Other issues in this batch may have been successfully fixed
@@ -132,7 +139,7 @@ export async function trySingleIssueFix(
           toolOutput: result.output?.substring(0, 500),
         });
         // Add lesson so tool knows to focus on the right file
-        lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify ${issue.comment.path}`);
+        LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify ${issue.comment.path}`);
         // Reset wrong files but keep any changes to the target file
         // WHY: The target file might have partial progress worth keeping
         const wrongFiles = changedFiles.filter(f => f !== issue.comment.path);
@@ -147,7 +154,7 @@ export async function trySingleIssueFix(
         if (noChangesExplanation) {
           console.log(chalk.gray(`    - No changes made`));
           console.log(chalk.cyan(`      Fixer's reason: ${noChangesExplanation}`));
-          lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${noChangesExplanation}`);
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${noChangesExplanation}`);
 
           // If fixer says it's already fixed, dismiss this issue
           const lowerExplanation = noChangesExplanation.toLowerCase();
@@ -157,7 +164,8 @@ export async function trySingleIssueFix(
                                  lowerExplanation.includes('implements');
 
           if (isAlreadyFixed) {
-            stateManager.addDismissedIssue(
+            Dismissed.dismissIssue(
+              stateContext,
               issue.comment.id,
               `Fixer tool (single-issue mode) reported: ${noChangesExplanation}`,
               'already-fixed',
@@ -170,7 +178,7 @@ export async function trySingleIssueFix(
           // No explanation provided - this is a problem but not fatal
           console.log(chalk.yellow(`    - No changes made (fixer didn't explain why)`));
           console.log(chalk.gray(`      Tip: Will rotate to different model/tool on next attempt`));
-          lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes without explanation, trying different approach`);
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - tool made no changes without explanation, trying different approach`);
           
           // Only show debug details in verbose mode, and sanitize output
           debug('Fixer made no changes', {
@@ -191,8 +199,8 @@ export async function trySingleIssueFix(
       });
     }
     
-    await stateManager.save();
-    await lessonsManager.save();
+    await State.saveState(stateContext);
+    await LessonsAPI.Save.save(lessonsContext);
   }
   
   return anyFixed;
@@ -218,11 +226,11 @@ export async function tryDirectLLMFix(
   workdir: string,
   llmProvider: string,
   llm: LLMClient,
-  stateManager: StateManager,
+  stateContext: StateContext,
   verifiedThisSession: Set<string> | undefined
 ): Promise<boolean> {
   const { debug, setTokenPhase } = await import('../../logger.js');
-  const { getDiffForFile } = await import('../../git/clone.js');
+  const { getDiffForFile } = await import('../../git/git-clone-index.js');
   const fs = await import('fs');
 
   console.log(chalk.cyan(`\n  🧠 Attempting direct ${llmProvider} API fix...`));
@@ -280,7 +288,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
 
           if (verification.fixed) {
             console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}`));
-            stateManager.markCommentVerifiedFixed(issue.comment.id);
+            Verification.markVerified(stateContext, issue.comment.id);
             verifiedThisSession?.add(issue.comment.id);
             anyFixed = true;
           } else {
@@ -293,7 +301,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
           console.log(chalk.gray(`    - No changes needed for ${issue.comment.path}`));
           console.log(chalk.cyan(`      Direct LLM indicated file is already correct`));
           // Document this dismissal
-          stateManager.addDismissedIssue(
+          Dismissed.dismissIssue(
+            stateContext,
             issue.comment.id,
             `Direct LLM API returned unchanged code, indicating the issue is already addressed or not applicable`,
             'already-fixed',

@@ -11,9 +11,17 @@
 import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Handle no-changes scenario after fixer runs
@@ -36,8 +44,8 @@ export async function handleNoChangesWithVerification(
   currentModel: string | undefined,
   fixerOutput: string,
   llm: LLMClient,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   verifiedThisSession: Set<string>,
   parseNoChangesExplanation: (output: string) => string | null
 ): Promise<{
@@ -61,7 +69,7 @@ export async function handleNoChangesWithVerification(
     // Fixer provided an explanation for why it made no changes
     console.log(chalk.cyan(`  Fixer's explanation: ${noChangesExplanation}`));
     // Note: Don't include tool/model names - that's tracked separately in modelStats
-    lessonsManager.addGlobalLesson(`Fixer made no changes: ${noChangesExplanation}`);
+    LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes: ${noChangesExplanation}`);
 
     // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
     const lowerExplanation = noChangesExplanation.toLowerCase();
@@ -95,7 +103,7 @@ export async function handleNoChangesWithVerification(
         if (result && !result.exists) {
           // Issue verified as fixed!
           verifiedAsFixed++;
-          stateManager.markCommentVerifiedFixed(issue.comment.id);
+          Verification.markVerified(stateContext, issue.comment.id);
           verifiedThisSession.add(issue.comment.id);
           console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}:${issue.comment.line} - ${result.explanation}`));
         } else {
@@ -109,7 +117,7 @@ export async function handleNoChangesWithVerification(
       
       if (verifiedAsFixed > 0) {
         console.log(chalk.green(`  → Verified ${verifiedAsFixed}/${unresolvedIssues.length} issues as already fixed`));
-        stateManager.recordModelFix(runnerName, currentModel, verifiedAsFixed);
+        Performance.recordModelFix(stateContext, runnerName, currentModel, verifiedAsFixed);
         progressMade = verifiedAsFixed;
         verifiedCount = verifiedAsFixed;
         
@@ -151,11 +159,11 @@ export async function handleNoChangesWithVerification(
     console.log(chalk.yellow(`  Fixer didn't explain why no changes were made`));
     console.log(chalk.gray(`  → Will try different model/tool approach`));
     // Note: Don't include tool/model - tracked separately in modelStats
-    lessonsManager.addGlobalLesson(`Fixer made no changes without explanation - trying different approach`);
+    LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes without explanation - trying different approach`);
   }
 
   // Track no-changes for performance stats
-  stateManager.recordModelNoChanges(runnerName, currentModel);
+  Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
   
   return {
     shouldBreak: false,

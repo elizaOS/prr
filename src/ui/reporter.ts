@@ -4,8 +4,13 @@
  */
 import chalk from 'chalk';
 import type { ReviewComment } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { getState } from '../state/state-context.js';
+import * as Performance from '../state/state-performance.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import type { LessonsContext } from '../state/lessons-context.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Unresolved issue with explanation
@@ -25,10 +30,10 @@ function formatNumber(num: number): string {
 /**
  * Print model performance statistics
  */
-export function printModelPerformance(stateManager: StateManager | null): void {
-  if (!stateManager) return;
+export function printModelPerformance(stateContext: StateContext | null): void {
+  if (!stateContext) return;
   
-  const models = stateManager.getModelsBySuccessRate();
+  const models = Performance.getModelsBySuccessRate(stateContext);
   if (models.length === 0) return;
   
   console.log(chalk.cyan('\n📊 Model Performance:'));
@@ -100,15 +105,15 @@ export function getExitReasonDisplay(exitReason: string | null): {
  * the most important info (what got fixed) is visible at the end.
  */
 export function printFinalSummary(
-  stateManager: StateManager | null,
+  stateContext: StateContext | null,
   exitReason: string | null,
   exitDetails: string | null
 ): void {
-  if (!stateManager) return;
+  if (!stateContext) return;
   
   // Get counts
-  const verifiedFixed = stateManager.getState()?.verifiedFixed || [];
-  const dismissedIssues = stateManager.getDismissedIssues();
+  const verifiedFixed = getState(stateContext).verifiedFixed || [];
+  const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
   
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
@@ -235,8 +240,8 @@ export async function printAfterActionReport(
   unresolvedIssues: UnresolvedIssue[],
   comments: ReviewComment[],
   noAfterAction: boolean,
-  stateManager: StateManager | null,
-  lessonsManager: LessonsManager | null
+  stateContext: StateContext | null,
+  lessonsContext: LessonsContext | null
 ): Promise<void> {
   if (noAfterAction || unresolvedIssues.length === 0) return;
   
@@ -265,14 +270,14 @@ export async function printAfterActionReport(
     }
     
     // Check model performance for this file
-    const fileModels = stateManager?.getModelsBySuccessRate() || [];
+    const fileModels = stateContext ? Performance.getModelsBySuccessRate(stateContext) : [];
     const relevantAttempts = fileModels.filter(m => m.stats.fixes > 0 || m.stats.failures > 0);
     if (relevantAttempts.length > 0) {
       console.log(chalk.gray(`     Tools attempted: ${relevantAttempts.map(m => m.key.split('/')[0]).join(', ')}`));
     }
     
     // Learnings related to this file
-    const fileSpecificLessons = lessonsManager?.getLessonsForFiles([issue.comment.path]) || [];
+    const fileSpecificLessons = lessonsContext ? LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, [issue.comment.path]) : [];
     if (fileSpecificLessons.length > 0) {
       console.log(chalk.cyan('\n  📚 Relevant Learnings:'));
       for (const lesson of fileSpecificLessons.slice(0, 3)) {
@@ -290,8 +295,8 @@ export async function printAfterActionReport(
   
   // Summary
   console.log(chalk.cyan('\n━━━ Summary ━━━'));
-  const fixedCount = comments.filter(c => stateManager?.isCommentVerifiedFixed(c.id)).length;
-  const dismissedCount = stateManager?.getDismissedIssues().length || 0;
+  const fixedCount = comments.filter(c => stateContext ? Verification.isVerified(stateContext, c.id) : false).length;
+  const dismissedCount = stateContext ? Dismissed.getDismissedIssues(stateContext).length : 0;
   console.log(chalk.gray(`  Total issues: ${comments.length}`));
   console.log(chalk.green(`  Fixed: ${fixedCount}`));
   console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));

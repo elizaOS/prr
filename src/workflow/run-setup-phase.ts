@@ -19,9 +19,9 @@ import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
 import type { PRInfo } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
-import type { LockManager } from '../state/lock.js';
+import type { StateContext } from '../state/state-context.js';
+import type { LessonsContext } from '../state/lessons-context.js';
+import type { LockConfig } from '../state/lock-functions.js';
 import type { Runner } from '../runners/types.js';
 
 /**
@@ -56,9 +56,9 @@ export async function executeSetupPhase(
   getCurrentModel: () => string | undefined
 ): Promise<{
   workdir: string;
-  stateManager: StateManager;
-  lessonsManager: LessonsManager;
-  lockManager: LockManager;
+  stateContext: StateContext;
+  lessonsContext: LessonsContext;
+  lockConfig: LockConfig;
   runner: Runner;
   runners: Runner[];
   currentRunnerIndex: number;
@@ -77,8 +77,8 @@ export async function executeSetupPhase(
   
   // Setup workdir and managers
   const managers = await ResolverProc.setupWorkdirAndManagers(config, options, owner, repo, number, prInfo);
-  const { workdir, stateManager, lessonsManager, lockManager } = managers;
-  const state = stateManager.getState();
+  const { workdir, stateContext, lessonsContext, lockConfig } = managers;
+  const state = stateContext.state!;
 
   // Setup runner
   debugStep('SETTING UP RUNNER');
@@ -87,7 +87,7 @@ export async function executeSetupPhase(
   
   // Restore tool/model rotation state
   const ctx = getRotationContext();
-  const rotationState = ResolverProc.restoreRunnerRotationState(stateManager, ctx.runners, ctx.modelIndices, getCurrentModel);
+  const rotationState = ResolverProc.restoreRunnerRotationState(stateContext, ctx.runners, ctx.modelIndices, getCurrentModel);
   let currentRunnerIndex = ctx.currentRunnerIndex;
   let resolvedRunner = runner;
   if (rotationState.runner) {
@@ -103,13 +103,13 @@ export async function executeSetupPhase(
   await ensureStateFileIgnored();
 
   // Recover verification state from git history
-  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateManager);
+  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext);
 
   // Check for conflicts and sync with remote
   const syncResult = await ResolverProc.checkAndSyncWithRemote(git, prInfo.branch, spinner, resolveConflictsWithLLM);
   if (!syncResult.success) {
     return {
-      workdir, stateManager, lessonsManager, lockManager, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
+      workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
       shouldExit: true,
     };
   }
@@ -118,7 +118,7 @@ export async function executeSetupPhase(
   const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsWithLLM);
   if (!mergeResult.success) {
     return {
-      workdir, stateManager, lessonsManager, lockManager, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
+      workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
       shouldExit: true,
       exitReason: mergeResult.exitReason,
       exitDetails: mergeResult.exitDetails,
@@ -126,7 +126,7 @@ export async function executeSetupPhase(
   }
 
   return {
-    workdir, stateManager, lessonsManager, lockManager, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
+    workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
     shouldExit: false,
   };
 }

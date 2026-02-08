@@ -6,7 +6,14 @@
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { StateManager } from '../state/manager.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
 import type { SimpleGit } from 'simple-git';
 import type { PRInfo } from '../github/types.js';
 
@@ -92,7 +99,7 @@ export function filterVerifiedIssues(
 export async function checkEmptyIssues(
   unresolvedIssues: UnresolvedIssue[],
   comments: ReviewComment[],
-  stateManager: StateManager,
+  stateContext: StateContext,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>
 ): Promise<{
   shouldBreak: boolean;
@@ -107,7 +114,7 @@ export async function checkEmptyIssues(
   if (unresolvedIssues.length === 0) {
     // Sanity check: verify that all comments are actually marked as verified
     const actuallyVerified = comments.filter(c => 
-      stateManager.isCommentVerifiedFixed(c.id)
+      Verification.isVerified(stateContext, c.id)
     ).length;
     const actuallyUnverified = comments.length - actuallyVerified;
     
@@ -119,13 +126,13 @@ export async function checkEmptyIssues(
         actuallyVerified,
         actuallyUnverified,
         totalComments: comments.length,
-        verifiedIds: comments.filter(c => stateManager.isCommentVerifiedFixed(c.id)).map(c => c.id),
+        verifiedIds: comments.filter(c => Verification.isVerified(stateContext, c.id)).map(c => c.id),
       });
       
       // Re-populate unresolvedIssues from scratch
       unresolvedIssues.splice(0, unresolvedIssues.length);
       for (const comment of comments) {
-        if (!stateManager.isCommentVerifiedFixed(comment.id)) {
+        if (!Verification.isVerified(stateContext, comment.id)) {
           const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
           unresolvedIssues.push({
             comment,
@@ -171,7 +178,7 @@ export async function checkAndPullRemoteCommits(
   git: SimpleGit,
   branch: string,
   unresolvedIssues: UnresolvedIssue[],
-  stateManager: StateManager,
+  stateContext: StateContext,
   github: GitHubAPI,
   owner: string,
   repo: string,
@@ -212,10 +219,10 @@ export async function checkAndPullRemoteCommits(
       
       // Invalidate verification cache - code has changed
       // WHY: Previous "fixed" status may no longer be valid
-      const previouslyVerified = stateManager.getVerifiedComments().length;
+      const previouslyVerified = Verification.getVerifiedComments(stateContext).length;
       if (previouslyVerified > 0) {
         console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
-        stateManager.clearVerificationCache();
+        ;
       }
       
       // Re-fetch code snippets for unresolved issues

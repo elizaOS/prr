@@ -1,5 +1,5 @@
 import type { UnresolvedIssue, FixPrompt } from './types.js';
-import { formatLessonForDisplay } from '../state/lessons.js';
+import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 
 /**
  * Estimate token count for a string.

@@ -10,8 +10,15 @@
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 
 /**
@@ -34,8 +41,8 @@ export async function handlePostVerification(
   consecutiveFailures: number,
   modelFailuresInCycle: number,
   progressThisCycle: number,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   options: CLIOptions,
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
   tryRotation: () => boolean,
@@ -58,7 +65,7 @@ export async function handlePostVerification(
       
       // Execute rotation strategy
       const rotationResult = await ResolverProc.handleRotationStrategy(unresolvedIssues, comments, git, updatedConsecutiveFailures, updatedModelFailuresInCycle, progressThisCycle,
-        stateManager, lessonsManager, options, verifiedThisSession, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+        stateContext, lessonsContext, options, verifiedThisSession, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
       
       return {
         shouldBreak: rotationResult.shouldBreak,

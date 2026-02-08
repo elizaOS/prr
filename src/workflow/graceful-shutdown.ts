@@ -6,7 +6,8 @@
  */
 
 import chalk from 'chalk';
-import type { StateManager } from '../state/manager.js';
+import type { StateContext } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
 import { endTimer, printTimingSummary, printTokenSummary } from '../logger.js';
 
 /**
@@ -22,7 +23,7 @@ import { endTimer, printTimingSummary, printTokenSummary } from '../logger.js';
  */
 export async function executeGracefulShutdown(
   isShuttingDown: boolean,
-  stateManager: StateManager | undefined,
+  stateContext: StateContext | undefined,
   printModelPerformance: () => void,
   printFinalSummary: () => void
 ): Promise<boolean> {
@@ -30,9 +31,9 @@ export async function executeGracefulShutdown(
   
   console.log(chalk.yellow('\n\n⚠ Interrupted! Saving state...'));
   
-  if (stateManager) {
+  if (stateContext) {
     try {
-      await stateManager.markInterrupted();
+      await State.markInterrupted(stateContext);
       console.log(chalk.green('✓ State saved. Run again to resume.'));
       endTimer('Total');
       printTimingSummary();

@@ -8,7 +8,14 @@ import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { LLMClient } from '../llm/client.js';
-import type { StateManager } from '../state/manager.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
 import type { CLIOptions } from '../cli.js';
 
 /**
@@ -17,7 +24,7 @@ import type { CLIOptions } from '../cli.js';
 export function analyzeAndReportIssues(
   comments: ReviewComment[],
   unresolvedIssues: UnresolvedIssue[],
-  stateManager: StateManager,
+  stateContext: StateContext,
   analyzeTime: number
 ): void {
   const chalk = require('chalk');
@@ -31,7 +38,7 @@ export function analyzeAndReportIssues(
   }
 
   // Report dismissed issues (issues that don't need fixing)
-  const dismissedIssues = stateManager.getDismissedIssues();
+  const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
   if (dismissedIssues.length > 0) {
     const byCategory = dismissedIssues.reduce((acc, issue) => {
       acc[issue.category] = (acc[issue.category] || 0) + 1;
@@ -138,7 +145,7 @@ export async function checkForNewComments(
  */
 export async function runFinalAudit(
   llm: LLMClient,
-  stateManager: StateManager,
+  stateContext: StateContext,
   comments: ReviewComment[],
   options: CLIOptions,
   spinner: Ora,
@@ -158,7 +165,7 @@ export async function runFinalAudit(
   
   // Clear verification cache so audit results are authoritative
   // This prevents stale "verified fixed" entries from persisting
-  stateManager.clearVerificationCache();
+  ;
   debug('Cleared verification cache before final audit');
   
   spinner.start('Running final audit on all issues...');
@@ -194,7 +201,7 @@ export async function runFinalAudit(
         failedAudit.push({ comment, explanation: result.explanation });
       } else {
         // Audit confirmed this is fixed - add to cache
-        stateManager.markCommentVerifiedFixed(comment.id);
+        Verification.markVerified(stateContext, comment.id);
       }
     } else {
       // No result from audit - treat as needing review (fail-safe)
@@ -209,7 +216,7 @@ export async function runFinalAudit(
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'}`));
       console.log(chalk.gray(`    ${explanation}`));
     }
-    await stateManager.save();
+    await State.saveState(stateContext);
     
     return { 
       failedAudit,
@@ -221,7 +228,7 @@ export async function runFinalAudit(
     console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
     
     // Report summary of dismissed issues
-    const dismissedIssues = stateManager.getDismissedIssues();
+    const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
     if (dismissedIssues.length > 0) {
       console.log(chalk.cyan(`\n📋 Dismissed Issues Summary (${formatNumber(dismissedIssues.length)} total)`));
       console.log(chalk.gray('These issues were determined not to need fixing:\n'));

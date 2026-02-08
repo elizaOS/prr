@@ -13,8 +13,15 @@ import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment } from '../github/types.js';
 import type { Runner } from '../runners/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import type { CLIOptions } from '../cli.js';
 
@@ -36,8 +43,8 @@ export async function executeFixIteration(
   git: SimpleGit,
   workdir: string,
   runner: Runner,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   llm: LLMClient,
   options: CLIOptions,
   verifiedThisSession: Set<string>,
@@ -74,13 +81,13 @@ export async function executeFixIteration(
     endTimer,
     formatDuration,
   } = await import('../logger.js');
-  const { hasChanges } = await import('../git/clone.js');
+  const { hasChanges } = await import('../git/git-clone-index.js');
   const ResolverProc = await import('../resolver-proc.js');
   const spinner = (await import('ora')).default();
 
   // Build fix prompt
   debugStep('GENERATING FIX PROMPT');
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsManager, options.verbose);
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose);
   
   if (promptDetails.shouldSkip) {
     return {
@@ -103,7 +110,7 @@ export async function executeFixIteration(
 
   // Run fixer tool
   debugStep('RUNNING FIXER TOOL');
-  stateManager.setPhase('fixing');
+  setPhase(stateContext, 'fixing');
   startTimer('Run fixer');
   spinner.start(`Running ${runner.name} to fix issues...`);
   spinner.stop();
@@ -119,7 +126,7 @@ export async function executeFixIteration(
   debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
   if (!result.success) {
-    const errorResult = ResolverProc.handleFixerError(result, runner, fixerTime, rapidFailureCount, lastFailureTime, stateManager, getCurrentModel);
+    const errorResult = ResolverProc.handleFixerError(result, runner, fixerTime, rapidFailureCount, lastFailureTime, stateContext, getCurrentModel);
     
     if (errorResult.shouldExit) {
       return {
@@ -157,7 +164,7 @@ export async function executeFixIteration(
   // Check for changes
   if (!(await hasChanges(git))) {
     // Handle no-changes scenario with verification
-    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(unresolvedIssues, runner.name, currentModel, result.output || '', llm, stateManager, lessonsManager, verifiedThisSession, parseNoChangesExplanation);
+    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(unresolvedIssues, runner.name, currentModel, result.output || '', llm, stateContext, lessonsContext, verifiedThisSession, parseNoChangesExplanation);
     
     let updatedConsecutiveFailures = consecutiveFailures;
     let updatedModelFailuresInCycle = modelFailuresInCycle;
@@ -205,7 +212,7 @@ export async function executeFixIteration(
     
     // Execute rotation strategy
     const rotationResult = await ResolverProc.handleRotationStrategy(updatedUnresolvedIssues, comments, git, updatedConsecutiveFailures, updatedModelFailuresInCycle, updatedProgressThisCycle,
-      stateManager, lessonsManager, options, verifiedThisSession, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+      stateContext, lessonsContext, options, verifiedThisSession, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
     
     return {
       shouldContinue: !rotationResult.shouldBreak,

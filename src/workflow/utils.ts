@@ -8,10 +8,11 @@ import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { LLMClient } from '../llm/client.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
-import type { LockManager } from '../state/lock.js';
+import type { StateContext } from '../state/state-context.js';
+import type { LessonsContext } from '../state/lessons-context.js';
+import type { LockConfig } from '../state/lock-functions.js';
 import type { Runner } from '../runners/types.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Context object containing all state for PR resolution
@@ -21,9 +22,9 @@ export interface ResolverContext {
   options: CLIOptions;
   github: GitHubAPI;
   llm: LLMClient;
-  stateManager: StateManager;
-  lessonsManager: LessonsManager;
-  lockManager: LockManager;
+  stateContext: StateContext;
+  lessonsContext: LessonsContext;
+  lockConfig: LockConfig;
   runner: Runner;
   runners: Runner[];
   currentRunnerIndex: number;
@@ -221,9 +222,9 @@ export function sleep(ms: number): Promise<void> {
 /**
  * Build prompt for fixing a single issue
  */
-export function buildSingleIssuePrompt(issue: UnresolvedIssue, lessonsManager: LessonsManager): string {
+export function buildSingleIssuePrompt(issue: UnresolvedIssue, lessonsContext: LessonsContext): string {
   // Get file-scoped lessons (automatically includes global + this file's lessons)
-  const lessons = lessonsManager.getLessonsForFiles([issue.comment.path])
+  const lessons = LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, [issue.comment.path])
     .slice(-5); // Last 5 relevant lessons
   
   let prompt = `# SINGLE ISSUE FIX

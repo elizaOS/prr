@@ -16,11 +16,19 @@ import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { Runner } from '../runners/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
-import { hasChanges } from '../git/clone.js';
+import { hasChanges } from '../git/git-clone-index.js';
 import { formatNumber, debugStep, endTimer } from '../logger.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Execute single push iteration
@@ -47,8 +55,8 @@ export async function executePushIteration(
   repo: string,
   number: number,
   prInfo: PRInfo,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   llm: LLMClient,
   options: CLIOptions,
   config: Config,
@@ -102,7 +110,7 @@ export async function executePushIteration(
 
   // Process comments and prepare fix loop
   const loopResult = await ResolverProc.processCommentsAndPrepareFixLoop(
-    git, github, owner, repo, number, prInfo, stateManager, lessonsManager, llm, options, config, workdir, spinner,
+    git, github, owner, repo, number, prInfo, stateContext, lessonsContext, llm, options, config, workdir, spinner,
     findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues
   );
   
@@ -140,7 +148,7 @@ export async function executePushIteration(
     
     // Pre-iteration checks
     const preChecks = await ResolverProc.executePreIterationChecks(
-      fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateManager, runner, options,
+      fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, runner, options,
       checkForNewBotReviews, getCodeSnippet, getCurrentModel
     );
     
@@ -155,7 +163,7 @@ export async function executePushIteration(
 
     // Execute fix iteration
     const iterResult = await ResolverProc.executeFixIteration(
-      unresolvedIssues, comments, git, workdir, runner, stateManager, lessonsManager, llm, options, verifiedThisSession,
+      unresolvedIssues, comments, git, workdir, runner, stateContext, lessonsContext, llm, options, verifiedThisSession,
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
     );
@@ -180,20 +188,20 @@ export async function executePushIteration(
       break;
     }
     if (iterResult.shouldContinue) {
-      await stateManager.save();
-      await lessonsManager.save();
+      await State.saveState(stateContext);
+      await LessonsAPI.Save.save(lessonsContext);
       continue;
     }
 
     // Verify fixes
-    const { verifiedCount, failedCount, changedIssues, unchangedIssues } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateManager, lessonsManager, llm, verifiedThisSession, options.noBatch);
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch);
     const totalIssues = unresolvedIssues.length;
     endTimer('Verify fixes');
     const currentModel = getCurrentModel();
     
     // Handle iteration cleanup
     const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, runner, currentModel,
-      stateManager, lessonsManager, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime);
+      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime);
     
     progressThisCycle += cleanupResult.progressMade;
     if (cleanupResult.expectedBotResponseTime !== undefined) expectedBotResponseTimeRef.current = cleanupResult.expectedBotResponseTime;
@@ -208,7 +216,7 @@ export async function executePushIteration(
     if (!allFixed) {
       // Post-verification handling
       const postVerif = await ResolverProc.handlePostVerification(verifiedCount, allFixed, unresolvedIssues, comments, verifiedThisSession, git, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
-        stateManager, lessonsManager, options, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+        stateContext, lessonsContext, options, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
       
       consecutiveFailures = postVerif.updatedConsecutiveFailures;
       modelFailuresInCycle = postVerif.updatedModelFailuresInCycle;
@@ -230,7 +238,7 @@ export async function executePushIteration(
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
-    const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateManager, lessonsManager, options, config.githubToken, github, workdir, spinner, pushIteration, maxPushIterations,
+    const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, pushIteration, maxPushIterations,
       resolveConflictsWithLLM, waitForBotReviews);
     if (commitResult.shouldBreak) {
       return {

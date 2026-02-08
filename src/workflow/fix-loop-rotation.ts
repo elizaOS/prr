@@ -11,8 +11,16 @@
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import * as Bailout from '../state/state-bailout.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 
 /**
@@ -35,8 +43,8 @@ export async function handleRotationStrategy(
   consecutiveFailures: number,
   modelFailuresInCycle: number,
   progressThisCycle: number,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   options: CLIOptions,
   verifiedThisSession: Set<string>,
   trySingleIssueFix: (
@@ -85,7 +93,7 @@ export async function handleRotationStrategy(
     const rotated = tryRotation();
     
     // Check if bail-out was triggered by tryRotation()
-    if (stateManager.getNoProgressCycles() >= options.maxStaleCycles) {
+    if (Bailout.getNoProgressCycles(stateContext) >= options.maxStaleCycles) {
       // Bail-out triggered - try direct LLM one last time before giving up
       console.log(chalk.yellow('\n  🧠 Last resort: trying direct LLM API fix before bail-out...'));
       const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
@@ -93,7 +101,7 @@ export async function handleRotationStrategy(
         newConsecutiveFailures = 0;
         newModelFailuresInCycle = 0;
         newProgressThisCycle++;
-        stateManager.resetNoProgressCycles();  // Made progress, reset
+        Bailout.resetNoProgressCycles(stateContext);  // Made progress, reset
       } else {
         // Direct LLM also failed - execute bail-out
         await executeBailOut(unresolvedIssues, comments);

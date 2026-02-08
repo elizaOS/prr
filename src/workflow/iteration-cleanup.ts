@@ -5,10 +5,18 @@
 
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { Runner } from '../runners/types.js';
 import type { CLIOptions } from '../cli.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Handle post-verification iteration cleanup
@@ -22,8 +30,8 @@ export async function handleIterationCleanup(
   unchangedIssues: UnresolvedIssue[],
   runner: Runner,
   currentModel: string | null | undefined,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   verifiedThisSession: Set<string>,
   alreadyCommitted: Set<string>,
   lessonsBeforeFix: number,
@@ -44,7 +52,7 @@ export async function handleIterationCleanup(
   const ora = require('ora');
   const spinner = ora();
   
-  const lessonsAfterVerify = lessonsManager.getTotalCount();
+  const lessonsAfterVerify = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
   const newLessons = lessonsAfterVerify - lessonsBeforeFix;
   
   // Track model performance for this iteration
@@ -52,29 +60,29 @@ export async function handleIterationCleanup(
   // Note: currentModel already defined at start of iteration
   let progressMade = 0;
   if (verifiedCount > 0) {
-    stateManager.recordModelFix(runner.name, currentModel || 'unknown', verifiedCount);
+    Performance.recordModelFix(stateContext, runner.name, currentModel || 'unknown', verifiedCount);
     // Track progress for bail-out cycle detection
     progressMade = verifiedCount;
   }
   if (failedCount > 0) {
-    stateManager.recordModelFailure(runner.name, currentModel || 'unknown', failedCount);
+    Performance.recordModelFailure(stateContext, runner.name, currentModel || 'unknown', failedCount);
   }
   
   // Record per-issue attempts for LLM model recommendation context
   // WHY: LLM needs to know what's been tried on each issue to recommend different models
   for (const issue of changedIssues) {
     const wasFixed = verifiedThisSession.has(issue.comment.id);
-    stateManager.recordIssueAttempt(
+    Performance.recordIssueAttempt(stateContext, 
       issue.comment.id,
       runner.name,
       currentModel || 'unknown',
       wasFixed ? 'fixed' : 'failed',
-      undefined,  // lessonLearned - could extract from lessonsManager later
+      undefined,  // lessonLearned - could extract from lessonsContext later
       undefined   // rejectionCount - could track in future
     );
   }
   for (const issue of unchangedIssues) {
-    stateManager.recordIssueAttempt(
+    Performance.recordIssueAttempt(stateContext, 
       issue.comment.id,
       runner.name,
       currentModel || 'unknown',
@@ -96,8 +104,8 @@ export async function handleIterationCleanup(
   }
   
   debug('Verification summary', { verifiedCount, failedCount, totalIssues, newLessons, totalLessons: lessonsAfterVerify });
-  await stateManager.save();
-  await lessonsManager.save();
+  await State.saveState(stateContext);
+  await LessonsAPI.Save.save(lessonsContext);
   debug('State and lessons saved');
 
   let newExpectedBotResponseTime: Date | null | undefined = undefined;

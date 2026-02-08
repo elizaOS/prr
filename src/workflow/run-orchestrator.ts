@@ -13,9 +13,9 @@ import type { ReviewComment, PRInfo, BotResponseTiming } from '../github/types.j
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { Runner } from '../runners/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
-import type { LockManager } from '../state/lock.js';
+import type { StateContext } from '../state/state-context.js';
+import type { LessonsContext } from '../state/lessons-context.js';
+import type { LockConfig } from '../state/lock-functions.js';
 import type { LLMClient } from '../llm/client.js';
 import { cleanupWorkdir } from '../git/workdir.js';
 
@@ -24,9 +24,9 @@ export interface RunState {
   botTimings: BotResponseTiming[];
   expectedBotResponseTime: Date | null;
   workdir: string;
-  stateManager: StateManager;
-  lessonsManager: LessonsManager;
-  lockManager: LockManager;
+  stateContext: StateContext;
+  lessonsContext: LessonsContext;
+  lockConfig: LockConfig;
   runner: Runner;
   runners: Runner[];
   currentRunnerIndex: number;
@@ -94,9 +94,9 @@ export async function executeRun(
       return state;
     }
     state.workdir = setupResult.workdir;
-    state.stateManager = setupResult.stateManager;
-    state.lessonsManager = setupResult.lessonsManager;
-    state.lockManager = setupResult.lockManager;
+    state.stateContext = setupResult.stateContext;
+    state.lessonsContext = setupResult.lessonsContext;
+    state.lockConfig = setupResult.lockConfig;
     state.runner = setupResult.runner;
     state.runners = setupResult.runners;
     state.currentRunnerIndex = setupResult.currentRunnerIndex;
@@ -110,7 +110,7 @@ export async function executeRun(
     const expectedBotResponseTimeRef = { current: state.expectedBotResponseTime };
     while (pushIteration < maxPushIterations) {
       pushIteration++;
-      const iterResult = await ResolverProc.executePushIteration(pushIteration, maxPushIterations, git, github, owner, repo, number, state.prInfo, state.stateManager, state.lessonsManager, llm, options, config, state.workdir, spinner, state.runner,
+      const iterResult = await ResolverProc.executePushIteration(pushIteration, maxPushIterations, git, github, owner, repo, number, state.prInfo, state.stateContext, state.lessonsContext, llm, options, config, state.workdir, spinner, state.runner,
         state.rapidFailureCount, state.lastFailureTime, state.consecutiveFailures, state.modelFailuresInCycle, state.progressThisCycle, state.expectedBotResponseTime, state.finalUnresolvedIssues, state.finalComments,
         callbacks.findUnresolvedIssues, callbacks.resolveConflictsWithLLM, callbacks.getCodeSnippet, callbacks.printUnresolvedIssues, callbacks.getCurrentModel, callbacks.parseNoChangesExplanation,
         callbacks.trySingleIssueFix, callbacks.tryRotation, callbacks.tryDirectLLMFix, callbacks.executeBailOut, callbacks.checkForNewBotReviews, callbacks.calculateExpectedBotResponseTime, callbacks.waitForBotReviews,
@@ -131,7 +131,7 @@ export async function executeRun(
         break;
       }
     }
-    await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsManager, state.stateManager, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
+    await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsContext, state.stateContext, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
   } catch (error) {
     await ResolverProc.executeErrorCleanup(state.workdir, options, spinner, state.finalUnresolvedIssues, state.finalComments, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);

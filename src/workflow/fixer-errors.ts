@@ -5,9 +5,17 @@
 
 import type { Runner } from '../runners/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 // Error type constants
 const RAPID_FAILURE_MS = 2000;
@@ -24,7 +32,7 @@ export function handleFixerError(
   fixerTime: number,
   rapidFailureCount: number,
   lastFailureTime: number,
-  stateManager: StateManager,
+  stateContext: StateContext,
   getCurrentModel: () => string | null | undefined
 ): {
   shouldExit: boolean;
@@ -105,7 +113,7 @@ export function handleFixerError(
   debug('Tool failure (not recorded as lesson)', { tool: runner.name, error: result.error });
   
   // Track model error for performance stats
-  stateManager.recordModelError(runner.name, getCurrentModel() || undefined);
+  Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
   
   return { 
     shouldExit: false, 
@@ -122,8 +130,8 @@ export async function handleNoChanges(
   runner: Runner,
   result: { output?: string },
   llm: LLMClient,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   verifiedThisSession: Set<string>,
   getCurrentModel: () => string | null | undefined,
   parseNoChangesExplanation: (output?: string) => string | null
@@ -149,7 +157,7 @@ export async function handleNoChanges(
     // Fixer provided an explanation for why it made no changes
     console.log(chalk.cyan(`  Fixer's explanation: ${noChangesExplanation}`));
     // Note: Don't include tool/model names - that's tracked separately in modelStats
-    lessonsManager.addGlobalLesson(`Fixer made no changes: ${noChangesExplanation}`);
+    LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes: ${noChangesExplanation}`);
 
     // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
     const lowerExplanation = noChangesExplanation.toLowerCase();
@@ -183,7 +191,7 @@ export async function handleNoChanges(
         if (verifyResult && !verifyResult.exists) {
           // Issue verified as fixed!
           verifiedAsFixed++;
-          stateManager.markCommentVerifiedFixed(issue.comment.id);
+          Verification.markVerified(stateContext, issue.comment.id);
           verifiedThisSession.add(issue.comment.id);
           console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}:${issue.comment.line} - ${verifyResult.explanation}`));
         } else {
@@ -197,7 +205,7 @@ export async function handleNoChanges(
       
       if (verifiedAsFixed > 0) {
         console.log(chalk.green(`  → Verified ${verifiedAsFixed}/${unresolvedIssues.length} issues as already fixed`));
-        stateManager.recordModelFix(runner.name, currentModel || 'unknown', verifiedAsFixed);
+        Performance.recordModelFix(stateContext, runner.name, currentModel || 'unknown', verifiedAsFixed);
         
         // Update unresolved list
         unresolvedIssues.splice(0, unresolvedIssues.length, ...stillUnresolved);
@@ -230,7 +238,7 @@ export async function handleNoChanges(
     // Either not "already fixed" claim or verification rejected it
     // Record as lesson and continue with model rotation
     debug('No changes and not verified as fixed - recording as failure');
-    stateManager.recordModelNoChanges(runner.name, currentModel || 'unknown');
+    Performance.recordModelNoChanges(stateContext, runner.name, currentModel || 'unknown');
     return {
       shouldContinue: false,
       shouldBreak: false,
@@ -241,7 +249,7 @@ export async function handleNoChanges(
     // No explanation provided - fixer just made zero changes
     console.log(chalk.yellow('  (No explanation provided for zero changes)'));
     debug('No changes and no explanation - recording as failure');
-    stateManager.recordModelNoChanges(runner.name, currentModel || 'unknown');
+    Performance.recordModelNoChanges(stateContext, runner.name, currentModel || 'unknown');
     return {
       shouldContinue: false,
       shouldBreak: false,

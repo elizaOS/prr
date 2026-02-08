@@ -5,11 +5,14 @@
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient, ModelRecommendationContext } from '../llm/client.js';
 import type { Runner } from '../runners/types.js';
 import { validateDismissalExplanation } from './utils.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Get code snippet from file for context
@@ -73,8 +76,8 @@ export async function getCodeSnippet(
 export async function findUnresolvedIssues(
   comments: ReviewComment[],
   totalCount: number,
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   llm: LLMClient,
   runner: Runner,
   options: CLIOptions,
@@ -96,7 +99,7 @@ export async function findUnresolvedIssues(
 
   // Verification expiry: re-check issues verified more than 5 iterations ago
   const VERIFICATION_EXPIRY_ITERATIONS = 5;
-  const staleVerifications = stateManager.getStaleVerifications(VERIFICATION_EXPIRY_ITERATIONS);
+  const staleVerifications = Verification.getStaleVerifications(stateContext, VERIFICATION_EXPIRY_ITERATIONS);
   
   // First pass: filter out already-verified issues and gather code snippets
   const toCheck: Array<{
@@ -108,12 +111,12 @@ export async function findUnresolvedIssues(
     const isStale = staleVerifications.includes(comment.id);
     
     // If --reverify flag is set, ignore the cache and re-check everything
-    if (!options.reverify && !isStale && stateManager.isCommentVerifiedFixed(comment.id)) {
+    if (!options.reverify && !isStale && Verification.isVerified(stateContext, comment.id)) {
       alreadyResolved++;
       continue;
     }
     
-    if (options.reverify && stateManager.isCommentVerifiedFixed(comment.id)) {
+    if (options.reverify && Verification.isVerified(stateContext, comment.id)) {
       skippedCache++;
     }
     
@@ -172,8 +175,9 @@ export async function findUnresolvedIssues(
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
         if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
           // Valid explanation - document why it doesn't need fixing
-          stateManager.markCommentVerifiedFixed(comment.id);
-          stateManager.addDismissedIssue(
+          Verification.markVerified(stateContext, comment.id);
+          Dismissed.dismissIssue(
+            stateContext,
             comment.id,
             result.explanation,
             'already-fixed',
@@ -214,10 +218,11 @@ export async function findUnresolvedIssues(
       const availableModels = getModelsForRunner(runner);
       // Get attempt history for these specific issues
       const commentIds = toCheck.map(item => item.comment.id);
+      const Performance = await import('../state/state-performance.js');
       modelContext = {
         availableModels,
-        modelHistory: stateManager.getModelHistorySummary?.() || undefined,
-        attemptHistory: stateManager.getAttemptHistoryForIssues(commentIds),
+        modelHistory: Performance.getModelHistorySummary(stateContext) || undefined,
+        attemptHistory: Performance.getAttemptHistoryForIssues(stateContext, commentIds),
       };
     }
 
@@ -269,8 +274,9 @@ export async function findUnresolvedIssues(
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
         if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
           // Valid explanation - document why it doesn't need fixing
-          stateManager.markCommentVerifiedFixed(comment.id);
-          stateManager.addDismissedIssue(
+          Verification.markVerified(stateContext, comment.id);
+          Dismissed.dismissIssue(
+            stateContext,
             comment.id,
             result.explanation,
             'already-fixed',
@@ -292,8 +298,9 @@ export async function findUnresolvedIssues(
     }
   }
 
-  await stateManager.save();
-  await lessonsManager.save();
+  const State = await import('../state/state-core.js');
+  await State.saveState(stateContext);
+  await LessonsAPI.Save.save(lessonsContext);
   
   return {
     unresolved,

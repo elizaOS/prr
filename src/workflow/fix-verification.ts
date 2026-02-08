@@ -5,9 +5,17 @@
 
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Verify fixes after fixer completes
@@ -16,8 +24,8 @@ import type { LLMClient } from '../llm/client.js';
 export async function verifyFixes(
   git: SimpleGit,
   unresolvedIssues: UnresolvedIssue[],
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   llm: LLMClient,
   verifiedThisSession: Set<string>,
   noBatch: boolean
@@ -35,7 +43,7 @@ export async function verifyFixes(
   const spinner = ora();
   
   debugStep('VERIFYING FIXES');
-  stateManager.setPhase('verifying');
+  setPhase(stateContext, 'verifying');
   setTokenPhase('Verify fixes');
   startTimer('Verify fixes');
   spinner.start('Verifying fixes...');
@@ -59,11 +67,11 @@ export async function verifyFixes(
   // Mark unchanged files as failed immediately and document as dismissed
   // NOTE: No validation needed here - we're providing an explicit, meaningful reason
   for (const issue of unchangedIssues) {
-    stateManager.addVerificationResult(issue.comment.id, {
+    Iterations.addVerificationResult(stateContext, issue.comment.id, {
       passed: false,
       reason: 'File was not modified',
     });
-    stateManager.addDismissedIssue(
+    Dismissed.dismissIssue(stateContext, 
       issue.comment.id,
       'File was not modified by the fixer tool, so issue could not have been addressed',
       'file-unchanged',
@@ -104,7 +112,7 @@ export async function verifyFixes(
           diff
         );
 
-        stateManager.addVerificationResult(issue.comment.id, {
+        Iterations.addVerificationResult(stateContext, issue.comment.id, {
           passed: verification.fixed,
           reason: verification.explanation,
         });
@@ -113,8 +121,8 @@ export async function verifyFixes(
         
         if (verification.fixed) {
           verifiedCount++;
-          stateManager.markCommentVerifiedFixed(issue.comment.id);
-          stateManager.addCommentToIteration(issue.comment.id);
+          Verification.markVerified(stateContext, issue.comment.id);
+          Iterations.addCommentToIteration(stateContext, issue.comment.id);
           verifiedThisSession.add(issue.comment.id);  // Track for session filtering
         } else {
           failedCount++;
@@ -128,7 +136,7 @@ export async function verifyFixes(
             diff,
             verification.explanation
           );
-          lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
         }
       }
     } else {
@@ -156,21 +164,21 @@ export async function verifyFixes(
       for (const issue of changedIssues) {
         const verification = result.get(issue.comment.id);
         if (verification) {
-          stateManager.addVerificationResult(issue.comment.id, {
+          Iterations.addVerificationResult(stateContext, issue.comment.id, {
             passed: verification.fixed,
             reason: verification.explanation,
           });
 
           if (verification.fixed) {
             verifiedCount++;
-            stateManager.markCommentVerifiedFixed(issue.comment.id);
-            stateManager.addCommentToIteration(issue.comment.id);
+            Verification.markVerified(stateContext, issue.comment.id);
+            Iterations.addCommentToIteration(stateContext, issue.comment.id);
             verifiedThisSession.add(issue.comment.id);  // Track for session filtering
           } else {
             failedCount++;
             // In batch mode, we don't analyze failures individually (too expensive)
             // Just record the explanation as a lesson
-            lessonsManager.addLesson(`Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
           }
         }
       }

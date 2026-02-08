@@ -7,10 +7,18 @@ import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { ReviewComment } from '../github/types.js';
 import type { PRInfo } from '../github/types.js';
-import type { StateManager } from '../state/manager.js';
-import type { LessonsManager } from '../state/lessons.js';
+import type { StateContext } from '../state/state-context.js';
+import { setPhase } from '../state/state-context.js';
+import * as State from '../state/state-core.js';
+import * as Verification from '../state/state-verification.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Iterations from '../state/state-iterations.js';
+import * as Lessons from '../state/state-lessons.js';
+import * as Performance from '../state/state-performance.js';
+import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
  * Commit and push changes after all issues are resolved
@@ -20,8 +28,8 @@ export async function commitAndPushChanges(
   git: SimpleGit,
   prInfo: PRInfo,
   comments: ReviewComment[],
-  stateManager: StateManager,
-  lessonsManager: LessonsManager,
+  stateContext: StateContext,
+  lessonsContext: LessonsContext,
   options: CLIOptions,
   config: Config,
   workdir: string,
@@ -43,9 +51,9 @@ export async function commitAndPushChanges(
   debugStep('COMMIT PHASE (all resolved)');
   
   // Export lessons to repo BEFORE commit so they're included
-  if (lessonsManager.hasNewLessonsForRepo()) {
+  if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
     spinner.start('Exporting lessons to repo...');
-    await lessonsManager.saveToRepo();
+    await LessonsAPI.Save.saveToRepo(lessonsContext);
     spinner.succeed('Lessons exported');
   }
   
@@ -57,7 +65,7 @@ export async function commitAndPushChanges(
   
   // Get all comments that were fixed for commit message
   const fixedIssues = comments
-    .filter((comment) => stateManager.isCommentVerifiedFixed(comment.id))
+    .filter((comment) => Verification.isVerified(stateContext, comment.id))
     .map((comment) => ({
       filePath: comment.path,
       comment: comment.body,
@@ -65,8 +73,8 @@ export async function commitAndPushChanges(
   
   // Generate commit message locally (no LLM call needed)
   // WHY: Pattern matching is fast, free, and works well for commit messages
-  const { buildCommitMessage } = await import('../git/commit.js');
-  const { squashCommit, pushWithRetry } = await import('../git/commit.js');
+  const { buildCommitMessage } = await import('../git/git-commit-index.js');
+  const { squashCommit, pushWithRetry } = await import('../git/git-commit-index.js');
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);
   
