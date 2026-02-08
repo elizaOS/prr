@@ -61,6 +61,11 @@ export {
   checkAndSyncWithRemote,
 } from './workflow/repository.js';
 
+// Base branch merge workflows
+export {
+  checkAndMergeBaseBranch,
+} from './workflow/base-merge.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,

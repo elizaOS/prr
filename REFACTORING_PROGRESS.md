@@ -8,8 +8,8 @@ Successfully refactored the PRResolver "god object" by extracting methods to spe
 
 ### Overall Reduction
 - **Starting**: resolver.ts was 4,503 lines
-- **Current**: resolver.ts is 3,364 lines
-- **Reduction**: -1,139 lines (-25.3%)
+- **Current**: resolver.ts is 3,258 lines
+- **Reduction**: -1,245 lines (-27.6%)
 
 ### Created/Extracted Modules
 
@@ -18,13 +18,14 @@ Successfully refactored the PRResolver "god object" by extracting methods to spe
 | `ui/reporter.ts` | 316 | 7 | UI and reporting functions |
 | `models/rotation.ts` | 459 | 14 | Model and runner rotation logic |
 | `git/operations.ts` | 504 | 4 | Git conflict resolution operations |
-| `resolver-proc.ts` | 392 | 13 | Core procedural facade (re-exports from workflow modules) |
+| `resolver-proc.ts` | 397 | 13 | Core procedural facade (re-exports from workflow modules) |
 | `workflow/utils.ts` | 300 | 9 | Pure utility functions |
 | `workflow/initialization.ts` | 182 | 3 | Setup and state initialization |
 | `workflow/issue-analysis.ts` | 304 | 2 | Issue finding and analysis |
 | `workflow/startup.ts` | 255 | 4 | Startup workflows (PR status, bot timing, CodeRabbit) |
 | `workflow/repository.ts` | 261 | 4 | Repository operations (clone, sync, conflicts) |
-| **Total** | **2,973** | **60** | |
+| `workflow/base-merge.ts` | 151 | 1 | Base branch merge with conflict resolution |
+| **Total** | **3,129** | **61** | |
 
 ## Completed Work
 
