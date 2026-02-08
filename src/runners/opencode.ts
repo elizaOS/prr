@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { writeFileSync, unlinkSync } from 'fs';
+import { writeFileSync, unlinkSync, createReadStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
@@ -127,7 +127,7 @@ export class OpencodeRunner implements Runner {
       // Pipe the prompt file to stdin
       const promptStream = createReadStream(promptFile);
       promptStream.pipe(child.stdin);
-      promptStream.on('error', (err) => {
+      promptStream.on('error', (err: Error) => {
         debug('Error reading prompt file', { error: err.message });
         child.stdin?.destroy();
         child.kill('SIGTERM');

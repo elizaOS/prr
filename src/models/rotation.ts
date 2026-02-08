@@ -86,6 +86,12 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
   }
   
   const index = ctx.modelIndices.get(ctx.runner.name) || 0;
+  // Bounds check: if persisted index exceeds model list (e.g., model was removed),
+  // wrap back to 0 and update the stored index
+  if (index >= models.length) {
+    ctx.modelIndices.set(ctx.runner.name, 0);
+    return models[0];
+  }
   return models[index];
 }
 
@@ -156,7 +162,12 @@ export function rotateModel(ctx: RotationContext, stateContext: StateContext): b
     return false;  // No rotation possible
   }
   
-  const currentIndex = ctx.modelIndices.get(ctx.runner.name) || 0;
+  let currentIndex = ctx.modelIndices.get(ctx.runner.name) || 0;
+  // Bounds check: if persisted index exceeds model list, wrap to 0
+  if (currentIndex >= models.length) {
+    currentIndex = 0;
+    ctx.modelIndices.set(ctx.runner.name, 0);
+  }
   const nextIndex = (currentIndex + 1) % models.length;
   
   // Check if we've completed a full cycle
@@ -239,35 +250,7 @@ export function tryRotation(
     const models = getModelsForRunner(runner);
     const currentIndex = ctx.modelIndices.get(runnerName) || 0;
     return currentIndex >= models.length - 1;  // On last model or beyond
-  };</change>
-</change>
-
-<change path="src/resolver.ts">
-<search>    const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
-    Object.assign(this, result);</search>
-<replace>    const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
-    // Explicitly sync only the mutable run-state fields
-    this.prInfo = result.prInfo;
-    this.botTimings = result.botTimings;
-    this.expectedBotResponseTime = result.expectedBotResponseTime;
-    this.workdir = result.workdir;
-    this.stateContext = result.stateContext;
-    this.lessonsContext = result.lessonsContext;
-    this.lockConfig = result.lockConfig;
-    this.runner = result.runner;
-    this.runners = result.runners;
-    this.currentRunnerIndex = result.currentRunnerIndex;
-    this.modelIndices = result.modelIndices;
-    this.rapidFailureCount = result.rapidFailureCount;
-    this.lastFailureTime = result.lastFailureTime;
-    this.consecutiveFailures = result.consecutiveFailures;
-    this.modelFailuresInCycle = result.modelFailuresInCycle;
-    this.progressThisCycle = result.progressThisCycle;
-    this.exitReason = result.exitReason;
-    this.exitDetails = result.exitDetails;
-    this.finalUnresolvedIssues = result.finalUnresolvedIssues;
-    this.finalComments = result.finalComments;
-  }
+  };
 
   // Helper: Check if we should bail out after completing a cycle
   const checkBailOut = (): boolean => {

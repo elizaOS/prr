@@ -4,9 +4,6 @@
  */
 
 import chalk from 'chalk';
-import { debug } from '../logger.js';
-import { checkRemoteAhead } from '../git/git-conflicts.js';
-import { pullLatest } from '../git/git-pull.js';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -20,6 +17,8 @@ import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { SimpleGit } from 'simple-git';
 import type { PRInfo } from '../github/types.js';
+import { checkRemoteAhead, pullLatest } from '../git/git-clone-index.js';
+import { debug } from '../logger.js';
 
 /**
  * Process new bot reviews and add them to the workflow
@@ -70,8 +69,6 @@ export function filterVerifiedIssues(
   unresolvedIssues: UnresolvedIssue[],
   verifiedThisSession: Set<string>
 ): void {
-  
-  
   // Filter out issues that were verified during THIS session (by single-issue mode, etc.)
   // WHY: trySingleIssueFix marks items as verified but 'continue' skips normal filtering
   // IMPORTANT: Don't use isCommentVerifiedFixed here - it would remove stale items
@@ -108,8 +105,6 @@ export async function checkEmptyIssues(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  
-  
   // Check for empty issues at start of each iteration
   // WHY: After verification/filtering, unresolvedIssues can be 0
   if (unresolvedIssues.length === 0) {

@@ -50,41 +50,6 @@ process.on('SIGTERM', () => {
 });
 
 async function main(): Promise<void> {
-  
-  isShuttingDown = true;
-  
-  if (resolver) {
-    await resolver.gracefulShutdown();
-  }
-  
-  // Compute signal-specific exit code (128 + signal number)
-  // SIGINT (2) -> 130, SIGTERM (15) -> 143
-  const signalCodes: Record<string, number> = {
-    'SIGINT': 130,   // 128 + 2
-    'SIGTERM': 143,  // 128 + 15
-    'SIGHUP': 129,   // 128 + 1
-    'SIGQUIT': 131,  // 128 + 3
-  };
-  const exitCode = signalCodes[signal] ?? 128;
-  
-  process.exit(exitCode);
-}
-
-// Set up signal handlers
-process.on('SIGINT', () => {
-  handleShutdown('SIGINT').catch(err => {
-    console.error('Error during shutdown:', err);
-    process.exit(1);
-  });
-});
-process.on('SIGTERM', () => {
-  handleShutdown('SIGTERM').catch(err => {
-    console.error('Error during shutdown:', err);
-    process.exit(1);
-  });
-});
-
-async function main(): Promise<void> {
   try {
     // Parse CLI arguments
     const program = createCLI();

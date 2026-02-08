@@ -68,7 +68,8 @@ export function getVerificationRecord(ctx: StateContext, commentId: string): Ver
   return state.verifiedComments.find(v => v.commentId === commentId);
 }
 
-export function getStaleVerifications(ctx: StateContext, maxIterationsAgo: number): string[] {
+export function getStaleVerifications(ctx: StateContext | undefined, maxIterationsAgo: number): string[] {
+  if (!ctx) return [];
   const state = ctx.state;
   if (!state || !state.verifiedComments) return [];
   
@@ -86,4 +87,12 @@ export function getVerifiedComments(ctx: StateContext): string[] {
   const fromNew = state.verifiedComments?.map(v => v.commentId) || [];
   
   return [...new Set([...fromLegacy, ...fromNew])];
+}
+
+export function clearAllVerifications(ctx: StateContext): void {
+  const state = ctx.state;
+  if (!state) return;
+  
+  state.verifiedFixed = [];
+  state.verifiedComments = [];
 }
