@@ -1,5 +1,31 @@
 /**
  * Git push operations with timeout, retry, and recovery
+ * 
+ * WHY this is the largest git module (328 lines):
+ * Push is the most complex git operation we perform:
+ * - Process management (spawn for timeout control)
+ * - Authentication (token injection into remote URL)
+ * - Error handling (parse stderr for specific error types)
+ * - Retry logic (pull and push again on rejection)
+ * - Remote URL management (inject token, restore original)
+ * 
+ * WHY use spawn() instead of simple-git:
+ * simple-git's push() returns a Promise that can't be cancelled. If it hangs,
+ * the process runs forever. spawn() gives us direct process control so we can
+ * SIGKILL on timeout or Ctrl+C interruption.
+ * 
+ * WHY inject auth token into remote URL:
+ * HTTPS auth for push requires credentials. Token injection
+ * (https://token@github.com/...) is the most reliable method that works
+ * across different git versions and configurations.
+ * 
+ * WHY restore original remote URL:
+ * Tokens are sensitive. Even though workdirs are local-only, we restore the
+ * original URL after push to avoid leaving tokens in .git/config.
+ * 
+ * DESIGN: This module is intentionally kept together despite its size because
+ * the push logic is tightly coupled - timeout handling, auth, and retry all
+ * interact with each other.
  */
 import type { SimpleGit } from 'simple-git';
 import { spawn, execSync, execFileSync } from 'child_process';

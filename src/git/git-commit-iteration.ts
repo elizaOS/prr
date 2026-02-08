@@ -1,10 +1,52 @@
 /**
- * Iteration commit logic
+ * Iteration commit logic - commits with prr-fix markers for recovery
+ * 
+ * WHY this module exists:
+ * Iteration commits have special requirements (markers for recovery, skip hooks,
+ * specific message format) that don't belong in generic commit operations.
+ * 
+ * WHY prr-fix markers:
+ * On restart after interruption (Ctrl+C, crash), we scan git log for these
+ * markers to recover which issues were already verified and committed. This
+ * is more reliable than state files which can be lost or corrupted.
+ * 
+ * WHY skip hooks (--no-verify):
+ * Pre-commit hooks are designed for human commits, not automated iterations.
+ * They can block automation (e.g., requiring ticket numbers) or add unwanted
+ * changes (e.g., auto-formatting that conflicts with fixer output).
+ * 
+ * USAGE: Called by fix iteration workflow after verification succeeds.
  */
 import type { SimpleGit } from 'simple-git';
 import { stageAll, type CommitResult } from './git-commit-core.js';
 import { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';
 
+/**
+ * Create a commit for a completed fix iteration with recovery markers
+ * 
+ * WHY check hasChanges first:
+ * Prevents "nothing to commit" errors when the fixer didn't actually modify
+ * any files. This can happen if the issue was already fixed or if the fixer
+ * determined no changes were needed.
+ * 
+ * WHY return null instead of throwing:
+ * No changes is a valid state, not an error. The caller can decide how to
+ * handle it (e.g., log a message, try a different approach).
+ * 
+ * WHY normalize comment IDs to lowercase:
+ * GitHub's GraphQL API sometimes returns IDs with inconsistent casing.
+ * Normalizing ensures we can reliably match markers during recovery.
+ * 
+ * WHY include iteration number:
+ * Makes it easy to see the sequence of fix attempts in git log. Also helps
+ * identify which iteration a particular fix came from when debugging.
+ * 
+ * @param git - SimpleGit instance for the repository
+ * @param verifiedCommentIds - GitHub comment IDs that were successfully fixed
+ * @param iterationNumber - Current iteration count (for logging/tracking)
+ * @param fixedIssues - Optional details about what was fixed (for better commit message)
+ * @returns Commit result, or null if nothing to commit
+ */
 export async function commitIteration(
   git: SimpleGit,
   verifiedCommentIds: string[],
@@ -12,6 +54,7 @@ export async function commitIteration(
   fixedIssues?: Array<{ filePath: string; comment: string }>
 ): Promise<CommitResult | null> {
   // Check if there are changes to commit
+  // WHY: Prevents "nothing to commit" errors if fixer made no changes
   const status = await git.status();
   const hasChanges = !status.isClean();
   
@@ -21,18 +64,21 @@ export async function commitIteration(
 
   await stageAll(git);
 
-  // Build commit message with prr-fix markers (normalized to lowercase)
+  // Build prr-fix markers for recovery
+  // WHY lowercase: GitHub IDs have inconsistent casing, normalize for reliable matching
   const markers = verifiedCommentIds
     .map(id => `prr-fix:${id.toLowerCase()}`)
     .join('\n');
   
   // Generate a meaningful commit message from the fixed issues
+  // WHY: Better than generic "fix iteration N" - shows what actually changed
   const commitMsg = fixedIssues && fixedIssues.length > 0
     ? buildCommitMessage(fixedIssues, [])
     : 'fix: address review comments';
   
   const firstLine = commitMsg.split('\n')[0];
   
+  // Format: <summary>\n\nIteration N\n\nprr-fix:id1\nprr-fix:id2\n...
   const message = [
     firstLine,
     '',
@@ -42,6 +88,7 @@ export async function commitIteration(
   ].join('\n');
 
   // Skip pre-commit hooks for automated commits
+  // WHY --no-verify: Hooks are for humans, can block automation or add unwanted changes
   const result = await git.commit(message, { '--no-verify': null });
 
   return {
