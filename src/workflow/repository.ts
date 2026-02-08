@@ -16,6 +16,11 @@ import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import * as Rotation from '../state/state-rotation.js';
 import type { Runner } from '../runners/types.js';
+import chalk from 'chalk';
+import { debug, debugStep, startTimer, endTimer } from '../logger.js';
+import { formatNumber } from '../ui/reporter.js';
+import { cloneOrUpdate, checkForConflicts, pullLatest, abortMerge, completeMerge } from '../git/git-clone-index.js';
+import { scanCommittedFixes } from '../git/git-commit-index.js';
 
 /**
  * Restore runner and model rotation state from previous session
@@ -29,8 +34,6 @@ export function restoreRunnerRotationState(
   runner: Runner | null;
   runnerIndex: number;
 } {
-  const chalk = require('chalk');
-  
   const savedRunnerIndex = Rotation.getCurrentRunnerIndex(stateContext);
   const savedModelIndices = Rotation.getModelIndices(stateContext);
   
@@ -66,10 +69,6 @@ export async function cloneOrUpdateRepository(
   hasVerifiedFixes: boolean,
   spinner: Ora
 ): Promise<SimpleGit> {
-  const { debug } = require('../logger.js');
-  const { debugStep } = require('../logger.js');
-  const { cloneOrUpdate } = require('../git/clone.js');
-  
   debugStep('CLONING/UPDATING REPOSITORY');
   spinner.start('Setting up repository...');
   const { git } = await cloneOrUpdate(
@@ -93,12 +92,6 @@ export async function recoverVerificationState(
   branch: string,
   stateContext: StateContext
 ): Promise<void> {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
-  const { debugStep } = require('../logger.js');
-  const { formatNumber } = require('../ui/reporter.js');
-  const { scanCommittedFixes } = require('../git/commit.js');
-  
   debugStep('RECOVERING STATE FROM GIT');
   const committedFixes = await scanCommittedFixes(git, branch);
   if (committedFixes.length > 0) {
@@ -120,12 +113,6 @@ export async function checkAndSyncWithRemote(
   spinner: Ora,
   resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>
 ): Promise<{success: boolean; error?: string}> {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
-  const { debugStep } = require('../logger.js');
-  const { startTimer, endTimer } = require('../logger.js');
-  const { checkForConflicts, pullLatest, abortMerge, completeMerge } = require('../git/clone.js');
-  
   // Check for conflicts and sync with remote
   // WHY CHECK EARLY: Conflict markers in files will cause fixer tools to fail confusingly.
   // Better to detect and resolve conflicts upfront before entering the fix loop.

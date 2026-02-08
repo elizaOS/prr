@@ -23,7 +23,7 @@ export interface UnresolvedIssue {
 /**
  * Format a number with commas (e.g., 1234 -> "1,234")
  */
-function formatNumber(num: number): string {
+export function formatNumber(num: number): string {
   return num.toLocaleString();
 }
 
@@ -59,10 +59,12 @@ export function printModelPerformance(stateContext: StateContext | null): void {
 /**
  * Get display properties for an exit reason
  */
+type ChalkColorFn = (text: string) => string;
+
 export function getExitReasonDisplay(exitReason: string | null): { 
   label: string; 
   icon: string; 
-  color: typeof chalk.green 
+  color: ChalkColorFn 
 } {
   switch (exitReason) {
     case 'all_fixed':

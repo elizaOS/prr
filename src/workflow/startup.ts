@@ -15,13 +15,14 @@ import * as Lock from '../state/lock-functions.js';
 import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import chalk from 'chalk';
+import { warn, info, debug, debugStep, formatDuration } from '../logger.js';
+import { getWorkdirInfo, ensureWorkdir } from '../git/workdir.js';
 
 /**
  * Display PR status including CI checks, bot reviews, and overall activity
  */
 export function displayPRStatus(prStatus: PRStatus): void {
-  const chalk = require('chalk');
-  const { warn, info } = require('../logger.js');
   
   // CI checks status
   if (prStatus.inProgressChecks.length > 0) {
@@ -72,10 +73,6 @@ export async function analyzeBotTimingAndDisplay(
   botTimings: BotResponseTiming[];
   expectedBotResponseTime: Date | null;
 }> {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
-  const { formatDuration } = require('../ui/reporter.js');
-  
   let lastCommitTime: Date | null = null;
   let botTimings: BotResponseTiming[] = [];
   let expectedBotResponseTime: Date | null = null;
@@ -140,9 +137,6 @@ export async function checkCodeRabbitStatus(
   headSha: string,
   spinner: Ora
 ): Promise<void> {
-  const chalk = require('chalk');
-  const { debug, info } = require('../logger.js');
-  
   try {
     spinner.start('Checking CodeRabbit status...');
     const crResult = await github.triggerCodeRabbitIfNeeded(
@@ -184,12 +178,6 @@ export async function setupWorkdirAndManagers(
   lessonsContext: LessonsContext;
   lockConfig: LockConfig;
 }> {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
-  const { debugStep } = require('../logger.js');
-  const { getWorkdirInfo, ensureWorkdir } = require('../git/workdir.js');
-  const { LessonsManager } = require('../state/lessons.js');
-  
   // Setup workdir (includes branch in hash for repos with PRs on different target branches)
   debugStep('SETTING UP WORKDIR');
   const workdirInfo = getWorkdirInfo(config.workdirBase, owner, repo, prNumber, prInfo.branch);
@@ -223,12 +211,13 @@ export async function setupWorkdirAndManagers(
 
   // Initialize lessons manager (branch-permanent storage)
   // WHY: Lessons help the fixer avoid repeating mistakes
-  const lessonsContext = new LessonsManager(owner, repo, prInfo.branch);
+  const localStorePath = LessonsAPI.Paths.getLocalLessonsPath(owner, repo, prInfo.branch);
+  const lessonsContext = LessonsAPI.createLessonsContext(owner, repo, prInfo.branch, localStorePath);
   if (options.noClaudeMd) {
-    lessonsContext.setSkipClaudeMd(true);
+    LessonsAPI.setSkipClaudeMd(lessonsContext, true);
   }
-  lessonsContext.setWorkdir(workdir); // Enable repo-based lesson sharing
-  await lessonsContext.load();
+  LessonsAPI.setWorkdir(lessonsContext, workdir); // Enable repo-based lesson sharing
+  await LessonsAPI.Load.loadLessons(lessonsContext);
   
   // Initialize lock config for multi-instance coordination
   // WHY: Prevents duplicate work when multiple prr instances run on same PR
@@ -245,7 +234,7 @@ export async function setupWorkdirAndManagers(
 
   // Prune lessons for deleted files
   // WHY: Lessons about files that no longer exist are useless clutter
-  const prunedDeletedFiles = lessonsContext.pruneDeletedFiles(workdir);
+  const prunedDeletedFiles = LessonsAPI.Prune.pruneDeletedFiles(lessonsContext, workdir);
   if (prunedDeletedFiles > 0) {
     console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
     await LessonsAPI.Save.save(lessonsContext);

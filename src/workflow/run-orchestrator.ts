@@ -44,7 +44,7 @@ export interface RunState {
 
 export interface RunCallbacks {
   setupRunner: () => Promise<Runner>;
-  ensureStateFileIgnored: () => Promise<void>;
+  ensureStateFileIgnored: (workdir: string) => Promise<void>;
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>;
   getRotationContext: () => any;
   getCurrentModel: () => string | undefined;
@@ -134,7 +134,8 @@ export async function executeRun(
     await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsContext, state.stateContext, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
   } catch (error) {
-    await ResolverProc.executeErrorCleanup(state.workdir, options, spinner, state.finalUnresolvedIssues, state.finalComments, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
+    // Use empty string as workdir if not yet initialized (error during setup phase)
+    await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, state.finalUnresolvedIssues, state.finalComments, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
     throw error;
   }
   return state;

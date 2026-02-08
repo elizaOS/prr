@@ -49,8 +49,11 @@ export const MAX_COMMENT_CHARS = 2000;
 export const MAX_SNIPPET_LINES = 500;
 
 /**
- * Maximum file size for LLM conflict resolution (50KB).
- * Larger files cause token overflow and response truncation.
+ * Maximum file size for single-pass LLM conflict resolution (50KB).
+ * Larger files use chunked resolution strategy to stay within token limits.
+ * 
+ * WHY CHUNKED STRATEGY: Files >50KB are split into conflict regions that are
+ * resolved separately and reconstructed, enabling resolution of any size file.
  */
 export const MAX_CONFLICT_RESOLUTION_FILE_SIZE = 50000;
 

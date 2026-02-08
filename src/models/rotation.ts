@@ -48,7 +48,8 @@ export function createRotationContext(runner: Runner, runners: Runner[]): Rotati
 /**
  * Get the list of models available for a runner
  */
-export function getModelsForRunner(runner: Runner): string[] {
+export function getModelsForRunner(runner: Runner | undefined): string[] {
+  if (!runner) return [];
   // Use runner's own list if provided, otherwise use defaults
   return runner.supportedModels || DEFAULT_MODEL_ROTATIONS[runner.name] || [];
 }

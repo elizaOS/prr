@@ -25,6 +25,8 @@ export function hasConflictMarkers(content: string): boolean {
 }
 
 export function findFilesWithConflictMarkers(workdir: string, files: string[]): string[] {
+  if (!workdir) return [];
+  
   const conflicted: string[] = [];
   for (const file of files) {
     const fullPath = join(workdir, file);

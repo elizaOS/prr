@@ -24,10 +24,10 @@ export async function checkAndMergeBaseBranch(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const chalk = require('chalk');
-  const { debugStep, startTimer, endTimer } = require('../logger.js');
-  const { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved } = require('../git/clone.js');
-  const { isLockFile } = require('../git/operations.js');
+  const chalk = (await import('chalk')).default;
+  const { debugStep, startTimer, endTimer } = await import('../logger.js');
+  const { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved } = await import('../git/git-clone-index.js');
+  const { isLockFile } = await import('../git/git-lock-files.js');
   
   debugStep('CHECKING PR MERGE STATUS');
   
@@ -83,7 +83,6 @@ export async function checkAndMergeBaseBranch(
             console.log(chalk.red(`    - ${file}`));
           }
           console.log(chalk.yellow('\n  These conflicts must be resolved before prr can continue.'));
-          console.log(chalk.yellow('  (Large files >50KB cannot be auto-resolved due to token limits)'));
           console.log(chalk.gray('\n  To resolve manually:'));
           console.log(chalk.gray(`    1. Checkout the branch: git checkout ${prInfo.branch}`));
           console.log(chalk.gray(`    2. Merge base branch: git merge ${prInfo.baseBranch}`));

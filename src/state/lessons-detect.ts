@@ -6,7 +6,9 @@ import { join } from 'path';
 import type { LessonsContext, LessonsSyncTarget } from './lessons-context.js';
 
 export function autoDetectSyncTargets(ctx: LessonsContext): void {
-  if (!ctx.workdir) return;
+  if (!ctx.workdir) {
+    throw new Error('Cannot detect sync targets: workdir is required');
+  }
 
   const detected: LessonsSyncTarget[] = [];
 

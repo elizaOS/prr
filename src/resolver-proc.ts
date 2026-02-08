@@ -425,9 +425,13 @@ export async function executeBailOut(
   
   console.log(chalk.cyan('\n  Tools Exhausted:'));
   for (const tool of toolsExhausted) {
-    const runner = runners.find(r => r.name === tool)!;
-    const models = getModelsForRunner(runner);
-    console.log(chalk.gray(`    • ${tool}: ${models.length} models tried`));
+    const runner = runners.find(r => r.name === tool);
+    if (runner) {
+      const models = getModelsForRunner(runner);
+      console.log(chalk.gray(`    • ${tool}: ${models.length} models tried`));
+    } else {
+      console.log(chalk.gray(`    • ${tool}: exhausted`));
+    }
   }
   
   if (unresolvedIssues.length > 0) {

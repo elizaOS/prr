@@ -114,6 +114,8 @@ export function pruneRelativeLessons(ctx: LessonsContext): number {
 }
 
 export function pruneDeletedFiles(ctx: LessonsContext, workdir: string): number {
+  if (!workdir) return 0;
+  
   let removed = 0;
   
   for (const filePath in ctx.store.files) {
