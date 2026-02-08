@@ -97,6 +97,11 @@ export {
   handleNoChanges,
 } from './workflow/fixer-errors.js';
 
+// Fix verification
+export {
+  verifyFixes,
+} from './workflow/fix-verification.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,
