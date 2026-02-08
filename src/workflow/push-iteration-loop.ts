@@ -27,9 +27,71 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../git/git-clone-index.js';
-import { formatNumber, debugStep, endTimer } from '../logger.js';
+import { formatNumber, debugStep } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+
+/** Git and GitHub context for a push iteration */
+export interface PushIterationGitContext {
+  git: SimpleGit;
+  github: GitHubAPI;
+  owner: string;
+  repo: string;
+  number: number;
+  workdir: string;
+}
+
+/** Mutable iteration state tracked across push iterations */
+export interface PushIterationState {
+  pushIteration: number;
+  maxPushIterations: number;
+  rapidFailureCount: number;
+  lastFailureTime: number;
+  consecutiveFailures: number;
+  modelFailuresInCycle: number;
+  progressThisCycle: number;
+  expectedBotResponseTime: Date | null;
+}
+
+/** Contextual objects passed through the push iteration */
+export interface PushIterationContexts {
+  prInfo: PRInfo;
+  stateContext: StateContext;
+  lessonsContext: LessonsContext;
+  finalUnresolvedIssues: UnresolvedIssue[];
+  finalComments: ReviewComment[];
+  /** Mutation refs for cross-iteration state */
+  prInfoRef: { current: PRInfo };
+  finalUnresolvedIssuesRef: { current: UnresolvedIssue[] };
+  finalCommentsRef: { current: ReviewComment[] };
+  expectedBotResponseTimeRef: { current: Date | null };
+}
+
+/** Callback functions used during push iteration */
+export interface PushIterationCallbacks {
+  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>;
+  resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>;
+  getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>;
+  printUnresolvedIssues: (issues: UnresolvedIssue[]) => void;
+  getCurrentModel: () => string | undefined;
+  parseNoChangesExplanation: (output: string) => string | null;
+  trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  tryRotation: () => boolean;
+  tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
+  checkForNewBotReviews: (owner: string, repo: string, number: number, existingIds: Set<string>) => Promise<{ newComments: ReviewComment[]; message: string } | null>;
+  calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null;
+  waitForBotReviews: (owner: string, repo: string, number: number, sha: string) => Promise<void>;
+}
+
+/** Service dependencies for push iteration */
+export interface PushIterationServices {
+  llm: LLMClient;
+  options: CLIOptions;
+  config: Config;
+  spinner: Ora;
+  runner: Runner;
+}
 
 /**
  * Execute single push iteration
@@ -48,49 +110,11 @@ import * as LessonsAPI from '../state/lessons-index.js';
  * @returns Exit control flow
  */
 export async function executePushIteration(
-  pushIteration: number,
-  maxPushIterations: number,
-  git: SimpleGit,
-  github: GitHubAPI,
-  owner: string,
-  repo: string,
-  number: number,
-  prInfo: PRInfo,
-  stateContext: StateContext,
-  lessonsContext: LessonsContext,
-  llm: LLMClient,
-  options: CLIOptions,
-  config: Config,
-  workdir: string,
-  spinner: Ora,
-  runner: Runner,
-  rapidFailureCount: number,
-  lastFailureTime: number,
-  consecutiveFailures: number,
-  modelFailuresInCycle: number,
-  progressThisCycle: number,
-  expectedBotResponseTime: Date | null,
-  finalUnresolvedIssues: UnresolvedIssue[],
-  finalComments: ReviewComment[],
-  // Callbacks
-  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>,
-  resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>,
-  getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>,
-  printUnresolvedIssues: (issues: UnresolvedIssue[]) => void,
-  getCurrentModel: () => string | undefined,
-  parseNoChangesExplanation: (output: string) => string | null,
-  trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>,
-  tryRotation: () => boolean,
-  tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>,
-  executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
-  checkForNewBotReviews: (owner: string, repo: string, number: number, existingIds: Set<string>) => Promise<{ newComments: ReviewComment[]; message: string } | null>,
-  calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null,
-  waitForBotReviews: (owner: string, repo: string, number: number, sha: string) => Promise<void>,
-  // Mutation refs
-  prInfoRef: { current: PRInfo },
-  finalUnresolvedIssuesRef: { current: UnresolvedIssue[] },
-  finalCommentsRef: { current: ReviewComment[] },
-  expectedBotResponseTimeRef: { current: Date | null }
+  gitCtx: PushIterationGitContext,
+  iterState: PushIterationState,
+  contexts: PushIterationContexts,
+  callbacks: PushIterationCallbacks,
+  services: PushIterationServices
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -102,6 +126,19 @@ export async function executePushIteration(
   updatedProgressThisCycle: number;
   updatedHeadSha?: string;
 }> {
+  // Destructure parameter objects for local use
+  const { git, github, owner, repo, number, workdir } = gitCtx;
+  let { rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle } = iterState;
+  const { pushIteration, maxPushIterations } = iterState;
+  const { prInfo, stateContext, lessonsContext } = contexts;
+  const { prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef } = contexts;
+  const {
+    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues,
+    getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation,
+    tryDirectLLMFix, executeBailOut, checkForNewBotReviews, calculateExpectedBotResponseTime, waitForBotReviews,
+  } = callbacks;
+  const { llm, options, config, spinner, runner } = services;
+
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
     console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
@@ -134,7 +171,7 @@ export async function executePushIteration(
   }
 
   // Initialize fix loop
-  const maxFixIterations = options.maxFixIterations || Infinity;
+  const maxFixIterations = options.maxFixIterations ?? Infinity;
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
   
@@ -195,7 +232,6 @@ export async function executePushIteration(
     // Verify fixes
     const { verifiedCount, failedCount, changedIssues, unchangedIssues } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch);
     const totalIssues = unresolvedIssues.length;
-    endTimer('Verify fixes');
     const currentModel = getCurrentModel();
     
     // Handle iteration cleanup

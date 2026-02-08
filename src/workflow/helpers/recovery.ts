@@ -179,11 +179,16 @@ export async function trySingleIssueFix(
           LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${noChangesExplanation}`);
 
           // If fixer says it's already fixed, dismiss this issue
+          // WHY: Only match targeted phrases to avoid false positives from
+          // single words like 'has' or 'exists' appearing in unrelated explanations
           const lowerExplanation = noChangesExplanation.toLowerCase();
-          const isAlreadyFixed = lowerExplanation.includes('already') ||
-                                 lowerExplanation.includes('exists') ||
-                                 lowerExplanation.includes('has') ||
-                                 lowerExplanation.includes('implements');
+          const isAlreadyFixed = /\balready\s+fixed\b/.test(lowerExplanation) ||
+                                 /\bissue\s+already\b/.test(lowerExplanation) ||
+                                 /\bno\s+changes?\s+(required|needed|necessary)\b/.test(lowerExplanation) ||
+                                 /\bno\s+fix\s+needed\b/.test(lowerExplanation) ||
+                                 /\bnothing\s+to\s+(do|fix|change)\b/.test(lowerExplanation) ||
+                                 /\bnot\s+reproducible\b/.test(lowerExplanation) ||
+                                 /\balready\s+(exists?|implemented|addressed|resolved|correct)\b/.test(lowerExplanation);
 
           if (isAlreadyFixed) {
             Dismissed.dismissIssue(
@@ -256,10 +261,21 @@ export async function tryDirectLLMFix(
   
   let anyFixed = false;
   
+  // Maximum file size to embed in prompt (128KB). Larger files would exceed
+  // model context limits and waste tokens.
+  const MAX_PROMPT_FILE_BYTES = 128 * 1024;
+
   for (const issue of issues) {
     const filePath = join(workdir, issue.comment.path);
     
     try {
+      // Guard against large files exceeding model context
+      const stat = fs.statSync(filePath);
+      if (stat.size > MAX_PROMPT_FILE_BYTES) {
+        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
+        continue;
+      }
+
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       
       const prompt = `Fix this code review issue:
@@ -322,9 +338,11 @@ Start your response with \`\`\` and end with \`\`\`.`;
             // First check if file exists in git
             const tracked = await git.raw(['ls-files', issue.comment.path]).catch(() => '');
             if (tracked.trim()) {
-              await git.checkout([issue.comment.path]).catch((err) => {
+              await git.checkout([issue.comment.path]).catch(async (err) => {
                 // If file is staged for deletion, unstage it first
-                git.reset(['HEAD', issue.comment.path]).catch(() => {});
+                try {
+                  await git.reset(['HEAD', issue.comment.path]);
+                } catch { /* ignore reset failures */ }
                 console.log(chalk.yellow(`    Warning: Could not reset ${issue.comment.path}: ${err.message}`));
               });
             } else {

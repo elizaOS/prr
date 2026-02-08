@@ -25,6 +25,8 @@ import type { LockConfig } from '../state/lock-functions.js';
 import type { Runner } from '../runners/types.js';
 import { debug, debugStep } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
+import { resolveConflictsWithLLM as resolveConflictsImpl } from '../git/git-conflict-resolve.js';
+import { LLMClient } from '../llm/client.js';
 
 /**
  * Execute complete setup phase
@@ -108,12 +110,8 @@ export async function executeSetupPhase(
   // WHY: During setup, resolver's workdir/runner are not set yet, so we need to
   // create a callback that captures the setup phase's workdir and runner
   const resolveConflictsInSetup = async (git: SimpleGit, files: string[], source: string) => {
-    // Import and call the actual resolution function with setup phase context
-    const { resolveConflictsWithLLM } = await import('../git/git-conflict-resolve.js');
-    const { LLMClient } = await import('../llm/client.js');
     const llm = new LLMClient(config);
-    // Pass the runner that was set up earlier (line 85-96)
-    return resolveConflictsWithLLM(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
+    return resolveConflictsImpl(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
   };
 
   // Check for conflicts and sync with remote

@@ -179,6 +179,14 @@ export async function verifyFixes(
             // Just record the explanation as a lesson
             LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
           }
+        } else {
+          // No verification result returned for this issue
+          failedCount++;
+          Iterations.addVerificationResult(stateContext, issue.comment.id, {
+            passed: false,
+            reason: 'No verification result returned by LLM',
+          });
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - No verification result returned, treating as failed`);
         }
       }
     }

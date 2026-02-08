@@ -17,7 +17,6 @@ import type { PRInfo, BotResponseTiming } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import { parsePRUrl } from '../github/types.js';
 import { 
-  debug as logDebug, 
   debug,
   debugStep,
   warn, 

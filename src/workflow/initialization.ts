@@ -6,6 +6,7 @@ import type { CLIOptions } from '../cli.js';
 import type { StateContext } from '../state/state-context.js';
 import { createStateContext, setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
+import type { ResolverState } from '../state/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import * as Lock from '../state/lock-functions.js';
@@ -84,7 +85,7 @@ export async function initializeManagers(
   stateContext: StateContext;
   lessonsContext: LessonsContext;
   lockConfig: LockConfig;
-  state: any;
+  state: ResolverState;
 }> {
   // Initialize state context
   debugStep('LOADING STATE');

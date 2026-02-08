@@ -20,10 +20,8 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatDuration } from '../logger.js';
 import { formatNumber } from '../ui/reporter.js';
 
-// Error type constants
-const RAPID_FAILURE_MS = 2000;
-const MAX_RAPID_FAILURES = 3;
-const RAPID_FAILURE_WINDOW_MS = 10_000;
+import { RAPID_FAILURE_THRESHOLD_MS, MAX_RAPID_FAILURES, RAPID_FAILURE_WINDOW_MS } from '../constants.js';
+const RAPID_FAILURE_MS = RAPID_FAILURE_THRESHOLD_MS;
 
 /**
  * Handle fixer tool errors (permission, auth, environment, rapid failures)
@@ -141,6 +139,7 @@ export async function handleNoChanges(
   exitReason?: string;
   exitDetails?: string;
   consecutiveFailures: number;
+  updatedUnresolvedIssues?: UnresolvedIssue[];
 }> {
   const currentModel = getCurrentModel();
   console.log(chalk.yellow(`\nNo changes made by ${runner.name}${currentModel ? ` (${currentModel})` : ''}`));
@@ -202,10 +201,7 @@ export async function handleNoChanges(
         console.log(chalk.green(`  → Verified ${verifiedAsFixed}/${unresolvedIssues.length} issues as already fixed`));
         Performance.recordModelFix(stateContext, runner.name, currentModel || 'unknown', verifiedAsFixed);
         
-        // Update unresolved list
-        unresolvedIssues.splice(0, unresolvedIssues.length, ...stillUnresolved);
-        
-        if (unresolvedIssues.length === 0) {
+        if (stillUnresolved.length === 0) {
           console.log(chalk.green('\n✓ All issues verified as already fixed'));
           return {
             shouldContinue: false,
@@ -214,6 +210,7 @@ export async function handleNoChanges(
             exitReason: 'all_fixed',
             exitDetails: 'All issues verified as already fixed',
             consecutiveFailures: 0,
+            updatedUnresolvedIssues: stillUnresolved,
           };
         }
         
@@ -223,6 +220,7 @@ export async function handleNoChanges(
           shouldBreak: false,
           progressMade: verifiedAsFixed,
           consecutiveFailures: 0,
+          updatedUnresolvedIssues: stillUnresolved,
         };
       } else {
         // Verification REJECTED fixer's claim - none are actually fixed

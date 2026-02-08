@@ -75,13 +75,13 @@ export async function handlePostVerification(
         updatedUnresolvedIssues: rotationResult.updatedUnresolvedIssues,
       };
     } else {
-      // Made progress, reset failure counters
+      // Made progress, reset failure counters and count verified fixes as progress
       const filteredIssues = unresolvedIssues.filter((i) => !verifiedThisSession.has(i.comment.id));
       return {
         shouldBreak: false,
         updatedConsecutiveFailures: 0,
         updatedModelFailuresInCycle: 0,
-        updatedProgressThisCycle: progressThisCycle,
+        updatedProgressThisCycle: progressThisCycle + verifiedCount,
         updatedUnresolvedIssues: filteredIssues,
       };
     }

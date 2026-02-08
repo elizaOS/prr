@@ -93,10 +93,7 @@ const PRR_SECTION_START = '<!-- PRR_LESSONS_START -->';
 const PRR_SECTION_END = '<!-- PRR_LESSONS_END -->';
 
 // Size limits for synced files (CLAUDE.md, etc.) to prevent bloat
-// Our canonical .prr/lessons.md has no limits
-const MAX_GLOBAL_LESSONS_FOR_SYNC = 15;
-const MAX_FILE_LESSONS_FOR_SYNC = 5;
-const MAX_FILES_FOR_SYNC = 20;
+import { MAX_GLOBAL_LESSONS_FOR_SYNC, MAX_FILE_LESSONS_FOR_SYNC, MAX_FILES_FOR_SYNC } from './lessons-paths.js';
 
 export class LessonsManager {
   private store: LessonsStore;

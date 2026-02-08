@@ -208,10 +208,7 @@ import {
 // CONSTANTS
 // ============================================================================
 
-export const MAX_MODELS_PER_TOOL_ROUND = 2;
-export const MAX_RAPID_FAILURES = 3;
-export const RAPID_FAILURE_MS = 2000;
-export const RAPID_FAILURE_WINDOW_MS = 10_000;
+// Constants consolidated to src/constants.ts (canonical source of truth)
 
 // ============================================================================
 // REMAINING WORKFLOW FUNCTIONS (not yet modularized)

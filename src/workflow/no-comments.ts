@@ -36,6 +36,8 @@ export async function handleNoComments(
     console.log(chalk.cyan(`  Auto-resolving conflicts with ${prInfo.baseBranch}...`));
     
     startTimer('Auto-resolve conflicts');
+    // Ensure base branch ref is up-to-date before merging
+    await git.fetch('origin', prInfo.baseBranch);
     const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch);
     
     if (!mergeResult.success) {
@@ -92,8 +94,13 @@ export async function handleNoComments(
     // Push the merge commit
     if (!options.noPush && !options.noCommit) {
       console.log(chalk.gray(`  Pushing merge commit...`));
-      await pushWithRetry(git, prInfo.branch, { githubToken: config.githubToken });
-      console.log(chalk.green(`  ✓ Pushed to origin/${prInfo.branch}`));
+      try {
+        await pushWithRetry(git, prInfo.branch, { githubToken: config.githubToken });
+        console.log(chalk.green(`  ✓ Pushed to origin/${prInfo.branch}`));
+      } catch (err) {
+        console.error(chalk.red(`  ✗ Failed to push ${prInfo.branch}: ${err instanceof Error ? err.message : String(err)}`));
+        throw err;
+      }
     }
     
     return {

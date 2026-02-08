@@ -82,9 +82,9 @@ export async function runCleanupMode(
     console.log(chalk.gray(`Creating workdir: ${workdir}`));
   }
   
-  // Clone/update repository
+  // Clone/update repository (pass githubToken for private repo access)
   spinner.start('Setting up repository...');
-  await cloneOrUpdateFn(prInfo.cloneUrl, prInfo.branch, workdir);
+  await cloneOrUpdateFn(prInfo.cloneUrl, prInfo.branch, workdir, config.githubToken);
   spinner.succeed('Repository ready');
   
   const git = simpleGit(workdir);

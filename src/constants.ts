@@ -214,23 +214,7 @@ export const MAX_RECENT_LESSONS_PER_FILE = 5;
 // LESSONS & STATE MANAGEMENT
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/**
- * Maximum global lessons to sync to CLAUDE.md/CONVENTIONS.md.
- * WHY: Keep sync files readable; too many lessons is noise.
- */
-export const MAX_GLOBAL_LESSONS_FOR_SYNC = 15;
-
-/**
- * Maximum lessons per file to sync to CLAUDE.md/CONVENTIONS.md.
- * WHY: Focus on most recent/relevant lessons per file.
- */
-export const MAX_FILE_LESSONS_FOR_SYNC = 5;
-
-/**
- * Maximum files to include per-file lessons for in sync.
- * WHY: Prevents massive sync files; focus on most-edited files.
- */
-export const MAX_FILES_FOR_SYNC = 20;
+// Lesson sync limits are defined in src/state/lessons-paths.ts (canonical source of truth).
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // DISTRIBUTED LOCKING

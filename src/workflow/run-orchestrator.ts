@@ -17,6 +17,7 @@ import type { StateContext } from '../state/state-context.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import type { LLMClient } from '../llm/client.js';
+import type { RotationContext } from '../models/rotation.js';
 import { cleanupWorkdir } from '../git/workdir.js';
 import * as ResolverProc from '../resolver-proc.js';
 
@@ -48,7 +49,7 @@ export interface RunCallbacks {
   ensureStateFileIgnored: (workdir: string) => Promise<void>;
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>;
   syncResolverState?: (state: RunState) => void;
-  getRotationContext: () => any;
+  getRotationContext: () => RotationContext;
   getCurrentModel: () => string | undefined;
   findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>;
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>;
@@ -121,11 +122,13 @@ export async function executeRun(
     const expectedBotResponseTimeRef = { current: state.expectedBotResponseTime };
     while (pushIteration < maxPushIterations) {
       pushIteration++;
-      const iterResult = await ResolverProc.executePushIteration(pushIteration, maxPushIterations, git, github, owner, repo, number, state.prInfo, state.stateContext, state.lessonsContext, llm, options, config, state.workdir, spinner, state.runner,
-        state.rapidFailureCount, state.lastFailureTime, state.consecutiveFailures, state.modelFailuresInCycle, state.progressThisCycle, state.expectedBotResponseTime, state.finalUnresolvedIssues, state.finalComments,
-        callbacks.findUnresolvedIssues, callbacks.resolveConflictsWithLLM, callbacks.getCodeSnippet, callbacks.printUnresolvedIssues, callbacks.getCurrentModel, callbacks.parseNoChangesExplanation,
-        callbacks.trySingleIssueFix, callbacks.tryRotation, callbacks.tryDirectLLMFix, callbacks.executeBailOut, callbacks.checkForNewBotReviews, callbacks.calculateExpectedBotResponseTime, callbacks.waitForBotReviews,
-        prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef);
+      const iterResult = await ResolverProc.executePushIteration(
+        { git, github, owner, repo, number, workdir: state.workdir },
+        { pushIteration, maxPushIterations, rapidFailureCount: state.rapidFailureCount, lastFailureTime: state.lastFailureTime, consecutiveFailures: state.consecutiveFailures, modelFailuresInCycle: state.modelFailuresInCycle, progressThisCycle: state.progressThisCycle, expectedBotResponseTime: state.expectedBotResponseTime },
+        { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef },
+        { findUnresolvedIssues: callbacks.findUnresolvedIssues, resolveConflictsWithLLM: callbacks.resolveConflictsWithLLM, getCodeSnippet: callbacks.getCodeSnippet, printUnresolvedIssues: callbacks.printUnresolvedIssues, getCurrentModel: callbacks.getCurrentModel, parseNoChangesExplanation: callbacks.parseNoChangesExplanation, trySingleIssueFix: callbacks.trySingleIssueFix, tryRotation: callbacks.tryRotation, tryDirectLLMFix: callbacks.tryDirectLLMFix, executeBailOut: callbacks.executeBailOut, checkForNewBotReviews: callbacks.checkForNewBotReviews, calculateExpectedBotResponseTime: callbacks.calculateExpectedBotResponseTime, waitForBotReviews: callbacks.waitForBotReviews },
+        { llm, options, config, spinner, runner: state.runner }
+      );
       state.rapidFailureCount = iterResult.updatedRapidFailureCount;
       state.lastFailureTime = iterResult.updatedLastFailureTime;
       state.consecutiveFailures = iterResult.updatedConsecutiveFailures;

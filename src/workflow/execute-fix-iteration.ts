@@ -108,15 +108,19 @@ export async function executeFixIteration(
   setPhase(stateContext, 'fixing');
   startTimer('Run fixer');
   spinner.start(`Running ${runner.name} to fix issues...`);
-  spinner.stop();
   
   debug('Executing runner', { tool: runner.name, workdir, model: options.toolModel });
   const codexAddDirs = [...(options.codexAddDir ?? [])];
 
-  const result = await runner.run(workdir, prompt, {
-    model: currentModel,
-    codexAddDirs,
-  });
+  let result;
+  try {
+    result = await runner.run(workdir, prompt, {
+      model: currentModel,
+      codexAddDirs,
+    });
+  } finally {
+    spinner.stop();
+  }
   const fixerTime = endTimer('Run fixer');
   debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 

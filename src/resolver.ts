@@ -40,7 +40,6 @@ export class PRResolver {
   private modelIndices: Map<string, number> = new Map();
   private modelFailuresInCycle = 0;
   private modelsTriedThisToolRound = 0;
-  private static readonly MAX_MODELS_PER_TOOL_ROUND = 2;
   private recommendedModels?: string[];
   private recommendedModelIndex = 0;
   private modelRecommendationReasoning?: string;
@@ -55,9 +54,6 @@ export class PRResolver {
   private finalComments: ReviewComment[] = [];
   private rapidFailureCount = 0;
   private lastFailureTime = 0;
-  private static readonly MAX_RAPID_FAILURES = 3;
-  private static readonly RAPID_FAILURE_MS = 2000;
-  private static readonly RAPID_FAILURE_WINDOW_MS = 10_000;
 
   constructor(config: Config, options: CLIOptions) {
     this.config = config;

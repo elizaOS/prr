@@ -118,23 +118,28 @@ export async function handleCommitAndPush(
     console.log(chalk.gray(`  Running: git push origin ${prInfo.branch}`));
     console.log(chalk.gray(`  Workdir: ${workdir}`));
     spinner.start('Pushing changes...');
-    await pushWithRetry(git, prInfo.branch, {
-      onPullNeeded: () => {
-        spinner.text = 'Push rejected, pulling and retrying...';
-      },
-      githubToken: githubToken,
-      onConflict: async (conflictedFiles) => {
-        // Resolve rebase conflicts using LLM
-        spinner.text = 'Resolving rebase conflicts...';
-        const resolution = await resolveConflictsWithLLM(
-          git,
-          conflictedFiles,
-          `origin/${prInfo.branch}`
-        );
-        return resolution.success;
-      },
-    });
-    spinner.succeed('Pushed to remote');
+    try {
+      await pushWithRetry(git, prInfo.branch, {
+        onPullNeeded: () => {
+          spinner.text = 'Push rejected, pulling and retrying...';
+        },
+        githubToken: githubToken,
+        onConflict: async (conflictedFiles) => {
+          // Resolve rebase conflicts using LLM
+          spinner.text = 'Resolving rebase conflicts...';
+          const resolution = await resolveConflictsWithLLM(
+            git,
+            conflictedFiles,
+            `origin/${prInfo.branch}`
+          );
+          return resolution.success;
+        },
+      });
+      spinner.succeed('Pushed to remote');
+    } catch (err) {
+      spinner.fail('Push failed');
+      throw err;
+    }
 
     // Check CodeRabbit status and trigger if needed
     // WHY: Some repos configure CodeRabbit to require manual trigger (@coderabbitai review)
