@@ -104,11 +104,23 @@ export function normalizeLessonText(lesson: string): string | null {
   normalized = normalized.replace(/\s+-\s*$/, '').trim();
   normalized = normalized.replace(/\s*(?:-\s*)?:\s*(?:string|number|boolean|unknown|any)\s*;?$/i, '').trim();
   normalized = normalized.replace(/\s{2,}/g, ' ').trim();
+  
+  // Detect orphaned/incomplete entries (truncated lessons)
+  if (/\.\.\.$/.test(normalized)) return null;  // Ends with "..."
+  if (/\b(?:in|to|for|from|with|the|and|or|but|if|when|that)\s*$/i.test(normalized)) return null;  // Ends with incomplete phrase
+  if (/(?:function|method|code|logic|generator|manager|strategy|helper|pattern|implementation)\s*$/i.test(normalized)) return null;  // Ends with noun expecting more
+  
+  // Reject common malformed patterns
   if (/\bchars\s+truncated\b/i.test(normalized)) return null;
   if (/^Fix for [^:]+:(?:null|undefined)\b/i.test(normalized)) return null;
   if (/^Fix for [^:]+:\d+$/i.test(normalized)) return null;
   if (/^Fix for [^:]+$/i.test(normalized)) return null;
   if (/^\d+\.?$/.test(normalized)) return null;
+  if (/^Instructions\b/i.test(normalized)) return null;  // Reject header fragments
+  
+  // Must have minimum substance (not just metadata)
+  if (normalized.length < 20) return null;
+  
   return normalized.length > 0 ? normalized : null;
 }
 
@@ -144,10 +156,14 @@ export function canonicalizeToolAttempts(lesson: string): string {
 
 export function sanitizeFilePathHeader(filePath: string): string {
   let cleaned = filePath.replace(/^#+\s*/, '').replace(/^\*\*|\*\*$/g, '').trim();
+  
+  // Strip all forms of " - (inferred) <language>" suffixes aggressively
   cleaned = cleaned.replace(/\s*-\s*\(inferred\).*$/i, '').trim();
   cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*\w+$/i, '').trim();
   cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*ts\b/i, '').trim();
-  cleaned = cleaned.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml)\b$/i, '').trim();
+  
+  // Strip bare language suffixes like " - ts", " - tsx", etc.
+  cleaned = cleaned.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml|py|go|rs|java|c|cpp|h|hpp)\b$/i, '').trim();
   cleaned = cleaned.replace(/^.*?([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?).*$/i, '$1').trim();
   cleaned = cleaned.replace(/^(.*?:\d+)\s*-\s*\(inferred\).*$/i, '$1').trim();
   const inferredSuffixMatch = cleaned.match(/^(.*?\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?)[\s-]*\(\s*inferred\s*\).*$/i);

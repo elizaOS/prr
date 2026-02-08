@@ -37,6 +37,7 @@ export function addFileLesson(ctx: LessonsContext, filePath: string, lesson: str
   const normalized = Normalize.normalizeLessonText(lesson);
   if (!normalized) return;
   
+  // Sanitize file path to strip " - ts", " - (inferred) <lang>", etc.
   const cleanedPath = Normalize.sanitizeFilePathHeader(filePath);
   if (!cleanedPath) return;
   

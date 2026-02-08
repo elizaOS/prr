@@ -106,7 +106,8 @@ export function toCompactedMarkdown(ctx: LessonsContext): string {
     '',
   ];
 
-  const globalLessons = [...ctx.store.global, ...collectOrphanLessons(ctx)];
+  // Sanitize lessons before syncing to CLAUDE.md
+  const globalLessons = Normalize.sanitizeLessonsList([...ctx.store.global, ...collectOrphanLessons(ctx)]);
   const topGlobal = globalLessons.slice(-MAX_GLOBAL_LESSONS_FOR_SYNC);
 
   if (topGlobal.length > 0) {
