@@ -107,6 +107,84 @@ export {
   handleIterationCleanup,
 } from './workflow/iteration-cleanup.js';
 
+// Recovery helpers
+export {
+  trySingleIssueFix,
+  tryDirectLLMFix,
+} from './workflow/helpers/recovery.js';
+
+// Fix loop rotation
+export {
+  handleRotationStrategy,
+} from './workflow/fix-loop-rotation.js';
+
+// No-changes verification
+export {
+  handleNoChangesWithVerification,
+} from './workflow/no-changes-verification.js';
+
+// Run initialization
+export {
+  initializeRun,
+} from './workflow/run-initialization.js';
+
+// Run setup phase
+export {
+  executeSetupPhase,
+} from './workflow/run-setup-phase.js';
+
+// Push iteration loop
+export {
+  executePushIteration,
+} from './workflow/push-iteration-loop.js';
+
+// Main loop setup
+export {
+  processCommentsAndPrepareFixLoop,
+} from './workflow/main-loop-setup.js';
+
+// Fix loop initialization
+export {
+  initializeFixLoop,
+  type FixLoopState,
+} from './workflow/fix-loop-initialization.js';
+
+// Fix iteration pre-checks
+export {
+  executePreIterationChecks,
+} from './workflow/fix-iteration-pre-checks.js';
+
+// Execute fix iteration
+export {
+  executeFixIteration,
+} from './workflow/execute-fix-iteration.js';
+
+// Post-verification handling
+export {
+  handlePostVerification,
+} from './workflow/post-verification-handling.js';
+
+// Prompt building
+export {
+  buildAndDisplayFixPrompt,
+} from './workflow/prompt-building.js';
+
+// Commit and push within fix loop
+export {
+  handleCommitAndPush,
+} from './workflow/commit-and-push-loop.js';
+
+// Final cleanup and reporting
+export {
+  executeFinalCleanup,
+  executeErrorCleanup,
+} from './workflow/final-cleanup.js';
+
+// Cleanup mode
+export {
+  runCleanupMode,
+} from './workflow/cleanup-mode.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,
