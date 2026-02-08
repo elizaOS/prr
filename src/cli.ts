@@ -113,7 +113,7 @@ export function createCLI(): Command {
     .option('--no-bell', 'Disable terminal bell on completion')
     .option('--incremental-commits', 'Commit after each fix iteration (default: true)', true)
     .option('--no-incremental-commits', 'Batch all fixes into single commit at end')
-    .option('--merge-base', 'Auto-merge base branch when conflicts detected (default: true)', true)
+    .option('--merge-base', 'Auto-merge base branch (main/master) when conflicts detected (default: true)', true)
     .option('--no-merge-base', 'Skip auto-merging base branch even if conflicts exist')
     .option('--no-handoff-prompt', 'Disable developer handoff prompt in final output')
     .option('--no-after-action', 'Disable after action report in final output')

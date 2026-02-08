@@ -316,16 +316,26 @@ NO: Looks good`;
     const modelRecSize = modelContext?.availableModels?.length ? 1500 : 0; // Reserve for model recommendation
     const availableForIssues = maxContextChars - headerSize - footerSize - modelRecSize;
 
-    // Build issue text - NO truncation, batching handles size limits
+    // Build issue text for sizing
     const buildIssueText = (issue: typeof issues[0]): string => {
+      // Truncate long comments and code to keep batches reasonable
+      const maxCommentLen = 800;
+      const maxCodeLen = 1500;
+      const truncatedComment = issue.comment.length > maxCommentLen
+        ? issue.comment.substring(0, maxCommentLen) + '...'
+        : issue.comment;
+      const truncatedCode = issue.codeSnippet.length > maxCodeLen
+        ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+        : issue.codeSnippet;
+
       return [
         `## Issue ${issue.id}`,
         `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
-        `Comment: ${issue.comment}`,
+        `Comment: ${truncatedComment}`,
         '',
         'Current code:',
         '```',
-        issue.codeSnippet,
+        truncatedCode,
         '```',
         '',
       ].join('\n');
@@ -655,7 +665,11 @@ NO: Looks good`;
 
     // Fail-safe: mark any unparsed issue as still existing
     if (parsed < issues.length) {
-      debug('WARNING: Some audit responses could not be parsed - marking unparsed as needing review');
+      if (parsed < issues.length * 0.5) {
+        debug('WARNING: Failed to parse most audit responses - marking unparsed as needing review');
+      } else {
+        debug('WARNING: Some audit responses could not be parsed - marking unparsed as needing review');
+      }
       // Mark any unparsed issues as potentially unfixed (fail-safe)
       for (const issue of issues) {
         if (!allResults.has(issue.id)) {
@@ -672,18 +686,28 @@ NO: Looks good`;
 
   /**
    * Build the text representation of an issue for the audit prompt
-   * NO truncation - batching handles size limits
    */
   private buildIssueText(
     index: number,
     issue: { filePath: string; line: number | null; comment: string; codeSnippet: string }
   ): string {
+    // Truncate long comments and code to keep batches reasonable
+    const maxCommentLen = 800;
+    const maxCodeLen = 1500;
+    
+    const truncatedComment = issue.comment.length > maxCommentLen
+      ? issue.comment.substring(0, maxCommentLen) + '...'
+      : issue.comment;
+    const truncatedCode = issue.codeSnippet.length > maxCodeLen
+      ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+      : issue.codeSnippet;
+
     return [
       `[${index}] File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
-      `Comment: ${issue.comment}`,
+      `Comment: ${truncatedComment}`,
       'Code:',
       '```',
-      issue.codeSnippet,
+      truncatedCode,
       '```',
       '',
     ].join('\n');
@@ -734,6 +758,7 @@ NO: <brief explanation of what's still missing or wrong>`;
     diff: string,
     rejectionReason: string
   ): Promise<string> {
+    const diffPreview = diff.length > 1500 ? diff.substring(0, 1500) : diff;
     const prompt = `A code fix attempt was rejected. Analyze what went wrong and extract a specific lesson.
 
 ORIGINAL ISSUE:
@@ -741,7 +766,7 @@ File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
 Review Comment: ${issue.comment}
 
 ATTEMPTED FIX (diff):
-${diff}
+${diffPreview}
 
 REJECTION REASON:
 ${rejectionReason}
@@ -893,7 +918,6 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         explanation: `File too large (${Math.round(conflictedContent.length / 1024)}KB) for automatic resolution. Please resolve manually.`,
       };
     }
-
     const prompt = `You are resolving a Git merge conflict.
 
 FILE: ${filePath}
@@ -1033,8 +1057,11 @@ RESOLVED:
     // Show feedback with emphasis on extracting the actual change
     for (const issue of fixedIssues.slice(0, 10)) { // Limit to avoid huge prompts
       const fileName = issue.filePath.split('/').pop();
-      // Include full comment for accurate commit message generation
-      parts.push(`[${fileName}] ${issue.comment}`);
+      // Extract just the key issue, truncate long comments
+      const shortComment = issue.comment.length > 400
+        ? issue.comment.substring(0, 400) + '...'
+        : issue.comment;
+      parts.push(`[${fileName}] ${shortComment}`);
       parts.push('');
     }
 

@@ -184,7 +184,6 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   parts.push('Example:');
   parts.push('NO_CHANGES: Issue 1 is already fixed - Line 45 has null check: if (value === null) return;\n');
   parts.push('DO NOT make zero changes without this explanation. The system requires documentation of why no changes were made.');
-
   const fullPrompt = parts.join('\n');
   const estimatedTokens = estimateTokens(fullPrompt);
   

@@ -193,7 +193,6 @@ Working directory: ${workdir}`;
     const workdirResolved = resolve(workdir);
     const fullPath = resolve(workdir, filePath);
     const relativePath = relative(workdirResolved, fullPath);
-
     // Detect any parent-traversal segments in the relative path
     const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
 

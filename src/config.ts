@@ -21,7 +21,6 @@ export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex
 
 const REAL_FIXER_TOOLS = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'] as const;
 export type RealFixerTool = typeof REAL_FIXER_TOOLS[number];
-
 /**
  * Application configuration loaded from environment.
  */

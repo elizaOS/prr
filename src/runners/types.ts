@@ -56,7 +56,7 @@ export interface Runner {
  * Start with the balanced model (sonnet), escalate to powerful (opus),
  * try alternative provider (GPT), then fast/cheap options (mini).
  * 
- * Updated January 28, 2026 with Claude Opus 4.6 and GPT-5.3 releases.
+ * Updated January 2026 with latest model versions from official docs.
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Cursor: Uses short model names (from `cursor --list-models`)

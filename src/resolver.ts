@@ -13,7 +13,7 @@ import type { LessonsContext } from './state/lessons-context.js';
 import type { LockConfig } from './state/lock-functions.js';
 import { getWorkdirInfo, ensureWorkdir, cleanupWorkdir } from './git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git/git-clone-index.js';
-import { simpleGit, type SimpleGit } from 'simple-git';
+import type { SimpleGit } from 'simple-git';
 import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from './git/git-commit-index.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from './runners/index.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from './logger.js';

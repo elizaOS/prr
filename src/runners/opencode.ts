@@ -23,11 +23,11 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error('Command failed'));
+        reject(new Error(`Command failed with code ${code}`));
       }
     });
-    child.on('error', () => {
-      reject(new Error('Failed to start command'));
+    child.on('error', (error) => {
+      reject(error);
     });
   });
 }
@@ -91,6 +91,7 @@ export class OpencodeRunner implements Runner {
         // Ignore cleanup errors
       }
     };
+
     try {
       writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     } catch (error) {
