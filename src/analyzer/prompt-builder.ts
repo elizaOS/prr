@@ -10,13 +10,7 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-/**
- * Maximum number of issues to include in a single fix prompt.
- * WHY: Large prompts (100+ issues) can exceed LLM token limits (200k).
- * With truncation (2k per comment + 500 lines per snippet), 50 issues ≈ 100k chars ≈ 25k tokens.
- * This leaves room for lessons and boilerplate while staying under limits.
- */
-const MAX_ISSUES_PER_PROMPT = 50;
+
 
 export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string[]): FixPrompt {
   // Guard: Return empty prompt if no issues
@@ -131,7 +125,7 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
     // Truncate very long comments to prevent prompt overflow
     // WHY: Some automated tools generate 10k+ char comments with HTML/details
     // Keep first 2000 chars which is enough context for the fix
-    const MAX_COMMENT_CHARS = 2000;
+    
     if (issue.comment.body.length > MAX_COMMENT_CHARS) {
       parts.push(issue.comment.body.substring(0, MAX_COMMENT_CHARS));
       parts.push('\n... (comment truncated for brevity - see PR for full text)');
@@ -148,7 +142,7 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
       // Truncate very large code snippets to prevent prompt overflow
       // WHY: Sometimes entire files are included (10k+ lines)
       // Keep first 500 lines which is usually more than enough for context
-      const MAX_SNIPPET_LINES = 500;
+      
       const snippetLines = issue.codeSnippet.split('\n');
       if (snippetLines.length > MAX_SNIPPET_LINES) {
         parts.push(snippetLines.slice(0, MAX_SNIPPET_LINES).join('\n'));
