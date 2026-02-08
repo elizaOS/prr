@@ -17,6 +17,9 @@ export function getLocalLessonsPath(owner: string, repo: string, branch: string)
  * Get path to canonical lessons file (.prr/lessons.md)
  */
 export function getPrrLessonsPath(workdir: string): string {
+  if (!workdir) {
+    throw new Error('Cannot get prr lessons path: workdir is required');
+  }
   return join(workdir, '.prr', 'lessons.md');
 }
 
@@ -25,19 +28,28 @@ export function getPrrLessonsPath(workdir: string): string {
  */
 export const SYNC_TARGETS: Record<LessonsSyncTarget, SyncTargetConfig> = {
   'claude-md': {
-    path: (workdir) => join(workdir, 'CLAUDE.md'),
+    path: (workdir) => {
+      if (!workdir) throw new Error('workdir required for CLAUDE.md path');
+      return join(workdir, 'CLAUDE.md');
+    },
     description: 'CLAUDE.md',
     tools: ['Cursor', 'Claude Code'],
     createHeader: '# Project Configuration\n\n',
   },
   'conventions-md': {
-    path: (workdir) => join(workdir, 'CONVENTIONS.md'),
+    path: (workdir) => {
+      if (!workdir) throw new Error('workdir required for CONVENTIONS.md path');
+      return join(workdir, 'CONVENTIONS.md');
+    },
     description: 'CONVENTIONS.md',
     tools: ['Aider'],
     createHeader: '# Coding Conventions\n\n',
   },
   'cursor-rules': {
-    path: (workdir) => join(workdir, '.cursor', 'rules', 'prr-lessons.mdc'),
+    path: (workdir) => {
+      if (!workdir) throw new Error('workdir required for cursor-rules path');
+      return join(workdir, '.cursor', 'rules', 'prr-lessons.mdc');
+    },
     description: '.cursor/rules/',
     tools: ['Cursor'],
     createHeader: '',

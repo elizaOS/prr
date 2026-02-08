@@ -11,6 +11,9 @@ export interface StateContext {
 }
 
 export function createStateContext(workdir: string): StateContext {
+  if (!workdir) {
+    throw new Error('Cannot create state context: workdir is required');
+  }
   return {
     statePath: join(workdir, '.pr-resolver-state.json'),
     state: null,

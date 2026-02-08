@@ -16,7 +16,7 @@ export async function cleanupCreatedSyncTargets(
   workdir: string,
   lessonsContext: LessonsContext | null
 ): Promise<void> {
-  if (!lessonsContext) return;
+  if (!lessonsContext || !workdir) return;
 
   // Check if CLAUDE.md was created by us (didn't exist before)
   const claudeMdExisted = LessonsAPI.Detect.didSyncTargetExist(lessonsContext, 'claude-md');

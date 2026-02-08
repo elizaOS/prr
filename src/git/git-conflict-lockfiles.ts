@@ -17,6 +17,11 @@ export async function handleLockFileConflicts(
   workdir: string,
   config: Config
 ): Promise<void> {
+  if (!workdir || !config?.workdirBase) {
+    console.log(chalk.yellow('    ⚠ Skipping lock file handling: workdir not initialized'));
+    return;
+  }
+  
   console.log(chalk.cyan('\n  Handling lock files...'));
   const { spawn } = await import('child_process');
   const fs = await import('fs');

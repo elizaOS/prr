@@ -26,6 +26,7 @@ export function workdirExists(workdir: string): boolean {
 }
 
 export async function cleanupWorkdir(workdir: string): Promise<void> {
+  if (!workdir) return;
   if (existsSync(workdir)) {
     await rm(workdir, { recursive: true, force: true });
   }
@@ -39,6 +40,9 @@ export interface WorkdirInfo {
 }
 
 export function getWorkdirInfo(baseDir: string, owner: string, repo: string, prNumber: number, branch: string): WorkdirInfo {
+  if (!baseDir) {
+    throw new Error('Cannot create workdir: baseDir is required (check config.workdirBase)');
+  }
   const hash = computeWorkdirHash(owner, repo, prNumber, branch);
   const path = join(baseDir, hash);
   return {

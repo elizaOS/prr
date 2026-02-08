@@ -15,6 +15,7 @@ import { setTokenPhase, debug } from '../logger.js';
 import { MAX_CONFLICT_RESOLUTION_FILE_SIZE } from '../constants.js';
 import { buildConflictResolutionPrompt } from './git-conflict-prompts.js';
 import { handleLockFileConflicts } from './git-conflict-lockfiles.js';
+import { resolveConflictsChunked, tryHeuristicResolution } from './git-conflict-chunked.js';
 
 
 export async function resolveConflictsWithLLM(
@@ -24,9 +25,17 @@ export async function resolveConflictsWithLLM(
   workdir: string,
   config: Config,
   llm: LLMClient,
-  runner: Runner,
+  runner: Runner | undefined,
   getCurrentModel: () => string | undefined
 ): Promise<{ success: boolean; remainingConflicts: string[] }> {
+  if (!workdir) {
+    return { success: false, remainingConflicts: conflictedFiles };
+  }
+  
+  // If runner not available yet (e.g., during setup phase), skip runner-based resolution
+  // and go straight to LLM API resolution
+  const skipRunnerAttempt = !runner;
+  
   // Separate lock files from regular files
   const lockFiles = conflictedFiles.filter(f => isLockFile(f));
   const codeFiles = conflictedFiles.filter(f => !isLockFile(f));
@@ -43,16 +52,16 @@ export async function resolveConflictsWithLLM(
   }
   
   // Handle code files with LLM tools
-  if (codeFiles.length > 0) {
+  if (codeFiles.length > 0 && !skipRunnerAttempt) {
     // Build prompt for conflict resolution (only non-lock files)
     const conflictPrompt = buildConflictResolutionPrompt(codeFiles, mergingBranch);
     
     // Run the cursor/opencode tool to resolve conflicts
-    console.log(chalk.cyan(`\n  Attempt 1: Using ${runner.name} to resolve conflicts...`));
-    const runResult = await runner.run(workdir, conflictPrompt, { model: getCurrentModel() });
+    console.log(chalk.cyan(`\n  Attempt 1: Using ${runner!.name} to resolve conflicts...`));
+    const runResult = await runner!.run(workdir, conflictPrompt, { model: getCurrentModel() });
     
     if (!runResult.success) {
-      console.log(chalk.yellow(`  ${runner.name} failed, will try direct API...`));
+      console.log(chalk.yellow(`  ${runner!.name} failed, will try direct API...`));
     } else {
       // Stage all code files that cursor may have resolved
       console.log(chalk.cyan('  Staging resolved files...'));
@@ -64,6 +73,8 @@ export async function resolveConflictsWithLLM(
         }
       }
     }
+  } else if (codeFiles.length > 0 && skipRunnerAttempt) {
+    console.log(chalk.blue(`\n  Skipping runner attempt (not available yet), using direct LLM API...`));
   }
   
   // Check if conflicts remain after first attempt
@@ -73,7 +84,7 @@ export async function resolveConflictsWithLLM(
   let markerConflicts = await findFilesWithConflictMarkers(workdir, codeFiles);
   let remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
   
-  if (remainingConflicts.length === 0 && codeFiles.length > 0) {
+  if (remainingConflicts.length === 0 && codeFiles.length > 0 && runner) {
     console.log(chalk.green(`  ✓ ${runner.name} resolved all conflicts`));
   } else if (markerConflicts.length > 0) {
     console.log(chalk.yellow(`  Files still have conflict markers: ${markerConflicts.join(', ')}`));
@@ -126,13 +137,32 @@ export async function resolveConflictsWithLLM(
         }
         
         console.log(chalk.cyan(`    Resolving: ${conflictFile}`));
+        const fileSize = Math.round(conflictedContent.length / 1024);
         
-        // Ask LLM to resolve
-        const result = await llm.resolveConflict(
-          conflictFile,
-          conflictedContent,
-          mergingBranch
-        );
+        // Try heuristic resolution first (fast, no LLM needed)
+        let result = tryHeuristicResolution(conflictFile, conflictedContent);
+        
+        if (result.resolved) {
+          console.log(chalk.blue(`    → Using heuristic strategy for ${conflictFile}`));
+        } else {
+          // Use appropriate strategy based on file size
+          if (conflictedContent.length > MAX_FILE_SIZE) {
+            console.log(chalk.blue(`    → Using chunked strategy (${fileSize}KB file)`));
+            result = await resolveConflictsChunked(
+              llm,
+              conflictFile,
+              conflictedContent,
+              mergingBranch
+            );
+          } else {
+            // Standard resolution for small files
+            result = await llm.resolveConflict(
+              conflictFile,
+              conflictedContent,
+              mergingBranch
+            );
+          }
+        }
         
         if (result.resolved) {
           // Write the resolved content
@@ -144,16 +174,12 @@ export async function resolveConflictsWithLLM(
         } else {
           console.log(chalk.red(`    ✗ ${conflictFile}: ${result.explanation}`));
           
-          // Provide helpful manual resolution instructions for large files
-          if (result.explanation.includes('too large')) {
-            const fileSize = Math.round(conflictedContent.length / 1024);
-            console.log(chalk.yellow(`      File is ${fileSize}KB - too large for automatic resolution`));
-            console.log(chalk.gray(`      To resolve manually:`));
-            console.log(chalk.gray(`        1. Open: ${fullPath}`));
-            console.log(chalk.gray(`        2. Search for: <<<<<<<`));
-            console.log(chalk.gray(`        3. Merge changes and remove conflict markers`));
-            console.log(chalk.gray(`        4. Save and run: git add ${conflictFile}`));
-          }
+          // Provide helpful manual resolution instructions
+          console.log(chalk.gray(`      To resolve manually:`));
+          console.log(chalk.gray(`        1. Open: ${fullPath}`));
+          console.log(chalk.gray(`        2. Search for: <<<<<<<`));
+          console.log(chalk.gray(`        3. Merge changes and remove conflict markers`));
+          console.log(chalk.gray(`        4. Save and run: git add ${conflictFile}`));
         }
       } catch (e) {
         console.log(chalk.red(`    ✗ ${conflictFile}: Error - ${e}`));

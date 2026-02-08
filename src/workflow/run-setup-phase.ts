@@ -50,7 +50,7 @@ export async function executeSetupPhase(
   github: GitHubAPI,
   spinner: Ora,
   setupRunner: () => Promise<Runner>,
-  ensureStateFileIgnored: () => Promise<void>,
+  ensureStateFileIgnored: (workdir: string) => Promise<void>,
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>,
   getRotationContext: () => any,
   getCurrentModel: () => string | undefined
@@ -100,7 +100,7 @@ export async function executeSetupPhase(
   const git = await ResolverProc.cloneOrUpdateRepository(prInfo, workdir, config.githubToken, hasVerifiedFixes, spinner);
 
   // Ensure state file is in .gitignore
-  await ensureStateFileIgnored();
+  await ensureStateFileIgnored(workdir);
 
   // Recover verification state from git history
   await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext);
@@ -115,7 +115,17 @@ export async function executeSetupPhase(
   }
 
   // Check and merge base branch
-  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsWithLLM);
+  // WHY wrap resolveConflictsWithLLM: During setup, resolver's workdir is not set yet, 
+  // so we need to create a new callback that captures the setup phase's workdir and runner
+  const resolveConflictsInSetup = async (git: SimpleGit, files: string[], source: string) => {
+    // Import and call the actual resolution function with setup phase context
+    const { resolveConflictsWithLLM: resolveFunc } = await import('../git/git-conflict-resolve.js');
+    const { LLMClient } = await import('../llm/client.js');
+    const llm = new LLMClient(config);
+    // Pass the runner that was set up earlier (line 85-96)
+    return resolveFunc(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
+  };
+  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup);
   if (!mergeResult.success) {
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
