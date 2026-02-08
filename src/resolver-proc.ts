@@ -71,6 +71,13 @@ export {
   handleNoComments,
 } from './workflow/no-comments.js';
 
+// Analysis workflows
+export {
+  analyzeAndReportIssues,
+  checkForNewComments,
+  runFinalAudit,
+} from './workflow/analysis.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,
