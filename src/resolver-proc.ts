@@ -316,4 +316,116 @@ export function shouldCheckForNewComments(expectedBotResponseTime: Date | null):
   return now >= expectedBotResponseTime;
 }
 
+/**
+ * Ensure state file is added to .gitignore
+ * WHY: State file should never be committed - it's local/temporary
+ */
+export async function ensureStateFileIgnored(workdir: string): Promise<void> {
+  const { join } = await import('path');
+  const { readFile, writeFile } = await import('fs/promises');
+  const { simpleGit } = await import('simple-git');
+  const chalk = (await import('chalk')).default;
+  
+  const gitignorePath = join(workdir, '.gitignore');
+  const stateFileName = '.pr-resolver-state.json';
+  
+  try {
+    // First, check if the state file is tracked in git (accidentally committed)
+    const git = simpleGit(workdir);
+    try {
+      const tracked = await git.raw(['ls-files', stateFileName]);
+      if (tracked.trim()) {
+        console.log(chalk.yellow(`  ⚠ ${stateFileName} was committed to git - removing from tracking...`));
+        await git.raw(['rm', '--cached', stateFileName]);
+        console.log(chalk.green(`  ✓ Removed ${stateFileName} from git tracking (local file preserved)`));
+      }
+    } catch {
+      // File not tracked, which is good
+    }
+    
+    let gitignoreContent = '';
+    try {
+      gitignoreContent = await readFile(gitignorePath, 'utf-8');
+    } catch {
+      // .gitignore doesn't exist, we'll create it
+    }
+    
+    // Check if already ignored
+    const lines = gitignoreContent.split('\n');
+    const isIgnored = lines.some(line => {
+      const trimmed = line.trim();
+      return trimmed === stateFileName || 
+             trimmed === `/${stateFileName}` ||
+             trimmed === `**/${stateFileName}`;
+    });
+    
+    if (!isIgnored) {
+      const newContent = gitignoreContent.endsWith('\n') || gitignoreContent === ''
+        ? `${gitignoreContent}# prr state file (auto-generated)\n${stateFileName}\n`
+        : `${gitignoreContent}\n\n# prr state file (auto-generated)\n${stateFileName}\n`;
+      
+      await writeFile(gitignorePath, newContent, 'utf-8');
+      console.log(chalk.gray(`  Added ${stateFileName} to .gitignore`));
+    }
+  } catch (err) {
+    // Non-fatal - just log and continue
+  }
+}
+
+/**
+ * Get code snippet from file for context
+ */
+export async function getCodeSnippet(
+  workdir: string,
+  path: string,
+  line: number | null,
+  commentBody?: string
+): Promise<string> {
+  try {
+    const { join } = await import('path');
+    const { readFile } = await import('fs/promises');
+    
+    const filePath = join(workdir, path);
+    const content = await readFile(filePath, 'utf-8');
+    const lines = content.split('\n');
+
+    // Try to extract line range from comment body (bugbot format)
+    let startLine = line;
+    let endLine = line;
+    
+    if (commentBody) {
+      const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
+      if (locationsMatch) {
+        const locationLines = locationsMatch[1].trim().split('\n');
+        for (const loc of locationLines) {
+          const lineMatch = loc.match(/#L(\d+)(?:-L(\d+))?/);
+          if (lineMatch) {
+            startLine = parseInt(lineMatch[1], 10);
+            endLine = lineMatch[2] ? parseInt(lineMatch[2], 10) : startLine + 20;
+            break;
+          }
+        }
+      }
+    }
+
+    if (startLine === null) {
+      // Return first 50 lines if no specific line
+      return lines.slice(0, 50).join('\n');
+    }
+
+    // Return code from startLine to endLine (with some context)
+    const contextBefore = 5;
+    const contextAfter = 10;
+    const start = Math.max(0, startLine - contextBefore - 1);
+    const end = Math.min(lines.length, (endLine || startLine) + contextAfter);
+    
+    return lines
+      .slice(start, end)
+      .map((l, i) => `${start + i + 1}: ${l}`)
+      .join('\n');
+  } catch {
+    return '(file not found or unreadable)';
+  }
+}
+
 // More functions will be added here as we extract methods from PRResolver

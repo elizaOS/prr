@@ -3355,57 +3355,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
    * If the file was accidentally committed, we remove it from git tracking.
    */
   private async ensureStateFileIgnored(): Promise<void> {
-    const gitignorePath = join(this.workdir, '.gitignore');
-    const stateFileName = '.pr-resolver-state.json';
-    const stateFilePath = join(this.workdir, stateFileName);
-    
-    try {
-      // First, check if the state file is tracked in git (accidentally committed)
-      const git = simpleGit(this.workdir);
-      try {
-        // git ls-files returns the file if it's tracked, empty if not
-        const tracked = await git.raw(['ls-files', stateFileName]);
-        if (tracked.trim()) {
-          // File is tracked - remove it from git (but keep local copy)
-          console.log(chalk.yellow(`  ⚠ ${stateFileName} was committed to git - removing from tracking...`));
-          await git.raw(['rm', '--cached', stateFileName]);
-          console.log(chalk.green(`  ✓ Removed ${stateFileName} from git tracking (local file preserved)`));
-          debug('Removed state file from git tracking', { stateFileName });
-        }
-      } catch {
-        // ls-files failed - file not tracked, which is good
-      }
-      
-      let gitignoreContent = '';
-      try {
-        gitignoreContent = await readFile(gitignorePath, 'utf-8');
-      } catch {
-        // .gitignore doesn't exist, we'll create it
-      }
-      
-      // Check if already ignored (exact match or with leading /)
-      const lines = gitignoreContent.split('\n');
-      const isIgnored = lines.some(line => {
-        const trimmed = line.trim();
-        return trimmed === stateFileName || 
-               trimmed === `/${stateFileName}` ||
-               trimmed === `**/${stateFileName}`;
-      });
-      
-      if (!isIgnored) {
-        // Add to .gitignore
-        const newContent = gitignoreContent.endsWith('\n') || gitignoreContent === ''
-          ? `${gitignoreContent}# prr state file (auto-generated)\n${stateFileName}\n`
-          : `${gitignoreContent}\n\n# prr state file (auto-generated)\n${stateFileName}\n`;
-        
-        await writeFile(gitignorePath, newContent, 'utf-8');
-        console.log(chalk.gray(`  Added ${stateFileName} to .gitignore`));
-        debug('Added state file to .gitignore', { gitignorePath });
-      }
-    } catch (err) {
-      // Non-fatal - just log and continue
-      debug('Could not update .gitignore', { error: err instanceof Error ? err.message : String(err) });
-    }
+    return ResolverProc.ensureStateFileIgnored(this.workdir);
   }
 
   /**
@@ -3642,53 +3592,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
   }
 
   private async getCodeSnippet(path: string, line: number | null, commentBody?: string): Promise<string> {
-    try {
-      const filePath = join(this.workdir, path);
-      const content = await readFile(filePath, 'utf-8');
-      const lines = content.split('\n');
-
-      // Try to extract line range from comment body (bugbot format)
-      // <!-- LOCATIONS START
-      // packages/rust/src/runtime.rs#L1743-L1781
-      // LOCATIONS END -->
-      let startLine = line;
-      let endLine = line;
-      
-      if (commentBody) {
-        const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
-        if (locationsMatch) {
-          const locationLines = locationsMatch[1].trim().split('\n');
-          for (const loc of locationLines) {
-            // Match: file.ext#L123-L456 or file.ext#L123
-            const lineMatch = loc.match(/#L(\d+)(?:-L(\d+))?/);
-            if (lineMatch) {
-              startLine = parseInt(lineMatch[1], 10);
-              endLine = lineMatch[2] ? parseInt(lineMatch[2], 10) : startLine + 20;
-              debug('Extracted line range from comment', { startLine, endLine, loc });
-              break;
-            }
-          }
-        }
-      }
-
-      if (startLine === null) {
-        // Return first 50 lines if no specific line
-        return lines.slice(0, 50).join('\n');
-      }
-
-      // Return code from startLine to endLine (with some context)
-      const contextBefore = 5;
-      const contextAfter = 10;
-      const start = Math.max(0, startLine - contextBefore - 1); // -1 for 0-indexed
-      const end = Math.min(lines.length, (endLine || startLine) + contextAfter);
-      
-      return lines
-        .slice(start, end)
-        .map((l, i) => `${start + i + 1}: ${l}`)
-        .join('\n');
-    } catch {
-      return '(file not found or unreadable)';
-    }
+    return ResolverProc.getCodeSnippet(this.workdir, path, line, commentBody);
   }
 
   private printUnresolvedIssues(issues: UnresolvedIssue[]): void {
