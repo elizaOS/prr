@@ -143,6 +143,13 @@ export {
   executeGracefulShutdown,
 } from './workflow/graceful-shutdown.js';
 
+// Run orchestrator
+export {
+  executeRun,
+  type RunState,
+  type RunCallbacks,
+} from './workflow/run-orchestrator.js';
+
 // Main loop setup
 export {
   processCommentsAndPrepareFixLoop,
