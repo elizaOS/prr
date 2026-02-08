@@ -172,7 +172,7 @@ export async function handleCommitAndPush(
     }
 
     // Wait for re-review using smart timing based on observed bot response times
-    if (pushIteration < maxPushIterations) {
+    if (maxPushIterations === 0 || pushIteration < maxPushIterations) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);
     }
     

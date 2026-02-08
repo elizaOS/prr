@@ -80,6 +80,10 @@ export class LLMAPIRunner implements Runner {
     if (!available) {
       return { success: false, output: '', error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
     }
+    const available = await this.isAvailable();
+    if (!available) {
+      return { success: false, output: '', error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
+    }
     debug('LLM API runner starting', { provider: this.provider, workdir, promptLength: prompt.length });
 
     const { anthropic, openai } = this.getClient();
