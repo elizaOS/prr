@@ -22,6 +22,23 @@ import { debug } from '../logger.js';
 
 /**
  * Process new bot reviews and add them to the workflow
+ * 
+ * Checks for new reviews from the bot and integrates them into the current
+ * fix iteration. New comments are added to tracking sets and turned into
+ * unresolved issues for processing.
+ * 
+ * WHY: Allows working on existing issues while waiting for bot reviews,
+ * then seamlessly incorporating new feedback without restarting.
+ * 
+ * @param github - GitHub API client
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param prNumber - Pull request number
+ * @param existingCommentIds - Set of already-tracked comment IDs (mutated)
+ * @param comments - Array of all comments (mutated)
+ * @param unresolvedIssues - Array of unresolved issues (mutated)
+ * @param checkForNewBotReviews - Function to check for new reviews
+ * @param getCodeSnippet - Function to fetch code snippets
  */
 export async function processNewBotReviews(
   github: GitHubAPI,
@@ -64,6 +81,16 @@ export async function processNewBotReviews(
 
 /**
  * Filter out issues that were verified during this session
+ * 
+ * Removes issues from the unresolvedIssues array that have been marked as
+ * verified in the current session (by single-issue mode or direct LLM).
+ * 
+ * IMPORTANT: Uses verifiedThisSession set instead of isCommentVerifiedFixed
+ * to avoid removing stale verifications that findUnresolvedIssues kept for
+ * re-checking.
+ * 
+ * @param unresolvedIssues - Array of unresolved issues (mutated in-place)
+ * @param verifiedThisSession - Set of comment IDs verified in this session
  */
 export function filterVerifiedIssues(
   unresolvedIssues: UnresolvedIssue[],
@@ -93,7 +120,19 @@ export function filterVerifiedIssues(
 
 /**
  * Check for empty issues and detect potential bugs
- * Returns exit info if all issues are resolved
+ * 
+ * Performs a sanity check when unresolvedIssues is empty: verifies that all
+ * comments are actually marked as verified. If there's a mismatch (bug), it
+ * re-populates unresolvedIssues from unverified comments.
+ * 
+ * WHY: Catch bugs in the filtering/verification logic that could cause the
+ * loop to exit prematurely while issues remain unfixed.
+ * 
+ * @param unresolvedIssues - Array of unresolved issues
+ * @param comments - All review comments
+ * @param stateContext - State context for verification checks
+ * @param getCodeSnippet - Function to fetch code snippets
+ * @returns Exit signal if all truly resolved, or continue signal if issues remain
  */
 export async function checkEmptyIssues(
   unresolvedIssues: UnresolvedIssue[],
@@ -168,7 +207,25 @@ export async function checkEmptyIssues(
 
 /**
  * Check and pull new remote commits
- * Returns whether to continue or break
+ * 
+ * Checks if the remote has new commits and pulls them if found. After pulling:
+ * - Invalidates all cached verifications (code changed)
+ * - Refreshes code snippets for all unresolved issues
+ * - Updates PR head SHA
+ * 
+ * WHY: Detect external pushes early so we don't waste cycles on stale code.
+ * Auto-merge if no conflicts; bail out if conflicts detected.
+ * 
+ * @param git - SimpleGit instance
+ * @param branch - Branch name to check
+ * @param unresolvedIssues - Array of issues (snippets will be refreshed)
+ * @param stateContext - State context
+ * @param github - GitHub API client
+ * @param owner - Repository owner
+ * @param repo - Repository name
+ * @param prNumber - Pull request number
+ * @param getCodeSnippet - Function to fetch code snippets
+ * @returns Exit signal if conflicts detected, continue signal with new SHA otherwise
  */
 export async function checkAndPullRemoteCommits(
   git: SimpleGit,

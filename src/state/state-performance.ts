@@ -26,6 +26,17 @@ function ensureModelStats(ctx: StateContext, key: string): ModelStats {
   return state.modelPerformance[key];
 }
 
+/**
+ * Record successful fix(es) for a tool/model combination
+ * 
+ * Increments the fix counter and updates last used timestamp. Used to track
+ * which models are most effective for this project.
+ * 
+ * @param ctx - State context
+ * @param tool - Tool name (e.g., 'cursor', 'codex', 'llm-api')
+ * @param model - Model name (optional, e.g., 'gpt-5.3', 'claude-sonnet-4-5')
+ * @param count - Number of fixes to record (default: 1)
+ */
 export function recordModelFix(ctx: StateContext, tool: string, model?: string, count: number = 1): void {
   const key = getModelKey(tool, model);
   const stats = ensureModelStats(ctx, key);
@@ -33,6 +44,17 @@ export function recordModelFix(ctx: StateContext, tool: string, model?: string, 
   stats.lastUsed = new Date().toISOString();
 }
 
+/**
+ * Record failed fix attempt(s) for a tool/model combination
+ * 
+ * Increments the failure counter and updates last used timestamp. Used for
+ * rotation decisions and performance reporting.
+ * 
+ * @param ctx - State context
+ * @param tool - Tool name
+ * @param model - Model name (optional)
+ * @param count - Number of failures to record (default: 1)
+ */
 export function recordModelFailure(ctx: StateContext, tool: string, model?: string, count: number = 1): void {
   const key = getModelKey(tool, model);
   const stats = ensureModelStats(ctx, key);
@@ -40,6 +62,16 @@ export function recordModelFailure(ctx: StateContext, tool: string, model?: stri
   stats.lastUsed = new Date().toISOString();
 }
 
+/**
+ * Record a "no changes" result from a tool/model
+ * 
+ * Increments the no-changes counter. No-changes results occur when the tool
+ * runs but produces zero modifications (may be intentional if already fixed).
+ * 
+ * @param ctx - State context
+ * @param tool - Tool name
+ * @param model - Model name (optional)
+ */
 export function recordModelNoChanges(ctx: StateContext, tool: string, model?: string): void {
   const key = getModelKey(tool, model);
   const stats = ensureModelStats(ctx, key);
@@ -47,6 +79,16 @@ export function recordModelNoChanges(ctx: StateContext, tool: string, model?: st
   stats.lastUsed = new Date().toISOString();
 }
 
+/**
+ * Record a tool error (crash, timeout, etc.)
+ * 
+ * Increments the error counter. Errors are distinct from failures - they
+ * indicate the tool couldn't run properly rather than producing an incorrect fix.
+ * 
+ * @param ctx - State context
+ * @param tool - Tool name
+ * @param model - Model name (optional)
+ */
 export function recordModelError(ctx: StateContext, tool: string, model?: string): void {
   const key = getModelKey(tool, model);
   const stats = ensureModelStats(ctx, key);
@@ -54,15 +96,40 @@ export function recordModelError(ctx: StateContext, tool: string, model?: string
   stats.lastUsed = new Date().toISOString();
 }
 
+/**
+ * Get all model performance data
+ * 
+ * Returns a map of "tool/model" keys to their performance stats.
+ * 
+ * @param ctx - State context
+ * @returns Performance data for all tool/model combinations
+ */
 export function getModelPerformance(ctx: StateContext): ModelPerformance {
   return ctx.state?.modelPerformance ?? {};
 }
 
+/**
+ * Get performance stats for a specific tool/model combination
+ * 
+ * @param ctx - State context
+ * @param tool - Tool name
+ * @param model - Model name (optional)
+ * @returns Stats for the tool/model, or undefined if never used
+ */
 export function getModelStats(ctx: StateContext, tool: string, model?: string): ModelStats | undefined {
   const key = getModelKey(tool, model);
   return ctx.state?.modelPerformance?.[key];
 }
 
+/**
+ * Get all models sorted by success rate
+ * 
+ * Returns models sorted by success rate (fixes / (fixes + failures)), with
+ * secondary sort by total attempts. Used for performance reporting.
+ * 
+ * @param ctx - State context
+ * @returns Array of models with their stats and success rates, sorted best to worst
+ */
 export function getModelsBySuccessRate(ctx: StateContext): Array<{ key: string; stats: ModelStats; successRate: number }> {
   const perf = ctx.state?.modelPerformance ?? {};
   return Object.entries(perf)
@@ -79,6 +146,15 @@ export function getModelsBySuccessRate(ctx: StateContext): Array<{ key: string; 
     });
 }
 
+/**
+ * Generate a text summary of model performance history
+ * 
+ * Creates a multi-line string summarizing performance for all models,
+ * sorted by success rate. Used for LLM context when recommending models.
+ * 
+ * @param ctx - State context
+ * @returns Formatted summary string, or undefined if no performance data
+ */
 export function getModelHistorySummary(ctx: StateContext): string | undefined {
   const models = getModelsBySuccessRate(ctx);
   if (models.length === 0) {
@@ -106,6 +182,21 @@ export function getModelHistorySummary(ctx: StateContext): string | undefined {
   return lines.length > 0 ? lines.join('\n') : undefined;
 }
 
+/**
+ * Record a fix attempt for a specific issue
+ * 
+ * Stores detailed attempt history per issue, including which tool/model was
+ * used, the result, and any lesson learned. Used by LLM to recommend different
+ * models for issues that have been attempted multiple times.
+ * 
+ * @param ctx - State context
+ * @param commentId - ID of the comment being fixed
+ * @param tool - Tool name used for this attempt
+ * @param model - Model name used (optional)
+ * @param result - Outcome of the attempt
+ * @param lessonLearned - Optional lesson generated from failure analysis
+ * @param rejectionCount - Number of times this attempt was rejected by verification
+ */
 export function recordIssueAttempt(
   ctx: StateContext,
   commentId: string,
@@ -134,6 +225,17 @@ export function recordIssueAttempt(
   });
 }
 
+/**
+ * Generate attempt history summary for specific issues
+ * 
+ * Creates a formatted text summary of all attempts made on the given issues.
+ * Used as context for LLM model recommendation to avoid repeating failed
+ * strategies.
+ * 
+ * @param ctx - State context
+ * @param commentIds - Array of comment IDs to get history for
+ * @returns Formatted summary string, or undefined if no attempt history
+ */
 export function getAttemptHistoryForIssues(ctx: StateContext, commentIds: string[]): string | undefined {
   const state = ctx.state;
   if (!state?.issueAttempts) return undefined;
