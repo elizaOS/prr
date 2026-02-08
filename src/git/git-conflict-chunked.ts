@@ -130,7 +130,7 @@ resolved code here
 EXPLANATION: Brief explanation of what you merged/kept/changed`;
 
   try {
-    const response = await (llm as any).complete(prompt);
+    const response = await llm.complete(prompt);
     const content = response.content;
 
     // Extract resolved code from between backticks
@@ -368,9 +368,12 @@ function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] {
   }
   
   // Reconstruct lines
-  return Array.from(merged.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([pkg, version]) => `    "${pkg}": "${version}",`);
+  const entries = Array.from(merged.entries())
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries.map(([pkg, version], idx) => {
+    const comma = idx < entries.length - 1 ? ',' : '';
+    return `    "${pkg}": "${version}"${comma}`;
+  });
 }
 
 /**
@@ -395,13 +398,27 @@ function parsePackageLines(lines: string[]): Map<string, string> {
  * Returns: >0 if v1 > v2, <0 if v1 < v2, 0 if equal
  */
 function compareVersions(v1: string, v2: string): number {
-  const parts1 = v1.replace(/[^0-9.]/g, '').split('.').map(Number);
-  const parts2 = v2.replace(/[^0-9.]/g, '').split('.').map(Number);
+  // Split version into base and prerelease parts
+  const [base1, prerelease1] = v1.split('-', 2);
+  const [base2, prerelease2] = v2.split('-', 2);
+  
+  // Compare base versions
+  const parts1 = base1.replace(/[^0-9.]/g, '').split('.').map(Number);
+  const parts2 = base2.replace(/[^0-9.]/g, '').split('.').map(Number);
   
   for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
     const p1 = parts1[i] || 0;
     const p2 = parts2[i] || 0;
     if (p1 !== p2) return p1 - p2;
+  }
+  
+  // If base versions are equal, handle prerelease
+  // No prerelease (release version) > has prerelease (prerelease version)
+  if (!prerelease1 && prerelease2) return 1;
+  if (prerelease1 && !prerelease2) return -1;
+  if (prerelease1 && prerelease2) {
+    // Both have prereleases, compare them lexicographically
+    return prerelease1.localeCompare(prerelease2);
   }
   
   return 0;

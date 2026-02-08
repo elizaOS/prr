@@ -49,6 +49,14 @@ export interface PushResult {
  * and the underlying git process keeps running even after timeout. Using
  * spawn directly lets us SIGKILL the process on timeout or Ctrl+C.
  * 
+ * SECURITY NOTE: This function temporarily injects auth token into git remote URL.
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).</search>
+</change>
+
+<change path="src/workflow/fix-loop-utils.ts">
+<search>  const chalk = require('chalk');</search>
+<replace>import chalk from 'chalk';
+ * 
  * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,
  * something is wrong (auth prompt, network). 30s is still generous.
  * 

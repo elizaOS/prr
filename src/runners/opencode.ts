@@ -26,8 +26,9 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
         reject(new Error(`Command failed with code ${code}`));
       }
     });
-    child.on('error', (error) => {
-      reject(error);
+    child.on('error', () => {
+      // Sanitize error to avoid leaking command or argument details
+      reject(new Error('Failed to start command'));
     });
   });
 }

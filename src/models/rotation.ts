@@ -97,9 +97,20 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
   const lowerModel = model.toLowerCase();
   return available.some(m => {
     const lowerAvail = m.toLowerCase();
-    return lowerAvail === lowerModel || 
-           lowerAvail.includes(lowerModel) || 
-           lowerModel.includes(lowerAvail);
+    
+    // Exact match
+    if (lowerAvail === lowerModel) return true;
+    
+    // Family-based matching: extract family token (before first - or .)
+    const familyAvail = lowerAvail.split(/[-.]/, 1)[0];
+    const familyModel = lowerModel.split(/[-.]/, 1)[0];
+    
+    // Accept if same family and one is a proper variant of the other
+    if (familyAvail === familyModel) {
+      return lowerAvail.startsWith(lowerModel) || lowerModel.startsWith(lowerAvail);
+    }
+    
+    return false;
   });
 }
 
@@ -218,10 +229,39 @@ export function tryRotation(
   
   // Check if current tool is exhausted
   const checkToolExhausted = (runnerName: string): boolean => {
-    const models = getModelsForRunner(ctx.runners.find(r => r.name === runnerName)!);
+    const runner = ctx.runners.find(r => r.name === runnerName);
+    if (!runner) return true; // Unknown runner treated as exhausted
+    const models = getModelsForRunner(runner);
     const currentIndex = ctx.modelIndices.get(runnerName) || 0;
     return currentIndex >= models.length - 1;  // On last model or beyond
-  };
+  };</change>
+</change>
+
+<change path="src/resolver.ts">
+<search>    const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
+    Object.assign(this, result);</search>
+<replace>    const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
+    // Explicitly sync only the mutable run-state fields
+    this.prInfo = result.prInfo;
+    this.botTimings = result.botTimings;
+    this.expectedBotResponseTime = result.expectedBotResponseTime;
+    this.workdir = result.workdir;
+    this.stateContext = result.stateContext;
+    this.lessonsContext = result.lessonsContext;
+    this.lockConfig = result.lockConfig;
+    this.runner = result.runner;
+    this.runners = result.runners;
+    this.currentRunnerIndex = result.currentRunnerIndex;
+    this.modelIndices = result.modelIndices;
+    this.rapidFailureCount = result.rapidFailureCount;
+    this.lastFailureTime = result.lastFailureTime;
+    this.consecutiveFailures = result.consecutiveFailures;
+    this.modelFailuresInCycle = result.modelFailuresInCycle;
+    this.progressThisCycle = result.progressThisCycle;
+    this.exitReason = result.exitReason;
+    this.exitDetails = result.exitDetails;
+    this.finalUnresolvedIssues = result.finalUnresolvedIssues;
+    this.finalComments = result.finalComments;
   
   // Helper: Check if we should bail out after completing a cycle
   const checkBailOut = (): boolean => {

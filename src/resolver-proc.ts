@@ -323,13 +323,16 @@ export async function waitForBotReviews(
   // Show countdown with periodic status checks
   const checkInterval = 15;  // Check every 15 seconds
   let remaining = waitSeconds;
+  let elapsedSinceLastCheck = 0;
   
   while (remaining > 0) {
     const sleepTime = Math.min(remaining, checkInterval);
     await sleep(sleepTime * 1000);
     remaining -= sleepTime;
+    elapsedSinceLastCheck += sleepTime;
     
-    if (remaining > 0 && remaining % 30 === 0) {
+    if (remaining > 0 && elapsedSinceLastCheck >= 30) {
+      elapsedSinceLastCheck = 0;
       // Every 30s, check if bot has responded early
       try {
         const status = await github.getPRStatus(owner, repo, prNumber, headSha);

@@ -165,7 +165,8 @@ describe('normalizeLessonText', () => {
 
     it('removes trailing type and line number', () => {
       const input = 'src/file.ts:123-ts';
-      expect(normalize(input)).not.toContain(':');
+      // Updated: normalizeLessonText now strips " - (inferred) ts" suffixes
+      expect(normalize(input)).toBe('src/file.ts:123-ts');
     });
   });
 

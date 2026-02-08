@@ -9,14 +9,15 @@ export function isLockFile(filepath: string): boolean {
 }
 
 export function getLockFileInfo(filepath: string): { deletePattern: string; regenerateCmd: string } | null {
-  if (filepath.endsWith('package-lock.json')) return { deletePattern: '**/package-lock.json', regenerateCmd: 'npm install' };
-  if (filepath.endsWith('yarn.lock')) return { deletePattern: '**/yarn.lock', regenerateCmd: 'yarn install' };
-  if (filepath.endsWith('pnpm-lock.yaml')) return { deletePattern: '**/pnpm-lock.yaml', regenerateCmd: 'pnpm install' };
-  if (filepath.endsWith('Gemfile.lock')) return { deletePattern: '**/Gemfile.lock', regenerateCmd: 'bundle install' };
-  if (filepath.endsWith('Pipfile.lock')) return { deletePattern: '**/Pipfile.lock', regenerateCmd: 'pipenv lock' };
-  if (filepath.endsWith('poetry.lock')) return { deletePattern: '**/poetry.lock', regenerateCmd: 'poetry lock' };
-  if (filepath.endsWith('composer.lock')) return { deletePattern: '**/composer.lock', regenerateCmd: 'composer install' };
-  if (filepath.endsWith('Cargo.lock')) return { deletePattern: '**/Cargo.lock', regenerateCmd: 'cargo build' };
+  const lower = filepath.toLowerCase();
+  if (lower.endsWith('package-lock.json')) return { deletePattern: '**/package-lock.json', regenerateCmd: 'npm install' };
+  if (lower.endsWith('yarn.lock')) return { deletePattern: '**/yarn.lock', regenerateCmd: 'yarn install' };
+  if (lower.endsWith('pnpm-lock.yaml')) return { deletePattern: '**/pnpm-lock.yaml', regenerateCmd: 'pnpm install' };
+  if (lower.endsWith('gemfile.lock')) return { deletePattern: '**/Gemfile.lock', regenerateCmd: 'bundle install' };
+  if (lower.endsWith('pipfile.lock')) return { deletePattern: '**/Pipfile.lock', regenerateCmd: 'pipenv lock' };
+  if (lower.endsWith('poetry.lock')) return { deletePattern: '**/poetry.lock', regenerateCmd: 'poetry lock' };
+  if (lower.endsWith('composer.lock')) return { deletePattern: '**/composer.lock', regenerateCmd: 'composer install' };
+  if (lower.endsWith('cargo.lock')) return { deletePattern: '**/Cargo.lock', regenerateCmd: 'cargo build' };
   return null;
 }
 

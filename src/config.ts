@@ -167,6 +167,7 @@ export function validateTool(tool: string): FixerTool {
 }
 
 export function validateRealTool(tool: string): RealFixerTool {
+  // Note: 'auto' is a meta-value for auto-detection and should be resolved before storage
   if (!REAL_FIXER_TOOLS.includes(tool as RealFixerTool)) {
     throw new Error(`Invalid tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')}`);
   }

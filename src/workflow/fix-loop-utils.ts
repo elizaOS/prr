@@ -31,7 +31,7 @@ export async function processNewBotReviews(
   checkForNewBotReviews: (owner: string, repo: string, prNumber: number, existingIds: Set<string>) => Promise<any>,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>
 ): Promise<void> {
-  const chalk = require('chalk');
+  const chalk = (await import('chalk')).default;
   
   // Check for new bot reviews if expected time has passed
   // WHY: Work on existing issues while waiting for bot reviews, then pull in new ones
@@ -68,7 +68,7 @@ export function filterVerifiedIssues(
   unresolvedIssues: UnresolvedIssue[],
   verifiedThisSession: Set<string>
 ): void {
-  const { debug } = require('../logger.js');
+  const { debug } = await import('../logger.js');
   
   // Filter out issues that were verified during THIS session (by single-issue mode, etc.)
   // WHY: trySingleIssueFix marks items as verified but 'continue' skips normal filtering
@@ -106,8 +106,8 @@ export async function checkEmptyIssues(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
+  const chalk = (await import('chalk')).default;
+  const { debug } = await import('../logger.js');
   
   // Check for empty issues at start of each iteration
   // WHY: After verification/filtering, unresolvedIssues can be 0
@@ -190,9 +190,10 @@ export async function checkAndPullRemoteCommits(
   exitDetails?: string;
   updatedHeadSha?: string;
 }> {
-  const chalk = require('chalk');
-  const { checkRemoteAhead, pullLatest } = require('../git/clone.js');
-  const { debug } = require('../logger.js');
+  import chalk from 'chalk';
+import { debug } from '../logger.js';
+import { checkRemoteAhead } from '../git/git-conflicts.js';
+import { pullLatest } from '../git/git-pull.js';
   
   // Check for new commits pushed to the PR (every iteration)
   // WHY: Detect external pushes early so we don't waste cycles on stale code
@@ -222,7 +223,7 @@ export async function checkAndPullRemoteCommits(
       const previouslyVerified = Verification.getVerifiedComments(stateContext).length;
       if (previouslyVerified > 0) {
         console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
-        ;
+        Verification.clearAllVerifications(stateContext);
       }
       
       // Re-fetch code snippets for unresolved issues
