@@ -20,6 +20,7 @@ import type { CLIOptions } from '../cli.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { PRInfo } from '../github/types.js';
 import * as Lock from '../state/lock-functions.js';
+import { debug } from '../logger.js';
 
 /**
  * Run cleanup mode to remove prr artifacts from repository
@@ -54,7 +55,6 @@ export async function runCleanupMode(
     githubToken?: string
   ) => Promise<any>
 ): Promise<void> {
-  const { debug } = await import('../logger.js');
   const spinner = ora();
   
   console.log(chalk.cyan('━━━ CLEANUP MODE ━━━\n'));
@@ -121,7 +121,14 @@ export async function runCleanupMode(
           } else {
             // File has other content - just remove our section
             await writeFile(claudeMdPath, newContent + '\n', 'utf-8');
-            await git.add('CLAUDE.md');
+            // Check if file is staged for deletion and unstage it first
+            const status = await git.status(['CLAUDE.md']).catch(() => null);
+            if (status?.deleted?.includes('CLAUDE.md')) {
+              await git.reset(['HEAD', 'CLAUDE.md']).catch(() => {});
+            }
+            await git.add('CLAUDE.md').catch((err) => {
+              console.log(chalk.yellow(`  Warning: Could not stage CLAUDE.md: ${err.message}`));
+            });
             console.log(chalk.green('✓ Removed prr section from CLAUDE.md'));
           }
           madeChanges = true;

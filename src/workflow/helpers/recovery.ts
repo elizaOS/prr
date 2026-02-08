@@ -21,6 +21,9 @@ import type { LessonsContext } from '../../state/lessons-context.js';
 import type { LLMClient } from '../../llm/client.js';
 import type { Runner } from '../../runners/types.js';
 import * as LessonsAPI from '../../state/lessons-index.js';
+import { debug, setTokenPhase } from '../../logger.js';
+import { getChangedFiles, getDiffForFile } from '../../git/git-clone-index.js';
+import * as fs from 'fs';
 
 /**
  * Try fixing issues one at a time (single-issue focus mode)
@@ -49,9 +52,6 @@ export async function trySingleIssueFix(
   parseNoChangesExplanation: (output: string) => string | null,
   sanitizeOutputForLog: (output: string | undefined, maxLength: number) => string
 ): Promise<boolean> {
-  const { debug, setTokenPhase } = await import('../../logger.js');
-  const { getChangedFiles, getDiffForFile } = await import('../../git/git-clone-index.js');
-
   // Focus on one issue at a time to reduce context and improve success rate
   // Randomize which issues to try to avoid hammering the same hard issue
   const shuffled = [...issues].sort(() => Math.random() - 0.5);
@@ -127,7 +127,18 @@ export async function trySingleIssueFix(
           // Reset ONLY this issue's file, not all changed files
           // WHY: Other issues in this batch may have been successfully fixed
           // and we don't want to lose those changes
-          await git.checkout([issue.comment.path]);
+          try {
+            await git.checkout([issue.comment.path]);
+          } catch {
+            // File might have been deleted from git (e.g., fixer ran git rm)
+            // Try to unstage deletion, then restore from HEAD
+            try {
+              await git.reset(['HEAD', issue.comment.path]);
+              await git.checkout([issue.comment.path]);
+            } catch {
+              debug(`Could not revert ${issue.comment.path} after rejected fix`);
+            }
+          }
         }
       } else if (changedFiles.length > 0) {
         // Tool made changes but to different files - might still be relevant
@@ -144,7 +155,18 @@ export async function trySingleIssueFix(
         // WHY: The target file might have partial progress worth keeping
         const wrongFiles = changedFiles.filter(f => f !== issue.comment.path);
         if (wrongFiles.length > 0) {
-          await git.checkout(wrongFiles);
+          try {
+            await git.checkout(wrongFiles);
+          } catch {
+            // Some files might have been deleted from git; revert individually
+            for (const f of wrongFiles) {
+              try {
+                await git.checkout([f]);
+              } catch {
+                try { await git.reset(['HEAD', f]); await git.checkout([f]); } catch { /* skip */ }
+              }
+            }
+          }
         }
       } else {
         // Tool ran but made no changes at all
@@ -229,10 +251,6 @@ export async function tryDirectLLMFix(
   stateContext: StateContext,
   verifiedThisSession: Set<string> | undefined
 ): Promise<boolean> {
-  const { debug, setTokenPhase } = await import('../../logger.js');
-  const { getDiffForFile } = await import('../../git/git-clone-index.js');
-  const fs = await import('fs');
-
   console.log(chalk.cyan(`\n  🧠 Attempting direct ${llmProvider} API fix...`));
   setTokenPhase('Direct LLM fix');
   
@@ -273,6 +291,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
           // Preserve trailing newline if original file had one
           const hasTrailingNewline = fileContent.endsWith('\n');
           fs.writeFileSync(filePath, fixedCode + (hasTrailingNewline ? '\n' : ''), 'utf-8');
+          
+          // If file was staged for deletion, unstage it so we can add it back
+          const status = await git.status([issue.comment.path]).catch(() => null);
+          if (status?.deleted?.includes(issue.comment.path)) {
+            await git.reset(['HEAD', issue.comment.path]).catch(() => {});
+          }
+          
           console.log(chalk.green(`    ✓ Written: ${issue.comment.path}`));
 
           // Verify the fix before counting it as successful
@@ -294,7 +319,20 @@ Start your response with \`\`\` and end with \`\`\`.`;
           } else {
             console.log(chalk.yellow(`    ○ Not verified: ${verification.explanation}`));
             // Reset the file - the fix wasn't correct
-            await git.checkout([issue.comment.path]);
+            // First check if file exists in git
+            const tracked = await git.raw(['ls-files', issue.comment.path]).catch(() => '');
+            if (tracked.trim()) {
+              await git.checkout([issue.comment.path]).catch((err) => {
+                // If file is staged for deletion, unstage it first
+                git.reset(['HEAD', issue.comment.path]).catch(() => {});
+                console.log(chalk.yellow(`    Warning: Could not reset ${issue.comment.path}: ${err.message}`));
+              });
+            } else {
+              // File is untracked, just delete it
+              try {
+                fs.unlinkSync(filePath);
+              } catch {}
+            }
           }
         } else {
           // LLM returned the same code - no changes needed
