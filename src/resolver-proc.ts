@@ -83,6 +83,14 @@ export {
   commitAndPushChanges,
 } from './workflow/commit.js';
 
+// Fix loop utilities
+export {
+  processNewBotReviews,
+  filterVerifiedIssues,
+  checkEmptyIssues,
+  checkAndPullRemoteCommits,
+} from './workflow/fix-loop-utils.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,

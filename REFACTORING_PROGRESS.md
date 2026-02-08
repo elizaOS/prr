@@ -8,8 +8,8 @@ Successfully refactored the PRResolver "god object" by extracting methods to spe
 
 ### Overall Reduction
 - **Starting**: resolver.ts was 4,503 lines
-- **Current**: resolver.ts is 3,005 lines
-- **Reduction**: -1,498 lines (-33.3%)
+- **Current**: resolver.ts is 2,906 lines
+- **Reduction**: -1,597 lines (-35.5%)
 
 ### Created/Extracted Modules
 
@@ -18,7 +18,7 @@ Successfully refactored the PRResolver "god object" by extracting methods to spe
 | `ui/reporter.ts` | 316 | 7 | UI and reporting functions |
 | `models/rotation.ts` | 459 | 14 | Model and runner rotation logic |
 | `git/operations.ts` | 504 | 4 | Git conflict resolution operations |
-| `resolver-proc.ts` | 414 | 13 | Core procedural facade (re-exports from workflow modules) |
+| `resolver-proc.ts` | 422 | 13 | Core procedural facade (re-exports from workflow modules) |
 | `workflow/utils.ts` | 300 | 9 | Pure utility functions |
 | `workflow/initialization.ts` | 182 | 3 | Setup and state initialization |
 | `workflow/issue-analysis.ts` | 304 | 2 | Issue finding and analysis |
@@ -28,7 +28,8 @@ Successfully refactored the PRResolver "god object" by extracting methods to spe
 | `workflow/no-comments.ts` | 121 | 1 | Handle "no comments" case with conflict auto-resolution |
 | `workflow/analysis.ts` | 265 | 3 | Issue analysis, new comments check, final audit |
 | `workflow/commit.ts` | 108 | 1 | Commit and push changes after fixes verified |
-| **Total** | **3,640** | **66** | |
+| `workflow/fix-loop-utils.ts` | 245 | 4 | Fix loop utilities (bot reviews, filtering, empty check, remote sync) |
+| **Total** | **3,893** | **70** | |
 
 ## Completed Work
 

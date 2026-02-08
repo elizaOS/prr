@@ -912,155 +912,56 @@ Start your response with \`\`\` and end with \`\`\`.`;
         const existingCommentIds = new Set(comments.map(c => c.id));
         
         while (fixIteration < maxFixIterations && !allFixed) {
-          // Check for new bot reviews if expected time has passed
-          // WHY: Work on existing issues while waiting for bot reviews, then pull in new ones
-          const newReviewResult = await this.checkForNewBotReviews(owner, repo, number, existingCommentIds);
-          if (newReviewResult) {
-            console.log(chalk.cyan(`\n📬 ${newReviewResult.message}`));
-            
-            // Add new comments to tracking
-            for (const comment of newReviewResult.newComments) {
-              existingCommentIds.add(comment.id);
-              comments.push(comment);
-              
-              console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
-              
-              // Analyze if this new comment needs fixing
-              const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
-              // Quick check - assume new comments need attention unless obviously resolved
-              unresolvedIssues.push({
-                comment,
-                codeSnippet,
-                stillExists: true,
-                explanation: 'New comment from bot review',
-              });
-            }
-            
-            console.log(chalk.cyan(`   Added ${newReviewResult.newComments.length} new issue(s) to workflow\n`));
-          }
+          // Check for new bot reviews
+          await ResolverProc.processNewBotReviews(
+            this.github,
+            owner,
+            repo,
+            number,
+            existingCommentIds,
+            comments,
+            unresolvedIssues,
+            (o, r, n, ids) => this.checkForNewBotReviews(o, r, n, ids),
+            (path, line, body) => this.getCodeSnippet(path, line, body)
+          );
           
-          // Filter out issues that were verified during THIS session (by single-issue mode, etc.)
-          // WHY: trySingleIssueFix marks items as verified but 'continue' skips normal filtering
-          // IMPORTANT: Don't use isCommentVerifiedFixed here - it would remove stale items
-          // that findUnresolvedIssues intentionally kept for re-checking
-          if (verifiedThisSession.size > 0) {
-            const beforeCount = unresolvedIssues.length;
-            const toRemove = unresolvedIssues.filter(i => verifiedThisSession.has(i.comment.id));
-            if (toRemove.length > 0) {
-              debug('Filtering issues verified this session', {
-                before: beforeCount,
-                removing: toRemove.map(i => i.comment.id),
-              });
-              unresolvedIssues.splice(
-                0,
-                unresolvedIssues.length,
-                ...unresolvedIssues.filter(i => !verifiedThisSession.has(i.comment.id))
-              );
-              debug('After filtering', { remaining: unresolvedIssues.length });
-            }
-          }
+          // Filter verified issues
+          ResolverProc.filterVerifiedIssues(unresolvedIssues, verifiedThisSession);
           
-          // Check for empty issues at start of each iteration
-          // WHY: After verification/filtering, unresolvedIssues can be 0
-          if (unresolvedIssues.length === 0) {
-            // Sanity check: verify that all comments are actually marked as verified
-            const actuallyVerified = comments.filter(c => 
-              this.stateManager.isCommentVerifiedFixed(c.id)
-            ).length;
-            const actuallyUnverified = comments.length - actuallyVerified;
-            
-            if (actuallyUnverified > 0) {
-              // BUG: We think we're done but there are unverified comments!
-              console.log(chalk.red(`\n⚠ BUG DETECTED: unresolvedIssues is empty but ${actuallyUnverified} comments are not verified`));
-              debug('Mismatch detected', {
-                unresolvedIssuesLength: unresolvedIssues.length,
-                actuallyVerified,
-                actuallyUnverified,
-                totalComments: comments.length,
-                verifiedIds: comments.filter(c => this.stateManager.isCommentVerifiedFixed(c.id)).map(c => c.id),
-              });
-              
-              // Re-populate unresolvedIssues from scratch
-              unresolvedIssues.splice(0, unresolvedIssues.length);
-              for (const comment of comments) {
-                if (!this.stateManager.isCommentVerifiedFixed(comment.id)) {
-                  const codeSnippet = await this.getCodeSnippet(comment.path, comment.line, comment.body);
-                  unresolvedIssues.push({
-                    comment,
-                    codeSnippet,
-                    stillExists: true,
-                    explanation: 'Re-added after bug detection',
-                  });
-                }
-              }
-              debug('Re-populated unresolvedIssues', { count: unresolvedIssues.length });
-              
-              if (unresolvedIssues.length === 0) {
-                // Now it's actually empty (all verified)
-                debug('All comments now verified - breaking');
-                console.log(chalk.green('\n✓ All issues resolved'));
-                this.exitReason = 'all_fixed';
-                this.exitDetails = 'All issues fixed and verified';
-                break;
-              }
-              // Continue with the re-populated list
-              console.log(chalk.yellow(`→ Continuing with ${unresolvedIssues.length} issues`));
-            } else {
-              debug('No issues to fix at start of iteration - breaking');
-              console.log(chalk.green('\n✓ All issues resolved'));
-              this.exitReason = 'all_fixed';
-              this.exitDetails = 'All issues fixed and verified';
-              break;
-            }
+          // Check for empty issues
+          const emptyCheck = await ResolverProc.checkEmptyIssues(
+            unresolvedIssues,
+            comments,
+            this.stateManager,
+            (path, line, body) => this.getCodeSnippet(path, line, body)
+          );
+          if (emptyCheck.shouldBreak) {
+            if (emptyCheck.exitReason) this.exitReason = emptyCheck.exitReason;
+            if (emptyCheck.exitDetails) this.exitDetails = emptyCheck.exitDetails;
+            break;
           }
           
           fixIteration++;
           
-          // Check for new commits pushed to the PR (every iteration)
-          // WHY: Detect external pushes early so we don't waste cycles on stale code
-          const remoteStatus = await checkRemoteAhead(git, this.prInfo.branch);
-          if (remoteStatus.behind > 0) {
-            console.log(chalk.yellow(`\n⚠ Remote has ${remoteStatus.behind} new commit(s) - pulling...`));
-            
-            const pullResult = await pullLatest(git, this.prInfo.branch);
-            if (!pullResult.success) {
-              console.log(chalk.red(`  Failed to pull: ${pullResult.error}`));
-              if (pullResult.error?.includes('conflict')) {
-                // Conflicts need manual resolution - bail out
-                console.log(chalk.red('  Conflicts detected. Please resolve manually and restart.'));
-                this.exitReason = 'error';
-                this.exitDetails = 'Pull conflicts require manual resolution';
-                break;
-              }
-              // Other pull errors - continue but warn
-              console.log(chalk.yellow('  Continuing with potentially stale code...'));
-            } else {
-              console.log(chalk.green(`  ✓ Pulled ${remoteStatus.behind} commit(s)`));
-              
-              // Invalidate verification cache - code has changed
-              // WHY: Previous "fixed" status may no longer be valid
-              const previouslyVerified = this.stateManager.getVerifiedComments().length;
-              if (previouslyVerified > 0) {
-                console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
-                this.stateManager.clearVerificationCache();
-              }
-              
-              // Re-fetch code snippets for unresolved issues
-              // WHY: Code at those lines may have changed
-              console.log(chalk.gray(`  Refreshing code snippets for ${unresolvedIssues.length} issues...`));
-              for (const issue of unresolvedIssues) {
-                issue.codeSnippet = await this.getCodeSnippet(
-                  issue.comment.path,
-                  issue.comment.line,
-                  issue.comment.body
-                );
-              }
-              
-              // Update PR info with new head SHA
-              const updatedPR = await this.github.getPRInfo(owner, repo, number);
-              this.prInfo.headSha = updatedPR.headSha;
-              debug('Updated PR head SHA', { oldSha: this.prInfo.headSha, newSha: updatedPR.headSha });
-            }
+          // Check and pull remote commits
+          const remotePull = await ResolverProc.checkAndPullRemoteCommits(
+            git,
+            this.prInfo.branch,
+            unresolvedIssues,
+            this.stateManager,
+            this.github,
+            owner,
+            repo,
+            number,
+            (path, line, body) => this.getCodeSnippet(path, line, body)
+          );
+          if (remotePull.shouldBreak) {
+            if (remotePull.exitReason) this.exitReason = remotePull.exitReason;
+            if (remotePull.exitDetails) this.exitDetails = remotePull.exitDetails;
+            break;
+          }
+          if (remotePull.updatedHeadSha) {
+            this.prInfo.headSha = remotePull.updatedHeadSha;
           }
           
           const iterLabel = this.options.maxFixIterations ? `${fixIteration}/${maxFixIterations}` : `${fixIteration}`;
