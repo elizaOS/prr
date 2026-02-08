@@ -179,7 +179,10 @@ describe('normalizeLessonText', () => {
       const input = 'src/state/manager.ts:117 - (inferred) ts';
       const result = normalize(input);
       expect(result).not.toBeNull();
-      expect(result).not.toContain('(inferred) ts');
+      // normalizeLessonText strips trailing " - (inferred) ..." patterns
+      if (result) {
+        expect(result).not.toContain('(inferred)');
+      }
     });
   });
 

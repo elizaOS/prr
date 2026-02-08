@@ -353,6 +353,10 @@ function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] {
   const oursMap = parsePackageLines(ours);
   const theirsMap = parsePackageLines(theirs);
   
+  // Detect indentation from input lines (default to 4 spaces)
+  const indentMatch = [...ours, ...theirs].find(l => l.match(/^(\s+)"/));
+  const indent = indentMatch ? indentMatch.match(/^(\s+)/)?.[1] ?? '    ' : '    ';
+  
   // Merge: for each package, take higher version
   const merged = new Map<string, string>();
   
@@ -372,7 +376,7 @@ function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] {
     .sort(([a], [b]) => a.localeCompare(b));
   return entries.map(([pkg, version], idx) => {
     const comma = idx < entries.length - 1 ? ',' : '';
-    return `    "${pkg}": "${version}"${comma}`;
+    return `${indent}"${pkg}": "${version}"${comma}`;
   });
 }
 

@@ -7,47 +7,12 @@
 
 ### Global
 
-- Fix for README.md rejected: The diff shows changes to line 576 about model listing commands, but the review requested verification and removal of unverified models like `gpt-5.2` and `Grok` from the table, which are not addressed
-- Fix for src/logger.ts rejected: The change only reorders the type check condition but doesn't address the unused initial value of overallTotals mentioned in the review comment.
-- Fix for src/resolver.ts rejected: The timeout reduction addresses one concern, but ignores the main security issues: no validation of working directory safety, no protection against shell injection, no use of Node.js APIs instead of execSync, and no process monitoring improvements.
-- Fix for README.md rejected: The fix only adds a clarification comment and a generic link, but does not provide the platform-specific instructions (Linux, Intel Mac) that the review explicitly requested
-- Fix for README.md rejected: The code change only reformats table formatting, but does not update the README example to match the canonical date-stamped model name from config.ts or add clarifying comments
-- Fix for src/runners/llm-api.ts rejected: The diff does not match the review comment - it shows the same change as the first fix instead of implementing the ReDoS mitigation for the whitespace pattern on line 232. The suggested change to use `\s{1,1000}` is not present in the diff.
-- Fix for .prr/lessons.md rejected: The fix removes malformed entries and deduplicated some lines, but the deduplication is incomplete. Many entries still contain
-- Fix for CLAUDE.md rejected: The fix removes corrupted entries from CLAUDE.md, but does not address the root cause identified in the review comment—the lessons generation logic that produces these malformed entries. The CLAUDE.md file was manually cleaned, but the generator function that syncs from `.prr/lessons.md` and creates the malformed "Instructions" section was not identified or fixed, so the problem will recur.
-- Review comment explicitly asks to "locate and modify the compaction function"—fix source code (compactLessons, dedupeLessons, etc. in src/state/man...
-- Comment requests sanitization logic in the generator—identify the function that syncs .prr/lessons.md to CLAUDE.md and add stripping of parsing art...
-- Comment asks for regex/trim logic in LessonsManager to strip " - ts" suffixes before saving—add this validation in the manager code, not...
-- Comment asks to update normalizeLessonText to trim whitespace, collapse duplicate spaces with /\s{2,}/g, and detect orphan lines—modify the functio...
-- Must implement the complete restoration strategy: add `originalRemoteUrl` variable, create `restoreRemote()` helper function, call it in ALL exit p...
-- Isolate the fix to lines 1038–1052 only. Remove unrelated lesson normalization changes. Submit the `existedBefore`/`createdByPrr` logic change sepa...
-- The suggested fix shows treating unknown entries (missing from map) as "existed before" to prevent data loss during cleanup. Instead, changes were ...
-- _(124 more in .prr/lessons.md)_
+- When fixing corrupted generated content, sanitize the source before regenerating - fix the generator logic, not the symptoms.
+- When a review requests fixing root-cause logic in code, locate and modify the actual function that generates the output.
+- When a review requests function improvements, update the function itself, not just the data it processes.
+- Treat unknown sync target state as "existed before" to prevent accidental data loss during cleanup.
 
 ### By File
-
-**src/state/manager.ts**
-- Fix for src/state/manager.ts:117 - When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation describing it.
-- Fix for src/state/manager.ts:384 rejected: The change modifies `clearInterrupted()` to be async and add a save call, but completely ignores the actual bug in `compactLessons()` that was described in the review comment. The fix addresses a different issue entirely.
-- Fix for src/state/manager.ts:117 - tool made no changes
-- tool made no changes - trying different approach
-- fixer made no changes
-
-**src/state/lessons.ts**
-- Fix for src/state/lessons.ts:613 rejected: The diff filters transient error patterns and marks repo lessons clean on success, but doesn't fix the Windows drive-letter path parsing issue in addLesson.
-- Fix for src/state/lessons.ts:625 - Anchor the regex on message suffixes like " rejected:" or " - " to reliably separate filePath from line numbers, rather than relying solely on the last `:digits` pattern.
-- Fix for src/state/lessons.ts:537 - Since the fix is already in place and the code matches the proposed solution, no changes are needed.
-- Fix for src/state/lessons.ts:625 - Since the fix is already in place and the code matches the proposed solution, no changes are needed.
-
-**src/runners/cursor.ts**
-- Fix for src/runners/cursor.ts:31 rejected: The diff changes stdin handling but does not update the FALLBACK_MODELS array. The review comment specifically requested updating outdated model names in the fallback list at lines 24-31, which is not present in this diff.
-- Fix for src/runners/cursor.ts:243 rejected: The diff changes stdin handling and prompt passing but does NOT move the prompt file from workdir to tmpdir as requested. The security issue about writing `.prr-prompt.txt` to the workspace and lacking cleanup is not addressed.
-- Fix for src/runners/cursor.ts:256 rejected: The temp file is created but the isSafePath check is removed without replacement, and there is no cleanup logic (unlinkSync call) after the process completes.
-- Fix for src/runners/cursor.ts:91 rejected: The fix duplicates the entire parsing loop instead of modifying the existing one, resulting in redundant code that processes lines twice.
-
-**README.md**
-- Fix for README.md:573 rejected: The diff updates model versions but doesn't correct the CLI command (should be `agent models` or `cursor-agent - list-models`) or verify/update the gpt-5.2 and Grok model names.
-- Fix for README.md:231 rejected: The diff updates model versions and rotation examples but doesn't fix the markdown indentation issues (MD005/MD007) in the nested list bullets under "Run Fixer".
 - Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
 - Fix for README.md:1 - tool made no changes without explanation - trying different approach
 
