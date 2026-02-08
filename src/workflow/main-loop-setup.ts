@@ -28,6 +28,8 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
+import { debug, debugStep, startTimer, endTimer, formatNumber, formatDuration, setTokenPhase } from '../logger.js';
+import * as ResolverProc from '../resolver-proc.js';
 
 /**
  * Process comments and determine if fix loop should run
@@ -69,17 +71,6 @@ export async function processCommentsAndPrepareFixLoop(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const {
-    debug,
-    debugStep,
-    startTimer,
-    endTimer,
-    formatNumber,
-    formatDuration,
-    setTokenPhase,
-  } = await import('../logger.js');
-  const ResolverProc = await import('../resolver-proc.js');
-
   // Fetch review comments
   debugStep('FETCHING REVIEW COMMENTS');
   startTimer('Fetch comments');

@@ -18,6 +18,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import type { LLMClient } from '../llm/client.js';
 import { cleanupWorkdir } from '../git/workdir.js';
+import * as ResolverProc from '../resolver-proc.js';
 
 export interface RunState {
   prInfo: PRInfo;
@@ -46,6 +47,7 @@ export interface RunCallbacks {
   setupRunner: () => Promise<Runner>;
   ensureStateFileIgnored: (workdir: string) => Promise<void>;
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>;
+  syncResolverState?: (state: RunState) => void;
   getRotationContext: () => any;
   getCurrentModel: () => string | undefined;
   findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>;
@@ -78,8 +80,6 @@ export async function executeRun(
   callbacks: RunCallbacks,
   state: RunState
 ): Promise<RunState> {
-  const ResolverProc = await import('../resolver-proc.js');
-  
   try {
     const initResult = await ResolverProc.initializeRun(prUrl, github, options, spinner, callbacks.runCleanupMode, callbacks.calculateExpectedBotResponseTime);
     if (!initResult) return state;
@@ -88,11 +88,10 @@ export async function executeRun(
     state.botTimings = botTimings;
     state.expectedBotResponseTime = expectedBotResponseTime;
     const setupResult = await ResolverProc.executeSetupPhase(config, options, owner, repo, number, state.prInfo, github, spinner, callbacks.setupRunner, callbacks.ensureStateFileIgnored, callbacks.resolveConflictsWithLLM, callbacks.getRotationContext, callbacks.getCurrentModel);
-    if (setupResult.shouldExit) {
-      if (setupResult.exitReason) state.exitReason = setupResult.exitReason;
-      if (setupResult.exitDetails) state.exitDetails = setupResult.exitDetails;
-      return state;
-    }
+    
+    // Always copy setup results to state, even on early exit
+    // WHY: Error handlers and cleanup need these values (especially stateContext)
+    // CRITICAL: Also update via callback so the resolver instance is updated BEFORE callbacks are invoked
     state.workdir = setupResult.workdir;
     state.stateContext = setupResult.stateContext;
     state.lessonsContext = setupResult.lessonsContext;
@@ -101,6 +100,18 @@ export async function executeRun(
     state.runners = setupResult.runners;
     state.currentRunnerIndex = setupResult.currentRunnerIndex;
     state.modelIndices = setupResult.modelIndices;
+    
+    // Immediately sync resolver instance via callback before continuing
+    // WHY: Callbacks need to access updated this.stateContext during main loop
+    if (callbacks.syncResolverState) {
+      callbacks.syncResolverState(state);
+    }
+    
+    if (setupResult.shouldExit) {
+      if (setupResult.exitReason) state.exitReason = setupResult.exitReason;
+      if (setupResult.exitDetails) state.exitDetails = setupResult.exitDetails;
+      return state;
+    }
     const git = setupResult.git;
     let pushIteration = 0;
     const maxPushIterations = options.autoPush ? (options.maxPushIterations || Infinity) : 1;

@@ -23,6 +23,8 @@ import type { StateContext } from '../state/state-context.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import type { Runner } from '../runners/types.js';
+import { debug, debugStep } from '../logger.js';
+import * as ResolverProc from '../resolver-proc.js';
 
 /**
  * Execute complete setup phase
@@ -68,9 +70,6 @@ export async function executeSetupPhase(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const { debug, debugStep } = await import('../logger.js');
-  const ResolverProc = await import('../resolver-proc.js');
-
   // Check CodeRabbit status
   debugStep('CHECKING CODERABBIT STATUS');
   await ResolverProc.checkCodeRabbitStatus(github, owner, repo, number, prInfo.branch, prInfo.headSha, spinner);
@@ -105,8 +104,20 @@ export async function executeSetupPhase(
   // Recover verification state from git history
   await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext);
 
+  // Create conflict resolution wrapper with setup phase context
+  // WHY: During setup, resolver's workdir/runner are not set yet, so we need to
+  // create a callback that captures the setup phase's workdir and runner
+  const resolveConflictsInSetup = async (git: SimpleGit, files: string[], source: string) => {
+    // Import and call the actual resolution function with setup phase context
+    const { resolveConflictsWithLLM } = await import('../git/git-conflict-resolve.js');
+    const { LLMClient } = await import('../llm/client.js');
+    const llm = new LLMClient(config);
+    // Pass the runner that was set up earlier (line 85-96)
+    return resolveConflictsWithLLM(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
+  };
+
   // Check for conflicts and sync with remote
-  const syncResult = await ResolverProc.checkAndSyncWithRemote(git, prInfo.branch, spinner, resolveConflictsWithLLM);
+  const syncResult = await ResolverProc.checkAndSyncWithRemote(git, prInfo.branch, spinner, resolveConflictsInSetup);
   if (!syncResult.success) {
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
@@ -115,16 +126,6 @@ export async function executeSetupPhase(
   }
 
   // Check and merge base branch
-  // WHY wrap resolveConflictsWithLLM: During setup, resolver's workdir is not set yet, 
-  // so we need to create a new callback that captures the setup phase's workdir and runner
-  const resolveConflictsInSetup = async (git: SimpleGit, files: string[], source: string) => {
-    // Import and call the actual resolution function with setup phase context
-    const { resolveConflictsWithLLM: resolveFunc } = await import('../git/git-conflict-resolve.js');
-    const { LLMClient } = await import('../llm/client.js');
-    const llm = new LLMClient(config);
-    // Pass the runner that was set up earlier (line 85-96)
-    return resolveFunc(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
-  };
   const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup);
   if (!mergeResult.success) {
     return {

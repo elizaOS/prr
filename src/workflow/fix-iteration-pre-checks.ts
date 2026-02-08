@@ -24,6 +24,7 @@ import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { CLIOptions } from '../cli.js';
 import type { Runner } from '../runners/types.js';
+import * as ResolverProc from '../resolver-proc.js';
 
 /**
  * Execute pre-iteration checks before running fixer
@@ -68,8 +69,6 @@ export async function executePreIterationChecks(
   exitDetails?: string;
   updatedHeadSha?: string;
 }> {
-  const ResolverProc = await import('../resolver-proc.js');
-
   // Check for new bot reviews
   await ResolverProc.processNewBotReviews(
     github,

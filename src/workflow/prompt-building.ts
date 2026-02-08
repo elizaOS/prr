@@ -13,6 +13,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt } from '../analyzer/prompt-builder.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { debug } from '../logger.js';
 
 /**
  * Build fix prompt with lessons and display summary
@@ -38,8 +39,6 @@ export function buildAndDisplayFixPrompt(
   affectedFiles: string[];
   shouldSkip: boolean;
 } {
-  const { debug } = require('../logger.js');
-  
   const lessonsBeforeFix = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
   
   // Get lessons for all files being fixed

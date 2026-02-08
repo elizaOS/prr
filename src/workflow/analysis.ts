@@ -3,6 +3,7 @@
  * Handles analyzing review comments, reporting dismissed issues, checking for new comments, and final audit
  */
 
+import chalk from 'chalk';
 import type { Ora } from 'ora';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
@@ -17,6 +18,8 @@ import * as Iterations from '../state/state-iterations.js';
 import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { CLIOptions } from '../cli.js';
+import { formatNumber } from '../ui/reporter.js';
+import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../logger.js';
 
 /**
  * Analyze issues and report dismissed issues
@@ -27,10 +30,6 @@ export function analyzeAndReportIssues(
   stateContext: StateContext,
   analyzeTime: number
 ): void {
-  const chalk = require('chalk');
-  const { formatNumber } = require('../ui/reporter.js');
-  const { debug } = require('../logger.js');
-  
   const resolvedCount = comments.length - unresolvedIssues.length;
   console.log(chalk.green(`✓ ${formatNumber(resolvedCount)}/${formatNumber(comments.length)} already resolved (${formatDuration(analyzeTime)})`));
   if (unresolvedIssues.length > 0) {
@@ -86,10 +85,6 @@ export async function checkForNewComments(
   updatedComments: ReviewComment[];
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
-  const chalk = require('chalk');
-  const { debugStep } = require('../logger.js');
-  const { formatNumber } = require('../ui/reporter.js');
-  
   // Before declaring victory, check for new comments added while we were fixing
   // WHY: Humans or bots may add new review comments during our fix cycle
   debugStep('CHECK FOR NEW COMMENTS');
@@ -154,11 +149,6 @@ export async function runFinalAudit(
   failedAudit: Array<{ comment: ReviewComment; explanation: string }>;
   auditPassed: boolean;
 }> {
-  const chalk = require('chalk');
-  const { debugStep, debug } = require('../logger.js');
-  const { setTokenPhase } = require('../logger.js');
-  const { formatNumber } = require('../ui/reporter.js');
-  
   // Before declaring victory, run a final audit to catch false positives
   debugStep('FINAL AUDIT');
   setTokenPhase('Final audit');
@@ -267,6 +257,5 @@ export async function runFinalAudit(
 
 // Helper function for formatting duration
 function formatDuration(ms: number): string {
-  const { formatDuration: format } = require('../ui/reporter.js');
-  return format(ms);
+  return formatDur(ms);
 }

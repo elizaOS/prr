@@ -11,17 +11,18 @@ import type { LockConfig } from '../state/lock-functions.js';
 import * as Lock from '../state/lock-functions.js';
 import type { Runner } from '../runners/types.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import chalk from 'chalk';
+import { join } from 'path';
+import { readFile, writeFile } from 'fs/promises';
+import { simpleGit } from 'simple-git';
+import { debug, debugStep } from '../logger.js';
+import * as Rotation from '../state/state-rotation.js';
 
 /**
  * Ensure state file is added to .gitignore
  * WHY: State file should never be committed - it's local/temporary
  */
 export async function ensureStateFileIgnored(workdir: string): Promise<void> {
-  const { join } = await import('path');
-  const { readFile, writeFile } = await import('fs/promises');
-  const { simpleGit } = await import('simple-git');
-  const chalk = (await import('chalk')).default;
-  
   const gitignorePath = join(workdir, '.gitignore');
   const stateFileName = '.pr-resolver-state.json';
   
@@ -85,9 +86,6 @@ export async function initializeManagers(
   lockConfig: LockConfig;
   state: any;
 }> {
-  const chalk = (await import('chalk')).default;
-  const { debug, debugStep } = await import('../logger.js');
-  
   // Initialize state context
   debugStep('LOADING STATE');
   const stateContext = createStateContext(workdir);
@@ -153,9 +151,6 @@ export async function restoreRunnerState(
   runner: Runner;
   modelIndices: Map<string, number>;
 }> {
-  const chalk = (await import('chalk')).default;
-  const Rotation = await import('../state/state-rotation.js');
-  
   // Restore tool/model rotation state from previous session
   // WHY: Resume where we left off if interrupted, don't restart from first model
   const savedRunnerIndex = Rotation.getCurrentRunnerIndex(stateContext);

@@ -2,17 +2,23 @@
  * Issue analysis and code snippet extraction functions
  */
 
+import chalk from 'chalk';
+import { join } from 'path';
+import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
+import * as State from '../state/state-core.js';
+import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient, ModelRecommendationContext } from '../llm/client.js';
 import type { Runner } from '../runners/types.js';
 import { validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { debug, warn } from '../logger.js';
 
 /**
  * Get code snippet from file for context
@@ -24,9 +30,6 @@ export async function getCodeSnippet(
   commentBody?: string
 ): Promise<string> {
   try {
-    const { join } = await import('path');
-    const { readFile } = await import('fs/promises');
-    
     const filePath = join(workdir, path);
     const content = await readFile(filePath, 'utf-8');
     const lines = content.split('\n');
@@ -89,9 +92,6 @@ export async function findUnresolvedIssues(
   recommendedModelIndex: number;
   modelRecommendationReasoning?: string;
 }> {
-  const chalk = (await import('chalk')).default;
-  const { debug, warn } = await import('../logger.js');
-  
   const unresolved: UnresolvedIssue[] = [];
   let alreadyResolved = 0;
   let skippedCache = 0;
@@ -218,7 +218,6 @@ export async function findUnresolvedIssues(
       const availableModels = getModelsForRunner(runner);
       // Get attempt history for these specific issues
       const commentIds = toCheck.map(item => item.comment.id);
-      const Performance = await import('../state/state-performance.js');
       modelContext = {
         availableModels,
         modelHistory: Performance.getModelHistorySummary(stateContext) || undefined,
@@ -298,7 +297,6 @@ export async function findUnresolvedIssues(
     }
   }
 
-  const State = await import('../state/state-core.js');
   await State.saveState(stateContext);
   await LessonsAPI.Save.save(lessonsContext);
   

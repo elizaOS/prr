@@ -3,6 +3,7 @@
  * Handles various error types from fixer tools (permission, auth, environment, rapid failures)
  */
 
+import chalk from 'chalk';
 import type { Runner } from '../runners/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { StateContext } from '../state/state-context.js';
@@ -16,6 +17,8 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { debug, formatDuration } from '../logger.js';
+import { formatNumber } from '../ui/reporter.js';
 
 // Error type constants
 const RAPID_FAILURE_MS = 2000;
@@ -39,10 +42,6 @@ export function handleFixerError(
   rapidFailureCount: number;
   lastFailureTime: number;
 } {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
-  const { formatDuration } = require('../ui/reporter.js');
-  
   console.log(chalk.red(`\n${runner.name} failed (${formatDuration(fixerTime)}):`, result.error));
   
   // PERMISSION ERRORS: Bail out immediately - don't waste tokens
@@ -143,10 +142,6 @@ export async function handleNoChanges(
   exitDetails?: string;
   consecutiveFailures: number;
 }> {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
-  const { formatNumber } = require('../ui/reporter.js');
-  
   const currentModel = getCurrentModel();
   console.log(chalk.yellow(`\nNo changes made by ${runner.name}${currentModel ? ` (${currentModel})` : ''}`));
 

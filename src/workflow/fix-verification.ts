@@ -3,6 +3,8 @@
  * Handles verification of fixes after fixer tool completes
  */
 
+import chalk from 'chalk';
+import ora from 'ora';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
@@ -16,6 +18,8 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration } from '../logger.js';
+import { getChangedFiles, getDiffForFile } from '../git/git-clone-index.js';
 
 /**
  * Verify fixes after fixer completes
@@ -35,11 +39,6 @@ export async function verifyFixes(
   changedIssues: UnresolvedIssue[];
   unchangedIssues: UnresolvedIssue[];
 }> {
-  const chalk = require('chalk');
-  const { debug, debugStep } = require('../logger.js');
-  const { startTimer, endTimer, setTokenPhase } = require('../ui/reporter.js');
-  const { getChangedFiles, getDiffForFile } = require('../git/commit.js');
-  const ora = require('ora');
   const spinner = ora();
   
   debugStep('VERIFYING FIXES');
@@ -189,7 +188,7 @@ export async function verifyFixes(
   const verifyTime = endTimer('Verify fixes');
   
   // Log verification results
-  console.log(chalk.gray(`\n  Verified in ${require('../ui/reporter.js').formatDuration(verifyTime)}`));
+  console.log(chalk.gray(`\n  Verified in ${formatDuration(verifyTime)}`));
   
   if (unchangedIssues.length > 0) {
     console.log(chalk.yellow(`  ${unchangedIssues.length} file(s) not modified - issues marked as failed`));

@@ -3,6 +3,7 @@
  * Handles committing and pushing fixes after audit passes
  */
 
+import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { ReviewComment } from '../github/types.js';
@@ -19,6 +20,10 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { debug, warn, debugStep } from '../logger.js';
+import { formatNumber } from '../ui/reporter.js';
+import { hasChanges } from '../git/git-clone-index.js';
+import { buildCommitMessage, squashCommit, pushWithRetry } from '../git/git-commit-index.js';
 
 /**
  * Commit and push changes after all issues are resolved
@@ -38,11 +43,6 @@ export async function commitAndPushChanges(
 ): Promise<{
   committed: boolean;
 }> {
-  const chalk = require('chalk');
-  const { debug, warn, debugStep } = require('../logger.js');
-  const { formatNumber } = require('../ui/reporter.js');
-  const { hasChanges } = require('../git/clone.js');
-  
   // Check if we have uncommitted changes that need to be committed
   if (!(await hasChanges(git))) {
     return { committed: false };
@@ -73,8 +73,6 @@ export async function commitAndPushChanges(
   
   // Generate commit message locally (no LLM call needed)
   // WHY: Pattern matching is fast, free, and works well for commit messages
-  const { buildCommitMessage } = await import('../git/git-commit-index.js');
-  const { squashCommit, pushWithRetry } = await import('../git/git-commit-index.js');
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);
   

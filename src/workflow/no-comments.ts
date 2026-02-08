@@ -3,10 +3,14 @@
  * Handles the case when no review comments are found
  */
 
+import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
+import { startTimer, endTimer } from '../logger.js';
+import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge } from '../git/git-clone-index.js';
+import { pushWithRetry } from '../git/git-commit-index.js';
 
 /**
  * Handle the "no comments" case - may need to resolve conflicts
@@ -23,11 +27,6 @@ export async function handleNoComments(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const chalk = require('chalk');
-  const { startTimer, endTimer } = require('../logger.js');
-  const { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge } = require('../git/clone.js');
-  const { pushWithRetry } = require('../git/commit.js');
-  
   // Check if there are unresolved conflicts
   const hasConflicts = prInfo.mergeable === false || prInfo.mergeableState === 'dirty';
   

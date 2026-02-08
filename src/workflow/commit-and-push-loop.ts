@@ -26,6 +26,8 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { debug, debugStep, warn } from '../logger.js';
+import { buildCommitMessage, squashCommit, pushWithRetry } from '../git/git-commit-index.js';
 
 /**
  * Handle commit and push after fixes are verified
@@ -74,9 +76,6 @@ export async function handleCommitAndPush(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const { debug, debugStep, warn } = await import('../logger.js');
-  const { squashCommit, pushWithRetry } = await import('../git/git-commit-index.js');
-  
   // Export lessons to repo BEFORE commit so they're included
   // WHY: Team gets lessons with the same push as fixes - single atomic update
   if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
@@ -104,7 +103,6 @@ export async function handleCommitAndPush(
   
   // Generate commit message locally (no LLM call needed)
   // WHY: Pattern matching is fast, free, and works well for commit messages
-  const { buildCommitMessage } = await import('../git/git-commit-index.js');
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);
   

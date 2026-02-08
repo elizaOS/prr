@@ -3,10 +3,14 @@
  * Handles merging the PR's base branch (e.g., main/master) into the PR branch
  */
 
+import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
+import { debugStep, startTimer, endTimer } from '../logger.js';
+import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved } from '../git/git-clone-index.js';
+import { isLockFile } from '../git/git-lock-files.js';
 
 /**
  * Check and merge base branch into PR branch
@@ -24,11 +28,6 @@ export async function checkAndMergeBaseBranch(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const chalk = (await import('chalk')).default;
-  const { debugStep, startTimer, endTimer } = await import('../logger.js');
-  const { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved } = await import('../git/git-clone-index.js');
-  const { isLockFile } = await import('../git/git-lock-files.js');
-  
   debugStep('CHECKING PR MERGE STATUS');
   
   const githubSaysConflicts = prInfo.mergeable === false || prInfo.mergeableState === 'dirty';

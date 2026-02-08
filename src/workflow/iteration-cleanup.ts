@@ -3,6 +3,8 @@
  * Handles post-verification tasks: tracking, summaries, incremental commits
  */
 
+import chalk from 'chalk';
+import ora from 'ora';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
@@ -17,6 +19,9 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { Runner } from '../runners/types.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { debug, startTimer, endTimer, formatDuration } from '../logger.js';
+import { formatNumber } from '../ui/reporter.js';
+import { commitIteration, pushWithRetry } from '../git/git-commit-index.js';
 
 /**
  * Handle post-verification iteration cleanup
@@ -45,11 +50,6 @@ export async function handleIterationCleanup(
   progressMade: number;
   expectedBotResponseTime?: Date | null;
 }> {
-  const chalk = require('chalk');
-  const { debug } = require('../logger.js');
-  const { startTimer, endTimer, formatNumber, formatDuration } = require('../ui/reporter.js');
-  const { commitIteration, pushWithRetry } = require('../git/commit.js');
-  const ora = require('ora');
   const spinner = ora();
   
   const lessonsAfterVerify = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
@@ -134,7 +134,7 @@ export async function handleIterationCleanup(
         if (options.autoPush && !options.noPush) {
           try {
             startTimer('Push iteration fixes');
-            await pushWithRetry(git, prBranch, { githubToken });
+            await pushWithRetry(git, prBranch, { githubToken: githubToken || undefined });
             const pushTime = endTimer('Push iteration fixes');
             console.log(chalk.green(`  Pushed to origin/${prBranch} (${formatDuration(pushTime)})`));
             

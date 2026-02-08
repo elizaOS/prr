@@ -27,6 +27,7 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { endTimer, printTimingSummary, printTokenSummary } from '../logger.js';
 
 /**
  * Execute final cleanup and reporting after fix loop completes
@@ -64,8 +65,6 @@ export async function executeFinalCleanup(
   printFinalSummary: () => void,
   ringBell: (times: number) => void
 ): Promise<void> {
-  const { endTimer, printTimingSummary, printTokenSummary } = await import('../logger.js');
-
   // Final lessons export (catches any lessons from last iteration not yet committed)
   // WHY: Lessons are also exported before each commit, but this catches edge cases
   if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
@@ -139,8 +138,6 @@ export async function executeErrorCleanup(
   printFinalSummary: () => void,
   ringBell: (times: number) => void
 ): Promise<void> {
-  const { endTimer, printTimingSummary, printTokenSummary } = await import('../logger.js');
-
   endTimer('Total');
   printTimingSummary();
   printTokenSummary();

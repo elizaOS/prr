@@ -16,6 +16,19 @@ import type { GitHubAPI } from '../github/api.js';
 import type { PRInfo, BotResponseTiming } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import { parsePRUrl } from '../github/types.js';
+import { 
+  debug as logDebug, 
+  debug,
+  debugStep,
+  warn, 
+  info,
+  startTimer, 
+  endTimer,
+  setVerbose, 
+  resetTimings, 
+  resetTokenUsage 
+} from '../logger.js';
+import * as ResolverProc from '../resolver-proc.js';
 
 /**
  * Initialize the PR resolver run
@@ -48,19 +61,6 @@ export async function initializeRun(
   expectedBotResponseTime: Date | null;
   isCleanupMode: boolean;
 } | null> {
-  const {
-    debug,
-    debugStep,
-    setVerbose,
-    warn,
-    info,
-    startTimer,
-    endTimer,
-    resetTimings,
-    resetTokenUsage,
-  } = await import('../logger.js');
-  const ResolverProc = await import('../resolver-proc.js');
-
   // Enable verbose logging if requested
   setVerbose(options.verbose);
 

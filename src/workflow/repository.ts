@@ -175,15 +175,17 @@ export async function checkAndSyncWithRemote(
         const status = await git.status();
         const conflictedFiles = status.conflicted || [];
         
+        console.log(chalk.cyan(`  Attempting to resolve pull conflicts automatically...`));
+        debug('Pull conflicts detected', { conflictedFiles: conflictedFiles.length });
+        
         if (conflictedFiles.length > 0) {
-          console.log(chalk.cyan('  Attempting to resolve pull conflicts automatically...'));
-          
           startTimer('Resolve pull conflicts');
           const resolution = await resolveConflicts(
             git,
             conflictedFiles,
             `origin/${branch}`
           );
+          debug('Pull conflict resolution result', { success: resolution.success, remaining: resolution.remainingConflicts.length });
           
           if (!resolution.success) {
             console.log(chalk.red('\n✗ Could not resolve pull conflicts automatically'));
