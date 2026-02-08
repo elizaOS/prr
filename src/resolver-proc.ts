@@ -428,4 +428,136 @@ export async function getCodeSnippet(
   }
 }
 
+/**
+ * Calculate smart wait time based on bot timing data and PR status
+ */
+export async function calculateSmartWaitTime(
+  botTimings: BotResponseTiming[],
+  pollInterval: number,
+  github: GitHubAPI,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha: string
+): Promise<{ waitSeconds: number; reason: string }> {
+  const defaultWait = pollInterval;
+  
+  // Check PR status to see what's pending
+  let prStatus: PRStatus | undefined;
+  try {
+    prStatus = await github.getPRStatus(owner, repo, prNumber, headSha);
+  } catch (err) {
+    // Ignore errors fetching status
+  }
+  
+  // If bots are actively reviewing (eyes reaction or in-progress), wait longer
+  const activelyReviewing = (prStatus?.activelyReviewingBots?.length ?? 0) > 0 || 
+                             (prStatus?.botsWithEyesReaction?.length ?? 0) > 0;
+  
+  // If checks are running, factor that in too
+  const checksRunning = (prStatus?.inProgressChecks?.length ?? 0) > 0 ||
+                        (prStatus?.pendingChecks?.length ?? 0) > 0;
+  
+  // Use bot timing data if available
+  if (botTimings.length > 0) {
+    const { formatDuration } = await import('./logger.js');
+    
+    // Use max observed + 20% buffer for safety
+    const maxObserved = Math.max(...botTimings.map(t => t.maxResponseMs));
+    const avgObserved = Math.round(
+      botTimings.reduce((sum, t) => sum + t.avgResponseMs, 0) / botTimings.length
+    );
+    
+    // If actively reviewing, use max + buffer
+    // Otherwise use average + smaller buffer
+    let waitMs: number;
+    let reason: string;
+    
+    if (activelyReviewing) {
+      waitMs = Math.ceil(maxObserved * 1.2);  // Max + 20% buffer
+      reason = `bot actively reviewing (max observed: ${formatDuration(maxObserved)})`;
+    } else if (checksRunning) {
+      waitMs = Math.ceil((avgObserved + maxObserved) / 2);  // Midpoint of avg and max
+      reason = `CI checks running (avg: ${formatDuration(avgObserved)})`;
+    } else {
+      waitMs = Math.ceil(avgObserved * 1.1);  // Avg + 10% buffer
+      reason = `based on avg response time (${formatDuration(avgObserved)})`;
+    }
+    
+    // Clamp to reasonable bounds (min 30s, max 5 min)
+    const minWaitMs = 30 * 1000;
+    const maxWaitMs = 5 * 60 * 1000;
+    waitMs = Math.max(minWaitMs, Math.min(maxWaitMs, waitMs));
+    
+    return { waitSeconds: Math.ceil(waitMs / 1000), reason };
+  }
+  
+  // No timing data - use status-based heuristics
+  if (activelyReviewing) {
+    return { waitSeconds: Math.max(defaultWait, 90), reason: 'bot actively reviewing (no timing data)' };
+  }
+  
+  if (checksRunning) {
+    return { waitSeconds: Math.max(defaultWait, 60), reason: 'CI checks running (no timing data)' };
+  }
+  
+  // Default: use configured poll interval
+  return { waitSeconds: defaultWait, reason: 'default poll interval (no timing data)' };
+}
+
+/**
+ * Wait for bot reviews after push with smart timing and progress feedback
+ */
+export async function waitForBotReviews(
+  botTimings: BotResponseTiming[],
+  pollInterval: number,
+  github: GitHubAPI,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha: string
+): Promise<void> {
+  const chalk = (await import('chalk')).default;
+  
+  const { waitSeconds, reason } = await calculateSmartWaitTime(
+    botTimings,
+    pollInterval,
+    github,
+    owner,
+    repo,
+    prNumber,
+    headSha
+  );
+  
+  console.log(chalk.gray(`\nWaiting ${waitSeconds}s for re-review (${reason})...`));
+  
+  // Show countdown with periodic status checks
+  const checkInterval = 15;  // Check every 15 seconds
+  let remaining = waitSeconds;
+  
+  while (remaining > 0) {
+    const sleepTime = Math.min(remaining, checkInterval);
+    await sleep(sleepTime * 1000);
+    remaining -= sleepTime;
+    
+    if (remaining > 0 && remaining % 30 === 0) {
+      // Every 30s, check if bot has responded early
+      try {
+        const status = await github.getPRStatus(owner, repo, prNumber, headSha);
+        const stillActive = (status.activelyReviewingBots?.length ?? 0) > 0 ||
+                            (status.botsWithEyesReaction?.length ?? 0) > 0;
+        
+        if (!stillActive && status.ciState !== 'pending') {
+          console.log(chalk.green('  Bot reviews appear complete, proceeding...'));
+          return;
+        } else {
+          console.log(chalk.gray(`  Still waiting... (${remaining}s remaining)`));
+        }
+      } catch {
+        // Ignore status check errors during wait
+      }
+    }
+  }
+}
+
 // More functions will be added here as we extract methods from PRResolver
