@@ -24,13 +24,15 @@ describe('normalizeLessonText', () => {
   describe('markdown header removal', () => {
     it('drops lines that are only headers', () => {
       const input = '# Header\n## Subheader';
+      // normalizeLessonText drops header-only content
       expect(normalize(input)).toBeNull();
     });
   });
 
-  describe('bold text removal', () => {
+  describe('bold text handling', () => {
     it('preserves bold markdown inline', () => {
       const input = 'This is **bold** text';
+      // normalizeLessonText preserves inline bold markers
       expect(normalize(input)).toBe('This is **bold** text');
     });
   });
@@ -164,7 +166,7 @@ describe('normalizeLessonText', () => {
     it('handles trailing line numbers', () => {
       const input = 'src/file.ts:123';
       const result = normalize(input);
-      // normalizeLessonText may or may not strip :line suffixes
+      // normalizeLessonText preserves file:line patterns as-is
       expect(result).not.toBeNull();
     });
 

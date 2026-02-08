@@ -334,7 +334,7 @@ export async function pushWithRetry(
   }
   
   // Exhausted retries
-  throw new Error(`Push failed after ${maxRetries + 1} attempts. Remote may be receiving concurrent pushes.`);
+  throw new Error(`Push failed after ${maxRetries + 1} attempts (${maxRetries} retries). Remote may be receiving concurrent pushes.`);
 }
 
 export async function getCurrentBranch(git: SimpleGit): Promise<string> {
