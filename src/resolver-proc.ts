@@ -66,6 +66,11 @@ export {
   checkAndMergeBaseBranch,
 } from './workflow/base-merge.js';
 
+// No comments workflows
+export {
+  handleNoComments,
+} from './workflow/no-comments.js';
+
 // Import for internal use in remaining functions
 import {
   sleep,
