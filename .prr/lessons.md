@@ -166,7 +166,12 @@
 
 - Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies multiple mismatches across a file range, fix all instances of the same type, not just one test case in isolation.
 - Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies N issues across a file range, fix all N or extend the function for all—patching one breaks the incomplete contract.
+- Fix for tests/normalize-lesson-text.test.ts:171 - **Scope mismatch: fix one test case, but issue spans lines 24-170. Must either update all failing tests or extend the function comprehensively.**
 
 ### src/workflow/fix-loop-utils.ts
 
 - Fix for src/workflow/fix-loop-utils.ts:194 - When reorganizing imports, verify the final file has no duplicate import statements before submission - check each module is imported exactly once.
+
+### src/git/commit.ts
+
+- Fix for src/git/commit.ts:92 - "Defining a cleanup function is not enough—must actually call it in every exit path: timeout handler, SIGINT handler, close handler, and error handler."

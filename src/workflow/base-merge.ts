@@ -117,6 +117,13 @@ export async function checkAndMergeBaseBranch(
           }
           
           console.log(chalk.green(`✓ Conflicts resolved and merged ${prInfo.baseBranch}`));
+          
+          // Push the resolved merge commit
+          if (!options.noPush && !options.noCommit) {
+            spinner.start('Pushing merge commit...');
+            await git.push('origin', prInfo.branch);
+            spinner.succeed('Pushed merge commit');
+          }
         }
       }
     } else if (mergeResult.alreadyUpToDate) {

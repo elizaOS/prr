@@ -3,6 +3,9 @@
  * Handles iteration tracking, issue filtering, new bot reviews, and remote sync
  */
 
+import chalk from 'chalk';
+import { debug } from '../logger.js';
+import { checkRemoteAhead, pullLatest } from '../git/clone.js';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -31,8 +34,6 @@ export async function processNewBotReviews(
   checkForNewBotReviews: (owner: string, repo: string, prNumber: number, existingIds: Set<string>) => Promise<any>,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>
 ): Promise<void> {
-  const chalk = (await import('chalk')).default;
-  
   // Check for new bot reviews if expected time has passed
   // WHY: Work on existing issues while waiting for bot reviews, then pull in new ones
   const newReviewResult = await checkForNewBotReviews(owner, repo, prNumber, existingCommentIds);
@@ -68,7 +69,7 @@ export function filterVerifiedIssues(
   unresolvedIssues: UnresolvedIssue[],
   verifiedThisSession: Set<string>
 ): void {
-  const { debug } = await import('../logger.js');
+  
   
   // Filter out issues that were verified during THIS session (by single-issue mode, etc.)
   // WHY: trySingleIssueFix marks items as verified but 'continue' skips normal filtering
@@ -106,8 +107,7 @@ export async function checkEmptyIssues(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  const chalk = (await import('chalk')).default;
-  const { debug } = await import('../logger.js');
+  
   
   // Check for empty issues at start of each iteration
   // WHY: After verification/filtering, unresolvedIssues can be 0

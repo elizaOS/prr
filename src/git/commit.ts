@@ -89,7 +89,19 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   } catch (e) {
     debug('Could not check/set remote URL', { error: String(e) });
   }
-  
+
+  // Restore original remote URL after push to avoid persisting tokens in .git/config
+  const restoreRemote = () => {
+    if (originalRemoteUrl) {
+      try {
+        execFileSync('git', ['remote', 'set-url', 'origin', originalRemoteUrl], { cwd: workdir });
+        debug('Restored original remote URL');
+      } catch (restoreErr) {
+        debug('Could not restore remote URL', { error: String(restoreErr) });
+      }
+    }
+  };
+
   const args = ['push', 'origin', branch];
   if (force) args.push('--force');
   
@@ -148,6 +160,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     process.on('SIGINT', sigintHandler);
     
     gitProcess.on('close', (code) => {
+      restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
       
@@ -178,6 +191,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     });
     
     gitProcess.on('error', (err) => {
+      restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
       resolve({ 

@@ -107,7 +107,12 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     
     // Accept if same family and one is a proper variant of the other
     if (familyAvail === familyModel) {
-      return lowerAvail.startsWith(lowerModel) || lowerModel.startsWith(lowerAvail);
+      // Only match if they share the same model family prefix (up to first version segment)
+      const familyOf = (m: string) => m.split(/[-._\d]/)[0];
+      const familyAvail = familyOf(lowerAvail);
+      const familyModel = familyOf(lowerModel);
+      return familyAvail === familyModel && familyAvail.length > 0 &&
+        (lowerAvail.startsWith(lowerModel) || lowerModel.startsWith(lowerAvail));
     }
     
     return false;
