@@ -45,6 +45,7 @@ export async function verifyFixes(
   setPhase(stateContext, 'verifying');
   setTokenPhase('Verify fixes');
   startTimer('Verify fixes');
+  try {
   spinner.start('Verifying fixes...');
   const changedFiles = await getChangedFiles(git);
   debug('Changed files', changedFiles);
@@ -192,7 +193,9 @@ export async function verifyFixes(
     }
   }
   
-  spinner.stop();
+  } finally {
+    spinner.stop();
+  }
   const verifyTime = endTimer('Verify fixes');
   
   // Log verification results

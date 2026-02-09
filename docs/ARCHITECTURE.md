@@ -243,13 +243,13 @@ State is stored in `.prr-state.json` in the cloned repository:
 }
 ```
 
-Lessons are stored in `.prr/lessons.json`:
+Lessons are stored in `.prr/lessons.md` (markdown format) and `.prr/lessons.json` (machine-local JSON):
 ```json
 {
   "global": [
     "Fix for src/foo.ts:42 rejected: Always check null before accessing properties"
   ],
-  "byFile": {
+  "files": {
     "src/foo.ts": [
       "Use ?? instead of || for nullish coalescing in TypeScript"
     ]

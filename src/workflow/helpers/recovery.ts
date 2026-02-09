@@ -277,6 +277,13 @@ export async function tryDirectLLMFix(
       }
 
       const fileContent = fs.readFileSync(filePath, 'utf-8');
+
+      // Skip files too large for direct LLM rewrite
+      const MAX_FILE_CHARS = 100_000; // ~25K tokens
+      if (fileContent.length > MAX_FILE_CHARS) {
+        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
+        continue;
+      }
       
       const prompt = `Fix this code review issue:
 
@@ -301,7 +308,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
       // Extract code from response
       const codeMatch = response.content.match(/```[\w]*\n?([\s\S]*?)```/);
       if (codeMatch) {
-        const fixedCode = codeMatch[1].trim();
+        const fixedCode = codeMatch[1].trimEnd();
         const fileContentTrimmed = fileContent.trimEnd();
         if (fixedCode !== fileContentTrimmed) {
           // Preserve trailing newline if original file had one

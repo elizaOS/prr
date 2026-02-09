@@ -171,8 +171,16 @@ export async function handleCommitAndPush(
       spinner.warn('Could not check CodeRabbit (continuing anyway)');
     }
 
+    // Ensure we have the latest HEAD SHA for bot review waiting
+    try {
+      const latestPR = await github.getPRInfo(owner, repo, number);
+      latestHeadSha = latestPR.headSha;
+    } catch {
+      // Fall through with best-effort SHA
+    }
+
     // Wait for re-review using smart timing based on observed bot response times
-    if (pushIteration < maxPushIterations) {
+    if (maxPushIterations === 0 || pushIteration < maxPushIterations) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);
     }
     

@@ -312,8 +312,13 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
     } else if (line.startsWith('>>>>>>>') && inConflict) {
       // Try to merge ours and theirs
       const merged = mergePackageJsonChunks(ours, theirs);
-      resolved.push(...merged);
-      conflictsResolved++;
+      if (merged) {
+        resolved.push(...merged);
+        conflictsResolved++;
+      } else {
+        // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
+        return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
+      }
       
       inConflict = false;
       ours = [];
@@ -348,10 +353,15 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
 /**
  * Merge two package.json sections, preferring higher versions
  */
-function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] {
+function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] | null {
   // Simple strategy: parse dependencies, take higher versions
   const oursMap = parsePackageLines(ours);
   const theirsMap = parsePackageLines(theirs);
+  
+  // If either side can't be parsed as dependency entries, bail out
+  if (!oursMap || !theirsMap) {
+    return null;
+  }
   
   // Detect indentation from input lines (default to 4 spaces)
   const indentMatch = [...ours, ...theirs].find(l => l.match(/^(\s+)"/));
@@ -383,15 +393,28 @@ function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] {
 /**
  * Parse package lines into Map<packageName, version>
  */
-function parsePackageLines(lines: string[]): Map<string, string> {
+function parsePackageLines(lines: string[]): Map<string, string> | null {
   const map = new Map<string, string>();
+  let matchedLines = 0;
+  let nonEmptyLines = 0;
   
   for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed === '{' || trimmed === '}' || trimmed === '},') {
+      continue;
+    }
+    nonEmptyLines++;
     // Match: "package-name": "1.2.3",
     const match = line.match(/"([^"]+)":\s*"([^"]+)"/);
     if (match) {
       map.set(match[1], match[2]);
+      matchedLines++;
     }
+  }
+  
+  // If we couldn't parse most non-empty lines, signal failure
+  if (nonEmptyLines > 0 && matchedLines < nonEmptyLines * 0.5) {
+    return null;
   }
   
   return map;

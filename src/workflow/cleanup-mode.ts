@@ -21,6 +21,7 @@ import type { GitHubAPI } from '../github/api.js';
 import type { PRInfo } from '../github/types.js';
 import * as Lock from '../state/lock-functions.js';
 import { debug } from '../logger.js';
+import { PRR_SECTION_START, PRR_SECTION_END } from '../state/lessons-paths.js';
 
 /**
  * Run cleanup mode to remove prr artifacts from repository
@@ -93,8 +94,7 @@ export async function runCleanupMode(
   // Clean CLAUDE.md
   if (cleanClaudeMd) {
     const claudeMdPath = join(workdir, 'CLAUDE.md');
-    const PRR_SECTION_START = '<!-- PRR_LESSONS_START -->';
-    const PRR_SECTION_END = '<!-- PRR_LESSONS_END -->';
+    
     
     if (existsSync(claudeMdPath)) {
       try {
@@ -208,9 +208,15 @@ export async function runCleanupMode(
   // Commit and push if changes were made
   if (madeChanges) {
     const status = await git.status();
-    if (status.staged.length > 0 || status.deleted.length > 0) {
+    const hasStaged = status.staged.length > 0 || status.deleted.length > 0 || status.created.length > 0;
+    if (hasStaged) {
       console.log(chalk.cyan('\nCommitting cleanup changes...'));
-      await git.commit('chore: clean up prr artifacts');
+      try {
+        await git.commit('chore: clean up prr artifacts');
+      } catch (err) {
+        console.log(chalk.yellow(`  Nothing to commit: ${err instanceof Error ? err.message : String(err)}`));
+        return;
+      }
       
       if (!options.noPush) {
         spinner.start('Pushing cleanup commit...');

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { LessonsManager } from '../src/state/lessons';
+import { normalizeLessonText } from '../src/state/lessons-normalize';
 
 describe('normalizeLessonText', () => {
   // Create an instance to access the private method via reflection
@@ -9,9 +10,9 @@ describe('normalizeLessonText', () => {
     lessonsManager = new LessonsManager('owner', 'repo', 'branch');
   });
 
-  // Helper to call private method
+  // Helper to call standalone function
   function normalize(lesson: string): string | null {
-    return (lessonsManager as any).normalizeLessonText(lesson);
+    return normalizeLessonText(lesson);
   }
 
   describe('code fence removal', () => {
@@ -246,10 +247,11 @@ describe('normalizeLessonText', () => {
 
   describe('combined edge cases', () => {
     it('handles multiple transformations in sequence', () => {
-      const input = '**Fix for** src/file.ts with // comment (inferred)';
+      const input = 'Fix for src/file.ts with // comment (inferred)';
       const result = normalize(input);
-      // Lines starting with ** are dropped by normalizeLessonText
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result).not.toContain('//');
+      expect(result).not.toContain('(inferred)');
     });
 
     it('handles whitespace normalization', () => {

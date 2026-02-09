@@ -108,6 +108,11 @@ export const MAX_MODELS_PER_TOOL_ROUND = 2;
  */
 export const DEFAULT_MAX_STALE_CYCLES = 1;
 
+/**
+ * Window for tracking rapid failures (ms).
+ */
+export const RAPID_FAILURE_WINDOW_MS = 60_000;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VERIFICATION & CACHING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
