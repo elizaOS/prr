@@ -313,15 +313,15 @@ export async function pullLatest(
           await git.merge([`origin/${branch}`]);
           console.log('  Merged remote changes');
         } catch (mergeError) {
-          const mergeMsg = mergeError instanceof Error ? mergeError.message : String(mergeError);
-          try {
-            await abortMerge(git);
-          } catch {
-            // Ignore abort errors - merge state may already be clean
+            const mergeMsg = mergeError instanceof Error ? mergeError.message : String(mergeError);
+            try {
+              await abortMerge(git);
+            } catch {
+              // Ignore abort errors - merge state may already be clean
+            }
+            await restoreStashOnFailure();
+            return { success: false, error: `Failed to sync with remote: ${mergeMsg}` };
           }
-          await restoreStashOnFailure();
-          return { success: false, error: `Failed to sync with remote: ${mergeMsg}` };
-        }
       }
     } else if (behind > 0) {
       // Just behind - simple fast-forward pull

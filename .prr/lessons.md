@@ -153,6 +153,9 @@
 - Fix for .prr/lessons.md:89 - No verification result returned, treating as failed
 - Fix for .prr/lessons.md:163 - No verification result returned, treating as failed
 - Fix for .prr/lessons.md:190 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:167 - tool modified wrong files (src/git/commit.ts, src/workflow/fix-verification.ts), need to modify .prr/lessons.md
+- Fix for .prr/lessons.md:167 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:205 - No verification result returned, treating as failed
 
 ### tests/normalizeLessonText.test.ts:88
 
@@ -207,6 +210,7 @@
 ### src/workflow/fix-verification.ts
 
 - Fix for src/workflow/fix-verification.ts:192 - tool modified wrong files (src/workflow/run-setup-phase.ts, tests/normalize-lesson-text.test.ts), need to modify src/workflow/fix-verification.ts
+- Fix for src/workflow/fix-verification.ts:201 - No verification result returned, treating as failed
 
 ### src/workflow/run-setup-phase.ts
 
@@ -237,6 +241,7 @@
 ### src/git/clone.ts
 
 - Fix for src/git/clone.ts:320 - No verification result returned, treating as failed
+- Fix for src/git/clone.ts:324 - No verification result returned, treating as failed
 
 ### src/runners/index.ts
 
@@ -256,3 +261,8 @@
 
 - Fix for src/workflow/run-orchestrator.ts:119 - No verification result returned, treating as failed
 - Fix for src/workflow/run-orchestrator.ts:86 - No verification result returned, treating as failed
+
+### src/git/commit.ts
+
+- Fix for src/git/commit.ts:462 - No verification result returned, treating as failed
+- Fix for src/git/commit.ts:536 - No verification result returned, treating as failed
