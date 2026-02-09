@@ -287,6 +287,7 @@
 
 - Fix for src/git/clone.ts:320 - No verification result returned, treating as failed
 - Fix for src/git/clone.ts:324 - No verification result returned, treating as failed
+- Fix for src/git/clone.ts:243 - No verification result returned, treating as failed
 
 ### src/runners/index.ts
 
@@ -297,6 +298,11 @@
 - Fix for src/workflow/commit-and-push-loop.ts:185 - No verification result returned, treating as failed
 - Fix for src/workflow/commit-and-push-loop.ts:190 - No verification result returned, treating as failed
 - Fix for src/workflow/commit-and-push-loop.ts:194 - No verification result returned, treating as failed
+- Fix for src/workflow/commit-and-push-loop.ts:144 - No verification result returned, treating as failed
+- Fix for src/workflow/commit-and-push-loop.ts:195 - No verification result returned, treating as failed
+- Fix for src/workflow/commit-and-push-loop.ts:91 - No verification result returned, treating as failed
+- Fix for src/workflow/commit-and-push-loop.ts:152 - No verification result returned, treating as failed
+- Fix for src/workflow/commit-and-push-loop.ts:195 - When the review comment identifies a stale variable issue, refresh that variable in a separate try-catch AFTER the failing block, not in unrelated code sections.
 
 ### src/workflow/cleanup-mode.ts
 
@@ -333,3 +339,7 @@
 ### tests/normalizeLessonText.test.ts
 
 - Fix for tests/normalizeLessonText.test.ts:36 - No verification result returned, treating as failed
+
+### src/state/lessons.ts
+
+- Fix for src/state/lessons.ts:53 - "Store the fallback value but also implement the conditional logic to use it—check if trimmed result is empty, then return the fallback instead."

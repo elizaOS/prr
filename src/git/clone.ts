@@ -240,7 +240,7 @@ export async function pullLatest(
     try {
       await git.stash(['push', '-u', '-m', 'prr-auto-stash-before-pull']);
       didStash = true;
-      console.log(`  Stashed ${status.modified.length + status.created.length + status.deleted.length} local changes`);
+      console.log(`  Stashed local changes (${status.modified.length} modified, ${status.created.length} created, ${status.deleted.length} deleted, plus untracked)`);
     } catch (stashError) {
       debug('Failed to stash', { error: stashError });
       // Continue anyway - pull might still work
