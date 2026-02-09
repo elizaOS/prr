@@ -157,6 +157,8 @@
 - Fix for .prr/lessons.md:167 - tool modified wrong files (src/git/commit.ts, src/workflow/fix-verification.ts), need to modify .prr/lessons.md
 - Fix for .prr/lessons.md:167 - No verification result returned, treating as failed
 - Fix for .prr/lessons.md:205 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:171 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:213 - No verification result returned, treating as failed
 
 ### tests/normalizeLessonText.test.ts:88
 
@@ -207,6 +209,8 @@
 
 - Fix for src/workflow/no-comments.ts:97 - When catching errors in error-handling blocks, must rethrow or exit after logging—don't silently continue, as this masks failures and returns false success.
 - Fix for src/workflow/no-comments.ts:109 - tool modified wrong files (.prr/lessons.md), need to modify src/workflow/no-comments.ts
+- Fix for src/workflow/no-comments.ts:93 - No verification result returned, treating as failed
+- Fix for src/workflow/no-comments.ts:13 - No verification result returned, treating as failed
 
 ### src/constants.ts
 
@@ -216,6 +220,7 @@
 
 - Fix for src/workflow/fix-verification.ts:192 - tool modified wrong files (src/workflow/run-setup-phase.ts, tests/normalize-lesson-text.test.ts), need to modify src/workflow/fix-verification.ts
 - Fix for src/workflow/fix-verification.ts:201 - No verification result returned, treating as failed
+- Fix for src/workflow/fix-verification.ts:57 - No verification result returned, treating as failed
 
 ### src/workflow/run-setup-phase.ts
 
@@ -253,12 +258,18 @@
 - Fix for src/workflow/helpers/recovery.ts:412 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:395 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:321 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:346 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:419 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:402 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:328 - No verification result returned, treating as failed
 
 ### src/git/git-conflict-chunked.ts
 
 - Fix for src/git/git-conflict-chunked.ts:148 - No verification result returned, treating as failed
 - Fix for src/git/git-conflict-chunked.ts:258 - No verification result returned, treating as failed
 - Fix for src/git/git-conflict-chunked.ts:259 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:173 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:437 - No verification result returned, treating as failed
 
 ### src/git/clone.ts
 
@@ -302,3 +313,7 @@
 ### src/runners/types.ts
 
 - Fix for src/runners/types.ts:103 - No verification result returned, treating as failed
+
+### src/runners/aider.ts
+
+- Fix for src/runners/aider.ts:89 - No verification result returned, treating as failed

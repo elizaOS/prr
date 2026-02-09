@@ -41,6 +41,11 @@ export async function verifyFixes(
   changedFiles: string[];
 }> {
   const spinner = ora();
+  let verifiedCount = 0;
+  let failedCount = 0;
+  const unchangedIssues: typeof unresolvedIssues = [];
+  const changedIssues: typeof unresolvedIssues = [];
+  let changedFiles: string[] = [];
   
   try {
   debugStep('VERIFYING FIXES');

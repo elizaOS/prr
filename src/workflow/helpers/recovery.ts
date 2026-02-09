@@ -388,12 +388,13 @@ Start your response with \`\`\` and end with \`\`\`.`;
             const tracked = await git.raw(['ls-files', issue.comment.path]).catch(() => '');
             if (tracked.trim()) {
               await git.checkout([issue.comment.path]).catch(async (err) => {
-                // If file is staged for deletion, unstage it first
-                try {
-                  await git.reset(['HEAD', issue.comment.path]);
-                } catch { /* ignore reset failures */ }
-                console.log(chalk.yellow(`    Warning: Could not reset ${issue.comment.path}: ${err.message}`));
-              });
+              // If file is staged for deletion, unstage it first
+              try {
+                await git.reset(['HEAD', issue.comment.path]);
+                await git.checkout([issue.comment.path]);
+              } catch { /* ignore reset failures */ }
+              console.log(chalk.yellow(`    Warning: Could not revert ${issue.comment.path}: ${err.message}`));
+            });
             } else {
               // File is untracked, just delete it
               try {

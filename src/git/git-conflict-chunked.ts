@@ -256,6 +256,9 @@ export async function resolveConflictsChunked(
     const resolved = resolutions.get(chunk.startLine);
     if (resolved) {
       resolvedLines.push(...resolved);
+    } else {
+      debug('BUG: missing resolution for chunk', { startLine: chunk.startLine });
+      resolvedLines.push(...chunk.conflictLines);
     }
 
     // Skip original conflict lines

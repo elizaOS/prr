@@ -9,8 +9,8 @@ import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
 import { startTimer, endTimer } from '../logger.js';
-import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge } from '../git/git-clone-index.js';
-import { pushWithRetry } from '../git/git-commit-index.js';
+import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge } from '../git/git-merge.js';
+import { pushWithRetry } from '../git/git-push.js';
 
 /**
  * Handle the "no comments" case - may need to resolve conflicts
