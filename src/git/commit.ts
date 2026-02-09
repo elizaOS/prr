@@ -2,7 +2,38 @@
 <replace>import chalk from 'chalk';
  </search>
 <replace>
+ import chalk from 'chalk';
+ </search>
+<replace>
  * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ *</search>
+<replace>import chalk from 'chalk';
+</search>
+<replace>
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ * 
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,
+</search>
+<replace>
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ *
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,import type { SimpleGit } from 'simple-git';
+import { spawn, execSync, execFileSync } from 'child_process';
+import { debug } from '../logger.js';
+</search>
+<replace>
+ * SECURITY NOTE: This function temporarily injects auth token into git remote URL.
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ *
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,
+ * something is wrong (auth prompt, network). 30s is still generous.
+ *
+ * Returns PushResult instead of throwing for rejected pushes, allowing caller
+ * to handle pull-and-retry logic.
+ */
+import type { SimpleGit } from 'simple-git';
+import { spawn, execSync, execFileSync } from 'child_process';
+import { debug } from '../logger.js'; The token is restored in cleanup handlers (timeout, SIGINT, error, success).
  *</search>
 <replace>import chalk from 'chalk';
 </search>

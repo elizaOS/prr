@@ -296,9 +296,6 @@ export class LessonsManager {
 
     return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
   }
-
-  /**
-   * Parse markdown lessons file into structured data.
    *
    * Expected format:
    * # PRR Lessons Learned

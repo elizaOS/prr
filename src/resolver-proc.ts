@@ -330,7 +330,7 @@ export async function waitForBotReviews(
     
     if (remaining > 0 && elapsedSinceLastCheck >= 30) {
       elapsedSinceLastCheck = 0;
-      // Every 30s, check if bot has responded early
+      // Every ~30s, check if bot has responded early
       try {
         const status = await github.getPRStatus(owner, repo, prNumber, headSha);
         const stillActive = (status.activelyReviewingBots?.length ?? 0) > 0 ||

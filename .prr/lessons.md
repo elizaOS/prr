@@ -110,6 +110,7 @@
 - Fix for src/llm/client.ts:115 rejected: The diff shows unrelated cleanup code instead of fixing the fixedIssues filter to use the full comments list rather than unresolvedIssues.
 - Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
 - Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
+- Fix for src/llm/client.ts:483 - tool modified wrong files (src/analyzer/prompt-builder.ts, src/git/commit.ts, src/runners/llm-api.ts, src/ui/reporter.ts), need to modify src/llm/client.ts
 
 ### README.md
 
