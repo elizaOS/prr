@@ -180,3 +180,11 @@
 ### src/constants.ts
 
 - Fix for src/constants.ts:109 - ts` - already has these constants (canonical source) ✓
+
+### src/workflow/fix-verification.ts
+
+- Fix for src/workflow/fix-verification.ts:192 - tool modified wrong files (src/workflow/run-setup-phase.ts, tests/normalize-lesson-text.test.ts), need to modify src/workflow/fix-verification.ts
+
+### src/workflow/run-setup-phase.ts
+
+- Fix for src/workflow/run-setup-phase.ts:115 - When renaming imports to avoid shadowing, add the static import statement at module top level before using the renamed binding in function bodies.
