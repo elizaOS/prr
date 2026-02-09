@@ -9,8 +9,7 @@ import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import { debugStep, startTimer, endTimer } from '../logger.js';
-import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved } from '../git/git-clone-index.js';
-import { isLockFile } from '../git/git-lock-files.js';
+import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../git/git-clone-index.js';
 
 /**
  * Check and merge base branch into PR branch
@@ -44,8 +43,9 @@ export async function checkAndMergeBaseBranch(
     startTimer('Merge base branch');
     console.log(chalk.cyan(`  Syncing with origin/${prInfo.baseBranch}...`));
     
-    // Fetch latest base branch first
+    // Fetch latest base branch and PR branch first
     await git.fetch('origin', prInfo.baseBranch);
+    await git.fetch('origin', prInfo.branch);
     
     const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch);
     
@@ -95,7 +95,7 @@ export async function checkAndMergeBaseBranch(
           // Abort merge and reset to clean state
           await abortMerge(git);
           await git.fetch('origin', prInfo.branch);
-          await git.reset(['--hard', `origin/${prInfo.branch}`]);
+          await git.reset(['--hard', 'FETCH_HEAD']);
           await git.clean('f', ['-d']);
           
           endTimer('Merge base branch');
@@ -109,16 +109,16 @@ export async function checkAndMergeBaseBranch(
         } else {
           // All conflicts resolved - stage files and complete the merge
           const codeFiles = conflictedFiles.filter((f: string) => !isLockFile(f));
-           const lockFiles = conflictedFiles.filter((f: string) => isLockFile(f));
+          const lockFiles = conflictedFiles.filter((f: string) => isLockFile(f));
 
-           // Lock files should be regenerated — accept theirs to unblock the merge
-           if (lockFiles.length > 0) {
-             await git.checkout(['--theirs', '--', ...lockFiles]);
-             await git.add(lockFiles);
-             console.log(chalk.gray(`  ℹ ${lockFiles.length} lock file(s) accepted from ${prInfo.baseBranch} — consider regenerating`));
-           }
+          // Lock files should be regenerated — accept theirs to unblock the merge
+          if (lockFiles.length > 0) {
+            await git.checkout(['--theirs', '--', ...lockFiles]);
+            await git.add(lockFiles);
+            console.log(chalk.gray(`  ℹ ${lockFiles.length} lock file(s) accepted from ${prInfo.baseBranch} — consider regenerating`));
+          }
 
-           await markConflictsResolved(git, codeFiles);
+          await markConflictsResolved(git, codeFiles);
           const commitResult = await completeMerge(git, `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`);
           
           if (!commitResult.success) {

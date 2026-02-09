@@ -369,7 +369,6 @@ export async function executeBailOut(
   finalComments: ReviewComment[];
 }> {
   const chalk = (await import('chalk')).default;
-  const { formatNumber } = await import('./logger.js');
   const Bailout = await import('./state/state-bailout.js');
   const Verification = await import('./state/state-verification.js');
   const State = await import('./state/state-core.js');

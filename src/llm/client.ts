@@ -824,7 +824,7 @@ NO: <brief explanation of what's still missing or wrong>`;
     diff: string,
     rejectionReason: string
   ): Promise<string> {
-    const diffPreview = diff.length > 1500 ? diff.substring(0, 1500) : diff;
+    const diffPreview = diff.length > 1500 ? `${diff.substring(0, 1500)}\n... (truncated)` : diff;
     const prompt = `A code fix attempt was rejected. Analyze what went wrong and extract a specific lesson.
 
 ORIGINAL ISSUE:

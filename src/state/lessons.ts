@@ -27,7 +27,7 @@ export function formatLessonForDisplay(lesson: string): string {
 
 /**
  * Sanitize lesson text by removing code fragments and noise.
- * Returns the original lesson (trimmed) if sanitization would result in empty string.
+ * Returns the original lesson (trimmed) if sanitization results in an empty string.
  */
 export function sanitizeLessonText(lesson: string): string {
   let result = lesson;
@@ -48,7 +48,6 @@ export function sanitizeLessonText(lesson: string): string {
   result = result.replace(/\s+/g, ' ');
   
   const trimmed = result.trim();
-  // Fallback to original if fully stripped
   return trimmed.length > 0 ? trimmed : lesson.trim();
 }
 

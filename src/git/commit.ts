@@ -533,7 +533,7 @@ function extractScope(filePaths: string[]): string | null {
       let cleanDir = dir;
       cleanDir = cleanDir.replace(/^plugin-/, '');
       cleanDir = cleanDir.replace(/^package-/, '');
-      cleanDir = cleanDir.replace(/^@[^/]+\//, ''); // @scope/name → name
+      cleanDir = cleanDir.replace(/^@/, ''); // @scope → scope
       
       // Skip if it's still too generic after cleaning
       if (cleanDir.length < 3 || skipDirs.includes(cleanDir)) continue;

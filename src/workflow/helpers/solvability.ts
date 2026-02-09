@@ -81,8 +81,9 @@ export function assessSolvability(
         };
       } else if (identifiers.length > 0) {
         // Line is within range - check if identifiers are near the target line
-        const snippetRegionStart = Math.max(0, comment.line - 15);
-        const snippetRegionEnd = Math.min(totalLines, comment.line + 15);
+        const targetIdx = comment.line - 1;
+        const snippetRegionStart = Math.max(0, targetIdx - 15);
+        const snippetRegionEnd = Math.min(totalLines, targetIdx + 15 + 1);
         const snippetRegion = lines.slice(snippetRegionStart, snippetRegionEnd).join('\n');
 
         let foundInRegion = false;
@@ -95,12 +96,19 @@ export function assessSolvability(
 
         if (!foundInRegion) {
           // Identifiers not in expected region - try to re-target
-          const retargetResult = findClosestOccurrence(fileContent, lines, identifiers, comment.line);
+          const retargetResult = findClosestOccurrence(lines, identifiers, comment.line);
           if (retargetResult.found && Math.abs(retargetResult.line! - comment.line) > 10) {
             return {
               solvable: true,
               retargetedLine: retargetResult.line,
               contextHints: [`Code for \`${identifiers[0]}\` found at line ${retargetResult.line} (comment targeted line ${comment.line})`],
+            };
+          } else if (!retargetResult.found) {
+            // Identifiers not found anywhere in the file - mark as stale
+            return {
+              solvable: false,
+              dismissCategory: 'stale',
+              contextHints: [`Comment targets line ${comment.line} but identifier \`${identifiers[0]}\` not found in file — code may have been removed or renamed`],
             };
           }
         }

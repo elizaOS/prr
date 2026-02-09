@@ -111,6 +111,8 @@
 - Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
 - Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
 - Fix for src/llm/client.ts:483 - tool modified wrong files (src/analyzer/prompt-builder.ts, src/git/commit.ts, src/runners/llm-api.ts, src/ui/reporter.ts), need to modify src/llm/client.ts
+- Fix for src/llm/client.ts:835 - No verification result returned, treating as failed
+- Fix for src/llm/client.ts:960 - No verification result returned, treating as failed
 
 ### README.md
 
@@ -144,6 +146,7 @@
 
 - Fix for src/runners/llm-api.ts:324 - No verification result returned, treating as failed
 - Fix for src/runners/llm-api.ts:322 - No verification result returned, treating as failed
+- Fix for src/runners/llm-api.ts:323 - No verification result returned, treating as failed
 
 ### .prr/lessons.md
 
@@ -161,6 +164,7 @@
 - Fix for .prr/lessons.md:213 - No verification result returned, treating as failed
 - Fix for .prr/lessons.md:173 - No verification result returned, treating as failed
 - Fix for .prr/lessons.md:223 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:226 - No verification result returned, treating as failed
 
 ### tests/normalizeLessonText.test.ts:88
 
@@ -182,6 +186,8 @@
 - Fix for src/workflow/base-merge.ts:66 - No verification result returned, treating as failed
 - Fix for src/workflow/base-merge.ts:127 - No verification result returned, treating as failed
 - Fix for src/workflow/base-merge.ts:163 - No verification result returned, treating as failed
+- Fix for src/workflow/base-merge.ts:99 - No verification result returned, treating as failed
+- Fix for src/workflow/base-merge.ts:67 - No verification result returned, treating as failed
 
 ### tests/normalize-lesson-text.test.ts
 
@@ -209,6 +215,15 @@
 - Fix for tests/normalize-lesson-text.test.ts:258 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:176 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:163 - tool modified wrong files (.prr/lessons.md), need to modify tests/normalize-lesson-text.test.ts
+- Fix for tests/normalize-lesson-text.test.ts:254 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:10 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:68 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:129 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:137 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:224 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:243 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:261 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:177 - No verification result returned, treating as failed
 
 ### src/workflow/fix-loop-utils.ts
 
@@ -220,6 +235,7 @@
 - Fix for src/workflow/no-comments.ts:109 - tool modified wrong files (.prr/lessons.md), need to modify src/workflow/no-comments.ts
 - Fix for src/workflow/no-comments.ts:93 - No verification result returned, treating as failed
 - Fix for src/workflow/no-comments.ts:13 - No verification result returned, treating as failed
+- Fix for src/workflow/no-comments.ts:108 - No verification result returned, treating as failed
 
 ### src/constants.ts
 
@@ -232,6 +248,8 @@
 - Fix for src/workflow/fix-verification.ts:57 - No verification result returned, treating as failed
 - Fix for src/workflow/fix-verification.ts:214 - No verification result returned, treating as failed
 - Fix for src/workflow/fix-verification.ts:62 - No verification result returned, treating as failed
+- Fix for src/workflow/fix-verification.ts:221 - No verification result returned, treating as failed
+- Fix for src/workflow/fix-verification.ts:62 - When restructuring try/finally blocks, always show the complete pairing from opening `try` to closing `}` in the diff to verify scope and syntax.
 
 ### src/workflow/run-setup-phase.ts
 
@@ -274,6 +292,7 @@
 - Fix for src/workflow/helpers/recovery.ts:402 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:328 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:346 - tool modified wrong files (src/workflow/push-iteration-loop.ts, tests/normalize-lesson-text.test.ts, tests/normalizeLessonText.test.ts), need to modify src/workflow/helpers/recovery.ts
+- Fix for src/workflow/helpers/recovery.ts:403 - No verification result returned, treating as failed
 
 ### src/git/git-conflict-chunked.ts
 
@@ -282,6 +301,11 @@
 - Fix for src/git/git-conflict-chunked.ts:259 - No verification result returned, treating as failed
 - Fix for src/git/git-conflict-chunked.ts:173 - No verification result returned, treating as failed
 - Fix for src/git/git-conflict-chunked.ts:437 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:85 - When fixing string character counts, manually verify the exact count in the replacement string matches the target count, not just the intent.
+- Fix for src/git/git-conflict-chunked.ts:85 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:262 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:409 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:85 - When a review comment targets a specific line/file, make only that change—don't refactor unrelated code or add extra features in the same commit.
 
 ### src/git/clone.ts
 
@@ -323,10 +347,14 @@
 ### src/workflow/issue-analysis.ts
 
 - Fix for src/workflow/issue-analysis.ts:106 - When removing a local constant, you must also add its import statement to the top-level import block—never remove without adding the replacement import.
+- Fix for src/workflow/issue-analysis.ts:106 - No verification result returned, treating as failed
 
 ### src/workflow/helpers/solvability.ts
 
 - Fix for src/workflow/helpers/solvability.ts:84 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/solvability.ts:155 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/solvability.ts:74 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/solvability.ts:86 - No verification result returned, treating as failed
 
 ### src/runners/types.ts
 
@@ -343,3 +371,13 @@
 ### src/state/lessons.ts
 
 - Fix for src/state/lessons.ts:53 - "Store the fallback value but also implement the conditional logic to use it—check if trimmed result is empty, then return the fallback instead."
+- Fix for src/state/lessons.ts:53 - No verification result returned, treating as failed
+
+### src/resolver-proc.ts
+
+- Fix for src/resolver-proc.ts:372 - No verification result returned, treating as failed
+
+### src/workflow/startup.ts
+
+- Fix for src/workflow/startup.ts:123 - No verification result returned, treating as failed
+- Fix for src/workflow/startup.ts:205 - No verification result returned, treating as failed

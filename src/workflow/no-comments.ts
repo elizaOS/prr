@@ -9,7 +9,12 @@ import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
 import { startTimer, endTimer } from '../logger.js';
-import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge } from '../git/git-merge.js';
+import {
+  mergeBaseBranch,
+  startMergeForConflictResolution,
+  abortMerge,
+  completeMerge,
+} from '../git/git-merge.js';
 import { pushWithRetry } from '../git/git-push.js';
 
 /**
@@ -69,6 +74,7 @@ export async function handleNoComments(
             console.log(chalk.red(`    - ${file}`));
           }
           await abortMerge(git);
+          endTimer('Auto-resolve conflicts');
           return {
             shouldExit: true,
             exitReason: 'error',
@@ -80,6 +86,7 @@ export async function handleNoComments(
         const commitResult = await completeMerge(git, `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`);
         if (!commitResult.success) {
           console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
+          endTimer('Auto-resolve conflicts');
           return {
             shouldExit: true,
             exitReason: 'error',
@@ -103,7 +110,7 @@ export async function handleNoComments(
         return {
           shouldExit: true,
           exitReason: 'error',
-          exitDetails: `Failed to push to ${prInfo.branch}: ${err instanceof Error ? err.message : String(err)}`,
+          exitDetails: `Failed to push to ${prInfo.branch}: ${err instanceof Error ? err.message : String(err)}`
         };
       }
     }

@@ -254,7 +254,7 @@ Working directory: ${workdir}`;
           continue;
         }
 
-        const newContent = originalContent.replace(searchNormalized, replaceText.trim());
+        const newContent = originalContent.replace(searchNormalized, () => replaceText.trim());
         
         if (newContent !== originalContent) {
           writeFileSync(fullPath, newContent, 'utf-8');
@@ -284,8 +284,7 @@ Working directory: ${workdir}`;
           await mkdir(dir, { recursive: true });
         }
 
-        const trimmedContent = content.replace(/^\n/, '');
-        const normalizedContent = trimmedContent.endsWith('\n') ? trimmedContent : `${trimmedContent}\n`;
+        const normalizedContent = content.endsWith('\n') ? content : `${content}\n`;
         writeFileSync(fullPath, normalizedContent, 'utf-8');
         filesModified.add(filePath);
         debug('Created new file', { filePath });

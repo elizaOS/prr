@@ -3,6 +3,9 @@
  */
 
 export function normalizeLessonText(lesson: string): string | null {
+  if (/\b[a-z]{1,5}`(?=\b|\s|$)/i.test(lesson) || /`[a-z]{1,5}\b/i.test(lesson)) {
+    return null;
+  }
   const lines = lesson.split('\n');
   const kept: string[] = [];
 
@@ -14,6 +17,7 @@ export function normalizeLessonText(lesson: string): string | null {
     if (!trimmed) continue;
     if (/^\d+\.$/.test(trimmed)) continue;
     if (/^(?:\/\/|\/\*|\*)/.test(trimmed)) continue;
+    if (!/^Fix for\b/i.test(trimmed) && /(^|\s)\/\/|\/\*|\*\//.test(trimmed)) continue;
     if (/^(?:public|private|protected)\s/.test(trimmed)) continue;
     if (/^[A-Za-z_$][\w$]*\s*(?::[^=;]+)?\s*(?:=|;)/.test(trimmed)) continue;
     if (/^(?:class|interface|type|enum|const|let|var|import|export)\b/.test(trimmed)) continue;
@@ -25,6 +29,9 @@ export function normalizeLessonText(lesson: string): string | null {
   let normalized = kept.join(' ');
   normalized = normalized.replace(/\s+/g, ' ').trim();
   normalized = normalized.replace(/`+$/g, '').trim();
+  normalized = normalized.replace(/\b[a-z]{1,5}`(?=\b|\s|$)/gi, '').trim();
+  normalized = normalized.replace(/`[a-z]{1,5}\b/gi, '').trim();
+  normalized = normalized.replace(/^\s*-\s*/, '').trim();
   normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
   normalized = normalized.replace(/\s*-\s*\(inferred\)\s*\w+\b/gi, '').trim();
   normalized = normalized.replace(/\s*-\s*\(inferred\)[^\s]*/gi, '').trim();
@@ -104,6 +111,8 @@ export function normalizeLessonText(lesson: string): string | null {
   normalized = normalized.replace(/\s+-\s*$/, '').trim();
   normalized = normalized.replace(/\s*(?:-\s*)?:\s*(?:string|number|boolean|unknown|any)\s*;?$/i, '').trim();
   normalized = normalized.replace(/\s{2,}/g, ' ').trim();
+  if (!normalized) return null;
+  if (/^\d+(?:\.\d+)?\.?$/.test(normalized)) return null;
   
   // Detect orphaned/incomplete entries (truncated lessons)
   if (/\.\.\.$/.test(normalized)) return null;  // Ends with "..."

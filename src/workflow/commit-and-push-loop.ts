@@ -146,10 +146,6 @@ export async function handleCommitAndPush(
       spinner.fail('Push failed');
       throw pushErr;
     }
-    } catch (err) {
-      spinner.fail('Push failed');
-      throw err;
-    }
 
     // Check CodeRabbit status and trigger if needed
     // WHY: Some repos configure CodeRabbit to require manual trigger (@coderabbitai review)

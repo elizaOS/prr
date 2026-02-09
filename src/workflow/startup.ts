@@ -119,6 +119,7 @@ export async function analyzeBotTimingAndDisplay(
       console.log(chalk.gray('No bot response timing data available yet'));
     }
   } catch (err) {
+    spinner.stop();
     debug('Bot timing analysis failed (non-critical)', { error: err });
   }
   
@@ -170,6 +171,7 @@ export async function checkCodeRabbitStatus(
 /**
  * Wait for CodeRabbit to complete its review by polling for new review comments.
  * Polls every 15s for up to 5 minutes.
+ * Captures the baseline comment count before waiting to detect *new* comments only.
  */
 async function waitForCodeRabbitReview(
   github: GitHubAPI,
@@ -182,6 +184,15 @@ async function waitForCodeRabbitReview(
   const maxWaitMs = 5 * 60 * 1000; // 5 minutes
   const pollIntervalMs = 15_000; // 15 seconds
   const startTime = Date.now();
+  
+  // Snapshot comment count before waiting so we detect *new* comments
+  let baselineCount = 0;
+  try {
+    const baselineComments = await github.getReviewComments(owner, repo, prNumber);
+    baselineCount = baselineComments.length;
+  } catch {
+    // Ignore baseline failures; fall back to 0
+  }
   
   spinner.start(`Waiting for CodeRabbit review of ${headSha.substring(0, 7)}...`);
   
@@ -196,9 +207,9 @@ async function waitForCodeRabbitReview(
                               (status.botsWithEyesReaction?.length ?? 0) > 0;
       
       if (!stillReviewing) {
-        // Check if there are any review comments (CodeRabbit may have finished)
+        // Check if there are any new review comments (CodeRabbit may have finished)
         const comments = await github.getReviewComments(owner, repo, prNumber);
-        if (comments.length > 0) {
+        if (comments.length > baselineCount) {
           spinner.succeed(`CodeRabbit review received (${elapsed}s)`);
           return;
         }

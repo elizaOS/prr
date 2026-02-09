@@ -16,6 +16,7 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient, ModelRecommendationContext } from '../llm/client.js';
 import type { Runner } from '../runners/types.js';
+import { VERIFICATION_EXPIRY_ITERATIONS } from '../constants.js';
 import { validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn } from '../logger.js';
@@ -103,7 +104,6 @@ export async function findUnresolvedIssues(
   let dismissedPlaceholder = 0;
 
   // Verification expiry: re-check issues verified more than 5 iterations ago
-  const VERIFICATION_EXPIRY_ITERATIONS = 5;
   const staleVerifications = Verification.getStaleVerifications(stateContext, VERIFICATION_EXPIRY_ITERATIONS);
   
   // First pass: filter out already-verified issues and gather code snippets

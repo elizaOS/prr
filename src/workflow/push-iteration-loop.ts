@@ -173,7 +173,7 @@ export async function executePushIteration(
 
   // Initialize fix loop
   // CLI convention: 0 = unlimited, undefined = use Infinity default
-  const maxFixIterations = options.maxFixIterations === 0 ? Infinity : (options.maxFixIterations ?? Infinity);
+  const maxFixIterations = options.maxFixIterations ?? Infinity;
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
   

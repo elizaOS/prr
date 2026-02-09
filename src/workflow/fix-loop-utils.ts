@@ -17,7 +17,8 @@ import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { SimpleGit } from 'simple-git';
 import type { PRInfo } from '../github/types.js';
-import { checkRemoteAhead, pullLatest } from '../git/git-clone-index.js';
+import { checkRemoteAhead } from '../git/git-conflicts.js';
+import { pullLatest } from '../git/git-pull.js';
 import { debug } from '../logger.js';
 
 // Note: All imports must be at module top level - do not use dynamic imports inside functions
@@ -288,14 +289,20 @@ export async function checkAndPullRemoteCommits(
       }
       
       // Update PR info with new head SHA
-      const updatedPR = await github.getPRInfo(owner, repo, prNumber);
-      const newHeadSha = updatedPR.headSha;
-      debug('Updated PR head SHA', { newSha: newHeadSha });
-      
-      return {
-        shouldBreak: false,
-        updatedHeadSha: newHeadSha,
-      };
+      try {
+        const updatedPR = await github.getPRInfo(owner, repo, prNumber);
+        const newHeadSha = updatedPR.headSha;
+        debug('Updated PR head SHA', { newSha: newHeadSha });
+        
+        return {
+          shouldBreak: false,
+          updatedHeadSha: newHeadSha,
+        };
+      } catch (err) {
+        debug('Failed to fetch updated PR info after pull', { error: err, prNumber });
+        console.log(chalk.yellow('  Could not refresh PR head SHA — continuing with current state'));
+        return { shouldBreak: false };
+      }
     }
   }
   
