@@ -7,12 +7,47 @@
 
 ## Global Lessons
 
-- When using `execSync`, always include `shell: false` option and pass command/args as array to prevent shell injection, not just whitelist validation.
-- When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
-- When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation describing it.
-- When fixing corrupted generated content, sanitize the source before regenerating - fix the generator logic, not the symptoms.
-- When a review requests fixing root-cause logic in code, locate and modify the actual function that generates the output.
-- Treat unknown sync target state as "existed before" to prevent accidental data loss during cleanup.
+- tool made no changes - trying different approach
+- fixer made no changes - already includes all runners
+- Fix for README.md rejected: The diff does not contain the suggested platform-specific installation instructions. It only updates model names and rotation strategy, missing the curl command clarification for macOS ARM64 vs other platforms.
+- Fix for README.md rejected: The diff updates model versions but doesn't update the actual model table entries from the outdated names (opus-4.5, sonnet-4.5, gpt-5.2-codex-xhigh, etc.) to the correct canonical Cursor CLI names.
+- Fix for README.md rejected: The provided diff doesn't include the platform-specific installation instructions. It shows the same model table changes from other fixes but lacks the cursor-agent installation updates for Linux and Intel Mac users mentioned in the review.
+- Fix for DEVELOPMENT.md rejected: The diff removes the language identifier from the code fence (changes `text` to nothing), which worsens the MD040 violation rather than fixing it as requested.
+- Fix for DEVELOPMENT.md rejected: The fix removes the language identifier (`text`) instead of adding it, changing `` ```text `` to just `` ``` ``, which violates the MD040 requirement to specify a language.
+- Fix for DEVELOPMENT.md rejected: The change removes the language identifier (`text`) from the code fence instead of adding one. The diff shows ```` ```text` ` changing to just `` ``` ``, which is the opposite of what the review requested. This will fail the markdownlint MD040 check.
+- Fix for DEVELOPMENT.md rejected: The code change removes the language identifier (`text`) from the fence, changing ` ```text` to ` ``` `, which makes the problem worse and violates the MD040 rule rather than fixing it.
+- Fix for src/resolver.ts - When using `execSync`, always include `shell: false` option and pass command/args as array to prevent shell injection, not just whitelist validation.
+- Fix for DEVELOPMENT.md rejected: The diff shows an incomplete fix - it adds a line break between the backticks and "text" instead of properly formatting it as ` ```text `, which does not satisfy the MD040 requirement for language-tagged code blocks.
+- Fix for README.md rejected: The diff only updates model version strings and rotation examples, not the platform-specific installation instructions for cursor-agent that were requested (macOS ARM64 vs Linux vs Intel Mac).
+- Fix for src/resolver.ts rejected: The diff changes resolver.ts to handle wrong files, but the review comment is about fixing `fixedIssues` which is computed from `unresolvedIssues`. The diff doesn't change the `fixedIssues` pipeline to use the full `comments` list instead.
+- Fix for src/git/commit.ts rejected: The diff modifies `commit.ts` lines related to `hasChanges` and `scanCommittedFixes`, but the review comment is about fixing a regex for emoji matching at line 267. The wrong file/section was changed.
+- Fix for README.md rejected: The diff changes model version strings but doesn't standardize the model naming format across the README as requested (mixing date-stamped and dotted formats).
+- Fix for src/runners/cursor.ts rejected: The diff shown only modifies the regex pattern but doesn't implement the stdin-based prompt passing approach required to address the E2BIG risk, missing the core fix of removing `args.push(prompt)` and writing to stdin.
+- Fix for src/git/commit.ts rejected: The code change removes imports (`execSync`, `execFileSync`) and adds a `redactAuth()` function with multiple `redactAuth()` calls, but does not fix the regex issue with emoji combining characters at line 267 that was the focus of the review.
+- Fix for src/runners/cursor.ts rejected: The code change shown is identical to the first fix and does not address the E2BIG issue. The prompt is still being passed as a positional argument rather than via stdin, and there is no modification to use `stdio: ['pipe', 'pipe', 'pipe']` or `child.stdin?.write()`.
+- Fix for src/git/commit.ts rejected: The review comment requests updating the emoji regex at line 267 to use Unicode property escapes like `\p{Emoji}`, but the diff shows unrelated changes to imports and a new `redactAuth()` function with no regex changes to the emoji stripping pattern.
+- Fix for src/runners/cursor.ts rejected: The review comment requests changes to handle E2BIG by passing prompt via stdin (lines 271-276), but the provided diff only shows the parseAndPrioritizeModels function being duplicated. The actual stdin implementation is missing.
+- Fix for src/runners/cursor.ts rejected: Same issue as above - shellEscape() is defined twice but never applied to workdir or promptFile variables in the vulnerable shell command string
+- Fix for README.md rejected: The diff shows model table changes and API endpoint additions, but does not address the core issue of standardizing model name formats (claude-sonnet-4-5-20250929 vs claude-sonnet-4.5 vs claude-sonnet-4.5) across the README as requested.
+- Fix for README.md rejected: The diff shows unrelated table changes at lines 571-582 but does not modify lines 78-83 in the README where the PRR_LLM_MODEL example needs to be aligned with the canonical date-stamped format from config.ts.
+- Fix for src/runners/cursor.ts rejected: The fix does not address the E2BIG risk—the diff shows only comments updated and temp file handling added, but the prompt is still passed as a positional argument via `args.push()` rather than being sent via stdin as required by the review.
+- Fix for src/runners/claude-code.ts rejected: The code change only updates an error message string and does not address either of the two main issues: (1) the fixed filename `.prr-prompt.txt` collision risk, or (2) the premature prompt write before model validation. The actual prompt file handling logic remains unchanged.
+- Fix for src/cli.ts rejected: The diff shows a duplicate function definition of `parseIntOrExit` (appears twice in the same file) rather than replacing the raw `parseInt` calls throughout the code. The proposed fix was not properly applied - it only added the helper function but didn't update the call sites.
+- Fix for src/runners/cursor.ts rejected: Diff shows the duplicate model parsing code again instead of changes to pass prompt via stdin and remove positional argument approach
+- Fix for src/cli.ts rejected: The diff only removes a nullish coalescing operator from `maxContextChars` but doesn't add the `parseIntOrDefault` validation helper function needed to prevent NaN propagation.
+- Fix for README.md rejected: The fix only clarifies the heading and adds a generic link, but doesn't provide the platform-specific instructions (Linux, Intel Mac) that were requested in the review comment
+- Fix for README.md rejected: The diff shows changes to line 576 about model listing commands, but the review requested verification and removal of unverified models like `gpt-5.2` and `Grok` from the table, which are not addressed
+- Fix for src/logger.ts rejected: The change only reorders the type check condition but doesn't address the unused initial value of overallTotals mentioned in the review comment.
+- Fix for README.md rejected: The fix only adds a clarification comment and a generic link, but does not provide the platform-specific instructions (Linux, Intel Mac) that the review explicitly requested
+- Fix for README.md rejected: The code change only reformats table formatting, but does not update the README example to match the canonical date-stamped model name from config.ts or add clarifying comments
+- Fix for src/runners/llm-api.ts rejected: The diff does not match the review comment - it shows the same change as the first fix instead of implementing the ReDoS mitigation for the whitespace pattern on line 232. The suggested change to use `\s{1,1000}` is not present in the diff.
+- Fix for .prr/lessons.md rejected: The fix removes malformed entries and deduplicated some lines, but the deduplication is incomplete. Many entries still contain
+- Fix for CLAUDE.md rejected: The fix removes corrupted entries from CLAUDE.md, but does not address the root cause identified in the review comment—the lessons generation logic that produces these malformed entries. The CLAUDE.md file was manually cleaned, but the generator function that syncs from `.prr/lessons.md` and creates the malformed "Instructions" section was not identified or fixed, so the problem will recur.
+- Fix for src/resolver.ts:1035 - tool made no changes without explanation
+- Fix for src/resolver.ts:2549 - tool made no changes without explanation - trying different approach
+- Fix for src/runners/opencode.ts:94 - When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
+- Fix for src/state/manager.ts:117 - When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation describing it.
+- Fix for src/state/manager.ts:384 rejected: The change modifies `clearInterrupted()` to be async and add a save call, but completely ignores the actual bug in `compactLessons()` that was described in the review comment. The fix addresses a different issue entirely.
 - Fix for src/state/manager.ts:117 - tool made no changes
 - Fix for src/state/lessons.ts:613 rejected: The diff filters transient error patterns and marks repo lessons clean on success, but doesn't fix the Windows drive-letter path parsing issue in addLesson.
 - Fix for src/state/lessons.ts:625 - Anchor the regex on message suffixes like " rejected:" or " - " to reliably separate filePath from line numbers, rather than relying solely on the last `:digits` pattern.
@@ -100,12 +135,14 @@
 
 - Fix for src/config.ts:61 - tool made no changes without explanation - trying different approach
 - Fix for src/config.ts:168 rejected: The change only removes the mention of 'auto' from the error message but does not separate 'auto' validation from actual tool validation or document that 'auto' should be resolved before storage. The underlying issue—that 'auto' is checked alongside real tools—remains unaddressed.
+- Fix for src/config.ts:115 - No verification result returned, treating as failed
 
 ### examples/feedback-loop-example.ts
 
 
 ### src/runners/llm-api.ts
 
+- Fix for src/runners/llm-api.ts:324 - No verification result returned, treating as failed
 
 ### .prr/lessons.md
 

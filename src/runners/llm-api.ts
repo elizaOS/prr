@@ -243,7 +243,7 @@ Working directory: ${workdir}`;
             .filter(Boolean);
           const whitespacePattern = patternParts.join(whitespaceToken);
           const whitespaceRegex = new RegExp(whitespacePattern, 'm');
-          const newContent = originalContent.replace(whitespaceRegex, replaceText.trim());
+          const newContent = originalContent.replace(whitespaceRegex, () => replaceText.trim());
           if (newContent === originalContent) {
             debug('Search text found only with normalized whitespace but replacement failed', { filePath, searchLength: searchNormalized.length });
             continue;
