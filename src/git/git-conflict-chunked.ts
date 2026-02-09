@@ -460,6 +460,7 @@ function compareVersions(v1: string, v2: string): number {
   if (prerelease1 && prerelease2) {
     // Both have prereleases, compare them lexicographically
     // NOTE: This is a heuristic - per semver, prerelease ordering is complex
+    // Note: lexicographic comparison is a heuristic - not fully semver-compliant
     // (e.g., 1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-beta < 1.0.0)
     return prerelease1.localeCompare(prerelease2);
   }

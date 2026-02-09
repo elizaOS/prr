@@ -166,9 +166,10 @@ export function validateTool(tool: string): FixerTool {
   return validateRealTool(tool) as FixerTool;
 }
 
+/** Validate that a tool is a real runner (not 'auto'). 'auto' should be resolved before calling this. */
 export function validateRealTool(tool: string): RealFixerTool {
   if (!REAL_FIXER_TOOLS.includes(tool as RealFixerTool)) {
-    throw new Error(`Invalid tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')}`);
+    throw new Error(`Invalid real tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')} (note: 'auto' must be resolved to a real tool before storage)`);
   }
   return tool as RealFixerTool;
 }

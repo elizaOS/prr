@@ -40,8 +40,10 @@ export function sanitizeLessonText(lesson: string): string {
   result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
   // Fix "made no changes" missing separator before "already"
   result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
-  // Strip trailing " - (inferred) ..." artifacts
-  result = result.replace(/\s*-\s*\(inferred\)\s*.*$/i, '');
+  // Strip trailing " - (inferred) ..." artifacts (including multiline)
+  result = result.replace(/\s*-\s*\(inferred\)\s*.*$/gim, '');
+  // Strip malformed section headers like "### src/file.ts:123 - (inferred) ts"
+  result = result.replace(/^###?\s+\S+:\d+\s*-\s*\(inferred\).*$/gm, '');
   // Collapse double hyphens to single
   result = result.replace(/\s*-\s+-\s*/g, ' - ');
   // Collapse multiple spaces to single
@@ -286,16 +288,7 @@ export class LessonsManager {
   /**
    * Extract the prr lessons section from a file's content.
    */
-  private extractPrrSection(content: string): string | null {
-    const startIdx = content.indexOf(PRR_SECTION_START);
-    const endIdx = content.indexOf(PRR_SECTION_END);
-
-    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-      return null;
-    }
-
-    return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
-  }
+  
    *
    * Expected format:
    * # PRR Lessons Learned
