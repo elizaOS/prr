@@ -25,34 +25,6 @@ export function formatLessonForDisplay(lesson: string): string {
   return lesson;
 }
 
-/**
- * Sanitize a lesson string to fix common malformed patterns.
- * WHY: The lessons extraction can produce artifacts like double spaces,
- * missing separators, and code fragments that need cleanup.
- */
-export function sanitizeLessonText(lesson: string): string {
-  let result = lesson;
-  // Strip code fragments (class properties, access modifiers, etc.)
-  result = result.replace(/^\s*(?:private|public|protected|static|readonly)\s+\w+.*$/gm, '');
-  // Strip lines that look like TypeScript declarations
-  result = result.replace(/^\s*(?:const|let|var|function|class|interface|type|import|export)\s+.*$/gm, '');
-  // Fix "made no changes" missing separator before "trying"
-  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
-  // Fix "made no changes" missing separator before "already"
-  result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
-  // Strip trailing " - (inferred) ..." artifacts (including multiline)
-  result = result.replace(/\s*-\s*\(inferred\)\s*.*$/gim, '');
-  // Strip malformed section headers like "### src/file.ts:123 - (inferred) ts"
-  result = result.replace(/^###?\s+\S+:\d+\s*-\s*\(inferred\).*$/gm, '');
-  // Collapse double hyphens to single
-  result = result.replace(/\s*-\s+-\s*/g, ' - ');
-  // Collapse multiple spaces to single
-  result = result.replace(/\s{2,}/g, ' ');
-  // Remove empty lines left after stripping
-  result = result.replace(/\n\s*\n/g, '\n');
-  return result.trim();
-}
-
 export interface LessonsStore {
   owner: string;
   repo: string;
@@ -288,7 +260,19 @@ export class LessonsManager {
   /**
    * Extract the prr lessons section from a file's content.
    */
-  
+  private extractPrrSection(content: string): string | null {
+    const startIdx = content.indexOf(PRR_SECTION_START);
+    const endIdx = content.indexOf(PRR_SECTION_END);
+
+    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+      return null;
+    }
+
+    return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
+  }
+
+  /**
+   * Parse markdown lessons file into structured data.
    *
    * Expected format:
    * # PRR Lessons Learned
