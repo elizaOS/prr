@@ -115,7 +115,8 @@ export async function executeRun(
     }
     const git = setupResult.git;
     let pushIteration = 0;
-    const maxPushIterations = options.autoPush ? (options.maxPushIterations ?? Infinity) : 1;
+    // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
+    const maxPushIterations = options.autoPush ? (options.maxPushIterations || Infinity) : 1;
     const prInfoRef = { current: state.prInfo };
     const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
     const finalCommentsRef = { current: state.finalComments };
@@ -124,7 +125,7 @@ export async function executeRun(
       pushIteration++;
       const iterResult = await ResolverProc.executePushIteration(
         { git, github, owner, repo, number, workdir: state.workdir },
-        { pushIteration, maxPushIterations, rapidFailureCount: state.rapidFailureCount, lastFailureTime: state.lastFailureTime, consecutiveFailures: state.consecutiveFailures, modelFailuresInCycle: state.modelFailuresInCycle, progressThisCycle: state.progressThisCycle, expectedBotResponseTime: state.expectedBotResponseTime, codeRabbitTriggered: setupResult.codeRabbitTriggered },
+        { pushIteration, maxPushIterations, rapidFailureCount: state.rapidFailureCount, lastFailureTime: state.lastFailureTime, consecutiveFailures: state.consecutiveFailures, modelFailuresInCycle: state.modelFailuresInCycle, progressThisCycle: state.progressThisCycle, expectedBotResponseTime: state.expectedBotResponseTime },
         { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef },
         { findUnresolvedIssues: callbacks.findUnresolvedIssues, resolveConflictsWithLLM: callbacks.resolveConflictsWithLLM, getCodeSnippet: callbacks.getCodeSnippet, printUnresolvedIssues: callbacks.printUnresolvedIssues, getCurrentModel: callbacks.getCurrentModel, parseNoChangesExplanation: callbacks.parseNoChangesExplanation, trySingleIssueFix: callbacks.trySingleIssueFix, tryRotation: callbacks.tryRotation, tryDirectLLMFix: callbacks.tryDirectLLMFix, executeBailOut: callbacks.executeBailOut, checkForNewBotReviews: callbacks.checkForNewBotReviews, calculateExpectedBotResponseTime: callbacks.calculateExpectedBotResponseTime, waitForBotReviews: callbacks.waitForBotReviews },
         { llm, options, config, spinner, runner: state.runner }
@@ -138,11 +139,20 @@ export async function executeRun(
       state.finalUnresolvedIssues = finalUnresolvedIssuesRef.current;
       state.finalComments = finalCommentsRef.current;
       state.expectedBotResponseTime = expectedBotResponseTimeRef.current;
+      // Always capture exit reason from last iteration (even when shouldBreak is false)
+      // WHY: When loop exhausts maxPushIterations without break, the last
+      // iteration's exitReason would be lost, causing "Exit: unknown"
+      if (iterResult.exitReason) state.exitReason = iterResult.exitReason;
+      if (iterResult.exitDetails) state.exitDetails = iterResult.exitDetails;
       if (iterResult.shouldBreak) {
-        if (iterResult.exitReason) state.exitReason = iterResult.exitReason;
-        if (iterResult.exitDetails) state.exitDetails = iterResult.exitDetails;
         break;
       }
+    }
+    // Sync resolver instance with final state so callbacks (e.g. printFinalSummary)
+    // see the updated exitReason. Without this, this.exitReason stays 'unknown'
+    // because syncResolverState only ran once after setup, before the push loop.
+    if (callbacks.syncResolverState) {
+      callbacks.syncResolverState(state);
     }
     await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsContext, state.stateContext, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);

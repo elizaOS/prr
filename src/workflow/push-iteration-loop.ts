@@ -52,8 +52,6 @@ export interface PushIterationState {
   modelFailuresInCycle: number;
   progressThisCycle: number;
   expectedBotResponseTime: Date | null;
-  /** Whether CodeRabbit was triggered at startup and we should wait for its review */
-  codeRabbitTriggered?: boolean;
 }
 
 /** Contextual objects passed through the push iteration */
@@ -147,13 +145,6 @@ export async function executePushIteration(
     console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
   }
 
-  // Wait for CodeRabbit review if we triggered one at startup (first push iteration only)
-  if (iterState.codeRabbitTriggered && pushIteration === 1) {
-    await waitForBotReviews(owner, repo, number, prInfo.headSha);
-    // Clear the flag so we don't wait again on subsequent iterations
-    iterState.codeRabbitTriggered = false;
-  }
-
   // Process comments and prepare fix loop
   const loopResult = await ResolverProc.processCommentsAndPrepareFixLoop(
     git, github, owner, repo, number, prInfo, stateContext, lessonsContext, llm, options, config, workdir, spinner,
@@ -181,7 +172,8 @@ export async function executePushIteration(
   }
 
   // Initialize fix loop
-  const maxFixIterations = options.maxFixIterations ?? Infinity;
+  // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
+  const maxFixIterations = options.maxFixIterations || Infinity;
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
   
@@ -223,7 +215,7 @@ export async function executePushIteration(
     unresolvedIssues.splice(0, unresolvedIssues.length, ...iterResult.updatedUnresolvedIssues);
     const lessonsBeforeFix = iterResult.lessonsBeforeFix;
     
-    if (iterResult.shouldExit) return { shouldBreak: true, updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle };
+    if (iterResult.shouldExit) return { shouldBreak: true, exitReason: iterResult.exitReason || 'bail_out', exitDetails: iterResult.exitDetails || 'Fix iteration requested early exit', updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle };
     if (iterResult.shouldBreak) {
       exitReason = iterResult.exitReason || '';
       exitDetails = iterResult.exitDetails || '';

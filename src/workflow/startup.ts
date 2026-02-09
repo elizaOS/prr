@@ -149,7 +149,10 @@ export async function checkCodeRabbitStatus(
       spinner.succeed(`CodeRabbit: already reviewed ${headSha.substring(0, 7)} ✓`);
     } else if (crResult.triggered) {
       spinner.succeed(`CodeRabbit: triggered review (${crResult.mode} mode)`);
-      info('CodeRabbit review requested - waiting for review before proceeding');
+      info('CodeRabbit review requested - waiting for review to complete');
+      
+      // Wait for CodeRabbit to finish reviewing before proceeding
+      await waitForCodeRabbitReview(github, owner, repo, prNumber, headSha, spinner);
     } else if (crResult.mode === 'auto') {
       spinner.info(`CodeRabbit: auto mode - will review automatically`);
     } else {
@@ -162,6 +165,55 @@ export async function checkCodeRabbitStatus(
     debug('CodeRabbit startup check failed', { error: err });
     return { triggered: false, reviewedCurrentCommit: false };
   }
+}
+
+/**
+ * Wait for CodeRabbit to complete its review by polling for new review comments.
+ * Polls every 15s for up to 5 minutes.
+ */
+async function waitForCodeRabbitReview(
+  github: GitHubAPI,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha: string,
+  spinner: Ora
+): Promise<void> {
+  const maxWaitMs = 5 * 60 * 1000; // 5 minutes
+  const pollIntervalMs = 15_000; // 15 seconds
+  const startTime = Date.now();
+  
+  spinner.start(`Waiting for CodeRabbit review of ${headSha.substring(0, 7)}...`);
+  
+  while (Date.now() - startTime < maxWaitMs) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    
+    try {
+      // Check if CodeRabbit has posted a review for this commit
+      const status = await github.getPRStatus(owner, repo, prNumber, headSha);
+      const stillReviewing = (status.activelyReviewingBots?.length ?? 0) > 0 ||
+                              (status.botsWithEyesReaction?.length ?? 0) > 0;
+      
+      if (!stillReviewing) {
+        // Check if there are any review comments (CodeRabbit may have finished)
+        const comments = await github.getReviewComments(owner, repo, prNumber);
+        if (comments.length > 0) {
+          spinner.succeed(`CodeRabbit review received (${elapsed}s)`);
+          return;
+        }
+      }
+      
+      spinner.text = `Waiting for CodeRabbit review of ${headSha.substring(0, 7)}... (${elapsed}s)`;
+    } catch (err) {
+      debug('Error polling for CodeRabbit review', { error: err });
+      // Continue polling on errors
+    }
+  }
+  
+  // Timed out - proceed anyway
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+  spinner.warn(`CodeRabbit review not received after ${elapsed}s, proceeding anyway`);
 }
 
 /**
