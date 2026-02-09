@@ -115,10 +115,10 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     if (familyAvail === familyModel) {
       // Only match if they share the same model family prefix (up to first version segment)
       const familyOf = (m: string) => m.split(/[-._\d]/)[0];
-      const familyAvail = familyOf(lowerAvail);
-      const familyModel = familyOf(lowerModel);
-      return familyAvail === familyModel && familyAvail.length > 0 &&
-        (lowerAvail === lowerModel || (familyAvail === familyModel && (lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-'))));
+      const fAvail = familyOf(lowerAvail);
+      const fModel = familyOf(lowerModel);
+      return fAvail === fModel && fAvail.length > 0 &&
+        (lowerAvail === lowerModel || (lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-')));
     }
     
     return false;

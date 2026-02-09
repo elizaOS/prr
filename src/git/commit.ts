@@ -33,11 +33,23 @@ export async function squashCommit(
   };
 }
 
-/* The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+/import chalk from 'chalk';
+ import chalk from 'chalk';
+ </search>
+<replace>import chalk from 'chalk';
+ * 
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,</search>
+<replace>
+ * 
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer, </search>
+<replace>
  * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ * 
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,</search>
+<replace>
  * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
- * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
- **
+ *
+ * WHY 30s timeout (reduced from 60s): Push should be fast. If it takes longer,*
  * Result of a push attempt, indicating whether it was rejected due to being behind.
  */
 export interface PushResult {

@@ -188,3 +188,11 @@
 ### src/workflow/run-setup-phase.ts
 
 - Fix for src/workflow/run-setup-phase.ts:115 - When renaming imports to avoid shadowing, add the static import statement at module top level before using the renamed binding in function bodies.
+
+### src/workflow/push-iteration-loop.ts
+
+- Fix for src/workflow/push-iteration-loop.ts:128 - The call sites pass object literals which will be structurally compatible with the named interfaces, so no changes needed there.
+
+### src/workflow/helpers/recovery.ts
+
+- Fix for src/workflow/helpers/recovery.ts:304 - Before committing a fix, verify there are no duplicate code blocks by reviewing the entire diff context—duplicates indicate incomplete merge resolution.
