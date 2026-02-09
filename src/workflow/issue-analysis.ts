@@ -19,6 +19,7 @@ import type { Runner } from '../runners/types.js';
 import { validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn } from '../logger.js';
+import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 
 /**
  * Get code snippet from file for context
@@ -84,6 +85,7 @@ export async function findUnresolvedIssues(
   llm: LLMClient,
   runner: Runner,
   options: CLIOptions,
+  workdir: string,
   getCodeSnippetFn: (path: string, line: number | null, commentBody?: string) => Promise<string>,
   getModelsForRunner: (runner: Runner) => string[]
 ): Promise<{
@@ -96,6 +98,9 @@ export async function findUnresolvedIssues(
   let alreadyResolved = 0;
   let skippedCache = 0;
   let staleRecheck = 0;
+  let dismissedStaleFiles = 0;
+  let dismissedExhausted = 0;
+  let dismissedPlaceholder = 0;
 
   // Verification expiry: re-check issues verified more than 5 iterations ago
   const VERIFICATION_EXPIRY_ITERATIONS = 5;
@@ -105,6 +110,7 @@ export async function findUnresolvedIssues(
   const toCheck: Array<{
     comment: ReviewComment;
     codeSnippet: string;
+    contextHints?: string[];
   }> = [];
 
   for (const comment of comments) {
@@ -124,8 +130,58 @@ export async function findUnresolvedIssues(
       staleRecheck++;
     }
 
-    const codeSnippet = await getCodeSnippetFn(comment.path, comment.line, comment.body);
-    toCheck.push({ comment, codeSnippet });
+    // Phase 1: Deterministic solvability check (zero LLM cost)
+    const solvability = assessSolvability(workdir, comment, stateContext);
+    if (!solvability.solvable) {
+      // CRITICAL: dismissIssue ONLY — do NOT call markVerified.
+      // If the file comes back (revert, re-add), we want to re-analyze it.
+      Dismissed.dismissIssue(
+        stateContext,
+        comment.id,
+        solvability.reason!,
+        solvability.dismissCategory!,
+        comment.path,
+        comment.line,
+        comment.body
+      );
+      if (solvability.dismissCategory === 'stale') {
+        dismissedStaleFiles++;
+      } else if (solvability.dismissCategory === 'exhausted') {
+        dismissedExhausted++;
+      }
+      continue;
+    }
+
+    // Fetch snippet using retargeted line if available
+    const snippetLine = solvability.retargetedLine ?? comment.line;
+    const codeSnippet = await getCodeSnippetFn(comment.path, snippetLine, comment.body);
+
+    // Belt-and-suspenders: catch placeholder after fetch (race or permission issue)
+    if (codeSnippet === SNIPPET_PLACEHOLDER) {
+      Dismissed.dismissIssue(
+        stateContext,
+        comment.id,
+        'File not found or unreadable after existence check passed',
+        'stale',
+        comment.path,
+        comment.line,
+        comment.body
+      );
+      dismissedPlaceholder++;
+      continue;
+    }
+
+    toCheck.push({ comment, codeSnippet, contextHints: solvability.contextHints });
+  }
+
+  // Report solvability dismissals
+  const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedPlaceholder;
+  if (totalDismissed > 0) {
+    const parts: string[] = [];
+    if (dismissedStaleFiles > 0) parts.push(`${dismissedStaleFiles} stale file(s)`);
+    if (dismissedExhausted > 0) parts.push(`${dismissedExhausted} exhausted attempt(s)`);
+    if (dismissedPlaceholder > 0) parts.push(`${dismissedPlaceholder} unreadable file(s)`);
+    console.log(chalk.gray(`  ${totalDismissed} issue(s) dismissed as unsolvable (${parts.join(', ')})`));
   }
 
   if (options.reverify && skippedCache > 0) {
@@ -154,17 +210,39 @@ export async function findUnresolvedIssues(
     console.log(chalk.gray(`  Analyzing ${toCheck.length} comments sequentially...`));
     
     for (let i = 0; i < toCheck.length; i++) {
-      const { comment, codeSnippet } = toCheck[i];
+      const { comment, codeSnippet, contextHints } = toCheck[i];
       console.log(chalk.gray(`    [${i + 1}/${toCheck.length}] ${comment.path}:${comment.line || '?'}`));
       
       const result = await llm.checkIssueExists(
         comment.body,
         comment.path,
         comment.line,
-        codeSnippet
+        codeSnippet,
+        contextHints
       );
       
-      if (result.exists) {
+      if (result.stale) {
+        // Issue is stale (code fundamentally restructured) - dismiss without marking verified
+        if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
+          Dismissed.dismissIssue(
+            stateContext,
+            comment.id,
+            result.explanation,
+            'stale',
+            comment.path,
+            comment.line,
+            comment.body
+          );
+        } else {
+          warn(`Stale issue missing valid explanation - marking as unresolved`);
+          unresolved.push({
+            comment,
+            codeSnippet,
+            stillExists: true,
+            explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
+          });
+        }
+      } else if (result.exists) {
         unresolved.push({
           comment,
           codeSnippet,
@@ -209,6 +287,7 @@ export async function findUnresolvedIssues(
         filePath: item.comment.path,
         line: item.comment.line,
         codeSnippet: item.codeSnippet,
+        contextHints: item.contextHints,
       };
     });
 
@@ -262,7 +341,28 @@ export async function findUnresolvedIssues(
         continue;
       }
 
-      if (result.exists) {
+      if (result.stale) {
+        // Issue is stale (code fundamentally restructured) - dismiss without marking verified
+        if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
+          Dismissed.dismissIssue(
+            stateContext,
+            comment.id,
+            result.explanation,
+            'stale',
+            comment.path,
+            comment.line,
+            comment.body
+          );
+        } else {
+          warn(`Stale issue missing valid explanation - marking as unresolved`);
+          unresolved.push({
+            comment,
+            codeSnippet,
+            stillExists: true,
+            explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
+          });
+        }
+      } else if (result.exists) {
         unresolved.push({
           comment,
           codeSnippet,

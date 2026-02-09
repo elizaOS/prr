@@ -9,7 +9,7 @@ export function dismissIssue(
   ctx: StateContext,
   commentId: string,
   reason: string,
-  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate',
+  category: DismissedIssue['category'],
   filePath: string,
   line: number | null,
   commentBody: string

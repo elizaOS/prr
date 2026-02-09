@@ -30,6 +30,7 @@ import { hasChanges } from '../git/git-clone-index.js';
 import { formatNumber, debugStep, startTimer } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { recheckSolvability } from './helpers/solvability.js';
 
 /** Git and GitHub context for a push iteration */
 export interface PushIterationGitContext {
@@ -230,7 +231,7 @@ export async function executePushIteration(
     }
 
     // Verify fixes
-    const { verifiedCount, failedCount, changedIssues, unchangedIssues } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch);
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch);
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
     
@@ -257,6 +258,24 @@ export async function executePushIteration(
       modelFailuresInCycle = postVerif.updatedModelFailuresInCycle;
       progressThisCycle = postVerif.updatedProgressThisCycle;
       unresolvedIssues.splice(0, unresolvedIssues.length, ...postVerif.updatedUnresolvedIssues);
+      
+      // Phase 2: Refresh snippets for issues whose files were touched by fixer
+      const getCodeSnippetFn = (path: string, line: number | null, body?: string) =>
+        ResolverProc.getCodeSnippet(gitCtx.workdir, path, line, body);
+      const refreshResult = await recheckSolvability(
+        unresolvedIssues, 
+        changedFiles, 
+        gitCtx.workdir, 
+        stateContext, 
+        getCodeSnippetFn
+      );
+      if (refreshResult.dismissed > 0) {
+        console.log(chalk.yellow(`  ${refreshResult.dismissed} issue(s) became stale (files deleted by fixer)`));
+      }
+      if (refreshResult.refreshed > 0) {
+        console.log(chalk.gray(`  ${refreshResult.refreshed} issue(s) refreshed (snippets updated)`));
+      }
+      unresolvedIssues.splice(0, unresolvedIssues.length, ...refreshResult.updated);
       
       if (postVerif.shouldBreak) break;
     }

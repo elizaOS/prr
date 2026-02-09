@@ -44,7 +44,7 @@ export interface LLMResponse {
  * Batch check result with optional model recommendation
  */
 export interface BatchCheckResult {
-  issues: Map<string, { exists: boolean; explanation: string }>;
+  issues: Map<string, { exists: boolean; explanation: string; stale: boolean }>;
   /** Recommended models to use for fixing, in order of preference */
   recommendedModels?: string[];
   /** Reasoning behind the model recommendation */
@@ -227,11 +227,17 @@ export class LLMClient {
     comment: string,
     filePath: string,
     line: number | null,
-    codeSnippet: string
-  ): Promise<{ exists: boolean; explanation: string }> {
+    codeSnippet: string,
+    contextHints?: string[]
+  ): Promise<{ exists: boolean; explanation: string; stale: boolean }> {
+    // Inject context hints as factual observations before the prompt
+    const hintsSection = contextHints && contextHints.length > 0
+      ? contextHints.map(hint => `NOTE: ${hint}`).join('\n') + '\n\n'
+      : '';
+    
     const prompt = `You are a strict code reviewer verifying whether a review comment has been properly addressed.
 
-REVIEW COMMENT:
+${hintsSection}REVIEW COMMENT:
 ---
 File: ${filePath}
 ${line ? `Line: ${line}` : 'Line: (not specified)'}
@@ -259,24 +265,39 @@ CRITICAL - Your explanation will be recorded for feedback between the issue gene
 Respond with EXACTLY one of these formats:
 YES: <quote the problematic code or explain what's still missing>
 NO: <cite the SPECIFIC code/line that resolves this issue and explain HOW it addresses the comment>
+STALE: <explain why this comment no longer applies to the current code>
+
+Use STALE when the code has been restructured so fundamentally that the review
+comment's concern no longer applies — e.g., the function was removed, the file
+was rewritten, or the code pattern the comment referenced is gone. Do NOT use
+STALE just because the fix approach would be different than what the comment
+suggested — if the underlying issue still exists, say YES.
 
 Examples of GOOD explanations:
 NO: Line 45 now has null check: if (value === null) return;
 NO: TypeScript type 'NonNullable<T>' at line 23 prevents null from being passed
 NO: Function already implements this at lines 67-70: try { ... } catch (error) { logger.error(error); }
+STALE: The processUser function mentioned in the comment no longer exists in this file; the entire module was refactored to use a different architecture
 
 Examples of BAD explanations (NEVER do this):
 NO: Fixed
 NO: Already done
-NO: Looks good`;
+NO: Looks good
+STALE: Not applicable`;
 
     const response = await this.complete(prompt);
     const content = response.content.trim();
 
+    // Lenient parsing: check for STALE prefix variations
+    const isStale = content.toUpperCase().startsWith('STALE');
     const exists = content.toUpperCase().startsWith('YES');
-    const explanation = content.replace(/^(YES|NO):\s*/i, '').trim();
+    const explanation = content.replace(/^(YES|NO|STALE)[:\s-]*/i, '').trim();
 
-    return { exists, explanation };
+    return { 
+      exists: !isStale && exists, 
+      stale: isStale, 
+      explanation 
+    };
   }
 
   /**
@@ -294,6 +315,7 @@ NO: Looks good`;
       filePath: string;
       line: number | null;
       codeSnippet: string;
+      contextHints?: string[];
     }>,
     modelContext?: ModelRecommendationContext,
     maxContextChars: number = 150_000
@@ -318,17 +340,24 @@ NO: Looks good`;
       '- Be specific and cite actual code/line numbers',
       '',
       'For EACH issue, respond with a line in this exact format:',
-      'ISSUE_ID: YES|NO: cite specific code or explain what is missing/fixed',
+      'ISSUE_ID: YES|NO|STALE: cite specific code or explain what is missing/fixed/stale',
+      '',
+      'Use STALE when the code has been restructured so fundamentally that the review comment',
+      'no longer applies — e.g., the function was removed, the file was rewritten, or the code',
+      'pattern referenced is gone. Do NOT use STALE just because the fix approach would be',
+      'different — if the underlying issue still exists, say YES.',
       '',
       'Example GOOD responses:',
       'issue_1: YES: Line 45 still has `user.email` without null check',
       'issue_2: NO: Line 23 now has `if (input === null) return;` guard',
       'issue_3: NO: TypeScript NonNullable<T> at line 67 prevents null',
+      'issue_4: STALE: The processUser function no longer exists; module was refactored',
       '',
       'Example BAD responses (NEVER do this):',
       'issue_1: NO: Fixed',
       'issue_2: NO: Done',
       'issue_3: NO: Already implemented',
+      'issue_4: STALE: Not applicable',
       '',
       '---',
       '',
@@ -351,7 +380,17 @@ NO: Looks good`;
         ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
         : issue.codeSnippet;
 
-      return [
+      const parts = [];
+      
+      // Inject context hints as factual observations
+      if (issue.contextHints && issue.contextHints.length > 0) {
+        for (const hint of issue.contextHints) {
+          parts.push(`NOTE: ${hint}`);
+        }
+        parts.push('');
+      }
+      
+      parts.push(
         `## Issue ${issue.id}`,
         `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
         `Comment: ${truncatedComment}`,
@@ -361,7 +400,9 @@ NO: Looks good`;
         truncatedCode,
         '```',
         '',
-      ].join('\n');
+      );
+
+      return parts.join('\n');
     };
 
     // Build batches dynamically based on content size
@@ -400,7 +441,7 @@ NO: Looks good`;
     });
 
     // Process all batches
-    const allResults = new Map<string, { exists: boolean; explanation: string }>();
+    const allResults = new Map<string, { exists: boolean; explanation: string; stale: boolean }>();
     let recommendedModels: string[] | undefined;
     let modelRecommendationReasoning: string | undefined;
 
@@ -468,16 +509,18 @@ NO: Looks good`;
       // Parse issue responses
       const lines = response.content.split('\n');
       for (const line of lines) {
-        const match = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
+        const match = line.match(/^([^:]+):\s*(YES|NO|STALE):\s*(.*)$/i);
         if (match) {
-          const [, id, yesNo, explanation] = match;
+          const [, id, response, explanation] = match;
           const resultId = normalizeIssueId(id);
           if (!allowedIds.has(resultId)) {
             debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
             continue;
           }
+          const responseUpper = response.toUpperCase();
           allResults.set(resultId, {
-            exists: yesNo.toUpperCase() === 'YES',
+            exists: responseUpper === 'YES',
+            stale: responseUpper === 'STALE',
             explanation: explanation.trim(),
           });
         }

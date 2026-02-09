@@ -109,9 +109,11 @@ export const MAX_MODELS_PER_TOOL_ROUND = 2;
 export const DEFAULT_MAX_STALE_CYCLES = 1;
 
 /**
- * Window for tracking rapid failures (ms).
+ * Maximum distinct tool/model combinations to attempt before dismissing as exhausted.
+ * WHY: If 4 different strategies all fail, the issue is likely unsolvable.
+ * Different from a raw attempt count which doesn't distinguish "same model retried" from "all strategies tried".
  */
-export const RAPID_FAILURE_WINDOW_MS = 60_000;
+export const MAX_DISTINCT_FAILED_ATTEMPTS = 4;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VERIFICATION & CACHING

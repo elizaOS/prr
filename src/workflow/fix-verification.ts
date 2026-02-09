@@ -38,6 +38,7 @@ export async function verifyFixes(
   failedCount: number;
   changedIssues: UnresolvedIssue[];
   unchangedIssues: UnresolvedIssue[];
+  changedFiles: string[];
 }> {
   const spinner = ora();
   
@@ -45,130 +46,81 @@ export async function verifyFixes(
   setPhase(stateContext, 'verifying');
   setTokenPhase('Verify fixes');
   startTimer('Verify fixes');
-  try {
-  spinner.start('Verifying fixes...');
-  const changedFiles = await getChangedFiles(git);
-  debug('Changed files', changedFiles);
+  
   let verifiedCount = 0;
   let failedCount = 0;
-
-  // Separate issues by whether their file was changed
   const unchangedIssues: typeof unresolvedIssues = [];
   const changedIssues: typeof unresolvedIssues = [];
+  let changedFiles: string[] = [];
   
-  for (const issue of unresolvedIssues) {
-    if (!changedFiles.includes(issue.comment.path)) {
-      unchangedIssues.push(issue);
-    } else {
-      changedIssues.push(issue);
+  try {
+    spinner.start('Verifying fixes...');
+    changedFiles = await getChangedFiles(git);
+    debug('Changed files', changedFiles);
+  
+    for (const issue of unresolvedIssues) {
+      if (!changedFiles.includes(issue.comment.path)) {
+        unchangedIssues.push(issue);
+      } else {
+        changedIssues.push(issue);
+      }
     }
-  }
 
-  // Mark unchanged files as failed immediately and document as dismissed
-  // NOTE: No validation needed here - we're providing an explicit, meaningful reason
-  for (const issue of unchangedIssues) {
-    Iterations.addVerificationResult(stateContext, issue.comment.id, {
-      passed: false,
-      reason: 'File was not modified',
-    });
-    Dismissed.dismissIssue(stateContext, 
-      issue.comment.id,
-      'File was not modified by the fixer tool, so issue could not have been addressed',
-      'file-unchanged',
-      issue.comment.path,
-      issue.comment.line,
-      issue.comment.body
-    );
-    failedCount++;
-  }
+    // Mark unchanged files as failed immediately and document as dismissed
+    // NOTE: No validation needed here - we're providing an explicit, meaningful reason
+    for (const issue of unchangedIssues) {
+      Iterations.addVerificationResult(stateContext, issue.comment.id, {
+        passed: false,
+        reason: 'File was not modified',
+      });
+      Dismissed.dismissIssue(stateContext, 
+        issue.comment.id,
+        'File was not modified by the fixer tool, so issue could not have been addressed',
+        'file-unchanged',
+        issue.comment.path,
+        issue.comment.line,
+        issue.comment.body
+      );
+      failedCount++;
+    }
 
-  // Verify changed files
-  if (changedIssues.length > 0) {
-    // Cache diffs by file to avoid fetching same diff multiple times
-    const diffCache = new Map<string, string>();
-    
-    const getDiff = async (path: string): Promise<string> => {
-      const cached = diffCache.get(path);
-      if (cached) {
-        return cached;
-      }
-      const diff = await getDiffForFile(git, path) || '';
-      diffCache.set(path, diff);
-      return diff;
-    };
-
-    if (noBatch) {
-      // Sequential mode - one LLM call per fix
-      spinner.text = `Verifying ${changedIssues.length} fixes sequentially...`;
+    // Verify changed files
+    if (changedIssues.length > 0) {
+      // Cache diffs by file to avoid fetching same diff multiple times
+      const diffCache = new Map<string, string>();
       
-      for (let i = 0; i < changedIssues.length; i++) {
-        const issue = changedIssues[i];
-        spinner.text = `Verifying [${i + 1}/${changedIssues.length}] ${issue.comment.path}:${issue.comment.line || '?'}`;
-        
-        const diff = await getDiff(issue.comment.path);
-        const verification = await llm.verifyFix(
-          issue.comment.body,
-          issue.comment.path,
-          diff
-        );
-
-        Iterations.addVerificationResult(stateContext, issue.comment.id, {
-          passed: verification.fixed,
-          reason: verification.explanation,
-        });
-
-        debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, verification);
-        
-        if (verification.fixed) {
-          verifiedCount++;
-          Verification.markVerified(stateContext, issue.comment.id);
-          Iterations.addCommentToIteration(stateContext, issue.comment.id);
-          verifiedThisSession.add(issue.comment.id);  // Track for session filtering
-        } else {
-          failedCount++;
-          // Analyze failure to generate actionable lesson
-          const lesson = await llm.analyzeFailedFix(
-            {
-              comment: issue.comment.body,
-              filePath: issue.comment.path,
-              line: issue.comment.line,
-            },
-            diff,
-            verification.explanation
-          );
-          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+      const getDiff = async (path: string): Promise<string> => {
+        const cached = diffCache.get(path);
+        if (cached) {
+          return cached;
         }
-      }
-    } else {
-      // Batch mode - one LLM call for all fixes
-      const fixesToVerify: Array<{
-        id: string;
-        comment: string;
-        filePath: string;
-        diff: string;
-      }> = [];
+        const diff = await getDiffForFile(git, path) || '';
+        diffCache.set(path, diff);
+        return diff;
+      };
 
-      for (const issue of changedIssues) {
-        const diff = await getDiff(issue.comment.path);
-        fixesToVerify.push({
-          id: issue.comment.id,
-          comment: issue.comment.body,
-          filePath: issue.comment.path,
-          diff,
-        });
-      }
+      if (noBatch) {
+        // Sequential mode - one LLM call per fix
+        spinner.text = `Verifying ${changedIssues.length} fixes sequentially...`;
+        
+        for (let i = 0; i < changedIssues.length; i++) {
+          const issue = changedIssues[i];
+          spinner.text = `Verifying [${i + 1}/${changedIssues.length}] ${issue.comment.path}:${issue.comment.line || '?'}`;
+          
+          const diff = await getDiff(issue.comment.path);
+          const verification = await llm.verifyFix(
+            issue.comment.body,
+            issue.comment.path,
+            diff
+          );
 
-      spinner.text = `Verifying ${fixesToVerify.length} fixes in batch...`;
-      const result = await llm.batchVerifyFixes(fixesToVerify);
-      
-      for (const issue of changedIssues) {
-        const verification = result.get(issue.comment.id);
-        if (verification) {
           Iterations.addVerificationResult(stateContext, issue.comment.id, {
             passed: verification.fixed,
             reason: verification.explanation,
           });
 
+          debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, verification);
+          
           if (verification.fixed) {
             verifiedCount++;
             Verification.markVerified(stateContext, issue.comment.id);
@@ -176,22 +128,72 @@ export async function verifyFixes(
             verifiedThisSession.add(issue.comment.id);  // Track for session filtering
           } else {
             failedCount++;
-            // In batch mode, we don't analyze failures individually (too expensive)
-            // Just record the explanation as a lesson
-            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
+            // Analyze failure to generate actionable lesson
+            const lesson = await llm.analyzeFailedFix(
+              {
+                comment: issue.comment.body,
+                filePath: issue.comment.path,
+                line: issue.comment.line,
+              },
+              diff,
+              verification.explanation
+            );
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
           }
-        } else {
-          // No verification result returned for this issue
-          failedCount++;
-          Iterations.addVerificationResult(stateContext, issue.comment.id, {
-            passed: false,
-            reason: 'No verification result returned by LLM',
+        }
+      } else {
+        // Batch mode - one LLM call for all fixes
+        const fixesToVerify: Array<{
+          id: string;
+          comment: string;
+          filePath: string;
+          diff: string;
+        }> = [];
+
+        for (const issue of changedIssues) {
+          const diff = await getDiff(issue.comment.path);
+          fixesToVerify.push({
+            id: issue.comment.id,
+            comment: issue.comment.body,
+            filePath: issue.comment.path,
+            diff,
           });
-          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - No verification result returned, treating as failed`);
+        }
+
+        spinner.text = `Verifying ${fixesToVerify.length} fixes in batch...`;
+        const result = await llm.batchVerifyFixes(fixesToVerify);
+        
+        for (const issue of changedIssues) {
+          const verification = result.get(issue.comment.id);
+          if (verification) {
+            Iterations.addVerificationResult(stateContext, issue.comment.id, {
+              passed: verification.fixed,
+              reason: verification.explanation,
+            });
+
+            if (verification.fixed) {
+              verifiedCount++;
+              Verification.markVerified(stateContext, issue.comment.id);
+              Iterations.addCommentToIteration(stateContext, issue.comment.id);
+              verifiedThisSession.add(issue.comment.id);  // Track for session filtering
+            } else {
+              failedCount++;
+              // In batch mode, we don't analyze failures individually (too expensive)
+              // Just record the explanation as a lesson
+              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
+            }
+          } else {
+            // No verification result returned for this issue
+            failedCount++;
+            Iterations.addVerificationResult(stateContext, issue.comment.id, {
+              passed: false,
+              reason: 'No verification result returned by LLM',
+            });
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - No verification result returned, treating as failed`);
+          }
         }
       }
     }
-  }
   
   } finally {
     spinner.stop();
@@ -213,5 +215,5 @@ export async function verifyFixes(
     console.log(chalk.yellow(`  ○ ${failedCount} issue(s) still need attention`));
   }
   
-  return { verifiedCount, failedCount, changedIssues, unchangedIssues };
+  return { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles };
 }
