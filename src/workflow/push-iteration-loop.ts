@@ -177,7 +177,7 @@ export async function executePushIteration(
   
   let exitReason = '';
   let exitDetails = '';
-  let bailedOut = false;
+  
   
   while (fixIteration < maxFixIterations && !allFixed) {
     fixIteration++;
@@ -258,14 +258,14 @@ export async function executePushIteration(
       progressThisCycle = postVerif.updatedProgressThisCycle;
       unresolvedIssues.splice(0, unresolvedIssues.length, ...postVerif.updatedUnresolvedIssues);
       
-      if (postVerif.shouldBreak || bailedOut) break;
+      if (postVerif.shouldBreak) break;
     }
   }
 
-  if (!allFixed && options.maxFixIterations > 0) {
-    console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(options.maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
+  if (!allFixed && maxFixIterations !== Infinity) {
+    console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
     exitReason = 'max_iterations';
-    exitDetails = `Hit max fix iterations (${options.maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
+    exitDetails = `Hit max fix iterations (${maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
   }

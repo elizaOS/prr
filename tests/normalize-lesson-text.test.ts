@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { LessonsManager } from '../src/state/lessons';
+import { normalizeLessonText } from '../src/state/lessons-normalize';
 
 describe('normalizeLessonText', () => {
   // Create an instance to access the private method via reflection
@@ -9,9 +10,9 @@ describe('normalizeLessonText', () => {
     lessonsManager = new LessonsManager('owner', 'repo', 'branch');
   });
 
-  // Helper to call private method
+  // Helper to call standalone function
   function normalize(lesson: string): string | null {
-    return (lessonsManager as any).normalizeLessonText(lesson);
+    return normalizeLessonText(lesson);
   }
 
   describe('code fence removal', () => {

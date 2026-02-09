@@ -52,6 +52,7 @@ export async function handleNoComments(
       
       if (error && conflictedFiles.length === 0) {
         console.log(chalk.red(`✗ Failed to start merge: ${error}`));
+        endTimer('Auto-resolve conflicts');
         return {
           shouldExit: true,
           exitReason: 'error',
@@ -99,7 +100,11 @@ export async function handleNoComments(
         console.log(chalk.green(`  ✓ Pushed to origin/${prInfo.branch}`));
       } catch (err) {
         console.error(chalk.red(`  ✗ Failed to push ${prInfo.branch}: ${err instanceof Error ? err.message : String(err)}`));
-        throw err;
+        return {
+          shouldExit: true,
+          exitReason: 'error',
+          exitDetails: `Failed to push to ${prInfo.branch}: ${err instanceof Error ? err.message : String(err)}`,
+        };
       }
     }
     

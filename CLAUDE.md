@@ -13,6 +13,8 @@
 - Treat unknown sync target state as "existed before" to prevent accidental data loss during cleanup.
 
 ### By File
+
+**README.md**
 - Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
 - Fix for README.md:1 - tool made no changes without explanation - trying different approach
 

@@ -312,8 +312,13 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
     } else if (line.startsWith('>>>>>>>') && inConflict) {
       // Try to merge ours and theirs
       const merged = mergePackageJsonChunks(ours, theirs);
-      resolved.push(...merged);
-      conflictsResolved++;
+      if (merged) {
+        resolved.push(...merged);
+        conflictsResolved++;
+      } else {
+        // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
+        return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
+      }
       
       inConflict = false;
       ours = [];

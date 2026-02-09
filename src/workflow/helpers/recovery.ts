@@ -308,7 +308,7 @@ Start your response with \`\`\` and end with \`\`\`.`;
       // Extract code from response
       const codeMatch = response.content.match(/```[\w]*\n?([\s\S]*?)```/);
       if (codeMatch) {
-        const fixedCode = codeMatch[1].trim();
+        const fixedCode = codeMatch[1].trimEnd();
         const fileContentTrimmed = fileContent.trimEnd();
         if (fixedCode !== fileContentTrimmed) {
           // Preserve trailing newline if original file had one

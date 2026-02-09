@@ -155,10 +155,13 @@ export async function handleNoChanges(
 
     // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
     const lowerExplanation = noChangesExplanation.toLowerCase();
-    const isAlreadyFixed = lowerExplanation.includes('already') ||
-                           lowerExplanation.includes('exists') ||
-                           lowerExplanation.includes('has') ||
-                           lowerExplanation.includes('implements');
+    const isAlreadyFixed = lowerExplanation.includes('already fixed') ||
+                           lowerExplanation.includes('already correct') ||
+                           lowerExplanation.includes('already addressed') ||
+                           lowerExplanation.includes('already exists') ||
+                           lowerExplanation.includes('already implements') ||
+                           lowerExplanation.includes('no change needed') ||
+                           lowerExplanation.includes('no changes needed');
 
     if (isAlreadyFixed) {
       // Fixer claims issues are already fixed - VERIFY the claim

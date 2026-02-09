@@ -176,3 +176,7 @@
 ### src/workflow/no-comments.ts
 
 - Fix for src/workflow/no-comments.ts:97 - When catching errors in error-handling blocks, must rethrow or exit after logging—don't silently continue, as this masks failures and returns false success.
+
+### src/constants.ts
+
+- Fix for src/constants.ts:109 - ts` - already has these constants (canonical source) ✓

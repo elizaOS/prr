@@ -115,7 +115,7 @@ export async function executeRun(
     }
     const git = setupResult.git;
     let pushIteration = 0;
-    const maxPushIterations = options.autoPush ? (options.maxPushIterations || Infinity) : 1;
+    const maxPushIterations = options.autoPush ? (options.maxPushIterations ?? Infinity) : 1;
     const prInfoRef = { current: state.prInfo };
     const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
     const finalCommentsRef = { current: state.finalComments };
@@ -134,7 +134,6 @@ export async function executeRun(
       state.consecutiveFailures = iterResult.updatedConsecutiveFailures;
       state.modelFailuresInCycle = iterResult.updatedModelFailuresInCycle;
       state.progressThisCycle = iterResult.updatedProgressThisCycle;
-      if (iterResult.updatedHeadSha) state.prInfo.headSha = iterResult.updatedHeadSha;
       state.prInfo = prInfoRef.current;
       state.finalUnresolvedIssues = finalUnresolvedIssuesRef.current;
       state.finalComments = finalCommentsRef.current;

@@ -108,6 +108,21 @@ export const MAX_MODELS_PER_TOOL_ROUND = 2;
  */
 export const DEFAULT_MAX_STALE_CYCLES = 1;
 
+/**
+ * Max models to try per tool before switching tools.
+ */
+export const MAX_MODELS_PER_TOOL_ROUND = 2;
+
+/**
+ * Max rapid failures before aborting.
+ */
+export const MAX_RAPID_FAILURES = 3;
+
+/**
+ * Window for tracking rapid failures (ms).
+ */
+export const RAPID_FAILURE_WINDOW_MS = 60_000;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VERIFICATION & CACHING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
