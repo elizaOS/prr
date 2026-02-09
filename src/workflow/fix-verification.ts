@@ -44,7 +44,7 @@ export async function verifyFixes(
   debugStep('VERIFYING FIXES');
   setPhase(stateContext, 'verifying');
   setTokenPhase('Verify fixes');
-  startTimer('Verify fixes');
+  // Timer started by caller (push-iteration-loop.ts)
   spinner.start('Verifying fixes...');
   const changedFiles = await getChangedFiles(git);
   debug('Changed files', changedFiles);

@@ -126,8 +126,6 @@ export async function checkAndMergeBaseBranch(
           }
           
           console.log(chalk.green(`✓ Conflicts resolved and merged ${prInfo.baseBranch}`));
-          mergeResult.success = true;
-          mergeResult.alreadyUpToDate = false;
           
           // Push the resolved merge commit
           if (!options.noPush && !options.noCommit) {
@@ -142,14 +140,12 @@ export async function checkAndMergeBaseBranch(
           }
         }
       }
-    } else if (mergeResult.alreadyUpToDate) {
-      console.log(chalk.green(`✓ Already up-to-date with ${prInfo.baseBranch}`));
-    } else {
-      console.log(chalk.green(`✓ Merged latest ${prInfo.baseBranch} into ${prInfo.branch}`));
     }
     
-    // Push the merge if there were changes and auto-push enabled  
-    if (mergeResult.success && !mergeResult.alreadyUpToDate) {
+    if (mergeResult.alreadyUpToDate) {
+      console.log(chalk.green(`✓ Already up-to-date with ${prInfo.baseBranch}`));
+    } else if (mergeResult.success) {
+      console.log(chalk.green(`✓ Merged latest ${prInfo.baseBranch} into ${prInfo.branch}`));
       if (!options.noPush && !options.noCommit) {
         try {
           spinner.start('Pushing merge commit...');
