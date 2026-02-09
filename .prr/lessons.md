@@ -143,6 +143,7 @@
 ### src/runners/llm-api.ts
 
 - Fix for src/runners/llm-api.ts:324 - No verification result returned, treating as failed
+- Fix for src/runners/llm-api.ts:322 - No verification result returned, treating as failed
 
 ### .prr/lessons.md
 
@@ -220,6 +221,9 @@
 
 - Fix for src/workflow/push-iteration-loop.ts:128 - The call sites pass object literals which will be structurally compatible with the named interfaces, so no changes needed there.
 - Fix for src/workflow/push-iteration-loop.ts:30 - "Remove file extensions entirely from TypeScript imports—use `../logger` not `../logger.ts` or `../logger.js`."
+- Fix for src/workflow/push-iteration-loop.ts:129 - No verification result returned, treating as failed
+- Fix for src/workflow/push-iteration-loop.ts:176 - No verification result returned, treating as failed
+- Fix for src/workflow/push-iteration-loop.ts:30 - No verification result returned, treating as failed
 
 ### src/workflow/helpers/recovery.ts
 
@@ -234,6 +238,9 @@
 - Fix for src/workflow/helpers/recovery.ts:311 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:384 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:293 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:318 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:391 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:300 - No verification result returned, treating as failed
 
 ### src/git/git-conflict-chunked.ts
 

@@ -42,6 +42,7 @@ export async function verifyFixes(
 }> {
   const spinner = ora();
   
+  try {
   debugStep('VERIFYING FIXES');
   setPhase(stateContext, 'verifying');
   setTokenPhase('Verify fixes');

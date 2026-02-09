@@ -68,15 +68,6 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
     if (status.ready) {
       detected.push({ runner, status });
     }
-  } catch (err) {
-    const status: RunnerStatus = {
-      installed: false,
-      ready: false,
-      error: `checkStatus failed: ${err instanceof Error ? err.message : String(err)}`
-    };
-    if (verbose) {
-      console.log(`  ${runner.displayName}: ${chalk.red('Error')} - ${status.error}`);
-    }
   }
 
   if (verbose) {
