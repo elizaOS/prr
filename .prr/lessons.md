@@ -176,6 +176,8 @@
 - Fix for src/workflow/base-merge.ts:125 - No verification result returned, treating as failed
 - Fix for src/workflow/base-merge.ts:161 - No verification result returned, treating as failed
 - Fix for src/workflow/base-merge.ts:66 - No verification result returned, treating as failed
+- Fix for src/workflow/base-merge.ts:127 - No verification result returned, treating as failed
+- Fix for src/workflow/base-merge.ts:163 - No verification result returned, treating as failed
 
 ### tests/normalize-lesson-text.test.ts
 
@@ -204,6 +206,7 @@
 ### src/workflow/no-comments.ts
 
 - Fix for src/workflow/no-comments.ts:97 - When catching errors in error-handling blocks, must rethrow or exit after logging—don't silently continue, as this masks failures and returns false success.
+- Fix for src/workflow/no-comments.ts:109 - tool modified wrong files (.prr/lessons.md), need to modify src/workflow/no-comments.ts
 
 ### src/constants.ts
 
@@ -246,6 +249,10 @@
 - Fix for src/workflow/helpers/recovery.ts:398 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:381 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:307 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:339 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:412 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:395 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:321 - No verification result returned, treating as failed
 
 ### src/git/git-conflict-chunked.ts
 
@@ -291,3 +298,7 @@
 ### src/workflow/helpers/solvability.ts
 
 - Fix for src/workflow/helpers/solvability.ts:84 - No verification result returned, treating as failed
+
+### src/runners/types.ts
+
+- Fix for src/runners/types.ts:103 - No verification result returned, treating as failed

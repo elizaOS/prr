@@ -1,27 +1,37 @@
-import { describe, it } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { sanitizeLessonText } from '../src/state/lessons-normalize.js';
 
 // Tests for normalizeLessonText behavior
 // Uses sanitizeLessonText as the public API (see normalize-lesson-text.test.ts for real tests)
 
 describe('normalizeLessonText', () => {
-  it.todo('should remove markdown code fences');
-  it.todo('should remove markdown headers');
-  it.todo('should remove bold/emphasis markers');
-  it.todo('should remove list markers');
-  it.todo('should remove comment tokens (//, /*, *)');
-  it.todo('should remove access modifiers (public/private/protected)');
-  it.todo('should remove declaration keywords');
-  it.todo('should remove (inferred) prefix');
-  it.todo('should strip file extensions (.ts, .js, .md, .json, .yml)');
-  it.todo('should remove trailing type/line-number patterns like "a:123"');
-  it.todo('should normalize "made no changes" variants');
-  it.todo('should return null for "chars truncated" patterns');
-  it.todo('should return null for "Fix for" patterns');
-  it.todo('should return null for numeric-only strings');
+  const normalize = (text: string) => sanitizeLessonText(text);
 
-  // Test edge cases
-  it.todo('should handle combined/edge inputs');
+  it('should remove markdown code fences', () => {
+    expect(normalize('```typescript\ncode\n```')).toBe('code');
+  });
 
-  // Test trimming and cleanup
-  it.todo('should trim and cleanup trailing colons/dashes');
+  it('should remove markdown headers', () => {
+    expect(normalize('## Header')).toBeNull();
+  });
+
+  it('should return null for "Fix for" patterns', () => {
+    expect(normalize('Fix for src/file.ts:42')).toBeNull();
+  });
+
+  it('should normalize "made no changes" variants', () => {
+    const input = 'tool made no changes without explanation';
+    expect(normalize(input)).toContain('made no changes');
+  });
+
+  it('should return null for numeric-only strings', () => {
+    expect(normalize('12345')).toBeNull();
+  });
+
+  it('should trim and cleanup trailing colons/dashes', () => {
+    const input = 'lesson text: -';
+    const result = normalize(input);
+    expect(result).not.toBeNull();
+    expect(result).not.toMatch(/[:-]$/);
+  });
 });
