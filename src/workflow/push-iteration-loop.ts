@@ -52,6 +52,8 @@ export interface PushIterationState {
   modelFailuresInCycle: number;
   progressThisCycle: number;
   expectedBotResponseTime: Date | null;
+  /** Whether CodeRabbit was triggered at startup and we should wait for its review */
+  codeRabbitTriggered?: boolean;
 }
 
 /** Contextual objects passed through the push iteration */
@@ -143,6 +145,13 @@ export async function executePushIteration(
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
     console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
+  }
+
+  // Wait for CodeRabbit review if we triggered one at startup (first push iteration only)
+  if (iterState.codeRabbitTriggered && pushIteration === 1) {
+    await waitForBotReviews(owner, repo, number, prInfo.headSha);
+    // Clear the flag so we don't wait again on subsequent iterations
+    iterState.codeRabbitTriggered = false;
   }
 
   // Process comments and prepare fix loop

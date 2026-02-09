@@ -136,7 +136,7 @@ export async function checkCodeRabbitStatus(
   branch: string,
   headSha: string,
   spinner: Ora
-): Promise<void> {
+): Promise<{ triggered: boolean; reviewedCurrentCommit: boolean }> {
   try {
     spinner.start('Checking CodeRabbit status...');
     const crResult = await github.triggerCodeRabbitIfNeeded(
@@ -149,16 +149,18 @@ export async function checkCodeRabbitStatus(
       spinner.succeed(`CodeRabbit: already reviewed ${headSha.substring(0, 7)} ✓`);
     } else if (crResult.triggered) {
       spinner.succeed(`CodeRabbit: triggered review (${crResult.mode} mode)`);
-      info('CodeRabbit review requested - it will analyze while we work');
+      info('CodeRabbit review requested - waiting for review before proceeding');
     } else if (crResult.mode === 'auto') {
       spinner.info(`CodeRabbit: auto mode - will review automatically`);
     } else {
       spinner.info(`CodeRabbit: ${crResult.reason}`);
     }
     debug('CodeRabbit startup check', crResult);
+    return { triggered: crResult.triggered ?? false, reviewedCurrentCommit: crResult.reviewedCurrentCommit ?? false };
   } catch (err) {
     spinner.warn('Could not check CodeRabbit status (continuing anyway)');
     debug('CodeRabbit startup check failed', { error: err });
+    return { triggered: false, reviewedCurrentCommit: false };
   }
 }
 

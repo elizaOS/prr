@@ -71,10 +71,12 @@ export async function executeSetupPhase(
   shouldExit: boolean;
   exitReason?: string;
   exitDetails?: string;
+  codeRabbitTriggered?: boolean;
 }> {
   // Check CodeRabbit status
   debugStep('CHECKING CODERABBIT STATUS');
-  await ResolverProc.checkCodeRabbitStatus(github, owner, repo, number, prInfo.branch, prInfo.headSha, spinner);
+  const crStatus = await ResolverProc.checkCodeRabbitStatus(github, owner, repo, number, prInfo.branch, prInfo.headSha, spinner);
+  const codeRabbitTriggered = crStatus.triggered;
   
   // Setup workdir and managers
   const managers = await ResolverProc.setupWorkdirAndManagers(config, options, owner, repo, number, prInfo);
@@ -120,6 +122,8 @@ export async function executeSetupPhase(
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
       shouldExit: true,
+      exitReason: 'sync_failed',
+      exitDetails: 'Failed to sync with remote',
     };
   }
 
@@ -137,5 +141,6 @@ export async function executeSetupPhase(
   return {
     workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
     shouldExit: false,
+    codeRabbitTriggered,
   };
 }
