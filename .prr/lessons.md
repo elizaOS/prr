@@ -149,6 +149,10 @@
 - Fix for .prr/lessons.md:172 - When a review requests fixing root-cause logic in code, don't fix symptoms in output files—locate and modify the actual function (compactLessons, dedupeLessons, etc.) that generates the output.
 - Fix for .prr/lessons.md:79 - When a review requests code changes to prevent future issues, don't just fix the symptom in data—implement the validation logic in the functions mentioned.
 - Fix for .prr/lessons.md:79 - When a review requests code function changes, don't just fix the data file—implement the validation logic in the functions mentioned (sanitizeLessonsList, addLesson).
+- Fix for .prr/lessons.md:44 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:89 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:163 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:190 - No verification result returned, treating as failed
 
 ### tests/normalizeLessonText.test.ts:88
 
