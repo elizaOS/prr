@@ -156,7 +156,7 @@ export async function checkAndMergeBaseBranch(
           console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
         }
       } else {
-        console.log(chalk.yellow('  Merge commit created locally. Use --push to push it.'));
+        console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit is set).'));
       }
     }
     endTimer('Merge base branch');

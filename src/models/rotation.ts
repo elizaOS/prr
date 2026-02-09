@@ -107,18 +107,13 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     // Exact match
     if (lowerAvail === lowerModel) return true;
     
-    // Family-based matching: extract family token (before first - or .)
-    const familyAvail = lowerAvail.split(/[-.]/, 1)[0];
-    const familyModel = lowerModel.split(/[-.]/, 1)[0];
+    // Family-based matching: extract family prefix (before first version/separator)
+    const familyOf = (m: string) => m.split(/[-._\d]/)[0];
+    const familyAvail = familyOf(lowerAvail);
+    const familyModel = familyOf(lowerModel);
     
-    // Accept if same family and one is a proper variant of the other
-    if (familyAvail === familyModel) {
-      // Only match if they share the same model family prefix (up to first version segment)
-      const familyOf = (m: string) => m.split(/[-._\d]/)[0];
-      const fAvail = familyOf(lowerAvail);
-      const fModel = familyOf(lowerModel);
-      return fAvail === fModel && fAvail.length > 0 &&
-        (lowerAvail === lowerModel || (lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-')));
+    if (familyAvail === familyModel && familyAvail.length > 0) {
+      return lowerAvail === lowerModel || lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-');
     }
     
     return false;

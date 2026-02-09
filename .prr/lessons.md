@@ -196,3 +196,4 @@
 ### src/workflow/helpers/recovery.ts
 
 - Fix for src/workflow/helpers/recovery.ts:304 - Before committing a fix, verify there are no duplicate code blocks by reviewing the entire diff context—duplicates indicate incomplete merge resolution.
+- Fix for src/workflow/helpers/recovery.ts:377 - When handling missing code blocks, must call `Dismissed.dismissIssue()` to track the issue in workflow state, not just log it.

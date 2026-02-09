@@ -11,43 +11,9 @@
 - When a review requests fixing root-cause logic in code, locate and modify the actual function that generates the output.
 - When a review requests function improvements, update the function itself, not just the data it processes.
 - Treat unknown sync target state as "existed before" to prevent accidental data loss during cleanup.
-
-### By File
-
-**README.md**
-- Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
-- Fix for README.md:1 - tool made no changes without explanation - trying different approach
-
-**src/runners/claude-code.ts**
-- Fix for src/runners/claude-code.ts:156 rejected: The diff improves the permission error message but doesn't defer prompt file creation until after model validation or use a unique temporary filename to prevent collisions.
-- Fix for src/runners/claude-code.ts:211 rejected: The diff is identical to the previous fixes and does not address the misleading error message. The error message should be updated to reflect whether skip-permissions is already enabled, but no such change is present.
-- tool made no changes - trying different approach
-- fixer made no changes
-
-**FIXER_EXPLANATION_REQUIREMENT.md**
-- Fix for FIXER_EXPLANATION_REQUIREMENT.md:78 - md` file already have the correct template literal syntax with backticks.
-- Fix for FIXER_EXPLANATION_REQUIREMENT.md:78 - tool made no changes
-- tool made no changes - trying different approach
-- fixer made no changes
-
-**src/git/commit.ts**
-- Fix for src/git/commit.ts:140 - tool modified wrong files (examples/feedback-loop-example.ts, src/resolver.ts, src/runners/cursor.ts), need to modify src/git/commit.ts
-- Fix for src/git/commit.ts:389 - tool made no changes without explanation - trying different approach
-- Fix for src/git/commit.ts:346 - tool made no changes without explanation - trying different approach
-
-**src/llm/client.ts**
-- Fix for src/llm/client.ts:115 rejected: The diff shows unrelated cleanup code instead of fixing the fixedIssues filter to use the full comments list rather than unresolvedIssues.
-- Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
-- Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
-
-**src/cli.ts**
-- Fix for src/cli.ts:133 rejected: The diff only adds parseIntOrExit for numeric validation but doesn't update the FixerTool type to include new runners ('claude-code', 'aider', 'codex', 'llm-api') or update validateTool() and CLI help text.
-- Fix for src/cli.ts:151 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/runners/cursor.ts, src/state/manager.ts), need to modify src/cli.ts
-- Fix for src/cli.ts:170 rejected: The diff only removes the `?? 400_000` fallback from `maxContextChars` but the comment indicates `maxStaleCycles` should also be changed to use nullish coalescing instead of `||`, which is missing from the diff.
-
-**src/resolver.ts**
-- Fix for src/resolver.ts:1035 - tool made no changes without explanation
-- Fix for src/resolver.ts:2549 - tool made no changes without explanation - trying different approach
+- When using `execSync`, always include `shell: false` option and pass command/args as array to prevent shell injection.
+- When adding file creation, implement cleanup in all exit paths using try-finally or a cleanup callback to prevent leaks.
+- When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation.
 
 **src/runners/opencode.ts**
 - Fix for src/runners/opencode.ts:93 - tool made no changes without explanation - trying different approach

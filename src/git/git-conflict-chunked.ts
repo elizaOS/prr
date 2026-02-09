@@ -138,6 +138,13 @@ EXPLANATION: Brief explanation of what you merged/kept/changed`;
         explanation: 'LLM returned invalid response'
       };
     }
+    if (!response || !response.content) {
+      return {
+        resolved: false,
+        resolvedLines: chunk.conflictLines,
+        explanation: 'LLM returned empty response'
+      };
+    }
     const content = response.content;
 
     // Extract resolved code from between backticks

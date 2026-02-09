@@ -32,6 +32,10 @@ export function formatLessonForDisplay(lesson: string): string {
  */
 export function sanitizeLessonText(lesson: string): string {
   let result = lesson;
+  // Strip code fragments (class properties, access modifiers, etc.)
+  result = result.replace(/^\s*(?:private|public|protected|static|readonly)\s+\w+.*$/gm, '');
+  // Strip lines that look like TypeScript declarations
+  result = result.replace(/^\s*(?:const|let|var|function|class|interface|type|import|export)\s+.*$/gm, '');
   // Fix "made no changes" missing separator before "trying"
   result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
   // Fix "made no changes" missing separator before "already"
@@ -42,6 +46,8 @@ export function sanitizeLessonText(lesson: string): string {
   result = result.replace(/\s*-\s+-\s*/g, ' - ');
   // Collapse multiple spaces to single
   result = result.replace(/\s{2,}/g, ' ');
+  // Remove empty lines left after stripping
+  result = result.replace(/\n\s*\n/g, '\n');
   return result.trim();
 }
 
