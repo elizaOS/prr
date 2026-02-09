@@ -84,7 +84,8 @@ export async function handleCommitAndPush(
       await LessonsAPI.Save.saveToRepo(lessonsContext);
       spinner.succeed('Lessons exported');
     } catch (error) {
-      spinner.fail('Failed exporting lessons');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      spinner.fail(`Failed exporting lessons: ${errorMessage}`);
       throw error;
     }
   }

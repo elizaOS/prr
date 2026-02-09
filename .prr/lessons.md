@@ -195,6 +195,7 @@
 - Fix for tests/normalize-lesson-text.test.ts:225 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:244 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:260 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:258 - **Before writing test assertions, trace through the actual normalize function logic to verify the exact expected output matches reality.**
 
 ### src/workflow/fix-loop-utils.ts
 
@@ -241,6 +242,10 @@
 - Fix for src/workflow/helpers/recovery.ts:318 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:391 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:300 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:325 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:398 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:381 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:307 - No verification result returned, treating as failed
 
 ### src/git/git-conflict-chunked.ts
 
@@ -261,6 +266,7 @@
 
 - Fix for src/workflow/commit-and-push-loop.ts:185 - No verification result returned, treating as failed
 - Fix for src/workflow/commit-and-push-loop.ts:190 - No verification result returned, treating as failed
+- Fix for src/workflow/commit-and-push-loop.ts:194 - No verification result returned, treating as failed
 
 ### src/workflow/cleanup-mode.ts
 
@@ -281,3 +287,7 @@
 ### src/workflow/issue-analysis.ts
 
 - Fix for src/workflow/issue-analysis.ts:106 - When removing a local constant, you must also add its import statement to the top-level import block—never remove without adding the replacement import.
+
+### src/workflow/helpers/solvability.ts
+
+- Fix for src/workflow/helpers/solvability.ts:84 - No verification result returned, treating as failed

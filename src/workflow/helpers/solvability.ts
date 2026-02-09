@@ -67,15 +67,17 @@ export function assessSolvability(
             };
           } else {
             return {
-              solvable: true,
-              contextHints: [`Identifier \`${identifiers[0]}\` from comment not found in file — code may have been removed or renamed`],
+              solvable: false,
+              dismissCategory: 'stale',
+              contextHints: [`Comment targets line ${comment.line} but file only has ${totalLines} lines, and identifier \`${identifiers[0]}\` not found — code may have been removed or renamed`],
             };
           }
         }
-        // No identifiers to re-target with - add warning hint
+        // No identifiers to re-target with - mark as stale
         return {
-          solvable: true,
-          contextHints: [`File has ${totalLines} lines but comment targets line ${comment.line} — code location may have shifted`],
+          solvable: false,
+          dismissCategory: 'stale',
+          contextHints: [`File has ${totalLines} lines but comment targets line ${comment.line} — code location may have shifted and no identifiers found to re-target`],
         };
       } else if (identifiers.length > 0) {
         // Line is within range - check if identifiers are near the target line

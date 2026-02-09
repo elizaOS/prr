@@ -191,6 +191,13 @@ export async function verifyFixes(
             reason: 'Batch verification returned no result for this issue',
           });
         } else {
+          // Batch didn't return a result for this issue - treat as failed
+          failedCount++;
+          Iterations.addVerificationResult(stateContext, issue.comment.id, {
+            passed: false,
+            reason: 'Batch verification returned no result for this issue',
+          });
+        } else {
             // No verification result returned for this issue
             failedCount++;
             Iterations.addVerificationResult(stateContext, issue.comment.id, {
