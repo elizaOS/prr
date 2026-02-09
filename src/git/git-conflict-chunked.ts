@@ -428,7 +428,8 @@ function parsePackageLines(lines: string[]): Map<string, string> | null {
   }
   
   // If we couldn't parse most non-empty lines, signal failure
-  if (nonEmptyLines > 0 && matchedLines < nonEmptyLines * 0.5) {
+  // Require 100% match to guarantee no data loss (e.g., non-dependency entries like "private": true)
+  if (nonEmptyLines > 0 && matchedLines < nonEmptyLines) {
     return null;
   }
   

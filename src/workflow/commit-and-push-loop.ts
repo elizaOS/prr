@@ -139,8 +139,12 @@ export async function handleCommitAndPush(
           );
           return resolution.success;
         },
-      });
-      spinner.succeed('Pushed to remote');
+    });
+    spinner.succeed('Pushed to remote');
+    } catch (pushErr) {
+      spinner.fail('Push failed');
+      throw pushErr;
+    }
     } catch (err) {
       spinner.fail('Push failed');
       throw err;

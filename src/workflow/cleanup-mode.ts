@@ -220,8 +220,13 @@ export async function runCleanupMode(
       
       if (!options.noPush) {
         spinner.start('Pushing cleanup commit...');
-        await git.push('origin', prInfo.branch);
-        spinner.succeed('Pushed cleanup commit');
+        try {
+          await git.push('origin', prInfo.branch);
+          spinner.succeed('Pushed cleanup commit');
+        } catch (err) {
+          spinner.fail('Push failed');
+          throw err;
+        }
       } else {
         console.log(chalk.yellow('  Cleanup committed locally (use git push to push)'));
       }

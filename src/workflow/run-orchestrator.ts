@@ -115,8 +115,8 @@ export async function executeRun(
     }
     const git = setupResult.git;
     let pushIteration = 0;
-    // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
-    const maxPushIterations = options.autoPush ? (options.maxPushIterations || Infinity) : 1;
+    // Use ?? so explicit 0 is honored (not treated as falsy)
+    const maxPushIterations = options.autoPush ? (options.maxPushIterations ?? Infinity) : 1;
     const prInfoRef = { current: state.prInfo };
     const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
     const finalCommentsRef = { current: state.finalComments };

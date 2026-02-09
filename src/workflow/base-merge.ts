@@ -62,6 +62,7 @@ export async function checkAndMergeBaseBranch(
       
       if (error && conflictedFiles.length === 0) {
         console.log(chalk.red(`✗ Failed to start merge: ${error}`));
+        endTimer('Merge base branch');
         return { success: false, exitReason: 'error', exitDetails: error };
       }
       
@@ -122,6 +123,7 @@ export async function checkAndMergeBaseBranch(
           
           if (!commitResult.success) {
             console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
+            endTimer('Merge base branch');
             return { success: false, exitReason: 'error', exitDetails: commitResult.error };
           }
           

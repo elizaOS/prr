@@ -169,6 +169,9 @@
 ### src/workflow/base-merge.ts
 
 - Fix for src/workflow/base-merge.ts:137 - Setting a flag is insufficient—must also add the push logic immediately after the flag is set, not rely on deferred checks elsewhere.
+- Fix for src/workflow/base-merge.ts:125 - No verification result returned, treating as failed
+- Fix for src/workflow/base-merge.ts:161 - No verification result returned, treating as failed
+- Fix for src/workflow/base-merge.ts:66 - No verification result returned, treating as failed
 
 ### tests/normalize-lesson-text.test.ts
 
@@ -180,6 +183,14 @@
 - Fix for tests/normalize-lesson-text.test.ts:168 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:252 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:250 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:163 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:9 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:67 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:128 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:136 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:225 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:244 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:260 - No verification result returned, treating as failed
 
 ### src/workflow/fix-loop-utils.ts
 
@@ -215,11 +226,13 @@
 - Fix for src/workflow/helpers/recovery.ts:231 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:377 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:360 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:311 - The fix must guard file size before reading (line 263), not after in error handling. Add MAX_FILE_CHARS check + skip/truncate logic before fs.readFileSync.
 
 ### src/git/git-conflict-chunked.ts
 
 - Fix for src/git/git-conflict-chunked.ts:148 - No verification result returned, treating as failed
 - Fix for src/git/git-conflict-chunked.ts:258 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:259 - No verification result returned, treating as failed
 
 ### src/git/clone.ts
 
@@ -232,3 +245,14 @@
 ### src/workflow/commit-and-push-loop.ts
 
 - Fix for src/workflow/commit-and-push-loop.ts:185 - No verification result returned, treating as failed
+- Fix for src/workflow/commit-and-push-loop.ts:190 - No verification result returned, treating as failed
+
+### src/workflow/cleanup-mode.ts
+
+- Fix for src/workflow/cleanup-mode.ts:228 - No verification result returned, treating as failed
+- Fix for src/workflow/cleanup-mode.ts:224 - No verification result returned, treating as failed
+
+### src/workflow/run-orchestrator.ts
+
+- Fix for src/workflow/run-orchestrator.ts:119 - No verification result returned, treating as failed
+- Fix for src/workflow/run-orchestrator.ts:86 - No verification result returned, treating as failed
