@@ -110,7 +110,7 @@ Working directory: ${workdir}`;
       let response: string;
 
       if (this.provider === 'anthropic' && anthropic) {
-        const model = options?.model || 'claude-sonnet-4-20250514';
+        const model = options?.model || 'claude-sonnet-4-5-20250929';
         debug('Calling Anthropic API', { model });
         
         console.log(`\n🧠 Calling ${model}...\n`);
