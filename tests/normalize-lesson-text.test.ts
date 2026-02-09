@@ -69,16 +69,19 @@ describe('normalizeLessonText', () => {
   describe('access modifier removal', () => {
     it('drops public modifier lines', () => {
       const input = 'public method()';
+      // normalizeLessonText filters entire lines starting with access modifiers
       expect(normalize(input)).toBeNull();
     });
 
     it('drops private modifier lines', () => {
       const input = 'private field';
+      // normalizeLessonText filters entire lines starting with access modifiers
       expect(normalize(input)).toBeNull();
     });
 
     it('drops protected modifier lines', () => {
       const input = 'protected method';
+      // normalizeLessonText filters entire lines starting with access modifiers
       expect(normalize(input)).toBeNull();
     });
   });
@@ -245,7 +248,7 @@ describe('normalizeLessonText', () => {
     it('handles multiple transformations in sequence', () => {
       const input = 'Fix for src/file.ts with // comment (inferred)';
       const result = normalize(input);
-      // Lines starting with ** are dropped by normalizeLessonText
+      // "Fix for" pattern causes normalizeLessonText to return null
       expect(result).toBeNull();
     });
 

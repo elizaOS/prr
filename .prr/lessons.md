@@ -175,6 +175,7 @@
 - Fix for tests/normalize-lesson-text.test.ts:160 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:168 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:252 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:250 - No verification result returned, treating as failed
 
 ### src/workflow/fix-loop-utils.ts
 
@@ -205,8 +206,25 @@
 
 - Fix for src/workflow/helpers/recovery.ts:304 - Before committing a fix, verify there are no duplicate code blocks by reviewing the entire diff context—duplicates indicate incomplete merge resolution.
 - Fix for src/workflow/helpers/recovery.ts:377 - When handling missing code blocks, must call `Dismissed.dismissIssue()` to track the issue in workflow state, not just log it.
+- Fix for src/workflow/helpers/recovery.ts:203 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:304 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:231 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:377 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:360 - No verification result returned, treating as failed
 
 ### src/git/git-conflict-chunked.ts
 
 - Fix for src/git/git-conflict-chunked.ts:148 - No verification result returned, treating as failed
 - Fix for src/git/git-conflict-chunked.ts:258 - No verification result returned, treating as failed
+
+### src/git/clone.ts
+
+- Fix for src/git/clone.ts:320 - No verification result returned, treating as failed
+
+### src/runners/index.ts
+
+- Fix for src/runners/index.ts:71 - No verification result returned, treating as failed
+
+### src/workflow/commit-and-push-loop.ts
+
+- Fix for src/workflow/commit-and-push-loop.ts:185 - No verification result returned, treating as failed

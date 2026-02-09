@@ -80,8 +80,13 @@ export async function handleCommitAndPush(
   // WHY: Team gets lessons with the same push as fixes - single atomic update
   if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
     spinner.start('Exporting lessons to repo...');
-    await LessonsAPI.Save.saveToRepo(lessonsContext);
-    spinner.succeed('Lessons exported');
+    try {
+      await LessonsAPI.Save.saveToRepo(lessonsContext);
+      spinner.succeed('Lessons exported');
+    } catch (error) {
+      spinner.fail('Failed exporting lessons');
+      throw error;
+    }
   }
 
   const fixedIssues = comments

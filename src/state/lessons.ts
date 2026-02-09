@@ -25,6 +25,33 @@ export function formatLessonForDisplay(lesson: string): string {
   return lesson;
 }
 
+/**
+ * Sanitize lesson text by removing code fragments and noise.
+ * Returns the original lesson (trimmed) if sanitization would result in empty string.
+ */
+export function sanitizeLessonText(lesson: string): string {
+  let result = lesson;
+  
+  // Remove code blocks
+  result = result.replace(/```[\s\S]*?```/g, '');
+  
+  // Remove inline code
+  result = result.replace(/`[^`]+`/g, '');
+  
+  // Remove URLs
+  result = result.replace(/https?:\/\/\S+/g, '');
+  
+  // Remove file paths that look like code references
+  result = result.replace(/\b[\w./\\-]+\.(ts|js|tsx|jsx|json|md|yaml|yml)\b/g, '');
+  
+  // Collapse multiple spaces/newlines
+  result = result.replace(/\s+/g, ' ');
+  
+  const trimmed = result.trim();
+  // Fallback to original if fully stripped
+  return trimmed.length > 0 ? trimmed : lesson.trim();
+}
+
 export interface LessonsStore {
   owner: string;
   repo: string;

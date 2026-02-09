@@ -314,7 +314,11 @@ export async function pullLatest(
           console.log('  Merged remote changes');
         } catch (mergeError) {
           const mergeMsg = mergeError instanceof Error ? mergeError.message : String(mergeError);
-          await abortMerge(git);
+          try {
+            await abortMerge(git);
+          } catch {
+            // Ignore abort errors - merge state may already be clean
+          }
           await restoreStashOnFailure();
           return { success: false, error: `Failed to sync with remote: ${mergeMsg}` };
         }

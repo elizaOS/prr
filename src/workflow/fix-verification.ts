@@ -172,17 +172,24 @@ export async function verifyFixes(
             });
 
             if (verification.fixed) {
-              verifiedCount++;
-              Verification.markVerified(stateContext, issue.comment.id);
-              Iterations.addCommentToIteration(stateContext, issue.comment.id);
-              verifiedThisSession.add(issue.comment.id);  // Track for session filtering
-            } else {
-              failedCount++;
-              // In batch mode, we don't analyze failures individually (too expensive)
-              // Just record the explanation as a lesson
-              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
-            }
+            verifiedCount++;
+            Verification.markVerified(stateContext, issue.comment.id);
+            Iterations.addCommentToIteration(stateContext, issue.comment.id);
+            verifiedThisSession.add(issue.comment.id);  // Track for session filtering
           } else {
+            failedCount++;
+            // In batch mode, we don't analyze failures individually (too expensive)
+            // Just record the explanation as a lesson
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
+          }
+        } else {
+          // Batch didn't return a result for this issue - treat as failed
+          failedCount++;
+          Iterations.addVerificationResult(stateContext, issue.comment.id, {
+            passed: false,
+            reason: 'Batch verification returned no result for this issue',
+          });
+        } else {
             // No verification result returned for this issue
             failedCount++;
             Iterations.addVerificationResult(stateContext, issue.comment.id, {
