@@ -231,6 +231,9 @@
 - Fix for src/workflow/helpers/recovery.ts:377 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:360 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:311 - The fix must guard file size before reading (line 263), not after in error handling. Add MAX_FILE_CHARS check + skip/truncate logic before fs.readFileSync.
+- Fix for src/workflow/helpers/recovery.ts:311 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:384 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:293 - No verification result returned, treating as failed
 
 ### src/git/git-conflict-chunked.ts
 
@@ -266,3 +269,8 @@
 
 - Fix for src/git/commit.ts:462 - No verification result returned, treating as failed
 - Fix for src/git/commit.ts:536 - No verification result returned, treating as failed
+- Fix for src/git/commit.ts:462 - tool made no changes without explanation - trying different approach
+
+### src/workflow/issue-analysis.ts
+
+- Fix for src/workflow/issue-analysis.ts:106 - When removing a local constant, you must also add its import statement to the top-level import block—never remove without adding the replacement import.
