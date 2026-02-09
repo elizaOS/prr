@@ -20,6 +20,8 @@ import type { PRInfo } from '../github/types.js';
 import { checkRemoteAhead, pullLatest } from '../git/git-clone-index.js';
 import { debug } from '../logger.js';
 
+// Note: All imports must be at module top level - do not use dynamic imports inside functions
+
 /**
  * Process new bot reviews and add them to the workflow
  * 

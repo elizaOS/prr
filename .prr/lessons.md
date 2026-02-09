@@ -159,6 +159,8 @@
 - Fix for .prr/lessons.md:205 - No verification result returned, treating as failed
 - Fix for .prr/lessons.md:171 - No verification result returned, treating as failed
 - Fix for .prr/lessons.md:213 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:173 - No verification result returned, treating as failed
+- Fix for .prr/lessons.md:223 - No verification result returned, treating as failed
 
 ### tests/normalizeLessonText.test.ts:88
 
@@ -206,6 +208,7 @@
 - Fix for tests/normalize-lesson-text.test.ts:242 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:258 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:176 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:163 - tool modified wrong files (.prr/lessons.md), need to modify tests/normalize-lesson-text.test.ts
 
 ### src/workflow/fix-loop-utils.ts
 
@@ -227,6 +230,8 @@
 - Fix for src/workflow/fix-verification.ts:192 - tool modified wrong files (src/workflow/run-setup-phase.ts, tests/normalize-lesson-text.test.ts), need to modify src/workflow/fix-verification.ts
 - Fix for src/workflow/fix-verification.ts:201 - No verification result returned, treating as failed
 - Fix for src/workflow/fix-verification.ts:57 - No verification result returned, treating as failed
+- Fix for src/workflow/fix-verification.ts:214 - No verification result returned, treating as failed
+- Fix for src/workflow/fix-verification.ts:62 - No verification result returned, treating as failed
 
 ### src/workflow/run-setup-phase.ts
 
