@@ -25,6 +25,26 @@ export function formatLessonForDisplay(lesson: string): string {
   return lesson;
 }
 
+/**
+ * Sanitize a lesson string to fix common malformed patterns.
+ * WHY: The lessons extraction can produce artifacts like double spaces,
+ * missing separators, and code fragments that need cleanup.
+ */
+export function sanitizeLessonText(lesson: string): string {
+  let result = lesson;
+  // Fix "made no changes" missing separator before "trying"
+  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+  // Fix "made no changes" missing separator before "already"
+  result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
+  // Strip trailing " - (inferred) ..." artifacts
+  result = result.replace(/\s*-\s*\(inferred\)\s*.*$/i, '');
+  // Collapse double hyphens to single
+  result = result.replace(/\s*-\s+-\s*/g, ' - ');
+  // Collapse multiple spaces to single
+  result = result.replace(/\s{2,}/g, ' ');
+  return result.trim();
+}
+
 export interface LessonsStore {
   owner: string;
   repo: string;

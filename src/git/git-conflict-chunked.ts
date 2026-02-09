@@ -131,6 +131,13 @@ EXPLANATION: Brief explanation of what you merged/kept/changed`;
 
   try {
     const response = await llm.complete(prompt);
+    if (!response || typeof response.content !== 'string') {
+      return {
+        resolved: false,
+        resolvedLines: chunk.conflictLines,
+        explanation: 'LLM returned invalid response'
+      };
+    }
     const content = response.content;
 
     // Extract resolved code from between backticks
@@ -358,7 +365,7 @@ function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] | nu
   const oursMap = parsePackageLines(ours);
   const theirsMap = parsePackageLines(theirs);
   
-  // If either side can't be parsed as dependency entries, bail out
+  // If either side can't be parsed as dependency entries (e.g., scripts, engines), bail out to LLM
   if (!oursMap || !theirsMap) {
     return null;
   }
@@ -445,6 +452,8 @@ function compareVersions(v1: string, v2: string): number {
   if (prerelease1 && !prerelease2) return -1;
   if (prerelease1 && prerelease2) {
     // Both have prereleases, compare them lexicographically
+    // NOTE: This is a heuristic - per semver, prerelease ordering is complex
+    // (e.g., 1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-beta < 1.0.0)
     return prerelease1.localeCompare(prerelease2);
   }
   

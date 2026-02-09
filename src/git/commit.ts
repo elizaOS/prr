@@ -33,7 +33,11 @@ export async function squashCommit(
   };
 }
 
-/**
+/* The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ * The token is restored in cleanup handlers (timeout, SIGINT, error, success).
+ **
  * Result of a push attempt, indicating whether it was rejected due to being behind.
  */
 export interface PushResult {

@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { LessonsManager } from '../src/state/lessons';
-import { normalizeLessonText } from '../src/state/lessons-normalize';
 
 describe('normalizeLessonText', () => {
   // Create an instance to access the private method via reflection
@@ -10,9 +9,9 @@ describe('normalizeLessonText', () => {
     lessonsManager = new LessonsManager('owner', 'repo', 'branch');
   });
 
-  // Helper to call standalone function
+  // Helper to call private method via reflection
   function normalize(lesson: string): string | null {
-    return normalizeLessonText(lesson);
+    return (lessonsManager as any).normalizeLessonText(lesson);
   }
 
   describe('code fence removal', () => {
@@ -88,14 +87,14 @@ describe('normalizeLessonText', () => {
   });
 
   describe('declaration removal', () => {
-    it('removes class declaration', () => {
+    it('drops class declaration lines', () => {
       const input = 'class MyClass';
-      expect(normalize(input)).not.toContain('class');
+      expect(normalize(input)).toBeNull();
     });
 
-    it('removes interface declaration', () => {
+    it('drops interface declaration lines', () => {
       const input = 'interface MyInterface';
-      expect(normalize(input)).not.toContain('interface');
+      expect(normalize(input)).toBeNull();
     });
 
     it('removes type declaration', () => {
