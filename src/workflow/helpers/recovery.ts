@@ -284,48 +284,6 @@ export async function tryDirectLLMFix(
         console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
         continue;
       }
-
-      // Skip files too large for direct LLM rewrite
-      const MAX_FILE_CHARS = 100_000; // ~25K tokens
-      if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
-        continue;
-      }
-
-      // Skip files too large for direct LLM rewrite
-      const MAX_FILE_CHARS = 100_000; // ~25K tokens
-      if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
-        continue;
-      }
-
-      // Skip files too large for direct LLM rewrite
-      const MAX_FILE_CHARS = 100_000; // ~25K tokens
-      if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
-        continue;
-      }
-
-      // Skip files too large for direct LLM rewrite
-      const MAX_FILE_CHARS = 100_000; // ~25K tokens
-      if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
-        continue;
-      }
-
-      // Skip files too large for direct LLM rewrite
-      const MAX_FILE_CHARS = 100_000; // ~25K tokens
-      if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
-        continue;
-      }
-
-      // Skip files too large for direct LLM rewrite
-      const MAX_FILE_CHARS = 100_000; // ~25K tokens
-      if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
-        continue;
-      }
       
       const prompt = `Fix this code review issue:
 

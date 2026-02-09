@@ -46,19 +46,12 @@ export async function verifyFixes(
   const unchangedIssues: typeof unresolvedIssues = [];
   const changedIssues: typeof unresolvedIssues = [];
   let changedFiles: string[] = [];
-  
-  try {
+
   debugStep('VERIFYING FIXES');
   setPhase(stateContext, 'verifying');
   setTokenPhase('Verify fixes');
   startTimer('Verify fixes');
-  
-  let verifiedCount = 0;
-  let failedCount = 0;
-  const unchangedIssues: typeof unresolvedIssues = [];
-  const changedIssues: typeof unresolvedIssues = [];
-  let changedFiles: string[] = [];
-  
+
   try {
     spinner.start('Verifying fixes...');
     changedFiles = await getChangedFiles(git);
@@ -178,39 +171,16 @@ export async function verifyFixes(
             });
 
             if (verification.fixed) {
-            verifiedCount++;
-            Verification.markVerified(stateContext, issue.comment.id);
-            Iterations.addCommentToIteration(stateContext, issue.comment.id);
-            verifiedThisSession.add(issue.comment.id);  // Track for session filtering
+              verifiedCount++;
+              Verification.markVerified(stateContext, issue.comment.id);
+              Iterations.addCommentToIteration(stateContext, issue.comment.id);
+              verifiedThisSession.add(issue.comment.id);
+            } else {
+              failedCount++;
+              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
+            }
           } else {
-          failedCount++;
-          // In batch mode, we don't analyze failures individually (too expensive)
-          // Just record the explanation as a lesson
-          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${verification.explanation}`);
-        }
-      } else {
-        // Batch didn't return a result for this issue - treat as failed
-        failedCount++;
-        Iterations.addVerificationResult(stateContext, issue.comment.id, {
-          passed: false,
-          reason: 'Batch verification returned no result for this issue',
-        });
-      } else {
-          // Batch didn't return a result for this issue - treat as failed
-          failedCount++;
-          Iterations.addVerificationResult(stateContext, issue.comment.id, {
-            passed: false,
-            reason: 'Batch verification returned no result for this issue',
-          });
-        } else {
-          // Batch didn't return a result for this issue - treat as failed
-          failedCount++;
-          Iterations.addVerificationResult(stateContext, issue.comment.id, {
-            passed: false,
-            reason: 'Batch verification returned no result for this issue',
-          });
-        } else {
-            // No verification result returned for this issue
+            // No verification result returned for this issue - treat as failed
             failedCount++;
             Iterations.addVerificationResult(stateContext, issue.comment.id, {
               passed: false,
@@ -221,7 +191,7 @@ export async function verifyFixes(
         }
       }
     }
-  
+
   } finally {
     spinner.stop();
   }
