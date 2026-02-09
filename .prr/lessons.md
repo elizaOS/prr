@@ -200,6 +200,12 @@
 - Fix for tests/normalize-lesson-text.test.ts:244 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:260 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:258 - **Before writing test assertions, trace through the actual normalize function logic to verify the exact expected output matches reality.**
+- Fix for tests/normalize-lesson-text.test.ts:185 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:251 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:223 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:242 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:258 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:176 - No verification result returned, treating as failed
 
 ### src/workflow/fix-loop-utils.ts
 
@@ -262,6 +268,7 @@
 - Fix for src/workflow/helpers/recovery.ts:419 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:402 - No verification result returned, treating as failed
 - Fix for src/workflow/helpers/recovery.ts:328 - No verification result returned, treating as failed
+- Fix for src/workflow/helpers/recovery.ts:346 - tool modified wrong files (src/workflow/push-iteration-loop.ts, tests/normalize-lesson-text.test.ts, tests/normalizeLessonText.test.ts), need to modify src/workflow/helpers/recovery.ts
 
 ### src/git/git-conflict-chunked.ts
 
@@ -317,3 +324,7 @@
 ### src/runners/aider.ts
 
 - Fix for src/runners/aider.ts:89 - No verification result returned, treating as failed
+
+### tests/normalizeLessonText.test.ts
+
+- Fix for tests/normalizeLessonText.test.ts:36 - No verification result returned, treating as failed
