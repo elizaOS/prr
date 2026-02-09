@@ -255,7 +255,8 @@ export async function pushWithRetry(
     }
     
     // Push was rejected - remote has newer commits
-    debug(`Push rejected (attempt ${attempts}/${maxRetries}), attempting fetch + rebase + retry`);
+    retries++;
+    debug(`Push rejected (attempt ${retries}/${maxRetries}), attempting fetch + rebase + retry`);
     options?.onPullNeeded?.();
     
     // Fetch and rebase to handle divergent branches
@@ -270,7 +271,7 @@ export async function pushWithRetry(
       // Loop continues to retry push
     } catch (syncError) {
       const syncMsg = syncError instanceof Error ? syncError.message : String(syncError);
-      debug('Rebase failed', { error: syncMsg, attempt: attempts });
+      debug('Rebase failed', { error: syncMsg, attempt: retries });
       
       // Check if it's a conflict
       if (syncMsg.includes('CONFLICT') || syncMsg.includes('conflict')) {
