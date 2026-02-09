@@ -58,7 +58,7 @@ export function assessSolvability(
       if (comment.line > totalLines) {
         // Line is out of range - try to re-target using identifiers
         if (identifiers.length > 0) {
-          const retargetResult = findClosestOccurrence(fileContent, lines, identifiers, comment.line);
+          const retargetResult = findClosestOccurrence(lines, identifiers, comment.line);
           if (retargetResult.found) {
             return {
               solvable: true,
@@ -147,7 +147,6 @@ export function extractIdentifiers(commentBody: string): string[] {
  * Prefers occurrences near the original line to handle insertion-drift correctly.
  */
 function findClosestOccurrence(
-  fileContent: string,
   lines: string[],
   identifiers: string[],
   originalLine: number

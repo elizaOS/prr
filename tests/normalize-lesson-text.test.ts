@@ -245,10 +245,8 @@ describe('normalizeLessonText', () => {
     it('handles multiple transformations in sequence', () => {
       const input = 'Fix for src/file.ts with // comment (inferred)';
       const result = normalize(input);
-      // sanitizeLessonText strips (inferred) suffix but may preserve other content
-      if (result !== null) {
-        expect(result).not.toContain('(inferred)');
-      }
+      // Lines starting with ** are dropped by normalizeLessonText
+      expect(result).toBeNull();
     });
 
     it('handles whitespace normalization', () => {

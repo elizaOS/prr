@@ -171,6 +171,10 @@
 - Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies multiple mismatches across a file range, fix all instances of the same type, not just one test case in isolation.
 - Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies N issues across a file range, fix all N or extend the function for all—patching one breaks the incomplete contract.
 - Fix for tests/normalize-lesson-text.test.ts:171 - **Scope mismatch: fix one test case, but issue spans lines 24-170. Must either update all failing tests or extend the function comprehensively.**
+- Fix for tests/normalize-lesson-text.test.ts:84 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:160 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:168 - No verification result returned, treating as failed
+- Fix for tests/normalize-lesson-text.test.ts:252 - No verification result returned, treating as failed
 
 ### src/workflow/fix-loop-utils.ts
 
@@ -195,8 +199,14 @@
 ### src/workflow/push-iteration-loop.ts
 
 - Fix for src/workflow/push-iteration-loop.ts:128 - The call sites pass object literals which will be structurally compatible with the named interfaces, so no changes needed there.
+- Fix for src/workflow/push-iteration-loop.ts:30 - "Remove file extensions entirely from TypeScript imports—use `../logger` not `../logger.ts` or `../logger.js`."
 
 ### src/workflow/helpers/recovery.ts
 
 - Fix for src/workflow/helpers/recovery.ts:304 - Before committing a fix, verify there are no duplicate code blocks by reviewing the entire diff context—duplicates indicate incomplete merge resolution.
 - Fix for src/workflow/helpers/recovery.ts:377 - When handling missing code blocks, must call `Dismissed.dismissIssue()` to track the issue in workflow state, not just log it.
+
+### src/git/git-conflict-chunked.ts
+
+- Fix for src/git/git-conflict-chunked.ts:148 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:258 - No verification result returned, treating as failed

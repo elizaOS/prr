@@ -163,7 +163,8 @@ EXPLANATION: Brief explanation of what you merged/kept/changed`;
     const explanation = explanationMatch?.[1]?.trim() || 'Resolved';
 
     // Verify no conflict markers remain
-    if (resolvedCode.includes('<<<<<<<') || resolvedCode.includes('>>>>>>>')) {
+    const markerRe = /^(<{7}|={7}|>{7})/m;
+    if (markerRe.test(resolvedCode)) {
       return {
         resolved: false,
         resolvedLines: chunk.conflictLines,
