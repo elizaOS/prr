@@ -11,6 +11,8 @@ const execAsync = promisify(exec);
 
 interface ToolVersion {
   name: string;
+  /** Binary name in PATH (e.g. "claude", "codex", "aider") */
+  binary: string;
   installed: boolean;
   version?: string;
   latest?: string;
@@ -54,36 +56,40 @@ export async function checkToolVersions(): Promise<ToolVersion[]> {
   const cursorExists = await commandExists('cursor');
   tools.push({
     name: 'Cursor',
+    binary: 'cursor',
     installed: cursorExists,
     version: cursorExists ? await getToolVersion('cursor', '--version') || 'installed' : undefined,
     upgradeCommand: cursorExists ? 'Check for updates in Cursor: Settings → Check for Updates' : undefined,
     installCommand: 'https://cursor.com',
   });
 
-  // Codex
+  // Codex (package: @openai/codex)
   const codexExists = await commandExists('codex');
   tools.push({
     name: 'Codex',
+    binary: 'codex',
     installed: codexExists,
     version: codexExists ? await getToolVersion('codex', '--version') || 'installed' : undefined,
-    upgradeCommand: codexExists ? 'npm update -g @openai/codex-cli' : undefined,
-    installCommand: 'npm install -g @openai/codex-cli',
+    upgradeCommand: codexExists ? 'npm install -g @openai/codex' : undefined,
+    installCommand: 'npm install -g @openai/codex',
   });
 
-  // Claude Code
-  const claudeCodeExists = await commandExists('claude-code');
+  // Claude Code (binary: "claude", package: @anthropic-ai/claude-code)
+  const claudeCodeExists = await commandExists('claude');
   tools.push({
     name: 'Claude Code',
+    binary: 'claude',
     installed: claudeCodeExists,
-    version: claudeCodeExists ? await getToolVersion('claude-code', '--version') || 'installed' : undefined,
-    upgradeCommand: claudeCodeExists ? 'npm update -g @anthropic/claude-code-cli' : undefined,
-    installCommand: 'npm install -g @anthropic/claude-code-cli',
+    version: claudeCodeExists ? await getToolVersion('claude', '--version') || 'installed' : undefined,
+    upgradeCommand: claudeCodeExists ? 'npm install -g @anthropic-ai/claude-code' : undefined,
+    installCommand: 'npm install -g @anthropic-ai/claude-code',
   });
 
-  // Aider
+  // Aider (pip package: aider-chat)
   const aiderExists = await commandExists('aider');
   tools.push({
     name: 'Aider',
+    binary: 'aider',
     installed: aiderExists,
     version: aiderExists ? await getToolVersion('aider', '--version') || 'installed' : undefined,
     upgradeCommand: aiderExists ? 'pip install --upgrade aider-chat' : undefined,
@@ -94,6 +100,7 @@ export async function checkToolVersions(): Promise<ToolVersion[]> {
   const opencodeExists = await commandExists('opencode');
   tools.push({
     name: 'OpenCode',
+    binary: 'opencode',
     installed: opencodeExists,
     version: opencodeExists ? await getToolVersion('opencode', '--version') || 'installed' : undefined,
     upgradeCommand: opencodeExists ? 'Check repository for updates: https://github.com/opencode/opencode' : undefined,
@@ -184,10 +191,7 @@ export async function updateAllTools(): Promise<void> {
       const { stdout, stderr } = await execAsync(tool.upgradeCommand, { timeout: 120_000 });
       
       // Get new version after update
-      const newVersion = await getToolVersion(
-        tool.name.toLowerCase().replace(/ /g, '-'),
-        '--version'
-      );
+      const newVersion = await getToolVersion(tool.binary, '--version');
       
       if (newVersion && newVersion !== tool.version) {
         console.log(chalk.green(`    ✓ Updated: ${tool.version} → ${newVersion}`));
