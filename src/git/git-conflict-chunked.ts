@@ -368,7 +368,8 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
   let inTheirs = false;
   let conflictsResolved = 0;
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (line.startsWith('<<<<<<<')) {
       inConflict = true;
       ours = [];
@@ -377,8 +378,21 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
     } else if (line.startsWith('=======') && inConflict) {
       inTheirs = true;
     } else if (line.startsWith('>>>>>>>') && inConflict) {
+      // Peek ahead past blank lines to determine if trailing comma is needed.
+      // If the next non-blank, non-comment line starts with a quote (another
+      // JSON key) or is another conflict marker, the last merged entry needs
+      // a trailing comma so the resulting JSON stays valid.
+      let needsTrailingComma = false;
+      for (let j = i + 1; j < lines.length; j++) {
+        const peek = lines[j].trim();
+        if (peek === '' || peek.startsWith('//')) continue;
+        // Another key, another conflict, or a non-closing token means more entries follow
+        needsTrailingComma = peek.startsWith('"') || peek.startsWith('<<<<<<<');
+        break;
+      }
+
       // Try to merge ours and theirs
-      const merged = mergePackageJsonChunks(ours, theirs);
+      const merged = mergePackageJsonChunks(ours, theirs, needsTrailingComma);
       if (merged) {
         resolved.push(...merged);
         conflictsResolved++;
@@ -420,7 +434,7 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
 /**
  * Merge two package.json sections, preferring higher versions
  */
-function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] | null {
+function mergePackageJsonChunks(ours: string[], theirs: string[], needsTrailingComma: boolean): string[] | null {
   // Simple strategy: parse dependencies, take higher versions
   const oursMap = parsePackageLines(ours);
   const theirsMap = parsePackageLines(theirs);
@@ -449,10 +463,13 @@ function mergePackageJsonChunks(ours: string[], theirs: string[]): string[] | nu
   }
   
   // Reconstruct lines
+  // Use needsTrailingComma to decide if the last entry needs a comma
+  // (true when the conflict sits mid-object with more keys following)
   const entries = Array.from(merged.entries())
     .sort(([a], [b]) => a.localeCompare(b));
   return entries.map(([pkg, version], idx) => {
-    const comma = idx < entries.length - 1 ? ',' : '';
+    const isLast = idx === entries.length - 1;
+    const comma = isLast ? (needsTrailingComma ? ',' : '') : ',';
     return `${indent}"${pkg}": "${version}"${comma}`;
   });
 }

@@ -18,6 +18,7 @@ import { simpleGit, SimpleGit } from 'simple-git';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { debug } from '../logger.js';
+import { abortMerge } from './git-merge.js';
 
 export interface GitOperations {
   git: SimpleGit;
@@ -380,14 +381,6 @@ export async function pullLatest(
 export async function getConflictedFiles(git: SimpleGit): Promise<string[]> {
   const status = await git.status();
   return status.conflicted || [];
-}
-
-export async function abortMerge(git: SimpleGit): Promise<void> {
-  try {
-    await git.merge(['--abort']);
-  } catch {
-    // May fail if no merge in progress, ignore
-  }
 }
 
 export async function cleanupGitState(git: SimpleGit): Promise<void> {
