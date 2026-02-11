@@ -247,6 +247,19 @@ export async function trySingleIssueFix(
  * - Verify the fix
  * - If verification fails, revert the file
  */
+/**
+ * Models to use for direct LLM fix (last resort).
+ * These should be STRONG models - this is the last chance to fix before bail-out.
+ * 
+ * WHY NOT use the verification model (haiku): Haiku is optimized for fast
+ * yes/no checks, NOT for writing code. Using haiku here wastes the last-resort
+ * attempt on a model that has ~0% fix success rate.
+ */
+const DIRECT_FIX_MODELS: Record<string, string> = {
+  anthropic: 'claude-sonnet-4-5-20250929',  // Strong coder, reasonable cost
+  openai: 'gpt-4o',                          // Strong coder
+};
+
 export async function tryDirectLLMFix(
   issues: UnresolvedIssue[],
   git: SimpleGit,
@@ -256,7 +269,10 @@ export async function tryDirectLLMFix(
   stateContext: StateContext,
   verifiedThisSession: Set<string> | undefined
 ): Promise<boolean> {
-  console.log(chalk.cyan(`\n  🧠 Attempting direct ${llmProvider} API fix...`));
+  // Use a strong model for fixing, NOT the verification model
+  const fixModel = DIRECT_FIX_MODELS[llmProvider];
+  const modelLabel = fixModel ? ` (${fixModel})` : '';
+  console.log(chalk.cyan(`\n  🧠 Attempting direct ${llmProvider} API fix${modelLabel}...`));
   setTokenPhase('Direct LLM fix');
   
   let anyFixed = false;
@@ -303,7 +319,7 @@ ${fileContent}
 Provide the COMPLETE fixed file content. Output ONLY the code, no explanations.
 Start your response with \`\`\` and end with \`\`\`.`;
 
-      const response = await llm.complete(prompt);
+      const response = await llm.complete(prompt, undefined, fixModel ? { model: fixModel } : undefined);
       
       // Extract code from response
       const codeMatch = response.content.match(/```[\w]*\n?([\s\S]*?)```/);

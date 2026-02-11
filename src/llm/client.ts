@@ -188,13 +188,21 @@ export class LLMClient {
     }
   }
 
-  async complete(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
+  async complete(prompt: string, systemPrompt?: string, options?: { model?: string }): Promise<LLMResponse> {
     // Sanitize inputs: strip unpaired UTF-16 surrogates that cause JSON serialization
     // errors (Anthropic API returns 400 "no low surrogate in string"). These can appear
     // in code snippets read from binary or corrupted files.
     prompt = sanitizeForJson(prompt);
     if (systemPrompt) {
       systemPrompt = sanitizeForJson(systemPrompt);
+    }
+
+    // Allow callers to override the model for this request
+    // WHY: The LLM client defaults to the verification model (often haiku),
+    // but some callers (like tryDirectLLMFix) need a stronger model for code fixing
+    const originalModel = this.model;
+    if (options?.model) {
+      this.model = options.model;
     }
 
     debug(`LLM request to ${this.provider}/${this.model}`, {
@@ -206,27 +214,32 @@ export class LLMClient {
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
     debugPrompt(`llm-${this.provider}`, fullPrompt, { model: this.model });
     
-    const response = this.provider === 'anthropic' 
-      ? await this.completeAnthropic(prompt, systemPrompt)
-      : await this.completeOpenAI(prompt, systemPrompt);
-    
-    debug('LLM response', {
-      responseLength: response.content.length,
-      usage: response.usage,
-    });
-    
-    // Log full response to debug file
-    debugResponse(`llm-${this.provider}`, response.content, { 
-      model: this.model, 
-      usage: response.usage 
-    });
-    
-    // Track token usage
-    if (response.usage) {
-      trackTokens(response.usage.inputTokens, response.usage.outputTokens);
+    try {
+      const response = this.provider === 'anthropic' 
+        ? await this.completeAnthropic(prompt, systemPrompt)
+        : await this.completeOpenAI(prompt, systemPrompt);
+      
+      debug('LLM response', {
+        responseLength: response.content.length,
+        usage: response.usage,
+      });
+      
+      // Log full response to debug file
+      debugResponse(`llm-${this.provider}`, response.content, { 
+        model: this.model, 
+        usage: response.usage 
+      });
+      
+      // Track token usage
+      if (response.usage) {
+        trackTokens(response.usage.inputTokens, response.usage.outputTokens);
+      }
+      
+      return response;
+    } finally {
+      // Always restore the original model
+      this.model = originalModel;
     }
-    
-    return response;
   }
 
   private async completeAnthropic(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
@@ -1009,8 +1022,16 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       '',
     ];
 
-    for (const fix of fixes) {
-      parts.push(`## Fix ${fix.id}`);
+    // Use simple 1-indexed numeric IDs in the prompt instead of actual comment IDs.
+    // WHY: Comment IDs are complex GraphQL node IDs (e.g. "PRR_kwDONqB7Uc5y6UGs")
+    // that the LLM often garbles when echoing back, causing parse failures (e.g. 34/38 parsed).
+    // Simple "1", "2", "3" are trivial to echo correctly.
+    const indexToId = new Map<number, string>();
+    for (let i = 0; i < fixes.length; i++) {
+      const fix = fixes[i];
+      const idx = i + 1;
+      indexToId.set(idx, fix.id);
+      parts.push(`## Fix ${idx}`);
       parts.push(`File: ${fix.filePath}`);
       parts.push(`Review Comment: ${fix.comment}`);
       parts.push('');
@@ -1023,35 +1044,39 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     parts.push('---');
     parts.push('');
-    parts.push('Now verify each fix and respond with one line per fix:');
+    parts.push('Now verify each fix and respond with one line per fix (use the fix number, e.g. "1: YES: ..." or "2: NO: ..."):');
 
     debug('Batch verifying fixes', { count: fixes.length });
     const response = await this.complete(parts.join('\n'));
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
+    // Matches patterns like "1: YES: explanation", "fix 2: NO: explanation", "Fix_3: YES: ..."
     const lines = response.content.split('\n');
-    let currentId: string | null = null;
+    let currentOriginalId: string | null = null;
     
     for (const line of lines) {
-      // Match patterns like "fix_123: YES: explanation" or "FIX_123: NO: explanation"
-      const verifyMatch = line.match(/^([^:]+):\s*(YES|NO):\s*(.*)$/i);
+      // Match patterns like "1: YES: explanation" or "fix_2: NO: explanation" or "Fix 3: YES: ..."
+      const verifyMatch = line.match(/^(?:fix[_\s]*)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
       if (verifyMatch) {
-        const [, id, yesNo, explanation] = verifyMatch;
-        const cleanId = id.trim().toLowerCase().replace(/^fix[_\s]*/i, '');
-        currentId = cleanId;
-        results.set(cleanId, {
-          fixed: yesNo.toUpperCase() === 'YES',
-          explanation: explanation.trim(),
-        });
+        const [, numStr, yesNo, explanation] = verifyMatch;
+        const idx = parseInt(numStr, 10);
+        const originalId = indexToId.get(idx);
+        if (originalId) {
+          currentOriginalId = originalId;
+          results.set(originalId, {
+            fixed: yesNo.toUpperCase() === 'YES',
+            explanation: explanation.trim(),
+          });
+        }
         continue;
       }
       
       // Match lesson line: "LESSON: actionable guidance"
       const lessonMatch = line.match(/^LESSON:\s*(.+)$/i);
-      if (lessonMatch && currentId) {
+      if (lessonMatch && currentOriginalId) {
         const lesson = lessonMatch[1].trim();
-        const existing = results.get(currentId);
+        const existing = results.get(currentOriginalId);
         if (existing && !existing.fixed) {
           // Only attach lesson to NO responses
           existing.lesson = lesson.length > 150 ? lesson.substring(0, 147) + '...' : lesson;
