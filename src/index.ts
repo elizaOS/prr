@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { loadConfig } from './config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { PRResolver } from './resolver.js';
-import { printToolStatus, checkPrrUpdate } from './upgrade.js';
+import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;
@@ -59,6 +59,12 @@ async function main(): Promise<void> {
     if (options.checkTools) {
       await printToolStatus();
       await checkPrrUpdate();
+      return;
+    }
+
+    // Handle --update-tools mode (update all installed tools and exit)
+    if (options.updateTools) {
+      await updateAllTools();
       return;
     }
 

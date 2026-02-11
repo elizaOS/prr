@@ -155,6 +155,69 @@ export async function printToolStatus(): Promise<void> {
 }
 
 /**
+ * Update all installed AI coding tools to their latest versions.
+ * Runs the upgrade command for each tool that is installed.
+ */
+export async function updateAllTools(): Promise<void> {
+  console.log(chalk.cyan('\n━━━ UPDATING AI CODING TOOLS ━━━\n'));
+
+  const tools = await checkToolVersions();
+  const installed = tools.filter(t => t.installed && t.upgradeCommand);
+  
+  if (installed.length === 0) {
+    console.log(chalk.yellow('  No updatable tools found.'));
+    console.log(chalk.gray('  Install tools with --check-tools to see options.\n'));
+    return;
+  }
+
+  for (const tool of installed) {
+    // Skip tools that don't have a shell command (e.g. "Check for updates in Cursor")
+    if (!tool.upgradeCommand || !isShellCommand(tool.upgradeCommand)) {
+      console.log(chalk.gray(`  ○ ${tool.name}: ${tool.upgradeCommand}`));
+      continue;
+    }
+
+    console.log(chalk.white(`  Updating ${tool.name}...`));
+    console.log(chalk.gray(`    $ ${tool.upgradeCommand}`));
+    
+    try {
+      const { stdout, stderr } = await execAsync(tool.upgradeCommand, { timeout: 120_000 });
+      
+      // Get new version after update
+      const newVersion = await getToolVersion(
+        tool.name.toLowerCase().replace(/ /g, '-'),
+        '--version'
+      );
+      
+      if (newVersion && newVersion !== tool.version) {
+        console.log(chalk.green(`    ✓ Updated: ${tool.version} → ${newVersion}`));
+      } else {
+        console.log(chalk.green(`    ✓ Already up to date (${tool.version})`));
+      }
+      
+      // Show any useful output (but keep it short)
+      const output = (stdout || '').trim();
+      if (output && output.length < 200) {
+        console.log(chalk.gray(`    ${output}`));
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.log(chalk.red(`    ✗ Failed: ${errorMsg.split('\n')[0]}`));
+    }
+    console.log('');
+  }
+
+  console.log(chalk.cyan('━━━ DONE ━━━\n'));
+}
+
+/**
+ * Check if an upgrade command is a shell command (vs. a URL or manual instruction).
+ */
+function isShellCommand(cmd: string): boolean {
+  return !cmd.startsWith('http') && !cmd.startsWith('Check ');
+}
+
+/**
  * Check for prr updates.
  */
 export async function checkPrrUpdate(): Promise<void> {

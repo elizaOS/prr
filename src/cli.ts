@@ -49,6 +49,8 @@ export interface CLIOptions {
   clearLock: boolean;
   /** Check installed tools and exit */
   checkTools: boolean;
+  /** Update all installed AI tools and exit */
+  updateTools: boolean;
 }
 
 export interface ParsedArgs {
@@ -89,7 +91,7 @@ export function createCLI(): Command {
     .name('prr')
     .description('Automatically resolve PR review comments')
     .version(CAT_BANNER, '-V, --version', 'output the version number')
-    .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
+    .argument('[pr-url]', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
     .option('-t, --tool <tool>', 'LLM tool to use for fixing (auto, cursor, opencode, claude-code, aider, codex, llm-api)')
     .option('-m, --model <model>', 'Model for fixer tool (e.g., claude-4-opus-thinking, claude-4-sonnet-thinking, o3)', (value) => {
       validateModelName(value);
@@ -127,7 +129,8 @@ export function createCLI(): Command {
     .option('--no-lock', 'Disable distributed locking (allow parallel instances on same PR)')
     .option('--clear-lock', 'Clear the lock file and exit (use if a previous instance crashed)')
     // Tool/version checking
-    .option('--check-tools', 'Check installed AI coding tools and show upgrade instructions, then exit');
+    .option('--check-tools', 'Check installed AI coding tools and show upgrade instructions, then exit')
+    .option('--update-tools', 'Update all installed AI coding tools to latest versions, then exit');
 
   return program;
 }
@@ -151,8 +154,8 @@ export function parseArgs(program: Command): ParsedArgs {
   const args = program.args;
   const opts = program.opts();
 
-  // PR URL is optional for --check-tools mode
-  if (args.length === 0 && !opts.checkTools) {
+  // PR URL is optional for --check-tools and --update-tools modes
+  if (args.length === 0 && !opts.checkTools && !opts.updateTools) {
     program.help();
     process.exit(1);
   }
@@ -212,6 +215,7 @@ export function parseArgs(program: Command): ParsedArgs {
       clearLock: opts.clearLock ?? false,
       // Tool checking
       checkTools: opts.checkTools ?? false,
+      updateTools: opts.updateTools ?? false,
     },
   };
 }
