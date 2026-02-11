@@ -133,7 +133,14 @@ export class AiderRunner implements Runner {
         if (code === 0) {
           resolve({ success: true, output: stdout });
         } else {
-          resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
+          const combinedOutput = stdout + stderr;
+          if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Model not found or not accessible', errorType: 'auth' });
+          } else if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Authentication error', errorType: 'auth' });
+          } else {
+            resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
+          }
         }
       });
 

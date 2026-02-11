@@ -193,6 +193,15 @@ export class CodexRunner implements Runner {
           const combinedOutput = stdout + stderr;
           if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
             resolve({ success: false, output: stdout, error: stderr || `Authentication error`, errorType: 'auth' });
+          } else if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
+            // Model doesn't exist or API key lacks access - bail immediately
+            // WHY: Retrying won't help. Need different model or API access.
+            const modelError = combinedOutput.match(/The model [`'"]?([^`'"]+)[`'"]? does not exist/i);
+            const errorMsg = modelError 
+              ? `Model "${modelError[1]}" does not exist or is not accessible`
+              : stderr || 'Model not found or not accessible';
+            debug('Model access error - bailing immediately', { error: errorMsg });
+            resolve({ success: false, output: stdout, error: errorMsg, errorType: 'auth' });
           } else if (/permission denied|cannot write|read-only/i.test(combinedOutput)) {
             resolve({ success: false, output: stdout, error: stderr || `Permission error`, errorType: 'permission' });
           } else {

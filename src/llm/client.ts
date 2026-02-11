@@ -63,6 +63,105 @@ export interface ModelRecommendationContext {
   attemptHistory?: string;
 }
 
+/**
+ * Fetch the list of model IDs available to the given OpenAI API key.
+ * Uses GET /v1/models (openai.models.list()).
+ *
+ * WHY: Model rotation lists contain models that may not exist or may not be
+ * accessible to the user's API key (e.g. "gpt-5.3-codex"). Without validation,
+ * the fixer retries multiple times per unavailable model, wasting time and tokens.
+ * Calling this once at startup lets us prune the rotation list up front.
+ *
+ * Returns an empty set on error (network issue, invalid key) so callers
+ * can safely fall back to the full rotation list.
+ */
+export async function fetchAvailableOpenAIModels(apiKey: string): Promise<Set<string>> {
+  try {
+    const client = new OpenAI({ apiKey });
+    const models = await client.models.list();
+    const ids = new Set<string>();
+    for await (const model of models) {
+      ids.add(model.id);
+    }
+    debug(`Fetched ${ids.size} available OpenAI models`);
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch OpenAI models list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set(); // Empty = skip filtering, keep all models
+  }
+}
+
+/**
+ * Fetch the list of model IDs available to the given Anthropic API key.
+ * Uses GET https://api.anthropic.com/v1/models directly.
+ *
+ * WHY: Same reason as OpenAI - rotation lists may reference models the key
+ * can't access (e.g. opus on a lower-tier plan). Validate once at startup
+ * instead of discovering failures one retry at a time.
+ *
+ * NOTE: Uses raw fetch because the @anthropic-ai/sdk@0.32.x doesn't have
+ * the .models namespace yet. The endpoint is stable (documented at
+ * docs.anthropic.com/en/api/models-list).
+ *
+ * Returns an empty set on error so callers can safely fall back.
+ */
+export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set<string>> {
+  try {
+    const ids = new Set<string>();
+    let afterId: string | undefined;
+    let hasMore = true;
+    
+    while (hasMore) {
+      const url = new URL('https://api.anthropic.com/v1/models');
+      url.searchParams.set('limit', '1000');
+      if (afterId) {
+        url.searchParams.set('after_id', afterId);
+      }
+      
+      const response = await fetch(url.toString(), {
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+      });
+      
+      if (!response.ok) {
+        debug('Anthropic models API returned non-OK', {
+          status: response.status,
+          statusText: response.statusText,
+        });
+        break;
+      }
+      
+      const body = await response.json() as {
+        data: Array<{ id: string }>;
+        has_more: boolean;
+      };
+      
+      for (const model of body.data) {
+        ids.add(model.id);
+      }
+      
+      hasMore = body.has_more;
+      if (body.data.length > 0) {
+        afterId = body.data[body.data.length - 1].id;
+      } else {
+        hasMore = false;
+      }
+    }
+    
+    debug(`Fetched ${ids.size} available Anthropic models`);
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch Anthropic models list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set(); // Empty = skip filtering, keep all models
+  }
+}
+
 export class LLMClient {
   private provider: LLMProvider;
   private model: string;

@@ -181,10 +181,15 @@ Working directory: ${workdir}`;
       const errorMessage = error instanceof Error ? error.message : String(error);
       debug('LLM API error', { error: errorMessage });
       
+      // Detect model-not-found errors from either provider
+      const isModelError = /does not exist|model.*not found|you do not have access|not_found_error/i.test(errorMessage);
+      const isAuthError = /api.?key|unauthorized|authentication|invalid.*key/i.test(errorMessage);
+      
       return {
         success: false,
         output: '',
         error: errorMessage,
+        errorType: isModelError || isAuthError ? 'auth' : undefined,
       };
     }
   }

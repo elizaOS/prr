@@ -236,9 +236,11 @@ export class ClaudeCodeRunner implements Runner {
         } else {
           // Determine error type for non-permission failures
           let errorType: RunnerErrorType = 'tool';
-          const errorText = (stderr || '').toLowerCase();
-          if (errorText.includes('api key') || errorText.includes('unauthorized') || errorText.includes('authentication')) {
+          const combinedOutput = (stdout + stderr).toLowerCase();
+          if (combinedOutput.includes('api key') || combinedOutput.includes('unauthorized') || combinedOutput.includes('authentication')) {
             errorType = 'auth';
+          } else if (/does not exist|model.*not found|you do not have access/i.test(stdout + stderr)) {
+            errorType = 'auth'; // Model access errors bail immediately, same as auth
           }
           resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}`, errorType });
         }
