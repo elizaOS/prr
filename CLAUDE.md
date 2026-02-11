@@ -14,5 +14,6 @@
 - When using `execSync`, always include `shell: false` option and pass command/args as array to prevent shell injection.
 - When adding file creation, implement cleanup in all exit paths using try-finally or a cleanup callback to prevent leaks.
 - When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation.
+- Always validate LLM conflict resolution output before writing: check JSON validity for .json files, reject catastrophic size regressions (resolved < 10% of larger conflict side), and use smart merge strategies for generated/schema files instead of sending 600KB+ to the LLM.
 
 <!-- PRR_LESSONS_END -->

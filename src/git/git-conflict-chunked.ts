@@ -8,6 +8,11 @@
 
 import type { LLMClient } from '../llm/client.js';
 import { debug } from '../logger.js';
+import {
+  MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
+  MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
+  ASYMMETRIC_CONFLICT_SIDE_RATIO,
+} from '../constants.js';
 
 /**
  * A single conflict region extracted from a file
@@ -25,6 +30,26 @@ export interface ConflictChunk {
   contextAfter: string[];
   /** All lines as single string for LLM */
   fullContent: string;
+}
+
+/**
+ * Extract the "ours" and "theirs" sides from conflict lines.
+ * WHY: Needed for size comparison heuristics and stub-vs-comprehensive detection.
+ */
+export function extractConflictSides(conflictLines: string[]): { ours: string[]; theirs: string[] } {
+  const ours: string[] = [];
+  const theirs: string[] = [];
+  let inTheirs = false;
+
+  for (const line of conflictLines) {
+    if (line.startsWith('<<<<<<<')) continue;
+    if (line.startsWith('=======')) { inTheirs = true; continue; }
+    if (line.startsWith('>>>>>>>')) continue;
+    if (inTheirs) theirs.push(line);
+    else ours.push(line);
+  }
+
+  return { ours, theirs };
 }
 
 /**
@@ -172,9 +197,33 @@ EXPLANATION: Brief explanation of what you merged/kept/changed`;
       };
     }
 
+    // Size regression check: resolution should not catastrophically shrink the conflict
+    // WHY: LLMs sometimes return only the first few entries of a large file,
+    // e.g., reducing 23K-line schema to 250 lines. Catch this before it's committed.
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const largerSideLines = Math.max(ours.length, theirs.length);
+    const resolvedLines = resolvedCode.split('\n');
+
+    if (largerSideLines >= MIN_LINES_FOR_SIZE_REGRESSION_CHECK) {
+      const sizeRatio = resolvedLines.length / largerSideLines;
+      if (sizeRatio < MIN_CONFLICT_RESOLUTION_SIZE_RATIO) {
+        debug('Chunk resolution rejected - suspicious size regression', {
+          filePath,
+          largerSideLines,
+          resolvedLineCount: resolvedLines.length,
+          ratio: sizeRatio.toFixed(3),
+        });
+        return {
+          resolved: false,
+          resolvedLines: chunk.conflictLines,
+          explanation: `Resolution suspiciously small: ${resolvedLines.length} lines vs ${largerSideLines} in larger conflict side (${(sizeRatio * 100).toFixed(1)}% - threshold is ${MIN_CONFLICT_RESOLUTION_SIZE_RATIO * 100}%)`
+        };
+      }
+    }
+
     return {
       resolved: true,
-      resolvedLines: resolvedCode.split('\n'),
+      resolvedLines,
       explanation
     };
   } catch (error) {
@@ -439,6 +488,355 @@ function parsePackageLines(lines: string[]): Map<string, string> | null {
   }
   
   return map;
+}
+
+/**
+ * Check if a file path matches known generated schema/migration file patterns.
+ * WHY: Generated files need special handling during conflict resolution because
+ * LLMs catastrophically fail on them (e.g., truncating 23K-line schemas to 250 lines).
+ */
+export function isGeneratedSchemaFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  
+  // Drizzle ORM migration metadata
+  if (normalized.includes('/meta/') && normalized.endsWith('_snapshot.json')) return true;
+  if (normalized.includes('/meta/') && normalized.endsWith('_journal.json')) return true;
+  
+  // Prisma migration metadata
+  if (normalized.includes('/migrations/') && normalized.endsWith('migration_lock.toml')) return true;
+  
+  // Generic schema snapshots
+  if (normalized.endsWith('.schema.json') && normalized.includes('/migration')) return true;
+  
+  return false;
+}
+
+/**
+ * Check if a conflicted file has highly asymmetric conflict sides.
+ * Returns true if ALL conflict chunks have one side <5% the size of the other.
+ * 
+ * Example: a 17-line empty Drizzle skeleton conflicting with a 23K-line full
+ * schema is asymmetric (ratio 0.07%). Two 500-line files with different content
+ * are not (ratio ~100%).
+ */
+export function hasAsymmetricConflict(content: string): boolean {
+  const chunks = extractConflictChunks(content);
+  if (chunks.length === 0) return false;
+  
+  for (const chunk of chunks) {
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const larger = Math.max(ours.length, theirs.length);
+    const smaller = Math.min(ours.length, theirs.length);
+    if (larger === 0 || (smaller / larger) >= ASYMMETRIC_CONFLICT_SIDE_RATIO) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ASYMMETRIC CONFLICT RESOLUTION (large side as base + smart merge)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * Resolve highly asymmetric conflicts in generated files.
+ * 
+ * WHY: When one conflict side is dramatically larger than the other (e.g., 23K-line
+ * full Drizzle schema vs 17-line empty skeleton), sending the entire file to the
+ * LLM causes catastrophic truncation. Instead:
+ * 
+ * 1. Use the LARGE side as the base (guaranteed no truncation)
+ * 2. Send only the SMALL side to the LLM to check for unique content
+ * 3. For JSON: programmatically deep-merge any unique additions from the small side
+ * 4. For non-JSON: if unique content found, reject for manual merge (safe)
+ * 
+ * This ensures nothing meaningful is lost from either side while avoiding the
+ * catastrophic failure mode of sending huge files to the LLM.
+ */
+export async function resolveAsymmetricConflict(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string
+): Promise<{ resolved: boolean; content: string; explanation: string }> {
+  const chunks = extractConflictChunks(content);
+  if (chunks.length === 0) {
+    return { resolved: false, content, explanation: 'No conflicts found' };
+  }
+
+  const lines = content.split('\n');
+  const resolvedLines: string[] = [];
+  const explanations: string[] = [];
+  let i = 0;
+
+  for (const chunk of chunks.sort((a, b) => a.startLine - b.startLine)) {
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+
+    if (Math.max(ours.length, theirs.length) === 0) {
+      return { resolved: false, content, explanation: 'Empty conflict sides' };
+    }
+    const sizeRatio = Math.min(ours.length, theirs.length) / Math.max(ours.length, theirs.length);
+    if (sizeRatio >= ASYMMETRIC_CONFLICT_SIDE_RATIO) {
+      return { resolved: false, content, explanation: 'Conflict sides are similar size — not asymmetric' };
+    }
+
+    const largeSide = ours.length > theirs.length ? ours : theirs;
+    const smallSide = ours.length > theirs.length ? theirs : ours;
+    const largeSideLabel = ours.length > theirs.length ? 'HEAD' : baseBranch;
+
+    // Add lines before this conflict
+    while (i < chunk.startLine) {
+      resolvedLines.push(lines[i]);
+      i++;
+    }
+
+    // Use large side as base, check small side for any unique content worth merging
+    const mergeResult = await checkSmallSideForAdditions(
+      llm, filePath, largeSide, smallSide, baseBranch
+    );
+
+    if (mergeResult.hasAdditions && mergeResult.merged) {
+      // Programmatic merge succeeded — both sides' content preserved
+      resolvedLines.push(...mergeResult.merged);
+      explanations.push(
+        `Lines ${chunk.startLine + 1}-${chunk.endLine + 1}: ` +
+        `Based on ${largeSideLabel} (${largeSide.length} lines), ` +
+        `merged additions from small side: ${mergeResult.explanation}`
+      );
+    } else if (mergeResult.hasAdditions && !mergeResult.merged) {
+      // LLM found meaningful content but couldn't merge programmatically.
+      // Reject for manual resolution rather than risk data loss.
+      return {
+        resolved: false,
+        content,
+        explanation: `Both sides have meaningful content that needs manual merge: ${mergeResult.explanation}`,
+      };
+    } else {
+      // No meaningful additions in small side — large side is complete
+      resolvedLines.push(...largeSide);
+      explanations.push(
+        `Lines ${chunk.startLine + 1}-${chunk.endLine + 1}: ` +
+        `Kept ${largeSideLabel} (${largeSide.length} lines), ` +
+        `small side (${smallSide.length} lines) had no meaningful unique content`
+      );
+    }
+
+    i = chunk.endLine + 1;
+  }
+
+  // Add remaining lines after last conflict
+  while (i < lines.length) {
+    resolvedLines.push(lines[i]);
+    i++;
+  }
+
+  const resolvedContent = resolvedLines.join('\n');
+
+  debug('Asymmetric conflict resolution', {
+    file: filePath,
+    chunks: chunks.length,
+    originalLines: lines.length,
+    resolvedLines: resolvedLines.length,
+  });
+
+  return {
+    resolved: true,
+    content: resolvedContent,
+    explanation: explanations.join('; '),
+  };
+}
+
+/**
+ * Check if the small side of a conflict has meaningful unique content.
+ * If so, try to merge it into the large side programmatically.
+ * 
+ * For JSON files: programmatic deep-merge (large side wins conflicts,
+ *   small side contributes new keys / non-empty values where large side is empty).
+ * For non-JSON files: LLM-based analysis of the small side content.
+ */
+async function checkSmallSideForAdditions(
+  llm: LLMClient,
+  filePath: string,
+  largeSide: string[],
+  smallSide: string[],
+  baseBranch: string
+): Promise<{ hasAdditions: boolean; merged?: string[]; explanation: string }> {
+  // For JSON files: try programmatic deep-merge first (no LLM needed)
+  if (filePath.endsWith('.json')) {
+    try {
+      const largeObj = JSON.parse(largeSide.join('\n'));
+      const smallObj = JSON.parse(smallSide.join('\n'));
+      const { additions, merged } = deepMergeJSON(largeObj, smallObj);
+
+      if (additions.length === 0) {
+        return { hasAdditions: false, explanation: 'No unique non-empty fields in small side (programmatic check)' };
+      }
+
+      // Detect indentation from large side to preserve formatting
+      const indent = detectJSONIndent(largeSide.join('\n'));
+      const mergedStr = JSON.stringify(merged, null, indent);
+
+      debug('JSON deep-merge found additions from small side', { filePath, additions });
+      return {
+        hasAdditions: true,
+        merged: mergedStr.split('\n'),
+        explanation: `${additions.join(', ')}`,
+      };
+    } catch {
+      // JSON parse failed on one or both sides — fall through to LLM check
+      debug('JSON parse failed for deep-merge, falling back to LLM check', { filePath });
+    }
+  }
+
+  // For non-JSON files (or failed JSON parse): use LLM to check small side for unique content
+  const largeSideSample = getFileSample(largeSide, 30);
+
+  const prompt = `You are checking if the smaller side of a merge conflict contains any meaningful unique content that is NOT already present in the larger side.
+
+FILE: ${filePath} (generated/schema file)
+MERGING: ${baseBranch} into current branch
+
+The LARGER side (${largeSide.length} lines) is being kept as the base resolution.
+Here is a sample of the larger side (first and last lines):
+\`\`\`
+${largeSideSample}
+\`\`\`
+
+SMALLER SIDE (${smallSide.length} lines) — check this for unique content:
+\`\`\`
+${smallSide.join('\n')}
+\`\`\`
+
+Does the smaller side contain ANY meaningful data, entries, or content that is NOT already covered by the larger side?
+Empty structural placeholders (e.g., "tables": {}, empty objects/arrays) are NOT meaningful additions.
+
+Answer with ONLY one of:
+NO_ADDITIONS - if the smaller side has nothing meaningful beyond what the larger version covers
+ADDITIONS_FOUND: <brief description of what unique content exists>`;
+
+  try {
+    const response = await llm.complete(prompt);
+    const responseText = response.content.trim();
+
+    if (responseText.startsWith('NO_ADDITIONS')) {
+      return { hasAdditions: false, explanation: 'LLM confirmed no meaningful additions in small side' };
+    }
+
+    if (responseText.startsWith('ADDITIONS_FOUND')) {
+      const desc = responseText.replace(/^ADDITIONS_FOUND:\s*/, '').trim();
+      debug('LLM found additions in small side', { filePath, description: desc });
+      // Found additions but can't programmatically merge non-JSON files
+      // Return without merged content — caller will reject for manual resolution
+      return { hasAdditions: true, explanation: `Small side has unique content: ${desc}` };
+    }
+
+    // Unexpected LLM response format — conservative: assume no additions
+    debug('Unexpected LLM response for small-side check, assuming no additions', {
+      responsePreview: responseText.substring(0, 200),
+    });
+    return { hasAdditions: false, explanation: 'LLM response unclear — assuming no additions' };
+  } catch (error) {
+    // LLM failed — conservative: assume large side is sufficient
+    debug('LLM small-side check failed, using large side', { error });
+    return { hasAdditions: false, explanation: 'LLM check failed — using large side' };
+  }
+}
+
+/**
+ * Deep-merge two JSON objects, tracking what was added from the small side.
+ * Large side wins all conflicts; small side only contributes NEW keys
+ * or non-empty values where large side has empty ones.
+ * 
+ * WHY: Preserves everything from the large side while capturing any meaningful
+ * additions from the small side (e.g., new tables, new fields, new schema keys).
+ */
+function deepMergeJSON(
+  largeSide: JSONValue,
+  smallSide: JSONValue,
+  path: string = ''
+): { additions: string[]; merged: JSONValue } {
+  const additions: string[] = [];
+
+  // Non-objects: large side wins
+  if (typeof largeSide !== 'object' || largeSide === null ||
+      typeof smallSide !== 'object' || smallSide === null) {
+    return { additions: [], merged: largeSide };
+  }
+
+  // Array merge: find items in small side not present in large side
+  if (Array.isArray(largeSide)) {
+    if (!Array.isArray(smallSide)) return { additions: [], merged: largeSide };
+
+    const largeSet = new Set(largeSide.map(item => JSON.stringify(item)));
+    const uniqueFromSmall = smallSide.filter(item => !largeSet.has(JSON.stringify(item)));
+
+    if (uniqueFromSmall.length > 0) {
+      additions.push(`${path || 'root'}[+${uniqueFromSmall.length} items]`);
+      return { additions, merged: [...largeSide, ...uniqueFromSmall] };
+    }
+    return { additions: [], merged: largeSide };
+  }
+
+  // Object merge
+  const largeRecord = largeSide as Record<string, JSONValue>;
+  const smallRecord = smallSide as Record<string, JSONValue>;
+  const merged: Record<string, JSONValue> = { ...largeRecord };
+
+  for (const key of Object.keys(smallRecord)) {
+    const fullPath = path ? `${path}.${key}` : key;
+
+    if (!(key in largeRecord)) {
+      // Brand new key from small side — always add it
+      merged[key] = smallRecord[key];
+      if (!isEmptyJSONValue(smallRecord[key])) {
+        additions.push(fullPath);
+      }
+    } else if (typeof largeRecord[key] === 'object' && typeof smallRecord[key] === 'object') {
+      // Both sides have this key as objects — recurse
+      if (isEmptyJSONValue(smallRecord[key])) continue; // Small side empty, large side wins
+
+      if (isEmptyJSONValue(largeRecord[key])) {
+        // Large side is empty but small side has content — take small side's
+        merged[key] = smallRecord[key];
+        additions.push(fullPath);
+      } else {
+        // Both have content — recurse
+        const sub = deepMergeJSON(largeRecord[key], smallRecord[key], fullPath);
+        if (sub.additions.length > 0) {
+          additions.push(...sub.additions);
+          merged[key] = sub.merged;
+        }
+      }
+    }
+    // For primitives where both exist, large side always wins
+  }
+
+  return { additions, merged };
+}
+
+/** JSON-compatible value type for deep merge operations */
+type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
+
+/** Check if a JSON value is "empty" (null, empty string, empty object/array) */
+function isEmptyJSONValue(val: JSONValue): boolean {
+  if (val === null || val === undefined || val === '') return true;
+  if (Array.isArray(val)) return val.length === 0;
+  if (typeof val === 'object') return Object.keys(val).length === 0;
+  return false;
+}
+
+/** Detect JSON indentation from a string (defaults to 2 spaces) */
+function detectJSONIndent(text: string): number {
+  const match = text.match(/\n(\s+)"/);
+  return match ? match[1].length : 2;
+}
+
+/** Get a representative sample of a large file (first N + last N lines) */
+function getFileSample(lines: string[], n: number): string {
+  if (lines.length <= n * 2) return lines.join('\n');
+  const first = lines.slice(0, n);
+  const last = lines.slice(-n);
+  return [...first, `\n... (${lines.length - n * 2} lines omitted) ...\n`, ...last].join('\n');
 }
 
 /**

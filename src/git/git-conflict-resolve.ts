@@ -12,11 +12,85 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import type { Runner } from '../runners/types.js';
 import type { Config } from '../config.js';
 import { setTokenPhase, debug } from '../logger.js';
-import { MAX_CONFLICT_RESOLUTION_FILE_SIZE } from '../constants.js';
+import {
+  MAX_CONFLICT_RESOLUTION_FILE_SIZE,
+  MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
+  MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
+} from '../constants.js';
 import { buildConflictResolutionPrompt } from './git-conflict-prompts.js';
 import { handleLockFileConflicts } from './git-conflict-lockfiles.js';
-import { resolveConflictsChunked, tryHeuristicResolution } from './git-conflict-chunked.js';
+import {
+  resolveConflictsChunked,
+  tryHeuristicResolution,
+  extractConflictSides,
+  extractConflictChunks,
+  isGeneratedSchemaFile,
+  hasAsymmetricConflict,
+  resolveAsymmetricConflict,
+} from './git-conflict-chunked.js';
 
+
+/**
+ * Validate that resolved content is sane before writing to disk.
+ * 
+ * WHY: LLMs sometimes catastrophically corrupt files during conflict resolution.
+ * Real example: a 23K-line Drizzle migration snapshot was reduced to 250 lines
+ * with broken JSON, then committed and pushed. These checks catch such failures.
+ * 
+ * Checks performed:
+ * 1. JSON validation for .json files (catches structural corruption)
+ * 2. Size regression detection (catches catastrophic truncation)
+ */
+function validateResolvedContent(
+  filePath: string,
+  originalConflictedContent: string,
+  resolvedContent: string
+): { valid: boolean; reason?: string } {
+  // JSON validation: if the file is JSON, ensure the resolution is valid JSON
+  if (filePath.endsWith('.json')) {
+    try {
+      JSON.parse(resolvedContent);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { valid: false, reason: `Invalid JSON after resolution: ${message}` };
+    }
+  }
+
+  // Size regression: compare resolved content to the larger side of conflicts.
+  // The resolved file should not be drastically smaller than the larger conflict side.
+  const chunks = extractConflictChunks(originalConflictedContent);
+  if (chunks.length > 0) {
+    // Find the total size of the larger side across all conflicts
+    let totalLargerSideLines = 0;
+    for (const chunk of chunks) {
+      const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+      totalLargerSideLines += Math.max(ours.length, theirs.length);
+    }
+
+    // Also count non-conflicted lines (these should be preserved verbatim)
+    const originalLines = originalConflictedContent.split('\n');
+    const conflictLineSet = new Set<number>();
+    for (const chunk of chunks) {
+      for (let i = chunk.startLine; i <= chunk.endLine; i++) {
+        conflictLineSet.add(i);
+      }
+    }
+    const nonConflictedLineCount = originalLines.length - conflictLineSet.size;
+    const expectedMinLines = nonConflictedLineCount + Math.floor(totalLargerSideLines * MIN_CONFLICT_RESOLUTION_SIZE_RATIO);
+    const resolvedLineCount = resolvedContent.split('\n').length;
+
+    if (totalLargerSideLines >= MIN_LINES_FOR_SIZE_REGRESSION_CHECK && resolvedLineCount < expectedMinLines) {
+      return {
+        valid: false,
+        reason: `Catastrophic size regression: resolved has ${resolvedLineCount} lines, ` +
+          `expected at least ${expectedMinLines} (${nonConflictedLineCount} non-conflicted + ` +
+          `${MIN_CONFLICT_RESOLUTION_SIZE_RATIO * 100}% of ${totalLargerSideLines} conflict lines)`
+      };
+    }
+  }
+
+  return { valid: true };
+}
 
 export async function resolveConflictsWithLLM(
   git: SimpleGit,
@@ -144,6 +218,23 @@ export async function resolveConflictsWithLLM(
         
         if (result.resolved) {
           console.log(chalk.blue(`    → Using heuristic strategy for ${conflictFile}`));
+        } else if (
+          isGeneratedSchemaFile(conflictFile) &&
+          hasAsymmetricConflict(conflictedContent)
+        ) {
+          // Asymmetric conflict in a generated file: one side is dramatically
+          // larger than the other. Use the large side as base, then check the
+          // small side for any unique content worth merging.
+          // WHY: Standard chunked strategy sends 600KB+ to the LLM and risks
+          // catastrophic truncation. This keeps the large side intact and only
+          // sends the small side for analysis.
+          console.log(chalk.blue(`    → Using asymmetric merge for generated file (${fileSize}KB)`));
+          result = await resolveAsymmetricConflict(
+            llm,
+            conflictFile,
+            conflictedContent,
+            mergingBranch
+          );
         } else {
           // Use appropriate strategy based on file size
           if (conflictedContent.length > MAX_FILE_SIZE) {
@@ -165,7 +256,23 @@ export async function resolveConflictsWithLLM(
         }
         
         if (result.resolved) {
-          // Write the resolved content
+          // Validate resolved content before writing
+          // WHY: Catches corrupted resolutions (invalid JSON, catastrophic truncation)
+          // before they get committed and pushed. Better to bail to manual resolution
+          // than to push garbage.
+          const validation = validateResolvedContent(conflictFile, conflictedContent, result.content);
+          if (!validation.valid) {
+            debug('Resolution rejected by validation', { file: conflictFile, reason: validation.reason });
+            result = {
+              resolved: false,
+              content: conflictedContent,
+              explanation: `Resolution rejected: ${validation.reason}`,
+            };
+          }
+        }
+        
+        if (result.resolved) {
+          // Write the validated resolved content
           fs.writeFileSync(fullPath, result.content, 'utf-8');
           console.log(chalk.green(`    ✓ ${conflictFile}: ${result.explanation}`));
           

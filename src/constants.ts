@@ -58,6 +58,33 @@ export const MAX_SNIPPET_LINES = 500;
 export const MAX_CONFLICT_RESOLUTION_FILE_SIZE = 50000;
 
 /**
+ * Minimum ratio of resolved content lines to the larger conflict side's lines.
+ * If a resolution is smaller than this fraction, reject it as likely corrupted.
+ * 
+ * WHY: LLMs sometimes catastrophically truncate large files during conflict
+ * resolution (e.g., reducing 23K-line schema to 250 lines). This catches such
+ * failures before the garbage gets committed and pushed.
+ */
+export const MIN_CONFLICT_RESOLUTION_SIZE_RATIO = 0.1; // 10%
+
+/**
+ * Minimum line count in the larger conflict side to trigger size regression checks.
+ * Small conflicts don't benefit from ratio checks (a 10-line conflict resolving
+ * to 1 line is fine).
+ */
+export const MIN_LINES_FOR_SIZE_REGRESSION_CHECK = 100;
+
+/**
+ * Size ratio threshold for detecting asymmetric conflicts in generated files.
+ * If the smaller conflict side is less than this fraction of the larger side,
+ * use the large-side-as-base strategy instead of standard LLM resolution.
+ * 
+ * Example: a 17-line empty Drizzle skeleton vs a 23K-line full schema
+ * has a ratio of 0.0007 — far below this 5% threshold.
+ */
+export const ASYMMETRIC_CONFLICT_SIDE_RATIO = 0.05; // 5%
+
+/**
  * Maximum issues to show in commit message generation.
  * Keeps prompt focused on most relevant context.
  */
