@@ -137,29 +137,35 @@ describe('normalizeLessonText', () => {
   });
 
   describe('file extension stripping', () => {
-    it('keeps .ts extension', () => {
+    it('strips .ts path from surrounding text', () => {
+      const input = 'check src/file.ts now';
+      expect(normalize(input)).toBe('check now');
+    });
+
+    it('strips .js path from surrounding text', () => {
+      const input = 'update src/file.js here';
+      expect(normalize(input)).toBe('update here');
+    });
+
+    it('strips .md path from surrounding text', () => {
+      const input = 'see docs/README.md for details';
+      expect(normalize(input)).toBe('see for details');
+    });
+
+    it('strips .json path from surrounding text', () => {
+      const input = 'edit package.json config';
+      expect(normalize(input)).toBe('edit config');
+    });
+
+    it('strips .yml path from surrounding text', () => {
+      const input = 'modify config.yml settings';
+      expect(normalize(input)).toBe('modify settings');
+    });
+
+    it('falls back to original when path is the entire input', () => {
+      // When stripping produces empty string, sanitizeLessonText returns original
       const input = 'src/file.ts';
       expect(normalize(input)).toBe('src/file.ts');
-    });
-
-    it('keeps .js extension', () => {
-      const input = 'src/file.js';
-      expect(normalize(input)).toBe('src/file.js');
-    });
-
-    it('keeps .md extension', () => {
-      const input = 'src/file.md';
-      expect(normalize(input)).toBe('src/file.md');
-    });
-
-    it('keeps .json extension', () => {
-      const input = 'src/file.json';
-      expect(normalize(input)).toBe('src/file.json');
-    });
-
-    it('keeps .yml extension', () => {
-      const input = 'src/file.yml';
-      expect(normalize(input)).toBe('src/file.yml');
     });
   });
 
