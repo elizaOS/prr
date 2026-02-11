@@ -125,6 +125,17 @@ export function loadConfig(): Config {
     config.openaiApiKey = getEnvOrThrow('OPENAI_API_KEY');
   }
 
+  // Also pick up the OTHER provider's key if available (optional).
+  // WHY: The LLM provider is for verification, but fixer tools may use a
+  // different provider (e.g. Anthropic for LLM + Codex/OpenAI for fixing).
+  // We need both keys to validate model rotation lists at startup.
+  if (!config.openaiApiKey && process.env.OPENAI_API_KEY) {
+    config.openaiApiKey = process.env.OPENAI_API_KEY;
+  }
+  if (!config.anthropicApiKey && process.env.ANTHROPIC_API_KEY) {
+    config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  }
+
   return config;
 }
 
