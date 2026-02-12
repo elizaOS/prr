@@ -104,14 +104,21 @@ OUTPUT FORMAT - Use search/replace blocks:
 
 <change path="relative/path/to/file.ext">
 <search>
-exact lines to find (include enough context to be unique)
+exact lines to find
 </search>
 <replace>
 the replacement lines
 </replace>
 </change>
 
-You can output multiple <change> blocks. Each <search> must match EXACTLY (including whitespace).
+SEARCH/REPLACE RULES (CRITICAL — failures here waste the entire attempt):
+- COPY the <search> text character-for-character from the ACTUAL FILE CONTENT provided below. Do NOT retype code from memory or from the review comment's snippet — the file may have changed since the review.
+- Keep <search> blocks SHORT: 3-10 lines. Include just enough context to uniquely identify the location (a function signature, a unique variable name, a distinctive comment).
+- Always include at least one UNIQUE identifier in your search (function name, variable name, import path) — never search for just braces, blank lines, or generic code.
+- Preserve the EXACT indentation (spaces vs tabs, indent depth) from the actual file.
+- If fixing multiple places in one file, use multiple <change> blocks — do NOT combine them into one large search.
+
+You can output multiple <change> blocks.
 If creating a new file, use:
 
 <newfile path="relative/path/to/new-file.ext">
@@ -119,6 +126,12 @@ file contents
 </newfile>
 
 Working directory: ${workdir}`;
+
+    // Inject actual file content from disk so the LLM can copy exact search text.
+    // Parse file paths mentioned in the prompt (e.g. "File: path/to/file.ts:123")
+    // and append the current file contents. This is the #1 fix for search/replace
+    // failures: the LLM can see exactly what's in the file instead of guessing.
+    const enrichedPrompt = this.injectFileContents(workdir, prompt);
 
     try {
       let response: string;
@@ -133,7 +146,7 @@ Working directory: ${workdir}`;
           model,
           max_tokens: 16000,
           system: systemPrompt,
-          messages: [{ role: 'user', content: prompt }],
+          messages: [{ role: 'user', content: enrichedPrompt }],
         });
 
         response = result.content
@@ -156,7 +169,7 @@ Working directory: ${workdir}`;
           max_tokens: 16000,
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: prompt },
+            { role: 'user', content: enrichedPrompt },
           ],
         });
 
@@ -248,6 +261,68 @@ Working directory: ${workdir}`;
     return { safe: true, fullPath };
   }
 
+  /**
+   * Inject actual file contents from disk into the prompt.
+   * 
+   * Parses file paths mentioned in the prompt and appends a section with the
+   * current on-disk content of each unique file. This lets the LLM copy exact
+   * search text from real file content instead of guessing from stale snippets.
+   * 
+   * Limits: files > 200KB or > 5000 lines are skipped, max 10 files injected.
+   */
+  private injectFileContents(workdir: string, prompt: string): string {
+    const MAX_FILE_SIZE = 200_000;
+    const MAX_LINES = 5_000;
+    const MAX_FILES = 10;
+    
+    // Extract file paths from prompt patterns like:
+    //   "File: path/to/file.ts:123"
+    //   "### Issue 1: path/to/file.ts:42"  
+    //   "FILE: path/to/file.ts"
+    const filePathPattern = /(?:File|FILE|Issue \d+):\s*([^\s:]+\.[a-zA-Z]+)/g;
+    const seenPaths = new Set<string>();
+    const fileSections: string[] = [];
+    
+    let match;
+    while ((match = filePathPattern.exec(prompt)) !== null) {
+      const filePath = match[1];
+      if (seenPaths.has(filePath)) continue;
+      seenPaths.add(filePath);
+      if (seenPaths.size > MAX_FILES) break;
+      
+      const { safe, fullPath } = this.isPathSafe(workdir, filePath);
+      if (!safe || !existsSync(fullPath)) continue;
+      
+      try {
+        const content = readFileSync(fullPath, 'utf-8');
+        if (content.length > MAX_FILE_SIZE) {
+          debug('Skipping file injection - too large', { filePath, size: content.length });
+          continue;
+        }
+        const lineCount = content.split('\n').length;
+        if (lineCount > MAX_LINES) {
+          debug('Skipping file injection - too many lines', { filePath, lineCount });
+          continue;
+        }
+        
+        // Number each line so the LLM can orient itself
+        const numbered = content.split('\n')
+          .map((line, i) => `${String(i + 1).padStart(4)} | ${line}`)
+          .join('\n');
+        
+        fileSections.push(`### ${filePath} (${lineCount} lines)\n\`\`\`\n${numbered}\n\`\`\``);
+      } catch {
+        debug('Failed to read file for injection', { filePath });
+      }
+    }
+    
+    if (fileSections.length === 0) return prompt;
+    
+    debug('Injected file contents into prompt', { fileCount: fileSections.length, files: Array.from(seenPaths) });
+    
+    return prompt + `\n\n---\n\n## ACTUAL FILE CONTENTS (current on-disk state)\n\nIMPORTANT: When writing <search> blocks, copy text EXACTLY from these files — they reflect the current state of the code, which may differ from the review comment's snippet.\n\n${fileSections.join('\n\n')}`;
+  }
+
   private async applyFileChanges(workdir: string, response: string): Promise<string[]> {
     const filesModified = new Set<string>();
     let attemptedChanges = 0;
@@ -288,26 +363,58 @@ Working directory: ${workdir}`;
           // Try with normalized whitespace
           const searchLines = searchNormalized.split('\n').map(l => l.trim()).join('\n');
           const contentLines = originalContent.split('\n').map(l => l.trim()).join('\n');
-          if (!contentLines.includes(searchLines)) {
-            debug('Search text not found even with normalized whitespace', { filePath });
-            failedSearchReplace++;
-            failedFiles.add(filePath);
+          if (contentLines.includes(searchLines)) {
+            // Whitespace-only difference — apply with regex
+            const whitespaceToken = `\\s{1,${MAX_WHITESPACE}}`;
+            const patternParts = searchNormalized.split(new RegExp(whitespaceToken))
+              .map(part => escapeRegExp(part))
+              .filter(Boolean);
+            const whitespacePattern = patternParts.join(whitespaceToken);
+            const whitespaceRegex = new RegExp(whitespacePattern, 'm');
+            const newContent = originalContent.replace(whitespaceRegex, () => replaceText.trim());
+            if (newContent !== originalContent) {
+              writeFileSync(fullPath, newContent, 'utf-8');
+              filesModified.add(filePath);
+              debug('Applied whitespace-normalized search/replace', { filePath });
+              continue;
+            }
+          }
+          
+          // Progressive line trimming: LLMs often include 1-2 extra context lines
+          // at the top/bottom that have drifted since the review. Try stripping them.
+          const trimResult = progressiveTrimMatch(originalContent, searchNormalized, replaceText.trim());
+          if (trimResult) {
+            writeFileSync(fullPath, trimResult, 'utf-8');
+            filesModified.add(filePath);
+            debug('Applied progressive-trim search/replace', { filePath });
             continue;
           }
-          const whitespaceToken = `\\s{1,${MAX_WHITESPACE}}`;
-          const patternParts = searchNormalized.split(new RegExp(whitespaceToken))
-            .map(part => escapeRegExp(part))
-            .filter(Boolean);
-          const whitespacePattern = patternParts.join(whitespaceToken);
-          const whitespaceRegex = new RegExp(whitespacePattern, 'm');
-          const newContent = originalContent.replace(whitespaceRegex, () => replaceText.trim());
-          if (newContent === originalContent) {
-            debug('Search text found only with normalized whitespace but replacement failed', { filePath, searchLength: searchNormalized.length });
-            continue;
+          
+          // Fuzzy anchor-based matching: find the best matching region in the file
+          // WHY: LLMs often generate search text that's slightly off — a few lines
+          // differ due to drift between the PR diff and the working tree. Instead of
+          // giving up, find the region with the highest line overlap and use that.
+          const fuzzyResult = fuzzyFindRegion(originalContent, searchNormalized);
+          if (fuzzyResult) {
+            // Re-align replacement indentation to match the file's actual indentation
+            const alignedReplace = realignIndent(originalContent, fuzzyResult, replaceText.trim());
+            const newContent = originalContent.slice(0, fuzzyResult.start) + alignedReplace + originalContent.slice(fuzzyResult.end);
+            if (newContent !== originalContent) {
+              writeFileSync(fullPath, newContent, 'utf-8');
+              filesModified.add(filePath);
+              debug('Applied fuzzy-matched search/replace', { 
+                filePath, 
+                matchRate: fuzzyResult.matchRate,
+                matchedLines: fuzzyResult.matchedLines,
+                totalSearchLines: fuzzyResult.totalSearchLines,
+              });
+              continue;
+            }
           }
-          writeFileSync(fullPath, newContent, 'utf-8');
-          filesModified.add(filePath);
-          debug('Applied whitespace-normalized search/replace', { filePath });
+          
+          debug('Search text not found even with fuzzy matching', { filePath });
+          failedSearchReplace++;
+          failedFiles.add(filePath);
           continue;
         }
 
@@ -392,4 +499,249 @@ Working directory: ${workdir}`;
 
     return Array.from(filesModified);
   }
+}
+
+/**
+ * Fuzzy anchor-based region finder.
+ * 
+ * When the LLM's search text doesn't exactly match the file, find the region
+ * in the file that has the highest line-by-line overlap with the search text.
+ * 
+ * Strategy:
+ * 1. Normalize both search and file lines (trim whitespace)
+ * 2. Find "anchor" lines — non-trivial search lines that appear in the file
+ * 3. For each anchor position, check how many surrounding lines also match
+ * 4. Pick the region with the best match rate (must be >= 50%)
+ * 
+ * Returns the byte offsets (start, end) of the matched region in the original file,
+ * or null if no good match is found.
+ */
+function fuzzyFindRegion(
+  fileContent: string,
+  searchText: string
+): { start: number; end: number; matchRate: number; matchedLines: number; totalSearchLines: number } | null {
+  const searchLines = searchText.split('\n');
+  const fileLines = fileContent.split('\n');
+  
+  // Need at least 2 search lines for meaningful matching
+  if (searchLines.length < 2 || fileLines.length < 2) return null;
+  
+  const trimmedSearch = searchLines.map(l => l.trim());
+  const trimmedFile = fileLines.map(l => l.trim());
+  
+  // Find non-trivial lines (not empty, not just braces/brackets)
+  const isTrivial = (line: string) => /^[\s{}()\[\];,]*$/.test(line);
+  
+  // Build a map of file line content → positions (for quick anchor lookup)
+  const fileLinePositions = new Map<string, number[]>();
+  for (let i = 0; i < trimmedFile.length; i++) {
+    const line = trimmedFile[i];
+    if (!isTrivial(line)) {
+      const positions = fileLinePositions.get(line) || [];
+      positions.push(i);
+      fileLinePositions.set(line, positions);
+    }
+  }
+  
+  let bestMatch: { fileStart: number; fileEnd: number; matched: number } | null = null;
+  const minMatchRate = 0.5; // Require at least 50% of search lines to match
+  
+  // For each non-trivial search line, try it as an anchor
+  for (let si = 0; si < trimmedSearch.length; si++) {
+    const anchor = trimmedSearch[si];
+    if (isTrivial(anchor)) continue;
+    
+    const filePositions = fileLinePositions.get(anchor);
+    if (!filePositions) continue;
+    
+    // For each occurrence of this anchor in the file
+    for (const fi of filePositions) {
+      // The search line si maps to file line fi
+      // So search line 0 would map to file line (fi - si)
+      const fileStart = fi - si;
+      if (fileStart < 0) continue;
+      const fileEnd = fileStart + searchLines.length;
+      if (fileEnd > fileLines.length) continue;
+      
+      // Count how many search lines match in this alignment
+      // Uses similarity scoring: exact matches count 1.0, similar lines count
+      // proportionally (>= 0.8 similarity threshold for non-trivial lines)
+      let matched = 0;
+      for (let j = 0; j < searchLines.length; j++) {
+        const sl = trimmedSearch[j];
+        const fl = trimmedFile[fileStart + j];
+        if (sl === fl) {
+          matched++;
+        } else if (isTrivial(sl) && isTrivial(fl)) {
+          matched++; // Both trivial — close enough
+        } else if (lineSimilarity(sl, fl) >= 0.8) {
+          matched += 0.8; // Partial credit for similar but not identical lines
+        }
+      }
+      
+      if (!bestMatch || matched > bestMatch.matched) {
+        bestMatch = { fileStart, fileEnd, matched };
+      }
+    }
+  }
+  
+  if (!bestMatch) return null;
+  
+  const matchRate = bestMatch.matched / searchLines.length;
+  if (matchRate < minMatchRate) return null;
+  
+  // Convert line range to byte offsets in the original file
+  const lines = fileContent.split('\n');
+  let startOffset = 0;
+  for (let i = 0; i < bestMatch.fileStart; i++) {
+    startOffset += lines[i].length + 1; // +1 for \n
+  }
+  let endOffset = startOffset;
+  for (let i = bestMatch.fileStart; i < bestMatch.fileEnd; i++) {
+    endOffset += lines[i].length + 1;
+  }
+  // Don't include trailing newline of last line (replace text handles its own)
+  if (endOffset > 0 && endOffset <= fileContent.length) {
+    endOffset--; // back off the final \n
+  }
+  
+  return {
+    start: startOffset,
+    end: endOffset,
+    matchRate,
+    matchedLines: bestMatch.matched,
+    totalSearchLines: searchLines.length,
+  };
+}
+
+/**
+ * Progressive line trimming: try removing 1-3 lines from the start/end of
+ * the search text to see if the inner portion matches. Handles the common case
+ * where the LLM includes context lines above/below the change that have drifted.
+ * 
+ * Returns the new file content if a trimmed version matches, or null.
+ */
+function progressiveTrimMatch(
+  fileContent: string,
+  searchText: string,
+  replaceText: string,
+): string | null {
+  const searchLines = searchText.split('\n');
+  if (searchLines.length < 4) return null; // Need enough lines to trim meaningfully
+  
+  const maxTrim = Math.min(3, Math.floor(searchLines.length / 3)); // Don't trim more than 1/3
+  
+  for (let trimTop = 0; trimTop <= maxTrim; trimTop++) {
+    for (let trimBot = 0; trimBot <= maxTrim; trimBot++) {
+      if (trimTop === 0 && trimBot === 0) continue; // Already tried exact match
+      if (trimTop + trimBot >= searchLines.length - 1) continue; // Must keep at least 2 lines
+      
+      const trimmedSearchLines = searchLines.slice(trimTop, searchLines.length - trimBot || undefined);
+      const trimmedSearch = trimmedSearchLines.join('\n');
+      
+      if (fileContent.includes(trimmedSearch)) {
+        // Found it! Now we need to adjust the replacement:
+        // - Keep the original lines above/below that we trimmed from search
+        //   (they're still in the file, we just couldn't match them)
+        // - Only replace the inner portion we actually matched
+        const newContent = fileContent.replace(trimmedSearch, replaceText);
+        if (newContent !== fileContent) return newContent;
+      }
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Compute similarity between two strings (0.0 to 1.0).
+ * Uses a token-overlap approach: split on word boundaries, count shared tokens.
+ * Fast and good enough for comparing code lines.
+ */
+function lineSimilarity(a: string, b: string): number {
+  if (a === b) return 1.0;
+  if (!a || !b) return 0.0;
+  
+  const tokenize = (s: string) => s.split(/[\s,;(){}[\]<>'"=+\-*/&|!?:]+/).filter(Boolean);
+  const tokensA = tokenize(a);
+  const tokensB = tokenize(b);
+  
+  if (tokensA.length === 0 && tokensB.length === 0) return 1.0;
+  if (tokensA.length === 0 || tokensB.length === 0) return 0.0;
+  
+  const setB = new Set(tokensB);
+  const shared = tokensA.filter(t => setB.has(t)).length;
+  
+  // Dice coefficient: 2 * intersection / (|A| + |B|)
+  return (2 * shared) / (tokensA.length + tokensB.length);
+}
+
+/**
+ * Re-align replacement text indentation to match the file's actual indentation.
+ * 
+ * When fuzzy matching finds a region, the LLM's replacement text may assume a
+ * different indentation than what the file actually has. Detect the indent delta
+ * and shift the replacement text accordingly.
+ */
+function realignIndent(
+  fileContent: string,
+  fuzzyResult: { start: number; end: number },
+  replaceText: string,
+): string {
+  // Get the first non-empty line of the matched file region
+  const matchedRegion = fileContent.slice(fuzzyResult.start, fuzzyResult.end);
+  const matchedLines = matchedRegion.split('\n');
+  const replaceLines = replaceText.split('\n');
+  
+  // Find indent of first non-empty line in file region vs replacement
+  const getIndent = (lines: string[]): string | null => {
+    for (const line of lines) {
+      if (line.trim().length > 0) {
+        const m = line.match(/^(\s+)/);
+        return m ? m[1] : '';
+      }
+    }
+    return null;
+  };
+  
+  const fileIndent = getIndent(matchedLines);
+  const replaceIndent = getIndent(replaceLines);
+  
+  if (fileIndent === null || replaceIndent === null) return replaceText;
+  if (fileIndent === replaceIndent) return replaceText;
+  
+  // Detect indent style: tabs vs spaces
+  const fileUsesTabs = fileIndent.includes('\t');
+  const replaceUsesTabs = replaceIndent.includes('\t');
+  
+  // If different indent styles, just do a simple re-indent
+  if (fileUsesTabs !== replaceUsesTabs) {
+    // Convert replacement to match file style
+    const fileIndentUnit = fileUsesTabs ? '\t' : (fileIndent.match(/^( +)/) || ['', '  '])[1];
+    const replaceIndentUnit = replaceUsesTabs ? '\t' : (replaceIndent.match(/^( +)/) || ['', '  '])[1];
+    
+    return replaceLines.map(line => {
+      const m = line.match(/^(\s+)/);
+      if (!m) return line;
+      const depth = Math.round(m[1].length / (replaceIndentUnit.length || 1));
+      return fileIndentUnit.repeat(depth) + line.trimStart();
+    }).join('\n');
+  }
+  
+  // Same indent style — compute delta and shift
+  const delta = fileIndent.length - replaceIndent.length;
+  if (delta === 0) return replaceText;
+  
+  const pad = delta > 0 ? fileIndent.charAt(0).repeat(delta) : '';
+  
+  return replaceLines.map(line => {
+    if (line.trim().length === 0) return line; // Leave blank lines alone
+    if (delta > 0) {
+      return pad + line;
+    } else {
+      // Remove up to |delta| leading whitespace chars
+      const remove = Math.min(Math.abs(delta), line.length - line.trimStart().length);
+      return line.slice(remove);
+    }
+  }).join('\n');
 }

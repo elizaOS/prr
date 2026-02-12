@@ -167,6 +167,8 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   parts.push('4. Do NOT change working code that is not mentioned in the review');
   parts.push('5. Preserve existing code structure, variable names, and formatting');
   parts.push('6. If an issue is unclear, make the smallest reasonable fix');
+  parts.push('7. When using search/replace, copy the search text EXACTLY from the actual file content — the code snippet in the review comment may be stale');
+  parts.push('8. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, import, etc.)');
   parts.push('');
   parts.push('## CRITICAL: If You Make Zero Changes\n');
   parts.push('If you decide NOT to make any file changes, you MUST explain why in your output.');

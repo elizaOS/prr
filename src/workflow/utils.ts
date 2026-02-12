@@ -267,6 +267,8 @@ ${lessons.map(l => `- ${l}`).join('\n')}
 2. Make the minimal change required - do NOT rewrite the whole file
 3. Do not modify any other files
 4. You MUST make a change - if unsure, make your best attempt
+5. When using search/replace, copy the search text character-for-character from the ACTUAL FILE CONTENT (not from the review comment snippet, which may be stale)
+6. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, etc.)
 
 IMPORTANT: Actually edit the file. Do not just explain what to do.`;
 
