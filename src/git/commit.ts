@@ -631,10 +631,11 @@ function extractDescription(
     }
   }
   
-  // Try to extract specific noun phrases
-  const nounMatch = allText.match(/(?:add|fix|improve|update|handle)\s+(\w+(?:\s+\w+)?)/);
-  if (nounMatch && nounMatch[1].length < 30) {
-    return `${allText.includes('fix') ? 'fix' : 'improve'} ${nounMatch[1]}`;
+  // Try to extract specific noun phrases (capture verb to avoid "fix fix X")
+  const nounMatch = allText.match(/(add|fix|improve|update|handle)\s+(\w+(?:\s+\w+)?)/);
+  if (nounMatch && nounMatch[2].length < 30) {
+    // Use the matched verb to avoid duplication like "fix fix typo"
+    return `${nounMatch[1]} ${nounMatch[2]}`;
   }
   
   return fileBasedDesc;

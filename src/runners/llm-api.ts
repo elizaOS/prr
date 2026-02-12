@@ -365,11 +365,10 @@ Working directory: ${workdir}`;
           const contentLines = originalContent.split('\n').map(l => l.trim()).join('\n');
           if (contentLines.includes(searchLines)) {
             // Whitespace-only difference — apply with regex (limited to prevent ReDoS)
-            const whitespaceToken = `\\s{1,${MAX_WHITESPACE}}`;
             const patternParts = searchNormalized.split(/\s+/)
               .map(part => escapeRegExp(part))
               .filter(Boolean);
-            const whitespacePattern = patternParts.join(whitespaceToken);
+            const whitespacePattern = patternParts.join(`\\s{1,${MAX_WHITESPACE}}`);
             const whitespaceRegex = new RegExp(whitespacePattern, 'm');
             const newContent = originalContent.replace(whitespaceRegex, () => replaceText.trim());
             if (newContent !== originalContent) {
