@@ -107,18 +107,28 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   }
 
   // Restore original remote URL after push to avoid persisting token in .git/config
-  const restoreRemoteUrl = async () => {
+  const restoreRemoteUrl = () => {
     try {
-      const currentUrl = await git.remote(['get-url', 'origin']);
-      if (currentUrl && currentUrl.trim().includes('@')) {
-        const cleanUrl = currentUrl.trim().replace(/https:\/\/[^@]+@/, 'https://');
-        await git.remote(['set-url', 'origin', cleanUrl]);
+      const currentUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+      if (currentUrl && currentUrl.includes('@')) {
+        const cleanUrl = currentUrl.replace(/https:\/\/[^@]+@/, 'https://');
+        execSync(`git remote set-url origin ${cleanUrl}`, { cwd: workdir, stdio: 'ignore', shell: false });
         debug('Restored clean remote URL after push');
       }
     } catch {
       // Ignore restore errors
     }
-  };
+  };</search>
+</change>
+
+<change path="src/git/commit.ts">
+<search>      if (result.success) {
+        debug('Push succeeded', { attempts: retries + 1 });
+        return { success: true };</search>
+<replace>      if (result.success) {
+        debug('Push succeeded', { attempts: retries + 1 });
+        restoreRemoteUrl();
+        return { success: true };
 
   const args = ['push', 'origin', branch];
   if (force) args.push('--force');
