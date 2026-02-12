@@ -804,7 +804,9 @@ function deepMergeJSON(
   const smallRecord = smallSide as Record<string, JSONValue>;
   const merged: Record<string, JSONValue> = { ...largeRecord };
 
+  const PROTO_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
   for (const key of Object.keys(smallRecord)) {
+    if (PROTO_KEYS.has(key)) continue; // Prevent prototype pollution
     const fullPath = path ? `${path}.${key}` : key;
 
     if (!(key in largeRecord)) {

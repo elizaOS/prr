@@ -14,12 +14,12 @@
 
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 function isValidModel(model: string): boolean {
   return isValidModelName(model);
@@ -32,7 +32,7 @@ export class GeminiRunner implements Runner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which gemini');
+      await execFile('which', ['gemini']);
       debug('Found Gemini CLI');
       return true;
     } catch {
@@ -50,8 +50,8 @@ export class GeminiRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec('gemini --version 2>&1');
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile('gemini', ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might fail
     }
@@ -63,7 +63,7 @@ export class GeminiRunner implements Runner {
     if (!hasApiKey) {
       // Try running a quick check - gemini might be authenticated via gcloud
       try {
-        await exec('gemini --help 2>&1');
+        await execFile('gemini', ['--help']);
         // If help works, assume it's usable (might be using gcloud auth)
         return { installed: true, ready: true, version };
       } catch {

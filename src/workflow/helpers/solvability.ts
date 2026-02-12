@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import type { ReviewComment } from '../../github/types.js';
 import type { StateContext } from '../../state/state-context.js';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
@@ -35,8 +35,19 @@ export function assessSolvability(
   comment: ReviewComment,
   stateContext: StateContext
 ): SolvabilityResult {
-  // Check 1: File existence
+  // Check 0: Path traversal guard (comment.path comes from GitHub API)
   const fullPath = join(workdir, comment.path);
+  const resolvedWorkdir = resolve(workdir);
+  const resolvedPath = resolve(fullPath);
+  if (!resolvedPath.startsWith(resolvedWorkdir + sep) && resolvedPath !== resolvedWorkdir) {
+    return {
+      solvable: false,
+      dismissCategory: 'stale',
+      reason: `Path outside workdir: ${comment.path}`,
+    };
+  }
+
+  // Check 1: File existence
   if (!existsSync(fullPath)) {
     return {
       solvable: false,

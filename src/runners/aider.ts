@@ -1,13 +1,13 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 // Validate model name to prevent injection (defense in depth - also validated in CLI)
 // Allows forward slashes for provider-prefixed names like "anthropic/claude-..." or "openrouter/anthropic/..."
@@ -22,7 +22,7 @@ export class AiderRunner implements Runner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which aider');
+      await execFile('which', ['aider']);
       debug('Found Aider CLI');
       return true;
     } catch {
@@ -40,8 +40,8 @@ export class AiderRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec('aider --version 2>&1');
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile('aider', ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might fail
     }

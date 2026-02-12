@@ -14,12 +14,12 @@
 
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 export class OpenHandsRunner implements Runner {
   name = 'openhands';
@@ -28,7 +28,7 @@ export class OpenHandsRunner implements Runner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which openhands');
+      await execFile('which', ['openhands']);
       debug('Found OpenHands CLI');
       return true;
     } catch {
@@ -45,8 +45,8 @@ export class OpenHandsRunner implements Runner {
 
     let version: string | undefined;
     try {
-      const { stdout } = await exec('openhands --version 2>&1');
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile('openhands', ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might fail
     }

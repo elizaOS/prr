@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import { createReadStream, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -8,7 +8,7 @@ import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 // Validate model name to prevent injection (defense in depth)
 function isValidModel(model: string): boolean {
@@ -27,7 +27,7 @@ export class CodexRunner implements Runner {
   async isAvailable(): Promise<boolean> {
     for (const binary of CODEX_BINARIES) {
       try {
-        await exec(`which ${binary}`);
+        await execFile('which', [binary]);
         this.binaryPath = binary;
         debug(`Found Codex CLI at: ${binary}`);
         return true;
@@ -48,8 +48,8 @@ export class CodexRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec(`${this.binaryPath} --version 2>&1`);
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile(this.binaryPath, ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might fail
     }

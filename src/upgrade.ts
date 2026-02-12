@@ -4,10 +4,11 @@
  * Checks versions of installed AI coding tools and provides upgrade instructions.
  */
 import chalk from 'chalk';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 interface ToolVersion {
   name: string;
@@ -25,7 +26,7 @@ interface ToolVersion {
  */
 async function commandExists(command: string): Promise<boolean> {
   try {
-    await execAsync(`which ${command}`);
+    await execFileAsync('which', [command]);
     return true;
   } catch {
     return false;
@@ -37,10 +38,11 @@ async function commandExists(command: string): Promise<boolean> {
  */
 async function getToolVersion(command: string, versionFlag: string = '--version'): Promise<string | null> {
   try {
-    const { stdout } = await execAsync(`${command} ${versionFlag}`);
+    const { stdout, stderr } = await execFileAsync(command, [versionFlag]);
+    const output = (stdout || stderr).toString();
     // Extract version number from output (common formats: v1.2.3, 1.2.3, version 1.2.3)
-    const match = stdout.match(/(\d+\.\d+\.\d+)/);
-    return match ? match[1] : stdout.trim().split('\n')[0];
+    const match = output.match(/(\d+\.\d+\.\d+)/);
+    return match ? match[1] : output.trim().split('\n')[0];
   } catch {
     return null;
   }

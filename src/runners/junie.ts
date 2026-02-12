@@ -13,12 +13,12 @@
 
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 export class JunieRunner implements Runner {
   name = 'junie';
@@ -27,7 +27,7 @@ export class JunieRunner implements Runner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which junie');
+      await execFile('which', ['junie']);
       debug('Found Junie CLI');
       return true;
     } catch {
@@ -44,8 +44,8 @@ export class JunieRunner implements Runner {
 
     let version: string | undefined;
     try {
-      const { stdout } = await exec('junie --version 2>&1');
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile('junie', ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might fail
     }
@@ -55,7 +55,7 @@ export class JunieRunner implements Runner {
     if (!hasToken) {
       // Try running help to see if it is authenticated via stored credentials
       try {
-        await exec('junie --help 2>&1');
+        await execFile('junie', ['--help']);
         return { installed: true, ready: true, version };
       } catch {
         return { installed: true, ready: false, version, error: 'JUNIE_AUTH_TOKEN not set (or run: junie auth)' };

@@ -1,5 +1,5 @@
 import type { SimpleGit } from 'simple-git';
-import { spawn, execSync, execFileSync } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
 
 export interface CommitResult {
@@ -87,7 +87,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     }
   };
   try {
-    const remoteUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf8' }).trim();
+    const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
     originalRemoteUrl = remoteUrl;
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
     

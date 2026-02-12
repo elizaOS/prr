@@ -14,12 +14,12 @@
 
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 /**
  * Map model names to goose provider names.
@@ -39,7 +39,7 @@ export class GooseRunner implements Runner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which goose');
+      await execFile('which', ['goose']);
       debug('Found Goose CLI');
       return true;
     } catch {
@@ -56,12 +56,12 @@ export class GooseRunner implements Runner {
 
     let version: string | undefined;
     try {
-      const { stdout } = await exec('goose version 2>&1');
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile('goose', ['version']);
+      version = (stdout || stderr).trim();
     } catch {
       try {
-        const { stdout } = await exec('goose --version 2>&1');
-        version = stdout.trim();
+        const { stdout, stderr } = await execFile('goose', ['--version']);
+        version = (stdout || stderr).trim();
       } catch {
         // Version check might fail
       }
