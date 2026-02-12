@@ -74,10 +74,20 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
   
   // Smart model selection: use LLM recommendations first
   if (!options.modelRotation && ctx.recommendedModels?.length) {
-    const model = ctx.recommendedModels[ctx.recommendedModelIndex];
-    if (model && isModelAvailableForRunner(ctx, model)) {
-      return model;
+    // Try current and subsequent recommendations to find one compatible with current runner
+    for (let i = ctx.recommendedModelIndex; i < ctx.recommendedModels.length; i++) {
+      const model = ctx.recommendedModels[i];
+      if (model && isModelAvailableForRunner(ctx, model) && isModelProviderCompatible(ctx.runner, model)) {
+        // Advance index to this position so advanceModel starts from here
+        ctx.recommendedModelIndex = i;
+        return model;
+      }
     }
+    // No compatible recommendations found for this runner - fall through to rotation
+    debug('No compatible recommended models for runner', { 
+      runner: ctx.runner.name, 
+      recommendations: ctx.recommendedModels,
+    });
   }
   
   // Fall back to legacy rotation
@@ -94,6 +104,33 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
     return models[0];
   }
   return models[index];
+}
+
+/**
+ * Check if a model's provider is compatible with a runner.
+ * 
+ * WHY: Recommended models come from LLM batch analysis which may have been
+ * done when a different runner was active. When the runner rotates (e.g., 
+ * claude-code → codex), the recommendations may contain models from the
+ * wrong provider (e.g., claude-sonnet for codex). This check prevents
+ * sending Anthropic models to OpenAI-only tools and vice versa.
+ */
+function isModelProviderCompatible(runner: Runner, model: string): boolean {
+  const runnerProvider = RUNNER_PROVIDER_MAP[runner.name];
+  
+  // No provider mapping = runner handles its own models (e.g., cursor) — allow anything
+  if (!runnerProvider) return true;
+  
+  // Mixed-provider runners accept any model
+  if (runnerProvider === 'mixed') return true;
+  
+  // Detect the model's provider from its name
+  const modelProvider = detectModelProvider(model, runnerProvider);
+  
+  // Can't determine model provider — allow it (safe default, let the API reject)
+  if (!modelProvider) return true;
+  
+  return modelProvider === runnerProvider;
 }
 
 /**

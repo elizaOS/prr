@@ -63,6 +63,18 @@ export function handleFixerError(
     return { shouldExit: true, rapidFailureCount, lastFailureTime };
   }
   
+  // MODEL ERRORS: Wrong model for this runner — don't bail, just rotate
+  // WHY: This happens when LLM-recommended models from a previous runner rotation
+  // leak through to an incompatible runner (e.g., claude-sonnet → codex).
+  // The runner's guard caught it; we should rotate to the next model, not exit.
+  if (result.errorType === 'model') {
+    console.log(chalk.yellow(`\n⚠ MODEL MISMATCH: ${result.error}`));
+    console.log(chalk.gray('  Will rotate to next model...'));
+    debug('Model mismatch - will rotate', { tool: runner.name, error: result.error });
+    Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
+    return { shouldExit: false, rapidFailureCount, lastFailureTime };
+  }
+  
   // ENVIRONMENT ERRORS: Tool environment issue (e.g., TTY/cursor position)
   // WHY: These are infrastructure issues that won't fix themselves with retries.
   // The tool needs a different environment (real TTY, GUI, etc.)

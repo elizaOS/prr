@@ -149,6 +149,13 @@ export class ClaudeCodeRunner implements Runner {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 
+    // Guard: Reject non-Anthropic models — Claude Code only supports Anthropic models.
+    if (options?.model && /^(gpt|o[34]|codex|davinci|gemini)/i.test(options.model)) {
+      const msg = `Model "${options.model}" is not an Anthropic model — skipping for Claude Code`;
+      debug(msg);
+      return { success: false, output: '', error: msg, errorType: 'model' };
+    }
+
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
     writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });

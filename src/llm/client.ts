@@ -663,9 +663,15 @@ STALE: Not applicable`;
             .map(m => m.trim())
             .filter(m => {
               const lower = m.toLowerCase();
+              // Exact match (case-insensitive)
               if (availableSet.has(lower)) return true;
+              // Prefix match: the recommended model is a prefix of an available model
+              // (e.g., "claude-sonnet" matches "claude-sonnet-4-5-20250929")
+              // But NOT the reverse — we don't want "gpt" to match "gpt-5.3-codex"
+              // because that's too loose and could cross provider boundaries.
               for (const avail of modelContext.availableModels!) {
-                if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
+                const availLower = avail.toLowerCase();
+                if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
                   return true;
                 }
               }
@@ -674,8 +680,10 @@ STALE: Not applicable`;
             .map(m => {
               const lower = m.toLowerCase();
               for (const avail of modelContext.availableModels!) {
-                if (avail.toLowerCase() === lower) return avail;
-                if (avail.toLowerCase().includes(lower) || lower.includes(avail.toLowerCase())) {
+                const availLower = avail.toLowerCase();
+                if (availLower === lower) return avail;
+                // Normalize to the full available model name
+                if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
                   return avail;
                 }
               }

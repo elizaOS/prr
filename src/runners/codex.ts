@@ -73,6 +73,16 @@ export class CodexRunner implements Runner {
     if (options?.model && !isValidModel(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
+    
+    // Guard: Reject non-OpenAI models — Codex only supports OpenAI models.
+    // WHY: If model rotation recommends an Anthropic/Google model (e.g., after
+    // a runner switch), sending it to the OpenAI API wastes a retry cycle and
+    // triggers a confusing "model does not exist" auth error.
+    if (options?.model && /^(claude|anthropic|gemini)/i.test(options.model)) {
+      const msg = `Model "${options.model}" is not an OpenAI model — skipping for Codex`;
+      debug(msg);
+      return { success: false, output: '', error: msg, errorType: 'model' };
+    }
 
     // Write prompt to temp file for stdin piping
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);

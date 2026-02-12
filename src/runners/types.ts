@@ -3,10 +3,11 @@
  * - 'permission': Tool lacks write permissions (bail out immediately - don't waste tokens)
  * - 'auth': Authentication/API key issues
  * - 'timeout': Process timed out
+ * - 'model': Wrong model for this runner (e.g., claude model sent to codex) - rotate, don't bail
  * - 'tool': General tool failure (retry with different model/tool)
  * - 'environment': Tool environment issue (e.g., TTY/cursor position) - bail out, won't fix with retries
  */
-export type RunnerErrorType = 'permission' | 'auth' | 'timeout' | 'tool' | 'environment';
+export type RunnerErrorType = 'permission' | 'auth' | 'model' | 'timeout' | 'tool' | 'environment';
 
 export interface RunnerResult {
   success: boolean;
