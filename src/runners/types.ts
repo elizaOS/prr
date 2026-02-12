@@ -69,7 +69,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   'cursor': [
     'claude-4-sonnet',                 // Claude 4.5 Sonnet - balanced, fast
     'claude-4-opus',                   // Claude 4.6 Opus - most intelligent
-    'gpt-5.3',                         // GPT-5.3 - latest OpenAI
+    'gpt-5.2',                         // GPT-5.3 - latest OpenAI
     'o3-mini',                         // OpenAI o3-mini - fast reasoning
   ],
   // Claude Code: Claude 4+ models (uses full API names)
