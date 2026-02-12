@@ -378,8 +378,9 @@ Start your response with \`\`\` and end with \`\`\`.`;
               try {
                 await git.reset(['HEAD', issue.comment.path]);
                 await git.checkout([issue.comment.path]);
-              } catch { /* ignore reset failures */ }
-              console.log(chalk.yellow(`    Warning: Could not revert ${issue.comment.path}: ${err.message}`));
+              } catch {
+                console.log(chalk.yellow(`    Warning: Could not revert ${issue.comment.path}: ${err.message}`));
+              }
             });
             } else {
               // File is untracked, just delete it

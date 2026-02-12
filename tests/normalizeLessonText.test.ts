@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeLessonText } from '../src/state/lessons-normalize.js';
+import { sanitizeLessonText } from '../src/state/lessons.js';
 
 // Tests for normalizeLessonText behavior
 // Uses sanitizeLessonText as the public API (see normalize-lesson-text.test.ts for real tests)

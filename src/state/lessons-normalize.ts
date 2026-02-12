@@ -117,7 +117,10 @@ export function normalizeLessonText(lesson: string): string | null {
   // Detect orphaned/incomplete entries (truncated lessons)
   if (/\.\.\.$/.test(normalized)) return null;  // Ends with "..."
   if (/\b(?:in|to|for|from|with|the|and|or|but|if|when|that)\s*$/i.test(normalized)) return null;  // Ends with incomplete phrase
-  if (/(?:function|method|code|logic|generator|manager|strategy|helper|pattern|implementation)\s*$/i.test(normalized)) return null;  // Ends with noun expecting more
+  // Ends with noun expecting more - only reject if short or lacking action verbs
+  const endsWithIncompleteNoun = /(?:function|method|code|logic|generator|manager|strategy|helper|pattern|implementation)\s*$/i.test(normalized);
+  const hasActionVerb = /\b(?:is|are|fix|avoid|implement|add|remove|update|use|handle|prevent|refactor|fixes|avoids|adds|check|ensure|validate|verify|create|delete|modify|change|apply|set|get|call|run|execute|skip|include|exclude)\b/i.test(normalized);
+  if (endsWithIncompleteNoun && (normalized.length < 40 || !hasActionVerb)) return null;
   
   // Reject common malformed patterns
   if (/\bchars\s+truncated\b/i.test(normalized)) return null;
