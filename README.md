@@ -581,10 +581,8 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 | `gpt-5` | GPT-5 |
 | `gpt-5.2` | GPT-5.2 |
 | `grok-2` | Grok 2 |
-| `grok-3-beta` | Grok 3 Beta |
-| `grok-3-mini` | Grok 3 Mini |
 
-> **⚠️ The table above is illustrative only — it may be outdated.** Model availability varies by account, plan, and provider. Run `agent models` or `cursor-agent --list-models` to see your actual available options. Refer to each provider's documentation for current model names.
+> **⚠️ The table above shows example models only and is likely outdated.** Model availability changes frequently and varies by account, plan, and provider. To see your actual available models, run `agent models` or `cursor-agent --list-models`. Refer to each provider's documentation for current model names and identifiers.
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 

@@ -44,10 +44,15 @@ export function sanitizeLessonText(lesson: string): string {
   // Remove file paths that look like code references
   result = result.replace(/\b[\w./\\-]+\.(ts|js|tsx|jsx|json|md|yaml|yml)\b/g, '');
   
+  // Normalize "made no changes" with missing separators
+  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+  result = result.replace(/made no changes\s{2,}already/gi, 'made no changes - already');
+  
   // Collapse double hyphens into single (formatting artifact)
   result = result.replace(/\s*-\s*-\s*/g, ' - ');
   
   // Remove malformed section header artifacts like "- (inferred) ts"
+  result = result.replace(/\s*-\s*\(inferred\)\s*\w*/g, '');
   result = result.replace(/\s*-\s*\(inferred\)\s*\w*/g, '');
   
   // Normalize "made no changes" variants with missing separators
