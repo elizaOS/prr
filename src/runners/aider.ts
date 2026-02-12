@@ -88,7 +88,7 @@ export class AiderRunner implements Runner {
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('aider', prompt, { workdir, model: options?.model });
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
       const args: string[] = ['--yes-always'];
       

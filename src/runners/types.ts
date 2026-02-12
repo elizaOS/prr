@@ -47,7 +47,10 @@ export interface Runner {
  * AI models get stuck. They'll make the same mistake repeatedly.
  * Different models have different strengths:
  * - Claude excels at following complex instructions
- * - GPT excels at common patterns  
+ * - GPT excels at common patterns
+ * 
+ * NOTE: Model names may need updating as providers release new versions.
+ * Run `agent models` or check provider docs for current availability.  
  * - Opus has better reasoning for hard problems
  * - Mini models work fine for simple fixes (and are faster/cheaper)
  * 

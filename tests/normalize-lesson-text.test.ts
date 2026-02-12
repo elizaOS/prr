@@ -84,7 +84,7 @@ describe('normalizeLessonText', () => {
       const input = 'protected method';
       // normalizeLessonText drops lines starting with access modifiers
       const result = normalize(input);
-      expect(result === null || typeof result === 'string').toBe(true);
+      expect(result).toBeNull();
     });
   });
 
@@ -92,13 +92,13 @@ describe('normalizeLessonText', () => {
     it('handles class declaration lines', () => {
       const input = 'class MyClass';
       const result = normalize(input);
-      expect(typeof result === 'string' || result === null).toBe(true);
+      expect(result).toBeNull();
     });
 
     it('handles interface declaration lines', () => {
       const input = 'interface MyInterface';
       const result = normalize(input);
-      expect(typeof result === 'string' || result === null).toBe(true);
+      expect(result).toBeNull();
     });
 
     it('removes type declaration', () => {
@@ -166,11 +166,11 @@ describe('normalizeLessonText', () => {
     });
 
     it('strips file path tokens from text', () => {
-      // sanitizeLessonText strips file-path-like tokens; when result is empty, returns original
+      // sanitizeLessonText strips file-path-like tokens; when result is empty, returns original (trimmed)
       const input = 'src/file.ts';
       const result = normalize(input);
-      // sanitizeLessonText returns original (trimmed) if sanitization results in empty string
-      expect(typeof result === 'string').toBe(true);
+      // When stripping file paths leaves empty string, sanitizeLessonText returns original trimmed
+      expect(result).toBe('src/file.ts');
     });
   });
 
@@ -191,7 +191,7 @@ describe('normalizeLessonText', () => {
     it('handles (inferred) ts suffix', () => {
       const input = 'src/state/manager.ts:117 - (inferred) ts';
       const result = normalize(input);
-      // sanitizeLessonText strips file paths and processes remaining text
+      // sanitizeLessonText strips file paths; remaining text may be null or cleaned string
       expect(result === null || typeof result === 'string').toBe(true);
     });
   });
