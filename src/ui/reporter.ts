@@ -13,6 +13,58 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
+ * Sanitize a review comment body for human-readable terminal output.
+ * Strips HTML tags, massive URLs (JWT tokens, data URIs, tracking links),
+ * markdown images, and collapses whitespace.
+ */
+export function sanitizeCommentForDisplay(body: string): string {
+  let text = body;
+  
+  // Strip HTML comments (<!-- ... -->) including BugBot metadata
+  text = text.replace(/<!--[\s\S]*?-->/g, '');
+  
+  // Strip entire <p> blocks that contain only links/images (BugBot "Fix in Cursor" buttons)
+  text = text.replace(/<p>\s*<a[^>]*>[\s\S]*?<\/a>(?:\s*&nbsp;\s*<a[^>]*>[\s\S]*?<\/a>)*\s*<\/p>/gi, '');
+  
+  // Strip <picture> blocks (contain <source>/<img> for dark/light mode badges)
+  text = text.replace(/<picture>[\s\S]*?<\/picture>/gi, '');
+  
+  // Strip <details> blocks (collapsed sections with secondary info)
+  text = text.replace(/<details>[\s\S]*?<\/details>/gi, '');
+  
+  // Strip markdown images: ![alt](url) and HTML <img> tags
+  text = text.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+  text = text.replace(/<img[^>]*\/?>/gi, '');
+  
+  // Strip <a> tags that wrap non-text content (images, badges) — remove entirely
+  text = text.replace(/<a[^>]*>\s*<(?:picture|img)[^]*?<\/a>/gi, '');
+  
+  // Strip remaining <a> tags but keep their text content
+  text = text.replace(/<a[^>]*>([\s\S]*?)<\/a>/gi, '$1');
+  
+  // Strip all remaining HTML tags
+  text = text.replace(/<[^>]+>/g, '');
+  
+  // Strip standalone URLs longer than 60 chars (JWT tokens, tracking links, data URIs)
+  text = text.replace(/https?:\/\/\S{60,}/g, '');
+  
+  // Strip markdown links where the URL is very long: [text](huge-url) → text
+  text = text.replace(/\[([^\]]*)\]\(https?:\/\/\S{60,}\)/g, '$1');
+  
+  // Strip HTML entities
+  text = text.replace(/&nbsp;/g, ' ');
+  text = text.replace(/&[a-z]+;/gi, '');
+  
+  // Collapse multiple blank lines into one
+  text = text.replace(/\n{3,}/g, '\n\n');
+  
+  // Collapse leading/trailing whitespace per line, drop empty lines at start/end
+  text = text.split('\n').map(l => l.trim()).join('\n').trim();
+  
+  return text;
+}
+
+/**
  * Unresolved issue with explanation
  */
 export interface UnresolvedIssue {
@@ -171,8 +223,9 @@ export function printHandoffPrompt(
   for (let i = 0; i < unresolvedIssues.length; i++) {
     const issue = unresolvedIssues[i];
     console.log(chalk.white(`${i + 1}. File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}`));
-    // Print full issue body - handoff needs complete context to be useful
-    const issueLines = issue.comment.body.split('\n');
+    // Sanitize comment body for terminal readability — strip HTML, massive URLs, images
+    const cleanBody = sanitizeCommentForDisplay(issue.comment.body);
+    const issueLines = cleanBody.split('\n');
     console.log(chalk.white(`   Issue: ${issueLines[0]}`));
     for (let j = 1; j < issueLines.length; j++) {
       if (issueLines[j].trim()) {
@@ -258,10 +311,10 @@ export async function printAfterActionReport(
     
     console.log(chalk.yellow(`\n━━━ Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'} ━━━`));
     
-    // Original issue - show full text for useful context
+    // Original issue - sanitized for terminal readability
     console.log(chalk.cyan('\n  📝 Original Issue:'));
-    const issueLines = issue.comment.body.split('\n');
-    for (const line of issueLines) {
+    const cleanIssue = sanitizeCommentForDisplay(issue.comment.body);
+    for (const line of cleanIssue.split('\n')) {
       console.log(chalk.gray(`     ${line}`));
     }
     
@@ -316,7 +369,7 @@ export function printUnresolvedIssues(issues: UnresolvedIssue[]): void {
   for (let i = 0; i < issues.length; i++) {
     const issue = issues[i];
     console.log(chalk.yellow(`Issue ${i + 1}: ${issue.comment.path}:${issue.comment.line || '?'}`));
-    console.log(chalk.gray('Comment:'), issue.comment.body.substring(0, 200));
+    console.log(chalk.gray('Comment:'), sanitizeCommentForDisplay(issue.comment.body).substring(0, 200));
     console.log(chalk.gray('Analysis:'), issue.explanation);
     console.log('');
   }
