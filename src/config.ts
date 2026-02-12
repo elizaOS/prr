@@ -14,12 +14,12 @@ import { join } from 'path';
 dotenv.config();
 
 /** Supported LLM provider backends */
-export type LLMProvider = 'anthropic' | 'openai';
+export type LLMProvider = 'elizacloud' | 'anthropic' | 'openai';
 
 /** Available fixer tools that can apply code changes */
-export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'gemini' | 'junie' | 'goose' | 'openhands' | 'llm-api' | 'auto';
+export type FixerTool = 'elizacloud' | 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'gemini' | 'junie' | 'goose' | 'openhands' | 'llm-api' | 'auto';
 
-const REAL_FIXER_TOOLS = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'gemini', 'junie', 'goose', 'openhands', 'llm-api'] as const;
+const REAL_FIXER_TOOLS = ['elizacloud', 'cursor', 'opencode', 'claude-code', 'aider', 'codex', 'gemini', 'junie', 'goose', 'openhands', 'llm-api'] as const;
 export type RealFixerTool = typeof REAL_FIXER_TOOLS[number];
 /**
  * Application configuration loaded from environment.
@@ -27,10 +27,12 @@ export type RealFixerTool = typeof REAL_FIXER_TOOLS[number];
 export interface Config {
   /** GitHub personal access token with repo scope */
   githubToken: string;
-  /** LLM provider for analysis (anthropic or openai) */
+  /** LLM provider for analysis (elizacloud, anthropic, or openai) */
   llmProvider: LLMProvider;
   /** Model name/identifier for the LLM provider */
   llmModel: string;
+  /** ElizaCloud API key (recommended - one key for all models) */
+  elizacloudApiKey?: string;
   /** Anthropic API key (required if provider is anthropic) */
   anthropicApiKey?: string;
   /** OpenAI API key (required if provider is openai) */
@@ -74,11 +76,11 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
  * 
  * Required environment variables:
  * - GITHUB_TOKEN: GitHub personal access token
- * - ANTHROPIC_API_KEY or OPENAI_API_KEY: LLM provider API key
+ * - ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY: LLM provider API key
  * 
  * Optional environment variables:
- * - PRR_LLM_PROVIDER: 'anthropic' (default) or 'openai'
- * - PRR_LLM_MODEL: Model name (defaults to claude-sonnet-4-5 or gpt-5.2)
+ * - PRR_LLM_PROVIDER: 'elizacloud', 'anthropic', or 'openai' (auto-detects if not set)
+ * - PRR_LLM_MODEL: Model name (defaults based on provider)
  * - PRR_TOOL: Default fixer tool
  * - PRR_THINKING_BUDGET: Extended thinking token budget
  * 
@@ -86,10 +88,24 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
  * @throws Error if required variables are missing or invalid
  */
 export function loadConfig(): Config {
-  const llmProvider = getEnvOrDefault('PRR_LLM_PROVIDER', 'anthropic') as LLMProvider;
+  // Smart auto-detect: check which API key is available, prefer ElizaCloud
+  const explicitProvider = process.env.PRR_LLM_PROVIDER;
+  let llmProvider: LLMProvider;
+  
+  if (explicitProvider) {
+    llmProvider = explicitProvider as LLMProvider;
+  } else if (process.env.ELIZACLOUD_API_KEY) {
+    llmProvider = 'elizacloud';
+  } else if (process.env.ANTHROPIC_API_KEY) {
+    llmProvider = 'anthropic';
+  } else if (process.env.OPENAI_API_KEY) {
+    llmProvider = 'openai';
+  } else {
+    llmProvider = 'elizacloud'; // will error below with helpful message
+  }
 
-  if (llmProvider !== 'anthropic' && llmProvider !== 'openai') {
-    throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'anthropic' or 'openai'`);
+  if (llmProvider !== 'elizacloud' && llmProvider !== 'anthropic' && llmProvider !== 'openai') {
+    throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'elizacloud', 'anthropic', or 'openai'`);
   }
 
   // Parse and validate thinking budget if set
@@ -106,20 +122,29 @@ export function loadConfig(): Config {
     thinkingBudget = parsed;
   }
 
+  // Default model based on provider
+  let defaultModel: string;
+  if (llmProvider === 'elizacloud') {
+    defaultModel = 'gpt-4o';
+  } else if (llmProvider === 'anthropic') {
+    defaultModel = 'claude-sonnet-4-5-20250929';
+  } else {
+    defaultModel = 'gpt-4o';
+  }
+
   const config: Config = {
     githubToken: getEnvOrThrow('GITHUB_TOKEN'),
     llmProvider,
-    llmModel: getEnvOrDefault(
-      'PRR_LLM_MODEL',
-      llmProvider === 'anthropic' ? 'claude-sonnet-4-5-20250929' : 'gpt-4o'
-    ),
+    llmModel: getEnvOrDefault('PRR_LLM_MODEL', defaultModel),
     defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'auto')),
     workdirBase: join(homedir(), '.prr', 'work'),
     anthropicThinkingBudget: thinkingBudget,
   };
 
   // Validate API key exists for chosen provider
-  if (llmProvider === 'anthropic') {
+  if (llmProvider === 'elizacloud') {
+    config.elizacloudApiKey = getEnvOrThrow('ELIZACLOUD_API_KEY');
+  } else if (llmProvider === 'anthropic') {
     config.anthropicApiKey = getEnvOrThrow('ANTHROPIC_API_KEY');
   } else {
     config.openaiApiKey = getEnvOrThrow('OPENAI_API_KEY');
@@ -127,8 +152,11 @@ export function loadConfig(): Config {
 
   // Also pick up the OTHER provider's key if available (optional).
   // WHY: The LLM provider is for verification, but fixer tools may use a
-  // different provider (e.g. Anthropic for LLM + Codex/OpenAI for fixing).
-  // We need both keys to validate model rotation lists at startup.
+  // different provider (e.g. ElizaCloud for LLM + Codex/OpenAI for fixing).
+  // We need all keys to validate model rotation lists at startup.
+  if (!config.elizacloudApiKey && process.env.ELIZACLOUD_API_KEY) {
+    config.elizacloudApiKey = process.env.ELIZACLOUD_API_KEY;
+  }
   if (!config.openaiApiKey && process.env.OPENAI_API_KEY) {
     config.openaiApiKey = process.env.OPENAI_API_KEY;
   }

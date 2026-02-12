@@ -16,6 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { Config, LLMProvider } from '../config.js';
 import { debug, trackTokens, debugPrompt, debugResponse } from '../logger.js';
+import { ELIZACLOUD_API_BASE_URL } from '../constants.js';
 
 /**
  * Strip unpaired UTF-16 surrogates from a string
@@ -167,6 +168,28 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
   }
 }
 
+/**
+ * Fetch all available models from ElizaCloud API.
+ * Returns empty set if fetch fails (skip filtering).
+ */
+export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Set<string>> {
+  try {
+    const client = new OpenAI({ apiKey, baseURL: ELIZACLOUD_API_BASE_URL });
+    const models = await client.models.list();
+    const ids = new Set<string>();
+    for await (const model of models) {
+      ids.add(model.id);
+    }
+    debug(`Fetched ${ids.size} available ElizaCloud models`);
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch ElizaCloud models list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set();
+  }
+}
+
 export class LLMClient {
   private provider: LLMProvider;
   private model: string;
@@ -186,6 +209,11 @@ export class LLMClient {
       if (this.thinkingBudget) {
         debug(`Extended thinking enabled with budget: ${this.thinkingBudget} tokens`);
       }
+    } else if (this.provider === 'elizacloud') {
+      this.openai = new OpenAI({
+        apiKey: config.elizacloudApiKey,
+        baseURL: ELIZACLOUD_API_BASE_URL,
+      });
     } else {
       this.openai = new OpenAI({
         apiKey: config.openaiApiKey,

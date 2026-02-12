@@ -256,6 +256,7 @@ export async function trySingleIssueFix(
  * attempt on a model that has ~0% fix success rate.
  */
 const DIRECT_FIX_MODELS: Record<string, string> = {
+  elizacloud: 'gpt-4o',                      // ElizaCloud gateway
   anthropic: 'claude-sonnet-4-5-20250929',  // Strong coder, reasonable cost
   openai: 'gpt-4o',                          // Strong coder
 };

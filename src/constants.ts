@@ -119,6 +119,16 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
  */
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
 
+/**
+ * Default LLM model for ElizaCloud provider.
+ */
+export const DEFAULT_ELIZACLOUD_MODEL = 'gpt-4o';
+
+/**
+ * ElizaCloud API base URL (OpenAI-compatible).
+ */
+export const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // MODEL ROTATION & TOOL SWITCHING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -5,19 +5,25 @@ import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.
 import { debug } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import { ELIZACLOUD_API_BASE_URL } from '../constants.js';
 
 /**
- * Direct LLM API runner - uses Anthropic or OpenAI API directly to fix code.
+ * Direct LLM API runner - uses ElizaCloud, Anthropic, or OpenAI API directly to fix code.
  * Useful as a fallback or alternative to CLI-based tools.
  */
 export class LLMAPIRunner implements Runner {
   name = 'llm-api';
   displayName = 'Direct LLM API';
-  private provider: 'anthropic' | 'openai' = 'anthropic';
+  private provider: 'elizacloud' | 'anthropic' | 'openai' = 'elizacloud';
   private anthropic?: Anthropic;
   private openai?: OpenAI;
 
   async isAvailable(): Promise<boolean> {
+    // Check ElizaCloud first (gateway to all models)
+    if (process.env.ELIZACLOUD_API_KEY) {
+      this.provider = 'elizacloud';
+      return true;
+    }
     if (process.env.ANTHROPIC_API_KEY) {
       this.provider = 'anthropic';
       return true;
@@ -30,29 +36,36 @@ export class LLMAPIRunner implements Runner {
   }
 
   async checkStatus(): Promise<RunnerStatus> {
+    const hasElizaCloud = !!process.env.ELIZACLOUD_API_KEY;
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
     const hasOpenAI = !!process.env.OPENAI_API_KEY;
 
-    if (!hasAnthropic && !hasOpenAI) {
+    if (!hasElizaCloud && !hasAnthropic && !hasOpenAI) {
       return {
         installed: false,
         ready: false,
-        error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)',
+        error: 'No API key found (set ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)',
       };
     }
 
-    this.provider = hasAnthropic ? 'anthropic' : 'openai';
+    this.provider = hasElizaCloud ? 'elizacloud' : hasAnthropic ? 'anthropic' : 'openai';
     
     return {
       installed: true,
       ready: true,
-      version: this.provider === 'anthropic' ? 'Anthropic Claude' : 'OpenAI GPT',
+      version: this.provider === 'elizacloud' ? 'ElizaCloud Gateway' : this.provider === 'anthropic' ? 'Anthropic Claude' : 'OpenAI GPT',
     };
   }
 
   private getClient(): { anthropic?: Anthropic; openai?: OpenAI } {
     if (this.provider === 'anthropic' && !this.anthropic) {
       this.anthropic = new Anthropic();
+    }
+    if (this.provider === 'elizacloud' && !this.openai) {
+      this.openai = new OpenAI({
+        apiKey: process.env.ELIZACLOUD_API_KEY,
+        baseURL: ELIZACLOUD_API_BASE_URL,
+      });
     }
     if (this.provider === 'openai' && !this.openai) {
       this.openai = new OpenAI();
@@ -69,7 +82,7 @@ export class LLMAPIRunner implements Runner {
     
     const available = await this.isAvailable();
     if (!available) {
-      return { success: false, output: '', error: 'No API key found (set ANTHROPIC_API_KEY or OPENAI_API_KEY)' };
+      return { success: false, output: '', error: 'No API key found (set ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)' };
     }
     debug('LLM API runner starting', { provider: this.provider, workdir, promptLength: prompt.length });
 
@@ -130,9 +143,9 @@ Working directory: ${workdir}`;
           inputTokens: result.usage.input_tokens,
           outputTokens: result.usage.output_tokens,
         });
-      } else if (this.provider === 'openai' && openai) {
+      } else if ((this.provider === 'elizacloud' || this.provider === 'openai') && openai) {
         const model = options?.model || 'gpt-4o';
-        debug('Calling OpenAI API', { model });
+        debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model });
 
         console.log(`\n🧠 Calling ${model}...\n`);
 
@@ -147,7 +160,7 @@ Working directory: ${workdir}`;
 
         response = result.choices[0]?.message?.content || '';
 
-        debug('OpenAI response received', {
+        debug(`${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} response received`, {
           inputTokens: result.usage?.prompt_tokens,
           outputTokens: result.usage?.completion_tokens,
         });

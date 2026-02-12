@@ -12,7 +12,7 @@ import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
 import { warn, debug } from '../logger.js';
 import { MAX_MODELS_PER_TOOL_ROUND } from '../constants.js';
-import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels } from '../llm/client.js';
+import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels } from '../llm/client.js';
 
 /**
  * Context for model rotation state
@@ -422,6 +422,7 @@ export function tryRotation(
  * the prefix and validate against the corresponding API.
  */
 const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'mixed'> = {
+  'elizacloud': 'mixed',      // Gateway to OpenAI + Anthropic + Google
   'codex': 'openai',
   'opencode': 'mixed',        // Has both OpenAI and Anthropic models
   'aider': 'mixed',           // Provider-prefixed: "openai/..." and "anthropic/..."
@@ -473,7 +474,8 @@ function stripProviderPrefix(model: string): string {
 export async function validateAndFilterModels(
   runners: Runner[],
   openaiApiKey?: string,
-  anthropicApiKey?: string
+  anthropicApiKey?: string,
+  elizacloudApiKey?: string
 ): Promise<{ removed: Array<{ runner: string; model: string }>}> {
   const removed: Array<{ runner: string; model: string }> = [];
   
@@ -491,16 +493,20 @@ export async function validateAndFilterModels(
     const p = RUNNER_PROVIDER_MAP[r.name];
     return p === 'anthropic' || p === 'mixed';
   });
+  const needsElizaCloud = runnersToValidate.some(r => r.name === 'elizacloud');
   
-  // Fetch available models from both providers in parallel
+  // Fetch available models from all providers in parallel
   console.log(chalk.gray('  Validating model access...'));
   
-  const [openaiModels, anthropicModels] = await Promise.all([
+  const [openaiModels, anthropicModels, elizacloudModels] = await Promise.all([
     needsOpenAI && openaiApiKey
       ? fetchAvailableOpenAIModels(openaiApiKey)
       : Promise.resolve(new Set<string>()),
     needsAnthropic && anthropicApiKey
       ? fetchAvailableAnthropicModels(anthropicApiKey)
+      : Promise.resolve(new Set<string>()),
+    needsElizaCloud && elizacloudApiKey
+      ? fetchAvailableElizaCloudModels(elizacloudApiKey)
       : Promise.resolve(new Set<string>()),
   ]);
   
@@ -523,8 +529,16 @@ export async function validateAndFilterModels(
     console.log(chalk.yellow('  ⚠ Could not fetch Anthropic model list'));
   }
   
-  // If both fetches failed or returned empty, skip filtering entirely
-  if (openaiModels.size === 0 && anthropicModels.size === 0) {
+  if (elizacloudModels.size > 0) {
+    debug(`Available ElizaCloud models (${elizacloudModels.size}):`,
+      Array.from(elizacloudModels).sort()
+    );
+  } else if (needsElizaCloud && elizacloudApiKey) {
+    console.log(chalk.yellow('  ⚠ Could not fetch ElizaCloud model list'));
+  }
+  
+  // If all fetches failed or returned empty, skip filtering entirely
+  if (openaiModels.size === 0 && anthropicModels.size === 0 && elizacloudModels.size === 0) {
     console.log(chalk.yellow('  ⚠ No model lists available - skipping validation'));
     return { removed };
   }
@@ -540,6 +554,21 @@ export async function validateAndFilterModels(
     const validModels: string[] = [];
     
     for (const model of models) {
+      // Special handling for elizacloud - it has its own model list
+      if (runner.name === 'elizacloud') {
+        const lookupName = stripProviderPrefix(model);
+        if (elizacloudModels.size === 0) {
+          // No model list available, keep all models
+          validModels.push(model);
+        } else if (elizacloudModels.has(lookupName)) {
+          validModels.push(model);
+        } else {
+          removed.push({ runner: runner.name, model });
+          debug(`Model "${model}" not found in available ElizaCloud models`);
+        }
+        continue;
+      }
+      
       const provider = detectModelProvider(model, runnerProvider);
       const lookupName = stripProviderPrefix(model);
       
@@ -605,12 +634,17 @@ export async function setupRunner(
 
   // Print summary
   printRunnerSummary(detected);
+  
+  // ElizaCloud promotional banner (only in normal mode, not utility commands)
+  if (!options.checkTools && !options.tidyLessons && !process.env.ELIZACLOUD_API_KEY) {
+    console.log(chalk.dim('  Tip: Get one API key for all models (Claude, GPT, Gemini) → https://elizacloud.ai\n'));
+  }
 
   // Validate model rotation lists against provider APIs
   // WHY: Remove models the user doesn't have access to BEFORE any fixer runs,
   // instead of discovering them one-by-one through failed retries
   const allDetectedRunners = detected.map(d => d.runner);
-  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey);
+  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey);
 
   // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
   let primaryRunner: Runner;

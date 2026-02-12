@@ -90,8 +90,12 @@ Interfaces with LLM providers (Anthropic Claude, OpenAI):
 - Commit message generation
 
 **Provider support:**
+- ElizaCloud (unified gateway - all models via single API key)
 - Anthropic (Claude Sonnet, Opus, Haiku)
 - OpenAI (GPT-4, GPT-5)
+
+**Provider auto-detection:**
+Smart auto-detect prioritizes ElizaCloud → Anthropic → OpenAI based on which API keys are present. Simplifies configuration.
 
 **Model validation at startup:**
 Queries provider APIs (`GET /v1/models`) to discover accessible models. Filters internal rotation lists to prevent wasted retries on unavailable models.

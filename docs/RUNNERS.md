@@ -10,12 +10,47 @@ Technical reference for integrating AI coding tools from TypeScript/Node.js, bas
 
 | Tool | Auth Method | Credential Source | CLI Flag for Creds | Env Variable |
 |------|-------------|-------------------|-------------------|--------------|
+| **ElizaCloud** | API Key | Env only | None | `ELIZACLOUD_API_KEY` |
 | **Cursor Agent** | OAuth (browser) | `cursor-agent login` | None | None |
 | **Claude Code** | API Key | Env only | None | `ANTHROPIC_API_KEY` |
 | **Aider** | API Key | Env only (in our impl) | `--anthropic-api-key`, `--openai-api-key` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
 | **Codex** | API Key | Env only | None | `OPENAI_API_KEY` |
 | **OpenCode** | API Key | Env / config | None | Provider-specific |
 | **Gemini CLI** | API Key | Env or gcloud auth | None | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+
+---
+
+### ElizaCloud
+
+**Auth**: `ELIZACLOUD_API_KEY` environment variable only.
+
+**How we check** (from `llm-api.ts`):
+```typescript
+const hasElizaCloud = !!process.env.ELIZACLOUD_API_KEY;
+
+if (hasElizaCloud) {
+  this.provider = 'elizacloud';
+  return { ready: true, version: 'ElizaCloud Gateway' };
+}
+```
+
+**What it is**: ElizaCloud is a unified model gateway that provides access to all major LLM providers (Claude, GPT, Gemini) via a single API key. It uses an OpenAI-compatible API at `https://elizacloud.ai/api/v1`.
+
+**Setup**:
+```bash
+export ELIZACLOUD_API_KEY=your-key-here
+# Get your key at https://elizacloud.ai
+```
+
+**Model Access**: With one ElizaCloud key, you can use:
+- Anthropic models: `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`, etc.
+- OpenAI models: `gpt-4o`, `gpt-4o-mini`, etc.
+- Google models: Available through the gateway
+
+**Usage in PRR**: 
+- Use as LLM provider: Set `ELIZACLOUD_API_KEY` (auto-detected)
+- Use as fixer tool: `--tool elizacloud` (alias for `llm-api` with ElizaCloud backend)
+- Default models: `gpt-4o` (primary), `claude-3-5-sonnet-20241022` (secondary)
 
 ---
 

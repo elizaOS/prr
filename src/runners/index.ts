@@ -97,6 +97,10 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
  * Get a runner by name
  */
 export function getRunnerByName(name: string): Runner | undefined {
+  // 'elizacloud' is an alias for 'llm-api' with ElizaCloud backend
+  if (name === 'elizacloud') {
+    return ALL_RUNNERS.find(r => r.name === 'llm-api');
+  }
   return ALL_RUNNERS.find(r => r.name === name);
 }
 
@@ -106,8 +110,8 @@ export function getRunnerByName(name: string): Runner | undefined {
 export function printRunnerSummary(detected: DetectedRunner[]): void {
   if (detected.length === 0) {
     console.log(chalk.red('No fix tools available!'));
-    console.log(chalk.gray('Install one of: cursor, claude-code, aider, opencode, codex, gemini, junie, goose, openhands, llm-api'));
-    console.log(chalk.gray('Or set ANTHROPIC_API_KEY / OPENAI_API_KEY for direct LLM API'));
+    console.log(chalk.gray('Install one of: elizacloud, cursor, claude-code, aider, opencode, codex, gemini, junie, goose, openhands, llm-api'));
+    console.log(chalk.gray('Or set ELIZACLOUD_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY for direct LLM API'));
     return;
   }
 

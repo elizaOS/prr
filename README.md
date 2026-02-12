@@ -87,24 +87,28 @@ Create a `.env` file (see `.env.example`):
 # Required
 GITHUB_TOKEN=ghp_xxxx
 
-# LLM for verification (anthropic or openai)
-PRR_LLM_PROVIDER=anthropic
-PRR_LLM_MODEL=claude-sonnet-4-5-20250929
-ANTHROPIC_API_KEY=sk-ant-xxxx
+# ElizaCloud - Unified model gateway (RECOMMENDED)
+# One API key for all models: Claude, GPT, Gemini
+ELIZACLOUD_API_KEY=your-key-here
 
-# Or use OpenAI
-# PRR_LLM_PROVIDER=openai
-# PRR_LLM_MODEL=gpt-5.2
+# PRR auto-detects ElizaCloud when the key is set
+# Default model: gpt-4o (no configuration needed)
+
+# Alternative: Direct provider keys
+# ANTHROPIC_API_KEY=sk-ant-xxxx
 # OPENAI_API_KEY=sk-xxxx
+# PRR_LLM_PROVIDER=anthropic  # or 'openai'
+# PRR_LLM_MODEL=claude-sonnet-4-5-20250929
 
 # Default fixer tool (rotates automatically when stuck)
 # If not set, prr will auto-detect which tool is installed
-# PRR_TOOL=cursor
+# PRR_TOOL=elizacloud  # or cursor, claude-code, aider, etc.
 ```
 
 ### Why These Defaults?
 
-- **Claude Sonnet 4.5** for verification: Best balance of accuracy and speed. Opus is overkill for yes/no verification. Haiku misses edge cases.
+- **ElizaCloud** as primary option: Simplest setup - one API key for all models (Claude, GPT, Gemini). No provider configuration needed.
+- **GPT-4o** for verification: Fast, accurate, cost-effective. ElizaCloud gives you access to any model via a single key.
 - **Cursor** as default fixer: Most capable agentic coding tool. Falls back to others automatically.
 
 ## Usage
@@ -152,7 +156,7 @@ prr https://github.com/owner/repo/pull/123 \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--tool <name>` | `cursor` | Fixer tool: cursor, claude-code, aider, opencode, codex, gemini, llm-api |
+| `--tool <name>` | `cursor` | Fixer tool: elizacloud, cursor, claude-code, aider, opencode, codex, gemini, llm-api |
 | `--model <model>` | (auto) | Override model for fixer tool |
 | `--auto-push` | **on** | Push after fixes verified, wait for re-review, loop |
 | `--no-auto-push` | off | Disable auto-push (just push once) |
