@@ -758,9 +758,9 @@ ADDITIONS_FOUND: <brief description of what unique content exists>`;
     });
     return { hasAdditions: false, explanation: 'LLM response unclear — assuming no additions' };
   } catch (error) {
-    // LLM failed — conservative: assume large side is sufficient
-    debug('LLM small-side check failed, using large side', { error });
-    return { hasAdditions: false, explanation: 'LLM check failed — using large side' };
+    // LLM failed — fail-safe: assume small side may have additions to avoid data loss
+    debug('LLM small-side check failed, flagging for manual review', { error });
+    return { hasAdditions: true, explanation: 'LLM check failed — manual review required' };
   }
 }
 

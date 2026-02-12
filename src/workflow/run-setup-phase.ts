@@ -81,7 +81,10 @@ export async function executeSetupPhase(
   // Setup workdir and managers
   const managers = await ResolverProc.setupWorkdirAndManagers(config, options, owner, repo, number, prInfo);
   const { workdir, stateContext, lessonsContext, lockConfig } = managers;
-  const state = stateContext.state!;
+  if (!stateContext.state) {
+    throw new Error('State not initialized after setupWorkdirAndManagers');
+  }
+  const state = stateContext.state;
 
   // Setup runner
   debugStep('SETTING UP RUNNERS');

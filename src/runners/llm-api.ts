@@ -644,7 +644,8 @@ function progressiveTrimMatch(
         // - Keep the original lines above/below that we trimmed from search
         //   (they're still in the file, we just couldn't match them)
         // - Only replace the inner portion we actually matched
-        const newContent = fileContent.replace(trimmedSearch, replaceText);
+        // Use callback to prevent $-token interpretation in replaceText
+        const newContent = fileContent.replace(trimmedSearch, () => replaceText);
         if (newContent !== fileContent) return newContent;
       }
     }

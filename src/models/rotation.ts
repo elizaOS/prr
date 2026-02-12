@@ -436,17 +436,19 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
 /**
  * Determine which provider a model belongs to based on its name/prefix.
  */
-function detectModelProvider(model: string, runnerProvider: string): 'openai' | 'anthropic' | null {
+function detectModelProvider(model: string, runnerProvider: string): 'openai' | 'anthropic' | 'google' | null {
   // Explicit provider prefix (aider style)
   if (model.startsWith('openai/')) return 'openai';
   if (model.startsWith('anthropic/')) return 'anthropic';
+  if (model.startsWith('google/')) return 'google';
   
   // Infer from model name patterns
   if (/^(gpt|o[34]|codex|davinci|babbage)/i.test(model)) return 'openai';
   if (/^claude/i.test(model)) return 'anthropic';
+  if (/^gemini/i.test(model)) return 'google';
   
   // Fall back to runner's default provider
-  if (runnerProvider === 'openai' || runnerProvider === 'anthropic') return runnerProvider;
+  if (runnerProvider === 'openai' || runnerProvider === 'anthropic' || runnerProvider === 'google') return runnerProvider;
   
   return null; // Can't determine - skip validation for this model
 }
@@ -456,7 +458,7 @@ function detectModelProvider(model: string, runnerProvider: string): 'openai' | 
  * "openai/gpt-5.3" -> "gpt-5.3", "anthropic/claude-sonnet-4-5" -> "claude-sonnet-4-5"
  */
 function stripProviderPrefix(model: string): string {
-  return model.replace(/^(openai|anthropic)\//, '');
+  return model.replace(/^(openai|anthropic|google)\//, '');
 }
 
 /**
