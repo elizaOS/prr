@@ -188,11 +188,8 @@ export function formatDuration(ms: number): string {
     return `${(ms / 1000).toFixed(1)}s`;
   } else {
     const mins = Math.floor(ms / 60000);
-    // Use Math.floor to prevent rounding to 60 seconds
     const secs = Math.floor((ms % 60000) / 1000);
-    // Pad seconds with leading zero for consistency (e.g., "1m 05s")
-    const secsStr = secs.toString().padStart(2, '0');
-    return `${mins}m ${secsStr}s`;
+    return `${mins}m ${secs.toString().padStart(2, '0')}s`;
   }
 }
 

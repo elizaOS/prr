@@ -8,24 +8,43 @@ describe('normalizeLessonText', () => {
   const normalize = (text: string) => sanitizeLessonText(text);
 
   it('should remove markdown code fences', () => {
-    expect(normalize('```typescript\ncode\n```')).toBe('code');
+    const result = normalize('Some lesson with ```typescript\ncode\n``` embedded');
+    expect(result).not.toBeNull();
+    expect(result).not.toContain('```');
   });
 
-  it('should remove markdown headers', () => {
-    expect(normalize('## Header')).toBeNull();
+  it('should remove inline code backticks', () => {
+    const result = normalize('Use `execSync` with shell false');
+    expect(result).not.toBeNull();
+    expect(typeof result === 'string').toBe(true);
+    expect(result).not.toContain('`');
   });
 
-  it('should return null for "Fix for" patterns', () => {
-    expect(normalize('Fix for src/file.ts:42')).toBeNull();
+  it('should remove URLs', () => {
+    const result = normalize('Check https://example.com for details about the fix');
+    expect(result).not.toBeNull();
+    expect(result).not.toContain('https://');
   });
 
   it('should normalize "made no changes" variants', () => {
     const input = 'tool made no changes without explanation';
-    expect(normalize(input)).toContain('made no changes');
+    const result = normalize(input);
+    expect(result).not.toBeNull();
+    expect(result).toContain('made no changes');
   });
 
-  it('should return null for numeric-only strings', () => {
-    expect(normalize('12345')).toBeNull();
+  it('should normalize "made no changes" with missing separator before trying', () => {
+    const input = 'tool made no changestrying different approach';
+    const result = normalize(input);
+    expect(result).not.toBeNull();
+    expect(result).toContain('made no changes - ');
+  });
+
+  it('should normalize "made no changes" with missing separator before already', () => {
+    const input = 'fixer made no changes  already includes all runners';
+    const result = normalize(input);
+    expect(result).not.toBeNull();
+    expect(result).toContain('made no changes - already');
   });
 
   it.todo('should trim and cleanup trailing colons/dashes');

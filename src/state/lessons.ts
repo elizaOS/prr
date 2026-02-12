@@ -44,6 +44,10 @@ export function sanitizeLessonText(lesson: string): string {
   // Remove file paths that look like code references
   result = result.replace(/\b[\w./\\-]+\.(ts|js|tsx|jsx|json|md|yaml|yml)\b/g, '');
   
+  // Normalize "made no changes" variants with missing separators
+  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+  result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
+  
   // Collapse multiple spaces/newlines
   result = result.replace(/\s+/g, ' ');
   
@@ -286,17 +290,6 @@ export class LessonsManager {
   /**
    * Extract the prr lessons section from a file's content.
    */
-  private extractPrrSection(content: string): string | null {
-    const startIdx = content.indexOf(PRR_SECTION_START);
-    const endIdx = content.indexOf(PRR_SECTION_END);
-
-    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-      return null;
-    }
-
-    return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
-  }
-
   /**
    * Parse markdown lessons file into structured data.
    *

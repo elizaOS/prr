@@ -209,6 +209,20 @@ export async function push(git: SimpleGit, branch: string, force = false, github
 }
 
 /**
+ * Restore the original (non-authenticated) remote URL after push.
+ * 
+ * WHY: pushWithRetry injects a token into the remote URL. If we don't restore it,
+ * the token persists in .git/config in plain text, which is a security risk.
+ */
+async function restoreRemoteUrl(git: SimpleGit, originalUrl: string): Promise<void> {
+  try {
+    await git.remote(['set-url', 'origin', originalUrl]);
+  } catch {
+    // Best-effort cleanup
+  }
+}
+
+/**
  * Result of pushWithRetry
  */
 export interface PushWithRetryResult {
@@ -374,7 +388,7 @@ export async function commitIteration(
   // Check if there are changes to commit (Trap 2)
   const status = await git.status();
   const hasChanges = !status.isClean();
-  
+
   if (!hasChanges || verifiedCommentIds.length === 0) {
     return null; // Nothing to commit
   }

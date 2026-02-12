@@ -60,7 +60,7 @@ Manages local git repository operations:
 - Cloning and updating repositories
 - Creating commits with verification metadata
 - Handling merge conflicts (including **large files**)
-- Managing branches and remges
+- Managing branches and merges
 
 **Modular structure:**
 - `git-clone-index.ts` - Cloning, pulling, diffing

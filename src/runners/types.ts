@@ -47,7 +47,10 @@ export interface Runner {
  * AI models get stuck. They'll make the same mistake repeatedly.
  * Different models have different strengths:
  * - Claude excels at following complex instructions
- * - GPT excels at common patterns  
+ * - GPT excels at common patterns
+ * 
+ * NOTE: Model names may need updating as providers release new versions.
+ * Run `agent models` or check provider docs for current availability.  
  * - Opus has better reasoning for hard problems
  * - Mini models work fine for simple fixes (and are faster/cheaper)
  * 
@@ -66,7 +69,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   'cursor': [
     'claude-4-sonnet',                 // Claude 4.5 Sonnet - balanced, fast
     'claude-4-opus',                   // Claude 4.6 Opus - most intelligent
-    'gpt-5.3',                         // GPT-5.3 - latest OpenAI
+    'gpt-5.2',                         // GPT-5.3 - latest OpenAI
     'o3-mini',                         // OpenAI o3-mini - fast reasoning
   ],
   // Claude Code: Claude 4+ models (uses full API names)
@@ -105,6 +108,6 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Haiku is used for verification (via LLMClient) but is too weak for code fixing.
   'llm-api': [
     'claude-sonnet-4-5-20250929',   // Claude 4.5 Sonnet - balanced ($3/$15 per MTok)
-    'claude-opus-4-6',              // Claude 4.6 Opus - most intelligent ($5/$25 per MTok)
+    'claude-opus-4-5-20251101',     // Claude 4.5 Opus - most intelligent ($5/$25 per MTok)
   ],
 };
