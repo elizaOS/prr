@@ -88,6 +88,14 @@ export class AiderRunner implements Runner {
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
     debugPrompt('aider', prompt, { workdir, model: options?.model });
 
+    const cleanupPromptFile = () => {
+      try {
+        unlinkSync(promptFile);
+      } catch {
+        // Ignore cleanup errors
+      }
+    };
+
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
       const args: string[] = ['--yes-always'];

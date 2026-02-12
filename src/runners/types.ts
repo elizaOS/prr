@@ -45,9 +45,11 @@ export interface Runner {
  * 
  * WHY MODEL ROTATION EXISTS:
  * AI models get stuck. They'll make the same mistake repeatedly.
- * Different models have different strengths:
- * - Claude excels at following complex instructions
- * - GPT excels at common patterns
+ * Different models have different strengths and availabilities change frequently.
+ * 
+ * NOTE: The lists below are ILLUSTRATIVE EXAMPLES ONLY and may be outdated.
+ * Actual model availability changes frequently. Use runner.supportedModels
+ * or dynamic discovery (e.g., `cursor --list-models`) for up-to-date lists.
  * 
  * NOTE: Model names may need updating as providers release new versions.
  * Run `agent models` or check provider docs for current availability.  

@@ -1,11 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeLessonText } from '../src/state/lessons';
+import { normalizeLessonText } from '../src/state/lessons-normalize';
 
 describe('normalizeLessonText', () => {
-  // Use the public sanitizeLessonText function
-  // Note: sanitizeLessonText returns a string, not null for empty results
   function normalize(lesson: string): string | null {
-    const result = sanitizeLessonText(lesson);
+    const result = normalizeLessonText(lesson);
     return result.length === 0 ? null : result;
   }
 

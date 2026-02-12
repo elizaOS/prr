@@ -26,6 +26,11 @@ import { debug, trackTokens, debugPrompt, debugResponse } from '../logger.js';
  * 
  * Replaces lone surrogates with U+FFFD (replacement character).
  */
+function normalizeIssueId(raw: string): string {
+  const normalized = raw.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+  return normalized.length > 0 ? `issue_${normalized}` : normalized;
+}
+
 function sanitizeForJson(text: string): string {
   // Match lone high surrogates (not followed by low) and lone low surrogates (not preceded by high)
   // eslint-disable-next-line no-control-regex
