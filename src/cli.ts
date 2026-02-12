@@ -51,6 +51,8 @@ export interface CLIOptions {
   checkTools: boolean;
   /** Update all installed AI tools and exit */
   updateTools: boolean;
+  /** Tidy lessons: re-normalize, deduplicate, prune garbage */
+  tidyLessons: boolean;
 }
 
 export interface ParsedArgs {
@@ -130,7 +132,8 @@ export function createCLI(): Command {
     .option('--clear-lock', 'Clear the lock file and exit (use if a previous instance crashed)')
     // Tool/version checking
     .option('--check-tools', 'Check installed AI coding tools and show upgrade instructions, then exit')
-    .option('--update-tools', 'Update all installed AI coding tools to latest versions, then exit');
+    .option('--update-tools', 'Update all installed AI coding tools to latest versions, then exit')
+    .option('--tidy-lessons', 'Clean up lessons: re-normalize, deduplicate, remove garbage entries, then exit');
 
   return program;
 }
@@ -154,8 +157,8 @@ export function parseArgs(program: Command): ParsedArgs {
   const args = program.args;
   const opts = program.opts();
 
-  // PR URL is optional for --check-tools and --update-tools modes
-  if (args.length === 0 && !opts.checkTools && !opts.updateTools) {
+  // PR URL is optional for --check-tools, --update-tools, and --tidy-lessons modes
+  if (args.length === 0 && !opts.checkTools && !opts.updateTools && !opts.tidyLessons) {
     program.help();
     process.exit(1);
   }
@@ -216,6 +219,7 @@ export function parseArgs(program: Command): ParsedArgs {
       // Tool checking
       checkTools: opts.checkTools ?? false,
       updateTools: opts.updateTools ?? false,
+      tidyLessons: opts.tidyLessons ?? false,
     },
   };
 }

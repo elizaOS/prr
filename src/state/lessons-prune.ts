@@ -1,9 +1,13 @@
 /**
- * Lessons pruning functions
+ * Lessons pruning and tidying functions
  */
 import { existsSync } from 'fs';
-import { join } from 'path';
-import type { LessonsContext } from './lessons-context.js';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { join, dirname } from 'path';
+import { homedir } from 'os';
+import { readdirSync, statSync } from 'fs';
+import chalk from 'chalk';
+import type { LessonsContext, LessonsStore } from './lessons-context.js';
 import * as Normalize from './lessons-normalize.js';
 
 const TRANSIENT_PATTERNS = [
@@ -136,4 +140,223 @@ export function pruneDeletedFiles(ctx: LessonsContext, workdir: string): number 
   }
   
   return removed;
+}
+
+/**
+ * Tidy a lessons store in-place: re-normalize, deduplicate, prune garbage.
+ * 
+ * WHY: Over time lessons accumulate garbage from parsing failures, infra errors,
+ * and non-actionable entries. This runs every filter we have to clean them up.
+ * 
+ * Returns stats about what was removed.
+ */
+function tidyStore(store: LessonsStore): {
+  originalGlobal: number;
+  originalFileTotal: number;
+  removedNormalize: number;
+  removedDuplicate: number;
+  removedTransient: number;
+  removedRelative: number;
+  finalGlobal: number;
+  finalFileTotal: number;
+} {
+  const originalGlobal = store.global.length;
+  const originalFileTotal = Object.values(store.files).reduce((sum, arr) => sum + arr.length, 0);
+  let removedNormalize = 0;
+  let removedDuplicate = 0;
+  let removedTransient = 0;
+  let removedRelative = 0;
+
+  // Step 1: Re-normalize all lessons (applies latest filters)
+  const normalizeAndDedupe = (lessons: string[]): string[] => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    
+    for (const lesson of lessons) {
+      const normalized = Normalize.normalizeLessonText(lesson);
+      if (!normalized) {
+        removedNormalize++;
+        continue;
+      }
+      const key = Normalize.lessonKey(normalized);
+      if (seen.has(key)) {
+        removedDuplicate++;
+        continue;
+      }
+      // Also check near-key for fuzzy dedup
+      const nearKey = Normalize.lessonNearKey(normalized);
+      if (seen.has(nearKey)) {
+        removedDuplicate++;
+        continue;
+      }
+      seen.add(key);
+      seen.add(nearKey);
+      result.push(normalized);
+    }
+    return result;
+  };
+
+  store.global = normalizeAndDedupe(store.global);
+
+  for (const filePath of Object.keys(store.files)) {
+    // Clean up the file path header too
+    const cleanedPath = Normalize.sanitizeFilePathHeader(filePath);
+    const lessons = normalizeAndDedupe(store.files[filePath]);
+    
+    delete store.files[filePath];
+    if (lessons.length > 0) {
+      if (cleanedPath && cleanedPath !== filePath) {
+        // Merge into cleaned path if it already exists
+        if (store.files[cleanedPath]) {
+          const existing = new Set(store.files[cleanedPath].map(l => Normalize.lessonKey(l)));
+          for (const l of lessons) {
+            if (!existing.has(Normalize.lessonKey(l))) {
+              store.files[cleanedPath].push(l);
+            } else {
+              removedDuplicate++;
+            }
+          }
+        } else {
+          store.files[cleanedPath] = lessons;
+        }
+      } else {
+        store.files[cleanedPath || filePath] = lessons;
+      }
+    }
+  }
+
+  // Step 2: Prune transient/infra lessons
+  const isTransient = (lesson: string): boolean => {
+    return TRANSIENT_PATTERNS.some(pattern => pattern.test(lesson));
+  };
+
+  const beforeTransientGlobal = store.global.length;
+  store.global = store.global.filter(l => !isTransient(l));
+  removedTransient += beforeTransientGlobal - store.global.length;
+
+  for (const filePath of Object.keys(store.files)) {
+    const before = store.files[filePath].length;
+    store.files[filePath] = store.files[filePath].filter(l => !isTransient(l));
+    removedTransient += before - store.files[filePath].length;
+    if (store.files[filePath].length === 0) delete store.files[filePath];
+  }
+
+  // Step 3: Prune relative references
+  const hasRelativeRef = (lesson: string): boolean => {
+    return /\b(?:Issue|Task|Bug|Fix)\s+\d+\b/i.test(lesson) ||
+           /\bthe\s+(?:above|below|previous|next)\s+/i.test(lesson);
+  };
+
+  const beforeRelativeGlobal = store.global.length;
+  store.global = store.global.filter(l => !hasRelativeRef(l));
+  removedRelative += beforeRelativeGlobal - store.global.length;
+
+  for (const filePath of Object.keys(store.files)) {
+    const before = store.files[filePath].length;
+    store.files[filePath] = store.files[filePath].filter(l => !hasRelativeRef(l));
+    removedRelative += before - store.files[filePath].length;
+    if (store.files[filePath].length === 0) delete store.files[filePath];
+  }
+
+  const finalGlobal = store.global.length;
+  const finalFileTotal = Object.values(store.files).reduce((sum, arr) => sum + arr.length, 0);
+
+  return {
+    originalGlobal,
+    originalFileTotal,
+    removedNormalize,
+    removedDuplicate,
+    removedTransient,
+    removedRelative,
+    finalGlobal,
+    finalFileTotal,
+  };
+}
+
+/**
+ * Tidy all lessons files on disk.
+ * 
+ * Scans ~/.prr/lessons/ for all stored lesson files, loads each one,
+ * runs the full tidy pipeline, and saves back.
+ */
+export async function tidyAllLessons(): Promise<void> {
+  const lessonsDir = join(homedir(), '.prr', 'lessons');
+  
+  if (!existsSync(lessonsDir)) {
+    console.log(chalk.yellow('No lessons directory found (~/.prr/lessons/)'));
+    return;
+  }
+
+  // Find all .json lesson files recursively
+  const jsonFiles: string[] = [];
+  function scanDir(dir: string): void {
+    try {
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        try {
+          const stat = statSync(fullPath);
+          if (stat.isDirectory()) {
+            scanDir(fullPath);
+          } else if (entry.endsWith('.json')) {
+            jsonFiles.push(fullPath);
+          }
+        } catch { /* skip unreadable entries */ }
+      }
+    } catch { /* skip unreadable dirs */ }
+  }
+  scanDir(lessonsDir);
+
+  if (jsonFiles.length === 0) {
+    console.log(chalk.yellow('No lesson files found'));
+    return;
+  }
+
+  console.log(chalk.cyan(`\nFound ${jsonFiles.length} lesson file(s)\n`));
+
+  let totalOriginal = 0;
+  let totalFinal = 0;
+  let totalRemoved = 0;
+  let filesModified = 0;
+
+  for (const filePath of jsonFiles) {
+    const relativePath = filePath.replace(lessonsDir + '/', '');
+    
+    try {
+      const content = await readFile(filePath, 'utf-8');
+      const store = JSON.parse(content) as LessonsStore;
+      
+      const stats = tidyStore(store);
+      const originalTotal = stats.originalGlobal + stats.originalFileTotal;
+      const finalTotal = stats.finalGlobal + stats.finalFileTotal;
+      const removed = originalTotal - finalTotal;
+      
+      totalOriginal += originalTotal;
+      totalFinal += finalTotal;
+      totalRemoved += removed;
+
+      if (removed > 0) {
+        // Save back
+        store.lastUpdated = new Date().toISOString();
+        const dir = dirname(filePath);
+        if (!existsSync(dir)) {
+          await mkdir(dir, { recursive: true });
+        }
+        await writeFile(filePath, JSON.stringify(store, null, 2), 'utf-8');
+        filesModified++;
+
+        console.log(chalk.green(`  ✓ ${relativePath}: ${originalTotal} → ${finalTotal} lessons (removed ${removed})`));
+        if (stats.removedNormalize > 0) console.log(chalk.gray(`      ${stats.removedNormalize} failed normalization (garbage/malformed)`));
+        if (stats.removedDuplicate > 0) console.log(chalk.gray(`      ${stats.removedDuplicate} duplicates`));
+        if (stats.removedTransient > 0) console.log(chalk.gray(`      ${stats.removedTransient} transient/infra errors`));
+        if (stats.removedRelative > 0) console.log(chalk.gray(`      ${stats.removedRelative} relative references`));
+      } else {
+        console.log(chalk.gray(`  - ${relativePath}: ${originalTotal} lessons (already clean)`));
+      }
+    } catch (e) {
+      console.log(chalk.red(`  ✗ ${relativePath}: ${e}`));
+    }
+  }
+
+  console.log(chalk.cyan(`\n  Summary: ${totalOriginal} → ${totalFinal} lessons total (removed ${totalRemoved} across ${filesModified} file(s))\n`));
 }

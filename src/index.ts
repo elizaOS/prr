@@ -5,6 +5,7 @@ import { loadConfig } from './config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
+import { tidyAllLessons } from './state/lessons-prune.js';
 
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;
@@ -65,6 +66,12 @@ async function main(): Promise<void> {
     // Handle --update-tools mode (update all installed tools and exit)
     if (options.updateTools) {
       await updateAllTools();
+      return;
+    }
+
+    // Handle --tidy-lessons mode (clean up all lesson files and exit)
+    if (options.tidyLessons) {
+      await tidyAllLessons();
       return;
     }
 
