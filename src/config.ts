@@ -178,9 +178,76 @@ export function validateTool(tool: string): FixerTool {
 }
 
 /** Validate that a tool is a real runner (not 'auto'). 'auto' should be resolved before calling this. */
+/**
+ * Validate a real fixer tool name (not 'auto').
+ * 
+ * WHY: 'auto' is a meta-value for auto-detection, not an actual tool.
+ * This function ensures only real tools are used when a specific tool is required.
+ */
 export function validateRealTool(tool: string): RealFixerTool {
   if (!REAL_FIXER_TOOLS.includes(tool as RealFixerTool)) {
-    throw new Error(`Invalid real tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')} (note: 'auto' must be resolved to a real tool before storage)`);
+    throw new Error(`Invalid real tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')}`);
   }
   return tool as RealFixerTool;
-}
+}</change>
+
+<change path="src/runners/index.ts">
+<search>  for (const runner of ALL_RUNNERS) {
+    const status = await runner.checkStatus();
+
+    if (verbose) {
+      const statusText = status.ready
+        ? chalk.green('✓ ready')
+        : status.installed
+          ? chalk.yellow('⚠ not ready')
+          : chalk.red('✗ not installed');
+      
+      const details = status.ready && status.version
+        ? chalk.gray(` (${status.version})`)
+        : status.error
+          ? chalk.gray(` - ${status.error}`)
+          : '';
+      
+      console.log(`  ${runner.displayName}: ${statusText}${details}`);
+    }
+
+    if (status.ready) {
+      detected.push({ runner, status });
+    }
+  }</search>
+<replace>  for (const runner of ALL_RUNNERS) {
+    let status: RunnerStatus;
+    try {
+      status = await runner.checkStatus();
+    } catch (err) {
+      status = {
+        installed: false,
+        ready: false,
+        error: `checkStatus failed: ${err instanceof Error ? err.message : String(err)}`
+      };
+    }
+
+    if (verbose) {
+      const statusText = status.ready
+        ? chalk.green('✓ ready')
+        : status.installed
+          ? chalk.yellow('⚠ not ready')
+          : chalk.red('✗ not installed');
+      
+      const details = status.ready && status.version
+        ? chalk.gray(` (${status.version})`)
+        : status.error
+          ? chalk.gray(` - ${status.error}`)
+          : '';
+      
+      console.log(`  ${runner.displayName}: ${statusText}${details}`);
+    }
+
+    if (status.ready) {
+      detected.push({ runner, status });
+    }
+  }</change>
+
+<change path="src/cli.ts">
+<search>      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') || 1,</search>
+<replace>      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') ?? 1,

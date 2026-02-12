@@ -439,6 +439,11 @@ function mergePackageJsonChunks(ours: string[], theirs: string[], needsTrailingC
   const oursMap = parsePackageLines(ours);
   const theirsMap = parsePackageLines(theirs);
   
+  // If either side failed to parse (non-dependency sections), bail out to LLM
+  if (oursMap === null || theirsMap === null) {
+    return null;
+  }
+  
   // If either side can't be parsed as dependency entries (e.g., scripts, engines), bail out to LLM
   if (!oursMap || !theirsMap) {
     return null;

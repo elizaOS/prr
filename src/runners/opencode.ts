@@ -26,8 +26,8 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
         reject(new Error(`Command failed with code ${code}`));
       }
     });
-    child.on('error', () => {
-      // Sanitize error to avoid leaking command or argument details
+    child.on('error', (err) => {
+      // Redact any sensitive information from error messages
       reject(new Error('Failed to start command'));
     });
   });
@@ -94,6 +94,7 @@ export class OpencodeRunner implements Runner {
       }
     };
 
+    // Register cleanup before any file operations
     try {
       writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     } catch (error) {
