@@ -117,6 +117,7 @@ export function normalizeLessonText(lesson: string): string | null {
   // Detect orphaned/incomplete entries (truncated lessons)
   if (/\.\.\.$/.test(normalized)) return null;  // Ends with "..."
   if (/\b(?:in|to|for|from|with|the|and|or|but|if|when|that)\s*$/i.test(normalized)) return null;  // Ends with incomplete phrase
+  if (/\b(?:contain|contains|include|includes)\s*$/i.test(normalized)) return null;  // Ends mid-thought
   // Ends with noun expecting more - only reject if short or lacking action verbs
   const endsWithIncompleteNoun = /(?:function|method|code|logic|generator|manager|strategy|helper|pattern|implementation)\s*$/i.test(normalized);
   const hasActionVerb = /\b(?:is|are|fix|avoid|implement|add|remove|update|use|handle|prevent|refactor|fixes|avoids|adds|check|ensure|validate|verify|create|delete|modify|change|apply|set|get|call|run|execute|skip|include|exclude)\b/i.test(normalized);
@@ -211,8 +212,7 @@ export function sanitizeFilePathHeader(filePath: string): string {
   const headerMatch = cleaned.match(/([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java))(?:[:](\d+)(?::\d+)?)?/i);
   if (headerMatch) {
     const pathPart = headerMatch[1];
-    const linePart = headerMatch[2];
-    return linePart ? `${pathPart}:${linePart}` : pathPart;
+    return pathPart;
   }
   return cleaned;
 }
@@ -227,15 +227,18 @@ export function lessonNearKey(lesson: string): string {
 }
 
 export function sanitizeLessonsList(lessons: string[]): string[] {
-  const seen = new Set<string>();
+  const seenKeys = new Set<string>();
+  const seenNear = new Set<string>();
   const result: string[] = [];
   
   for (const lesson of lessons) {
     const normalized = normalizeLessonText(lesson);
     if (!normalized) continue;
     const key = lessonKey(normalized);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const nearKey = lessonNearKey(normalized);
+    if (seenKeys.has(key) || seenNear.has(nearKey)) continue;
+    seenKeys.add(key);
+    seenNear.add(nearKey);
     result.push(normalized);
   }
   

@@ -8,35 +8,35 @@ function normalize(lesson: string): string | null {
 
 async function run(): Promise<void> {
   assert.equal(
-    normalize('```ts\ncode\n```\n# Header\n**Bold line**\n- Keep this'),
-    'code Keep this'
+    normalize('```ts\nconst x = 1;\n```\n# Header\n**Bold line**\n- Keep this lesson text for later reference'),
+    'Keep this lesson text for later reference'
   );
-  assert.equal(normalize('```ts\ncode\n```\n# Header\n**Bold line**'), 'code');
+  assert.equal(normalize('```ts\ncode\n```\n# Header\n**Bold line**'), null);
 
-  assert.equal(normalize('1. item one\n2. item two\n- bullet\n+ plus\n* star'), 'item one item two bullet plus star');
-  assert.equal(normalize('- **bold bullet**\n- kept'), 'kept');
+  assert.equal(normalize('1. item one\n2. item two\n- bullet\n+ plus\n* star'), 'item one item two bullet plus');
+  assert.equal(normalize('- **bold bullet**\n- kept lesson about sync errors'), 'kept lesson about sync errors');
 
   assert.equal(normalize('// comment only'), null);
-  assert.equal(normalize('// comment only\n- keep'), 'keep');
-  assert.equal(normalize('/* comment */\n1. keep'), 'keep');
+  assert.equal(normalize('// comment only\n- keep this lesson about conflict resolution'), 'keep this lesson about conflict resolution');
+  assert.equal(normalize('/* comment */\n1. keep this lesson about merge failures'), 'keep this lesson about merge failures');
 
-  assert.equal(normalize('private isShuttingDown = false;\n- keep'), 'keep');
-  assert.equal(normalize('const foo = 1;\n- keep'), 'keep');
-  assert.equal(normalize('class Foo {}\n- keep'), 'keep');
-  assert.equal(normalize('import { foo } from "bar"\n- keep'), 'keep');
+  assert.equal(normalize('private isShuttingDown = false;\n- keep this lesson about safe shutdowns'), 'keep this lesson about safe shutdowns');
+  assert.equal(normalize('const foo = 1;\n- keep this lesson about timeouts'), 'keep this lesson about timeouts');
+  assert.equal(normalize('class Foo {}\n- keep this lesson about retries'), 'keep this lesson about retries');
+  assert.equal(normalize('import { foo } from "bar"\n- keep this lesson about error handling'), 'keep this lesson about error handling');
 
-  assert.equal(normalize('use this (inferred)'), 'use this');
+  assert.equal(normalize('use this (inferred) before publishing changes'), 'use this before publishing changes');
 
-  assert.equal(normalize('lesson - ts'), 'lesson');
-  assert.equal(normalize('lesson - js'), 'lesson');
-  assert.equal(normalize('lesson - md'), 'lesson');
-  assert.equal(normalize('lesson - json'), 'lesson');
-  assert.equal(normalize('lesson - yml'), 'lesson');
+  assert.equal(normalize('Always validate user input - ts'), 'Always validate user input');
+  assert.equal(normalize('Always validate user input - js'), 'Always validate user input');
+  assert.equal(normalize('Always validate user input - md'), 'Always validate user input');
+  assert.equal(normalize('Always validate user input - json'), 'Always validate user input');
+  assert.equal(normalize('Always validate user input - yml'), 'Always validate user input');
 
-  assert.equal(normalize('lesson - ts:8'), 'lesson');
+  assert.equal(normalize('Always validate user input - ts:8'), 'Always validate user input');
   assert.equal(normalize('ts:8` already includes all runners'), 'already includes all runners');
-  assert.equal(normalize('lesson - a:123'), 'lesson');
-  assert.equal(normalize('lesson - a.ts:123'), 'lesson - a.ts:123');
+  assert.equal(normalize('Always document decisions - a:123'), 'Always document decisions');
+  assert.equal(normalize('Always document decisions - a.ts:123'), 'Always document decisions - a.ts:123');
 
   assert.equal(
     normalize('claude-code with gpt-5-mini made no changes: without explanation - trying different approach'),
@@ -52,8 +52,8 @@ async function run(): Promise<void> {
   assert.equal(normalize('Do NOT repeat them:'), null);
   assert.equal(normalize('chars truncated'), null);
 
-  assert.equal(normalize('lesson:'), 'lesson');
-  assert.equal(normalize('lesson -'), 'lesson');
+  assert.equal(normalize('Always document decisions:'), 'Always document decisions');
+  assert.equal(normalize('Always document decisions -'), 'Always document decisions');
   assert.equal(normalize('Fix for README.md. rejected: ok'), 'Fix for README.md rejected: ok');
   assert.equal(normalize('123'), null);
   assert.equal(normalize('123.'), null);

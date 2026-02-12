@@ -897,12 +897,7 @@ STALE: Not applicable`;
 
     // Fail-safe: mark any unparsed issue as still existing
     if (parsed < issues.length) {
-      if (parsed < issues.length * 0.5) {
-        debug('WARNING: Failed to parse most audit responses - marking unparsed as needing review');
-      } else {
-        debug('WARNING: Some audit responses could not be parsed - marking unparsed as needing review');
-      }
-      // Mark any unparsed issues as potentially unfixed (fail-safe)
+      debug('WARNING: Some audit responses could not be parsed - marking unparsed as needing review');
       for (const issue of issues) {
         if (!allResults.has(issue.id)) {
           allResults.set(issue.id, {

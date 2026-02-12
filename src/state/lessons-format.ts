@@ -42,11 +42,17 @@ export function getMergedFileEntries(ctx: LessonsContext): Array<{ filePath: str
     for (const lesson of lessons) {
       const normalized = Normalize.normalizeLessonText(lesson);
       if (!normalized) continue;
-      const key = Normalize.lessonKey(normalized);
-      if (!entry.seen.has(key)) {
-        entry.seen.add(key);
-        entry.lessons.push(normalized);
+      const lessonFilePath = Normalize.extractLessonFilePath(normalized);
+      const cleanedLessonPath = lessonFilePath ? Normalize.sanitizeFilePathHeader(lessonFilePath) : null;
+      if (!cleanedLessonPath || cleanedLessonPath !== cleanedPath) {
+        continue;
       }
+      const key = Normalize.lessonKey(normalized);
+      const nearKey = Normalize.lessonNearKey(normalized);
+      if (entry.seen.has(key) || entry.seen.has(nearKey)) continue;
+      entry.seen.add(key);
+      entry.seen.add(nearKey);
+      entry.lessons.push(normalized);
     }
   }
   
@@ -56,6 +62,7 @@ export function getMergedFileEntries(ctx: LessonsContext): Array<{ filePath: str
       lessons: data.lessons,
       order: data.order,
     }))
+    .filter(entry => entry.lessons.length > 0)
     .sort((a, b) => a.order - b.order);
 }
 
@@ -124,8 +131,9 @@ export function toCompactedMarkdown(ctx: LessonsContext): string {
     lines.push('');
   }
 
-  const fileEntries = getMergedFileEntries(ctx)
-    .map(e => ({ ...e, lessons: e.lessons.slice(-MAX_FILE_LESSONS_FOR_SYNC) }))
+  const mergedEntries = getMergedFileEntries(ctx);
+  const fileEntries = mergedEntries
+    .map(e => ({ ...e, totalLessons: e.lessons.length, lessons: e.lessons.slice(-MAX_FILE_LESSONS_FOR_SYNC) }))
     .filter(e => e.lessons.length > 0)
     .slice(-MAX_FILES_FOR_SYNC);
 
@@ -133,20 +141,19 @@ export function toCompactedMarkdown(ctx: LessonsContext): string {
     lines.push('### By File');
     lines.push('');
 
-    for (const { filePath, lessons } of fileEntries) {
+    for (const { filePath, lessons, totalLessons } of fileEntries) {
       lines.push(`**${filePath}**`);
       for (const lesson of lessons) {
         const formatted = Normalize.formatLessonForDisplay(lesson);
         lines.push(`- ${formatted}`);
       }
-      const allLessonsForFile = ctx.store.files[filePath] || [];
-      if (allLessonsForFile.length > MAX_FILE_LESSONS_FOR_SYNC) {
-        const remaining = allLessonsForFile.length - MAX_FILE_LESSONS_FOR_SYNC;
+      if (totalLessons > MAX_FILE_LESSONS_FOR_SYNC) {
+        const remaining = totalLessons - MAX_FILE_LESSONS_FOR_SYNC;
         lines.push(`- _(${remaining} more in .prr/lessons.md)_`);
       }
     }
 
-    const totalFiles = Object.keys(ctx.store.files).length;
+    const totalFiles = mergedEntries.length;
     if (totalFiles > MAX_FILES_FOR_SYNC) {
       const remaining = totalFiles - MAX_FILES_FOR_SYNC;
       lines.push('');

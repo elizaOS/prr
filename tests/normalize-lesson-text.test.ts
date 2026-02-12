@@ -11,19 +11,17 @@ describe('normalizeLessonText', () => {
 
   describe('code fence removal', () => {
     it('removes markdown code fences', () => {
-      const input = '```typescript\ncode here\n```';
+      const input = 'Always explain the fix before changes.\n```typescript\ncode here\n```';
       const result = normalize(input);
-      // sanitizeLessonText processes the text but may not strip code fences
-      expect(result).not.toBeNull();
+      expect(result).toBe('Always explain the fix before changes.');
     });
   });
 
   describe('markdown header removal', () => {
     it('handles lines that are only headers', () => {
-      const input = '# Header\n## Subheader';
+      const input = '# Header\n## Subheader\nDocument the cleanup behavior clearly.';
       const result = normalize(input);
-      // sanitizeLessonText processes but may not fully strip headers
-      expect(typeof result === 'string' || result === null).toBe(true);
+      expect(result).toBe('Document the cleanup behavior clearly.');
     });
   });
 
@@ -37,16 +35,15 @@ describe('normalizeLessonText', () => {
 
   describe('list removal', () => {
     it('handles bullet points', () => {
-      const input = '- Item 1\n- Item 2';
+      const input = '- Always check preconditions before merge\n- Preserve state when exiting early';
       const result = normalize(input);
-      // normalizeLessonText may strip list markers or keep them
-      expect(result).not.toBeNull();
+      expect(result).toBe('Always check preconditions before merge Preserve state when exiting early');
     });
 
     it('handles numbered lists', () => {
-      const input = '1. First\n2. Second';
+      const input = '1. Always validate before writing files\n2. Always log errors for failed syncs';
       const result = normalize(input);
-      expect(result).not.toBeNull();
+      expect(result).toBe('Always validate before writing files Always log errors for failed syncs');
     });
   });
 
@@ -141,6 +138,13 @@ describe('normalizeLessonText', () => {
     });
   });
 
+  describe('property declaration removal', () => {
+    it('drops class property declarations', () => {
+      expect(normalize('modelsTriedThisToolRound: number;')).toBeNull();
+      expect(normalize('progressThisCycle = 0;')).toBeNull();
+    });
+  });
+
   describe('inferred removal', () => {
     it('removes (inferred) tag', () => {
       const input = 'Always validate input (inferred) before processing data';
@@ -184,24 +188,21 @@ describe('normalizeLessonText', () => {
       // A standalone file path is not a meaningful lesson
       const input = 'src/file.ts';
       const result = normalize(input);
-      // normalizeLessonText may filter bare paths as non-actionable
-      expect(typeof result === 'string' || result === null).toBe(true);
+      expect(result).toBeNull();
     });
   });
 
   describe('trailing pattern removal', () => {
     it('handles trailing line numbers on file paths', () => {
-      const input = 'src/file.ts:123';
+      const input = 'Review src/file.ts:123 before committing changes';
       const result = normalize(input);
-      // sanitizeLessonText preserves file:line patterns as-is
-      expect(result).not.toBeNull();
+      expect(result).toBe('Review src/file.ts:123 before committing changes');
     });
 
     it('preserves trailing type and line number', () => {
-      const input = 'src/file.ts:123-ts';
+      const input = 'Use src/file.ts:123-ts only for test fixtures';
       const result = normalize(input);
-      // sanitizeLessonText processes this - file paths get stripped
-      expect(typeof result === 'string' || result === null).toBe(true);
+      expect(result).toBe('Use src/file.ts:123-ts only for test fixtures');
     });
 
     it('handles (inferred) ts suffix', () => {

@@ -41,15 +41,18 @@ async function run(): Promise<void> {
   assert.ok(!saved.includes('claude-code with'));
   assert.equal(saved.match(/tool made no changes - trying different approach/g)?.length ?? 0, 1);
   assert.ok(saved.includes('Fix for README.md rejected:'));
-  assert.ok(saved.includes('### src/state/manager.ts:117'));
-  assert.ok(saved.includes('### src/llm/client.ts:319'));
+  assert.ok(saved.includes('### src/state/manager.ts'));
+  assert.ok(saved.includes('### src/llm/client.ts'));
 
   const normalizeLessonText = (input: string) => (manager as any).normalizeLessonText(input) as string | null;
-  assert.equal(normalizeLessonText('```ts\nconst x = 1;\n```\n# Header\n**Bold**\n- Keep this'), 'Keep this');
-  assert.equal(normalizeLessonText('1. Numbered item'), 'Numbered item');
+  assert.equal(
+    normalizeLessonText('```ts\nconst x = 1;\n```\n# Header\n**Bold**\n- Keep this lesson text for later reference'),
+    'Keep this lesson text for later reference'
+  );
+  assert.equal(normalizeLessonText('1. Always verify fixes before commit'), 'Always verify fixes before commit');
   assert.equal(normalizeLessonText('// comment only'), null);
   assert.equal(normalizeLessonText('/* block comment */'), null);
-  assert.equal(normalizeLessonText('* leading comment'), 'leading comment');
+  assert.equal(normalizeLessonText('* leading comment'), null);
   assert.equal(normalizeLessonText('private isShuttingDown = false;'), null);
   assert.equal(normalizeLessonText('progressThisCycle = 0;'), null);
   assert.equal(normalizeLessonText('modelsTriedThisToolRound: number;'), null);
@@ -61,11 +64,11 @@ async function run(): Promise<void> {
   assert.equal(normalizeLessonText('import foo from "bar"'), null);
   assert.equal(normalizeLessonText('Fix for src/resolver.ts - : string; tool made no changes - trying different approach tool made no changes  already includes all runners'), null);
   assert.equal(normalizeLessonText('Fixer made no changes  already includes all runners'), 'fixer made no changes - already includes all runners');
-  assert.equal(normalizeLessonText('use this (inferred)'), 'use this');
-  assert.equal(normalizeLessonText('lesson - ts'), 'lesson');
-  assert.equal(normalizeLessonText('lesson - json'), 'lesson');
-  assert.equal(normalizeLessonText('lesson - a:123'), 'lesson');
-  assert.equal(normalizeLessonText('lesson - a.ts:123'), 'lesson - a.ts:123');
+  assert.equal(normalizeLessonText('use this (inferred) before publishing changes'), 'use this before publishing changes');
+  assert.equal(normalizeLessonText('Always validate user input - ts'), 'Always validate user input');
+  assert.equal(normalizeLessonText('Always validate config files - json'), 'Always validate config files');
+  assert.equal(normalizeLessonText('Always document decisions - a:123'), 'Always document decisions');
+  assert.equal(normalizeLessonText('Always document decisions - a.ts:123'), 'Always document decisions - a.ts:123');
   assert.equal(
     normalizeLessonText('claude-code with claude-sonnet-4-5-20250929 made no changes without explanation - trying different approach'),
     'tool made no changes without explanation - trying different approach'
