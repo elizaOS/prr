@@ -162,7 +162,9 @@ export class OpencodeRunner implements Runner {
           });
         } else {
           const combinedOutput = stdout + stderr;
-          if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
+          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Quota or rate limit exceeded', errorType: 'quota' });
+          } else if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
             resolve({ success: false, output: stdout, error: stderr || 'Model not found or not accessible', errorType: 'auth' });
           } else if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
             resolve({ success: false, output: stdout, error: stderr || 'Authentication error', errorType: 'auth' });

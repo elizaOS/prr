@@ -146,6 +146,16 @@ export class GooseRunner implements Runner {
 
         const combinedOutput = stdout + stderr;
 
+        if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedOutput)) {
+          resolve({
+            success: false,
+            output: stdout,
+            error: stderr || 'Quota or rate limit exceeded',
+            errorType: 'quota' as RunnerErrorType,
+          });
+          return;
+        }
+
         if (/model.*not found|does not exist|unauthorized|authentication|invalid.*key|api.?key/i.test(combinedOutput)) {
           resolve({
             success: false,
@@ -170,7 +180,7 @@ export class GooseRunner implements Runner {
           resolve({ success: true, output: stdout });
         } else {
           let errorType: RunnerErrorType = 'tool';
-          if (/auth|api.?key|unauthorized|quota|rate.?limit/i.test(combinedOutput)) {
+          if (/auth|api.?key|unauthorized/i.test(combinedOutput)) {
             errorType = 'auth';
           }
           resolve({

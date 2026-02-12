@@ -4,10 +4,11 @@
  * - 'auth': Authentication/API key issues
  * - 'timeout': Process timed out
  * - 'model': Wrong model for this runner (e.g., claude model sent to codex) - rotate, don't bail
+ * - 'quota': API quota or rate limit exceeded - rotate to different tool/model, don't bail
  * - 'tool': General tool failure (retry with different model/tool)
  * - 'environment': Tool environment issue (e.g., TTY/cursor position) - bail out, won't fix with retries
  */
-export type RunnerErrorType = 'permission' | 'auth' | 'model' | 'timeout' | 'tool' | 'environment';
+export type RunnerErrorType = 'permission' | 'auth' | 'model' | 'quota' | 'timeout' | 'tool' | 'environment';
 
 export interface RunnerResult {
   success: boolean;
@@ -69,6 +70,12 @@ export interface Runner {
  * Updated February 2026 with latest model versions from official docs.
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
+  // ElizaCloud: Model gateway - one API key for Claude, GPT, Gemini
+  'elizacloud': [
+    'gpt-4o',                          // GPT-4o - general purpose
+    'claude-3-5-sonnet-20241022',      // Claude 3.5 Sonnet - strong coding
+    'gpt-4o-mini',                     // GPT-4o mini - fast, cost-effective
+  ],
   // Cursor: Uses short model names (from `cursor --list-models`)
   // WHY these names: Cursor has its own model aliases, not full API names
   'cursor': [

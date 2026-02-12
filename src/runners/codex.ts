@@ -202,7 +202,16 @@ export class CodexRunner implements Runner {
         } else {
           // Check for common error patterns
           const combinedOutput = stdout + stderr;
-          if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
+          // QUOTA/RATE-LIMIT: Must be checked BEFORE auth — quota errors often
+          // contain "billing" or "plan" text that could match loosely, and the
+          // correct response is to rotate to a different tool, not bail out.
+          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan|tokens?.used/i.test(combinedOutput)) {
+            const tokensMatch = combinedOutput.match(/tokens?\s*used\s*[\n:]*\s*([\d,]+)/i);
+            const tokenInfo = tokensMatch ? ` (${tokensMatch[1]} tokens used)` : '';
+            const errorMsg = `Quota/rate limit exceeded${tokenInfo}`;
+            debug('Quota exceeded - will rotate to next tool/model', { error: errorMsg });
+            resolve({ success: false, output: stdout, error: errorMsg, errorType: 'quota' });
+          } else if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
             resolve({ success: false, output: stdout, error: stderr || `Authentication error`, errorType: 'auth' });
           } else if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
             // Model doesn't exist or API key lacks access - bail immediately

@@ -75,6 +75,17 @@ export function handleFixerError(
     return { shouldExit: false, rapidFailureCount, lastFailureTime };
   }
   
+  // QUOTA/RATE-LIMIT ERRORS: Rotate to a different tool/model, don't bail
+  // WHY: Quota exceeded means this specific API key hit its limit.
+  // A different tool (e.g., codex → claude-code) uses a different API and may still work.
+  if (result.errorType === 'quota') {
+    console.log(chalk.yellow(`\n⚠ QUOTA/RATE LIMIT: ${result.error}`));
+    console.log(chalk.gray('  Will rotate to next tool/model...'));
+    debug('Quota exceeded - rotating', { tool: runner.name, error: result.error });
+    Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
+    return { shouldExit: false, rapidFailureCount, lastFailureTime };
+  }
+  
   // ENVIRONMENT ERRORS: Tool environment issue (e.g., TTY/cursor position)
   // WHY: These are infrastructure issues that won't fix themselves with retries.
   // The tool needs a different environment (real TTY, GUI, etc.)

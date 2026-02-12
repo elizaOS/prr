@@ -134,6 +134,17 @@ export class GeminiRunner implements Runner {
 
         const combinedOutput = stdout + stderr;
 
+        // Check for quota/rate-limit before auth (quota merits rotation, not bail)
+        if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedOutput)) {
+          resolve({
+            success: false,
+            output: stdout,
+            error: stderr || 'Quota or rate limit exceeded',
+            errorType: 'quota' as RunnerErrorType,
+          });
+          return;
+        }
+
         // Check for model/auth errors
         if (/model.*not found|does not exist|you do not have access|not_found_error|invalid.*api.?key|unauthorized|authentication/i.test(combinedOutput)) {
           debug('Auth/model error detected', { exitCode: code });
@@ -161,7 +172,7 @@ export class GeminiRunner implements Runner {
           resolve({ success: true, output: stdout });
         } else {
           let errorType: RunnerErrorType = 'tool';
-          if (/api.?key|unauthorized|authentication|quota|rate.?limit/i.test(combinedOutput)) {
+          if (/api.?key|unauthorized|authentication/i.test(combinedOutput)) {
             errorType = 'auth';
           }
           resolve({
