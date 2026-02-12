@@ -21,6 +21,7 @@ const CODEX_BINARIES = ['codex', 'openai-codex'];
 export class CodexRunner implements Runner {
   name = 'codex';
   displayName = 'OpenAI Codex';
+  installHint = 'npm install -g @openai/codex';
   private binaryPath: string = 'codex';
 
   async isAvailable(): Promise<boolean> {

@@ -181,12 +181,14 @@ export async function verifyFixes(
             }
           } else {
             // No verification result returned for this issue - treat as failed
+            // WHY no lesson: "No verification result returned" is a parsing/infra issue,
+            // NOT actionable guidance for fixing code. These pollute the lessons list
+            // and waste prompt tokens with zero value.
             failedCount++;
             Iterations.addVerificationResult(stateContext, issue.comment.id, {
               passed: false,
               reason: 'No verification result returned by LLM',
             });
-            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - No verification result returned, treating as failed`);
           }
         }
       }

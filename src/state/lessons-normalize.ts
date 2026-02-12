@@ -127,6 +127,12 @@ export function normalizeLessonText(lesson: string): string | null {
   if (/^\d+\.?$/.test(normalized)) return null;
   if (/^Instructions\b/i.test(normalized)) return null;  // Reject header fragments
   
+  // Reject non-actionable infrastructure messages
+  // WHY: These describe parsing failures or tool issues, not how to fix code
+  if (/\bNo verification result returned\b/i.test(normalized)) return null;
+  if (/\btreating as failed\b/i.test(normalized)) return null;
+  if (/\bFile was not modified\b/i.test(normalized)) return null;
+  
   // Must have minimum substance (not just metadata)
   if (normalized.length < 20) return null;
   

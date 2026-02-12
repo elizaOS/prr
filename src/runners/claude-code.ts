@@ -65,6 +65,7 @@ function shouldSkipPermissions(): boolean {
 export class ClaudeCodeRunner implements Runner {
   name = 'claude-code';
   displayName = 'Claude Code';
+  installHint = 'npm install -g @anthropic-ai/claude-code';
   private binaryPath: string = 'claude';
 
   async isAvailable(): Promise<boolean> {

@@ -164,6 +164,16 @@ Working directory: ${workdir}`;
       const filesWritten = await this.applyFileChanges(workdir, response);
 
       if (filesWritten.length === 0) {
+        // Check if LLM tried to make changes but all search/replace failed
+        const hasChangeBlocks = /<change\s+path="/.test(response) || /<file\s+path="/.test(response) || /<newfile\s+path="/.test(response);
+        if (hasChangeBlocks) {
+          console.log('  ⚠ LLM attempted changes but all search/replace operations failed to match');
+          return {
+            success: false,
+            output: response,
+            error: 'All search/replace operations failed - search text did not match file contents',
+          };
+        }
         console.log('  No file changes extracted from LLM response');
         return {
           success: true,
@@ -208,6 +218,9 @@ Working directory: ${workdir}`;
 
   private async applyFileChanges(workdir: string, response: string): Promise<string[]> {
     const filesModified = new Set<string>();
+    let attemptedChanges = 0;
+    let failedSearchReplace = 0;
+    const failedFiles = new Set<string>();
     const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const MAX_WHITESPACE = 1000;
     
@@ -217,16 +230,21 @@ Working directory: ${workdir}`;
     let match;
     while ((match = changePattern.exec(response)) !== null) {
       const [, filePath, searchText, replaceText] = match;
+      attemptedChanges++;
       
       const { safe, fullPath } = this.isPathSafe(workdir, filePath);
       if (!safe) {
         debug('Skipping file outside workdir', { filePath });
+        failedSearchReplace++;
+        failedFiles.add(filePath);
         continue;
       }
 
       try {
         if (!existsSync(fullPath)) {
           debug('File not found for search/replace', { filePath });
+          failedSearchReplace++;
+          failedFiles.add(filePath);
           continue;
         }
 
@@ -240,6 +258,8 @@ Working directory: ${workdir}`;
           const contentLines = originalContent.split('\n').map(l => l.trim()).join('\n');
           if (!contentLines.includes(searchLines)) {
             debug('Search text not found even with normalized whitespace', { filePath });
+            failedSearchReplace++;
+            failedFiles.add(filePath);
             continue;
           }
           const whitespaceToken = `\\s{1,${MAX_WHITESPACE}}`;
@@ -330,6 +350,12 @@ Working directory: ${workdir}`;
       } catch (error) {
         debug('Failed to write file', { filePath, error });
       }
+    }
+
+    // Report search/replace failures so callers know the LLM tried but couldn't apply
+    if (failedSearchReplace > 0) {
+      const failedList = Array.from(failedFiles).join(', ');
+      console.log(`  ⚠ ${failedSearchReplace}/${attemptedChanges} search/replace(s) failed to match: ${failedList}`);
     }
 
     return Array.from(filesModified);

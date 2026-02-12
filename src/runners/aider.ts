@@ -18,6 +18,7 @@ function isValidModel(model: string): boolean {
 export class AiderRunner implements Runner {
   name = 'aider';
   displayName = 'Aider';
+  installHint = 'pip install aider-chat';
 
   async isAvailable(): Promise<boolean> {
     try {

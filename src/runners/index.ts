@@ -63,6 +63,10 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
           : chalk.gray('not installed');
       const versionText = status.version ? chalk.gray(` (${status.version})`) : '';
       console.log(`  ${icon} ${runner.displayName}${versionText}: ${statusText}`);
+      // Show install hint for tools that aren't installed
+      if (!status.installed && runner.installHint) {
+        console.log(chalk.gray(`    → ${runner.installHint}`));
+      }
     }
 
     if (status.ready) {

@@ -42,6 +42,7 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
 export class OpencodeRunner implements Runner {
   name = 'opencode';
   displayName = 'OpenCode';
+  installHint = 'go install github.com/opencode-ai/opencode@latest';
 
   async isAvailable(): Promise<boolean> {
     try {

@@ -31,6 +31,8 @@ export interface RunnerStatus {
 export interface Runner {
   name: string;
   displayName: string;   // Human-friendly name
+  /** Install command/instructions shown when tool is not installed */
+  installHint?: string;
   /** List of models this runner can use, in rotation order */
   supportedModels?: string[];
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult>;
