@@ -14,6 +14,7 @@ import type { LLMClient } from './llm/client.js';
 import type { StateContext } from './state/state-context.js';
 import type { LessonsContext } from './state/lessons-context.js';
 import * as LessonsAPI from './state/lessons-index.js';
+import * as Reporter from './ui/reporter.js';
 
 // ============================================================================
 // RE-EXPORTS FROM WORKFLOW MODULES
@@ -437,7 +438,8 @@ export async function executeBailOut(
     console.log(chalk.cyan('\n  Remaining Issues (need human attention):'));
     for (const issue of unresolvedIssues.slice(0, 5)) {
       console.log(chalk.yellow(`    • ${issue.comment.path}:${issue.comment.line || '?'}`));
-      console.log(chalk.gray(`      "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
+      const cleanPreview = Reporter.sanitizeCommentForDisplay(issue.comment.body).split('\n')[0].substring(0, 80);
+      console.log(chalk.gray(`      "${cleanPreview}..."`));
     }
     if (unresolvedIssues.length > 5) {
       console.log(chalk.gray(`    ... and ${unresolvedIssues.length - 5} more`));

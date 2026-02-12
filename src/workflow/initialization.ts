@@ -108,6 +108,9 @@ export async function initializeManagers(
   if (options.noClaudeMd) {
     LessonsAPI.setSkipClaudeMd(lessonsContext, true);
   }
+  if (options.noAgentsMd) {
+    LessonsAPI.setSkipAgentsMd(lessonsContext, true);
+  }
   LessonsAPI.setWorkdir(lessonsContext, workdir); // Enable repo-based lesson sharing
   await LessonsAPI.Load.loadLessons(lessonsContext);
   

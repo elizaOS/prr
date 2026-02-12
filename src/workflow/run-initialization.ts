@@ -76,7 +76,7 @@ export async function initializeRun(
   console.log(chalk.blue(`\nProcessing PR: ${owner}/${repo}#${number}\n`));
   
   // Handle cleanup-only modes
-  const isCleanupMode = options.cleanClaudeMd || options.cleanState || options.cleanAll || options.clearLock;
+  const isCleanupMode = options.cleanClaudeMd || options.cleanAgentsMd || options.cleanState || options.cleanAll || options.clearLock;
   if (isCleanupMode) {
     await runCleanupMode(prUrl, owner, repo, number);
     return null;  // Signal cleanup-only mode

@@ -61,6 +61,7 @@ export async function runCleanupMode(
   console.log(chalk.cyan('━━━ CLEANUP MODE ━━━\n'));
   
   const cleanClaudeMd = options.cleanClaudeMd || options.cleanAll;
+  const cleanAgentsMd = options.cleanAgentsMd || options.cleanAll;
   const cleanState = options.cleanState || options.cleanAll;
   
   // Get PR info to know the branch
@@ -140,6 +141,52 @@ export async function runCleanupMode(
       }
     } else {
       console.log(chalk.gray('  CLAUDE.md does not exist'));
+    }
+  }
+  
+  // Clean AGENTS.md (same logic as CLAUDE.md)
+  if (cleanAgentsMd) {
+    const agentsMdPath = join(workdir, 'AGENTS.md');
+    
+    if (existsSync(agentsMdPath)) {
+      try {
+        const content = await readFile(agentsMdPath, 'utf-8');
+        const startIdx = content.indexOf(PRR_SECTION_START);
+        const endIdx = content.indexOf(PRR_SECTION_END);
+        
+        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+          let newContent = content.slice(0, startIdx) + content.slice(endIdx + PRR_SECTION_END.length);
+          newContent = newContent.replace(/\n{3,}/g, '\n\n').trim();
+          
+          if (!newContent || newContent === '# Agent Instructions') {
+            const tracked = await git.raw(['ls-files', 'AGENTS.md']).catch(() => '');
+            if (tracked.trim()) {
+              await git.raw(['rm', 'AGENTS.md']);
+              console.log(chalk.green('✓ Deleted AGENTS.md (was only prr content)'));
+            } else {
+              await unlink(agentsMdPath);
+              console.log(chalk.green('✓ Deleted AGENTS.md (was only prr content, untracked)'));
+            }
+          } else {
+            await writeFile(agentsMdPath, newContent + '\n', 'utf-8');
+            const status = await git.status(['AGENTS.md']).catch(() => null);
+            if (status?.deleted?.includes('AGENTS.md')) {
+              await git.reset(['HEAD', 'AGENTS.md']).catch(() => {});
+            }
+            await git.add('AGENTS.md').catch((err) => {
+              console.log(chalk.yellow(`  Warning: Could not stage AGENTS.md: ${err.message}`));
+            });
+            console.log(chalk.green('✓ Removed prr section from AGENTS.md'));
+          }
+          madeChanges = true;
+        } else {
+          console.log(chalk.gray('  AGENTS.md exists but has no prr section'));
+        }
+      } catch (err) {
+        console.log(chalk.yellow(`  Could not clean AGENTS.md: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    } else {
+      console.log(chalk.gray('  AGENTS.md does not exist'));
     }
   }
   

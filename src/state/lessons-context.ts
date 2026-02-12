@@ -11,7 +11,7 @@ export interface LessonsStore {
   files: Record<string, string[]>;
 }
 
-export type LessonsSyncTarget = 'claude-md' | 'conventions-md' | 'cursor-rules';
+export type LessonsSyncTarget = 'claude-md' | 'agents-md' | 'conventions-md' | 'cursor-rules';
 
 export interface SyncTargetConfig {
   path: (workdir: string) => string;
@@ -31,6 +31,7 @@ export interface LessonsContext {
   newLessonsThisSession: number;
   originalSyncTargetState: Map<LessonsSyncTarget, boolean>;
   skipClaudeMd: boolean;
+  skipAgentsMd: boolean;
 }
 
 export function createLessonsContext(
@@ -57,6 +58,7 @@ export function createLessonsContext(
     newLessonsThisSession: 0,
     originalSyncTargetState: new Map(),
     skipClaudeMd: false,
+    skipAgentsMd: false,
   };
 }
 
@@ -64,6 +66,13 @@ export function setSkipClaudeMd(ctx: LessonsContext, skip: boolean): void {
   ctx.skipClaudeMd = skip;
   if (skip) {
     ctx.syncTargets = ctx.syncTargets.filter(t => t !== 'claude-md');
+  }
+}
+
+export function setSkipAgentsMd(ctx: LessonsContext, skip: boolean): void {
+  ctx.skipAgentsMd = skip;
+  if (skip) {
+    ctx.syncTargets = ctx.syncTargets.filter(t => t !== 'agents-md');
   }
 }
 

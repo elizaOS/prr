@@ -37,8 +37,12 @@ export interface CLIOptions {
   modelRotation: boolean;
   /** Don't sync lessons to CLAUDE.md (only use .prr/lessons.md) */
   noClaudeMd: boolean;
+  /** Don't sync lessons to AGENTS.md */
+  noAgentsMd: boolean;
   /** Cleanup mode: remove prr section from CLAUDE.md */
   cleanClaudeMd: boolean;
+  /** Cleanup mode: remove prr section from AGENTS.md */
+  cleanAgentsMd: boolean;
   /** Cleanup mode: remove state file from git */
   cleanState: boolean;
   /** Cleanup mode: run both cleanups */
@@ -123,10 +127,12 @@ export function createCLI(): Command {
     .option('--no-after-action', 'Disable after action report in final output')
     .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false)
     .option('--no-claude-md', 'Don\'t sync lessons to CLAUDE.md (only use .prr/lessons.md)')
+    .option('--no-agents-md', 'Don\'t sync lessons to AGENTS.md')
     // Cleanup-only modes (run and exit)
     .option('--clean-claude-md', 'Remove prr section from CLAUDE.md (or delete if only prr content) and exit')
+    .option('--clean-agents-md', 'Remove prr section from AGENTS.md (or delete if only prr content) and exit')
     .option('--clean-state', 'Remove .pr-resolver-state.json from git tracking and exit')
-    .option('--clean-all', 'Run both --clean-claude-md and --clean-state, then exit')
+    .option('--clean-all', 'Run all cleanup modes (CLAUDE.md, AGENTS.md, state) and exit')
     // Distributed locking for multi-instance coordination
     .option('--no-lock', 'Disable distributed locking (allow parallel instances on same PR)')
     .option('--clear-lock', 'Clear the lock file and exit (use if a previous instance crashed)')
@@ -209,8 +215,10 @@ export function parseArgs(program: Command): ParsedArgs {
       noAfterAction: !opts.afterAction,       // --no-after-action sets opts.afterAction=false
       modelRotation: opts.modelRotation ?? false,  // Default: use smart model selection
       noClaudeMd: !opts.claudeMd,             // --no-claude-md sets opts.claudeMd=false
+      noAgentsMd: !opts.agentsMd,             // --no-agents-md sets opts.agentsMd=false
       // Cleanup modes
       cleanClaudeMd: opts.cleanClaudeMd ?? false,
+      cleanAgentsMd: opts.cleanAgentsMd ?? false,
       cleanState: opts.cleanState ?? false,
       cleanAll: opts.cleanAll ?? false,
       // Distributed locking

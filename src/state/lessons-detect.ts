@@ -19,6 +19,16 @@ export function autoDetectSyncTargets(ctx: LessonsContext): void {
     detected.push('claude-md');
   }
 
+  // AGENTS.md — used by OpenAI Codex CLI
+  if (!ctx.skipAgentsMd) {
+    const agentsMdPath = join(ctx.workdir, 'AGENTS.md');
+    const agentsMdExists = existsSync(agentsMdPath);
+    ctx.originalSyncTargetState.set('agents-md', agentsMdExists);
+    if (agentsMdExists) {
+      detected.push('agents-md');
+    }
+  }
+
   const conventionsMdPath = join(ctx.workdir, 'CONVENTIONS.md');
   const conventionsMdExists = existsSync(conventionsMdPath);
   ctx.originalSyncTargetState.set('conventions-md', conventionsMdExists);

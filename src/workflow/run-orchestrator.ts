@@ -106,6 +106,12 @@ export async function executeRun(
     state.currentRunnerIndex = setupResult.currentRunnerIndex;
     state.modelIndices = setupResult.modelIndices;
     
+    // If codex is active, ensure AGENTS.md is a sync target
+    // WHY: Codex reads AGENTS.md for project instructions, same way Claude reads CLAUDE.md
+    if (state.runner?.name === 'codex' && state.lessonsContext && !state.lessonsContext.syncTargets.includes('agents-md')) {
+      state.lessonsContext.syncTargets.push('agents-md');
+    }
+    
     // Immediately sync resolver instance via callback before continuing
     // WHY: Callbacks need to access updated this.stateContext during main loop
     if (callbacks.syncResolverState) {

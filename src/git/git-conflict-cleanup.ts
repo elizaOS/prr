@@ -53,6 +53,36 @@ export async function cleanupCreatedSyncTargets(
     }
   }
 
+  // Same for AGENTS.md (created when codex is active tool)
+  const agentsMdExisted = LessonsAPI.Detect.didSyncTargetExist(lessonsContext, 'agents-md');
+  if (!agentsMdExisted) {
+    const agentsMdPath = join(workdir, 'AGENTS.md');
+    
+    try {
+      const status = await git.status(['AGENTS.md']).catch(() => null);
+      
+      if (status?.deleted?.includes('AGENTS.md')) {
+        await git.reset(['HEAD', 'AGENTS.md']).catch(() => {});
+        console.log(chalk.gray('  Unstaged AGENTS.md deletion'));
+      } else {
+        const tracked = await git.raw(['ls-files', 'AGENTS.md']).catch(() => '');
+        if (tracked.trim()) {
+          await git.raw(['rm', '--cached', 'AGENTS.md']).catch((err) => {
+            debug('Could not git rm AGENTS.md', { error: err instanceof Error ? err.message : String(err) });
+          });
+          console.log(chalk.gray('  Removed AGENTS.md from git (created by prr, not in original PR)'));
+        }
+      }
+      
+      if (existsSync(agentsMdPath)) {
+        await unlink(agentsMdPath);
+        debug('Deleted AGENTS.md created by prr');
+      }
+    } catch (err) {
+      debug('Could not clean up AGENTS.md', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   // Same for CONVENTIONS.md
   const conventionsMdExisted = LessonsAPI.Detect.didSyncTargetExist(lessonsContext, 'conventions-md');
   if (!conventionsMdExisted) {

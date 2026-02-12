@@ -120,7 +120,7 @@ function getLocalLessonsPath(owner: string, repo: string, branch: string): strin
  * WHY: Different AI tools read different files.
  * We preserve existing content and only update our delimited section.
  */
-export type LessonsSyncTarget = 'claude-md' | 'conventions-md' | 'cursor-rules';
+export type LessonsSyncTarget = 'claude-md' | 'agents-md' | 'conventions-md' | 'cursor-rules';
 
 interface SyncTargetConfig {
   path: (workdir: string) => string;
@@ -135,6 +135,12 @@ const SYNC_TARGETS: Record<LessonsSyncTarget, SyncTargetConfig> = {
     description: 'CLAUDE.md',
     tools: ['Cursor', 'Claude Code'],
     createHeader: '# Project Configuration\n\n',
+  },
+  'agents-md': {
+    path: (workdir) => join(workdir, 'AGENTS.md'),
+    description: 'AGENTS.md',
+    tools: ['OpenAI Codex'],
+    createHeader: '# Agent Instructions\n\n',
   },
   'conventions-md': {
     path: (workdir) => join(workdir, 'CONVENTIONS.md'),
@@ -221,6 +227,11 @@ export class LessonsManager {
 
     // Always sync to CLAUDE.md (Cursor + Claude Code both read it)
     detected.push('claude-md');
+
+    // AGENTS.md — used by OpenAI Codex CLI
+    if (existsSync(join(this.workdir, 'AGENTS.md'))) {
+      detected.push('agents-md');
+    }
 
     // Check for Aider's CONVENTIONS.md or config
     if (existsSync(join(this.workdir, 'CONVENTIONS.md')) ||

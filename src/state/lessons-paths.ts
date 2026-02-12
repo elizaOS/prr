@@ -36,6 +36,15 @@ export const SYNC_TARGETS: Record<LessonsSyncTarget, SyncTargetConfig> = {
     tools: ['Cursor', 'Claude Code'],
     createHeader: '# Project Configuration\n\n',
   },
+  'agents-md': {
+    path: (workdir) => {
+      if (!workdir) throw new Error('workdir required for AGENTS.md path');
+      return join(workdir, 'AGENTS.md');
+    },
+    description: 'AGENTS.md',
+    tools: ['OpenAI Codex'],
+    createHeader: '# Agent Instructions\n\n',
+  },
   'conventions-md': {
     path: (workdir) => {
       if (!workdir) throw new Error('workdir required for CONVENTIONS.md path');
