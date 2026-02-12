@@ -80,9 +80,9 @@ export async function executeFixIteration(
 }> {
   const spinner = ora();
 
-  // Build fix prompt
+  // Build fix prompt (with adaptive batch sizing based on consecutive failures)
   debugStep('GENERATING FIX PROMPT');
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose);
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures);
   
   if (promptDetails.shouldSkip) {
     return {

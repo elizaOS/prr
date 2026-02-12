@@ -1,6 +1,6 @@
 import type { UnresolvedIssue, FixPrompt } from './types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
-import { MAX_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../constants.js';
+import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../constants.js';
 
 /**
  * Estimate token count for a string.
@@ -13,7 +13,30 @@ function estimateTokens(text: string): number {
 
 
 
-export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string[]): FixPrompt {
+/**
+ * Compute effective batch size using adaptive batching.
+ *
+ * WHY: When the fixer repeatedly fails to fix any issues, the batch is likely
+ * too large for the model to handle effectively. Halving after each zero-fix
+ * iteration lets the system converge on a manageable size before falling back
+ * to single-issue focus mode.
+ *
+ * @param consecutiveZeroFixIterations Number of consecutive iterations with 0 verified fixes
+ * @returns Effective max issues for this prompt
+ */
+export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number): number {
+  if (consecutiveZeroFixIterations <= 0) return MAX_ISSUES_PER_PROMPT;
+  // Halve the batch size for each consecutive zero-fix iteration
+  // e.g. 50 → 25 → 12 → 6 → 5 (clamped to MIN)
+  const reduced = Math.floor(MAX_ISSUES_PER_PROMPT / Math.pow(2, consecutiveZeroFixIterations));
+  return Math.max(MIN_ISSUES_PER_PROMPT, reduced);
+}
+
+export function buildFixPrompt(
+  issues: UnresolvedIssue[],
+  lessonsLearned: string[],
+  options?: { maxIssues?: number }
+): FixPrompt {
   // Guard: Return empty prompt if no issues
   // WHY: Prevents confusing "Fixing 0 issues" output and wasted fixer runs
   if (issues.length === 0) {
@@ -28,9 +51,11 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
 
   // Limit issues per prompt to prevent token overflow
   // WHY: 124 issues at once = 202k tokens which exceeds Anthropic's 200k limit
+  // The effective limit may be reduced by adaptive batching when consecutive iterations fail.
+  const effectiveMax = options?.maxIssues ?? MAX_ISSUES_PER_PROMPT;
   const originalCount = issues.length;
-  const limitedIssues = issues.slice(0, MAX_ISSUES_PER_PROMPT);
-  const wasLimited = originalCount > MAX_ISSUES_PER_PROMPT;
+  const limitedIssues = issues.slice(0, effectiveMax);
+  const wasLimited = originalCount > effectiveMax;
 
   const parts: string[] = [];
 

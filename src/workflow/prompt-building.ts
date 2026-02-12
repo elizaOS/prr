@@ -11,7 +11,7 @@ import chalk from 'chalk';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
-import { buildFixPrompt as buildPrompt } from '../analyzer/prompt-builder.js';
+import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug } from '../logger.js';
 
@@ -30,7 +30,8 @@ import { debug } from '../logger.js';
 export function buildAndDisplayFixPrompt(
   unresolvedIssues: UnresolvedIssue[],
   lessonsContext: LessonsContext,
-  verbose: boolean
+  verbose: boolean,
+  consecutiveZeroFixIterations: number = 0
 ): {
   prompt: string;
   detailedSummary: string;
@@ -44,9 +45,17 @@ export function buildAndDisplayFixPrompt(
   // Get lessons for all files being fixed
   const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];
   const lessons = LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, affectedFiles);
+
+  // Adaptive batch sizing: reduce batch when consecutive iterations fail
+  const effectiveMax = computeEffectiveBatchSize(consecutiveZeroFixIterations);
+  if (effectiveMax < 50 && consecutiveZeroFixIterations > 0) {
+    debug('Adaptive batch sizing', { consecutiveZeroFixIterations, effectiveMax });
+  }
+
   const { prompt, detailedSummary, lessonsIncluded } = buildPrompt(
     unresolvedIssues,
-    lessons
+    lessons,
+    { maxIssues: effectiveMax }
   );
 
   console.log(chalk.cyan(`\n${detailedSummary}\n`));

@@ -37,6 +37,12 @@ export const BATCH_CHECK_MAX_CONTEXT_CHARS = 150000;
 export const MAX_ISSUES_PER_PROMPT = 50;
 
 /**
+ * Minimum issues per prompt when adaptive batching reduces the batch size.
+ * Below this, single-issue focus mode is more appropriate.
+ */
+export const MIN_ISSUES_PER_PROMPT = 5;
+
+/**
  * Maximum characters per review comment in fix prompts.
  * Truncate longer comments to prevent prompt overflow.
  */

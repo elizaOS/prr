@@ -5,20 +5,9 @@
 
 import chalk from 'chalk';
 import type { Runner } from '../runners/types.js';
-import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { StateContext } from '../state/state-context.js';
-import { setPhase } from '../state/state-context.js';
-import * as State from '../state/state-core.js';
-import * as Verification from '../state/state-verification.js';
-import * as Dismissed from '../state/state-dismissed.js';
-import * as Iterations from '../state/state-iterations.js';
-import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
-import type { LessonsContext } from '../state/lessons-context.js';
-import type { LLMClient } from '../llm/client.js';
-import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatDuration } from '../logger.js';
-import { formatNumber } from '../ui/reporter.js';
 
 import { RAPID_FAILURE_THRESHOLD_MS, MAX_RAPID_FAILURES, RAPID_FAILURE_WINDOW_MS } from '../constants.js';
 const RAPID_FAILURE_MS = RAPID_FAILURE_THRESHOLD_MS;
@@ -142,140 +131,7 @@ export function handleFixerError(
   };
 }
 
-/**
- * Handle "no changes" case from fixer - verify if issues are actually fixed
- */
-export async function handleNoChanges(
-  unresolvedIssues: UnresolvedIssue[],
-  runner: Runner,
-  result: { output?: string },
-  llm: LLMClient,
-  stateContext: StateContext,
-  lessonsContext: LessonsContext,
-  verifiedThisSession: Set<string>,
-  getCurrentModel: () => string | null | undefined,
-  parseNoChangesExplanation: (output?: string) => string | null
-): Promise<{
-  shouldContinue: boolean;
-  shouldBreak: boolean;
-  progressMade: number;
-  exitReason?: string;
-  exitDetails?: string;
-  consecutiveFailures: number;
-  updatedUnresolvedIssues?: UnresolvedIssue[];
-}> {
-  const currentModel = getCurrentModel();
-  console.log(chalk.yellow(`\nNo changes made by ${runner.name}${currentModel ? ` (${currentModel})` : ''}`));
-
-  // Parse fixer output for NO_CHANGES explanation
-  const noChangesExplanation = parseNoChangesExplanation(result.output);
-
-  if (noChangesExplanation) {
-    // Fixer provided an explanation for why it made no changes
-    console.log(chalk.cyan(`  Fixer's explanation: ${noChangesExplanation}`));
-    // Note: Don't include tool/model names - that's tracked separately in modelStats
-    LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes: ${noChangesExplanation}`);
-
-    // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
-    // WHY: Only match targeted phrases to avoid false positives from
-    // single words like 'has' or 'exists' appearing in unrelated explanations
-    const lowerExplanation = noChangesExplanation.toLowerCase();
-    const isAlreadyFixed = /\balready\s+fixed\b/.test(lowerExplanation) ||
-                           /\bissue\s+already\b/.test(lowerExplanation) ||
-                           /\bno\s+changes?\s+(required|needed|necessary)\b/.test(lowerExplanation) ||
-                           /\bno\s+fix\s+needed\b/.test(lowerExplanation) ||
-                           /\bnothing\s+to\s+(do|fix|change)\b/.test(lowerExplanation) ||
-                           /\bnot\s+reproducible\b/.test(lowerExplanation) ||
-                           /\balready\s+(exists?|implemented|addressed|resolved|correct)\b/.test(lowerExplanation);
-
-    if (isAlreadyFixed) {
-      // Fixer claims issues are already fixed - VERIFY the claim
-      console.log(chalk.gray(`  → Fixer believes issues are already addressed - verifying...`));
-      
-      // Run verification on all unresolved issues to check fixer's claim
-      const verifyResults = await llm.batchCheckIssuesExist(
-        unresolvedIssues.map((issue, idx) => ({
-          id: `issue_${idx + 1}`,
-          comment: issue.comment.body,
-          filePath: issue.comment.path,
-          line: issue.comment.line,
-          codeSnippet: issue.codeSnippet,
-        }))
-      );
-      
-      let verifiedAsFixed = 0;
-      const stillUnresolved: typeof unresolvedIssues = [];
-      
-      for (let i = 0; i < unresolvedIssues.length; i++) {
-        const issue = unresolvedIssues[i];
-        const verifyResult = verifyResults.issues.get(`issue_${i + 1}`);
-        
-        if (verifyResult && !verifyResult.exists) {
-          // Issue verified as fixed!
-          verifiedAsFixed++;
-          Verification.markVerified(stateContext, issue.comment.id);
-          verifiedThisSession.add(issue.comment.id);
-          console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}:${issue.comment.line} - ${verifyResult.explanation}`));
-        } else {
-          // Issue still exists despite fixer's claim
-          stillUnresolved.push(issue);
-          if (verifyResult) {
-            console.log(chalk.yellow(`    ○ Still exists: ${issue.comment.path}:${issue.comment.line} - ${verifyResult.explanation}`));
-          }
-        }
-      }
-      
-      if (verifiedAsFixed > 0) {
-        console.log(chalk.green(`  → Verified ${verifiedAsFixed}/${unresolvedIssues.length} issues as already fixed`));
-        Performance.recordModelFix(stateContext, runner.name, currentModel || 'unknown', verifiedAsFixed);
-        
-        if (stillUnresolved.length === 0) {
-          console.log(chalk.green('\n✓ All issues verified as already fixed'));
-          return {
-            shouldContinue: false,
-            shouldBreak: true,
-            progressMade: verifiedAsFixed,
-            exitReason: 'all_fixed',
-            exitDetails: 'All issues verified as already fixed',
-            consecutiveFailures: 0,
-            updatedUnresolvedIssues: stillUnresolved,
-          };
-        }
-        
-        // Some verified, some remain - continue with remaining
-        return {
-          shouldContinue: true,
-          shouldBreak: false,
-          progressMade: verifiedAsFixed,
-          consecutiveFailures: 0,
-          updatedUnresolvedIssues: stillUnresolved,
-        };
-      } else {
-        // Verification REJECTED fixer's claim - none are actually fixed
-        console.log(chalk.yellow(`  ✗ Verification rejected fixer's claim - issues still exist`));
-      }
-    }
-    
-    // Either not "already fixed" claim or verification rejected it
-    // Record as lesson and continue with model rotation
-    debug('No changes and not verified as fixed - recording as failure');
-    Performance.recordModelNoChanges(stateContext, runner.name, currentModel || 'unknown');
-    return {
-      shouldContinue: false,
-      shouldBreak: false,
-      progressMade: 0,
-      consecutiveFailures: 1, // Indicate failure for consecutive counter
-    };
-  } else {
-    // No explanation provided - fixer just made zero changes
-    console.log(chalk.yellow('  (No explanation provided for zero changes)'));
-    debug('No changes and no explanation - recording as failure');
-    Performance.recordModelNoChanges(stateContext, runner.name, currentModel || 'unknown');
-    return {
-      shouldContinue: false,
-      shouldBreak: false,
-      progressMade: 0,
-      consecutiveFailures: 1,
-    };
-  }
-}
+// NOTE: The "no changes" verification workflow is handled exclusively by
+// handleNoChangesWithVerification in no-changes-verification.ts.
+// A duplicate handleNoChanges function was removed from here to prevent
+// divergent logic (the duplicate used broader "already fixed" detection).

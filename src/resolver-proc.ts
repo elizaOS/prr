@@ -96,7 +96,6 @@ export {
 // Fixer error handling
 export {
   handleFixerError,
-  handleNoChanges,
 } from './workflow/fixer-errors.js';
 
 // Fix verification

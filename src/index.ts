@@ -6,6 +6,10 @@ import { createCLI, parseArgs } from './cli.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath } from './logger.js';
+
+// Start output log tee immediately — captures all console output to ~/.prr/output.log
+initOutputLog();
 
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;
@@ -14,6 +18,7 @@ async function handleShutdown(signal: string): Promise<void> {
   if (isShuttingDown) {
     // Second signal - force exit
     console.log(chalk.red('\nForce exit.'));
+    closeOutputLog();
     process.exit(1);
   }
   
@@ -23,6 +28,12 @@ async function handleShutdown(signal: string): Promise<void> {
     await resolver.gracefulShutdown();
   }
   
+  const logPath = getOutputLogPath();
+  if (logPath) {
+    console.log(chalk.gray(`\n📄 Full output log: ${logPath}`));
+  }
+  closeOutputLog();
+
   // Compute signal-specific exit code (128 + signal number)
   // SIGINT (2) -> 130, SIGTERM (15) -> 143
   const signalCodes: Record<string, number> = {
@@ -89,6 +100,12 @@ async function main(): Promise<void> {
     resolver = new PRResolver(config, options);
     await resolver.run(prUrl);
 
+    const logPath = getOutputLogPath();
+    if (logPath) {
+      console.log(chalk.gray(`\n📄 Full output log: ${logPath}`));
+    }
+    closeOutputLog();
+
   } catch (error) {
     if (error instanceof Error) {
       console.error(chalk.red('\nError:'), error.message);
@@ -100,6 +117,11 @@ async function main(): Promise<void> {
     } else {
       console.error(chalk.red('\nUnknown error:'), error);
     }
+    const logPath = getOutputLogPath();
+    if (logPath) {
+      console.error(chalk.gray(`\n📄 Full output log: ${logPath}`));
+    }
+    closeOutputLog();
     process.exit(1);
   }
 }

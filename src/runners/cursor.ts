@@ -295,7 +295,8 @@ export class CursorRunner implements Runner {
       child.stdin?.write(prompt);
       child.stdin?.end();
 
-      let stdout = '';
+      let stdout = '';       // Raw stdout (all JSON frames) — for debug logging
+      let textContent = '';  // Clean text content extracted from JSON stream — for output parsing
       let stderr = '';
       let lastContent = '';
       let pending = '';
@@ -308,6 +309,7 @@ export class CursorRunner implements Runner {
             // Incremental text output
             process.stdout.write(json.content);
             lastContent += json.content;
+            textContent += json.content;
           } else if (json.type === 'tool_use') {
             // Tool being used
             console.log(`\n🔧 ${json.name || 'tool'}: ${json.input?.path || json.input?.command || ''}`);
@@ -322,16 +324,19 @@ export class CursorRunner implements Runner {
             // Message ended
             if (lastContent) {
               process.stdout.write('\n');
+              textContent += '\n';
               lastContent = '';
             }
           } else if (json.content) {
             // Fallback: if there's content, print it
             process.stdout.write(json.content);
+            textContent += json.content;
           }
         } catch {
           // Not JSON, print raw (might be plain text mode)
           if (line.trim() && !line.includes('"type"')) {
             process.stdout.write(line + '\n');
+            textContent += line + '\n';
           }
         }
       };
@@ -375,12 +380,12 @@ export class CursorRunner implements Runner {
         if (code === 0) {
           resolve({
             success: true,
-            output: stdout,
+            output: textContent,  // Clean text, not raw JSON stream
           });
         } else {
           resolve({
             success: false,
-            output: stdout,
+            output: textContent,  // Clean text for NO_CHANGES parsing
             error: stderr || `Process exited with code ${code}`,
           });
         }
@@ -392,7 +397,7 @@ export class CursorRunner implements Runner {
 
         resolve({
           success: false,
-          output: stdout,
+          output: textContent,
           error: err.message,
         });
       });

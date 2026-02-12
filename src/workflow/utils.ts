@@ -116,6 +116,24 @@ export function ringBell(times: number = 3): void {
 }
 
 /**
+ * Known fragments from the prompt template's NO_CHANGES instruction section.
+ * If the fixer output contains these, it regurgitated the prompt instead of
+ * providing a real explanation.
+ *
+ * WHY: When models are overwhelmed (large prompts, many issues), they sometimes
+ * echo the instruction template verbatim. Treating that as a genuine "already
+ * fixed" claim triggers expensive re-verification of all issues for nothing.
+ */
+const PROMPT_REGURGITATION_MARKERS = [
+  'Issue 1 is already fixed - Line 45 has null check',
+  'Valid reasons include',
+  'DO NOT make zero changes without this explanation',
+  'The system requires documentation of why no changes were made',
+  'Cannot determine correct fix (explain what is unclear)',
+  'Code already handles this correctly (cite specific implementation)',
+];
+
+/**
  * Parse fixer tool output to extract NO_CHANGES explanation.
  */
 export function parseNoChangesExplanation(output: string): string | null {
@@ -130,6 +148,11 @@ export function parseNoChangesExplanation(output: string): string | null {
     if (match && match[1]) {
       const explanation = match[1].trim();
       if (explanation.length >= 20) {
+        // Reject prompt regurgitation: if the explanation matches template text,
+        // the model echoed instructions instead of providing a real explanation.
+        if (PROMPT_REGURGITATION_MARKERS.some(marker => explanation.includes(marker))) {
+          continue; // Skip this match, try next line
+        }
         return explanation;
       }
     }
@@ -151,7 +174,12 @@ export function parseNoChangesExplanation(output: string): string | null {
     if (match) {
       const sentenceMatch = output.match(new RegExp(`[^.!?]*${pattern.source}[^.!?]*[.!?]?`, 'i'));
       if (sentenceMatch && sentenceMatch[0].length >= 20) {
-        return `(inferred) ${sentenceMatch[0].trim()}`;
+        const inferred = sentenceMatch[0].trim();
+        // Reject prompt regurgitation in inferred explanations too
+        if (PROMPT_REGURGITATION_MARKERS.some(marker => inferred.includes(marker))) {
+          continue;
+        }
+        return `(inferred) ${inferred}`;
       }
     }
   }
