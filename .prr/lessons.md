@@ -44,10 +44,9 @@
 
 ## .prr/lessons.md
 
-- Fix for .prr/lessons.md:172 - When a review requests fixing root-cause logic in code, don't fix symptoms in output files—locate and modify the actual function (compactLessons, dedupeLessons, etc.) that generates the output.
-- Fix for .prr/lessons.md:79 - When a review requests code changes to prevent future issues, don't just fix the symptom in data—implement the validation logic in the functions mentioned.
-- Fix for .prr/lessons.md:79 - When a review requests code function changes, don't just fix the data file—implement the validation logic in the functions mentioned (sanitizeLessonsList, addLesson).
-- Fix for .prr/lessons.md:167 - tool modified wrong files (src/git/commit.ts, src/workflow/fix-verification.ts), need to modify .prr/lessons.md
+- When a review requests fixing root-cause logic in code, don't fix symptoms in output files - locate and modify the actual function that generates the output.
+- When a review requests code changes to prevent future issues, implement the validation logic in the functions mentioned.
+- When a review requests code function changes, implement the validation logic in the functions mentioned (sanitizeLessonsList, addLesson).
 
 ## .prr/lessons.md:108
 
