@@ -48,7 +48,9 @@ export interface Runner {
  * AI models get stuck. They'll make the same mistake repeatedly.
  * Different models have different strengths and availabilities change frequently.
  * 
- * NOTE: The lists below are ILLUSTRATIVE EXAMPLES ONLY and may be outdated.
+ * NOTE: The lists below are ILLUSTRATIVE EXAMPLES ONLY and will likely be outdated.
+ * They are NOT used at runtime when dynamic model discovery is available.
+ * Real model lists are fetched via API when possible. These are fallbacks only.
  * Actual model availability changes frequently. Use runner.supportedModels
  * or dynamic discovery (e.g., `cursor --list-models`) for up-to-date lists.
  * 

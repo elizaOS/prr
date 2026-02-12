@@ -48,6 +48,13 @@ export function sanitizeLessonText(lesson: string): string {
   result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
   result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
   
+  // Collapse double hyphens and multiple spaces
+  result = result.replace(/\s*-\s*-\s*/g, ' - ');
+  result = result.replace(/\s{2,}/g, ' ');
+  
+  // Strip malformed header artifacts like "- (inferred) ts"
+  result = result.replace(/\s*-\s*\(inferred\)\s*\w*\s*$/gi, '');
+  
   // Normalize "made no changes" variants with missing separators
   result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
   result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
