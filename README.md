@@ -576,7 +576,7 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 | `grok-3-beta` | Grok 3 Beta |
 | `grok-3-mini` | Grok 3 Mini |
 
-> **Note**: The models listed above are examples and may not all be available. Model availability varies by account, plan, and provider. Run `agent models` or `cursor-agent --list-models` to see your actual available options.
+> **Note**: The models listed above are examples and may not all be available. Model availability varies by account, plan, and provider. Run `agent models` or `cursor-agent --list-models` to see your actual available options. Models and names change frequently; refer to each provider's documentation for the latest.
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 

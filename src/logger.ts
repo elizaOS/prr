@@ -189,8 +189,7 @@ export function formatDuration(ms: number): string {
   } else {
     const mins = Math.floor(ms / 60000);
     const secs = Math.floor((ms % 60000) / 1000);
-    const secsStr = secs.toString().padStart(2, '0');
-    return `${mins}m ${secsStr}s`;
+    return `${mins}m ${secs.toString().padStart(2, '0')}s`;
   }
 }
 
