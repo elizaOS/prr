@@ -106,15 +106,20 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Could not check/set remote URL', { error: String(e) });
   }
 
+  // Capture original remote URL before injection
+  let originalRemoteUrl: string | null = null;
+  try {
+    originalRemoteUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+  } catch {
+    debug('Could not capture original remote URL');
+  }
+
   // Restore original remote URL after push to avoid persisting token in .git/config
   const restoreRemoteUrl = () => {
+    if (!originalRemoteUrl) return;
     try {
-      const currentUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-      if (currentUrl && currentUrl.includes('@')) {
-        const cleanUrl = currentUrl.replace(/https:\/\/[^@]+@/, 'https://');
-        execSync(`git remote set-url origin ${cleanUrl}`, { cwd: workdir, stdio: 'ignore', shell: false });
-        debug('Restored clean remote URL after push');
-      }
+      execSync(`git remote set-url origin "${originalRemoteUrl}"`, { cwd: workdir, stdio: 'ignore', shell: false });
+      debug('Restored original remote URL after push');
     } catch {
       // Ignore restore errors
     }
