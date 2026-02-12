@@ -191,8 +191,12 @@ describe('normalizeLessonText', () => {
     it('handles (inferred) ts suffix', () => {
       const input = 'src/state/manager.ts:117 - (inferred) ts';
       const result = normalize(input);
-      // sanitizeLessonText strips file paths; remaining text may be null or cleaned string
+      // normalizeLessonText drops lines that are just code references/artifacts
       expect(result === null || typeof result === 'string').toBe(true);
+      if (result !== null) {
+        // If not dropped, should not contain raw code artifacts
+        expect(result).not.toContain('(inferred) ts');
+      }
     });
   });
 

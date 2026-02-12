@@ -97,7 +97,8 @@ export class AiderRunner implements Runner {
         args.push('--model', options.model);
       }
       
-      // Pass prompt file directly to avoid OS arg limits
+      // Pass prompt via file to avoid OS arg limits (E2BIG)
+      // aider's --message-file reads the file as the prompt and exits
       args.push('--message-file', promptFile);
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
