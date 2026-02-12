@@ -66,6 +66,7 @@ export async function trySingleIssueFix(
     console.log(chalk.cyan(`\n  [${i + 1}/${toTry.length}] Focusing on: ${issue.comment.path}:${issue.comment.line || '?'}`));
     console.log(chalk.gray(`    "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
     
+    try {
     // Build a focused prompt for just this one issue
     const focusedPrompt = buildSingleIssuePrompt(issue);
     
@@ -228,6 +229,11 @@ export async function trySingleIssueFix(
     
     await State.saveState(stateContext);
     await LessonsAPI.Save.save(lessonsContext);
+    } catch (err) {
+      console.log(chalk.yellow(`    ⚠ Error processing issue: ${err instanceof Error ? err.message : String(err)}`));
+      debug('Error in single-issue fix loop', { issue: issue.comment.path, error: err });
+      // Continue with next issue instead of aborting entire loop
+    }
   }
   
   return anyFixed;

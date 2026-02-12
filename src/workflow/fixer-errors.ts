@@ -177,14 +177,16 @@ export async function handleNoChanges(
     LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes: ${noChangesExplanation}`);
 
     // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
+    // WHY: Only match targeted phrases to avoid false positives from
+    // single words like 'has' or 'exists' appearing in unrelated explanations
     const lowerExplanation = noChangesExplanation.toLowerCase();
-    const isAlreadyFixed = lowerExplanation.includes('already fixed') ||
-                           lowerExplanation.includes('already correct') ||
-                           lowerExplanation.includes('already addressed') ||
-                           lowerExplanation.includes('already exists') ||
-                           lowerExplanation.includes('already implements') ||
-                           lowerExplanation.includes('no change needed') ||
-                           lowerExplanation.includes('no changes needed');
+    const isAlreadyFixed = /\balready\s+fixed\b/.test(lowerExplanation) ||
+                           /\bissue\s+already\b/.test(lowerExplanation) ||
+                           /\bno\s+changes?\s+(required|needed|necessary)\b/.test(lowerExplanation) ||
+                           /\bno\s+fix\s+needed\b/.test(lowerExplanation) ||
+                           /\bnothing\s+to\s+(do|fix|change)\b/.test(lowerExplanation) ||
+                           /\bnot\s+reproducible\b/.test(lowerExplanation) ||
+                           /\balready\s+(exists?|implemented|addressed|resolved|correct)\b/.test(lowerExplanation);
 
     if (isAlreadyFixed) {
       // Fixer claims issues are already fixed - VERIFY the claim
