@@ -5,161 +5,94 @@
 > You can edit this file manually or let prr update it.
 > To share lessons across your team, commit this file to your repo.
 
-## Global Lessons
+## File-Specific Lessons
 
-- When a fixer tool makes no changes, try a different approach or tool.
-- When fixing README.md, ensure the diff addresses the specific issue mentioned in the review (e.g., platform-specific instructions, model name standardization) rather than making unrelated changes.
-- When fixing a specific code issue, ensure the diff modifies the exact lines and logic mentioned in the review comment, not unrelated code in the same file.
-- Avoid duplicating function definitions or code blocks when applying fixes; modify the existing code in place.
-- When a review requests a regex change (e.g., Unicode property escapes for emoji), the fix must include that regex change, not unrelated refactoring.
-- When a review requests stdin-based prompt passing, the fix must implement the actual stdin logic, not duplicate existing parsing code.
-- When adding validation helpers (e.g., parseIntOrDefault), update all call sites to use them, not just define the helper.
-- When fixing a rejected lesson entry, ensure deduplication is complete and no malformed entries remain.
-- When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
-- When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation describing it.
-- When a review comment targets a specific bug (e.g., in compactLessons), fix that bug, not a different issue in the same file.
-- When fixing path parsing (e.g., Windows drive letters), address the actual parsing issue rather than filtering unrelated patterns.
-- Anchor the regex on message suffixes like " rejected:" or " - " to reliably separate filePath from line numbers, rather than relying solely on the last `:digits` pattern.
-- When a review requests updating a specific array (e.g., FALLBACK_MODELS), the diff must modify that array, not unrelated code.
-- When creating temp files, include cleanup logic (e.g., unlinkSync) in all exit paths and do not remove safety checks (e.g., isSafePath) without replacement.
-- Avoid duplicating entire code loops; modify the existing loop to add new behavior.
-- Ensure tool modifications target the correct file as specified in the review comment.
-- When a fixer tool makes no changes without explanation, try a different approach.
-- Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
-- Fix for README.md:231 rejected: The diff updates model versions and rotation examples but doesn't fix the markdown indentation issues (MD005/MD007) in the nested list bullets under "Run Fixer".
-- Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
-- Fix for README.md:1 - tool made no changes without explanation - trying different approach
-- Fix for src/runners/claude-code.ts:156 rejected: The diff improves the permission error message but doesn't defer prompt file creation until after model validation or use a unique temporary filename to prevent collisions.
-- Fix for src/cli.ts:133 rejected: The diff only adds parseIntOrExit for numeric validation but doesn't update the FixerTool type to include new runners ('claude-code', 'aider', 'codex', 'llm-api') or update validateTool() and CLI help text.
-- Fix for src/cli.ts:151 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/runners/cursor.ts, src/state/manager.ts), need to modify src/cli.ts
-- Fix for src/cli.ts:170 rejected: The diff only removes the `?? 400_000` fallback from `maxContextChars` but the comment indicates `maxStaleCycles` should also be changed to use nullish coalescing instead of `||`, which is missing from the diff.
-- Fix for src/git/clone.ts:452 rejected: The diff adds merge completion logic but the merge abort on error path is missing—the suggested fix shows aborting merge on both conflict and generic error returns.
-- Fix for FIXER_EXPLANATION_REQUIREMENT.md:78 - tool made no changes
-- Fix for src/config.ts:61 - tool made no changes without explanation - trying different approach
-- Fix for src/config.ts:168 rejected: The change only removes the mention of 'auto' from the error message but does not separate 'auto' validation from actual tool validation or document that 'auto' should be resolved before storage. The underlying issue—that 'auto' is checked alongside real tools—remains unaddressed.
-- Fix for CLAUDE.md:94 - When fixing corrupted generated content, sanitize the source before regenerating, not just the output structure—fix the generator logic, not the symptoms.
-- Fix for .prr/lessons.md:172 - When a review requests fixing root-cause logic in code, don't fix symptoms in output files—locate and modify the actual function (compactLessons, dedupeLessons, etc.) that generates the output.
-- Fix for .prr/lessons.md:108 - When a review requests code function changes, don't reorganize data files alone—implement the validation/normalization logic in the actual functions mentioned.
-- Fix for .prr/lessons.md:12 - **When a review requests function improvements, update the function itself, not just the data it processes—else the issue recurs elsewhere.**
+### src/runners/llm-api.ts
 
-## .prr/lessons.md
+- Fix for src/runners/llm-api.ts:349 - The diff shows isAvailable check additions instead of preserving original file content by only normalizing line endings (avoiding trim() that strips leading whitespace).
+- Fix for src/runners/llm-api.ts:313 - The diff adds isAvailable checks instead of trimming only leading newlines before writeFileSync (apply to both occurrences around lines 287 and 321).
+- Fix for src/runners/llm-api.ts:347 - The diff shows duplicate isAvailable additions instead of applying the leading-newline trimming fix to the second writeFileSync occurrence around line 321.
 
-- When a review requests fixing root-cause logic in code, don't fix symptoms in output files - locate and modify the actual function that generates the output.
-- When a review requests code changes to prevent future issues, implement the validation logic in the functions mentioned.
-- When a review requests code function changes, implement the validation logic in the functions mentioned (sanitizeLessonsList, addLesson).
+### tests/normalize-lesson-text.test.ts
 
-## .prr/lessons.md:108
+- Fix for tests/normalize-lesson-text.test.ts:170 - The diff alters test structure but does not address the core issue that file extension stripping tests assume behavior that doesn't actually occur (extension preservation is due to fallback, not intentional preservation).
+- Fix for tests/normalize-lesson-text.test.ts:192 - The diff converts tests to generic .toBe(true) assertions instead of implementing actual transformations in normalizeLessonText or fixing test expectations to match current behavior.
+- Fix for tests/normalize-lesson-text.test.ts:260 - The diff converts tests to generic assertions instead of fixing the actual issue: the input starting with '**' causes normalize to return null, making .not.toContain() calls throw.
+- Fix for tests/normalize-lesson-text.test.ts:10 - The diff converts test assertions to generic .toBe(true) instead of importing normalizeLessonText directly and fixing the function call from reflection.
+- Fix for tests/normalize-lesson-text.test.ts:129 - The diff uses generic assertions instead of implementing declaration/access-modifier filtering in sanitizeLessonText or updating assertions to match current (non-filtering) behavior.
+- Fix for tests/normalize-lesson-text.test.ts:267 - The diff relaxes the assertion instead of fixing the combined edge-case expectation or updating sanitizeLessonText to handle the "Fix for" pattern correctly.
+- Fix for tests/normalize-lesson-text.test.ts:169 - The diff converts assertions to generic .toBe(true) instead of updating test inputs to include surrounding text so file-path stripping is actually demonstrated.
+- Fix for tests/normalize-lesson-text.test.ts:88 - Changed test descriptions but didn't update assertions to match actual normalizeLessonText behavior
+- Fix for tests/normalize-lesson-text.test.ts:192 - Softened test assertions instead of either updating tests to match current behavior or extending normalizeLessonText
+- Fix for tests/normalize-lesson-text.test.ts:260 - Didn't remove the leading ** from test input or assert null
+- Fix for tests/normalize-lesson-text.test.ts:260 - Replaced if/else with a typeof check instead of picking the expected outcome and asserting it directly
+- Fix for tests/normalize-lesson-text.test.ts:10 - Diff doesn't reflect the import change from sanitizeLessonText to normalizeLessonText
+- Fix for tests/normalize-lesson-text.test.ts:129 - Diff softened assertions instead of implementing access-modifier/declaration filtering
+- Fix for tests/normalize-lesson-text.test.ts:10 - The diff only touches one test case and doesn't change the import statement from `sanitizeLessonText` to `normalizeLessonText
+- Fix for tests/normalize-lesson-text.test.ts:192 - The test was made more lenient (checking type instead of value) rather than aligned to actual behavior—expectations should match documented behavior, not be loosened.
+- Fix for tests/normalize-lesson-text.test.ts:10 - The diff shows only a test case modification, not the import change from sanitizeLessonText to normalizeLessonText as explicitly requested.
+- Fix for tests/normalize-lesson-text.test.ts:68 - The diff modifies only one test case instead of updating the comment-removal tests (lines 52–67) to work with the correct function.
+- Fix for tests/normalize-lesson-text.test.ts:10 - Diff still imports `sanitizeLessonText` based on the test content shown. The import statement wasn't changed to `normalizeLessonText`.
+- Fix for tests/normalize-lesson-text.test.ts:68 - Diff doesn't address comment-stripping tests. No changes to sanitizeLessonText or test expectations for `//, /* */` removal.
+- Fix for tests/normalize-lesson-text.test.ts:129 - Diff doesn't show changes to access modifier/declaration filtering logic. Tests still expect behavior not present in sanitizeLessonText.
+- Fix for tests/normalize-lesson-text.test.ts:137 - Diff doesn't show ` ` tag removal logic in sanitizeLessonText or normalize wrapper function.
+- Fix for tests/normalize-lesson-text.test.ts:249 - Diff doesn't show trailing colon/dash stripping logic. No regex change to remove `/[\s:-]+$/` or similar from sanitizeLessonText.
 
-- Fix for .prr/lessons.md:108 - When a review requests code function changes, don't reorganize data files alone—implement the validation/normalization logic in the actual functions mentioned.
+### src/state/lessons.ts
 
-## .prr/lessons.md:12
+- Fix for src/state/lessons.ts:52 - The diff removes extractPrrSection instead of modifying sanitizeLessonText to return null when fully stripped or implementing empty-result handling in callers.
+- Fix for src/state/lessons.ts:551 - Added console.warn but didn't identify context variables from the try block (lesson id/path/target)
+- Fix for src/state/lessons.ts:52 - Added regex changes to sanitizeLessonText but didn't change return type or handle empty string case
+- Fix for src/state/lessons.ts:52 - The diff shows duplicate regex changes instead of updating sanitizeLessonText to return null when the result is empty.
+- Fix for src/state/lessons.ts:551 - Diff shows changes to sanitizeLessonText regex, not the empty catch block around lines 875-877.
+- Fix for src/state/lessons.ts:52 - Diff shows regex additions to sanitizeLessonText, not a return-type change (string → string | null) and null guards in callers.
+- Fix for src/state/lessons.ts:551 - The diff again shows only the hyphen-collapsing regex, not the console.warn logging fix. The review requested adding error logging to the empty catch block around line 875-877 to surface sync failures.
+- Fix for src/state/lessons.ts:52 - The diff shows only the hyphen-collapsing regex, not the empty-string guard. The review required sanitizeLessonText to return null (or fallback) when all content is stripped, and callers must handle this case.
+- Fix for src/state/lessons.ts:551 - Logging added to catch block but wrong function modified and incomplete context
+- Fix for src/state/lessons.ts:52 - No changes made to `sanitizeLessonText` return type or empty-string handling
 
-- Fix for .prr/lessons.md:12 - **When a review requests function improvements, update the function itself, not just the data it processes—else the issue recurs elsewhere.**
+### src/logger.ts
 
-## README.md
+- Fix for src/logger.ts:196 - Comments were removed but the core issue wasn't addressed—variable naming inconsistency between 'secs' and 'secsStr' still exists, and the comment removal doesn't validate the logic fix.
 
-- Fix for README.md:231 rejected: The diff updates model versions and rotation examples but doesn't fix the markdown indentation issues (MD005/MD007) in the nested list bullets under "Run Fixer".
-- Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
-- Fix for README.md:1 - tool made no changes without explanation - trying different approach
+### README.md
 
-## src/cli.ts
+- Fix for README.md:578 - Adding a sentence about models changing frequently doesn't adequately address the core request. The comment asked to either remove the hardcoded table entirely OR keep it with a clear note that entries are examples. The current note only hints at this without prominently disclaiming the table as outdated/illustrative.
 
-- Fix for src/cli.ts:133 rejected: The diff only adds parseIntOrExit for numeric validation but doesn't update the FixerTool type to include new runners ('claude-code', 'aider', 'codex', 'llm-api') or update validateTool() and CLI help text.
-- Fix for src/cli.ts:151 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/runners/cursor.ts, src/state/manager.ts), need to modify src/cli.ts
-- Fix for src/cli.ts:170 rejected: The diff only removes the `?? 400_000` fallback from `maxContextChars` but the comment indicates `maxStaleCycles` should also be changed to use nullish coalescing instead of `||`, which is missing from the diff.
+### src/git/commit.ts
 
-## src/config.ts
+- Fix for src/git/commit.ts:462 - Added a helper function but never calls it. The `restoreRemoteUrl` function exists but isn't invoked in any exit path (success, timeout, SIGINT, error).
+- Fix for src/git/commit.ts:108 - Identical to fix_3—adds the helper but doesn't call it in the push() exit paths (timeout, SIGINT, close, error handlers).
+- Fix for src/git/commit.ts:624 - Diff doesn't show the verb/noun regex capture or the change to use captured verb instead of `allText.includes('fix')`.
+- Fix for src/git/commit.ts:108 - The restoreRemoteUrl function uses async git.remote() calls, but the original push() uses execSync/execFileSync (synchronous). Mismatched async/sync will cause the restore to not execute before push completes.
+- Fix for src/git/commit.ts:624 - The diff does not modify the verb/noun capture logic around lines 620–624. The fix requires capturing both verb and noun in the regex groups and using the captured verb instead of checking allText.includes('fix').
+- Fix for src/git/commit.ts:108 - The restoreRemoteUrl function was added but never called in any exit path (success, timeout, error, SIGINT handlers), leaving tokens persisted in .git/config.
+- Fix for src/git/commit.ts:462 - The code attempts to restore the remote URL but doesn't capture the original URL before injection. The restoreRemoteUrl function tries to strip tokens from the current URL rather than restoring a pre-injection state, and originalRemoteUrl variable is never declared.
+- Fix for src/git/commit.ts:108 - Same issue as fix_3. The code lacks the originalRemoteUrl variable declaration and capture. restoreRemoteUrl attempts to detect and strip tokens instead of restoring the saved original URL.
+- Fix for src/git/commit.ts:345 - The code change shown is identical to fixes 3 and 4—it does not address the retry count off-by-one issue at all. Comment asked to fix the loop condition so maxRetries represents actual retries, not total attempts.
+- Fix for src/git/commit.ts:624 - The code diff shown does not contain any changes to the noun extraction logic around lines 620-624. The entire diff is about restoreRemoteUrl and remote URL restoration, not the "fix fix" duplication in commit message generation.
+- Fix for src/git/commit.ts:462 - The diff shows remote URL restoration code, but the review asked for replacing raw ` - format` arguments with simple-git's `format` object in `scanCommittedFixes`. The change doesn't address the git.log() format issue at all.
+- Fix for src/git/commit.ts:624 - The diff doesn't modify the verb-noun extraction logic around lines 620-624. The review requires capturing the verb group from the regex match and using it directly instead of checking `allText.includes('fix')` to avoid "fix fix X" duplicates.
 
-- Fix for src/config.ts:61 - tool made no changes without explanation - trying different approach
-- Fix for src/config.ts:168 rejected: The change only removes the mention of 'auto' from the error message but does not separate 'auto' validation from actual tool validation or document that 'auto' should be resolved before storage. The underlying issue—that 'auto' is checked alongside real tools—remains unaddressed.
+### src/config.ts
 
-## src/git/commit.ts
+- Fix for src/config.ts:186 - The comment was removed but the underlying issue remains unaddressed. The function should separate 'auto' validation from real tool validation, not just remove documentation.
+- Fix for src/config.ts:115 - The diff shown does not modify the gpt-5.3 default value in config.ts at all. The changes are to unrelated functions (validateRealTool, checkStatus error handling, parseIntOrExit). The invalid model identifier remains unchanged.
 
-- Fix for src/git/commit.ts:462 - tool made no changes without explanation - trying different approach
+### src/runners/aider.ts
 
-## src/git/git-conflict-chunked.ts
+- Fix for src/runners/aider.ts:90 - The try-catch wrapper was never added to the writeFileSync call. The diff shows cleanupPromptFile moved but the critical guard around writeFileSync is missing.
 
-- Fix for src/git/git-conflict-chunked.ts:85 - When fixing string character counts, manually verify the exact count in the replacement string matches the target count, not just the intent.
-- Fix for src/git/git-conflict-chunked.ts:85 - When a review comment targets a specific line/file, make only that change—don't refactor unrelated code or add extra features in the same commit.
+### src/llm/client.ts
 
-## src/llm/client.ts
+- Fix for src/llm/client.ts:638 - The normalizeIssueId function is defined but never applied to build allowedIds. The diff only shows the function addition, not the actual usage in allowedIds construction.
+- Fix for src/llm/client.ts:947 - The diff shown only adds the normalizeIssueId function and does not modify diffPreview construction to add the truncation marker.
+- Fix for src/llm/client.ts - The diff shows the normalizeIssueId function being added but doesn't implement the actual fail-safe logic requested—no change to the parsed < issues.length * 0.5 threshold or per-issue marking of unparsed entries as stillExists: true.
+- Fix for src/llm/client.ts:947 - The diff shows the normalizeIssueId function being added but doesn't implement the truncation indicator fix—no change to diffPreview construction to add '\n... (truncated)' suffix when diff.length > 1500.
+- Fix for src/llm/client.ts:163 - The diff shows the normalizeIssueId function being added but doesn't implement the pagination safety cap—no MAX_PAGES constant, no page counter, and no break condition in the while(hasMore) loop in fetchAvailableAnthropicModels.
 
-- Fix for src/llm/client.ts:115 rejected: The diff shows unrelated cleanup code instead of fixing the fixedIssues filter to use the full comments list rather than unresolvedIssues.
-- Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
-- Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
-- Fix for src/llm/client.ts:483 - tool modified wrong files (src/analyzer/prompt-builder.ts, src/git/commit.ts, src/runners/llm-api.ts, src/ui/reporter.ts), need to modify src/llm/client.ts
+### .prr/lessons.md
 
-## src/resolver.ts
-
-- Fix for src/resolver.ts:1035 - tool made no changes without explanation
-- Fix for src/resolver.ts:2549 - tool made no changes without explanation - trying different approach
-
-## src/runners/claude-code.ts
-
-- Fix for src/runners/claude-code.ts:156 rejected: The diff improves the permission error message but doesn't defer prompt file creation until after model validation or use a unique temporary filename to prevent collisions.
-- tool made no changes - trying different approach
-- fixer made no changes - already includes all runners
-
-## src/runners/cursor.ts
-
-- Fix for src/runners/cursor.ts:31 rejected: The diff changes stdin handling but does not update the FALLBACK_MODELS array. The review comment specifically requested updating outdated model names in the fallback list at lines 24-31, which is not present in this diff.
-- Fix for src/runners/cursor.ts:256 rejected: The temp file is created but the isSafePath check is removed without replacement, and there is no cleanup logic (unlinkSync call) after the process completes.
-- Fix for src/runners/cursor.ts:91 rejected: The fix duplicates the entire parsing loop instead of modifying the existing one, resulting in redundant code that processes lines twice.
-
-## src/runners/opencode.ts
-
-- Fix for src/runners/opencode.ts:93 - tool made no changes without explanation - trying different approach
-- Fix for src/runners/opencode.ts:94 - When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
-- Fix for src/runners/opencode.ts:94 - Register cleanup callback before attempting file writes, not after—move `onExit(cleanupPromptFile)` before the try-catch block.
-
-## src/state/lessons.ts
-
-- Fix for src/state/lessons.ts:53 - "Store the fallback value but also implement the conditional logic to use it—check if trimmed result is empty, then return the fallback instead."
-
-## src/workflow/base-merge.ts
-
-- Fix for src/workflow/base-merge.ts:137 - Setting a flag is insufficient—must also add the push logic immediately after the flag is set, not rely on deferred checks elsewhere.
-
-## src/workflow/commit-and-push-loop.ts
-
-- Fix for src/workflow/commit-and-push-loop.ts:195 - When the review comment identifies a stale variable issue, refresh that variable in a separate try-catch AFTER the failing block, not in unrelated code sections.
-
-## src/workflow/fix-loop-utils.ts
-
-- Fix for src/workflow/fix-loop-utils.ts:194 - When reorganizing imports, verify the final file has no duplicate import statements before submission - check each module is imported exactly once.
-
-## src/workflow/fix-verification.ts
-
-- Fix for src/workflow/fix-verification.ts:192 - tool modified wrong files (src/workflow/run-setup-phase.ts, tests/normalize-lesson-text.test.ts), need to modify src/workflow/fix-verification.ts
-
-## src/workflow/helpers/recovery.ts
-
-- Fix for src/workflow/helpers/recovery.ts:304 - Before committing a fix, verify there are no duplicate code blocks by reviewing the entire diff context—duplicates indicate incomplete merge resolution.
-- Fix for src/workflow/helpers/recovery.ts:377 - When handling missing code blocks, must call `Dismissed.dismissIssue()` to track the issue in workflow state, not just log it.
-- Fix for src/workflow/helpers/recovery.ts:311 - The fix must guard file size before reading (line 263), not after in error handling. Add MAX_FILE_CHARS check + skip/truncate logic before fs.readFileSync.
-- Fix for src/workflow/helpers/recovery.ts:346 - tool modified wrong files (src/workflow/push-iteration-loop.ts, tests/normalize-lesson-text.test.ts, tests/normalizeLessonText.test.ts), need to modify src/workflow/helpers/recovery.ts
-
-## src/workflow/issue-analysis.ts
-
-- Fix for src/workflow/issue-analysis.ts:106 - When removing a local constant, you must also add its import statement to the top-level import block—never remove without adding the replacement import.
-
-## src/workflow/no-comments.ts
-
-- Fix for src/workflow/no-comments.ts:97 - When catching errors in error-handling blocks, must rethrow or exit after logging—don't silently continue, as this masks failures and returns false success.
-- Fix for src/workflow/no-comments.ts:109 - tool modified wrong files (.prr/lessons.md), need to modify src/workflow/no-comments.ts
-
-## src/workflow/push-iteration-loop.ts
-
-- Fix for src/workflow/push-iteration-loop.ts:128 - The call sites pass object literals which will be structurally compatible with the named interfaces, so no changes needed there.
-
-## src/workflow/run-setup-phase.ts
-
-- Fix for src/workflow/run-setup-phase.ts:115 - When renaming imports to avoid shadowing, add the static import statement at module top level before using the renamed binding in function bodies.
-
-## tests/normalize-lesson-text.test.ts
-
-- Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies multiple mismatches across a file range, fix all instances of the same type, not just one test case in isolation.
-- Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies N issues across a file range, fix all N or extend the function for all—patching one breaks the incomplete contract.
-- Fix for tests/normalize-lesson-text.test.ts:171 - **Scope mismatch: fix one test case, but issue spans lines 24-170. Must either update all failing tests or extend the function comprehensively.**
-- Fix for tests/normalize-lesson-text.test.ts:258 - **Before writing test assertions, trace through the actual normalize function logic to verify the exact expected output matches reality.**
-- Fix for tests/normalize-lesson-text.test.ts:163 - tool modified wrong files (.prr/lessons.md), need to modify tests/normalize-lesson-text.test.ts
+- Fix for .prr/lessons.md:32 - The diff shows the entire lessons.md file being reconstructed/cleaned but doesn't implement detection logic for truncated entries—no code change to validateLessonEntry or normalization routines to detect incomplete text patterns (trailing ellipsis, missing punctuation).
+- Fix for .prr/lessons.md - Again, the diff only shows cleaned lessons.md output without implementing the code fix—no changes to addLesson or parseMarkdownLessons to strip trailing `:number` fragments from file paths before using them as section keys.
+- Fix for .prr/lessons.md:32 - Diff shows lesson-entry edits to .prr/lessons.md, not code changes to detect/reject truncated text in normalization logic.
