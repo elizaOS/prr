@@ -146,6 +146,11 @@ export class GooseRunner implements Runner {
 
         const combinedOutput = stdout + stderr;
 
+        if (code === 0) {
+          resolve({ success: true, output: stdout });
+          return;
+        }
+
         if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedOutput)) {
           resolve({
             success: false,
@@ -176,20 +181,16 @@ export class GooseRunner implements Runner {
           return;
         }
 
-        if (code === 0) {
-          resolve({ success: true, output: stdout });
-        } else {
-          let errorType: RunnerErrorType = 'tool';
-          if (/auth|api.?key|unauthorized/i.test(combinedOutput)) {
-            errorType = 'auth';
-          }
-          resolve({
-            success: false,
-            output: stdout,
-            error: stderr || `Process exited with code ${code}`,
-            errorType,
-          });
+        let errorType: RunnerErrorType = 'tool';
+        if (/auth|api.?key|unauthorized/i.test(combinedOutput)) {
+          errorType = 'auth';
         }
+        resolve({
+          success: false,
+          output: stdout,
+          error: stderr || `Process exited with code ${code}`,
+          errorType,
+        });
       });
 
       child.on('error', (err) => {
