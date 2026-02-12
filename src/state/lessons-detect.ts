@@ -36,10 +36,13 @@ export function autoDetectSyncTargets(ctx: LessonsContext): void {
     detected.push('conventions-md');
   }
 
-  const cursorRulesPath = join(ctx.workdir, '.cursor', 'rules');
-  const cursorRulesExists = existsSync(cursorRulesPath);
-  ctx.originalSyncTargetState.set('cursor-rules', cursorRulesExists);
-  if (cursorRulesExists) {
+  const cursorRulesDir = join(ctx.workdir, '.cursor', 'rules');
+  const cursorRulesFile = join(cursorRulesDir, 'prr-lessons.mdc');
+  const cursorRulesDirExists = existsSync(cursorRulesDir);
+  const cursorRulesFileExists = existsSync(cursorRulesFile);
+  // Track file existence for cleanup (not directory)
+  ctx.originalSyncTargetState.set('cursor-rules', cursorRulesFileExists);
+  if (cursorRulesDirExists) {
     detected.push('cursor-rules');
   }
 

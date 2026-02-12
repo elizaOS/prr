@@ -318,6 +318,11 @@ export async function tryDirectLLMFix(
         continue;
       }
       
+      // Escape any triple backticks in content to prevent prompt injection
+      const escapeBackticks = (s: string) => s.replace(/```/g, '` ` `');
+      const escapedSnippet = escapeBackticks(issue.codeSnippet);
+      const escapedContent = escapeBackticks(fileContent);
+      
       const prompt = `Fix this code review issue:
 
 FILE: ${issue.comment.path}
@@ -325,12 +330,12 @@ ISSUE: ${issue.comment.body}
 
 CURRENT CODE:
 \`\`\`
-${issue.codeSnippet}
+${escapedSnippet}
 \`\`\`
 
 FULL FILE:
 \`\`\`
-${fileContent}
+${escapedContent}
 \`\`\`
 
 Provide the COMPLETE fixed file content. Output ONLY the code, no explanations.
@@ -410,6 +415,14 @@ Start your response with \`\`\` and end with \`\`\`.`;
             issue.comment.body
           );
         }
+      } else {
+        // LLM response didn't contain a valid code block
+        console.log(chalk.yellow(`    - Could not extract code from LLM response for ${issue.comment.path}`));
+        debug('Direct LLM fix: no code block in response', {
+          file: issue.comment.path,
+          responseLength: response.content.length,
+          responsePreview: response.content.substring(0, 200),
+        });
       }
     } catch (e) {
       console.log(chalk.gray(`    - Skipped ${issue.comment.path}: ${e}`));
