@@ -296,7 +296,7 @@ export async function executePushIteration(
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
     const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, pushIteration, maxPushIterations,
-      resolveConflictsWithLLM, waitForBotReviews);
+      resolveConflictsWithLLM, waitForBotReviews, allFixed);
     if (commitResult.shouldBreak) {
       return {
         shouldBreak: true,

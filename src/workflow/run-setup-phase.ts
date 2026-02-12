@@ -84,7 +84,7 @@ export async function executeSetupPhase(
   const state = stateContext.state!;
 
   // Setup runner
-  debugStep('SETTING UP RUNNER');
+  debugStep('SETTING UP RUNNERS');
   const runner = await setupRunner();
   debug('Using runner', runner.name);
   

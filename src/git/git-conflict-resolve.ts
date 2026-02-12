@@ -125,6 +125,20 @@ export async function resolveConflictsWithLLM(
     await handleLockFileConflicts(git, lockFiles, workdir, config);
   }
   
+  // Handle delete conflicts (e.g. "deleted by them", "deleted by us")
+  // WHY: These have NO conflict markers - one side deleted the file, the other modified it.
+  // The standard resolution code only handles files with <<<<<<< markers, so delete
+  // conflicts fall through and get reported as unresolvable.
+  const deleteConflicts = await detectDeleteConflicts(git, codeFiles, workdir);
+  if (deleteConflicts.length > 0) {
+    for (const dc of deleteConflicts) {
+      await resolveDeleteConflict(git, dc, workdir);
+      // Remove from codeFiles so we don't try to resolve again
+      const idx = codeFiles.indexOf(dc.file);
+      if (idx !== -1) codeFiles.splice(idx, 1);
+    }
+  }
+  
   // Handle code files with LLM tools
   if (codeFiles.length > 0 && !skipRunnerAttempt) {
     // Build prompt for conflict resolution (only non-lock files)
@@ -304,6 +318,115 @@ export async function resolveConflictsWithLLM(
     success: remainingConflicts.length === 0,
     remainingConflicts
   };
+}
+
+/**
+ * Conflict type for delete/modify conflicts
+ */
+interface DeleteConflict {
+  file: string;
+  type: 'deleted-by-them' | 'deleted-by-us' | 'both-deleted';
+}
+
+/**
+ * Detect delete/modify conflicts from git status.
+ * 
+ * WHY: When one side deletes a file and the other modifies it, git reports a conflict
+ * but there are NO conflict markers in the file. These show up as:
+ *   - UD (us=modified, them=deleted) → "deleted by them"
+ *   - DU (us=deleted, them=modified) → "deleted by us"  
+ *   - DD (both deleted) → rare but possible
+ * 
+ * We detect these by parsing `git status --porcelain` which shows two-char status codes.
+ */
+async function detectDeleteConflicts(
+  git: SimpleGit,
+  conflictedFiles: string[],
+  workdir: string
+): Promise<DeleteConflict[]> {
+  const results: DeleteConflict[] = [];
+  
+  try {
+    // git status --porcelain shows XY format where X=index, Y=worktree
+    // For conflicts: UU=both modified, UD=deleted by them, DU=deleted by us, DD=both deleted
+    const raw = await git.raw(['status', '--porcelain']);
+    const lines = raw.split('\n').filter(Boolean);
+    
+    for (const line of lines) {
+      const statusCode = line.substring(0, 2);
+      const filePath = line.substring(3).trim();
+      // Handle renamed files (format: "R  old -> new")
+      const actualPath = filePath.includes(' -> ') ? filePath.split(' -> ')[1] : filePath;
+      
+      if (!conflictedFiles.includes(actualPath)) continue;
+      
+      if (statusCode === 'UD') {
+        results.push({ file: actualPath, type: 'deleted-by-them' });
+      } else if (statusCode === 'DU') {
+        results.push({ file: actualPath, type: 'deleted-by-us' });
+      } else if (statusCode === 'DD') {
+        results.push({ file: actualPath, type: 'both-deleted' });
+      }
+    }
+  } catch (e) {
+    debug('Failed to detect delete conflicts', { error: e });
+  }
+  
+  return results;
+}
+
+/**
+ * Resolve a delete/modify conflict.
+ * 
+ * Strategy:
+ * - "deleted by them" → Accept the deletion. The base/target branch decided the file
+ *   should go. Our modifications don't matter if the file shouldn't exist.
+ * - "deleted by us" → Accept the deletion. We deleted it intentionally.
+ * - "both deleted" → Accept the deletion (both sides agree).
+ * 
+ * For all cases: `git rm <file>` to accept deletion and mark resolved.
+ */
+async function resolveDeleteConflict(
+  git: SimpleGit,
+  conflict: DeleteConflict,
+  workdir: string
+): Promise<void> {
+  const { file, type } = conflict;
+  
+  try {
+    switch (type) {
+      case 'deleted-by-them':
+        console.log(chalk.cyan(`    - ${file}: deleted by target branch, accepting deletion`));
+        break;
+      case 'deleted-by-us':
+        console.log(chalk.cyan(`    - ${file}: deleted by our branch, accepting deletion`));
+        break;
+      case 'both-deleted':
+        console.log(chalk.cyan(`    - ${file}: deleted by both branches`));
+        break;
+    }
+    
+    // Accept the deletion: remove the file and mark conflict as resolved
+    await git.rm(file).catch(async () => {
+      // git rm may fail if file is already gone from worktree
+      // Fall back to staging the deletion manually
+      try {
+        const { existsSync: fileExists, unlinkSync } = await import('fs');
+        const fullPath = join(workdir, file);
+        if (fileExists(fullPath)) {
+          unlinkSync(fullPath);
+        }
+        await git.add(file).catch(() => {});
+      } catch {
+        // Last resort: just mark resolved
+        await git.raw(['add', '-u', file]).catch(() => {});
+      }
+    });
+    
+    console.log(chalk.green(`    ✓ ${file}: delete conflict resolved`));
+  } catch (e) {
+    console.log(chalk.red(`    ✗ ${file}: failed to resolve delete conflict: ${e}`));
+  }
 }
 
 /**

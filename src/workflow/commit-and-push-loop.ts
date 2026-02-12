@@ -6,7 +6,7 @@
  * 2. Generate commit message
  * 3. Create commit
  * 4. Push to remote (if auto-push enabled)
- * 5. Check and trigger CodeRabbit
+ * 5. Trigger CodeRabbit final review (only when all issues fixed)
  * 6. Wait for bot reviews
  */
 
@@ -70,7 +70,8 @@ export async function handleCommitAndPush(
     repo: string,
     prNumber: number,
     headSha: string
-  ) => Promise<void>
+  ) => Promise<void>,
+  allFixed: boolean = false
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -147,42 +148,38 @@ export async function handleCommitAndPush(
       throw pushErr;
     }
 
-    // Check CodeRabbit status and trigger if needed
-    // WHY: Some repos configure CodeRabbit to require manual trigger (@coderabbitai review)
-    // We check if it has reviewed the current commit and trigger only if needed
+    // Get the latest HEAD SHA for bot review waiting
     let latestHeadSha = prInfo.headSha;
-    try {
-      spinner.start('Checking CodeRabbit status...');
-      
-      // Get the latest HEAD sha after push
-      const latestPR = await github.getPRInfo(owner, repo, number);
-      latestHeadSha = latestPR.headSha;
-      
-      const result = await github.triggerCodeRabbitIfNeeded(
-        owner, repo, number, prInfo.branch, latestHeadSha
-      );
-      
-      if (result.mode === 'none') {
-        spinner.info('CodeRabbit not detected on this PR');
-      } else if (result.reviewedCurrentCommit) {
-        spinner.succeed(`CodeRabbit already reviewed current commit ✓`);
-      } else if (result.triggered) {
-        spinner.succeed(`CodeRabbit triggered for new commit`);
-      } else {
-        spinner.info(`CodeRabbit (${result.mode}) - ${result.reason}`);
-      }
-      debug('CodeRabbit check result', result);
-    } catch (err) {
-      debug('Failed to check/trigger CodeRabbit', { error: err });
-      spinner.warn('Could not check CodeRabbit (continuing anyway)');
-    }
-
-    // Ensure we have the latest HEAD SHA for bot review waiting
     try {
       const latestPR = await github.getPRInfo(owner, repo, number);
       latestHeadSha = latestPR.headSha;
     } catch {
       // Fall through with best-effort SHA
+    }
+
+    // Only trigger CodeRabbit on the FINAL push when all issues are resolved.
+    // WHY: Triggering CR after each intermediate push generates NEW review comments
+    // on a moving target, creating more issues than it resolves and preventing
+    // the PR from converging. But once everything is fixed, we want CR to do a
+    // final verification pass.
+    if (allFixed) {
+      try {
+        spinner.start('Triggering CodeRabbit final review...');
+        const result = await github.triggerCodeRabbitIfNeeded(
+          owner, repo, number, prInfo.branch, latestHeadSha
+        );
+        if (result.triggered) {
+          spinner.succeed('CodeRabbit triggered for final review');
+        } else if (result.mode === 'none') {
+          spinner.info('CodeRabbit not detected on this PR');
+        } else {
+          spinner.info(`CodeRabbit: ${result.reason}`);
+        }
+        debug('CodeRabbit final review result', result);
+      } catch (err) {
+        debug('Failed to trigger CodeRabbit final review', { error: err });
+        spinner.warn('Could not trigger CodeRabbit final review (continuing anyway)');
+      }
     }
 
     // Wait for re-review using smart timing based on observed bot response times
