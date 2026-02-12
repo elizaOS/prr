@@ -80,6 +80,7 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
       if (model && isModelAvailableForRunner(ctx, model) && isModelProviderCompatible(ctx.runner, model)) {
         // Advance index to this position so advanceModel starts from here
         ctx.recommendedModelIndex = i;
+        debug('Using LLM-recommended model', { model, runner: ctx.runner.name, index: i });
         return model;
       }
     }

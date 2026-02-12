@@ -59,6 +59,13 @@ function formatCompact(data: unknown): string {
       }
       if (typeof v === 'object' && v !== null) {
         if (Array.isArray(v)) {
+          // Show short arrays inline (e.g. model names), collapse long ones
+          if (v.length <= 5 && v.every(item => typeof item === 'string')) {
+            const items = v.map(item => typeof item === 'string' && item.length > 40 
+              ? `"${item.substring(0, 40)}..."` 
+              : safeStringify(item));
+            return `${k}: [${items.join(', ')}]`;
+          }
           return `${k}: [${v.length}]`;
         }
         return `${k}: {...}`;
