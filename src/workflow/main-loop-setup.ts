@@ -175,6 +175,7 @@ export async function processCommentsAndPrepareFixLoop(
           codeSnippet,
           stillExists: true,
           explanation,
+          triage: { importance: 2, ease: 3 },  // Audit failures are important (fooled verifier)
         });
       }
       console.log(chalk.cyan(`\n→ Re-entering fix loop with ${formatNumber(unresolvedIssues.length)} issues from audit\n`));

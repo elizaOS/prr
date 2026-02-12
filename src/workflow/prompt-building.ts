@@ -14,6 +14,7 @@ import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug } from '../logger.js';
+import { sortByPriority, type PriorityOrder } from '../analyzer/severity.js';
 
 /**
  * Build fix prompt with lessons and display summary
@@ -31,7 +32,8 @@ export function buildAndDisplayFixPrompt(
   unresolvedIssues: UnresolvedIssue[],
   lessonsContext: LessonsContext,
   verbose: boolean,
-  consecutiveZeroFixIterations: number = 0
+  consecutiveZeroFixIterations: number = 0,
+  priorityOrder: PriorityOrder = 'important'
 ): {
   prompt: string;
   detailedSummary: string;
@@ -52,13 +54,42 @@ export function buildAndDisplayFixPrompt(
     debug('Adaptive batch sizing', { consecutiveZeroFixIterations, effectiveMax });
   }
 
+  // Sort issues by priority before slicing for the prompt.
+  // WHY sort here, not in issue-analysis: the same unresolvedIssues array is shared
+  // with single-issue focus mode (which randomizes) and no-changes verification.
+  // Sorting at the prompt boundary means we pick the best issues for the batch
+  // without affecting other consumers.
+  const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
+
   const { prompt, detailedSummary, lessonsIncluded } = buildPrompt(
-    unresolvedIssues,
+    sortedIssues,
     lessons,
     { maxIssues: effectiveMax }
   );
 
   console.log(chalk.cyan(`\n${detailedSummary}\n`));
+  
+  // Show triage breakdown if issues have triage data
+  // WHY: Operators need to see if we're tackling critical issues or style nits.
+  // Only show when priorityOrder is not 'none' and some issues have triage.
+  if (priorityOrder !== 'none') {
+    const triaged = sortedIssues.slice(0, effectiveMax).filter(i => i.triage);
+    if (triaged.length > 0) {
+      // Count by importance: 1-2=critical/major, 3=moderate, 4-5=minor/trivial
+      const critical = triaged.filter(i => i.triage!.importance <= 2).length;
+      const moderate = triaged.filter(i => i.triage!.importance === 3).length;
+      const minor = triaged.filter(i => i.triage!.importance >= 4).length;
+      
+      const orderLabel = priorityOrder === 'important' ? 'critical first'
+        : priorityOrder === 'important-asc' ? 'trivial first'
+        : priorityOrder === 'easy' ? 'easy first'
+        : priorityOrder === 'easy-asc' ? 'hard first'
+        : priorityOrder === 'newest' ? 'newest first'
+        : 'oldest first';
+      
+      console.log(chalk.gray(`  Priority: ${critical} critical/major, ${moderate} moderate, ${minor} minor/trivial (sorted: ${orderLabel})\n`));
+    }
+  }
   
   // In verbose mode, show lessons by scope
   if (verbose && lessons.length > 0) {

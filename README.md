@@ -40,6 +40,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
 
 ### Smart Retry Strategies
+- **Issue priority triage**: LLM assesses importance (1-5) and difficulty (1-5) during analysis, then sorts issues by `--priority-order` (important, easy, newest, oldest). Critical security issues are tackled before style nits.
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
 - **Adaptive batch sizing**: Halves issues per prompt on consecutive failures (50 → 25 → 12 → 6 → 5) before falling back to single-issue mode
@@ -169,6 +170,7 @@ prr https://github.com/owner/repo/pull/123 \
 | `--max-stale-cycles <n>` | 1 | Bail out after N complete tool/model cycles with zero progress |
 | `--poll-interval <sec>` | 120 | Seconds to wait for re-review |
 | `--max-context <chars>` | 400000 | Max chars per LLM batch (~100k tokens) |
+| `--priority-order <order>` | `important` | Issue sort order: `important`, `important-asc`, `easy`, `easy-asc`, `newest`, `oldest`, `none` |
 | `--reverify` | off | Re-check all cached "fixed" issues |
 | `--dry-run` | off | Show issues without fixing |
 | `--no-commit` | off | Don't commit (for testing) |
@@ -207,7 +209,9 @@ When fixes fail, prr escalates through multiple strategies:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  BATCH MODE           → Try all issues at once              │
+│  PRIORITY TRIAGE      → LLM assesses importance & difficulty│
+│      ↓                                                       │
+│  BATCH MODE           → Try top N issues (sorted by prio)   │
 │      ↓ fail                                                 │
 │  ADAPTIVE BATCHING    → Halve batch size (50→25→12→6→5)     │
 │      ↓ fail                                                 │
@@ -222,6 +226,8 @@ When fixes fail, prr escalates through multiple strategies:
 │  BAIL OUT             → Commit partial progress, exit       │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+*Why priority triage?* When batching limits prompts to 50 of 93 issues, the selection was arbitrary — trivial style nits could crowd out critical security fixes. The LLM already reads every comment during analysis, so we piggyback importance/difficulty assessment onto the same call at zero extra cost. Sorting ensures the fixer tackles high-impact issues first.
 
 *Why adaptive batching?* 50 issues across 23 files in a 213K-char prompt overwhelms models — they fix 5 and miss 45. Halving the batch on each zero-fix iteration gives the model a progressively smaller workload before falling back to single-issue mode.
 

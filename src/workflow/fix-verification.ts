@@ -177,20 +177,14 @@ export async function verifyFixes(
               verifiedThisSession.add(issue.comment.id);
             } else {
               failedCount++;
-              // Analyze failure to generate actionable lesson (same as sequential mode)
-              // WHY: Raw verification explanations like "diff doesn't show X" are descriptive
-              // but not actionable. analyzeFailedFix extracts specific guidance like
-              // "don't just add Y, also need to update Z".
-              const diff = await getDiff(issue.comment.path);
-              const lesson = await llm.analyzeFailedFix(
-                {
-                  comment: issue.comment.body,
-                  filePath: issue.comment.path,
-                  line: issue.comment.line,
-                },
-                diff,
-                verification.explanation
-              );
+              // Use lesson from batch response (already parsed by batchVerifyFixes).
+              // WHY not calling analyzeFailedFix here: batchVerifyFixes already asks
+              // the LLM for a LESSON line alongside each NO verdict in the same call.
+              // Calling analyzeFailedFix separately was making N extra LLM calls (one
+              // per failure), turning a "batch" verify into 1+N sequential calls.
+              // With 6 failures out of 12 fixes, that was 7 LLM calls instead of 1.
+              const lesson = verification.lesson
+                || `Fix rejected: ${verification.explanation}`;
               LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
             }
           } else {

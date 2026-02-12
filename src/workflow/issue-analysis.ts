@@ -240,6 +240,7 @@ export async function findUnresolvedIssues(
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
+            triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
           });
         }
       } else if (result.exists) {
@@ -248,6 +249,7 @@ export async function findUnresolvedIssues(
           codeSnippet,
           stillExists: true,
           explanation: result.explanation,
+          triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
         });
       } else {
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
@@ -271,6 +273,7 @@ export async function findUnresolvedIssues(
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
+            triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
           });
         }
       }
@@ -337,6 +340,7 @@ export async function findUnresolvedIssues(
           codeSnippet,
           stillExists: true,
           explanation: 'Unable to determine status',
+          triage: { importance: 3, ease: 3 },  // Default: fallback path
         });
         continue;
       }
@@ -360,6 +364,7 @@ export async function findUnresolvedIssues(
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
+            triage: { importance: result.importance, ease: result.ease },
           });
         }
       } else if (result.exists) {
@@ -368,6 +373,7 @@ export async function findUnresolvedIssues(
           codeSnippet,
           stillExists: true,
           explanation: result.explanation,
+          triage: { importance: result.importance, ease: result.ease },
         });
       } else {
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
@@ -391,6 +397,7 @@ export async function findUnresolvedIssues(
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
+            triage: { importance: result.importance, ease: result.ease },
           });
         }
       }

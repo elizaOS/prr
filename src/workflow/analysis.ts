@@ -114,6 +114,7 @@ export async function checkForNewComments(
         codeSnippet,
         stillExists: true,
         explanation: 'New comment added during fix cycle',
+        triage: { importance: 3, ease: 3 },  // Default: new comment mid-cycle
       });
     }
     

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (2026-02-12)
 
+**Batch Verification with Inline Failure Analysis (Fix N+1 LLM Calls)**
+- `batchVerifyFixes` prompt overhauled to produce the same quality lessons as the standalone `analyzeFailedFix` — 4 good + 3 bad examples, explicit "what the diff changed vs what the comment asked" framing, LESSON line required for every NO
+- Batch mode now uses these inline lessons instead of making separate `analyzeFailedFix` calls per failure
+- Reduces LLM calls from 1+N (where N = failed fixes) to just 1
+- Sequential mode (`--no-batch`) still uses dedicated `analyzeFailedFix` for maximum quality
+- WHY: With 12 fixes and 6 failures, batch "verification" was making 7 LLM calls (1 batch verify + 6 individual failure analyses). The batch prompt previously had a minimal lesson request ("LESSON: actionable guidance" with 1 example). Now it matches the standalone prompt's rigor, so no separate calls are needed.
+
+**Issue Priority Triage**
+- LLM-based importance (1-5) and difficulty (1-5) assessment for every issue during analysis
+- New `--priority-order` CLI option with 7 sort strategies: `important` (default), `important-asc`, `easy`, `easy-asc`, `newest`, `oldest`, `none`
+- Triage scores displayed in fix prompts as `[importance:X/5, difficulty:Y/5]` per issue
+- Console output shows breakdown: "8 critical/major, 22 moderate, 12 minor/trivial (sorted: critical first)"
+- Per-batch debug logs now include `avgImportance` and `avgEase` metrics
+- WHY: When batching limits prompts to 50 of 93 issues, the selection was arbitrary - trivial style nits could crowd out critical security fixes. The LLM already reads every comment to judge "does this still exist?", so we piggyback importance/difficulty assessment onto the same call at zero extra cost. Sorting by importance ensures the fixer tackles high-impact issues first. The `easy` sort order enables "quick wins first" strategies to show visible progress faster.
+
 **Output Log Tee (`~/.prr/output.log`)**
 - All console output is mirrored to `~/.prr/output.log` as clean ANSI-stripped text
 - File is truncated on each run start, so it always contains only the latest run

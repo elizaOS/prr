@@ -144,7 +144,14 @@ export function buildFixPrompt(
 
   for (let i = 0; i < limitedIssues.length; i++) {
     const issue = limitedIssues[i];
-    parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}\n`);
+    // Add triage labels if available
+    // WHY: The fixer should know which issues are critical (need careful handling)
+    // vs trivial style nits (can get quick fixes). Importance 1-2 = critical/major,
+    // difficulty 1-2 = easy/simple fix.
+    const triageLabel = issue.triage
+      ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
+      : '';
+    parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}\n`);
     parts.push(`**Review Comment** (${issue.comment.author}):`);
     parts.push('```');
     

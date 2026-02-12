@@ -329,7 +329,174 @@ export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number):
 
 **Where the counter resets**: Any iteration with verified fixes resets `consecutiveFailures` to 0, bringing batch size back to MAX. WHY: The model might have been overwhelmed by a specific mix of hard issues; after resolving some, the remaining set may be tractable at full batch size.
 
-### 4a. Lessons Learned System
+### 4a. Issue Priority Triage
+
+**The Problem**: When adaptive batching limits prompts to 50 of 93 issues, the selection was arbitrary — trivial style nits could crowd out critical security fixes. All 93 issues had equal priority (essentially random GitHub thread creation order).
+
+**Why not just process chronologically?** Older comments aren't necessarily more important. A critical security issue added yesterday should be fixed before a 2-week-old style nit.
+
+**Solution**: LLM-based importance and difficulty assessment during the existing analysis phase:
+
+```typescript
+// src/llm/client.ts - Extended response format
+// OLD: ISSUE_ID: YES|NO|STALE: explanation
+// NEW: ISSUE_ID: YES|NO|STALE: I<1-5>: D<1-5>: explanation
+
+// Prompt addition:
+For issues that still exist (YES), also rate:
+- I<1-5> importance: 1=critical security/data loss, 2=major bug, 3=moderate, 4=minor, 5=trivial style
+- D<1-5> difficulty: 1=one-line fix, 2=simple, 3=moderate, 4=complex multi-file, 5=major refactor
+
+For NO/STALE responses, you may omit the I/D ratings (they won't be used).
+
+// Parser - two-stage with graceful defaults:
+const match = line.match(/^([^:]+):\s*(YES|NO|STALE):\s*(.*)$/i);
+if (match) {
+  let [, id, response, rest] = match;
+  let importance = 3, ease = 3;  // Graceful defaults
+  const triageMatch = rest.match(/^I(\d):\s*D(\d):\s*(.*)$/i);
+  if (triageMatch) {
+    importance = Math.min(5, Math.max(1, parseInt(triageMatch[1], 10)));
+    ease = Math.min(5, Math.max(1, parseInt(triageMatch[2], 10)));
+    rest = triageMatch[3];
+  }
+  // ... store with importance/ease
+}
+```
+
+**Why piggyback onto existing analysis call?** The LLM already reads every comment to judge "does this still exist?". Asking for two additional numbers costs essentially nothing (same context, ~5 extra tokens per issue in response).
+
+**Why graceful defaults (3/3)?** 
+- LLM may omit ratings for NO/STALE responses (they won't be used anyway)
+- Old-format responses still parse correctly (backwards compatible)
+- Default to middle of pack (3), not worst (5) — issues without triage aren't necessarily trivial
+
+**Why clamp to 1-5?** LLMs sometimes output 0 or 6. Clamping ensures scores stay in range.
+
+**Data flow** (11 construction sites):
+
+```typescript
+// src/analyzer/types.ts
+export interface IssueTriage {
+  importance: number;  // 1-5
+  ease: number;        // 1-5
+}
+
+export interface UnresolvedIssue {
+  comment: ReviewComment;
+  codeSnippet: string;
+  stillExists: boolean;
+  explanation: string;
+  triage?: IssueTriage;  // Optional - see WHY below
+}
+```
+
+**Why `triage?` optional?** There are 11 places that construct `UnresolvedIssue` objects across 5 files. Making it required would break all of them simultaneously during implementation. Optional means:
+- Type system accepts objects without triage
+- Can add triage incrementally, one site at a time
+- Recovery paths (audit failures, new mid-cycle comments) can use default values
+
+**11 construction sites and their triage strategy**:
+
+| File | Sites | Triage Source |
+|------|-------|---------------|
+| `workflow/issue-analysis.ts` | 7 | LLM result map (batch mode) or default `{3,3}` (sequential mode) |
+| `workflow/main-loop-setup.ts` | 1 | `{2,3}` — audit failures are important (fooled verifier) |
+| `workflow/fix-loop-utils.ts` | 2 | `{3,3}` — new comments, re-added (not yet analyzed) |
+| `workflow/analysis.ts` | 1 | `{3,3}` — new comment mid-cycle |
+
+**NOT** `llm/client.ts` audit site (~line 942): That constructs audit result objects `{ stillExists, explanation }`, NOT `UnresolvedIssue` — different type.
+
+**Sorting** (`src/analyzer/severity.ts`):
+
+```typescript
+export type PriorityOrder =
+  | 'important'      // Most important first (1=critical first)
+  | 'important-asc'  // Least important first (5=trivial first)
+  | 'easy'           // Easiest fixes first (1=one-liner first)
+  | 'easy-asc'       // Hardest fixes first (5=refactor first)
+  | 'newest'         // Newest comments first
+  | 'oldest'         // Oldest comments first (GitHub default)
+  | 'none';          // No sorting (preserve input order)
+
+export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder): UnresolvedIssue[] {
+  if (order === 'none') return issues;
+  const sorted = [...issues];  // NEVER mutate input
+  sorted.sort((a, b) => {
+    switch (order) {
+      case 'important':
+        return (a.triage?.importance ?? 3) - (b.triage?.importance ?? 3);
+      // ... other cases
+    }
+  });
+  return sorted;
+}
+```
+
+**Why return new array (non-mutating)?** The `unresolvedIssues` array is shared state used by:
+- Fix iteration loop
+- No-changes verification
+- Single-issue focus mode (which intentionally randomizes)
+
+If we mutated, single-issue randomization and priority sort would fight each other on alternate iterations. Returning a new array means each consumer gets its own ordering.
+
+**Where sorting happens** (`src/workflow/prompt-building.ts`):
+
+```typescript
+// WHY sort here, not in issue-analysis:
+// Same unresolvedIssues array shared with single-issue mode (randomizes)
+// and no-changes verification. Sorting at prompt boundary means we pick
+// the best issues for the batch without affecting other consumers.
+const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
+const { prompt, detailedSummary } = buildPrompt(sortedIssues, lessons, { maxIssues: effectiveMax });
+```
+
+**Triage labels in prompts** (`src/analyzer/prompt-builder.ts`):
+
+```typescript
+// WHY tell the fixer: The model should know which issues are critical
+// (need careful handling) vs trivial style nits (can get quick fixes)
+const triageLabel = issue.triage
+  ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
+  : '';
+parts.push(`### Issue ${i + 1}: ${issue.comment.path}${triageLabel}\n`);
+```
+
+**Console display** (`src/workflow/prompt-building.ts`):
+
+```typescript
+// Console shows breakdown:
+// "Priority: 8 critical/major, 22 moderate, 12 minor/trivial (sorted: critical first)"
+const critical = triaged.filter(i => i.triage!.importance <= 2).length;
+const moderate = triaged.filter(i => i.triage!.importance === 3).length;
+const minor = triaged.filter(i => i.triage!.importance >= 4).length;
+```
+
+**Per-batch debug logging** (`src/llm/client.ts`):
+
+```typescript
+// Added to existing per-batch summary:
+const avgImportance = countTriage > 0 ? (sumImportance / countTriage).toFixed(1) : 'N/A';
+const avgEase = countTriage > 0 ? (sumEase / countTriage).toFixed(1) : 'N/A';
+debug(`Batch ${batchIdx + 1}/${batches.length} results`, {
+  parsed, expected, stillExists, alreadyFixed, stale, unparsed,
+  avgImportance, avgEase  // NEW
+});
+```
+
+**Strategy comparison**:
+
+| Order | Use Case | Example |
+|-------|----------|---------|
+| `important` (default) | Tackle critical issues first | Security fixes before style nits |
+| `easy` | Quick wins first | Show progress, build confidence |
+| `newest` | Address recent feedback | Show responsiveness to reviewers |
+| `oldest` | FIFO queue | GitHub's default behavior |
+| `none` | Debug/comparison | Preserve original behavior |
+
+**Why default to `important`?** Critical security issues should be fixed before trivial style nits. The fixer has limited context window and iteration budget — spend it on what matters most.
+
+### 4b. Lessons Learned System
 
 **The Problem**: Fixer tools flip-flop. Attempt #1 adds a try/catch. Verification rejects it. Attempt #2 adds the same try/catch. Loop forever.
 
@@ -421,7 +588,7 @@ if (!lessons.includes(lesson)) {
 **Batch vs sequential lesson quality**:
 Both batch and sequential verification modes now call `llm.analyzeFailedFix()` for failed verifications. WHY: Batch mode previously recorded raw verification explanations (e.g., "diff doesn't show changes to progressiveTrimMatch") as lessons. These describe what went wrong but not what to do differently. `analyzeFailedFix` produces actionable guidance (e.g., "Don't just add null check at line 45, also need to handle the undefined case at line 47") by analyzing the original issue, the attempted diff, and the rejection reason together.
 
-### 4b. Two-Tier Lessons Storage
+### 4c. Two-Tier Lessons Storage
 
 **The Problem**: Where should lessons live? If we write to CLAUDE.md, we might overwrite user content. If we use a hidden file, tools like Cursor/Claude Code won't read it.
 
@@ -483,7 +650,7 @@ if (existsSync('.cursor/rules/')) {
 - Final export at end of run (catches edge cases)
 - NOT after commit (would require separate commit for lessons)
 
-### 4c. NO_CHANGES Handling & Regurgitation Detection
+### 4d. NO_CHANGES Handling & Regurgitation Detection
 
 **The Problem**: When a fixer tool makes zero changes, it may provide a reason. The system needs to distinguish three cases:
 1. **Legitimately already fixed** — issues were resolved by previous iterations

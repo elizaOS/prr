@@ -10,6 +10,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { validateTool, isValidModelName, type FixerTool } from './config.js';
+import type { PriorityOrder } from './analyzer/severity.js';
 
 export interface CLIOptions {
   tool: FixerTool | undefined;  // undefined = use PRR_TOOL env var or default
@@ -49,6 +50,8 @@ export interface CLIOptions {
   cleanAll: boolean;
   /** Disable distributed locking */
   noLock: boolean;
+  /** Issue processing order */
+  priorityOrder: PriorityOrder;
   /** Clear lock file and exit */
   clearLock: boolean;
   /** Check installed tools and exit */
@@ -128,6 +131,7 @@ export function createCLI(): Command {
     .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false)
     .option('--no-claude-md', 'Don\'t sync lessons to CLAUDE.md (only use .prr/lessons.md)')
     .option('--no-agents-md', 'Don\'t sync lessons to AGENTS.md')
+    .option('--priority-order <order>', 'Issue processing order: important (default), important-asc, easy, easy-asc, newest, oldest, none', 'important')
     // Cleanup-only modes (run and exit)
     .option('--clean-claude-md', 'Remove prr section from CLAUDE.md (or delete if only prr content) and exit')
     .option('--clean-agents-md', 'Remove prr section from AGENTS.md (or delete if only prr content) and exit')
@@ -216,6 +220,7 @@ export function parseArgs(program: Command): ParsedArgs {
       modelRotation: opts.modelRotation ?? false,  // Default: use smart model selection
       noClaudeMd: !opts.claudeMd,             // --no-claude-md sets opts.claudeMd=false
       noAgentsMd: !opts.agentsMd,             // --no-agents-md sets opts.agentsMd=false
+      priorityOrder: (opts.priorityOrder ?? 'important') as PriorityOrder,
       // Cleanup modes
       cleanClaudeMd: opts.cleanClaudeMd ?? false,
       cleanAgentsMd: opts.cleanAgentsMd ?? false,

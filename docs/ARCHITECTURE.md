@@ -106,7 +106,37 @@ Issue batches are capped at 50 per batch to prevent LLM response truncation. Wit
 **Adaptive batch sizing:**
 Fix prompts halve `MAX_ISSUES_PER_PROMPT` after each consecutive zero-fix iteration (50 → 25 → 12 → 6 → 5, minimum `MIN_ISSUES_PER_PROMPT`). WHY: A 213K-char prompt with 50 issues across 23 files produced a 5% fix rate. The model has too much to process and makes scattered, shallow changes. Progressively smaller batches improve focus before falling back to single-issue mode. See `computeEffectiveBatchSize()` in `prompt-builder.ts`.
 
-### 4. Runners (`src/runners/`)
+**Issue priority triage:**
+During the batch analysis phase, the LLM assesses both "does this issue still exist?" AND "how important/difficult is it?" in a single call (zero extra cost). Each issue receives:
+- `importance` score (1-5): 1=critical security/data loss, 2=major bug, 3=moderate, 4=minor, 5=trivial style
+- `ease` score (1-5): 1=one-line fix, 2=simple, 3=moderate, 4=complex multi-file, 5=major refactor
+
+The response format extends from `ISSUE_ID: YES|NO|STALE: explanation` to `ISSUE_ID: YES|NO|STALE: I<1-5>: D<1-5>: explanation`. Parser uses graceful defaults (3/3) when ratings are omitted (e.g., for NO/STALE responses). Scores are propagated to all 11 `UnresolvedIssue` construction sites across the codebase.
+
+WHY: When batching limits prompts to 50 of 93 issues, the selection was arbitrary — trivial style nits could crowd out critical security fixes. The LLM already reads every comment during analysis, so we piggyback assessment onto the same call. The `--priority-order` CLI option (default: `important`) sorts issues before batching, ensuring the fixer tackles high-impact issues first.
+
+### 4. Analyzer (`src/analyzer/`)
+
+Issue analysis and prompt building:
+- `types.ts` - Core types: `UnresolvedIssue`, `IssueTriage`, `FixPrompt`
+- `prompt-builder.ts` - Constructs fix prompts with lessons, adaptive batch sizing, triage labels
+- `severity.ts` - **NEW**: Priority sorting by importance, difficulty, or chronological order
+
+**Priority sorting:**
+The `sortByPriority()` function accepts 7 sort orders:
+- `important` (default): Most important first (1=critical first)
+- `important-asc`: Least important first (5=trivial first)
+- `easy`: Easiest fixes first (1=one-liner first)
+- `easy-asc`: Hardest fixes first (5=refactor first)
+- `newest`: Newest comments first
+- `oldest`: Oldest comments first (GitHub default)
+- `none`: No sorting (preserve input order)
+
+**Non-mutating sort:** Returns a new array instead of sorting in-place. WHY: The `unresolvedIssues` array is shared state used by the fix loop, no-changes verification, and single-issue focus mode. Single-issue focus mode intentionally randomizes order — if we mutated the array, randomization and priority sort would fight each other on alternate iterations.
+
+**Default triage:** Issues without LLM-assigned triage (recovery paths, new comments mid-cycle) default to `{ importance: 3, ease: 3 }` (middle of pack), not `5` (worst). WHY: These aren't necessarily trivial, they just haven't been analyzed yet. Putting them in the middle ensures they're not deprioritized.
+
+### 6. Runners (`src/runners/`)
 
 Fixer tools that make actual code changes:
 - **Cursor** - Cursor Composer agent
@@ -129,7 +159,7 @@ interface Runner {
 
 **Runner output hygiene:** Runners return clean text in `RunResult.output`, not raw protocol frames. WHY: The Cursor runner streams JSON frames like `{"type":"text","content":"..."}`. Downstream consumers like `parseNoChangesExplanation()` search the output for patterns like `NO_CHANGES:` — raw JSON metadata caused false matches against embedded instruction text, triggering expensive re-verification of all issues.
 
-### 5. State Management (`src/state/`)
+### 7. State Management (`src/state/`)
 
 Maintains session state across iterations:
 - Verified fixes (prevents re-checking)
@@ -187,12 +217,13 @@ Breaks down the main resolver loop into focused phases:
 **Other workflow modules:**
 - `fix-verification.ts` - Post-fix verification logic (both sequential and batch modes)
 - `no-changes-verification.ts` - Handles fixer tools that make zero changes (spot-check verification, "already fixed" detection)
-- `issue-analysis.ts` - Issue batching and analysis
+- `issue-analysis.ts` - Issue batching and analysis (wires triage scores from LLM results into `UnresolvedIssue` objects)
+- `prompt-building.ts` - Sorts issues by `--priority-order`, displays triage breakdown in console
 - `graceful-shutdown.ts` - SIGINT handling
 - `helpers/recovery.ts` - State recovery utilities
 - `utils.ts` - `parseNoChangesExplanation()` with prompt regurgitation detection
 
-### 7. UI & Reporting (`src/ui/`)
+### 8. UI & Reporting (`src/ui/`)
 
 User-facing output and progress indicators:
 - Spinners for long operations

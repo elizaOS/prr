@@ -50,7 +50,21 @@ export interface LLMResponse {
  * Batch check result with optional model recommendation
  */
 export interface BatchCheckResult {
-  issues: Map<string, { exists: boolean; explanation: string; stale: boolean }>;
+  issues: Map<string, {
+    exists: boolean;
+    explanation: string;
+    stale: boolean;
+    /**
+     * Importance score (1-5): 1=critical, 5=trivial.
+     * Defaults to 3 if LLM doesn't provide or issue is NO/STALE.
+     */
+    importance: number;
+    /**
+     * Fix difficulty score (1-5): 1=easy one-liner, 5=major refactor.
+     * Defaults to 3 if LLM doesn't provide or issue is NO/STALE.
+     */
+    ease: number;
+  }>;
   /** Recommended models to use for fixing, in order of preference */
   recommendedModels?: string[];
   /** Reasoning behind the model recommendation */
@@ -491,7 +505,13 @@ STALE: Not applicable`;
       '- Be specific and cite actual code/line numbers',
       '',
       'For EACH issue, respond with a line in this exact format:',
-      'ISSUE_ID: YES|NO|STALE: cite specific code or explain what is missing/fixed/stale',
+      'ISSUE_ID: YES|NO|STALE: I<1-5>: D<1-5>: cite specific code or explain',
+      '',
+      'For issues that still exist (YES), also rate:',
+      '- I<1-5> importance: 1=critical security/data loss, 2=major bug, 3=moderate, 4=minor, 5=trivial style',
+      '- D<1-5> difficulty: 1=one-line fix, 2=simple, 3=moderate, 4=complex multi-file, 5=major refactor',
+      '',
+      'For NO/STALE responses, you may omit the I/D ratings (they won\'t be used).',
       '',
       'Use STALE when the code has been restructured so fundamentally that the review comment',
       'no longer applies — e.g., the function was removed, the file was rewritten, or the code',
@@ -499,9 +519,9 @@ STALE: Not applicable`;
       'different — if the underlying issue still exists, say YES.',
       '',
       'Example GOOD responses:',
-      'issue_1: YES: Line 45 still has `user.email` without null check',
-      'issue_2: NO: Line 23 now has `if (input === null) return;` guard',
-      'issue_3: NO: TypeScript NonNullable<T> at line 67 prevents null',
+      'issue_1: YES: I1: D2: Line 45 still has SQL injection via unsanitized user input',
+      'issue_2: YES: I4: D1: Line 12 uses `var` instead of `const`',
+      'issue_3: NO: Line 23 now has `if (input === null) return;` guard',
       'issue_4: STALE: The processUser function no longer exists; module was refactored',
       '',
       'Example BAD responses (NEVER do this):',
@@ -599,7 +619,13 @@ STALE: Not applicable`;
     });
 
     // Process all batches
-    const allResults = new Map<string, { exists: boolean; explanation: string; stale: boolean }>();
+    const allResults = new Map<string, {
+      exists: boolean;
+      explanation: string;
+      stale: boolean;
+      importance: number;
+      ease: number;
+    }>();
     let recommendedModels: string[] | undefined;
     let modelRecommendationReasoning: string | undefined;
 
@@ -664,22 +690,37 @@ STALE: Not applicable`;
       };
       const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
 
-      // Parse issue responses
+      // Parse issue responses with optional triage scores
+      // WHY two-stage parse: LLM may omit I/D ratings for NO/STALE responses.
+      // Graceful fallback to default (3) means old-format responses still parse correctly.
       const lines = response.content.split('\n');
       for (const line of lines) {
         const match = line.match(/^([^:]+):\s*(YES|NO|STALE):\s*(.*)$/i);
         if (match) {
-          const [, id, response, explanation] = match;
+          let [, id, response, rest] = match;
           const resultId = normalizeIssueId(id);
           if (!allowedIds.has(resultId)) {
             debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
             continue;
           }
+          
+          // Stage 2: Try to extract I<n>: D<n>: triage scores
+          let importance = 3, ease = 3;  // Graceful defaults
+          const triageMatch = rest.match(/^I(\d):\s*D(\d):\s*(.*)$/i);
+          if (triageMatch) {
+            // Clamp to 1-5 range (LLMs sometimes output 0 or 6)
+            importance = Math.min(5, Math.max(1, parseInt(triageMatch[1], 10)));
+            ease = Math.min(5, Math.max(1, parseInt(triageMatch[2], 10)));
+            rest = triageMatch[3];
+          }
+          
           const responseUpper = response.toUpperCase();
           allResults.set(resultId, {
             exists: responseUpper === 'YES',
             stale: responseUpper === 'STALE',
-            explanation: explanation.trim(),
+            explanation: rest.trim(),
+            importance,
+            ease,
           });
         }
       }
@@ -690,6 +731,7 @@ STALE: Not applicable`;
       // to diagnose prompt/model problems early (e.g., batch 2 parsed 0 = response format issue).
       {
         let batchParsed = 0, batchExists = 0, batchFixed = 0, batchStale = 0;
+        let sumImportance = 0, sumEase = 0, countTriage = 0;
         for (const issue of batchIssues) {
           const rid = normalizeIssueId(issue.id);
           const r = allResults.get(rid);
@@ -698,8 +740,14 @@ STALE: Not applicable`;
             if (r.stale) batchStale++;
             else if (r.exists) batchExists++;
             else batchFixed++;
+            // Accumulate triage scores for avg calculation
+            sumImportance += r.importance;
+            sumEase += r.ease;
+            countTriage++;
           }
         }
+        const avgImportance = countTriage > 0 ? (sumImportance / countTriage).toFixed(1) : 'N/A';
+        const avgEase = countTriage > 0 ? (sumEase / countTriage).toFixed(1) : 'N/A';
         debug(`Batch ${batchIdx + 1}/${batches.length} results`, {
           parsed: batchParsed,
           expected: batchIssues.length,
@@ -707,6 +755,8 @@ STALE: Not applicable`;
           alreadyFixed: batchFixed,
           stale: batchStale,
           unparsed: batchIssues.length - batchParsed,
+          avgImportance,
+          avgEase,
         });
       }
 
@@ -1085,26 +1135,45 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       return new Map();
     }
 
-    // Build batch prompt
-    // WHY: Combine verification + lesson extraction in one call to save N LLM calls
+    // Build batch prompt — verification + failure analysis in a single LLM call.
+    //
+    // WHY combined: Previously, batch verify returned YES/NO and then fix-verification.ts
+    // called analyzeFailedFix() individually for each NO — turning 1 batch call into 1+N
+    // calls (e.g., 12 fixes with 6 failures = 7 LLM calls). Now the LLM does both jobs
+    // in one pass: verify AND produce an actionable lesson for each failure.
+    //
+    // The lesson prompt here matches the quality of the standalone analyzeFailedFix:
+    // - Explains what the diff attempted vs what the comment actually asked for
+    // - Provides 4 good + 3 bad examples to calibrate quality
+    // - Explicitly tells the LLM the lesson feeds back into the next fix attempt
     const parts: string[] = [
-      'Verify whether each of the following code changes adequately addresses the review comment.',
+      'You are a STRICT code reviewer. For each fix below, verify whether the code change adequately addresses the review comment.',
       '',
-      'For EACH fix, respond with these lines:',
-      'FIX_ID: YES|NO: brief explanation',
-      'LESSON: <actionable guidance for next attempt> (ONLY if NO)',
+      'For EACH fix, respond with EXACTLY this format:',
+      'FIX_ID: YES|NO: brief explanation of what was/wasn\'t fixed',
+      'LESSON: <actionable guidance> (REQUIRED for every NO — this feeds into the next fix attempt)',
+      '',
+      'The LESSON line is critical for NO responses. It must explain:',
+      '- What the diff actually changed vs what the comment asked for',
+      '- What specific action the next attempt should take to succeed',
+      '',
+      'GOOD lessons (specific, actionable):',
+      '- "When adding validation for X, must also update the error message to mention X"',
+      '- "The fix added null check but comment also requires empty string handling - need both"',
+      '- "Don\'t just check for null, also handle the undefined case mentioned in review"',
+      '- "The validation was added but in the wrong location - must be before the return on line Y"',
+      '',
+      'BAD lessons (vague, not actionable — NEVER produce these):',
+      '- "Fix was incomplete" (doesn\'t say what\'s missing)',
+      '- "Need to try again" (no guidance)',
+      '- "The change didn\'t work" (no specifics)',
       '',
       'Example responses:',
-      'fix_123: YES: The null check was added as requested',
       '',
-      'fix_456: NO: The validation is incomplete, missing edge case',
-      'LESSON: Must validate both null AND empty string as mentioned in comment',
+      '1: YES: The null check on line 45 matches what the comment requested',
       '',
-      'Guidelines for lessons (when fix = NO):',
-      '- Be specific and actionable (not vague like "fix was incomplete")',
-      '- Reference what the comment asked for vs what was done',
-      '- Keep under 150 characters',
-      '- Focus on what needs to be added/changed',
+      '2: NO: Added try/catch but the comment asks for input validation before the call, not error handling after',
+      'LESSON: Comment asks for validation BEFORE the API call (line 32), not try/catch AFTER - add input check',
       '',
       '---',
       '',
@@ -1132,7 +1201,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     parts.push('---');
     parts.push('');
-    parts.push('Now verify each fix and respond with one line per fix (use the fix number, e.g. "1: YES: ..." or "2: NO: ..."):');
+    parts.push('Now verify each fix. Use the fix number (e.g. "1: YES: ..." or "2: NO: ..."). For every NO, include a LESSON line immediately after:');
 
     debug('Batch verifying fixes', { count: fixes.length });
     const response = await this.complete(parts.join('\n'));
@@ -1165,9 +1234,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       if (lessonMatch && currentOriginalId) {
         const lesson = lessonMatch[1].trim();
         const existing = results.get(currentOriginalId);
-        if (existing && !existing.fixed) {
-          // Only attach lesson to NO responses
-          existing.lesson = lesson.length > 150 ? lesson.substring(0, 147) + '...' : lesson;
+        if (existing && !existing.fixed && lesson.length >= 10) {
+          // Only attach lesson to NO responses; skip trivially short ones
+          existing.lesson = lesson.length > 200 ? lesson.substring(0, 197) + '...' : lesson;
         }
       }
     }

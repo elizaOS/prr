@@ -84,7 +84,7 @@ export async function executeFixIteration(
   // WHY: consecutiveFailures drives batch size reduction (50→25→12→6→5) so the model
   // gets fewer issues per prompt when it's struggling. Resets to MAX on any success.
   debugStep('GENERATING FIX PROMPT');
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures);
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures, options.priorityOrder);
   
   if (promptDetails.shouldSkip) {
     return {

@@ -75,6 +75,7 @@ export async function processNewBotReviews(
         codeSnippet,
         stillExists: true,
         explanation: 'New comment from bot review',
+        triage: { importance: 3, ease: 3 },  // Default: new comment, not yet analyzed
       });
     }
     
@@ -177,6 +178,7 @@ export async function checkEmptyIssues(
             codeSnippet,
             stillExists: true,
             explanation: 'Re-added after bug detection',
+            triage: { importance: 3, ease: 3 },  // Default: re-added mid-cycle
           });
         }
       }

@@ -1,10 +1,32 @@
 import type { ReviewComment } from '../github/types.js';
 
+/**
+ * Triage scores from LLM analysis (1-5 scale).
+ * 
+ * WHY: The analysis phase already asks the LLM "does this issue still exist?"
+ * for every comment. We piggyback importance + difficulty assessment onto the
+ * same call at zero extra cost, then use these scores to prioritize fixes.
+ */
+export interface IssueTriage {
+  /** 1=critical/security, 2=major bug, 3=moderate, 4=minor, 5=trivial/style */
+  importance: number;
+  /** 1=one-line fix, 2=simple, 3=moderate, 4=complex multi-file, 5=major refactor */
+  ease: number;
+}
+
 export interface UnresolvedIssue {
   comment: ReviewComment;
   codeSnippet: string;
   stillExists: boolean;
   explanation: string;
+  /**
+   * Optional triage scores from LLM analysis.
+   * 
+   * WHY optional: There are 11 places that construct UnresolvedIssue objects.
+   * Making this required would break all of them simultaneously. Optional means
+   * the type system accepts objects without triage, and we can add it incrementally.
+   */
+  triage?: IssueTriage;
 }
 
 export interface FixPrompt {
