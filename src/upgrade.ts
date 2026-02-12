@@ -197,9 +197,9 @@ export async function printToolStatus(): Promise<void> {
   console.log(chalk.gray('    • claude-haiku-4-5-20251001 (fastest)'));
   console.log('');
   console.log(chalk.white('  OpenAI:'));
-  console.log(chalk.gray('    • gpt-5.3 (latest)'));
-  console.log(chalk.gray('    • gpt-5.3-codex (optimized for coding)'));
-  console.log(chalk.gray('    • gpt-5.3-mini (fast, cost-effective)'));
+  console.log(chalk.gray('    • gpt-5.2 (best for coding/agentic tasks)'));
+  console.log(chalk.gray('    • gpt-5.2-codex (optimized for agentic coding)'));
+  console.log(chalk.gray('    • gpt-5-mini (fast, cost-effective)'));
   console.log('');
 
   console.log(chalk.gray('Use --tool <name> to specify which tool to use.'));

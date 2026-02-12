@@ -122,18 +122,27 @@ export const FINAL_AUDIT_FOOTER_SIZE = 100;
 
 /**
  * Default LLM model for Anthropic provider.
+ * 
+ * WHY claude-sonnet-4-5: Best speed/intelligence combo per Anthropic docs.
+ * claude-3-5-sonnet-20241022 was deprecated and returns 404.
+ * See: https://platform.claude.com/docs/en/about-claude/models/overview
  */
-export const DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022';
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
 
 /**
  * Default LLM model for OpenAI provider.
+ * 
+ * WHY gpt-4.1: Smartest non-reasoning model, general purpose.
+ * gpt-4o is legacy. gpt-5.2 is frontier but more expensive.
+ * See: https://developers.openai.com/api/docs/models
  */
-export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
+export const DEFAULT_OPENAI_MODEL = 'gpt-4.1';
 
 /**
  * Default LLM model for ElizaCloud provider.
+ * ElizaCloud is an OpenAI-compatible gateway that routes to multiple providers.
  */
-export const DEFAULT_ELIZACLOUD_MODEL = 'gpt-4o';
+export const DEFAULT_ELIZACLOUD_MODEL = 'gpt-4.1';
 
 /**
  * ElizaCloud API base URL (OpenAI-compatible).

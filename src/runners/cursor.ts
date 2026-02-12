@@ -22,13 +22,15 @@ function isSafePath(value: string): boolean {
 // Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
 const CURSOR_AGENT_BINARY = 'cursor-agent';
 
-// Fallback model list if dynamic discovery fails
+// Fallback model list if dynamic discovery fails.
+// WHY these names: Cursor uses its own short aliases, not full API IDs.
+// These are common Cursor model names as of Feb 2026.
 const FALLBACK_MODELS = [
-  'claude-4-sonnet-thinking',
-  'gpt-4o',
-  'claude-4-opus-thinking',
-  'gpt-4o-mini',
-  'o3',
+  'claude-sonnet-4-5',
+  'gpt-4.1',
+  'claude-opus-4-6',
+  'gpt-5.2',
+  'gpt-5-mini',
 ];
 
 /**

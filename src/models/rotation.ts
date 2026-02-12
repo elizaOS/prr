@@ -418,7 +418,7 @@ export function tryRotation(
  * - 'anthropic': Models validated against Anthropic GET /v1/models
  * - undefined: Runner manages its own models (cursor uses internal aliases)
  * 
- * NOTE: 'aider' uses provider-prefixed names like "openai/gpt-5.3" and
+ * NOTE: 'aider' uses provider-prefixed names like "openai/gpt-5.2" and
  * "anthropic/claude-sonnet-4-5-20250929". We detect the provider from
  * the prefix and validate against the corresponding API.
  */

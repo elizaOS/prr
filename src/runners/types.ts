@@ -69,75 +69,93 @@ export interface Runner {
  * Start with the balanced model (sonnet), escalate to powerful (opus),
  * try alternative provider (GPT), then fast/cheap options (mini).
  * 
- * Updated February 2026 with latest model versions from official docs.
+ * Updated February 2026 with current model versions from official docs:
+ *   Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
+ *   OpenAI:    https://developers.openai.com/api/docs/models
+ *
+ * Current Anthropic models (Feb 2026):
+ *   claude-opus-4-6            — Most intelligent, agents/coding ($5/$25 per MTok)
+ *   claude-sonnet-4-5-20250929 — Best speed/intelligence ($3/$15 per MTok)
+ *   claude-haiku-4-5-20251001  — Fastest ($1/$5 per MTok)
+ *
+ * Current OpenAI models (Feb 2026):
+ *   gpt-5.2       — Best for coding/agentic tasks (frontier)
+ *   gpt-5-mini    — Faster, cost-efficient
+ *   gpt-5-nano    — Fastest, cheapest
+ *   gpt-4.1       — Smartest non-reasoning model
+ *
+ * DEPRECATED (return 404):
+ *   claude-3-5-sonnet-20241022, claude-3-opus-20240229, claude-3-5-haiku-20241022
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // ElizaCloud: Model gateway - one API key for Claude, GPT, Gemini
   'elizacloud': [
-    'gpt-4o',                          // GPT-4o - general purpose
-    'claude-3-5-sonnet-20241022',      // Claude 3.5 Sonnet - strong coding
-    'gpt-4o-mini',                     // GPT-4o mini - fast, cost-effective
+    'gpt-4.1',                            // GPT-4.1 - smartest non-reasoning
+    'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - strong coding
+    'gpt-5-mini',                          // GPT-5 mini - fast, cost-effective
   ],
-  // Cursor: Uses short model names (from `cursor --list-models`)
-  // WHY these names: Cursor has its own model aliases, not full API names
+  // Cursor: Uses short model names (from `cursor-agent models`)
+  // WHY these names: Cursor has its own model aliases, not full API names.
+  // These get discovered dynamically at runtime via `cursor-agent models`.
+  // This is just the fallback list if discovery fails.
   'cursor': [
-    'claude-3.7-sonnet',               // Claude 3.7 Sonnet - balanced
-    'claude-3.5-sonnet',               // Claude 3.5 Sonnet - strong coding
-    'gpt-4o',                          // GPT-4o - general purpose
-    'o3-mini',                         // OpenAI o3-mini - fast reasoning
+    'claude-sonnet-4-5',                   // Claude Sonnet 4.5 - balanced
+    'gpt-4.1',                             // GPT-4.1 - general purpose
+    'claude-opus-4-6',                     // Claude Opus 4.6 - most intelligent
+    'gpt-5.2',                             // GPT-5.2 - frontier coding
   ],
-  // Claude Code: Claude 4+ models (uses full API names)
+  // Claude Code: Claude models (uses full API names)
   'claude-code': [
-    'claude-3-5-sonnet-20241022',     // Claude 3.5 Sonnet - best speed/intelligence
-    'claude-3-opus-20240229',         // Claude 3 Opus - most intelligent
-    'claude-3-5-haiku-20241022',      // Claude 3.5 Haiku - fastest
+    'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - best speed/intelligence
+    'claude-opus-4-6',                     // Claude Opus 4.6 - most intelligent
+    'claude-haiku-4-5-20251001',           // Claude Haiku 4.5 - fastest
   ],
   // Aider: Supports many providers (provider-prefixed)
   'aider': [
-    'anthropic/claude-3-5-sonnet-20241022',
-    'openai/gpt-4o',
-    'openai/gpt-4o-mini',
-    'anthropic/claude-3-5-haiku-20241022',
+    'anthropic/claude-sonnet-4-5-20250929',
+    'openai/gpt-4.1',
+    'openai/gpt-5-mini',
+    'anthropic/claude-haiku-4-5-20251001',
   ],
   // OpenCode: Mix of providers
   'opencode': [
-    'claude-3-5-sonnet-20241022',
-    'claude-3-opus-20240229',
-    'gpt-4o',
-    'gpt-4o-mini',
+    'claude-sonnet-4-5-20250929',
+    'claude-opus-4-6',
+    'gpt-4.1',
+    'gpt-5-mini',
   ],
-  // Codex: OpenAI models (use codex-optimized variants)
+  // Codex: OpenAI models (use codex-optimized variants when available)
   'codex': [
-    'gpt-4o',                        // GPT-4o - best general coding
-    'gpt-4o-mini',                   // GPT-4o mini - fast and cost-effective
+    'gpt-5.2-codex',                      // GPT-5.2-Codex - optimized for agentic coding
+    'gpt-5-mini',                          // GPT-5 mini - fast and cost-effective
   ],
   // Gemini CLI: Google models (strong coding, free tier available)
   'gemini': [
-    'gemini-2.5-pro',               // Gemini 2.5 Pro - best quality
-    'gemini-2.5-flash',             // Gemini 2.5 Flash - fast and capable
+    'gemini-2.5-pro',                      // Gemini 2.5 Pro - best quality
+    'gemini-2.5-flash',                    // Gemini 2.5 Flash - fast and capable
   ],
   // Junie CLI: JetBrains AI agent (model selection may be limited by backend)
   'junie': [
-    'gemini-3-flash',                  // Fast, high Terminal-Bench score with Junie
-    'gemini-3-pro',                    // Gemini 3 Pro
+    'gemini-3-flash',                      // Fast, high Terminal-Bench score with Junie
+    'gemini-3-pro',                        // Gemini 3 Pro
   ],
   // Goose: Block's open-source agent (supports multiple providers)
   'goose': [
-    'claude-3-5-sonnet-20241022',      // Claude 3.5 Sonnet via Anthropic provider
-    'claude-3-opus-20240229',          // Claude 3 Opus
-    'gpt-4o',                          // GPT-4o via OpenAI provider
+    'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 via Anthropic provider
+    'claude-opus-4-6',                     // Claude Opus 4.6
+    'gpt-4.1',                             // GPT-4.1 via OpenAI provider
   ],
   // OpenHands: Open-source agent (litellm format: provider/model)
   'openhands': [
-    'anthropic/claude-3-5-sonnet-20241022',
-    'anthropic/claude-3-opus-20240229',
-    'openai/gpt-4o',
+    'anthropic/claude-sonnet-4-5-20250929',
+    'anthropic/claude-opus-4-6',
+    'openai/gpt-4.1',
   ],
   // LLM API: Direct Anthropic API calls (uses full API names)
   // NOTE: Haiku intentionally excluded — 0% fix success rate across 147 attempts.
   // Haiku is used for verification (via LLMClient) but is too weak for code fixing.
   'llm-api': [
-    'claude-3-5-sonnet-20241022',   // Claude 3.5 Sonnet - balanced
-    'claude-3-opus-20240229',       // Claude 3 Opus - most intelligent
+    'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - balanced
+    'claude-opus-4-6',                     // Claude Opus 4.6 - most intelligent
   ],
 };
