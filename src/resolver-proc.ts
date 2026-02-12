@@ -437,8 +437,9 @@ export async function executeBailOut(
     console.log(chalk.cyan('\n  Remaining Issues (need human attention):'));
     for (const issue of unresolvedIssues.slice(0, 5)) {
       console.log(chalk.yellow(`    • ${issue.comment.path}:${issue.comment.line || '?'}`));
-      const cleanPreview = Reporter.sanitizeCommentForDisplay(issue.comment.body).split('\n')[0].substring(0, 80);
-      console.log(chalk.gray(`      "${cleanPreview}..."`));
+      const cleanPreview = Reporter.sanitizeCommentForDisplay(issue.comment.body).split('\n')[0];
+      const truncated = cleanPreview.length > 80 ? `${cleanPreview.substring(0, 80)}...` : cleanPreview;
+      console.log(chalk.gray(`      "${truncated}"`));
     }
     if (unresolvedIssues.length > 5) {
       console.log(chalk.gray(`    ... and ${unresolvedIssues.length - 5} more`));

@@ -596,7 +596,6 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 | `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
 | `o3` | OpenAI reasoning |
 | `o3-mini` | OpenAI reasoning (mini) |
-| `gpt-5` | GPT-5 |
 | `gpt-5.2` | GPT-5.2 |
 | `grok-2` | Grok 2 |
 

@@ -10,6 +10,7 @@
 import dotenv from 'dotenv';
 import { homedir } from 'os';
 import { join } from 'path';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL } from './constants.js';
 
 dotenv.config();
 
@@ -125,11 +126,11 @@ export function loadConfig(): Config {
   // Default model based on provider
   let defaultModel: string;
   if (llmProvider === 'elizacloud') {
-    defaultModel = 'gpt-4o';
+    defaultModel = DEFAULT_ELIZACLOUD_MODEL;
   } else if (llmProvider === 'anthropic') {
-    defaultModel = 'claude-sonnet-4-5-20250929';
+    defaultModel = DEFAULT_ANTHROPIC_MODEL;
   } else {
-    defaultModel = 'gpt-4o';
+    defaultModel = DEFAULT_OPENAI_MODEL;
   }
 
   const config: Config = {

@@ -36,9 +36,11 @@ export function compactLessons(ctx: StateContext): number {
   if (!state) return 0;
   
   // Import normalization utilities
-  const { normalizeLessonText, lessonKey } = require('./lessons-normalize.js');
+  const { normalizeLessonText, lessonKey, lessonNearKey } = require('./lessons-normalize.js');
   
-  const lessonsByKey = new Map<string, string>();
+  const seenKeys = new Set<string>();
+  const seenNear = new Set<string>();
+  const compacted: string[] = [];
   const before = state.lessonsLearned.length;
   
   for (const lesson of state.lessonsLearned) {
@@ -48,13 +50,15 @@ export function compactLessons(ctx: StateContext): number {
     
     // Use the proper key generation function for deduplication
     const key = lessonKey(normalized);
+    const nearKey = lessonNearKey(normalized);
     
     // Keep only one instance per key
-    if (!lessonsByKey.has(key)) {
-      lessonsByKey.set(key, normalized);
-    }
+    if (seenKeys.has(key) || seenNear.has(nearKey)) continue;
+    seenKeys.add(key);
+    seenNear.add(nearKey);
+    compacted.push(normalized);
   }
 
-  state.lessonsLearned = Array.from(lessonsByKey.values());
+  state.lessonsLearned = compacted;
   return before - state.lessonsLearned.length;
 }

@@ -81,36 +81,35 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Cursor: Uses short model names (from `cursor --list-models`)
   // WHY these names: Cursor has its own model aliases, not full API names
   'cursor': [
-    'claude-4-sonnet',                 // Claude 4.5 Sonnet - balanced, fast
-    'claude-4-opus',                   // Claude 4.6 Opus - most intelligent
-    'gpt-5.2',                         // GPT-5.3 - latest OpenAI
+    'claude-3.7-sonnet',               // Claude 3.7 Sonnet - balanced
+    'claude-3.5-sonnet',               // Claude 3.5 Sonnet - strong coding
+    'gpt-4o',                          // GPT-4o - general purpose
     'o3-mini',                         // OpenAI o3-mini - fast reasoning
   ],
   // Claude Code: Claude 4+ models (uses full API names)
   'claude-code': [
-    'claude-sonnet-4-5-20250929',     // Claude 4.5 Sonnet - best speed/intelligence
-    'claude-opus-4-6',                // Claude 4.6 Opus - NEW! Most intelligent
-    'claude-haiku-4-5-20251001',      // Claude 4.5 Haiku - fastest
+    'claude-3-5-sonnet-20241022',     // Claude 3.5 Sonnet - best speed/intelligence
+    'claude-3-opus-20240229',         // Claude 3 Opus - most intelligent
+    'claude-3-5-haiku-20241022',      // Claude 3.5 Haiku - fastest
   ],
   // Aider: Supports many providers (provider-prefixed)
   'aider': [
-    'anthropic/claude-sonnet-4-5-20250929',
-    'anthropic/claude-opus-4-6',     // NEW! Claude 4.6 Opus
-    'openai/gpt-5.3',                // NEW! GPT-5.3
-    'anthropic/claude-haiku-4-5-20251001',
+    'anthropic/claude-3-5-sonnet-20241022',
+    'openai/gpt-4o',
+    'openai/gpt-4o-mini',
+    'anthropic/claude-3-5-haiku-20241022',
   ],
   // OpenCode: Mix of providers
   'opencode': [
-    'claude-sonnet-4-5-20250929',
-    'claude-opus-4-6',               // NEW! Claude 4.6 Opus
-    'gpt-5.3',                       // NEW! GPT-5.3
-    'gpt-5.3-mini',                  // GPT-5.3 mini variant
+    'claude-3-5-sonnet-20241022',
+    'claude-3-opus-20240229',
+    'gpt-4o',
+    'gpt-4o-mini',
   ],
   // Codex: OpenAI models (use codex-optimized variants)
   'codex': [
-    'gpt-5.3-codex',                 // NEW! GPT-5.3 Codex - best for coding
-    'gpt-5.3',                       // NEW! GPT-5.3 standard
-    'gpt-5.2-codex',                 // Fallback to 5.2 Codex
+    'gpt-4o',                        // GPT-4o - best general coding
+    'gpt-4o-mini',                   // GPT-4o mini - fast and cost-effective
   ],
   // Gemini CLI: Google models (strong coding, free tier available)
   'gemini': [
@@ -124,21 +123,21 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   ],
   // Goose: Block's open-source agent (supports multiple providers)
   'goose': [
-    'claude-sonnet-4-5-20250929',      // Claude 4.5 Sonnet via Anthropic provider
-    'claude-opus-4-5-20251101',        // Claude 4.5 Opus
-    'gpt-5.3',                         // GPT-5.3 via OpenAI provider
+    'claude-3-5-sonnet-20241022',      // Claude 3.5 Sonnet via Anthropic provider
+    'claude-3-opus-20240229',          // Claude 3 Opus
+    'gpt-4o',                          // GPT-4o via OpenAI provider
   ],
   // OpenHands: Open-source agent (litellm format: provider/model)
   'openhands': [
-    'anthropic/claude-sonnet-4-5-20250929',
-    'anthropic/claude-opus-4-5-20251101',
-    'openai/gpt-5.3',
+    'anthropic/claude-3-5-sonnet-20241022',
+    'anthropic/claude-3-opus-20240229',
+    'openai/gpt-4o',
   ],
   // LLM API: Direct Anthropic API calls (uses full API names)
   // NOTE: Haiku intentionally excluded — 0% fix success rate across 147 attempts.
   // Haiku is used for verification (via LLMClient) but is too weak for code fixing.
   'llm-api': [
-    'claude-sonnet-4-5-20250929',   // Claude 4.5 Sonnet - balanced ($3/$15 per MTok)
-    'claude-opus-4-5-20251101',     // Claude 4.5 Opus - most intelligent ($5/$25 per MTok)
+    'claude-3-5-sonnet-20241022',   // Claude 3.5 Sonnet - balanced
+    'claude-3-opus-20240229',       // Claude 3 Opus - most intelligent
   ],
 };

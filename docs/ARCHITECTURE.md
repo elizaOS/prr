@@ -155,7 +155,7 @@ interface Runner {
   installHint?: string;  // Install command shown when tool not found
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunResult>;
 }
-```
+```text
 
 **Runner output hygiene:** Runners return clean text in `RunResult.output`, not raw protocol frames. WHY: The Cursor runner streams JSON frames like `{"type":"text","content":"..."}`. Downstream consumers like `parseNoChangesExplanation()` search the output for patterns like `NO_CHANGES:` — raw JSON metadata caused false matches against embedded instruction text, triggering expensive re-verification of all issues.
 
@@ -236,7 +236,7 @@ User-facing output and progress indicators:
 
 ### Issue Resolution Flow
 
-```
+```text
 1. Fetch PR comments from GitHub
    ↓
 2. Pre-screen for solvability (skip deleted files, stale refs)
@@ -259,7 +259,7 @@ User-facing output and progress indicators:
 
 ### Conflict Resolution Flow
 
-```
+```text
 1. Detect conflicted files during git operations
    ↓
 2. Separate by conflict type
@@ -381,7 +381,7 @@ npm test -- git-ops        # Specific suite
 ## Code Organization Principles
 
 ### Module Structure
-```
+```text
 src/subsystem/
 ├── subsystem-core.ts       # Core types and pure functions
 ├── subsystem-operations.ts # Stateful operations
