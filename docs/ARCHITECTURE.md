@@ -14,7 +14,7 @@ This document explains the high-level architecture of PRR (PR Resolver), a syste
 
 ## System Overview
 
-```text
+```texttexttext
 ┌─────────────────────────────────────────────────────────────┐
 │                         CLI Entry                            │
 │                      (src/cli.ts)                           │
