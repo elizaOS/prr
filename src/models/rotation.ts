@@ -293,7 +293,7 @@ export function tryRotation(
       const cycles = Bailout.incrementNoProgressCycles(stateContext);
       console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
       
-      if (cycles >= options.maxStaleCycles) {
+      if (options.maxStaleCycles > 0 && cycles >= options.maxStaleCycles) {
         console.log(chalk.red(`\n  🛑 Bail-out triggered: ${cycles} cycles with no progress (max: ${options.maxStaleCycles})`));
         return true;  // Signal bail-out
       }

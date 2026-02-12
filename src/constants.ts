@@ -123,12 +123,12 @@ export const FINAL_AUDIT_FOOTER_SIZE = 100;
 /**
  * Default LLM model for Anthropic provider.
  */
-export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022';
 
 /**
  * Default LLM model for OpenAI provider.
  */
-export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
+export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 
 /**
  * Default LLM model for ElizaCloud provider.

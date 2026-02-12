@@ -5,7 +5,7 @@ import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.
 import { debug } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { ELIZACLOUD_API_BASE_URL } from '../constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL } from '../constants.js';
 
 /**
  * Direct LLM API runner - uses ElizaCloud, Anthropic, or OpenAI API directly to fix code.
@@ -137,7 +137,7 @@ Working directory: ${workdir}`;
       let response: string;
 
       if (this.provider === 'anthropic' && anthropic) {
-        const model = options?.model || 'claude-sonnet-4-5-20250929';
+        const model = options?.model || DEFAULT_ANTHROPIC_MODEL;
         debug('Calling Anthropic API', { model });
         
         console.log(`\n🧠 Calling ${model}...\n`);
@@ -159,7 +159,7 @@ Working directory: ${workdir}`;
           outputTokens: result.usage.output_tokens,
         });
       } else if ((this.provider === 'elizacloud' || this.provider === 'openai') && openai) {
-        const model = options?.model || 'gpt-4o';
+        const model = options?.model || (this.provider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : DEFAULT_OPENAI_MODEL);
         debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model });
 
         console.log(`\n🧠 Calling ${model}...\n`);
