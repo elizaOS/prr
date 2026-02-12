@@ -3,10 +3,11 @@
  */
 
 export function normalizeLessonText(lesson: string): string | null {
-  if (/\b[a-z]{1,5}`(?=\b|\s|$)/i.test(lesson) || /`[a-z]{1,5}\b/i.test(lesson)) {
+  const withoutFences = lesson.replace(/```[\s\S]*?```/g, '');
+  if (/\b[a-z]{1,5}`(?=\b|\s|$)/i.test(withoutFences) || /`[a-z]{1,5}\b/i.test(withoutFences)) {
     return null;
   }
-  const lines = lesson.split('\n');
+  const lines = withoutFences.split('\n');
   const kept: string[] = [];
 
   for (const line of lines) {
@@ -17,7 +18,7 @@ export function normalizeLessonText(lesson: string): string | null {
     if (!trimmed) continue;
     if (/^\d+\.$/.test(trimmed)) continue;
     if (/^(?:\/\/|\/\*|\*)/.test(trimmed)) continue;
-    if (!/^Fix for\b/i.test(trimmed) && /(^|\s)\/\/|\/\*|\*\//.test(trimmed)) continue;
+    if (/(^|\s)\/\/|\/\*|\*\//.test(trimmed)) continue;
     if (/^(?:public|private|protected)\s/.test(trimmed)) continue;
     if (/^[A-Za-z_$][\w$]*\s*(?::[^=;]+)?\s*(?:=|;)/.test(trimmed)) continue;
     if (/^(?:class|interface|type|enum|const|let|var|import|export)\b/.test(trimmed)) continue;

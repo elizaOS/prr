@@ -224,6 +224,16 @@ describe('normalizeLessonText', () => {
       const input = 'tool made no changes - trying different approach';
       expect(normalize(input)).toBe('tool made no changes - trying different approach');
     });
+
+    it('normalizes missing separator before "trying"', () => {
+      const input = 'tool made no changestrying different approach';
+      expect(normalize(input)).toBe('tool made no changes - trying different approach');
+    });
+
+    it('normalizes missing separator before "already"', () => {
+      const input = 'fixer made no changes  already includes all runners';
+      expect(normalize(input)).toBe('fixer made no changes - already includes all runners');
+    });
   });
 
   describe('chars truncated handling', () => {

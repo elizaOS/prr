@@ -18,6 +18,7 @@ import { dirname, join } from 'path';
 import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance, DismissedIssue, BailOutRecord, IssueAttempt, IssueAttempts } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../logger.js';
+import * as Normalize from './lessons-normalize.js';
 
 const STATE_FILENAME = '.pr-resolver-state.json';
 
@@ -366,35 +367,33 @@ export class StateManager {
   }
   
   /**
-   * Deduplicate lessons - keep one per file:line.
+   * Deduplicate lessons - keep one per normalized key.
    * 
    * WHY deduplicate: If we learn something new about line 45, we should
    * replace the old lesson, not accumulate them. Multiple lessons for the
    * same location bloat the prompt and confuse the LLM.
-   * 
-   * WHY separate uniqueCounter: Early bug used `removed` counter for both
-   * generating unique keys AND calculating duplicates removed. Now we use
-   * a separate counter to avoid miscounting.
    * 
    * @returns Number of duplicate lessons removed
    */
   compactLessons(): number {
     if (!this.state) return 0;
     
-    const lessonsByKey = new Map<string, string>();
+    const seenKeys = new Set<string>();
+    const seenNear = new Set<string>();
+    const compacted: string[] = [];
     const before = this.state.lessonsLearned.length;
-    // WHY separate counter: Previously we used `removed` for both key generation
-    // and return value calculation, causing incorrect counts
-    let uniqueCounter = 0;
-    
     for (const lesson of this.state.lessonsLearned) {
-      const keyMatch = lesson.match(/^Fix for ([^:]+:\S+)/);
-      const key = keyMatch ? keyMatch[1] : `unique_${uniqueCounter++}`;
-      
-      lessonsByKey.set(key, lesson);
+      const normalized = Normalize.normalizeLessonText(lesson);
+      if (!normalized) continue;
+      const key = Normalize.lessonKey(normalized);
+      const nearKey = Normalize.lessonNearKey(normalized);
+      if (seenKeys.has(key) || seenNear.has(nearKey)) continue;
+      seenKeys.add(key);
+      seenNear.add(nearKey);
+      compacted.push(normalized);
     }
 
-    this.state.lessonsLearned = Array.from(lessonsByKey.values());
+    this.state.lessonsLearned = compacted;
     return before - this.state.lessonsLearned.length;
   }
 
