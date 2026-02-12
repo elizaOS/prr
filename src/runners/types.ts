@@ -48,6 +48,8 @@ export interface Runner {
  * WHY MODEL ROTATION EXISTS:
  * AI models get stuck. They'll make the same mistake repeatedly.
  * Different models have different strengths and availabilities change frequently.
+ * NOTE: These are examples and may become outdated as providers update their model offerings.
+ * Models are validated at startup via API queries; unavailable models are skipped.
  * 
  * NOTE: The lists below are ILLUSTRATIVE EXAMPLES ONLY and will likely be outdated.
  * They are NOT used at runtime when dynamic model discovery is available.
