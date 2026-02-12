@@ -12,37 +12,24 @@
 - Fix for README.md rejected: The diff does not contain the suggested platform-specific installation instructions. It only updates model names and rotation strategy, missing the curl command clarification for macOS ARM64 vs other platforms.
 - Fix for README.md rejected: The diff updates model versions but doesn't update the actual model table entries from the outdated names (opus-4.5, sonnet-4.5, gpt-5.2-codex-xhigh, etc.) to the correct canonical Cursor CLI names.
 - Fix for README.md rejected: The provided diff doesn't include the platform-specific installation instructions. It shows the same model table changes from other fixes but lacks the cursor-agent installation updates for Linux and Intel Mac users mentioned in the review.
-- Fix for DEVELOPMENT.md rejected: The diff removes the language identifier from the code fence (changes `text` to nothing), which worsens the MD040 violation rather than fixing it as requested.
-- Fix for DEVELOPMENT.md rejected: The fix removes the language identifier (`text`) instead of adding it, changing `` ```text `` to just `` ``` ``, which violates the MD040 requirement to specify a language.
-- Fix for DEVELOPMENT.md rejected: The change removes the language identifier (`text`) from the code fence instead of adding one. The diff shows ```` ```text` ` changing to just `` ``` ``, which is the opposite of what the review requested. This will fail the markdownlint MD040 check.
-- Fix for DEVELOPMENT.md rejected: The code change removes the language identifier (`text`) from the fence, changing ` ```text` to ` ``` `, which makes the problem worse and violates the MD040 rule rather than fixing it.
-- Fix for src/resolver.ts - When using `execSync`, always include `shell: false` option and pass command/args as array to prevent shell injection, not just whitelist validation.
-- Fix for DEVELOPMENT.md rejected: The diff shows an incomplete fix - it adds a line break between the backticks and "text" instead of properly formatting it as ` ```text `, which does not satisfy the MD040 requirement for language-tagged code blocks.
 - Fix for README.md rejected: The diff only updates model version strings and rotation examples, not the platform-specific installation instructions for cursor-agent that were requested (macOS ARM64 vs Linux vs Intel Mac).
 - Fix for src/resolver.ts rejected: The diff changes resolver.ts to handle wrong files, but the review comment is about fixing `fixedIssues` which is computed from `unresolvedIssues`. The diff doesn't change the `fixedIssues` pipeline to use the full `comments` list instead.
-- Fix for src/git/commit.ts rejected: The diff modifies `commit.ts` lines related to `hasChanges` and `scanCommittedFixes`, but the review comment is about fixing a regex for emoji matching at line 267. The wrong file/section was changed.
 - Fix for README.md rejected: The diff changes model version strings but doesn't standardize the model naming format across the README as requested (mixing date-stamped and dotted formats).
-- Fix for src/runners/cursor.ts rejected: The diff shown only modifies the regex pattern but doesn't implement the stdin-based prompt passing approach required to address the E2BIG risk, missing the core fix of removing `args.push(prompt)` and writing to stdin.
 - Fix for src/git/commit.ts rejected: The code change removes imports (`execSync`, `execFileSync`) and adds a `redactAuth()` function with multiple `redactAuth()` calls, but does not fix the regex issue with emoji combining characters at line 267 that was the focus of the review.
-- Fix for src/runners/cursor.ts rejected: The code change shown is identical to the first fix and does not address the E2BIG issue. The prompt is still being passed as a positional argument rather than via stdin, and there is no modification to use `stdio: ['pipe', 'pipe', 'pipe']` or `child.stdin?.write()`.
 - Fix for src/git/commit.ts rejected: The review comment requests updating the emoji regex at line 267 to use Unicode property escapes like `\p{Emoji}`, but the diff shows unrelated changes to imports and a new `redactAuth()` function with no regex changes to the emoji stripping pattern.
 - Fix for src/runners/cursor.ts rejected: The review comment requests changes to handle E2BIG by passing prompt via stdin (lines 271-276), but the provided diff only shows the parseAndPrioritizeModels function being duplicated. The actual stdin implementation is missing.
 - Fix for src/runners/cursor.ts rejected: Same issue as above - shellEscape() is defined twice but never applied to workdir or promptFile variables in the vulnerable shell command string
 - Fix for README.md rejected: The diff shows model table changes and API endpoint additions, but does not address the core issue of standardizing model name formats (claude-sonnet-4-5-20250929 vs claude-sonnet-4.5 vs claude-sonnet-4.5) across the README as requested.
 - Fix for README.md rejected: The diff shows unrelated table changes at lines 571-582 but does not modify lines 78-83 in the README where the PRR_LLM_MODEL example needs to be aligned with the canonical date-stamped format from config.ts.
-- Fix for src/runners/cursor.ts rejected: The fix does not address the E2BIG risk—the diff shows only comments updated and temp file handling added, but the prompt is still passed as a positional argument via `args.push()` rather than being sent via stdin as required by the review.
-- Fix for src/runners/claude-code.ts rejected: The code change only updates an error message string and does not address either of the two main issues: (1) the fixed filename `.prr-prompt.txt` collision risk, or (2) the premature prompt write before model validation. The actual prompt file handling logic remains unchanged.
 - Fix for src/cli.ts rejected: The diff shows a duplicate function definition of `parseIntOrExit` (appears twice in the same file) rather than replacing the raw `parseInt` calls throughout the code. The proposed fix was not properly applied - it only added the helper function but didn't update the call sites.
 - Fix for src/runners/cursor.ts rejected: Diff shows the duplicate model parsing code again instead of changes to pass prompt via stdin and remove positional argument approach
 - Fix for src/cli.ts rejected: The diff only removes a nullish coalescing operator from `maxContextChars` but doesn't add the `parseIntOrDefault` validation helper function needed to prevent NaN propagation.
 - Fix for README.md rejected: The fix only clarifies the heading and adds a generic link, but doesn't provide the platform-specific instructions (Linux, Intel Mac) that were requested in the review comment
-- Fix for README.md rejected: The diff shows changes to line 576 about model listing commands, but the review requested verification and removal of unverified models like `gpt-5.2` and `Grok` from the table, which are not addressed
 - Fix for src/logger.ts rejected: The change only reorders the type check condition but doesn't address the unused initial value of overallTotals mentioned in the review comment.
 - Fix for README.md rejected: The fix only adds a clarification comment and a generic link, but does not provide the platform-specific instructions (Linux, Intel Mac) that the review explicitly requested
 - Fix for README.md rejected: The code change only reformats table formatting, but does not update the README example to match the canonical date-stamped model name from config.ts or add clarifying comments
 - Fix for src/runners/llm-api.ts rejected: The diff does not match the review comment - it shows the same change as the first fix instead of implementing the ReDoS mitigation for the whitespace pattern on line 232. The suggested change to use `\s{1,1000}` is not present in the diff.
 - Fix for .prr/lessons.md rejected: The fix removes malformed entries and deduplicated some lines, but the deduplication is incomplete. Many entries still contain
-- Fix for CLAUDE.md rejected: The fix removes corrupted entries from CLAUDE.md, but does not address the root cause identified in the review comment—the lessons generation logic that produces these malformed entries. The CLAUDE.md file was manually cleaned, but the generator function that syncs from `.prr/lessons.md` and creates the malformed "Instructions" section was not identified or fixed, so the problem will recur.
 - Fix for src/resolver.ts:1035 - tool made no changes without explanation
 - Fix for src/resolver.ts:2549 - tool made no changes without explanation - trying different approach
 - Fix for src/runners/opencode.ts:94 - When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
@@ -54,7 +41,6 @@
 - Fix for src/state/lessons.ts:537 - Since the fix is already in place and the code matches the proposed solution, no changes are needed.
 - Fix for src/state/lessons.ts:625 - Since the fix is already in place and the code matches the proposed solution, no changes are needed.
 - Fix for src/runners/cursor.ts:31 rejected: The diff changes stdin handling but does not update the FALLBACK_MODELS array. The review comment specifically requested updating outdated model names in the fallback list at lines 24-31, which is not present in this diff.
-- Fix for src/runners/cursor.ts:243 rejected: The diff changes stdin handling and prompt passing but does NOT move the prompt file from workdir to tmpdir as requested. The security issue about writing `.prr-prompt.txt` to the workspace and lacking cleanup is not addressed.
 - Fix for src/runners/cursor.ts:256 rejected: The temp file is created but the isSafePath check is removed without replacement, and there is no cleanup logic (unlinkSync call) after the process completes.
 - Fix for src/runners/cursor.ts:91 rejected: The fix duplicates the entire parsing loop instead of modifying the existing one, resulting in redundant code that processes lines twice.
 - Fix for src/git/commit.ts:140 - tool modified wrong files (examples/feedback-loop-example.ts, src/resolver.ts, src/runners/cursor.ts), need to modify src/git/commit.ts
@@ -63,7 +49,6 @@
 - Fix for src/llm/client.ts:115 rejected: The diff shows unrelated cleanup code instead of fixing the fixedIssues filter to use the full comments list rather than unresolvedIssues.
 - Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
 - Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
-- Fix for README.md:573 rejected: The diff updates model versions but doesn't correct the CLI command (should be `agent models` or `cursor-agent - list-models`) or verify/update the gpt-5.2 and Grok model names.
 - Fix for README.md:231 rejected: The diff updates model versions and rotation examples but doesn't fix the markdown indentation issues (MD005/MD007) in the nested list bullets under "Run Fixer".
 - Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
 - Fix for README.md:1 - tool made no changes without explanation - trying different approach
@@ -72,312 +57,133 @@
 - Fix for src/cli.ts:151 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/runners/cursor.ts, src/state/manager.ts), need to modify src/cli.ts
 - Fix for src/cli.ts:170 rejected: The diff only removes the `?? 400_000` fallback from `maxContextChars` but the comment indicates `maxStaleCycles` should also be changed to use nullish coalescing instead of `||`, which is missing from the diff.
 - Fix for src/git/clone.ts:452 rejected: The diff adds merge completion logic but the merge abort on error path is missing—the suggested fix shows aborting merge on both conflict and generic error returns.
-- Fix for FIXER_EXPLANATION_REQUIREMENT.md:78 - md` file already have the correct template literal syntax with backticks.
 - Fix for FIXER_EXPLANATION_REQUIREMENT.md:78 - tool made no changes
 - Fix for src/config.ts:61 - tool made no changes without explanation - trying different approach
 - Fix for src/config.ts:168 rejected: The change only removes the mention of 'auto' from the error message but does not separate 'auto' validation from actual tool validation or document that 'auto' should be resolved before storage. The underlying issue—that 'auto' is checked alongside real tools—remains unaddressed.
 - Fix for CLAUDE.md:94 - When fixing corrupted generated content, sanitize the source before regenerating, not just the output structure—fix the generator logic, not the symptoms.
 - Fix for .prr/lessons.md:172 - When a review requests fixing root-cause logic in code, don't fix symptoms in output files—locate and modify the actual function (compactLessons, dedupeLessons, etc.) that generates the output.
-- Fix for tests/normalizeLessonText.test.ts:88 - The fix must replace the actual test bodies with `it.todo(...)` or real assertions—removing imports alone doesn't address the no-op test cases.
 - Fix for .prr/lessons.md:108 - When a review requests code function changes, don't reorganize data files alone—implement the validation/normalization logic in the actual functions mentioned.
 - Fix for .prr/lessons.md:12 - **When a review requests function improvements, update the function itself, not just the data it processes—else the issue recurs elsewhere.**
 
-## File-Specific Lessons
+## .prr/lessons.md
 
-### src/logger.ts
+- Fix for .prr/lessons.md:172 - When a review requests fixing root-cause logic in code, don't fix symptoms in output files—locate and modify the actual function (compactLessons, dedupeLessons, etc.) that generates the output.
+- Fix for .prr/lessons.md:79 - When a review requests code changes to prevent future issues, don't just fix the symptom in data—implement the validation logic in the functions mentioned.
+- Fix for .prr/lessons.md:79 - When a review requests code function changes, don't just fix the data file—implement the validation logic in the functions mentioned (sanitizeLessonsList, addLesson).
+- Fix for .prr/lessons.md:167 - tool modified wrong files (src/git/commit.ts, src/workflow/fix-verification.ts), need to modify .prr/lessons.md
 
+## .prr/lessons.md:108
 
-### src/resolver.ts
+- Fix for .prr/lessons.md:108 - When a review requests code function changes, don't reorganize data files alone—implement the validation/normalization logic in the actual functions mentioned.
 
-- Fix for src/resolver.ts:1035 - tool made no changes without explanation
-- Fix for src/resolver.ts:2549 - tool made no changes without explanation - trying different approach
+## .prr/lessons.md:12
 
-### src/runners/opencode.ts
+- Fix for .prr/lessons.md:12 - **When a review requests function improvements, update the function itself, not just the data it processes—else the issue recurs elsewhere.**
 
-- Fix for src/runners/opencode.ts:93 - tool made no changes without explanation - trying different approach
-- Fix for src/runners/opencode.ts:94 - When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
-- Fix for src/runners/opencode.ts:94 - Register cleanup callback before attempting file writes, not after—move `onExit(cleanupPromptFile)` before the try-catch block.
+## README.md
 
-### src/runners/cursor.ts
-
-- Fix for src/runners/cursor.ts:31 rejected: The diff changes stdin handling but does not update the FALLBACK_MODELS array. The review comment specifically requested updating outdated model names in the fallback list at lines 24-31, which is not present in this diff.
-- Fix for src/runners/cursor.ts:243 rejected: The diff changes stdin handling and prompt passing but does NOT move the prompt file from workdir to tmpdir as requested. The security issue about writing `.prr-prompt.txt` to the workspace and lacking cleanup is not addressed.
-- Fix for src/runners/cursor.ts:256 rejected: The temp file is created but the isSafePath check is removed without replacement, and there is no cleanup logic (unlinkSync call) after the process completes.
-- Fix for src/runners/cursor.ts:91 rejected: The fix duplicates the entire parsing loop instead of modifying the existing one, resulting in redundant code that processes lines twice.
-
-### src/llm/client.ts
-
-- Fix for src/llm/client.ts:115 rejected: The diff shows unrelated cleanup code instead of fixing the fixedIssues filter to use the full comments list rather than unresolvedIssues.
-- Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
-- Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
-- Fix for src/llm/client.ts:483 - tool modified wrong files (src/analyzer/prompt-builder.ts, src/git/commit.ts, src/runners/llm-api.ts, src/ui/reporter.ts), need to modify src/llm/client.ts
-- Fix for src/llm/client.ts:835 - No verification result returned, treating as failed
-- Fix for src/llm/client.ts:960 - No verification result returned, treating as failed
-
-### README.md
-
-- Fix for README.md:573 rejected: The diff updates model versions but doesn't correct the CLI command (should be `agent models` or `cursor-agent - list-models`) or verify/update the gpt-5.2 and Grok model names.
 - Fix for README.md:231 rejected: The diff updates model versions and rotation examples but doesn't fix the markdown indentation issues (MD005/MD007) in the nested list bullets under "Run Fixer".
 - Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
 - Fix for README.md:1 - tool made no changes without explanation - trying different approach
 
-### src/runners/claude-code.ts
-
-- Fix for src/runners/claude-code.ts:156 rejected: The diff improves the permission error message but doesn't defer prompt file creation until after model validation or use a unique temporary filename to prevent collisions.
-- tool made no changes - trying different approach
-- fixer made no changes - already includes all runners
-
-### src/cli.ts
+## src/cli.ts
 
 - Fix for src/cli.ts:133 rejected: The diff only adds parseIntOrExit for numeric validation but doesn't update the FixerTool type to include new runners ('claude-code', 'aider', 'codex', 'llm-api') or update validateTool() and CLI help text.
 - Fix for src/cli.ts:151 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/runners/cursor.ts, src/state/manager.ts), need to modify src/cli.ts
 - Fix for src/cli.ts:170 rejected: The diff only removes the `?? 400_000` fallback from `maxContextChars` but the comment indicates `maxStaleCycles` should also be changed to use nullish coalescing instead of `||`, which is missing from the diff.
 
-### src/config.ts
+## src/config.ts
 
 - Fix for src/config.ts:61 - tool made no changes without explanation - trying different approach
 - Fix for src/config.ts:168 rejected: The change only removes the mention of 'auto' from the error message but does not separate 'auto' validation from actual tool validation or document that 'auto' should be resolved before storage. The underlying issue—that 'auto' is checked alongside real tools—remains unaddressed.
-- Fix for src/config.ts:115 - No verification result returned, treating as failed
 
-### examples/feedback-loop-example.ts
+## src/git/commit.ts
 
+- Fix for src/git/commit.ts:462 - tool made no changes without explanation - trying different approach
 
-### src/runners/llm-api.ts
+## src/git/git-conflict-chunked.ts
 
-- Fix for src/runners/llm-api.ts:324 - No verification result returned, treating as failed
-- Fix for src/runners/llm-api.ts:322 - No verification result returned, treating as failed
-- Fix for src/runners/llm-api.ts:323 - No verification result returned, treating as failed
+- Fix for src/git/git-conflict-chunked.ts:85 - When fixing string character counts, manually verify the exact count in the replacement string matches the target count, not just the intent.
+- Fix for src/git/git-conflict-chunked.ts:85 - When a review comment targets a specific line/file, make only that change—don't refactor unrelated code or add extra features in the same commit.
 
-### .prr/lessons.md
+## src/llm/client.ts
 
-- Fix for .prr/lessons.md:172 - When a review requests fixing root-cause logic in code, don't fix symptoms in output files—locate and modify the actual function (compactLessons, dedupeLessons, etc.) that generates the output.
-- Fix for .prr/lessons.md:79 - When a review requests code changes to prevent future issues, don't just fix the symptom in data—implement the validation logic in the functions mentioned.
-- Fix for .prr/lessons.md:79 - When a review requests code function changes, don't just fix the data file—implement the validation logic in the functions mentioned (sanitizeLessonsList, addLesson).
-- Fix for .prr/lessons.md:44 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:89 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:163 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:190 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:167 - tool modified wrong files (src/git/commit.ts, src/workflow/fix-verification.ts), need to modify .prr/lessons.md
-- Fix for .prr/lessons.md:167 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:205 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:171 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:213 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:173 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:223 - No verification result returned, treating as failed
-- Fix for .prr/lessons.md:226 - No verification result returned, treating as failed
+- Fix for src/llm/client.ts:115 rejected: The diff shows unrelated cleanup code instead of fixing the fixedIssues filter to use the full comments list rather than unresolvedIssues.
+- Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
+- Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
+- Fix for src/llm/client.ts:483 - tool modified wrong files (src/analyzer/prompt-builder.ts, src/git/commit.ts, src/runners/llm-api.ts, src/ui/reporter.ts), need to modify src/llm/client.ts
 
-### tests/normalizeLessonText.test.ts:88
+## src/resolver.ts
 
-- Fix for tests/normalizeLessonText.test.ts:88 - The fix must replace the actual test bodies with `it.todo(...)` or real assertions—removing imports alone doesn't address the no-op test cases.
+- Fix for src/resolver.ts:1035 - tool made no changes without explanation
+- Fix for src/resolver.ts:2549 - tool made no changes without explanation - trying different approach
 
-### .prr/lessons.md:108
+## src/runners/claude-code.ts
 
-- Fix for .prr/lessons.md:108 - When a review requests code function changes, don't reorganize data files alone—implement the validation/normalization logic in the actual functions mentioned.
+- Fix for src/runners/claude-code.ts:156 rejected: The diff improves the permission error message but doesn't defer prompt file creation until after model validation or use a unique temporary filename to prevent collisions.
+- tool made no changes - trying different approach
+- fixer made no changes - already includes all runners
 
-### .prr/lessons.md:12
+## src/runners/cursor.ts
 
-- Fix for .prr/lessons.md:12 - **When a review requests function improvements, update the function itself, not just the data it processes—else the issue recurs elsewhere.**
+- Fix for src/runners/cursor.ts:31 rejected: The diff changes stdin handling but does not update the FALLBACK_MODELS array. The review comment specifically requested updating outdated model names in the fallback list at lines 24-31, which is not present in this diff.
+- Fix for src/runners/cursor.ts:256 rejected: The temp file is created but the isSafePath check is removed without replacement, and there is no cleanup logic (unlinkSync call) after the process completes.
+- Fix for src/runners/cursor.ts:91 rejected: The fix duplicates the entire parsing loop instead of modifying the existing one, resulting in redundant code that processes lines twice.
 
-### src/workflow/base-merge.ts
+## src/runners/opencode.ts
+
+- Fix for src/runners/opencode.ts:93 - tool made no changes without explanation - trying different approach
+- Fix for src/runners/opencode.ts:94 - When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
+- Fix for src/runners/opencode.ts:94 - Register cleanup callback before attempting file writes, not after—move `onExit(cleanupPromptFile)` before the try-catch block.
+
+## src/state/lessons.ts
+
+- Fix for src/state/lessons.ts:53 - "Store the fallback value but also implement the conditional logic to use it—check if trimmed result is empty, then return the fallback instead."
+
+## src/workflow/base-merge.ts
 
 - Fix for src/workflow/base-merge.ts:137 - Setting a flag is insufficient—must also add the push logic immediately after the flag is set, not rely on deferred checks elsewhere.
-- Fix for src/workflow/base-merge.ts:125 - No verification result returned, treating as failed
-- Fix for src/workflow/base-merge.ts:161 - No verification result returned, treating as failed
-- Fix for src/workflow/base-merge.ts:66 - No verification result returned, treating as failed
-- Fix for src/workflow/base-merge.ts:127 - No verification result returned, treating as failed
-- Fix for src/workflow/base-merge.ts:163 - No verification result returned, treating as failed
-- Fix for src/workflow/base-merge.ts:99 - No verification result returned, treating as failed
-- Fix for src/workflow/base-merge.ts:67 - No verification result returned, treating as failed
 
-### tests/normalize-lesson-text.test.ts
+## src/workflow/commit-and-push-loop.ts
+
+- Fix for src/workflow/commit-and-push-loop.ts:195 - When the review comment identifies a stale variable issue, refresh that variable in a separate try-catch AFTER the failing block, not in unrelated code sections.
+
+## src/workflow/fix-loop-utils.ts
+
+- Fix for src/workflow/fix-loop-utils.ts:194 - When reorganizing imports, verify the final file has no duplicate import statements before submission - check each module is imported exactly once.
+
+## src/workflow/fix-verification.ts
+
+- Fix for src/workflow/fix-verification.ts:192 - tool modified wrong files (src/workflow/run-setup-phase.ts, tests/normalize-lesson-text.test.ts), need to modify src/workflow/fix-verification.ts
+
+## src/workflow/helpers/recovery.ts
+
+- Fix for src/workflow/helpers/recovery.ts:304 - Before committing a fix, verify there are no duplicate code blocks by reviewing the entire diff context—duplicates indicate incomplete merge resolution.
+- Fix for src/workflow/helpers/recovery.ts:377 - When handling missing code blocks, must call `Dismissed.dismissIssue()` to track the issue in workflow state, not just log it.
+- Fix for src/workflow/helpers/recovery.ts:311 - The fix must guard file size before reading (line 263), not after in error handling. Add MAX_FILE_CHARS check + skip/truncate logic before fs.readFileSync.
+- Fix for src/workflow/helpers/recovery.ts:346 - tool modified wrong files (src/workflow/push-iteration-loop.ts, tests/normalize-lesson-text.test.ts, tests/normalizeLessonText.test.ts), need to modify src/workflow/helpers/recovery.ts
+
+## src/workflow/issue-analysis.ts
+
+- Fix for src/workflow/issue-analysis.ts:106 - When removing a local constant, you must also add its import statement to the top-level import block—never remove without adding the replacement import.
+
+## src/workflow/no-comments.ts
+
+- Fix for src/workflow/no-comments.ts:97 - When catching errors in error-handling blocks, must rethrow or exit after logging—don't silently continue, as this masks failures and returns false success.
+- Fix for src/workflow/no-comments.ts:109 - tool modified wrong files (.prr/lessons.md), need to modify src/workflow/no-comments.ts
+
+## src/workflow/push-iteration-loop.ts
+
+- Fix for src/workflow/push-iteration-loop.ts:128 - The call sites pass object literals which will be structurally compatible with the named interfaces, so no changes needed there.
+
+## src/workflow/run-setup-phase.ts
+
+- Fix for src/workflow/run-setup-phase.ts:115 - When renaming imports to avoid shadowing, add the static import statement at module top level before using the renamed binding in function bodies.
+
+## tests/normalize-lesson-text.test.ts
 
 - Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies multiple mismatches across a file range, fix all instances of the same type, not just one test case in isolation.
 - Fix for tests/normalize-lesson-text.test.ts:170 - When a review identifies N issues across a file range, fix all N or extend the function for all—patching one breaks the incomplete contract.
 - Fix for tests/normalize-lesson-text.test.ts:171 - **Scope mismatch: fix one test case, but issue spans lines 24-170. Must either update all failing tests or extend the function comprehensively.**
-- Fix for tests/normalize-lesson-text.test.ts:84 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:160 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:168 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:252 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:250 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:163 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:9 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:67 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:128 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:136 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:225 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:244 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:260 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:258 - **Before writing test assertions, trace through the actual normalize function logic to verify the exact expected output matches reality.**
-- Fix for tests/normalize-lesson-text.test.ts:185 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:251 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:223 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:242 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:258 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:176 - No verification result returned, treating as failed
 - Fix for tests/normalize-lesson-text.test.ts:163 - tool modified wrong files (.prr/lessons.md), need to modify tests/normalize-lesson-text.test.ts
-- Fix for tests/normalize-lesson-text.test.ts:254 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:10 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:68 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:129 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:137 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:224 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:243 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:261 - No verification result returned, treating as failed
-- Fix for tests/normalize-lesson-text.test.ts:177 - No verification result returned, treating as failed
-
-### src/workflow/fix-loop-utils.ts
-
-- Fix for src/workflow/fix-loop-utils.ts:194 - When reorganizing imports, verify the final file has no duplicate import statements before submission - check each module is imported exactly once.
-
-### src/workflow/no-comments.ts
-
-- Fix for src/workflow/no-comments.ts:97 - When catching errors in error-handling blocks, must rethrow or exit after logging—don't silently continue, as this masks failures and returns false success.
-- Fix for src/workflow/no-comments.ts:109 - tool modified wrong files (.prr/lessons.md), need to modify src/workflow/no-comments.ts
-- Fix for src/workflow/no-comments.ts:93 - No verification result returned, treating as failed
-- Fix for src/workflow/no-comments.ts:13 - No verification result returned, treating as failed
-- Fix for src/workflow/no-comments.ts:108 - No verification result returned, treating as failed
-
-### src/constants.ts
-
-- Fix for src/constants.ts:109 - ts` - already has these constants (canonical source) ✓
-
-### src/workflow/fix-verification.ts
-
-- Fix for src/workflow/fix-verification.ts:192 - tool modified wrong files (src/workflow/run-setup-phase.ts, tests/normalize-lesson-text.test.ts), need to modify src/workflow/fix-verification.ts
-- Fix for src/workflow/fix-verification.ts:201 - No verification result returned, treating as failed
-- Fix for src/workflow/fix-verification.ts:57 - No verification result returned, treating as failed
-- Fix for src/workflow/fix-verification.ts:214 - No verification result returned, treating as failed
-- Fix for src/workflow/fix-verification.ts:62 - No verification result returned, treating as failed
-- Fix for src/workflow/fix-verification.ts:221 - No verification result returned, treating as failed
-- Fix for src/workflow/fix-verification.ts:62 - When restructuring try/finally blocks, always show the complete pairing from opening `try` to closing `}` in the diff to verify scope and syntax.
-
-### src/workflow/run-setup-phase.ts
-
-- Fix for src/workflow/run-setup-phase.ts:115 - When renaming imports to avoid shadowing, add the static import statement at module top level before using the renamed binding in function bodies.
-
-### src/workflow/push-iteration-loop.ts
-
-- Fix for src/workflow/push-iteration-loop.ts:128 - The call sites pass object literals which will be structurally compatible with the named interfaces, so no changes needed there.
-- Fix for src/workflow/push-iteration-loop.ts:30 - "Remove file extensions entirely from TypeScript imports—use `../logger` not `../logger.ts` or `../logger.js`."
-- Fix for src/workflow/push-iteration-loop.ts:129 - No verification result returned, treating as failed
-- Fix for src/workflow/push-iteration-loop.ts:176 - No verification result returned, treating as failed
-- Fix for src/workflow/push-iteration-loop.ts:30 - No verification result returned, treating as failed
-
-### src/workflow/helpers/recovery.ts
-
-- Fix for src/workflow/helpers/recovery.ts:304 - Before committing a fix, verify there are no duplicate code blocks by reviewing the entire diff context—duplicates indicate incomplete merge resolution.
-- Fix for src/workflow/helpers/recovery.ts:377 - When handling missing code blocks, must call `Dismissed.dismissIssue()` to track the issue in workflow state, not just log it.
-- Fix for src/workflow/helpers/recovery.ts:203 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:304 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:231 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:377 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:360 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:311 - The fix must guard file size before reading (line 263), not after in error handling. Add MAX_FILE_CHARS check + skip/truncate logic before fs.readFileSync.
-- Fix for src/workflow/helpers/recovery.ts:311 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:384 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:293 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:318 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:391 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:300 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:325 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:398 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:381 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:307 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:339 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:412 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:395 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:321 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:346 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:419 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:402 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:328 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/recovery.ts:346 - tool modified wrong files (src/workflow/push-iteration-loop.ts, tests/normalize-lesson-text.test.ts, tests/normalizeLessonText.test.ts), need to modify src/workflow/helpers/recovery.ts
-- Fix for src/workflow/helpers/recovery.ts:403 - No verification result returned, treating as failed
-
-### src/git/git-conflict-chunked.ts
-
-- Fix for src/git/git-conflict-chunked.ts:148 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:258 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:259 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:173 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:437 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:85 - When fixing string character counts, manually verify the exact count in the replacement string matches the target count, not just the intent.
-- Fix for src/git/git-conflict-chunked.ts:85 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:262 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:409 - No verification result returned, treating as failed
-- Fix for src/git/git-conflict-chunked.ts:85 - When a review comment targets a specific line/file, make only that change—don't refactor unrelated code or add extra features in the same commit.
-
-### src/git/clone.ts
-
-- Fix for src/git/clone.ts:320 - No verification result returned, treating as failed
-- Fix for src/git/clone.ts:324 - No verification result returned, treating as failed
-- Fix for src/git/clone.ts:243 - No verification result returned, treating as failed
-
-### src/runners/index.ts
-
-- Fix for src/runners/index.ts:71 - No verification result returned, treating as failed
-
-### src/workflow/commit-and-push-loop.ts
-
-- Fix for src/workflow/commit-and-push-loop.ts:185 - No verification result returned, treating as failed
-- Fix for src/workflow/commit-and-push-loop.ts:190 - No verification result returned, treating as failed
-- Fix for src/workflow/commit-and-push-loop.ts:194 - No verification result returned, treating as failed
-- Fix for src/workflow/commit-and-push-loop.ts:144 - No verification result returned, treating as failed
-- Fix for src/workflow/commit-and-push-loop.ts:195 - No verification result returned, treating as failed
-- Fix for src/workflow/commit-and-push-loop.ts:91 - No verification result returned, treating as failed
-- Fix for src/workflow/commit-and-push-loop.ts:152 - No verification result returned, treating as failed
-- Fix for src/workflow/commit-and-push-loop.ts:195 - When the review comment identifies a stale variable issue, refresh that variable in a separate try-catch AFTER the failing block, not in unrelated code sections.
-
-### src/workflow/cleanup-mode.ts
-
-- Fix for src/workflow/cleanup-mode.ts:228 - No verification result returned, treating as failed
-- Fix for src/workflow/cleanup-mode.ts:224 - No verification result returned, treating as failed
-
-### src/workflow/run-orchestrator.ts
-
-- Fix for src/workflow/run-orchestrator.ts:119 - No verification result returned, treating as failed
-- Fix for src/workflow/run-orchestrator.ts:86 - No verification result returned, treating as failed
-
-### src/git/commit.ts
-
-- Fix for src/git/commit.ts:462 - No verification result returned, treating as failed
-- Fix for src/git/commit.ts:536 - No verification result returned, treating as failed
-- Fix for src/git/commit.ts:462 - tool made no changes without explanation - trying different approach
-
-### src/workflow/issue-analysis.ts
-
-- Fix for src/workflow/issue-analysis.ts:106 - When removing a local constant, you must also add its import statement to the top-level import block—never remove without adding the replacement import.
-- Fix for src/workflow/issue-analysis.ts:106 - No verification result returned, treating as failed
-
-### src/workflow/helpers/solvability.ts
-
-- Fix for src/workflow/helpers/solvability.ts:84 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/solvability.ts:155 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/solvability.ts:74 - No verification result returned, treating as failed
-- Fix for src/workflow/helpers/solvability.ts:86 - No verification result returned, treating as failed
-
-### src/runners/types.ts
-
-- Fix for src/runners/types.ts:103 - No verification result returned, treating as failed
-
-### src/runners/aider.ts
-
-- Fix for src/runners/aider.ts:89 - No verification result returned, treating as failed
-
-### tests/normalizeLessonText.test.ts
-
-- Fix for tests/normalizeLessonText.test.ts:36 - No verification result returned, treating as failed
-
-### src/state/lessons.ts
-
-- Fix for src/state/lessons.ts:53 - "Store the fallback value but also implement the conditional logic to use it—check if trimmed result is empty, then return the fallback instead."
-- Fix for src/state/lessons.ts:53 - No verification result returned, treating as failed
-
-### src/resolver-proc.ts
-
-- Fix for src/resolver-proc.ts:372 - No verification result returned, treating as failed
-
-### src/workflow/startup.ts
-
-- Fix for src/workflow/startup.ts:123 - No verification result returned, treating as failed
-- Fix for src/workflow/startup.ts:205 - No verification result returned, treating as failed

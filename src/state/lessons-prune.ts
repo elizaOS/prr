@@ -9,6 +9,7 @@ import { readdirSync, statSync } from 'fs';
 import chalk from 'chalk';
 import type { LessonsContext, LessonsStore } from './lessons-context.js';
 import * as Normalize from './lessons-normalize.js';
+import * as Parse from './lessons-parse.js';
 
 const TRANSIENT_PATTERNS = [
   /connection refused/i,
@@ -358,5 +359,177 @@ export async function tidyAllLessons(): Promise<void> {
     }
   }
 
-  console.log(chalk.cyan(`\n  Summary: ${totalOriginal} → ${totalFinal} lessons total (removed ${totalRemoved} across ${filesModified} file(s))\n`));
+  console.log(chalk.cyan(`\n  Summary: ${totalOriginal} → ${totalFinal} lessons total (removed ${totalRemoved} across ${filesModified} file(s))`));
+
+  // Also tidy any .prr/lessons.md in the current working directory
+  const cwd = process.cwd();
+  const repoLessonsPath = join(cwd, '.prr', 'lessons.md');
+  if (existsSync(repoLessonsPath)) {
+    await tidyMarkdownLessonsFile(repoLessonsPath);
+  }
+
+  console.log('');
+}
+
+/**
+ * Flexible markdown parser that handles both lesson file formats:
+ * - Format 1: ## Global Lessons / ## File-Specific Lessons / ### filename
+ * - Format 2: ### Global / ### By File / **filename**
+ */
+function parseMarkdownFlexible(content: string): { global: string[]; files: Record<string, string[]> } {
+  const result: { global: string[]; files: Record<string, string[]> } = { global: [], files: {} };
+  const lines = content.split('\n');
+  let section: 'none' | 'global' | 'files' = 'none';
+  let currentFile: string | null = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Detect global sections
+    if (/^#{2,3}\s+Global/i.test(trimmed)) {
+      section = 'global';
+      currentFile = null;
+      continue;
+    }
+
+    // Detect file-specific section headers
+    if (/^#{2,3}\s+(?:File-Specific|By File)/i.test(trimmed)) {
+      section = 'files';
+      currentFile = null;
+      continue;
+    }
+
+    // Detect file headers: ### filename or **filename**
+    if (section === 'files' || section === 'none') {
+      const h3Match = trimmed.match(/^###\s+(.+)/);
+      if (h3Match) {
+        currentFile = h3Match[1].trim();
+        section = 'files';
+        if (!result.files[currentFile]) result.files[currentFile] = [];
+        continue;
+      }
+      const boldMatch = trimmed.match(/^\*\*(.+?)\*\*$/);
+      if (boldMatch) {
+        currentFile = boldMatch[1].trim();
+        section = 'files';
+        if (!result.files[currentFile]) result.files[currentFile] = [];
+        continue;
+      }
+    }
+
+    // Also treat any ## that looks like a file path as a file header
+    if (/^##\s+\S+\.\w+/.test(trimmed)) {
+      currentFile = trimmed.replace(/^##\s+/, '').trim();
+      section = 'files';
+      if (!result.files[currentFile]) result.files[currentFile] = [];
+      continue;
+    }
+
+    // Parse lesson lines
+    if (trimmed.startsWith('- ')) {
+      const lesson = trimmed.substring(2).trim();
+      if (!lesson) continue;
+      
+      if (section === 'global') {
+        result.global.push(lesson);
+      } else if (section === 'files' && currentFile) {
+        result.files[currentFile].push(lesson);
+      } else {
+        // Default to global if no section detected yet
+        result.global.push(lesson);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Tidy a .prr/lessons.md markdown file in place.
+ * 
+ * Parses the markdown, runs all lessons through normalization/dedup,
+ * and rewrites with only clean entries.
+ */
+async function tidyMarkdownLessonsFile(filePath: string): Promise<void> {
+  try {
+    const content = await readFile(filePath, 'utf-8');
+    
+    // Parse the markdown ourselves to handle both formats:
+    // Format 1 (lessons-format.ts): ## Global Lessons / ## File-Specific Lessons / ### filename
+    // Format 2 (lessons-parse.ts):  ### Global / ### By File / **filename**
+    const parsed = parseMarkdownFlexible(content);
+    
+    const originalGlobal = parsed.global.length;
+    const originalFileTotal = Object.values(parsed.files).reduce((sum, arr) => sum + arr.length, 0);
+    const originalTotal = originalGlobal + originalFileTotal;
+
+    // Normalize and deduplicate
+    const normalizeAndDedupe = (lessons: string[]): string[] => {
+      const seen = new Set<string>();
+      const result: string[] = [];
+      for (const lesson of lessons) {
+        const normalized = Normalize.normalizeLessonText(lesson);
+        if (!normalized) continue;
+        const key = Normalize.lessonKey(normalized);
+        if (seen.has(key)) continue;
+        const nearKey = Normalize.lessonNearKey(normalized);
+        if (seen.has(nearKey)) continue;
+        seen.add(key);
+        seen.add(nearKey);
+        result.push(normalized);
+      }
+      return result;
+    };
+
+    const cleanGlobal = normalizeAndDedupe(parsed.global);
+    const cleanFiles: Record<string, string[]> = {};
+    for (const [path, lessons] of Object.entries(parsed.files)) {
+      const cleanedPath = Normalize.sanitizeFilePathHeader(path);
+      const cleaned = normalizeAndDedupe(lessons);
+      if (cleaned.length > 0) {
+        cleanFiles[cleanedPath || path] = cleaned;
+      }
+    }
+
+    const finalTotal = cleanGlobal.length + Object.values(cleanFiles).reduce((sum, arr) => sum + arr.length, 0);
+    const removed = originalTotal - finalTotal;
+
+    if (removed === 0) {
+      console.log(chalk.gray(`\n  .prr/lessons.md: ${originalTotal} lessons (already clean)`));
+      return;
+    }
+
+    // Rebuild markdown
+    const lines: string[] = [
+      '# PRR Lessons Learned',
+      '',
+      '> This file is auto-generated by [prr](https://github.com/elizaOS/prr).',
+      '> It contains lessons learned from PR review fixes to help improve future fix attempts.',
+      '> You can edit this file manually or let prr update it.',
+      '> To share lessons across your team, commit this file to your repo.',
+      '',
+    ];
+
+    if (cleanGlobal.length > 0) {
+      lines.push('## Global Lessons', '');
+      for (const lesson of cleanGlobal) {
+        lines.push(`- ${lesson}`);
+      }
+      lines.push('');
+    }
+
+    const sortedFiles = Object.entries(cleanFiles).sort(([a], [b]) => a.localeCompare(b));
+    for (const [path, lessons] of sortedFiles) {
+      lines.push(`## ${path}`, '');
+      for (const lesson of lessons) {
+        lines.push(`- ${lesson}`);
+      }
+      lines.push('');
+    }
+
+    await writeFile(filePath, lines.join('\n'), 'utf-8');
+    console.log(chalk.green(`\n  .prr/lessons.md: ${originalTotal} → ${finalTotal} lessons (removed ${removed})`));
+  } catch (e) {
+    console.log(chalk.red(`\n  Failed to tidy .prr/lessons.md: ${e}`));
+  }
 }
