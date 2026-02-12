@@ -105,7 +105,21 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   } catch (e) {
     debug('Could not check/set remote URL', { error: String(e) });
   }
-  
+
+  // Restore original remote URL after push to avoid persisting token in .git/config
+  const restoreRemoteUrl = async () => {
+    try {
+      const currentUrl = await git.remote(['get-url', 'origin']);
+      if (currentUrl && currentUrl.trim().includes('@')) {
+        const cleanUrl = currentUrl.trim().replace(/https:\/\/[^@]+@/, 'https://');
+        await git.remote(['set-url', 'origin', cleanUrl]);
+        debug('Restored clean remote URL after push');
+      }
+    } catch {
+      // Ignore restore errors
+    }
+  };
+
   const args = ['push', 'origin', branch];
   if (force) args.push('--force');
   
@@ -451,8 +465,8 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
     // This is less precise but won't fail
     // Note: simple-git doesn't handle --grep properly, so use raw git command
     const logArgs = baseBranch
-      ? ['log', '--grep=prr-fix:', '--format=%B', `${baseBranch}..${branch}`]
-      : ['log', '--grep=prr-fix:', '--format=%B', '-n', '100'];
+        ? ['log', '--grep=prr-fix:', '--pretty=format:%B', `${baseBranch}..${branch}`]
+        : ['log', '--grep=prr-fix:', '--pretty=format:%B', '-n', '100'];
     
     debug('scanCommittedFixes', { baseBranch, branch, logArgs });
     const logOutput = await git.raw(logArgs);

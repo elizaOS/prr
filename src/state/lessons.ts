@@ -48,6 +48,10 @@ export function sanitizeLessonText(lesson: string): string {
   result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
   result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
   
+  // Normalize "made no changes" variants with missing separators
+  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+  result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
+  
   // Collapse multiple spaces/newlines
   result = result.replace(/\s+/g, ' ');
   

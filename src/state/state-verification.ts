@@ -136,6 +136,15 @@ export function clearAllVerifications(ctx: { state: { verifiedComments?: Record<
   }
 }
 
+export function clearAllVerifications(ctx: StateContext): void {
+  if (ctx.state.verifiedComments) {
+    ctx.state.verifiedComments = {};
+  }
+  if (ctx.state.verifiedFixed) {
+    ctx.state.verifiedFixed = {};
+  }
+}
+
 export function getStaleVerifications(ctx: StateContext | undefined, maxIterationsAgo: number): string[] {
   if (!ctx) return [];
   const state = ctx.state;
