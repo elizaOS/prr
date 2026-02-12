@@ -364,9 +364,9 @@ Working directory: ${workdir}`;
           const searchLines = searchNormalized.split('\n').map(l => l.trim()).join('\n');
           const contentLines = originalContent.split('\n').map(l => l.trim()).join('\n');
           if (contentLines.includes(searchLines)) {
-            // Whitespace-only difference — apply with regex
+            // Whitespace-only difference — apply with regex (limited to prevent ReDoS)
             const whitespaceToken = `\\s{1,${MAX_WHITESPACE}}`;
-            const patternParts = searchNormalized.split(new RegExp(whitespaceToken))
+            const patternParts = searchNormalized.split(/\s+/)
               .map(part => escapeRegExp(part))
               .filter(Boolean);
             const whitespacePattern = patternParts.join(whitespaceToken);
@@ -418,6 +418,7 @@ Working directory: ${workdir}`;
           continue;
         }
 
+        // Use callback to prevent $ token substitution in replaceText
         const newContent = originalContent.replace(searchNormalized, () => replaceText.trim());
         
         if (newContent !== originalContent) {

@@ -256,10 +256,8 @@ describe('normalizeLessonText', () => {
     it('handles multiple transformations in sequence', () => {
       const input = 'Fix for src/file.ts with // comment (inferred)';
       const result = normalize(input);
-      // sanitizeLessonText processes the text - may return null if filtered
-      if (result !== null) {
-        expect(typeof result).toBe('string');
-      }
+      // Lines starting with "Fix for" followed by file path are dropped by normalizeLessonText
+      expect(result).toBeNull();
     });
 
     it('handles whitespace normalization', () => {
