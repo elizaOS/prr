@@ -143,8 +143,8 @@ describe('normalizeLessonText', () => {
 
   describe('inferred removal', () => {
     it('removes (inferred) tag', () => {
-      const input = 'something (inferred) here';
-      expect(normalize(input)).toBe('something here');
+      const input = 'Always validate input (inferred) before processing data';
+      expect(normalize(input)).toBe('Always validate input before processing data');
     });
   });
 
@@ -207,8 +207,8 @@ describe('normalizeLessonText', () => {
     it('handles (inferred) ts suffix', () => {
       const input = 'src/state/manager.ts:117 - (inferred) ts';
       const result = normalize(input);
-      // normalizeLessonText drops lines that are just code references/artifacts
-      expect(result).toBeNull();
+      // normalizeLessonText strips the (inferred) suffix and trailing language indicator
+      expect(result).toBe('src/state/manager.ts:117');
     });
   });
 
@@ -252,13 +252,13 @@ describe('normalizeLessonText', () => {
 
   describe('trimming and cleanup', () => {
     it('removes trailing colons', () => {
-      const input = 'some lesson:';
-      expect(normalize(input)).toBe('some lesson');
+      const input = 'Always check null values before accessing properties:';
+      expect(normalize(input)).toBe('Always check null values before accessing properties');
     });
 
     it('removes trailing dashes', () => {
-      const input = 'some lesson -';
-      expect(normalize(input)).not.toContain('-');
+      const input = 'Always validate user input before processing -';
+      expect(normalize(input)).toBe('Always validate user input before processing');
     });
 
     it('returns null for empty strings', () => {
