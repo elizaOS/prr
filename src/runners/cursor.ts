@@ -296,6 +296,11 @@ export class CursorRunner implements Runner {
       child.stdin?.end();
 
       let stdout = '';       // Raw stdout (all JSON frames) — for debug logging
+      // WHY separate textContent: The raw stdout includes JSON protocol frames like
+      // {"type":"text","content":"..."} and {"session_id":"..."}. Downstream consumers
+      // (parseNoChangesExplanation, lesson extraction) search for patterns like "NO_CHANGES:"
+      // and "already fixed" — matching against raw JSON caused false positives where
+      // embedded instruction examples were treated as real fixer explanations.
       let textContent = '';  // Clean text content extracted from JSON stream — for output parsing
       let stderr = '';
       let lastContent = '';

@@ -42,8 +42,11 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 ### Smart Retry Strategies
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
+- **Adaptive batch sizing**: Halves issues per prompt on consecutive failures (50 → 25 → 12 → 6 → 5) before falling back to single-issue mode
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
+- **Prompt regurgitation detection**: Rejects model output that echoes the instruction template instead of reasoning
+- **Spot-check verification**: Samples 5 issues before committing to expensive full batch verification on "already fixed" claims
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
 - **Model validation at startup**: Queries OpenAI/Anthropic APIs to filter out inaccessible models before attempting fixes
 - **Issue solvability detection**: Pre-screens review comments to skip unsolvable issues (deleted files, stale references)
@@ -64,6 +67,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
+- **Output log tee**: All console output mirrored to `~/.prr/output.log` (ANSI-stripped) for easy LLM-assisted debugging
 
 ## Installation
 
@@ -205,6 +209,8 @@ When fixes fail, prr escalates through multiple strategies:
 ┌─────────────────────────────────────────────────────────────┐
 │  BATCH MODE           → Try all issues at once              │
 │      ↓ fail                                                 │
+│  ADAPTIVE BATCHING    → Halve batch size (50→25→12→6→5)     │
+│      ↓ fail                                                 │
 │  SINGLE-ISSUE MODE    → Focus on 1-3 random issues          │
 │      ↓ fail                                                 │
 │  ROTATE MODEL         → Try different model family          │
@@ -216,6 +222,8 @@ When fixes fail, prr escalates through multiple strategies:
 │  BAIL OUT             → Commit partial progress, exit       │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+*Why adaptive batching?* 50 issues across 23 files in a 213K-char prompt overwhelms models — they fix 5 and miss 45. Halving the batch on each zero-fix iteration gives the model a progressively smaller workload before falling back to single-issue mode.
 
 *Why single-issue mode?* Batch prompts with 10+ issues can overwhelm LLMs. Single-issue = smaller context = better focus. Issues are **randomized** so hard issues don't block easy ones.
 
@@ -606,6 +614,29 @@ prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123
+```
+
+## Debugging
+
+Every run mirrors all console output to `~/.prr/output.log` — a plain-text file with ANSI escape codes stripped. This file is truncated on each run start, so it always contains only the latest session.
+
+*Why a log file?* Terminal scrollback is hard to search, and copy-paste loses formatting. A clean text file can be directly fed into Cursor, Claude, or any LLM for analysis:
+
+```bash
+# Feed the last run's output to an LLM
+cat ~/.prr/output.log | pbcopy   # macOS
+# Or just reference it in Cursor: @~/.prr/output.log
+
+# Verbose mode shows LLM prompts and responses
+prr <url> --verbose
+
+# Debug prompt files are also saved
+ls ~/.prr/debug/*.txt
+```
+
+The log path is printed at the end of each run:
+```text
+📄 Full output log: /Users/you/.prr/output.log
 ```
 
 ## License

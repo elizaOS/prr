@@ -684,6 +684,32 @@ STALE: Not applicable`;
         }
       }
 
+      // Per-batch outcome summary
+      // WHY: Without this, the only signal between batches is the raw LLM response length.
+      // Operators need to see how many issues were parsed and their disposition per batch
+      // to diagnose prompt/model problems early (e.g., batch 2 parsed 0 = response format issue).
+      {
+        let batchParsed = 0, batchExists = 0, batchFixed = 0, batchStale = 0;
+        for (const issue of batchIssues) {
+          const rid = normalizeIssueId(issue.id);
+          const r = allResults.get(rid);
+          if (r) {
+            batchParsed++;
+            if (r.stale) batchStale++;
+            else if (r.exists) batchExists++;
+            else batchFixed++;
+          }
+        }
+        debug(`Batch ${batchIdx + 1}/${batches.length} results`, {
+          parsed: batchParsed,
+          expected: batchIssues.length,
+          stillExists: batchExists,
+          alreadyFixed: batchFixed,
+          stale: batchStale,
+          unparsed: batchIssues.length - batchParsed,
+        });
+      }
+
       // Parse model recommendation only from first batch
       if (isFirstBatch && modelContext?.availableModels?.length) {
         const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
@@ -736,11 +762,24 @@ STALE: Not applicable`;
       }
     }
 
-    debug('Batch check complete', { 
-      parsed: allResults.size, 
-      expected: issues.length,
-      batches: batches.length,
-    });
+    // Aggregate summary across all batches
+    {
+      let totalExists = 0, totalFixed = 0, totalStale = 0;
+      for (const r of allResults.values()) {
+        if (r.stale) totalStale++;
+        else if (r.exists) totalExists++;
+        else totalFixed++;
+      }
+      debug('Batch check complete', { 
+        parsed: allResults.size, 
+        expected: issues.length,
+        batches: batches.length,
+        stillExists: totalExists,
+        alreadyFixed: totalFixed,
+        stale: totalStale,
+        unparsed: issues.length - allResults.size,
+      });
+    }
 
     return {
       issues: allResults,

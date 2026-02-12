@@ -22,6 +22,7 @@ import type { GitHubAPI } from '../github/api.js';
 import type { StateContext } from '../state/state-context.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
+import type { ReviewComment } from '../github/types.js';
 import type { Runner } from '../runners/types.js';
 import { debug, debugStep } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
@@ -72,6 +73,8 @@ export async function executeSetupPhase(
   exitReason?: string;
   exitDetails?: string;
   codeRabbitTriggered?: boolean;
+  /** Comments already fetched during CodeRabbit polling — avoids redundant API call */
+  prefetchedComments?: ReviewComment[];
 }> {
   // Check CodeRabbit status
   debugStep('CHECKING CODERABBIT STATUS');
@@ -145,5 +148,6 @@ export async function executeSetupPhase(
     workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
     shouldExit: false,
     codeRabbitTriggered,
+    prefetchedComments: crStatus.prefetchedComments,
   };
 }

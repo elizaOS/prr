@@ -62,7 +62,11 @@ export async function processCommentsAndPrepareFixLoop(
   findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>,
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>,
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>,
-  printUnresolvedIssues: (issues: UnresolvedIssue[]) => void
+  printUnresolvedIssues: (issues: UnresolvedIssue[]) => void,
+  /** Comments already fetched during setup (e.g., CodeRabbit polling).
+   *  WHY: Avoids re-fetching 200+ comments (3 GraphQL pages, ~3s) when
+   *  the CodeRabbit check already did the exact same API call. */
+  prefetchedComments?: ReviewComment[]
 ): Promise<{
   comments: ReviewComment[];
   unresolvedIssues: UnresolvedIssue[];
@@ -71,13 +75,24 @@ export async function processCommentsAndPrepareFixLoop(
   exitReason?: string;
   exitDetails?: string;
 }> {
-  // Fetch review comments
+  // Fetch review comments (reuse prefetched if available)
+  // WHY reuse: The CodeRabbit polling phase already fetches all comments via the same
+  // GraphQL query (3+ pages for 200+ comments). Fetching again wastes ~3s and API quota.
+  // Only reuse on the first push iteration — subsequent iterations need fresh data.
   debugStep('FETCHING REVIEW COMMENTS');
   startTimer('Fetch comments');
-  spinner.start('Fetching review comments...');
-  const comments = await github.getReviewComments(owner, repo, number);
-  const fetchTime = endTimer('Fetch comments');
-  spinner.succeed(`Found ${formatNumber(comments.length)} review comments (${formatDuration(fetchTime)})`);
+  let comments: ReviewComment[];
+  if (prefetchedComments && prefetchedComments.length > 0) {
+    comments = prefetchedComments;
+    const fetchTime = endTimer('Fetch comments');
+    spinner.succeed(`Found ${formatNumber(comments.length)} review comments (prefetched, ${formatDuration(fetchTime)})`);
+    debug('Reused prefetched comments from setup phase', { count: comments.length });
+  } else {
+    spinner.start('Fetching review comments...');
+    comments = await github.getReviewComments(owner, repo, number);
+    const fetchTime = endTimer('Fetch comments');
+    spinner.succeed(`Found ${formatNumber(comments.length)} review comments (${formatDuration(fetchTime)})`);
+  }
   
   debug('Review comments', comments.map(c => ({
     id: c.id,

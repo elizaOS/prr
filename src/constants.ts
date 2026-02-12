@@ -39,6 +39,11 @@ export const MAX_ISSUES_PER_PROMPT = 50;
 /**
  * Minimum issues per prompt when adaptive batching reduces the batch size.
  * Below this, single-issue focus mode is more appropriate.
+ *
+ * WHY 5: Single-issue mode already handles 1-3 issues with focused context
+ * per issue. Between 5 and MAX, the adaptive batch gives the model a smaller
+ * but still meaningful workload. Going below 5 would overlap with single-issue
+ * mode without the per-issue context benefits.
  */
 export const MIN_ISSUES_PER_PROMPT = 5;
 

@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (2026-02-12)
 
+**Output Log Tee (`~/.prr/output.log`)**
+- All console output is mirrored to `~/.prr/output.log` as clean ANSI-stripped text
+- File is truncated on each run start, so it always contains only the latest run
+- Path printed at end of run for easy access
+- WHY: Feeding terminal output back into an LLM for debugging required manual copy-paste from scrollback. A plain-text log file can be directly referenced or piped into Cursor/Claude.
+
+**Adaptive Batch Sizing**
+- Fix prompts now halve `MAX_ISSUES_PER_PROMPT` after each consecutive zero-fix iteration (50 → 25 → 12 → 6 → 5)
+- New constant `MIN_ISSUES_PER_PROMPT = 5` prevents reduction below the single-issue focus threshold
+- New exported function `computeEffectiveBatchSize()` in prompt-builder
+- WHY: Logs showed the model fixing 5/50 issues in iteration 1, then 0/50 in iterations 2-3. The 213K-char prompt with 50 issues across 23 files was too much cognitive load. Adaptive sizing gives the model a progressively smaller workload before falling back to single-issue focus mode.
+
+**Spot-Check Verification for NO_CHANGES Claims**
+- When a fixer claims "already fixed" but made zero changes, a sample of 5 issues is verified before committing to full batch verification
+- If fewer than 40% of the sample pass, the full verification is skipped entirely
+- WHY: A garbled model response triggered re-verification of 88 issues (2+ minutes, significant token cost). Spot-checking rejects bogus claims cheaply before wasting tokens on a full pass.
+
+**Prompt Regurgitation Detection**
+- `parseNoChangesExplanation()` now rejects output that matches known prompt template fragments (e.g., "Issue 1 is already fixed - Line 45 has null check")
+- Both Stage 1 (explicit `NO_CHANGES:`) and Stage 2 (inferred patterns) check against `PROMPT_REGURGITATION_MARKERS`
+- WHY: When overwhelmed by large prompts, models sometimes echo the instruction template verbatim instead of reasoning about the issues. This was treated as a valid "already fixed" claim, triggering expensive re-verification for nothing.
+
+### Fixed (2026-02-12)
+
+**Overly Broad "Already Fixed" Detection**
+- Replaced single-word `includes('has')` / `includes('exists')` checks with regex word-boundary patterns like `/\balready\s+fixed\b/`
+- WHY: `includes('has')` matched "This **has** not been resolved"; `includes('exists')` matched "The file no longer **exists**". These false positives triggered expensive re-verification of all unresolved issues even when the fixer's explanation indicated failure, not success.
+
+**Cursor Runner Output Pollution**
+- Cursor runner now returns clean extracted text content instead of raw JSON stream frames
+- Added separate `textContent` accumulator alongside `stdout` for debug logging
+- WHY: The raw `stdout` included `{"type":"text","content":"..."}` JSON and `{"session_id":"..."}` metadata. `parseNoChangesExplanation` searched this raw output, matching `NO_CHANGES:` inside JSON values and treating garbled metadata as a valid explanation.
+
+**Non-Actionable Batch Verification Lessons**
+- Batch verification mode now calls `llm.analyzeFailedFix()` for failed verifications, matching sequential mode behavior
+- WHY: Batch mode was recording raw verification explanations like "diff doesn't show changes to X" as lessons. These describe what went wrong but not what to do differently. `analyzeFailedFix` produces actionable guidance like "don't just add Y, also need to update Z".
+
+### Removed (2026-02-12)
+
+**Duplicate `handleNoChanges` Function**
+- Removed `handleNoChanges()` from `fixer-errors.ts` and its re-export from `resolver-proc.ts`
+- The canonical handler is `handleNoChangesWithVerification()` in `no-changes-verification.ts`
+- WHY: Two implementations with divergent "already fixed" detection logic caused confusion. The removed version (stricter) was never actually called; the used version (broader) had the bugs. Consolidating to a single implementation prevents future drift.
+
 **Gemini CLI Runner**
 - New runner for Google's Gemini CLI (`npm install -g @google/gemini-cli`)
 - Supports `gemini-2.5-pro` and `gemini-2.5-flash` in model rotation

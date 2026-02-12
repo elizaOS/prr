@@ -103,6 +103,9 @@ Queries provider APIs (`GET /v1/models`) to discover accessible models. Filters 
 **Batch analysis:**
 Issue batches are capped at 50 per batch to prevent LLM response truncation. With 189 issues, batching only on prompt size caused haiku to summarize instead of listing per-issue results.
 
+**Adaptive batch sizing:**
+Fix prompts halve `MAX_ISSUES_PER_PROMPT` after each consecutive zero-fix iteration (50 → 25 → 12 → 6 → 5, minimum `MIN_ISSUES_PER_PROMPT`). WHY: A 213K-char prompt with 50 issues across 23 files produced a 5% fix rate. The model has too much to process and makes scattered, shallow changes. Progressively smaller batches improve focus before falling back to single-issue mode. See `computeEffectiveBatchSize()` in `prompt-builder.ts`.
+
 ### 4. Runners (`src/runners/`)
 
 Fixer tools that make actual code changes:
@@ -123,6 +126,8 @@ interface Runner {
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunResult>;
 }
 ```
+
+**Runner output hygiene:** Runners return clean text in `RunResult.output`, not raw protocol frames. WHY: The Cursor runner streams JSON frames like `{"type":"text","content":"..."}`. Downstream consumers like `parseNoChangesExplanation()` search the output for patterns like `NO_CHANGES:` — raw JSON metadata caused false matches against embedded instruction text, triggering expensive re-verification of all issues.
 
 ### 5. State Management (`src/state/`)
 
@@ -180,10 +185,12 @@ Breaks down the main resolver loop into focused phases:
 - Clean up working directory
 
 **Other workflow modules:**
-- `fix-verification.ts` - Post-fix verification logic
+- `fix-verification.ts` - Post-fix verification logic (both sequential and batch modes)
+- `no-changes-verification.ts` - Handles fixer tools that make zero changes (spot-check verification, "already fixed" detection)
 - `issue-analysis.ts` - Issue batching and analysis
 - `graceful-shutdown.ts` - SIGINT handling
 - `helpers/recovery.ts` - State recovery utilities
+- `utils.ts` - `parseNoChangesExplanation()` with prompt regurgitation detection
 
 ### 7. UI & Reporting (`src/ui/`)
 
@@ -327,7 +334,9 @@ npm test -- git-ops        # Specific suite
 - Batch issue checking (check 50 issues in one LLM call)
 - Truncate large comments (max 2000 chars each)
 - Limit code snippets (max 500 lines)
-- **NEW**: Chunked conflict resolution (splits large files)
+- Chunked conflict resolution (splits large files)
+- **Spot-check verification**: When a fixer claims "already fixed" with no changes, sample 5 issues first. If < 40% pass, skip the full batch verification entirely. WHY: A garbled model response claiming "already fixed" triggered verification of 88 issues (2+ minutes, significant tokens). Spot-checking rejects bogus claims before committing to the expensive full pass.
+- **Adaptive batch sizing**: Fewer issues per prompt when the model is struggling, reducing prompt size and cost before falling to single-issue mode
 
 ### Caching & State
 - Verified fixes cached to avoid re-verification
@@ -372,6 +381,8 @@ This shows:
 - Git command execution
 - State transitions
 - Timing for each phase
+
+**Output log tee:** Every run mirrors all console output (ANSI-stripped) to `~/.prr/output.log`. The file is truncated on each run start so it always contains only the latest session. WHY: Debugging prr often means feeding its output into another LLM for analysis. Terminal scrollback is hard to search and copy-paste loses formatting. A plain-text file can be directly referenced (`@~/.prr/output.log` in Cursor) or piped into any tool.
 
 ## Further Reading
 

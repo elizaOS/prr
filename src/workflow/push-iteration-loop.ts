@@ -66,6 +66,12 @@ export interface PushIterationContexts {
   finalUnresolvedIssuesRef: { current: UnresolvedIssue[] };
   finalCommentsRef: { current: ReviewComment[] };
   expectedBotResponseTimeRef: { current: Date | null };
+  /**
+   * Comments already fetched during setup phase (e.g., CodeRabbit polling).
+   * WHY: Avoids redundant GitHub API fetch (~3s, 3 pages) when the same data
+   * was already retrieved. Consumed once on first push iteration, then cleared.
+   */
+  prefetchedComments?: ReviewComment[];
 }
 
 /** Callback functions used during push iteration */
@@ -145,10 +151,15 @@ export async function executePushIteration(
     console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
   }
 
-  // Process comments and prepare fix loop
+  // Process comments and prepare fix loop.
+  // Pass prefetched comments from setup phase to avoid redundant API call on first iteration.
+  const prefetched = contexts.prefetchedComments;
+  // Clear after first use — subsequent push iterations must fetch fresh data
+  contexts.prefetchedComments = undefined;
+  
   const loopResult = await ResolverProc.processCommentsAndPrepareFixLoop(
     git, github, owner, repo, number, prInfo, stateContext, lessonsContext, llm, options, config, workdir, spinner,
-    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues
+    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched
   );
   
   const { comments, unresolvedIssues } = loopResult;

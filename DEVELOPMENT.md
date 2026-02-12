@@ -301,7 +301,35 @@ Strategy per failure:
 
 **State persistence**: Tool index and per-tool model indices saved to state file. Resuming continues from same position instead of restarting rotation.
 
-### 4. Lessons Learned System
+### 4. Adaptive Batch Sizing
+
+**The Problem**: The first iteration stuffed 50 issues into a single 213K-char prompt. The model fixed 5 (5% success). Iterations 2-3 sent the same 50-issue prompt and fixed 0 — the model was overwhelmed.
+
+**Why not just reduce `MAX_ISSUES_PER_PROMPT`?** Fixed reduction wastes capacity on easy runs. With 10 simple issues, a small batch size means unnecessary iterations.
+
+**Solution**: Halve the batch size after each consecutive zero-fix iteration:
+
+```typescript
+// src/analyzer/prompt-builder.ts
+export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number): number {
+  if (consecutiveZeroFixIterations <= 0) return MAX_ISSUES_PER_PROMPT;  // 50
+  const reduced = Math.floor(MAX_ISSUES_PER_PROMPT / Math.pow(2, consecutiveZeroFixIterations));
+  return Math.max(MIN_ISSUES_PER_PROMPT, reduced);  // Floor: 5
+}
+// Iteration 1: 50 issues → 5 fixed → reset
+// Iteration 2: 50 issues → 0 fixed → next time use 25
+// Iteration 3: 25 issues → 0 fixed → next time use 12
+// Iteration 4: 12 issues → 0 fixed → next time use 6
+// Iteration 5: 6 issues → 0 fixed → next time use 5 (minimum)
+```
+
+**Why halve (exponential backoff)?** Linear reduction (50 → 49 → 48...) is too slow. Halving matches the severity — if 50 issues produced zero fixes, there's no reason to believe 49 will be better. Get to smaller batches quickly.
+
+**Why MIN_ISSUES_PER_PROMPT = 5?** Below 5, single-issue focus mode is more efficient (it also includes focused context per issue). The adaptive sizing bridges the gap between "try everything" and "try one thing at a time."
+
+**Where the counter resets**: Any iteration with verified fixes resets `consecutiveFailures` to 0, bringing batch size back to MAX. WHY: The model might have been overwhelmed by a specific mix of hard issues; after resolving some, the remaining set may be tractable at full batch size.
+
+### 4a. Lessons Learned System
 
 **The Problem**: Fixer tools flip-flop. Attempt #1 adds a try/catch. Verification rejects it. Attempt #2 adds the same try/catch. Loop forever.
 
@@ -390,6 +418,9 @@ if (!lessons.includes(lesson)) {
 
 **Why deduplicated?** One lesson per `file:line`. If we learn something new about line 45, it replaces the old lesson.
 
+**Batch vs sequential lesson quality**:
+Both batch and sequential verification modes now call `llm.analyzeFailedFix()` for failed verifications. WHY: Batch mode previously recorded raw verification explanations (e.g., "diff doesn't show changes to progressiveTrimMatch") as lessons. These describe what went wrong but not what to do differently. `analyzeFailedFix` produces actionable guidance (e.g., "Don't just add null check at line 45, also need to handle the undefined case at line 47") by analyzing the original issue, the attempted diff, and the rejection reason together.
+
 ### 4b. Two-Tier Lessons Storage
 
 **The Problem**: Where should lessons live? If we write to CLAUDE.md, we might overwrite user content. If we use a hidden file, tools like Cursor/Claude Code won't read it.
@@ -451,6 +482,51 @@ if (existsSync('.cursor/rules/')) {
 - BEFORE each commit (so lessons are included with fixes)
 - Final export at end of run (catches edge cases)
 - NOT after commit (would require separate commit for lessons)
+
+### 4c. NO_CHANGES Handling & Regurgitation Detection
+
+**The Problem**: When a fixer tool makes zero changes, it may provide a reason. The system needs to distinguish three cases:
+1. **Legitimately already fixed** — issues were resolved by previous iterations
+2. **Garbled output** — the model echoed its own instructions instead of reasoning
+3. **Genuine failure** — the model couldn't figure out what to change
+
+**Why this is hard**: Cursor (and other runners) stream JSON frames. The raw stdout includes metadata like `{"session_id":"..."}` alongside actual text content. Searching raw output for patterns like "already fixed" produces false matches against embedded JSON values.
+
+**Solution layers**:
+
+```text
+Layer 1: Clean runner output (src/runners/cursor.ts)
+  └─ Extract only text content from JSON stream
+  └─ WHY: Prevents downstream pattern matching against protocol metadata
+
+Layer 2: Regurgitation detection (src/workflow/utils.ts)
+  └─ PROMPT_REGURGITATION_MARKERS = known instruction fragments
+  └─ If output matches known template text → reject as invalid
+  └─ WHY: When overwhelmed, models echo "Issue 1 is already fixed -
+     Line 45 has null check" verbatim from the instruction template.
+     This looks like a valid explanation but isn't.
+
+Layer 3: Strict "already fixed" patterns (src/workflow/no-changes-verification.ts)
+  └─ Replaced .includes('has') with /\balready\s+fixed\b/
+  └─ WHY: includes('has') matches "This has not been resolved";
+     includes('exists') matches "The file no longer exists".
+     Word-boundary regexes prevent single-word false positives.
+
+Layer 4: Spot-check verification cap
+  └─ Sample 5 issues before full verification of all unresolved
+  └─ Skip if < 40% of sample pass
+  └─ WHY: A garbled "already fixed" claim triggered verification of
+     88 issues (2+ min, significant tokens). Sampling rejects
+     bogus claims cheaply before committing to the full pass.
+```
+
+**Spot-check constants**:
+```typescript
+const SPOT_CHECK_SAMPLE_SIZE = 5;    // Issues to verify in sample
+const SPOT_CHECK_PASS_THRESHOLD = 0.4;  // 40% must pass to justify full check
+```
+
+**Why 40% threshold?** If the fixer legitimately believes issues are fixed, at least 2/5 sampled issues should verify. Below that, the "already fixed" claim is almost certainly wrong and full verification would be wasted work.
 
 ### 5. Context Size Management
 
@@ -1621,6 +1697,40 @@ overallTokenUsage: TokenUsageRecord[]     // Cumulative across runs
 Cost estimate uses rough rates:
 - Input: ~$3/M tokens
 - Output: ~$15/M tokens
+
+## Output Log Tee
+
+**The Problem**: Debugging prr requires reading its console output, but terminal scrollback is finite, hard to search, and loses formatting on copy-paste. When feeding output to another LLM for analysis, you need a clean text file.
+
+**Solution**: Monkey-patch `process.stdout.write` and `process.stderr.write` at startup to mirror all output to `~/.prr/output.log`:
+
+```typescript
+// src/logger.ts
+export function initOutputLog(): void {
+  const logPath = path.join(os.homedir(), '.prr', 'output.log');
+  // Truncate on each run start — always latest session only
+  outputLogStream = fs.createWriteStream(logPath, { flags: 'w' });
+  
+  const origStdoutWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = function(chunk: any, ...args: any[]): boolean {
+    // Strip ANSI escape codes for clean text
+    outputLogStream.write(stripAnsi(String(chunk)));
+    return origStdoutWrite(chunk, ...args);
+  };
+  // Same for stderr
+}
+```
+
+**Why monkey-patch stdout/stderr?** All output paths (console.log, spinner libraries, debug logging, child process output) go through these. Wrapping at this level captures everything without modifying every log call site.
+
+**Why strip ANSI?** Terminal escape codes (`\x1b[32m` etc.) make the file unreadable in plain text editors and confuse LLMs. Stripping produces clean text that works everywhere.
+
+**Why truncate on start, not append?** Appending would require the user to figure out where the latest run begins. Truncation means the file always contains exactly one session — the most recent one. If you need historical output, use `--verbose` with dedicated debug log files.
+
+**Lifecycle**:
+1. `initOutputLog()` called at the top of `src/index.ts` (before any output)
+2. `closeOutputLog()` called in success path, error handler, and signal handlers
+3. Path printed at end: `Full output log: ~/.prr/output.log`
 
 ## Graceful Shutdown
 
