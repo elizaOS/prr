@@ -48,4 +48,6 @@ describe('normalizeLessonText', () => {
   });
 
   it.todo('should trim and cleanup trailing colons/dashes');
+  it.todo('should remove (inferred) artifacts');
+  it.todo('should collapse multiple hyphens');
 });

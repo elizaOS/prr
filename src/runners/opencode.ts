@@ -23,7 +23,7 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
       if (code === 0) {
         resolve({ stdout, stderr });
       } else {
-        reject(new Error(`Command failed with code ${code}: ${stderr.slice(0, 200)}`));
+        reject(new Error(`Command failed with code ${code}`));
       }
     });
     child.on('error', (err) => {
