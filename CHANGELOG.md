@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02-12)
+
+**Gemini CLI Runner**
+- New runner for Google's Gemini CLI (`npm install -g @google/gemini-cli`)
+- Supports `gemini-2.5-pro` and `gemini-2.5-flash` in model rotation
+- Auto-detect installation, version, and API key status
+- Non-interactive execution via `--yolo` and `--prompt` flags
+
+**`--tidy-lessons` CLI Option**
+- Scans all lesson JSON files in `~/.prr/lessons/` and re-normalizes, deduplicates, prunes garbage entries
+- Also cleans `.prr/lessons.md` in the current repo (flexible parser handles multiple Markdown formats)
+- Filters out non-actionable noise like "No verification result returned, treating as failed"
+
+**`--update-tools` CLI Option**
+- Runs `npm install -g` / `pip install --upgrade` for all detected AI coding tools
+- Shows current vs latest version comparison
+- Supports Codex, Claude Code, Aider, OpenCode, Cursor, Gemini CLI
+
+**Model Validation at Startup**
+- Queries OpenAI (`GET /v1/models`) and Anthropic APIs to discover accessible models
+- Filters internal rotation lists so inaccessible models (e.g. `gpt-5.3-codex`) are never attempted
+- Prevents wasted retries on "model does not exist" errors
+
+**Issue Solvability Detection**
+- Pre-screens review comments to identify issues that are impossible to fix (deleted files, stale references)
+- Prevents wasting LLM tokens on unsolvable issues
+
+**Install Hints for Runners**
+- When a tool is not installed, `--check-tools` now shows the install command (e.g. `→ npm install -g @anthropic-ai/claude-code`)
+
+### Fixed (2026-02-09 → 2026-02-12)
+
+**Batch Analysis Parse Failures**
+- Capped batch issue analysis at 50 issues per batch; 189 issues in a single batch caused haiku to summarize instead of producing 189 structured response lines (parsed 0/189)
+
+**Direct LLM Fix Using Wrong Model**
+- `tryDirectLLMFix` was using the cheap verification model (haiku) instead of a capable fixer model
+- Now uses `claude-sonnet-4-5-20250929` (Anthropic) or `gpt-4o` (OpenAI) via model override on `llm.complete()`
+
+**Batch Verify ID Garbling**
+- Batch verification used complex GraphQL node IDs that the LLM would garble when echoing back (parsed 34/38)
+- Now uses simple numeric IDs (1, 2, 3...) with an internal map back to original IDs
+
+**Delete Conflict Resolution**
+- Git conflicts where one side deleted a file (e.g. "deleted by them" for `CLAUDE.md`) were unhandled
+- Now detects `UD`/`DU`/`DD` status codes via `git status --porcelain` and resolves with `git rm`
+
+**CodeRabbit Trigger Control**
+- Stopped triggering CodeRabbit re-review after every push (created moving target)
+- Now only triggers CodeRabbit for a final review when all issues are resolved
+
+**Garbage Lessons Pollution**
+- Stopped generating "No verification result returned, treating as failed" as lessons
+- Added normalization filters to reject non-actionable infrastructure messages
+- `llm-api` runner now returns `success: false` when all search/replace operations fail (instead of silently reporting "no changes")
+
+**Infinite Loop in pushWithRetry**
+- Fixed stale comment date causing infinite retry loop
+
+**Push/Fix Loops Not Running**
+- `0 ?? Infinity` evaluates to `0`, not `Infinity` — fixed so 0 means unlimited iterations
+
+**CodeRabbit Race Condition**
+- Now waits for CodeRabbit review to complete before fetching comments
+
+**UTF-16 Surrogate Sanitization**
+- Sanitize unpaired UTF-16 surrogates before sending to LLM APIs (prevented API errors)
+
+**Catastrophic Conflict Resolution Safeguards**
+- Added safeguards to prevent conflict resolution from producing worse output than the conflicted input
+
+**Lock File Conflict Handling**
+- Fixed trailing comma in `package.json` conflict resolution
+
+### Changed (2026-02-08 → 2026-02-12)
+
+**Code Quality**
+- Converted dynamic imports to static ES imports across workflow modules
+- Consolidated constants, hardened error handling, improved type safety
+- Added comprehensive JSDoc comments to state and workflow modules
+- Removed large amounts of duplicate/unused code across workflow and runner modules
+- Updated llm-api model rotation to current Anthropic lineup
+
+---
+
 ### Changed - Major Refactoring (2026-02-08)
 
 #### God Object Elimination

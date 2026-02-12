@@ -17,9 +17,9 @@ dotenv.config();
 export type LLMProvider = 'anthropic' | 'openai';
 
 /** Available fixer tools that can apply code changes */
-export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'gemini' | 'llm-api' | 'auto';
+export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'gemini' | 'junie' | 'goose' | 'openhands' | 'llm-api' | 'auto';
 
-const REAL_FIXER_TOOLS = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'gemini', 'llm-api'] as const;
+const REAL_FIXER_TOOLS = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'gemini', 'junie', 'goose', 'openhands', 'llm-api'] as const;
 export type RealFixerTool = typeof REAL_FIXER_TOOLS[number];
 /**
  * Application configuration loaded from environment.
@@ -189,65 +189,4 @@ export function validateRealTool(tool: string): RealFixerTool {
     throw new Error(`Invalid real tool: ${tool}. Must be one of: ${REAL_FIXER_TOOLS.join(', ')}`);
   }
   return tool as RealFixerTool;
-}</change>
-
-<change path="src/runners/index.ts">
-<search>  for (const runner of ALL_RUNNERS) {
-    const status = await runner.checkStatus();
-
-    if (verbose) {
-      const statusText = status.ready
-        ? chalk.green('✓ ready')
-        : status.installed
-          ? chalk.yellow('⚠ not ready')
-          : chalk.red('✗ not installed');
-      
-      const details = status.ready && status.version
-        ? chalk.gray(` (${status.version})`)
-        : status.error
-          ? chalk.gray(` - ${status.error}`)
-          : '';
-      
-      console.log(`  ${runner.displayName}: ${statusText}${details}`);
-    }
-
-    if (status.ready) {
-      detected.push({ runner, status });
-    }
-  }</search>
-<replace>  for (const runner of ALL_RUNNERS) {
-    let status: RunnerStatus;
-    try {
-      status = await runner.checkStatus();
-    } catch (err) {
-      status = {
-        installed: false,
-        ready: false,
-        error: `checkStatus failed: ${err instanceof Error ? err.message : String(err)}`
-      };
-    }
-
-    if (verbose) {
-      const statusText = status.ready
-        ? chalk.green('✓ ready')
-        : status.installed
-          ? chalk.yellow('⚠ not ready')
-          : chalk.red('✗ not installed');
-      
-      const details = status.ready && status.version
-        ? chalk.gray(` (${status.version})`)
-        : status.error
-          ? chalk.gray(` - ${status.error}`)
-          : '';
-      
-      console.log(`  ${runner.displayName}: ${statusText}${details}`);
-    }
-
-    if (status.ready) {
-      detected.push({ runner, status });
-    }
-  }</change>
-
-<change path="src/cli.ts">
-<search>      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') || 1,</search>
-<replace>      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') ?? 1,
+}

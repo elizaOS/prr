@@ -46,6 +46,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 │ - Status      │    │ - AiderRunner     │    │ - Conflict res.   │
 │               │    │ - OpencodeRunner  │    │                   │
 │               │    │ - CodexRunner     │    │                   │
+│               │    │ - GeminiRunner    │    │                   │
 │               │    │ - LLMAPIRunner    │    │                   │
 └───────────────┘    └───────────────────┘    └───────────────────┘
         │                       │                       │
@@ -68,7 +69,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/index.ts` | CLI entry point, signal handlers |
 | `src/cli.ts` | Argument parsing, validation |
 | `src/config.ts` | Environment/config loading |
-| `src/resolver.ts` | Main orchestration (1300+ lines) |
+| `src/resolver.ts` | Main orchestration (delegates to workflow/) |
 | `src/logger.ts` | Logging, timing, token tracking |
 
 
@@ -102,6 +103,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/runners/aider.ts` | Aider CLI |
 | `src/runners/opencode.ts` | OpenCode CLI |
 | `src/runners/codex.ts` | OpenAI Codex CLI |
+| `src/runners/gemini.ts` | Google Gemini CLI |
 | `src/runners/llm-api.ts` | Direct API (fallback) |
 
 
@@ -118,8 +120,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/state/manager.ts` | Per-workdir state (iterations, verified fixes, bail-out tracking) |
-| `src/state/lessons.ts` | Branch-permanent lessons (~/.prr/lessons/) |
+| `src/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
+| `src/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
 | `src/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 
 
@@ -271,7 +273,7 @@ Model rotation (interleaved by family):
   Round 2: claude-4-opus-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
   
 Tool rotation (after MAX_MODELS_PER_TOOL_ROUND models tried):
-  Cursor → Claude Code → Aider → Direct LLM API
+  Cursor → Claude Code → Aider → Gemini CLI → Direct LLM API
   (then back to Cursor with next model in rotation)
 
 Strategy per failure:
@@ -1102,6 +1104,56 @@ if (resolution.success) {
 - Partial conflict resolution leaves repo in bad state
 - Better to abort and preserve the conflict markers for human review
 - User can see exactly what couldn't be resolved
+
+### 15b. Delete Conflict Resolution
+
+**The Problem**: Git conflicts where one side deleted a file (`CLAUDE.md` "deleted by them") lack traditional `<<<<<<<` markers. The existing resolution logic skipped these files silently.
+
+**Solution**: Detect delete conflicts via `git status --porcelain` and resolve with `git rm`:
+
+```typescript
+// Detect UD (we modified, they deleted), DU (they modified, we deleted), DD (both deleted)
+const deleteConflicts = await detectDeleteConflicts(git, codeFiles, workdir);
+for (const dc of deleteConflicts) {
+  await resolveDeleteConflict(git, dc, workdir);  // git rm <file>
+  codeFiles.splice(codeFiles.indexOf(dc.file), 1);  // Don't try LLM resolution
+}
+```
+
+**WHY accept deletion?** The remote branch reflects the team's intent. If they deleted a file, our local modifications to it are likely stale.
+
+### 15c. Model Validation at Startup
+
+**The Problem**: Models like `gpt-5.3-codex` would fail repeatedly with "model does not exist" errors, wasting retries and API calls.
+
+**Solution**: Query OpenAI (`GET /v1/models`) and Anthropic APIs at startup to discover accessible models. Filter internal rotation lists so only available models are attempted.
+
+### 15d. Issue Solvability Detection
+
+**The Problem**: Review comments referencing deleted files or fundamentally stale code would waste LLM tokens on unsolvable issues.
+
+**Solution**: Pre-screen review comments to identify issues that cannot be fixed (deleted files, stale references). These are dismissed before the fix loop begins.
+
+### 15e. Batch Analysis Size Cap
+
+**The Problem**: 189 issues in a single batch caused haiku to produce a 4K summary instead of 189 structured response lines (`parsed: 0/189`).
+
+**Solution**: Cap batch issue analysis at 50 issues per batch. Batching was only gated on prompt size (chars), not response size (issue count). Now 189 issues → 4 batches of ~47 each.
+
+### 15f. CodeRabbit Final-Push-Only Trigger
+
+**The Problem**: Triggering CodeRabbit re-review after every push created a "moving target" with new comments appearing mid-fix.
+
+**Solution**: Only trigger CodeRabbit for a final review when all issues are resolved. Intermediate pushes skip CodeRabbit.
+
+### 15g. Lesson Cleanup (`--tidy-lessons`)
+
+**The Problem**: Lesson stores accumulated garbage entries like "No verification result returned, treating as failed" that polluted fix prompts.
+
+**Solution**: 
+1. **Prevention**: Stopped generating non-actionable lessons at source
+2. **Normalization filters**: `lessons-normalize.ts` rejects known garbage patterns
+3. **CLI cleanup**: `--tidy-lessons` scans all JSON files in `~/.prr/lessons/` and `.prr/lessons.md`, re-normalizes, deduplicates, and prunes
 
 ### 9. Commit Message Generation
 

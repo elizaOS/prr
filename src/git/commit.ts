@@ -106,35 +106,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Could not check/set remote URL', { error: String(e) });
   }
 
-  // Capture original remote URL before injection
-  let originalRemoteUrl: string | null = null;
-  try {
-    originalRemoteUrl = execSync('git remote get-url origin', { cwd: workdir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-  } catch {
-    debug('Could not capture original remote URL');
-  }
-
-  // Restore original remote URL after push to avoid persisting token in .git/config
-  const restoreRemoteUrl = () => {
-    if (!originalRemoteUrl) return;
-    try {
-      execSync(`git remote set-url origin "${originalRemoteUrl}"`, { cwd: workdir, stdio: 'ignore', shell: false });
-      debug('Restored original remote URL after push');
-    } catch {
-      // Ignore restore errors
-    }
-  };</search>
-</change>
-
-<change path="src/git/commit.ts">
-<search>      if (result.success) {
-        debug('Push succeeded', { attempts: retries + 1 });
-        return { success: true };</search>
-<replace>      if (result.success) {
-        debug('Push succeeded', { attempts: retries + 1 });
-        restoreRemoteUrl();
-        return { success: true };
-
   const args = ['push', 'origin', branch];
   if (force) args.push('--force');
   

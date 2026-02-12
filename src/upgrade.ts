@@ -118,6 +118,39 @@ export async function checkToolVersions(): Promise<ToolVersion[]> {
     installCommand: 'npm install -g @google/gemini-cli',
   });
 
+  // Junie CLI
+  const junieExists = await commandExists('junie');
+  tools.push({
+    name: 'Junie CLI',
+    binary: 'junie',
+    installed: junieExists,
+    version: junieExists ? await getToolVersion('junie', '--version') || 'installed' : undefined,
+    upgradeCommand: junieExists ? 'npm install -g @jetbrains/junie-cli' : undefined,
+    installCommand: 'npm install -g @jetbrains/junie-cli',
+  });
+
+  // Goose
+  const gooseExists = await commandExists('goose');
+  tools.push({
+    name: 'Goose',
+    binary: 'goose',
+    installed: gooseExists,
+    version: gooseExists ? await getToolVersion('goose', 'version') || await getToolVersion('goose', '--version') || 'installed' : undefined,
+    upgradeCommand: gooseExists ? 'brew upgrade goose' : undefined,
+    installCommand: 'brew install block/tap/goose',
+  });
+
+  // OpenHands
+  const openhandsExists = await commandExists('openhands');
+  tools.push({
+    name: 'OpenHands',
+    binary: 'openhands',
+    installed: openhandsExists,
+    version: openhandsExists ? await getToolVersion('openhands', '--version') || 'installed' : undefined,
+    upgradeCommand: openhandsExists ? 'pip install --upgrade openhands-ai' : undefined,
+    installCommand: 'pip install openhands-ai',
+  });
+
   return tools;
 }
 

@@ -15,6 +15,7 @@ Technical reference for integrating AI coding tools from TypeScript/Node.js, bas
 | **Aider** | API Key | Env only (in our impl) | `--anthropic-api-key`, `--openai-api-key` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` |
 | **Codex** | API Key | Env only | None | `OPENAI_API_KEY` |
 | **OpenCode** | API Key | Env / config | None | Provider-specific |
+| **Gemini CLI** | API Key | Env or gcloud auth | None | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 
 ---
 
@@ -496,6 +497,68 @@ promptStream.pipe(child.stdin);
 
 ---
 
+## Gemini CLI
+
+Binary: `gemini`
+
+### CLI Options (what we use)
+
+```
+gemini [options]
+
+Options we use:
+  --yolo                            Auto-approve all changes (non-interactive)
+  --model <name>                    Model to use
+  --prompt <text>                   Prompt text (non-interactive)
+  --version                         Get version
+```
+
+### How We Run It (from `gemini.ts`)
+
+```typescript
+import { spawn } from 'child_process';
+
+const args: string[] = ['--yolo'];
+
+if (options?.model) {
+  args.push('--model', options.model);
+}
+
+// Pass prompt via --prompt argument (NOT stdin)
+args.push('--prompt', prompt);
+
+const child = spawn('gemini', args, {
+  cwd: workdir,
+  stdio: ['pipe', 'pipe', 'pipe'],
+  env: { ...process.env },
+});
+```
+
+### Auth
+
+```typescript
+// Checks GEMINI_API_KEY, GOOGLE_API_KEY, or implicit gcloud auth
+const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+const hasGoogleKey = !!process.env.GOOGLE_API_KEY;
+
+if (!hasGeminiKey && !hasGoogleKey) {
+  return { ready: false, error: 'GEMINI_API_KEY or GOOGLE_API_KEY not set' };
+}
+```
+
+### Error Classification (from `gemini.ts`)
+
+```typescript
+if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
+  return { success: false, output: stdout, error: 'Authentication error', errorType: 'auth' };
+}
+if (/permission denied|cannot write|read-only/i.test(combinedOutput)) {
+  return { success: false, output: stdout, error: 'Permission error', errorType: 'permission' };
+}
+```
+
+---
+
 ## Common Types (from `types.ts`)
 
 ### RunnerErrorType
@@ -549,7 +612,8 @@ interface RunnerOptions {
 interface Runner {
   name: string;
   displayName: string;
-  supportedModels?: string[];  // Populated dynamically for some runners
+  installHint?: string;          // Installation command shown when tool is not installed
+  supportedModels?: string[];    // Populated dynamically for some runners
   
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult>;
   isAvailable(): Promise<boolean>;
@@ -589,6 +653,10 @@ const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'gpt-5.2-codex',
     'gpt-5.2',
     'gpt-5-mini',
+  ],
+  'gemini': [
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
   ],
   'llm-api': [
     'claude-sonnet-4-5-20250929',
@@ -704,6 +772,7 @@ async function isAvailable(): Promise<boolean> {
 | **Aider** | `--message <prompt>` | `--yes-always --model <model>` |
 | **Codex** | stdin (piped from file) | `exec --dangerously-bypass-approvals-and-sandbox -C <dir> -` |
 | **OpenCode** | stdin (piped from file) | `--model <model>` |
+| **Gemini CLI** | `--prompt <text>` | `--yolo --model <model>` |
 
 ---
 
@@ -713,5 +782,6 @@ async function isAvailable(): Promise<boolean> {
 |----------|---------|
 | `ANTHROPIC_API_KEY` | Claude Code, Aider, LLM API |
 | `OPENAI_API_KEY` | Codex, Aider, LLM API |
+| `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini CLI |
 | `PRR_CLAUDE_SKIP_PERMISSIONS` | Claude Code (set to `0` to disable skip-permissions) |
 | `CI`, `NO_COLOR`, `FORCE_COLOR` | Set by Codex runner for automation hints |

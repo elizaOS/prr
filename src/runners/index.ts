@@ -5,6 +5,9 @@ import { ClaudeCodeRunner } from './claude-code.js';
 import { AiderRunner } from './aider.js';
 import { CodexRunner } from './codex.js';
 import { GeminiRunner } from './gemini.js';
+import { JunieRunner } from './junie.js';
+import { GooseRunner } from './goose.js';
+import { OpenHandsRunner } from './openhands.js';
 import { LLMAPIRunner } from './llm-api.js';
 import chalk from 'chalk';
 
@@ -14,6 +17,9 @@ export { ClaudeCodeRunner } from './claude-code.js';
 export { AiderRunner } from './aider.js';
 export { CodexRunner } from './codex.js';
 export { GeminiRunner } from './gemini.js';
+export { JunieRunner } from './junie.js';
+export { GooseRunner } from './goose.js';
+export { OpenHandsRunner } from './openhands.js';
 export { LLMAPIRunner } from './llm-api.js';
 export type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 export { DEFAULT_MODEL_ROTATIONS } from './types.js';
@@ -27,6 +33,9 @@ export const ALL_RUNNERS: Runner[] = [
   new OpencodeRunner(),
   new CodexRunner(),
   new GeminiRunner(),
+  new JunieRunner(),
+  new GooseRunner(),
+  new OpenHandsRunner(),
   new LLMAPIRunner(),  // Direct API fallback - always available with API key
 ];
 
@@ -97,7 +106,7 @@ export function getRunnerByName(name: string): Runner | undefined {
 export function printRunnerSummary(detected: DetectedRunner[]): void {
   if (detected.length === 0) {
     console.log(chalk.red('No fix tools available!'));
-    console.log(chalk.gray('Install one of: cursor, claude-code, aider, opencode, codex, gemini, llm-api'));
+    console.log(chalk.gray('Install one of: cursor, claude-code, aider, opencode, codex, gemini, junie, goose, openhands, llm-api'));
     console.log(chalk.gray('Or set ANTHROPIC_API_KEY / OPENAI_API_KEY for direct LLM API'));
     return;
   }

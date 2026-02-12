@@ -116,35 +116,6 @@ export function getVerificationRecord(ctx: StateContext, commentId: string): Ver
  * @param maxIterationsAgo - Maximum age in iterations before considered stale
  * @returns Array of stale comment IDs
  */
-export function clearAllVerifications(ctx: import('./state-context.js').StateContext): void {
-  ctx.state.verifiedComments = {};
-  if (ctx.state.verifiedFixed) {
-    ctx.state.verifiedFixed = {};
-  }
-}
-
-/**
- * Clear all verification records.
- * WHY: Final audit and remote sync need to re-verify from scratch.
- */
-export function clearAllVerifications(ctx: { state: { verifiedComments?: Record<string, unknown>; verifiedFixed?: Record<string, unknown> } }): void {
-  if (ctx.state.verifiedComments) {
-    ctx.state.verifiedComments = {};
-  }
-  if (ctx.state.verifiedFixed) {
-    ctx.state.verifiedFixed = {};
-  }
-}
-
-export function clearAllVerifications(ctx: StateContext): void {
-  if (ctx.state.verifiedComments) {
-    ctx.state.verifiedComments = {};
-  }
-  if (ctx.state.verifiedFixed) {
-    ctx.state.verifiedFixed = {};
-  }
-}
-
 export function getStaleVerifications(ctx: StateContext | undefined, maxIterationsAgo: number): string[] {
   if (!ctx) return [];
   const state = ctx.state;
@@ -164,13 +135,6 @@ export function getStaleVerifications(ctx: StateContext | undefined, maxIteratio
  * @param ctx - State context
  * @returns Array of all verified comment IDs
  */
-export function clearAllVerifications(ctx: StateContext): void {
-  ctx.state.verifiedComments = {};
-  if (ctx.state.verifiedFixed) {
-    ctx.state.verifiedFixed = {};
-  }
-}
-
 export function getVerifiedComments(ctx: StateContext): string[] {
   const state = ctx.state;
   if (!state) return [];

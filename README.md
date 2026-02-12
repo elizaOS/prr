@@ -35,7 +35,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 ### Core Loop
 - Fetches review comments from PRs (humans, bots, or any reviewer)
 - Uses LLM to detect which issues still exist in the code
-- Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
+- Generates fix prompts and runs Cursor CLI, Claude Code, Gemini CLI, or other tools to fix issues
 - Verifies fixes with LLM to prevent false positives
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
 
@@ -45,14 +45,16 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
+- **Model validation at startup**: Queries OpenAI/Anthropic APIs to filter out inaccessible models before attempting fixes
+- **Issue solvability detection**: Pre-screens review comments to skip unsolvable issues (deleted files, stale references)
 - **Stalemate detection & bail-out**: Detects when agents disagree, bails out after N cycles with zero progress
 
 ### Git Integration
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
 - **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
-- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
+- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically (including delete conflicts)
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
-- **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
+- **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed (final push only)
 - Batched commits with LLM-generated messages (not "fix review comments")
 
 ### Robustness
@@ -150,7 +152,7 @@ prr https://github.com/owner/repo/pull/123 \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--tool <name>` | `cursor` | Fixer tool: cursor, claude-code, aider, opencode, codex, llm-api |
+| `--tool <name>` | `cursor` | Fixer tool: cursor, claude-code, aider, opencode, codex, gemini, llm-api |
 | `--model <model>` | (auto) | Override model for fixer tool |
 | `--auto-push` | **on** | Push after fixes verified, wait for re-review, loop |
 | `--no-auto-push` | off | Disable auto-push (just push once) |
@@ -167,6 +169,9 @@ prr https://github.com/owner/repo/pull/123 \
 | `--keep-workdir` | on | Keep work directory after completion |
 | `--no-batch` | off | Disable batched LLM calls |
 | `--verbose` | on | Debug output |
+| `--check-tools` | off | Show installed tools and versions, then exit |
+| `--update-tools` | off | Update all installed AI tools to latest, then exit |
+| `--tidy-lessons` | off | Clean up lessons: re-normalize, deduplicate, remove garbage, then exit |
 
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
@@ -226,7 +231,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 4. **Run Fixer**: Executes the AI coding tool in the cloned repo.
    - **Model rotation**: Interleaves model families - tries Claude, then GPT, then Gemini before exhausting any single family
-   - **Tool rotation**: Cursor → Claude Code → Aider → Direct LLM API when models exhausted
+   - **Tool rotation**: Cursor → Claude Code → Aider → Gemini CLI → Direct LLM API when models exhausted
    - *Why interleave families*: Same-family models often fail the same way. Switching families gives fresh perspective.
    - *Why rotation*: Different models have different strengths. If one gets stuck, another might succeed.
 
@@ -274,6 +279,7 @@ When fixes fail, prr escalates through multiple strategies:
 - **Pull conflicts**: Branch diverged while prr was working
 - **Stash conflicts**: Interrupted run had uncommitted changes
 - **Base branch merge**: PR conflicts with target branch (main/master)
+- **Delete conflicts**: One side deleted a file, the other modified it (`UD`/`DU`/`DD` status)
 
 **Why two attempts for code files?**
 - Fixer tools are good at agentic changes but sometimes miss conflict markers
@@ -503,6 +509,7 @@ Team gets everything in one atomic update
 - `--tool aider`: `aider` (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
 - `--tool claude-code`: `claude` or `claude-code` (`ANTHROPIC_API_KEY`)
 - `--tool codex`: `codex` or `openai-codex` (OpenAI Codex access / `OPENAI_API_KEY`)
+- `--tool gemini`: `gemini` (`GEMINI_API_KEY` or `GOOGLE_API_KEY`)
 - `--tool llm-api`: no CLI (direct API; `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
 
 
@@ -513,6 +520,7 @@ Team gets everything in one atomic update
 | `aider` | `aider` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 | `opencode` | `opencode` | (check opencode docs) |
 | `codex` | `codex` or `openai-codex` | `OPENAI_API_KEY` |
+| `gemini` | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | `llm-api` | (none - direct API) | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 
 

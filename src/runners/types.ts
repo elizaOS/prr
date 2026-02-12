@@ -103,6 +103,23 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'gemini-2.5-pro',               // Gemini 2.5 Pro - best quality
     'gemini-2.5-flash',             // Gemini 2.5 Flash - fast and capable
   ],
+  // Junie CLI: JetBrains AI agent (model selection may be limited by backend)
+  'junie': [
+    'gemini-3-flash',                  // Fast, high Terminal-Bench score with Junie
+    'gemini-3-pro',                    // Gemini 3 Pro
+  ],
+  // Goose: Block's open-source agent (supports multiple providers)
+  'goose': [
+    'claude-sonnet-4-5-20250929',      // Claude 4.5 Sonnet via Anthropic provider
+    'claude-opus-4-5-20251101',        // Claude 4.5 Opus
+    'gpt-5.3',                         // GPT-5.3 via OpenAI provider
+  ],
+  // OpenHands: Open-source agent (litellm format: provider/model)
+  'openhands': [
+    'anthropic/claude-sonnet-4-5-20250929',
+    'anthropic/claude-opus-4-5-20251101',
+    'openai/gpt-5.3',
+  ],
   // LLM API: Direct Anthropic API calls (uses full API names)
   // NOTE: Haiku intentionally excluded — 0% fix success rate across 147 attempts.
   // Haiku is used for verification (via LLMClient) but is too weak for code fixing.

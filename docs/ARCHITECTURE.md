@@ -93,6 +93,12 @@ Interfaces with LLM providers (Anthropic Claude, OpenAI):
 - Anthropic (Claude Sonnet, Opus, Haiku)
 - OpenAI (GPT-4, GPT-5)
 
+**Model validation at startup:**
+Queries provider APIs (`GET /v1/models`) to discover accessible models. Filters internal rotation lists to prevent wasted retries on unavailable models.
+
+**Batch analysis:**
+Issue batches are capped at 50 per batch to prevent LLM response truncation. With 189 issues, batching only on prompt size caused haiku to summarize instead of listing per-issue results.
+
 ### 4. Runners (`src/runners/`)
 
 Fixer tools that make actual code changes:
@@ -101,6 +107,7 @@ Fixer tools that make actual code changes:
 - **Aider** - Terminal-based AI pair programmer
 - **Claude Code** - Anthropic's code editor
 - **Codex** - Direct GPT integration
+- **Gemini CLI** - Google's Gemini coding agent
 - **LLM API** - Fallback direct API calls
 
 Each runner implements the `Runner` interface:
@@ -108,6 +115,7 @@ Each runner implements the `Runner` interface:
 interface Runner {
   name: string;
   displayName: string;
+  installHint?: string;  // Install command shown when tool not found
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunResult>;
 }
 ```
@@ -189,29 +197,32 @@ User-facing output and progress indicators:
 ```
 1. Fetch PR comments from GitHub
    ↓
-2. Check if issues still exist (batch LLM call)
+2. Pre-screen for solvability (skip deleted files, stale refs)
    ↓
-3. Filter out already-fixed issues (from state)
+3. Check if issues still exist (batch LLM call, max 50/batch)
    ↓
-4. For remaining issues:
+4. Filter out already-fixed issues (from state)
+   ↓
+5. For remaining issues:
    ├─ Build fix prompt with code context + lessons
-   ├─ Run fixer tool (Cursor/Aider/etc.)
+   ├─ Run fixer tool (Cursor/Aider/Gemini/etc.)
    ├─ Verify each fix (LLM check)
    ├─ Commit verified fixes
    └─ Record failures as lessons
    ↓
-5. If progress: continue loop
+6. If progress: continue loop
    If stalled: rotate model/tool
-   If no issues remain: complete
+   If no issues remain: trigger CodeRabbit final review, complete
 ```
 
-### Conflict Resolution Flow (NEW)
+### Conflict Resolution Flow
 
 ```
 1. Detect conflicted files during git operations
    ↓
-2. Separate lock files from code files
+2. Separate by conflict type
    ├─ Lock files → Delete & regenerate
+   ├─ Delete conflicts (UD/DU/DD) → git rm (accept deletion)
    └─ Code files → Resolve with AI
        ↓
 3. Attempt 1: Runner tool (Cursor/Aider)
