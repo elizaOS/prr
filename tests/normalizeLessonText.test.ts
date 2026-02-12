@@ -9,21 +9,21 @@ describe('normalizeLessonText', () => {
 
   it('should remove markdown code fences', () => {
     const result = normalize('Some lesson with ```typescript\ncode\n``` embedded');
-    // sanitizeLessonText strips code fences, leaving surrounding text
     expect(result).not.toBeNull();
     expect(result).not.toContain('```');
   });
 
-  it('should handle markdown headers', () => {
-    const result = normalize('## Header');
-    // sanitizeLessonText processes headers - may return string or null
-    expect(typeof result === 'string' || result === null).toBe(true);
+  it('should remove inline code backticks', () => {
+    const result = normalize('Use `execSync` with shell false');
+    expect(result).not.toBeNull();
+    expect(typeof result === 'string').toBe(true);
+    expect(result).not.toContain('`');
   });
 
-  it('should handle "Fix for" patterns', () => {
-    const result = normalize('Fix for src/file.ts:42');
-    // sanitizeLessonText strips file paths - may return string or null
-    expect(typeof result === 'string' || result === null).toBe(true);
+  it('should remove URLs', () => {
+    const result = normalize('Check https://example.com for details about the fix');
+    expect(result).not.toBeNull();
+    expect(result).not.toContain('https://');
   });
 
   it('should normalize "made no changes" variants', () => {
@@ -33,10 +33,18 @@ describe('normalizeLessonText', () => {
     expect(result).toContain('made no changes');
   });
 
-  it('should handle numeric-only strings', () => {
-    const result = normalize('12345');
-    // sanitizeLessonText may or may not filter pure numbers
-    expect(typeof result === 'string' || result === null).toBe(true);
+  it('should normalize "made no changes" with missing separator before trying', () => {
+    const input = 'tool made no changestrying different approach';
+    const result = normalize(input);
+    expect(result).not.toBeNull();
+    expect(result).toContain('made no changes - ');
+  });
+
+  it('should normalize "made no changes" with missing separator before already', () => {
+    const input = 'fixer made no changes  already includes all runners';
+    const result = normalize(input);
+    expect(result).not.toBeNull();
+    expect(result).toContain('made no changes - already');
   });
 
   it.todo('should trim and cleanup trailing colons/dashes');
