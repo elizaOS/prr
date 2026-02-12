@@ -107,6 +107,17 @@ export async function checkToolVersions(): Promise<ToolVersion[]> {
     installCommand: 'https://github.com/opencode/opencode',
   });
 
+  // Gemini CLI
+  const geminiExists = await commandExists('gemini');
+  tools.push({
+    name: 'Gemini CLI',
+    binary: 'gemini',
+    installed: geminiExists,
+    version: geminiExists ? await getToolVersion('gemini', '--version') || 'installed' : undefined,
+    upgradeCommand: geminiExists ? 'npm install -g @google/gemini-cli' : undefined,
+    installCommand: 'npm install -g @google/gemini-cli',
+  });
+
   return tools;
 }
 

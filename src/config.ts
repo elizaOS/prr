@@ -17,9 +17,9 @@ dotenv.config();
 export type LLMProvider = 'anthropic' | 'openai';
 
 /** Available fixer tools that can apply code changes */
-export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'llm-api' | 'auto';
+export type FixerTool = 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'gemini' | 'llm-api' | 'auto';
 
-const REAL_FIXER_TOOLS = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'] as const;
+const REAL_FIXER_TOOLS = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'gemini', 'llm-api'] as const;
 export type RealFixerTool = typeof REAL_FIXER_TOOLS[number];
 /**
  * Application configuration loaded from environment.

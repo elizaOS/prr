@@ -95,6 +95,11 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'gpt-5.3',                       // NEW! GPT-5.3 standard
     'gpt-5.2-codex',                 // Fallback to 5.2 Codex
   ],
+  // Gemini CLI: Google models (strong coding, free tier available)
+  'gemini': [
+    'gemini-2.5-pro',               // Gemini 2.5 Pro - best quality
+    'gemini-2.5-flash',             // Gemini 2.5 Flash - fast and capable
+  ],
   // LLM API: Direct Anthropic API calls (uses full API names)
   // NOTE: Haiku intentionally excluded — 0% fix success rate across 147 attempts.
   // Haiku is used for verification (via LLMClient) but is too weak for code fixing.

@@ -384,13 +384,14 @@ export function tryRotation(
  * "anthropic/claude-sonnet-4-5-20250929". We detect the provider from
  * the prefix and validate against the corresponding API.
  */
-const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'mixed'> = {
+const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'mixed'> = {
   'codex': 'openai',
   'opencode': 'mixed',        // Has both OpenAI and Anthropic models
   'aider': 'mixed',           // Provider-prefixed: "openai/..." and "anthropic/..."
   'claude-code': 'anthropic',
   'llm-api': 'anthropic',
   // 'cursor' intentionally omitted - uses its own internal model aliases
+  // 'gemini' intentionally omitted - uses Google's own model validation
 };
 
 /**
