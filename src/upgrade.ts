@@ -238,7 +238,7 @@ function isShellCommand(cmd: string): boolean {
 export async function checkPrrUpdate(): Promise<void> {
   try {
     // Get current version from package.json
-    const { default: pkg } = await import('../package.json', { assert: { type: 'json' } });
+    const { default: pkg } = await import('../package.json', { with: { type: 'json' } });
     const currentVersion = pkg.version;
 
     console.log(chalk.cyan('\n━━━ PRR VERSION ━━━\n'));

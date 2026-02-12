@@ -7,47 +7,24 @@
 
 ## Global Lessons
 
-- tool made no changes - trying different approach
-- fixer made no changes - already includes all runners
-- Fix for README.md rejected: The diff does not contain the suggested platform-specific installation instructions. It only updates model names and rotation strategy, missing the curl command clarification for macOS ARM64 vs other platforms.
-- Fix for README.md rejected: The diff updates model versions but doesn't update the actual model table entries from the outdated names (opus-4.5, sonnet-4.5, gpt-5.2-codex-xhigh, etc.) to the correct canonical Cursor CLI names.
-- Fix for README.md rejected: The provided diff doesn't include the platform-specific installation instructions. It shows the same model table changes from other fixes but lacks the cursor-agent installation updates for Linux and Intel Mac users mentioned in the review.
-- Fix for README.md rejected: The diff only updates model version strings and rotation examples, not the platform-specific installation instructions for cursor-agent that were requested (macOS ARM64 vs Linux vs Intel Mac).
-- Fix for src/resolver.ts rejected: The diff changes resolver.ts to handle wrong files, but the review comment is about fixing `fixedIssues` which is computed from `unresolvedIssues`. The diff doesn't change the `fixedIssues` pipeline to use the full `comments` list instead.
-- Fix for README.md rejected: The diff changes model version strings but doesn't standardize the model naming format across the README as requested (mixing date-stamped and dotted formats).
-- Fix for src/git/commit.ts rejected: The code change removes imports (`execSync`, `execFileSync`) and adds a `redactAuth()` function with multiple `redactAuth()` calls, but does not fix the regex issue with emoji combining characters at line 267 that was the focus of the review.
-- Fix for src/git/commit.ts rejected: The review comment requests updating the emoji regex at line 267 to use Unicode property escapes like `\p{Emoji}`, but the diff shows unrelated changes to imports and a new `redactAuth()` function with no regex changes to the emoji stripping pattern.
-- Fix for src/runners/cursor.ts rejected: The review comment requests changes to handle E2BIG by passing prompt via stdin (lines 271-276), but the provided diff only shows the parseAndPrioritizeModels function being duplicated. The actual stdin implementation is missing.
-- Fix for src/runners/cursor.ts rejected: Same issue as above - shellEscape() is defined twice but never applied to workdir or promptFile variables in the vulnerable shell command string
-- Fix for README.md rejected: The diff shows model table changes and API endpoint additions, but does not address the core issue of standardizing model name formats (claude-sonnet-4-5-20250929 vs claude-sonnet-4.5 vs claude-sonnet-4.5) across the README as requested.
-- Fix for README.md rejected: The diff shows unrelated table changes at lines 571-582 but does not modify lines 78-83 in the README where the PRR_LLM_MODEL example needs to be aligned with the canonical date-stamped format from config.ts.
-- Fix for src/cli.ts rejected: The diff shows a duplicate function definition of `parseIntOrExit` (appears twice in the same file) rather than replacing the raw `parseInt` calls throughout the code. The proposed fix was not properly applied - it only added the helper function but didn't update the call sites.
-- Fix for src/runners/cursor.ts rejected: Diff shows the duplicate model parsing code again instead of changes to pass prompt via stdin and remove positional argument approach
-- Fix for src/cli.ts rejected: The diff only removes a nullish coalescing operator from `maxContextChars` but doesn't add the `parseIntOrDefault` validation helper function needed to prevent NaN propagation.
-- Fix for README.md rejected: The fix only clarifies the heading and adds a generic link, but doesn't provide the platform-specific instructions (Linux, Intel Mac) that were requested in the review comment
-- Fix for src/logger.ts rejected: The change only reorders the type check condition but doesn't address the unused initial value of overallTotals mentioned in the review comment.
-- Fix for README.md rejected: The fix only adds a clarification comment and a generic link, but does not provide the platform-specific instructions (Linux, Intel Mac) that the review explicitly requested
-- Fix for README.md rejected: The code change only reformats table formatting, but does not update the README example to match the canonical date-stamped model name from config.ts or add clarifying comments
-- Fix for src/runners/llm-api.ts rejected: The diff does not match the review comment - it shows the same change as the first fix instead of implementing the ReDoS mitigation for the whitespace pattern on line 232. The suggested change to use `\s{1,1000}` is not present in the diff.
-- Fix for .prr/lessons.md rejected: The fix removes malformed entries and deduplicated some lines, but the deduplication is incomplete. Many entries still contain
-- Fix for src/resolver.ts:1035 - tool made no changes without explanation
-- Fix for src/resolver.ts:2549 - tool made no changes without explanation - trying different approach
-- Fix for src/runners/opencode.ts:94 - When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
-- Fix for src/state/manager.ts:117 - When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation describing it.
-- Fix for src/state/manager.ts:384 rejected: The change modifies `clearInterrupted()` to be async and add a save call, but completely ignores the actual bug in `compactLessons()` that was described in the review comment. The fix addresses a different issue entirely.
-- Fix for src/state/manager.ts:117 - tool made no changes
-- Fix for src/state/lessons.ts:613 rejected: The diff filters transient error patterns and marks repo lessons clean on success, but doesn't fix the Windows drive-letter path parsing issue in addLesson.
-- Fix for src/state/lessons.ts:625 - Anchor the regex on message suffixes like " rejected:" or " - " to reliably separate filePath from line numbers, rather than relying solely on the last `:digits` pattern.
-- Fix for src/state/lessons.ts:537 - Since the fix is already in place and the code matches the proposed solution, no changes are needed.
-- Fix for src/state/lessons.ts:625 - Since the fix is already in place and the code matches the proposed solution, no changes are needed.
-- Fix for src/runners/cursor.ts:31 rejected: The diff changes stdin handling but does not update the FALLBACK_MODELS array. The review comment specifically requested updating outdated model names in the fallback list at lines 24-31, which is not present in this diff.
-- Fix for src/runners/cursor.ts:256 rejected: The temp file is created but the isSafePath check is removed without replacement, and there is no cleanup logic (unlinkSync call) after the process completes.
-- Fix for src/runners/cursor.ts:91 rejected: The fix duplicates the entire parsing loop instead of modifying the existing one, resulting in redundant code that processes lines twice.
-- Fix for src/git/commit.ts:140 - tool modified wrong files (examples/feedback-loop-example.ts, src/resolver.ts, src/runners/cursor.ts), need to modify src/git/commit.ts
-- Fix for src/git/commit.ts:389 - tool made no changes without explanation - trying different approach
-- Fix for src/git/commit.ts:346 - tool made no changes without explanation - trying different approach
-- Fix for src/llm/client.ts:115 rejected: The diff shows unrelated cleanup code instead of fixing the fixedIssues filter to use the full comments list rather than unresolvedIssues.
-- Fix for src/llm/client.ts:319 - tool made no changes without explanation - trying different approach
+- When a fixer tool makes no changes, try a different approach or tool.
+- When fixing README.md, ensure the diff addresses the specific issue mentioned in the review (e.g., platform-specific instructions, model name standardization) rather than making unrelated changes.
+- When fixing a specific code issue, ensure the diff modifies the exact lines and logic mentioned in the review comment, not unrelated code in the same file.
+- Avoid duplicating function definitions or code blocks when applying fixes; modify the existing code in place.
+- When a review requests a regex change (e.g., Unicode property escapes for emoji), the fix must include that regex change, not unrelated refactoring.
+- When a review requests stdin-based prompt passing, the fix must implement the actual stdin logic, not duplicate existing parsing code.
+- When adding validation helpers (e.g., parseIntOrDefault), update all call sites to use them, not just define the helper.
+- When fixing a rejected lesson entry, ensure deduplication is complete and no malformed entries remain.
+- When adding file creation, implement cleanup in all exit paths (resolve/reject/error) using try-finally or a cleanup callback to prevent leaks.
+- When a requirement specifies "call X after Y", the fix must include the actual call statement, not just documentation describing it.
+- When a review comment targets a specific bug (e.g., in compactLessons), fix that bug, not a different issue in the same file.
+- When fixing path parsing (e.g., Windows drive letters), address the actual parsing issue rather than filtering unrelated patterns.
+- Anchor the regex on message suffixes like " rejected:" or " - " to reliably separate filePath from line numbers, rather than relying solely on the last `:digits` pattern.
+- When a review requests updating a specific array (e.g., FALLBACK_MODELS), the diff must modify that array, not unrelated code.
+- When creating temp files, include cleanup logic (e.g., unlinkSync) in all exit paths and do not remove safety checks (e.g., isSafePath) without replacement.
+- Avoid duplicating entire code loops; modify the existing loop to add new behavior.
+- Ensure tool modifications target the correct file as specified in the review comment.
+- When a fixer tool makes no changes without explanation, try a different approach.
 - Fix for src/llm/client.ts:319 - The code after `Updated upstream` already has the fix with `allowedIds` validation, but the merge conflict needs to be cleaned up.
 - Fix for README.md:231 rejected: The diff updates model versions and rotation examples but doesn't fix the markdown indentation issues (MD005/MD007) in the nested list bullets under "Run Fixer".
 - Fix for README.md:576 - tool modified wrong files (src/config.ts, src/git/clone.ts, src/git/commit.ts, src/resolver.ts, src/state/manager.ts), need to modify README.md
