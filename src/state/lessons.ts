@@ -31,6 +31,7 @@ export function formatLessonForDisplay(lesson: string): string {
  */
 export function sanitizeLessonText(lesson: string): string {
   let result = lesson;
+  const original = lesson.trim();
   
   // Remove code blocks
   result = result.replace(/```[\s\S]*?```/g, '');
@@ -46,6 +47,15 @@ export function sanitizeLessonText(lesson: string): string {
   
   // Remove "(inferred) ts" and similar parsing artifacts
   result = result.replace(/\s*-\s*\(inferred\)\s*\w*/g, '');
+  
+  // Normalize "made no changes" malformed variants
+  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+  result = result.replace(/made no changes\s{2,}already/gi, 'made no changes - already');
+  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+  result = result.replace(/made no changes\s{2,}already/gi, 'made no changes - already');
+  
+  // Collapse multiple spaces
+  result = result.replace(/\s{2,}/g, ' ');
   
   // Collapse multiple hyphens into single separator
   result = result.replace(/\s*-\s*-\s*/g, ' - ');

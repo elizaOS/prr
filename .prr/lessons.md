@@ -50,6 +50,11 @@
 - Fix for src/state/lessons.ts:52 - The diff shows only the hyphen-collapsing regex, not the empty-string guard. The review required sanitizeLessonText to return null (or fallback) when all content is stripped, and callers must handle this case.
 - Fix for src/state/lessons.ts:551 - Logging added to catch block but wrong function modified and incomplete context
 - Fix for src/state/lessons.ts:52 - No changes made to `sanitizeLessonText` return type or empty-string handling
+- Fix for src/state/lessons.ts:561 - The diff does not show the error logging change for the empty catch block. The comment requested adding console.warn/logging to the catch handler around lines 875-877, but the provided diff modifies sanitizeLessonText instead.
+- Fix for src/state/lessons.ts:73 - The diff does not add a guard against empty-string returns. The comment requested either returning null when the lesson is fully stripped or adding a fallback to original content. The provided diff adds regex patterns instead of guarding the return value.
+- Fix for src/state/lessons.ts:73 - The diff adds regex patterns but does NOT modify the return type or add null checks. sanitizeLessonText still returns `string` and can return empty strings after stripping.
+- Fix for src/state/lessons.ts:561 - The diff shows regex changes to sanitizeLessonText but does not address the empty catch block in the file-writing try/catch around lines 875-877.
+- Fix for src/state/lessons.ts:73 - The diff shows regex changes but does not modify sanitizeLessonText to return null or guard against empty strings after stripping.
 
 ### src/logger.ts
 
@@ -58,6 +63,7 @@
 ### README.md
 
 - Fix for README.md:578 - Adding a sentence about models changing frequently doesn't adequately address the core request. The comment asked to either remove the hardcoded table entirely OR keep it with a clear note that entries are examples. The current note only hints at this without prominently disclaiming the table as outdated/illustrative.
+- Fix for README.md:1 - The change updates README documentation but does not address the original review comment requesting a more descriptive PR title (e.g., "Add model rotation, lessons management, and new runner support"). The PR title itself was not changed.
 
 ### src/git/commit.ts
 
