@@ -517,7 +517,13 @@ STALE: Not applicable`;
       return parts.join('\n');
     };
 
-    // Build batches dynamically based on content size
+    // Build batches dynamically based on content size AND issue count.
+    // WHY max issues per batch: Even if the prompt fits within context limits,
+    // the LLM must produce one response line per issue. With 189 issues, that's
+    // ~15K+ output chars. Haiku (and even larger models) often truncate or
+    // summarize instead of listing all items. Cap at 50 issues per batch to
+    // ensure the model can actually respond to each one.
+    const MAX_ISSUES_PER_BATCH = 50;
     const batches: Array<{ issues: typeof issues; issueTexts: string[] }> = [];
     let currentBatch: typeof issues = [];
     let currentTexts: string[] = [];
@@ -527,8 +533,8 @@ STALE: Not applicable`;
       const issueText = buildIssueText(issue);
       const issueSize = issueText.length;
 
-      // If adding this issue would exceed limit, start a new batch
-      if (currentSize + issueSize > availableForIssues && currentBatch.length > 0) {
+      // Start a new batch if adding this issue would exceed size OR count limit
+      if ((currentSize + issueSize > availableForIssues || currentBatch.length >= MAX_ISSUES_PER_BATCH) && currentBatch.length > 0) {
         batches.push({ issues: currentBatch, issueTexts: currentTexts });
         currentBatch = [];
         currentTexts = [];
@@ -548,8 +554,9 @@ STALE: Not applicable`;
     debug('Batch check batches', { 
       total: issues.length,
       batches: batches.length, 
-      sizes: batches.map(b => ({ issues: b.issues.length, chars: b.issueTexts.join('').length })),
+      sizes: batches.map(b => b.issues.length),
       maxContextChars,
+      maxIssuesPerBatch: MAX_ISSUES_PER_BATCH,
     });
 
     // Process all batches
