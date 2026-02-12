@@ -100,6 +100,6 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Haiku is used for verification (via LLMClient) but is too weak for code fixing.
   'llm-api': [
     'claude-sonnet-4-5-20250929',   // Claude 4.5 Sonnet - balanced ($3/$15 per MTok)
-    'claude-opus-4-6',              // Claude 4.6 Opus - most intelligent ($5/$25 per MTok)
+    'claude-opus-4-5-20251101',     // Claude 4.5 Opus - most intelligent ($5/$25 per MTok)
   ],
 };

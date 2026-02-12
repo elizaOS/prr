@@ -286,17 +286,6 @@ export class LessonsManager {
   /**
    * Extract the prr lessons section from a file's content.
    */
-  private extractPrrSection(content: string): string | null {
-    const startIdx = content.indexOf(PRR_SECTION_START);
-    const endIdx = content.indexOf(PRR_SECTION_END);
-
-    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-      return null;
-    }
-
-    return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
-  }
-
   /**
    * Parse markdown lessons file into structured data.
    *
