@@ -101,8 +101,15 @@ export function createResolverContext(
 /**
  * Ring terminal bell to notify user
  * WHY: Long-running processes need audio notification when complete
+ * 
+ * Skipped inside GNU Screen or tmux — bell characters cause visual
+ * artifacts or get swallowed, and the user typically can't hear them.
  */
 export function ringBell(times: number = 3): void {
+  // STY is set by GNU Screen, TMUX is set by tmux
+  if (process.env.STY || process.env.TMUX) {
+    return;
+  }
   for (let i = 0; i < times; i++) {
     process.stdout.write('\x07'); // BEL character (ASCII 7)
   }
