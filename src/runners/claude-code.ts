@@ -244,13 +244,13 @@ export class ClaudeCodeRunner implements Runner {
         } else {
           // Determine error type for non-permission failures
           let errorType: RunnerErrorType = 'tool';
-          const combinedOutput = (stdout + stderr).toLowerCase();
+          const combinedLower = (stdout + stderr).toLowerCase();
           // Quota/rate-limit must be checked BEFORE auth — rotate, don't bail
-          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(stdout + stderr)) {
+          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedLower)) {
             errorType = 'quota';
-          } else if (combinedOutput.includes('api key') || combinedOutput.includes('unauthorized') || combinedOutput.includes('authentication')) {
+          } else if (combinedLower.includes('api key') || combinedLower.includes('unauthorized') || combinedLower.includes('authentication')) {
             errorType = 'auth';
-          } else if (/does not exist|model.*not found|you do not have access/i.test(stdout + stderr)) {
+          } else if (/does not exist|model.*not found|you do not have access/i.test(combinedLower)) {
             errorType = 'auth'; // Model access errors bail immediately, same as auth
           }
           resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}`, errorType });

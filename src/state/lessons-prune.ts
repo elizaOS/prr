@@ -68,7 +68,8 @@ export function sanitizeModelNames(ctx: LessonsContext): number {
   let sanitized = 0;
   
   const stripModelNames = (lesson: string): string => {
-    return lesson.replace(/\b(?:claude-4-sonnet|gpt-4o|gemini-[^\s]+|o1-[^\s]+|deepseek-[^\s]+)\b/gi, '');
+    // Match common model name patterns (claude, gpt, o1/o3, gemini, deepseek, etc.)
+    return lesson.replace(/\b(?:claude-(?:sonnet|opus|haiku|code)?-?[0-9a-z.-]*|gpt-?[0-9a-z.-]+|o[1-9]-?[^\s]*|gemini-[^\s]+|deepseek-[^\s]+|codex-?[^\s]*)\b/gi, '');
   };
   
   ctx.store.global = ctx.store.global.map(l => {
@@ -169,7 +170,8 @@ function tidyStore(store: LessonsStore): {
 
   // Step 1: Re-normalize all lessons (applies latest filters)
   const normalizeAndDedupe = (lessons: string[]): string[] => {
-    const seen = new Set<string>();
+    const seenExact = new Set<string>();
+    const seenNear = new Set<string>();
     const result: string[] = [];
     
     for (const lesson of lessons) {
@@ -179,18 +181,18 @@ function tidyStore(store: LessonsStore): {
         continue;
       }
       const key = Normalize.lessonKey(normalized);
-      if (seen.has(key)) {
+      if (seenExact.has(key)) {
         removedDuplicate++;
         continue;
       }
-      // Also check near-key for fuzzy dedup
+      // Also check near-key for fuzzy dedup (using separate Set)
       const nearKey = Normalize.lessonNearKey(normalized);
-      if (seen.has(nearKey)) {
+      if (seenNear.has(nearKey)) {
         removedDuplicate++;
         continue;
       }
-      seen.add(key);
-      seen.add(nearKey);
+      seenExact.add(key);
+      seenNear.add(nearKey);
       result.push(normalized);
     }
     return result;
@@ -464,17 +466,18 @@ async function tidyMarkdownLessonsFile(filePath: string): Promise<void> {
 
     // Normalize and deduplicate
     const normalizeAndDedupe = (lessons: string[]): string[] => {
-      const seen = new Set<string>();
+      const seenExact = new Set<string>();
+      const seenNear = new Set<string>();
       const result: string[] = [];
       for (const lesson of lessons) {
         const normalized = Normalize.normalizeLessonText(lesson);
         if (!normalized) continue;
         const key = Normalize.lessonKey(normalized);
-        if (seen.has(key)) continue;
+        if (seenExact.has(key)) continue;
         const nearKey = Normalize.lessonNearKey(normalized);
-        if (seen.has(nearKey)) continue;
-        seen.add(key);
-        seen.add(nearKey);
+        if (seenNear.has(nearKey)) continue;
+        seenExact.add(key);
+        seenNear.add(nearKey);
         result.push(normalized);
       }
       return result;

@@ -35,8 +35,8 @@ export async function handleNoComments(
   // Check if there are unresolved conflicts
   const hasConflicts = prInfo.mergeable === false || prInfo.mergeableState === 'dirty';
   
-  if (hasConflicts && !options.mergeBase) {
-    // No comments but conflicts exist - auto-resolve since there's nothing else to do
+  if (hasConflicts && options.mergeBase) {
+    // No comments but conflicts exist - auto-resolve since --merge-base is enabled
     console.log(chalk.yellow('\nNo review comments found, but PR has merge conflicts.'));
     console.log(chalk.cyan(`  Auto-resolving conflicts with ${prInfo.baseBranch}...`));
     
@@ -120,13 +120,13 @@ export async function handleNoComments(
       exitReason: 'no_comments',
       exitDetails: `No review comments, but conflicts with ${prInfo.baseBranch} were resolved`
     };
-  } else if (hasConflicts && options.mergeBase) {
-    // Conflicts should have been resolved above
-    console.log(chalk.green('\nNo review comments found. Conflicts were resolved above.'));
+  } else if (hasConflicts && !options.mergeBase) {
+    // Conflicts exist but user opted out of auto-merge
+    console.log(chalk.yellow('\nNo review comments found, but PR has merge conflicts (--no-merge-base skipped auto-resolve).'));
     return {
       shouldExit: true,
       exitReason: 'no_comments',
-      exitDetails: 'No review comments on the PR (conflicts resolved)'
+      exitDetails: 'No review comments on the PR (conflicts skipped via --no-merge-base)'
     };
   } else {
     console.log(chalk.green('\nNo review comments found. Nothing to do!'));

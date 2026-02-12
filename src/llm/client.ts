@@ -118,8 +118,14 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
     const ids = new Set<string>();
     let afterId: string | undefined;
     let hasMore = true;
+    const MAX_PAGES = 20; // Safety cap to prevent infinite loops
+    let page = 0;
     
     while (hasMore) {
+      if (++page > MAX_PAGES) {
+        debug('Anthropic models pagination safety cap reached');
+        break;
+      }
       const url = new URL('https://api.anthropic.com/v1/models');
       url.searchParams.set('limit', '1000');
       if (afterId) {
