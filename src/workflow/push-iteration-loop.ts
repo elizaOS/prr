@@ -316,8 +316,9 @@ export async function executePushIteration(
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
+    const isBailout = exitReason === 'bail_out';
     const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, pushIteration, maxPushIterations,
-      resolveConflictsWithLLM, waitForBotReviews, allFixed);
+      resolveConflictsWithLLM, waitForBotReviews, allFixed, isBailout);
     if (commitResult.shouldBreak) {
       return {
         shouldBreak: true,

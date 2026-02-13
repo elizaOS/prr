@@ -243,7 +243,24 @@ function tidyStore(store: LessonsStore): {
     if (store.files[filePath].length === 0) delete store.files[filePath];
   }
 
-  // Step 3: Prune relative references
+  // Step 3: Compact (keep most recent N per file, M global)
+  const MAX_PER_FILE = 10;
+  const MAX_GLOBAL = 20;
+
+  if (store.global.length > MAX_GLOBAL) {
+    const excess = store.global.length - MAX_GLOBAL;
+    store.global = store.global.slice(-MAX_GLOBAL);
+    removedNormalize += excess; // count toward normalize bucket
+  }
+  for (const filePath of Object.keys(store.files)) {
+    if (store.files[filePath].length > MAX_PER_FILE) {
+      const excess = store.files[filePath].length - MAX_PER_FILE;
+      store.files[filePath] = store.files[filePath].slice(-MAX_PER_FILE);
+      removedNormalize += excess;
+    }
+  }
+
+  // Step 4: Prune relative references
   const hasRelativeRef = (lesson: string): boolean => {
     return /\b(?:Issue|Task|Bug|Fix)\s+\d+\b/i.test(lesson) ||
            /\bthe\s+(?:above|below|previous|next)\s+/i.test(lesson);

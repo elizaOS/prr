@@ -37,6 +37,12 @@ const TOOL_MARKER_FILES = [
 ];
 
 /**
+ * Directories that the fixer should never modify.
+ * These are tool-managed (lessons, state) and any edits to them are accidental.
+ */
+const PROTECTED_DIRS = ['.prr/'];
+
+/**
  * Stage all changes in the repository
  * 
  * WHY use git add -A instead of git add .:
@@ -120,6 +126,17 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
 
     for (const file of stagedFiles) {
       const basename = file.split('/').pop() || '';
+
+      // Check protected directories (fixer should never modify these)
+      if (PROTECTED_DIRS.some(dir => file.startsWith(dir))) {
+        debug(`Tool artifact detected (protected dir): ${file}`);
+        if (status.created.includes(file)) {
+          filesToRemove.push(file);
+        } else {
+          filesToRevert.push(file);
+        }
+        continue;
+      }
 
       // Check filename patterns
       if (TOOL_MARKER_FILES.some(pattern => basename === pattern || basename.startsWith('__') && basename.endsWith('.md'))) {

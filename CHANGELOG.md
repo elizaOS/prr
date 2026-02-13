@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-02-13)
+
+**Stalemate Bailout Loop**
+- After stalemate detection, the tool would commit+push partial progress then re-enter the push iteration loop instead of exiting. This caused 9 repeated stalemate cycles, each waiting 300s for CodeRabbit re-review and running full fix loops — burning tokens and time for zero progress.
+- Fix: set `exitReason = 'bail_out'` when breaking from the fix loop, then return `shouldBreak: true` after commit+push so the outer loop exits cleanly.
+
+**Auto-Verified Duplicate Counter**
+- The "Auto-verified N duplicate comment(s)" count was recounting previously-verified duplicates every iteration, showing inflated numbers (e.g., 8 when 0 new duplicates were verified).
+- Fix: count inline at the point of auto-verification instead of recounting all verified duplicates after the fact.
+
+### Added (2026-02-13)
+
+**Claude[bot] Issue Comment Extraction**
+- The tool only extracted inline review thread comments (GraphQL `reviewThreads`), completely missing claude[bot]'s reviews which are posted as issue/conversation comments.
+- New `getReviewBotIssueComments()` fetches PR issue comments, filters for known review bots (extensible, currently `claude[bot]`), takes only the latest comment (bots re-review on each push).
+- New `parseMarkdownReviewIssues()` handles both of Claude's review formats:
+  - Format A: `### N. **Title**` with `**Location:** \`file.ts:line\`` (structured)
+  - Format B: `**Issues:**` sub-headers with `N. **Title** (file.ts:line)` (condensed)
+- Parsed issues merge seamlessly into the existing `ReviewComment[]` flow.
+
+**Lessons System Overhaul**
+- Lesson generation reframed: prompts now ask "what was LEARNED from this failure so the next attempt makes progress" instead of "extract a technical constraint." Produces lessons like "cache.set() returns void not boolean — checking return value always falsy" instead of "The diff only adds X but doesn't do Y."
+- Lesson cleanup on fix: when an issue is verified, fix-attempt-specific lessons (prefixed "Fix for X:Y - ...") are removed while architectural insights are kept. New `lessons-cleanup.ts` module.
+- Lessons capped in prompts: max 15 most recent (was unlimited, observed 73+). Reframed from "DO NOT REPEAT THESE MISTAKES" to collaborative "Lessons Learned" framing.
+- Compaction wired to save: `compact()` (10/file, 20 global) now runs automatically on every `save()` — existed but was never called.
+- `--tidy-lessons` now also runs compaction step (was missing from the tidy pipeline).
+
+**Pre-Commit Tool Artifact Detection**
+- New `unstageToolArtifacts()` runs after staging, before committing.
+- Detects raw `<change><search>...</search><replace>` markup from partially-parsed LLM responses and tool-generated note files (e.g., `__cache-check-needed.md`).
+- Reverts modified files / unstages new files with a warning, preventing tool debris from being committed to the codebase.
+
+**Output Log Improvements**
+- Moved `output.log` to CWD (was `~/.prr/output.log`).
+- Patches `console.log/warn/error` directly instead of `process.stdout.write` — excludes spinner noise (ora) from the log while capturing all substantive output.
+
 ### Added (2026-02-12)
 
 **Batch Verification with Inline Failure Analysis (Fix N+1 LLM Calls)**
