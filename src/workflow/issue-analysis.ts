@@ -148,8 +148,12 @@ function logDuplicateCandidates(
     return; // No logging if no candidates found
   }
 
-  console.log(chalk.gray(`\nDuplicate candidates: ${candidateGroups.length} group(s) found`));
+  const totalComments = candidateGroups.reduce((sum, g) => sum + g.items.length, 0);
+  console.log(chalk.gray(`\nDuplicate candidates: ${candidateGroups.length} group(s), ${totalComments} comments total`));
   
+  // Global counter so every comment has a unique number across all groups.
+  // Makes references unambiguous (e.g. "#7" means exactly one comment).
+  let globalIdx = 0;
   for (const group of candidateGroups) {
     const authorInfo = group.sameAuthor 
       ? `same author: ${[...group.authors][0]}`
@@ -158,10 +162,12 @@ function logDuplicateCandidates(
     console.log(chalk.gray(`  ${group.file}:${group.lineRange} (${group.items.length} comments, ${authorInfo})`));
     
     for (let i = 0; i < group.items.length; i++) {
+      globalIdx++;
       const item = group.items[i];
+      const author = item.comment.author || 'unknown';
       const preview = item.comment.body.substring(0, 80).replace(/\n/g, ' ');
       const suffix = item.comment.body.length > 80 ? '...' : '';
-      console.log(chalk.gray(`    #${i + 1}: "${preview}${suffix}"`));
+      console.log(chalk.gray(`    #${globalIdx} (${author}): "${preview}${suffix}"`));
     }
   }
   console.log(''); // Blank line after the report
@@ -299,12 +305,22 @@ function heuristicDedup(
       `(${totalDupes + duplicateMap.size} comments -> ${duplicateMap.size} canonical)`
     ));
     
-    // Log each group
+    // Build commentId → index lookup for readable verdict display
+    const idToIndex = new Map<string, number>();
+    for (let i = 0; i < toCheck.length; i++) {
+      idToIndex.set(toCheck[i].comment.id, i + 1);
+    }
+
+    // Log each dedup verdict with identifiable indexes
     for (const [canonicalId, dupes] of duplicateMap.entries()) {
       const canonical = toCheck.find(item => item.comment.id === canonicalId);
       if (canonical) {
+        const canonIdx = idToIndex.get(canonicalId) ?? '?';
+        const dupeIdxs = dupes.map(d => `#${idToIndex.get(d) ?? '?'}`).join(', ');
         const lineInfo = canonical.comment.line !== null ? `:${canonical.comment.line}` : '';
-        debug(`Dedup group: ${canonical.comment.path}${lineInfo} (1 canonical + ${dupes.length} duplicates)`);
+        console.log(chalk.gray(
+          `    #${canonIdx} [canonical] ${canonical.comment.path}${lineInfo} ← dupes: ${dupeIdxs}`
+        ));
       }
     }
   }
