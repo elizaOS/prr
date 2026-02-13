@@ -96,10 +96,19 @@ export async function analyzeBotTimingAndDisplay(
           `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${timing.responseCount})`
         ));
       }
-      // Recommend wait time based on max observed
-      const maxWait = Math.max(...botTimings.map(t => t.maxResponseMs));
-      const recommendedWait = Math.ceil(maxWait / 1000 / 30) * 30; // Round up to nearest 30s
-      console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s`));
+      // Recommend wait time based on 75th percentile (not max — outliers waste time).
+      // Cap at 5 minutes: any bot that takes longer will be caught by the early-exit
+      // polling in waitForBotReviews, so waiting the full max is wasteful.
+      const MAX_RECOMMENDED_WAIT_S = 300; // 5 minutes
+      const allDelays = botTimings.flatMap(t => t.responseTimes?.map(r => r.delayMs) ?? [t.avgResponseMs]);
+      allDelays.sort((a, b) => a - b);
+      const p75Index = Math.floor(allDelays.length * 0.75);
+      const p75Wait = allDelays[p75Index] ?? allDelays[allDelays.length - 1] ?? 120_000;
+      const recommendedWait = Math.min(
+        Math.ceil(p75Wait / 1000 / 30) * 30, // Round up to nearest 30s
+        MAX_RECOMMENDED_WAIT_S
+      );
+      console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s (p75, capped at ${MAX_RECOMMENDED_WAIT_S}s)`));
       
       // Calculate when we expect bot reviews to arrive
       if (lastCommitTime) {

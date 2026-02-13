@@ -52,12 +52,23 @@ export async function trySingleIssueFix(
   parseNoChangesExplanation: (output: string) => string | null,
   sanitizeOutputForLog: (output: string | undefined, maxLength: number) => string
 ): Promise<boolean> {
-  // Focus on one issue at a time to reduce context and improve success rate
-  // Randomize which issues to try to avoid hammering the same hard issue
-  const shuffled = [...issues].sort(() => Math.random() - 0.5);
-  const toTry = shuffled.slice(0, Math.min(issues.length, 3));
+  // Prioritize by: (1) highest importance (lowest number = most critical),
+  // then (2) easiest to fix (lowest number = simplest). This maximizes the
+  // chance of quick wins on the most impactful issues.
+  // Issues without triage scores go to the end with a randomized tiebreaker.
+  const MAX_FOCUS_ISSUES = 5;  // Try up to 5 (was 3 — focus mode outperforms batch)
+  const prioritized = [...issues].sort((a, b) => {
+    const aImportance = a.triage?.importance ?? 3;
+    const bImportance = b.triage?.importance ?? 3;
+    if (aImportance !== bImportance) return aImportance - bImportance;  // critical first
+    const aEase = a.triage?.ease ?? 3;
+    const bEase = b.triage?.ease ?? 3;
+    if (aEase !== bEase) return aEase - bEase;  // easiest first
+    return Math.random() - 0.5;  // randomize ties
+  });
+  const toTry = prioritized.slice(0, Math.min(issues.length, MAX_FOCUS_ISSUES));
   
-  console.log(chalk.cyan(`\n  Focusing on ${toTry.length} random issues one at a time...`));
+  console.log(chalk.cyan(`\n  Focusing on ${toTry.length} issues one at a time (prioritized by severity + ease)...`));
   
   let anyFixed = false;
   

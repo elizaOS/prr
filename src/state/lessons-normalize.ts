@@ -233,10 +233,50 @@ export function lessonNearKey(lesson: string): string {
     .trim();
 }
 
+/**
+ * Extract significant tokens from a lesson for Jaccard similarity comparison.
+ * Strips common stop words and short tokens to focus on meaningful content.
+ */
+function lessonTokens(lesson: string): Set<string> {
+  const STOP_WORDS = new Set([
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'shall', 'can', 'need', 'must', 'ought',
+    'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from', 'as',
+    'into', 'through', 'during', 'before', 'after', 'above', 'below',
+    'and', 'but', 'or', 'nor', 'not', 'so', 'yet', 'both', 'either',
+    'neither', 'each', 'every', 'all', 'any', 'few', 'more', 'most',
+    'other', 'some', 'such', 'than', 'too', 'very', 'just', 'also',
+    'this', 'that', 'these', 'those', 'it', 'its',
+    'fix', 'tool', 'fixer', 'file', 'files', 'code', 'change', 'changes',
+    'instead', 'rather', 'only', 'use', 'using', 'when', 'make',
+  ]);
+  const words = lesson.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/);
+  return new Set(words.filter(w => w.length > 2 && !STOP_WORDS.has(w)));
+}
+
+/**
+ * Jaccard similarity between two token sets: |A∩B| / |A∪B|
+ */
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection++;
+  }
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/** Similarity threshold above which two lessons are considered duplicates. */
+const LESSON_SIMILARITY_THRESHOLD = 0.6;
+
 export function sanitizeLessonsList(lessons: string[]): string[] {
   const seenKeys = new Set<string>();
   const seenNear = new Set<string>();
   const result: string[] = [];
+  // Token sets for Jaccard similarity — keeps the longest lesson on collision
+  const keptTokens: Array<Set<string>> = [];
   
   for (const lesson of lessons) {
     const normalized = normalizeLessonText(lesson);
@@ -244,8 +284,21 @@ export function sanitizeLessonsList(lessons: string[]): string[] {
     const key = lessonKey(normalized);
     const nearKey = lessonNearKey(normalized);
     if (seenKeys.has(key) || seenNear.has(nearKey)) continue;
+
+    // Semantic similarity check: compare against all kept lessons
+    const tokens = lessonTokens(normalized);
+    let isDuplicate = false;
+    for (const existing of keptTokens) {
+      if (jaccardSimilarity(tokens, existing) >= LESSON_SIMILARITY_THRESHOLD) {
+        isDuplicate = true;
+        break;
+      }
+    }
+    if (isDuplicate) continue;
+
     seenKeys.add(key);
     seenNear.add(nearKey);
+    keptTokens.push(tokens);
     result.push(normalized);
   }
   

@@ -243,48 +243,67 @@ export function printHandoffPrompt(
 
 /**
  * Suggest possible resolutions for an unresolved issue.
+ * Prioritizes actionable, pattern-specific suggestions over generic boilerplate.
  */
-function suggestResolutions(issue: UnresolvedIssue): string[] {
+function suggestResolutions(issue: UnresolvedIssue, stateContext?: StateContext | null): string[] {
   const resolutions: string[] = [];
   const body = issue.comment.body.toLowerCase();
-  const path = issue.comment.path.toLowerCase();
-  
-  // Generic suggestions based on issue content
-  if (body.includes('type') || body.includes('typescript')) {
-    resolutions.push('Review TypeScript types and interfaces in the file');
+  const path = issue.comment.path;
+  const pathLower = path.toLowerCase();
+
+  // --- Pattern 1: File corruption (multiple reviews about same file being broken) ---
+  if (body.includes('corrupt') || body.includes('garbled') || body.includes('broken code')
+    || body.includes('duplicate') && body.includes('method')
+    || body.includes('orphaned') && body.includes('code')
+    || body.includes('multiple automated fix attempts')) {
+    resolutions.push(`Restore ${path} from the base branch: git show origin/dev:${path} > ${path}`);
+    resolutions.push('The file may have been corrupted by previous automated fix attempts — a clean slate is faster than patching');
   }
-  if (body.includes('test') || body.includes('coverage')) {
-    resolutions.push('Add or update tests for the affected code');
+
+  // --- Pattern 2: Test writing requests ---
+  if (body.includes('test') && (body.includes('coverage') || body.includes('automated') || body.includes('unit'))) {
+    resolutions.push('Write tests manually — LLMs struggle to generate working test suites without a running test harness');
+    resolutions.push('Start with a single happy-path test, verify it runs, then expand to edge cases');
   }
-  if (body.includes('error') || body.includes('exception') || body.includes('handle')) {
-    resolutions.push('Review error handling and edge cases');
+
+  // --- Pattern 3: Multi-file consistency (duplication, shared imports) ---
+  if (body.includes('duplicat') && (body.includes('import') || body.includes('shared') || body.includes('inline'))) {
+    resolutions.push('Fix the shared module first, then update all import sites in a single commit');
   }
-  if (body.includes('performance') || body.includes('slow') || body.includes('optimize')) {
-    resolutions.push('Profile the code and consider caching or algorithmic improvements');
+
+  // --- Pattern 4: Transaction / atomicity ---
+  if (body.includes('transaction') || body.includes('atomic') || (body.includes('race') && body.includes('condition'))) {
+    resolutions.push('Database transactions require understanding the ORM/driver — review the DB layer docs for this project');
+    resolutions.push('Consider a compensating-action pattern if true transactions are not available');
   }
-  if (body.includes('security') || body.includes('injection') || body.includes('sanitize')) {
-    resolutions.push('Review security implications and add input validation');
+
+  // --- Pattern 5: Dead code / unused variables ---
+  if (body.includes('unused') || body.includes('dead code') || body.includes('never referenced')) {
+    resolutions.push('Simple deletion — verify no other files import the symbol, then remove it');
   }
-  if (body.includes('refactor') || body.includes('clean') || body.includes('simplify')) {
-    resolutions.push('Break down into smaller functions or extract common patterns');
+
+  // --- Pattern 6: Security / Redis / cache issues ---
+  if (body.includes('redis') || body.includes('cache') && body.includes('unavailable')) {
+    resolutions.push('Add an availability check at the entry point (return 503 early) rather than fixing downstream');
   }
-  
-  // File-type specific suggestions
-  if (path.endsWith('.tsx') || path.endsWith('.jsx')) {
-    resolutions.push('Check React component props and state management');
-  }
-  if (path.includes('test')) {
-    resolutions.push('Verify test assertions match expected behavior');
-  }
-  
-  // Always include these
+
+  // --- Fallback: content-based ---
   if (resolutions.length === 0) {
-    resolutions.push('Manually review the code and reviewer comment');
+    if (body.includes('error') || body.includes('exception')) {
+      resolutions.push('Review error handling and add appropriate try-catch or fail-fast logic');
+    } else if (body.includes('security') || body.includes('injection')) {
+      resolutions.push('Review security implications and add input validation');
+    } else {
+      resolutions.push('Manually review the code and reviewer comment');
+    }
   }
-  resolutions.push('Try a different LLM model with more context');
-  resolutions.push('Break the issue into smaller, incremental changes');
-  
-  return resolutions.slice(0, 4); // Max 4 suggestions
+
+  // One generic fallback at most
+  if (resolutions.length < 3) {
+    resolutions.push('Break the issue into smaller, incremental changes');
+  }
+
+  return resolutions.slice(0, 4);
 }
 
 /**
@@ -319,8 +338,16 @@ export async function printAfterActionReport(
     }
     
     // Analysis / why it's hard
+    // IMPORTANT: The batch verifier determined this issue still exists.
+    // If the analysis below suggests the fix "may already be in place,"
+    // that's a stale/inconsistent analysis — the verifier's verdict takes precedence.
     console.log(chalk.cyan('\n  🔍 Analysis:'));
     if (issue.explanation) {
+      const looksFixedPhrases = ['already.*(?:fixed|applied|in place)', 'fix.*may.*already', 'suggests.*the fix'];
+      const contradictsVerifier = looksFixedPhrases.some(p => new RegExp(p, 'i').test(issue.explanation || ''));
+      if (contradictsVerifier) {
+        console.log(chalk.yellow(`     ⚠ Note: Analysis below suggests fix may be in place, but verifier confirmed issue STILL EXISTS.`));
+      }
       console.log(chalk.gray(`     ${issue.explanation}`));
     }
     
@@ -342,7 +369,7 @@ export async function printAfterActionReport(
     
     // Possible resolutions
     console.log(chalk.cyan('\n  💡 Possible Resolutions:'));
-    const resolutions = suggestResolutions(issue);
+    const resolutions = suggestResolutions(issue, stateContext);
     for (const resolution of resolutions) {
       console.log(chalk.gray(`     • ${resolution}`));
     }

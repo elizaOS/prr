@@ -19,7 +19,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration } from '../logger.js';
-import { getChangedFiles, getDiffForFile } from '../git/git-clone-index.js';
+import { getChangedFiles, getDiffForFile, detectFileCorruption } from '../git/git-clone-index.js';
 import { basename, dirname, extname } from 'path';
 
 /**
@@ -357,6 +357,36 @@ export async function verifyFixes(
   if (failedCount > 0) {
     console.log(chalk.yellow(`  ○ ${failedCount} issue(s) still need attention`));
   }
-  
+
+  // Self-corruption detection: if ALL issues on a file failed verification,
+  // check whether previous fixer attempts have structurally damaged the file.
+  // If corrupted, restore from base branch to give the next iteration a clean slate.
+  if (failedCount > 0 && verifiedCount === 0) {
+    const failedByFile = new Map<string, number>();
+    for (const issue of changedIssues) {
+      const path = issue.comment.path;
+      failedByFile.set(path, (failedByFile.get(path) || 0) + 1);
+    }
+
+    for (const [filePath, count] of failedByFile.entries()) {
+      if (count < 2) continue; // Only check files with multiple failed issues
+      try {
+        const corruption = await detectFileCorruption(git, filePath, 'HEAD');
+        if (corruption.corrupted && corruption.baseContent) {
+          console.log(chalk.red(`  ⚠ Self-corruption detected in ${filePath}: ${corruption.reason}`));
+          console.log(chalk.yellow(`    Restoring from base branch to give next iteration a clean slate...`));
+          try {
+            await git.checkout(['HEAD', '--', filePath]);
+            debug(`Restored corrupted file from HEAD: ${filePath}`);
+          } catch {
+            debug(`Could not restore ${filePath} from HEAD`);
+          }
+        }
+      } catch {
+        // Corruption detection is best-effort
+      }
+    }
+  }
+
   return { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles };
 }

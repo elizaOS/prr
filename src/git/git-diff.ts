@@ -42,3 +42,97 @@ export async function hasChanges(git: SimpleGit): Promise<boolean> {
   return !status.isClean();
 }
 
+/**
+ * Detect if a file has been corrupted by automated fix attempts.
+ *
+ * Compares the current working tree version against the base branch version.
+ * Returns true if the file shows signs of corruption:
+ * - Diff from base has grown significantly (>2x) compared to previous diff
+ * - File contains structural indicators of layered failed fixes
+ *   (duplicate method definitions, orphaned code, etc.)
+ *
+ * @param baseBranch - The base branch to compare against (e.g. "origin/dev")
+ * @returns null if file is healthy, or a description of the corruption
+ */
+export async function detectFileCorruption(
+  git: SimpleGit,
+  filePath: string,
+  baseBranch: string
+): Promise<{ corrupted: boolean; reason?: string; baseContent?: string }> {
+  try {
+    // Get the base branch version of the file
+    let baseContent: string;
+    try {
+      baseContent = await git.show([`${baseBranch}:${filePath}`]);
+    } catch {
+      // File doesn't exist in base branch — can't be corrupted by us
+      return { corrupted: false };
+    }
+
+    // Get current working tree content
+    let currentContent: string;
+    try {
+      const { readFileSync } = await import('fs');
+      const { resolve } = await import('path');
+      const cwd = await git.revparse(['--show-toplevel']);
+      currentContent = readFileSync(resolve(cwd.trim(), filePath), 'utf-8');
+    } catch {
+      return { corrupted: false };
+    }
+
+    const baseLines = baseContent.split('\n').length;
+    const currentLines = currentContent.split('\n').length;
+    const currentLower = currentContent.toLowerCase();
+
+    // Heuristic 1: Duplicate method/function definitions
+    // A sign of layered failed search/replace attempts
+    const methodPattern = /(?:public|private|protected|async|export)\s+(?:function\s+)?(\w+)\s*[(<]/g;
+    const methodCounts = new Map<string, number>();
+    let match;
+    while ((match = methodPattern.exec(currentContent)) !== null) {
+      const name = match[1];
+      methodCounts.set(name, (methodCounts.get(name) || 0) + 1);
+    }
+    const duplicateMethods = [...methodCounts.entries()].filter(([, count]) => count >= 3);
+    if (duplicateMethods.length > 0) {
+      const names = duplicateMethods.map(([name, count]) => `${name}(×${count})`).join(', ');
+      return {
+        corrupted: true,
+        reason: `Duplicate method definitions detected: ${names}`,
+        baseContent,
+      };
+    }
+
+    // Heuristic 2: Orphaned code indicators
+    // Unbalanced braces suggest structural damage
+    const openBraces = (currentContent.match(/\{/g) || []).length;
+    const closeBraces = (currentContent.match(/\}/g) || []).length;
+    const braceImbalance = Math.abs(openBraces - closeBraces);
+    const baseBraceOpen = (baseContent.match(/\{/g) || []).length;
+    const baseBraceClose = (baseContent.match(/\}/g) || []).length;
+    const baseBraceImbalance = Math.abs(baseBraceOpen - baseBraceClose);
+    if (braceImbalance > baseBraceImbalance + 3) {
+      return {
+        corrupted: true,
+        reason: `Structural damage: brace imbalance grew from ${baseBraceImbalance} to ${braceImbalance}`,
+        baseContent,
+      };
+    }
+
+    // Heuristic 3: Tool artifact remnants inside the code
+    if (currentLower.includes('<search>') || currentLower.includes('<replace>') ||
+        currentLower.includes('</change>') || currentLower.includes('<change path=')) {
+      return {
+        corrupted: true,
+        reason: 'Tool markup (search/replace XML) found inside source file',
+        baseContent,
+      };
+    }
+
+    return { corrupted: false };
+  } catch (err) {
+    debug('Corruption detection failed', { filePath, error: err instanceof Error ? err.message : String(err) });
+    return { corrupted: false };
+  }
+}
+

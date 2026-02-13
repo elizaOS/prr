@@ -333,6 +333,120 @@ function heuristicDedup(
 }
 
 /**
+ * Phase 2: LLM-based semantic deduplication.
+ *
+ * Takes candidate groups from Phase 0 that heuristic dedup (Phase 1) didn't merge
+ * — typically because authors differ or lines are too far apart — and asks the LLM
+ * whether they describe the same underlying issue.
+ *
+ * This catches the pattern where 4 reviewers flag the same corrupted file from
+ * different angles (line 50, 62, 440, null) — the heuristic can't see they're all
+ * "one file is structurally broken."
+ *
+ * Cost: One lightweight LLM call with short summaries. Typically <2k tokens.
+ */
+async function llmDedup(
+  dedupResult: DedupResult,
+  toCheck: Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[] }>,
+  llm: LLMClient
+): Promise<DedupResult> {
+  // Find items that survived heuristic dedup — only compare within same file
+  const byFile = new Map<string, Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[] }>>();
+  for (const item of dedupResult.dedupedToCheck) {
+    const existing = byFile.get(item.comment.path) || [];
+    existing.push(item);
+    byFile.set(item.comment.path, existing);
+  }
+
+  // Only process files with 3+ remaining issues — high chance of semantic overlap
+  const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 3);
+  if (filesToCheck.length === 0) return dedupResult;
+
+  debug(`LLM dedup: checking ${filesToCheck.length} file(s) with 3+ issues`);
+
+  const newDuplicateMap = new Map(dedupResult.duplicateMap);
+  const newDuplicateItems = new Map(dedupResult.duplicateItems);
+  const newDuplicateIds = new Set<string>();
+
+  for (const [filePath, items] of filesToCheck) {
+    // Build a compact prompt with just the first 150 chars of each comment
+    const summaries = items.map((item, idx) => {
+      const line = item.comment.line !== null ? `:${item.comment.line}` : '';
+      const preview = item.comment.body.substring(0, 150).replace(/\n/g, ' ');
+      return `[${idx + 1}] ${item.comment.author}${line}: ${preview}`;
+    }).join('\n');
+
+    const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
+Some may describe the SAME underlying problem from different angles.
+
+${summaries}
+
+Which comments describe the SAME underlying issue? Group them.
+For each group, pick the most detailed comment as canonical.
+
+Reply ONLY with lines like:
+GROUP: 2,5,7 → canonical 5
+GROUP: 1,3 → canonical 3
+
+If no comments are duplicates, reply: NONE`;
+
+    try {
+      const response = await llm.complete(prompt, undefined, { model: 'fast' });
+      const content = response.content.trim();
+
+      if (content.toUpperCase().includes('NONE')) continue;
+
+      // Parse GROUP lines
+      const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
+      let match;
+      while ((match = groupPattern.exec(content)) !== null) {
+        const indices = match[1].split(',').map(s => parseInt(s.trim(), 10) - 1).filter(i => i >= 0 && i < items.length);
+        const canonicalIdx = parseInt(match[2], 10) - 1;
+        if (canonicalIdx < 0 || canonicalIdx >= items.length) continue;
+        if (indices.length < 2) continue;
+
+        const canonical = items[canonicalIdx];
+        const dupes = indices.filter(i => i !== canonicalIdx).map(i => items[i]);
+
+        // Merge into dedup result
+        const existingDupes = newDuplicateMap.get(canonical.comment.id) || [];
+        for (const dupe of dupes) {
+          if (!existingDupes.includes(dupe.comment.id) && !newDuplicateIds.has(dupe.comment.id)) {
+            existingDupes.push(dupe.comment.id);
+            newDuplicateIds.add(dupe.comment.id);
+            newDuplicateItems.set(dupe.comment.id, dupe);
+          }
+        }
+        newDuplicateMap.set(canonical.comment.id, existingDupes);
+
+        debug(`LLM dedup: merged ${dupes.length} duplicate(s) for ${filePath}:${canonical.comment.line ?? '?'}`);
+      }
+    } catch (err) {
+      debug(`LLM dedup failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+      // Non-fatal — fall back to heuristic-only results
+    }
+  }
+
+  if (newDuplicateIds.size === 0) return dedupResult;
+
+  // Rebuild dedupedToCheck excluding newly identified duplicates
+  const updatedDeduped = dedupResult.dedupedToCheck.filter(
+    item => !newDuplicateIds.has(item.comment.id)
+  );
+
+  const totalNewDupes = newDuplicateIds.size;
+  console.log(chalk.gray(
+    `  LLM dedup: merged ${totalNewDupes} additional duplicate(s) across ${filesToCheck.length} file(s)`
+  ));
+
+  return {
+    dedupedToCheck: updatedDeduped,
+    duplicateMap: newDuplicateMap,
+    duplicateItems: newDuplicateItems,
+  };
+}
+
+/**
  * Get code snippet from file for context
  */
 export async function getCodeSnippet(
@@ -499,6 +613,14 @@ export async function findUnresolvedIssues(
       duplicateMap: new Map(),
       duplicateItems: new Map(),
     };
+  }
+
+  // Phase 2: LLM semantic deduplication (catches what heuristics miss)
+  // Only runs when files have 3+ remaining issues — lightweight, typically <2k tokens
+  try {
+    dedupResult = await llmDedup(dedupResult, toCheck, llm);
+  } catch (err) {
+    warn(`LLM dedup failed, proceeding with heuristic-only results: ${err}`);
   }
 
   // Use deduplicated list for analysis
