@@ -138,6 +138,12 @@ export function normalizeLessonText(lesson: string): string | null {
   if (/\btreating as failed\b/i.test(normalized)) return null;
   if (/\bFile was not modified\b/i.test(normalized)) return null;
   
+  // Reject standalone "made no changes" lessons — completely non-actionable.
+  // WHY: "fixer made no changes" as a global lesson tells the next developer nothing.
+  // File-specific "Fix for X:Y - tool made no changes" are already handled above
+  // and collapsed; this catches any remaining standalone variants.
+  if (/^(?:fixer|tool)\s+made\s+no\s+changes\b/i.test(normalized)) return null;
+  
   // Must have minimum substance (not just metadata)
   if (normalized.length < 20) return null;
   

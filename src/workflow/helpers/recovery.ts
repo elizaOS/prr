@@ -67,6 +67,12 @@ export async function trySingleIssueFix(
     console.log(chalk.gray(`    "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
     
     try {
+    // Snapshot working tree BEFORE the fix so we can revert only NEW changes on failure.
+    // WHY: The fixer often creates auxiliary files (tests, helpers) beyond the target.
+    // If verification rejects, we must clean ALL of them up — not just the target file —
+    // otherwise orphan files pollute subsequent diffs and verifications.
+    const filesBeforeFix = new Set(await getChangedFiles(git));
+
     // Build a focused prompt for just this one issue
     const focusedPrompt = buildSingleIssuePrompt(issue);
     
@@ -125,20 +131,37 @@ export async function trySingleIssueFix(
           console.log(chalk.gray(`    📝 Lesson: ${lesson}`));
           LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
 
-          // Reset ONLY this issue's file, not all changed files
-          // WHY: Other issues in this batch may have been successfully fixed
-          // and we don't want to lose those changes
-          try {
-            await git.checkout([issue.comment.path]);
-          } catch {
-            // File might have been deleted from git (e.g., fixer ran git rm)
-            // Try to unstage deletion, then restore from HEAD
+          // Revert ALL files changed by this attempt (not just the target).
+          // WHY: The fixer may create test files, helpers, etc. beyond the target.
+          // Only revert files that are NEW since the snapshot — preserve prior progress.
+          const filesAfterFix = await getChangedFiles(git);
+          const filesToRevert = filesAfterFix.filter(f => !filesBeforeFix.has(f));
+          // Also always revert the target file itself
+          if (!filesToRevert.includes(issue.comment.path)) {
+            filesToRevert.push(issue.comment.path);
+          }
+          for (const f of filesToRevert) {
             try {
-              await git.reset(['HEAD', issue.comment.path]);
-              await git.checkout([issue.comment.path]);
+              await git.checkout([f]);
             } catch {
-              debug(`Could not revert ${issue.comment.path} after rejected fix`);
+              try {
+                // File might be untracked (new) — remove from index and working tree
+                await git.raw(['rm', '-f', f]);
+              } catch {
+                try {
+                  await git.reset(['HEAD', f]);
+                  await git.checkout([f]);
+                } catch {
+                  debug(`Could not revert ${f} after rejected fix`);
+                }
+              }
             }
+          }
+          if (filesToRevert.length > 1) {
+            debug('Reverted auxiliary files from rejected focus fix', {
+              target: issue.comment.path,
+              reverted: filesToRevert,
+            });
           }
         }
       } else if (changedFiles.length > 0) {
@@ -152,20 +175,16 @@ export async function trySingleIssueFix(
         });
         // Add lesson so tool knows to focus on the right file
         LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify ${issue.comment.path}`);
-        // Reset wrong files but keep any changes to the target file
-        // WHY: The target file might have partial progress worth keeping
-        const wrongFiles = changedFiles.filter(f => f !== issue.comment.path);
-        if (wrongFiles.length > 0) {
+        // Revert ALL new files (not just wrong-target ones) — the fixer didn't help here.
+        const filesToClean = changedFiles.filter(f => !filesBeforeFix.has(f));
+        for (const f of filesToClean) {
           try {
-            await git.checkout(wrongFiles);
+            await git.checkout([f]);
           } catch {
-            // Some files might have been deleted from git; revert individually
-            for (const f of wrongFiles) {
-              try {
-                await git.checkout([f]);
-              } catch {
-                try { await git.reset(['HEAD', f]); await git.checkout([f]); } catch { /* skip */ }
-              }
+            try {
+              await git.raw(['rm', '-f', f]);
+            } catch {
+              try { await git.reset(['HEAD', f]); await git.checkout([f]); } catch { /* skip */ }
             }
           }
         }

@@ -34,6 +34,15 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           console.log(`Compacted ${removed} duplicate lessons (${ctx.state.lessonsLearned.length} unique remaining)`);
         }
         
+        // Reset no-progress cycle counter at session start.
+        // WHY: This counter is for detecting stalemate within a session's rotation.
+        // Carrying over 43 from a previous run makes the bail-out message misleading
+        // ("44 cycles") and gives no useful signal. Historical bail-out data is
+        // preserved in bailOutRecord anyway.
+        if (ctx.state.noProgressCycles) {
+          ctx.state.noProgressCycles = 0;
+        }
+        
         if (ctx.state.totalTimings) {
           loadOverallTimings(ctx.state.totalTimings);
         }
