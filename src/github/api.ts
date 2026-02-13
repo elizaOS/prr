@@ -346,7 +346,100 @@ export class GitHubAPI {
     }
 
     debug(`Extracted ${reviewComments.length} review comments from threads`);
+
+    // Also fetch issue comments (conversation tab) from review bots like claude[bot].
+    // These bots post full markdown reviews as issue comments rather than inline
+    // review threads, so we need to parse them to extract individual issues.
+    try {
+      const botComments = await this.getReviewBotIssueComments(owner, repo, prNumber);
+      if (botComments.length > 0) {
+        debug(`Found ${botComments.length} issue(s) from bot review comments`);
+        reviewComments.push(...botComments);
+      }
+    } catch (err) {
+      // Non-fatal: if issue comment parsing fails, we still have the thread comments
+      debug('Failed to fetch/parse bot issue comments', { error: String(err) });
+    }
+
+    debug('Review comments', reviewComments);
     return reviewComments;
+  }
+
+  /**
+   * Fetch issue comments (conversation tab) and extract review issues from bots.
+   *
+   * Some review bots (notably claude[bot]) post structured markdown reviews as
+   * issue comments rather than inline review comments. We take the LATEST comment
+   * from each known review bot, parse it into individual file-specific issues,
+   * and return them as ReviewComment objects.
+   */
+  private async getReviewBotIssueComments(
+    owner: string, repo: string, prNumber: number
+  ): Promise<ReviewComment[]> {
+    // Known bots that post review-style issue comments
+    const REVIEW_BOTS = ['claude[bot]'];
+
+    const allIssueComments: Array<{
+      id: number;
+      user: { login: string } | null;
+      body: string;
+      created_at: string;
+    }> = [];
+
+    // Paginate through all issue comments
+    for await (const response of this.octokit.paginate.iterator(
+      this.octokit.issues.listComments,
+      { owner, repo, issue_number: prNumber, per_page: 100 }
+    )) {
+      for (const c of response.data) {
+        if (c.body) {
+          allIssueComments.push({
+            id: c.id,
+            user: c.user,
+            body: c.body,
+            created_at: c.created_at,
+          });
+        }
+      }
+    }
+
+    const results: ReviewComment[] = [];
+
+    for (const botLogin of REVIEW_BOTS) {
+      // Filter to this bot's comments and take only the LATEST one.
+      // Bots re-review on each push, so the latest reflects current code state.
+      const botComments = allIssueComments
+        .filter(c => c.user?.login === botLogin)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+
+      if (botComments.length === 0) continue;
+
+      const latest = botComments[0];
+      const authorClean = botLogin.replace(/\[bot\]$/, '');
+      debug(`Parsing latest ${botLogin} issue comment`, {
+        commentId: latest.id,
+        bodyLength: latest.body.length,
+        totalComments: botComments.length,
+      });
+
+      const parsed = parseMarkdownReviewIssues(latest.body);
+      debug(`Parsed ${parsed.length} issue(s) from ${botLogin} comment`);
+
+      for (let i = 0; i < parsed.length; i++) {
+        const issue = parsed[i];
+        results.push({
+          id: `ic-${latest.id}-${i}`,
+          threadId: `ic-${latest.id}-${i}`,
+          author: authorClean,
+          body: issue.body,
+          path: issue.path,
+          line: issue.line,
+          createdAt: latest.created_at,
+        });
+      }
+    }
+
+    return results;
   }
 
   async getFileContent(owner: string, repo: string, branch: string, path: string): Promise<string | null> {
@@ -825,4 +918,192 @@ export class GitHubAPI {
       reviewedCurrentCommit: false,
     };
   }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Markdown review comment parser
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+interface ParsedIssue {
+  body: string;
+  path: string;
+  line: number | null;
+}
+
+/**
+ * File path + optional line pattern.  Matches patterns like:
+ *   `lib/cache/client.ts:470`
+ *   `app/api/auth/siwe/verify/route.ts:155`
+ *   verify/route.ts:304-376
+ *   nonce/route.ts:49
+ *   (lib/cache/consume.ts:15-20)
+ *
+ * Uses [\w./-]+ for path chars to avoid capturing leading punctuation like `(`.
+ * Requires at least one `/` to avoid matching bare words like `client.ts`.
+ */
+const FILE_LINE_RE = /(?:[`(])?(?:\.\/)?(\w[\w./-]*\/[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))(?::(\d+))?(?:[:-]\d+)?(?:[`)])?/;
+
+/**
+ * Section headers to SKIP entirely — these never contain issues.
+ * Everything else gets processed (we rely on items having file:line refs to filter).
+ */
+const SKIP_SECTION_KEYWORDS = [
+  'overview', 'summary', 'verdict', 'approve', 'overall assessment',
+];
+
+/**
+ * Parse a structured markdown review comment (as posted by claude[bot] etc.)
+ * into individual file-specific issues.
+ *
+ * Strategy:
+ * 1. Split the markdown into sections by ## / ### headers
+ * 2. Identify sections that contain issue/problem content (vs. "strengths")
+ * 3. Within issue sections, split by numbered items (### N. or **N.)
+ * 4. For each item, extract the first file:line reference as the location
+ * 5. Return each item as a ParsedIssue with path, line, and body
+ */
+export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
+  const issues: ParsedIssue[] = [];
+  const lines = markdown.split('\n');
+
+  // Phase 1: Split into top-level sections by ## headers
+  const sections: Array<{ header: string; body: string }> = [];
+  let currentHeader = '';
+  let currentBody: string[] = [];
+
+  for (const line of lines) {
+    const h2Match = line.match(/^##\s+(.+)/);
+    if (h2Match) {
+      if (currentBody.length > 0) {
+        sections.push({ header: currentHeader, body: currentBody.join('\n') });
+      }
+      currentHeader = h2Match[1];
+      currentBody = [];
+    } else {
+      currentBody.push(line);
+    }
+  }
+  if (currentBody.length > 0) {
+    sections.push({ header: currentHeader, body: currentBody.join('\n') });
+  }
+
+  // Phase 2: Process sections, extracting issue items with file references.
+  // We skip only known non-issue sections (verdicts, summaries). Everything
+  // else gets processed — items without file:line refs are naturally filtered.
+  for (const section of sections) {
+    const headerLower = section.header.toLowerCase();
+    if (SKIP_SECTION_KEYWORDS.some(kw => headerLower.includes(kw))) continue;
+
+    // Within a section, focus on sub-areas that contain issues.
+    // Claude uses two patterns:
+    //   Format A: items directly under the ## header (e.g. "## 🚨 BLOCKING ISSUES")
+    //   Format B: **Issues:** / **Concerns:** sub-headers within a larger section
+    // We extract items from both.
+    const textToProcess = extractIssueSubsections(section.body);
+
+    // Phase 3: Split into individual items
+    const items = splitIntoItems(textToProcess);
+
+    for (const item of items) {
+      // Phase 4: Extract file:line from the item.
+      // Try structured **Location(s):** pattern first, then fall back to generic.
+      const locationMatch = item.match(
+        /\*\*Locations?:\*\*\s*`?(\w[\w./-]*\/[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))(?::(\d+))?/
+      );
+      const fileMatch = locationMatch || item.match(FILE_LINE_RE);
+      if (!fileMatch) continue; // Skip items without file references
+
+      const path = fileMatch[1];
+      const line = fileMatch[2] ? parseInt(fileMatch[2], 10) : null;
+
+      // Clean the body: trim, remove excessive blank lines
+      const body = item.trim().replace(/\n{3,}/g, '\n\n');
+      if (body.length < 20) continue; // Skip trivially short items
+
+      issues.push({ body, path, line });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Extract issue-bearing subsections from a section body.
+ *
+ * Claude's Format B uses subsections like:
+ *   **Strengths:**
+ *   - ...
+ *   **Issues:**
+ *   1. ...
+ *
+ * We keep only lines under sub-headers that indicate issues/concerns,
+ * plus any ### subsections (which are always issue-level in Format A).
+ * If there are no **Label:** sub-headers, returns the body as-is.
+ */
+function extractIssueSubsections(body: string): string {
+  const ISSUE_LABELS = ['issue', 'concern', 'problem', 'bug', 'critical', 'warning', 'fix'];
+  const SKIP_LABELS = ['strength', 'good', 'strong', 'highlight'];
+
+  // Check if this section uses **Label:** sub-headers
+  const hasSubHeaders = /^\*\*[A-Z][\w\s]+:\*\*\s*$/m.test(body);
+  if (!hasSubHeaders) return body;
+
+  const lines = body.split('\n');
+  const result: string[] = [];
+  let inIssueBlock = false;
+  let inSkipBlock = false;
+
+  for (const line of lines) {
+    const subHeaderMatch = line.match(/^\*\*([^*]+):\*\*\s*$/);
+    if (subHeaderMatch) {
+      const label = subHeaderMatch[1].toLowerCase();
+      inIssueBlock = ISSUE_LABELS.some(kw => label.includes(kw));
+      inSkipBlock = SKIP_LABELS.some(kw => label.includes(kw));
+      continue;
+    }
+
+    // ### headers are always issue items (Format A under Format B sections)
+    if (/^###\s+/.test(line)) {
+      inIssueBlock = true;
+      inSkipBlock = false;
+    }
+
+    if (inIssueBlock && !inSkipBlock) {
+      result.push(line);
+    }
+  }
+
+  return result.length > 0 ? result.join('\n') : body;
+}
+
+/**
+ * Split a section body into individual items.
+ * Looks for ### headers, **N. patterns, or N. ** patterns.
+ */
+function splitIntoItems(body: string): string[] {
+  const items: string[] = [];
+  const lines = body.split('\n');
+  let current: string[] = [];
+
+  for (const line of lines) {
+    // New item boundary patterns:
+    //   ### N. **Title**  (Format A)
+    //   **N. Title**      (Format A variant)
+    //   N. **Title**      (Format B)
+    const isNewItem = /^###\s+/.test(line)
+      || /^\*\*\d+[\.\)]\s+/.test(line)
+      || /^\d+\.\s+\*\*/.test(line);
+
+    if (isNewItem && current.length > 0) {
+      items.push(current.join('\n'));
+      current = [];
+    }
+    current.push(line);
+  }
+
+  if (current.length > 0) {
+    items.push(current.join('\n'));
+  }
+
+  return items;
 }

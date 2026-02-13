@@ -76,7 +76,13 @@ export interface PushIterationContexts {
 
 /** Callback functions used during push iteration */
 export interface PushIterationCallbacks {
-  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>;
+  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<{
+    unresolved: UnresolvedIssue[];
+    recommendedModels?: string[];
+    recommendedModelIndex: number;
+    modelRecommendationReasoning?: string;
+    duplicateMap: Map<string, string[]>;
+  }>;
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>;
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>;
   printUnresolvedIssues: (issues: UnresolvedIssue[]) => void;
@@ -162,7 +168,7 @@ export async function executePushIteration(
     findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched
   );
   
-  const { comments, unresolvedIssues } = loopResult;
+  const { comments, unresolvedIssues, duplicateMap } = loopResult;
   
   if (loopResult.shouldBreak) {
     // Store final state for after action report (for dry-run)
@@ -245,7 +251,7 @@ export async function executePushIteration(
     }
 
     // Verify fixes
-    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch);
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap);
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
     
@@ -291,7 +297,11 @@ export async function executePushIteration(
       }
       unresolvedIssues.splice(0, unresolvedIssues.length, ...refreshResult.updated);
       
-      if (postVerif.shouldBreak) break;
+      if (postVerif.shouldBreak) {
+        exitReason = 'bail_out';
+        exitDetails = `Stalemate detected: fix loop exhausted all strategies with ${unresolvedIssues.length} issue(s) remaining`;
+        break;
+      }
     }
   }
 
@@ -336,8 +346,18 @@ export async function executePushIteration(
     };
   }
 
+  // After commit+push, if we broke out of the fix loop due to bail-out (stalemate),
+  // signal the outer push iteration loop to stop. We still committed+pushed above
+  // to save partial progress, but we must NOT re-enter the loop — doing so would
+  // re-fetch comments, find "new" issues from the re-review, and loop indefinitely.
+  const bailedOut = exitReason === 'bail_out';
+  if (bailedOut) {
+    finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+    finalCommentsRef.current = [...comments];
+  }
+
   return {
-    shouldBreak: false,
+    shouldBreak: bailedOut,
     exitReason,
     exitDetails,
     updatedRapidFailureCount: rapidFailureCount,

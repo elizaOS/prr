@@ -51,7 +51,13 @@ export interface RunCallbacks {
   syncResolverState?: (state: RunState) => void;
   getRotationContext: () => RotationContext;
   getCurrentModel: () => string | undefined;
-  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>;
+  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<{
+    unresolved: UnresolvedIssue[];
+    recommendedModels?: string[];
+    recommendedModelIndex: number;
+    modelRecommendationReasoning?: string;
+    duplicateMap: Map<string, string[]>;
+  }>;
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>;
   printUnresolvedIssues: (issues: UnresolvedIssue[]) => void;
   parseNoChangesExplanation: (output: string) => string | null;

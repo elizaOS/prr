@@ -13,12 +13,28 @@
  * return types. No complex retry logic or timeout handling here.
  */
 import type { SimpleGit } from 'simple-git';
+import { debug } from '../logger.js';
 
 export interface CommitResult {
   hash: string;
   message: string;
   filesChanged: number;
 }
+
+/**
+ * Patterns that indicate tool markup was accidentally left in source files.
+ * These are the XML-like edit instructions from the LLM-API runner that should
+ * be parsed and applied, never committed as raw text.
+ *
+ * We check for the COMBINATION of <search> + <replace> or <change path="...">
+ * to avoid false positives from legitimate XML/HTML code that might use one
+ * of these tag names individually.
+ */
+const TOOL_MARKUP_PATTERN = /<change\s+path="[^"]+">[\s\S]*?<search>[\s\S]*?<\/search>[\s\S]*?<replace>/;
+const TOOL_MARKER_FILES = [
+  '__cache-check-needed.md',   // PRR tool notes
+  '__fix-notes.md',            // PRR tool notes
+];
 
 /**
  * Stage all changes in the repository
@@ -57,6 +73,12 @@ export async function squashCommit(
   // Stage all changes
   await stageAll(git);
 
+  // Pre-commit safety check: detect and unstage files with tool markup artifacts.
+  // The LLM-API runner uses <change><search>...</search><replace>...</replace></change>
+  // XML blocks. If parsing fails partially, these end up in source files.
+  // Also catch accidental tool-generated note files.
+  await unstageToolArtifacts(git);
+
   // Build commit message (title + optional body separated by blank line)
   const fullMessage = body ? `${message}\n\n${body}` : message;
 
@@ -68,4 +90,87 @@ export async function squashCommit(
     message,
     filesChanged: result.summary.changes,
   };
+}
+
+/**
+ * Inspect staged changes for tool markup artifacts and unstage them.
+ *
+ * Checks two things:
+ * 1. Files whose names match known tool-generated patterns (e.g., __cache-check-needed.md)
+ * 2. Files whose staged diff contains raw <change><search>...</search><replace> markup
+ *
+ * For any matches, we `git checkout HEAD -- <file>` to restore the original and
+ * `git rm --cached` for new files. This prevents tool debris from being committed
+ * while still allowing the rest of the changes through.
+ */
+async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
+  try {
+    // Get list of staged files
+    const status = await git.status();
+    const stagedFiles = [
+      ...status.created,
+      ...status.modified,
+      ...status.renamed.map(r => r.to),
+    ];
+
+    if (stagedFiles.length === 0) return;
+
+    const filesToRevert: string[] = [];
+    const filesToRemove: string[] = []; // New files to unstage entirely
+
+    for (const file of stagedFiles) {
+      const basename = file.split('/').pop() || '';
+
+      // Check filename patterns
+      if (TOOL_MARKER_FILES.some(pattern => basename === pattern || basename.startsWith('__') && basename.endsWith('.md'))) {
+        debug(`Tool artifact detected (filename): ${file}`);
+        if (status.created.includes(file)) {
+          filesToRemove.push(file);
+        } else {
+          filesToRevert.push(file);
+        }
+        continue;
+      }
+
+      // Check file content for tool markup (only for text-like files)
+      if (/\.(ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)$/.test(file)) {
+        try {
+          const diff = await git.diff(['--cached', '--', file]);
+          if (TOOL_MARKUP_PATTERN.test(diff)) {
+            debug(`Tool markup detected in staged diff: ${file}`);
+            if (status.created.includes(file)) {
+              filesToRemove.push(file);
+            } else {
+              filesToRevert.push(file);
+            }
+          }
+        } catch {
+          // If diff fails, skip this file (don't block commit)
+        }
+      }
+    }
+
+    // Revert modified files to HEAD (removes the tool markup changes)
+    for (const file of filesToRevert) {
+      try {
+        await git.checkout(['HEAD', '--', file]);
+        console.log(`  ⚠ Reverted tool markup in ${file}`);
+      } catch {
+        debug(`Failed to revert tool artifact: ${file}`);
+      }
+    }
+
+    // Remove new files that are tool artifacts
+    for (const file of filesToRemove) {
+      try {
+        await git.raw(['rm', '--cached', file]);
+        console.log(`  ⚠ Excluded tool artifact: ${file}`);
+      } catch {
+        debug(`Failed to unstage tool artifact: ${file}`);
+      }
+    }
+  } catch (err) {
+    // Non-fatal: if artifact detection fails, proceed with commit as-is
+    debug('Tool artifact detection failed', { error: String(err) });
+  }
 }

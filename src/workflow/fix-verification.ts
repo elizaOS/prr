@@ -32,7 +32,8 @@ export async function verifyFixes(
   lessonsContext: LessonsContext,
   llm: LLMClient,
   verifiedThisSession: Set<string>,
-  noBatch: boolean
+  noBatch: boolean,
+  duplicateMap?: Map<string, string[]>
 ): Promise<{
   verifiedCount: number;
   failedCount: number;
@@ -43,6 +44,7 @@ export async function verifyFixes(
   const spinner = ora();
   let verifiedCount = 0;
   let failedCount = 0;
+  let autoVerifiedCount = 0;
   const unchangedIssues: typeof unresolvedIssues = [];
   const changedIssues: typeof unresolvedIssues = [];
   let changedFiles: string[] = [];
@@ -125,6 +127,28 @@ export async function verifyFixes(
             Verification.markVerified(stateContext, issue.comment.id);
             Iterations.addCommentToIteration(stateContext, issue.comment.id);
             verifiedThisSession.add(issue.comment.id);  // Track for session filtering
+            
+            // Clean up fix-attempt lessons now that the issue is resolved.
+            // Keeps architectural constraints, removes "Fix for X - the diff..." debris.
+            const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
+              lessonsContext, issue.comment.path, issue.comment.line
+            );
+            if (cleaned > 0) {
+              debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${issue.comment.path}:${issue.comment.line}`);
+            }
+            
+            // Auto-verify duplicates of this canonical issue
+            if (duplicateMap) {
+              const duplicates = duplicateMap.get(issue.comment.id) || [];
+              for (const dupId of duplicates) {
+                if (!Verification.isVerified(stateContext, dupId)) {
+                  Verification.markVerified(stateContext, dupId, issue.comment.id);
+                  verifiedThisSession.add(dupId);
+                  autoVerifiedCount++;
+                  debug(`Auto-verified duplicate comment ${dupId} (canonical ${issue.comment.id} was fixed)`);
+                }
+              }
+            }
           } else {
             failedCount++;
             // Analyze failure to generate actionable lesson
@@ -175,6 +199,27 @@ export async function verifyFixes(
               Verification.markVerified(stateContext, issue.comment.id);
               Iterations.addCommentToIteration(stateContext, issue.comment.id);
               verifiedThisSession.add(issue.comment.id);
+              
+              // Clean up fix-attempt lessons now that the issue is resolved
+              const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
+                lessonsContext, issue.comment.path, issue.comment.line
+              );
+              if (cleaned > 0) {
+                debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${issue.comment.path}:${issue.comment.line}`);
+              }
+              
+              // Auto-verify duplicates of this canonical issue
+              if (duplicateMap) {
+                const duplicates = duplicateMap.get(issue.comment.id) || [];
+                for (const dupId of duplicates) {
+                  if (!Verification.isVerified(stateContext, dupId)) {
+                    Verification.markVerified(stateContext, dupId, issue.comment.id);
+                    verifiedThisSession.add(dupId);
+                    autoVerifiedCount++;
+                    debug(`Auto-verified duplicate comment ${dupId} (canonical ${issue.comment.id} was fixed)`);
+                  }
+                }
+              }
             } else {
               failedCount++;
               // Use lesson from batch response (already parsed by batchVerifyFixes).
@@ -216,6 +261,10 @@ export async function verifyFixes(
   
   if (verifiedCount > 0) {
     console.log(chalk.green(`  ✓ ${verifiedCount} issue(s) verified as fixed`));
+  }
+  
+  if (autoVerifiedCount > 0) {
+    console.log(chalk.gray(`  Auto-verified ${autoVerifiedCount} duplicate comment(s)`));
   }
   
   if (failedCount > 0) {

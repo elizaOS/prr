@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import { writeFileSync, mkdirSync, createWriteStream } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { format } from 'node:util';
 import type { WriteStream } from 'fs';
 
 let verboseEnabled = false;
@@ -9,62 +10,51 @@ let debugLogDir: string | null = null;
 let debugLogCounter = 0;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// OUTPUT LOG TEE — mirrors all console output to ~/.prr/output.log
+// OUTPUT LOG TEE — mirrors all console output to ./output.log in the CWD
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 let outputLogStream: WriteStream | null = null;
 let outputLogPath: string | null = null;
 
 /**
- * Strip ANSI escape codes from a string so the log file is clean text.
- * Matches CSI sequences (colors, cursor), OSC sequences, and simple escapes.
+ * Strip ANSI escape codes from a string for plain-text logging.
  */
 function stripAnsi(str: string): string {
   // eslint-disable-next-line no-control-regex
-  return str.replace(/\x1B(?:\[[0-9;]*[A-Za-z]|\].*?(?:\x07|\x1B\\)|\(B)/g, '');
+  return str.replace(/\x1B(?:\[[\x20-\x3F]*[\x40-\x7E]|\].*?(?:\x07|\x1B\\)|\(B)/g, '');
 }
 
 /**
  * Initialize the output log tee.
  *
- * Creates/truncates ~/.prr/output.log and monkey-patches process.stdout.write
- * and process.stderr.write to mirror all output (ANSI-stripped) to the file.
+ * Creates/truncates ./output.log in the CWD and patches console.log/warn/error
+ * to mirror all formatted output (ANSI-stripped) to the file.
+ *
+ * Spinner output (ora etc.) goes through process.stdout.write — NOT console.log —
+ * and is intentionally excluded.  It's pure UI noise with no analytical value.
  *
  * Call this once at startup, before any meaningful output.
- *
- * WHY: Having a plain-text log of the full run makes it easy to feed back
- * into an LLM or Cursor for analysis without manually copying terminal output.
  */
 export function initOutputLog(): void {
-  const prrDir = join(homedir(), '.prr');
-  mkdirSync(prrDir, { recursive: true });
+  outputLogPath = join(process.cwd(), 'output.log');
 
-  outputLogPath = join(prrDir, 'output.log');
-
-  // Truncate / create the file, then open an append stream
   writeFileSync(outputLogPath, '', 'utf-8');
   outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
 
-  // Monkey-patch stdout
-  const origStdoutWrite = process.stdout.write.bind(process.stdout) as typeof process.stdout.write;
-  process.stdout.write = function (chunk: string | Uint8Array, ...args: any[]): boolean {
-    // Write to log file (strip ANSI for readability)
-    if (outputLogStream) {
-      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
-      outputLogStream.write(stripAnsi(text));
-    }
-    return origStdoutWrite(chunk, ...args);
-  } as typeof process.stdout.write;
+  const origLog = console.log.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origError = console.error.bind(console);
 
-  // Monkey-patch stderr
-  const origStderrWrite = process.stderr.write.bind(process.stderr) as typeof process.stderr.write;
-  process.stderr.write = function (chunk: string | Uint8Array, ...args: any[]): boolean {
-    if (outputLogStream) {
-      const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf-8');
-      outputLogStream.write(stripAnsi(text));
-    }
-    return origStderrWrite(chunk, ...args);
-  } as typeof process.stderr.write;
+  function logToStream(...args: unknown[]): void {
+    if (!outputLogStream) return;
+    const text = format(...args);
+    const clean = stripAnsi(text);
+    if (clean) outputLogStream.write(clean + '\n');
+  }
+
+  console.log = (...args: unknown[]) => { logToStream(...args); origLog(...args); };
+  console.warn = (...args: unknown[]) => { logToStream(...args); origWarn(...args); };
+  console.error = (...args: unknown[]) => { logToStream(...args); origError(...args); };
 }
 
 /**

@@ -1075,30 +1075,29 @@ NO: <brief explanation of what's still missing or wrong>`;
     rejectionReason: string
   ): Promise<string> {
     const diffPreview = diff.length > 1500 ? `${diff.substring(0, 1500)}\n... (truncated)` : diff;
-    const prompt = `A code fix attempt was rejected. Analyze what went wrong and extract a specific lesson.
+    const prompt = `A fix attempt for a code review issue was rejected. You need to extract what was LEARNED from this failure so the next attempt makes progress instead of repeating the same mistake.
 
-ORIGINAL ISSUE:
-File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
-Review Comment: ${issue.comment}
+FILE: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
+REVIEW COMMENT: ${issue.comment}
 
 ATTEMPTED FIX (diff):
 ${diffPreview}
 
-REJECTION REASON:
+WHY IT WAS REJECTED:
 ${rejectionReason}
 
-Generate ONE specific, actionable lesson that will help the next fix attempt succeed.
+Write ONE lesson learned — a specific insight from this failure that the next attempt needs to account for. Focus on WHY this approach failed and what must be different.
 
-GOOD LESSONS (specific, actionable):
-- "When adding validation for X, must also update the error message to mention X"
-- "The fix added A but the comment also requires B - need both"
-- "Don't just check for null, also handle the empty string case mentioned"
-- "The validation was added but in the wrong location - must be before Y"
+GOOD lessons (specific, learned from the failure):
+- "cache.set() returns void not boolean — checking its return value always evaluates to falsy"
+- "Test files must go in __tests__/ subdirectory, not next to route.ts — previous attempt put them in wrong location"
+- "The review asks for DB transactions but services layer doesn't accept tx params — need compensating cleanup pattern instead"
+- "Comment requires BOTH nonce and verify endpoints to be fixed — fixing only verify was rejected"
 
-BAD LESSONS (vague, not actionable):
-- "Fix was incomplete" (doesn't say what's missing)
-- "Need to try again" (no guidance)
-- "The change didn't work" (no specifics)
+BAD lessons (vague, not learned from failure):
+- "The diff only adds X but doesn't do Y" (just restates the rejection)
+- "Fix was incomplete" (no insight about why)
+- "tool modified wrong files" (meta about tooling, not the problem)
 
 Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
@@ -1153,27 +1152,25 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'FIX_ID: YES|NO: brief explanation of what was/wasn\'t fixed',
       'LESSON: <actionable guidance> (REQUIRED for every NO — this feeds into the next fix attempt)',
       '',
-      'The LESSON line is critical for NO responses. It must explain:',
-      '- What the diff actually changed vs what the comment asked for',
-      '- What specific action the next attempt should take to succeed',
+      'The LESSON line is critical for NO responses. It captures what was LEARNED from this failure so the next attempt makes progress instead of repeating the same mistake. Focus on WHY this approach failed and what must be different next time.',
       '',
-      'GOOD lessons (specific, actionable):',
-      '- "When adding validation for X, must also update the error message to mention X"',
-      '- "The fix added null check but comment also requires empty string handling - need both"',
-      '- "Don\'t just check for null, also handle the undefined case mentioned in review"',
-      '- "The validation was added but in the wrong location - must be before the return on line Y"',
+      'GOOD lessons (specific, learned from the failure):',
+      '- "cache.set() returns void not boolean — checking return value always falsy"',
+      '- "Test files must go in __tests__/ subdirectory — placing next to route.ts was rejected"',
+      '- "Review requires BOTH endpoints fixed — fixing only verify was insufficient"',
+      '- "Services layer has no tx param — need compensating cleanup, not DB transactions"',
       '',
-      'BAD lessons (vague, not actionable — NEVER produce these):',
-      '- "Fix was incomplete" (doesn\'t say what\'s missing)',
-      '- "Need to try again" (no guidance)',
-      '- "The change didn\'t work" (no specifics)',
+      'BAD lessons (vague, just restating the rejection):',
+      '- "The diff only adds X but doesn\'t do Y" (restates rejection, no insight)',
+      '- "Fix was incomplete" (obvious, not useful)',
+      '- "The code change does not address the issue" (zero information)',
       '',
       'Example responses:',
       '',
       '1: YES: The null check on line 45 matches what the comment requested',
       '',
       '2: NO: Added try/catch but the comment asks for input validation before the call, not error handling after',
-      'LESSON: Comment asks for validation BEFORE the API call (line 32), not try/catch AFTER - add input check',
+      'LESSON: Review asks for pre-call validation (line 32), not post-call error handling — need input check before the API call',
       '',
       '---',
       '',

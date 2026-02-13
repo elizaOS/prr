@@ -23,6 +23,300 @@ import { debug, warn } from '../logger.js';
 import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 
 /**
+ * Result of the deduplication process
+ */
+interface DedupResult {
+  /** Items to proceed with (canonicals + non-duplicates) */
+  dedupedToCheck: Array<{
+    comment: ReviewComment;
+    codeSnippet: string;
+    contextHints?: string[];
+  }>;
+  /** Maps canonical commentId -> duplicate commentIds */
+  duplicateMap: Map<string, string[]>;
+  /** Duplicate items keyed by commentId (for context merging) */
+  duplicateItems: Map<string, {
+    comment: ReviewComment;
+    codeSnippet: string;
+    contextHints?: string[];
+  }>;
+}
+
+/**
+ * Log duplicate candidate groups for analysis.
+ * Phase 0: Observation only - no filtering or behavior change.
+ * 
+ * Groups issues by file path and line proximity to identify potential duplicates.
+ * 
+ * @param toCheck Array of issues with snippets to analyze
+ */
+function logDuplicateCandidates(
+  toCheck: Array<{
+    comment: ReviewComment;
+    codeSnippet: string;
+    contextHints?: string[];
+  }>
+): void {
+  // Skip if too few issues to have meaningful duplicates
+  if (toCheck.length <= 3) {
+    return;
+  }
+
+  // Group by file path
+  const byFile = new Map<string, typeof toCheck>();
+  for (const item of toCheck) {
+    const path = item.comment.path;
+    if (!byFile.has(path)) {
+      byFile.set(path, []);
+    }
+    byFile.get(path)!.push(item);
+  }
+
+  // Find candidate duplicate groups within each file
+  const candidateGroups: Array<{
+    file: string;
+    lineRange: string;
+    items: typeof toCheck;
+    sameAuthor: boolean;
+    authors: Set<string>;
+  }> = [];
+
+  for (const [file, items] of byFile.entries()) {
+    if (items.length < 2) continue;
+
+    // Cluster by line proximity (within 10 lines or both null)
+    const clusters: typeof toCheck[] = [];
+    const processed = new Set<number>();
+
+    for (let i = 0; i < items.length; i++) {
+      if (processed.has(i)) continue;
+
+      const cluster = [items[i]];
+      processed.add(i);
+
+      for (let j = i + 1; j < items.length; j++) {
+        if (processed.has(j)) continue;
+
+        const line1 = items[i].comment.line;
+        const line2 = items[j].comment.line;
+
+        // Check if lines are close or both null
+        const areClose = 
+          (line1 !== null && line2 !== null && Math.abs(line1 - line2) <= 10) ||
+          (line1 === null && line2 === null);
+
+        if (areClose) {
+          cluster.push(items[j]);
+          processed.add(j);
+        }
+      }
+
+      if (cluster.length >= 2) {
+        clusters.push(cluster);
+      }
+    }
+
+    // Record clusters as candidate groups
+    for (const cluster of clusters) {
+      const authors = new Set(cluster.map(item => item.comment.author));
+      const lines = cluster.map(item => item.comment.line).filter(l => l !== null) as number[];
+      const hasNullLine = cluster.some(item => item.comment.line === null);
+      
+      let lineRange: string;
+      if (lines.length === 0) {
+        lineRange = '(both line:null -- may be unrelated)';
+      } else if (lines.length === 1) {
+        lineRange = hasNullLine ? `${lines[0]} + null` : `${lines[0]}`;
+      } else {
+        const min = Math.min(...lines);
+        const max = Math.max(...lines);
+        lineRange = hasNullLine ? `${min}-${max} + null` : `${min}-${max}`;
+      }
+
+      candidateGroups.push({
+        file,
+        lineRange,
+        items: cluster,
+        sameAuthor: authors.size === 1,
+        authors,
+      });
+    }
+  }
+
+  // Log results
+  if (candidateGroups.length === 0) {
+    return; // No logging if no candidates found
+  }
+
+  console.log(chalk.gray(`\nDuplicate candidates: ${candidateGroups.length} group(s) found`));
+  
+  for (const group of candidateGroups) {
+    const authorInfo = group.sameAuthor 
+      ? `same author: ${[...group.authors][0]}`
+      : 'different authors';
+    
+    console.log(chalk.gray(`  ${group.file}:${group.lineRange} (${group.items.length} comments, ${authorInfo})`));
+    
+    for (let i = 0; i < group.items.length; i++) {
+      const item = group.items[i];
+      const preview = item.comment.body.substring(0, 80).replace(/\n/g, ' ');
+      const suffix = item.comment.body.length > 80 ? '...' : '';
+      console.log(chalk.gray(`    #${i + 1}: "${preview}${suffix}"`));
+    }
+  }
+  console.log(''); // Blank line after the report
+}
+
+/**
+ * Heuristic deduplication: filter obvious duplicates before batch analysis.
+ * Phase 1: Zero LLM cost, uses deterministic logic.
+ * 
+ * Criteria for duplicates (stricter than Phase 0 candidates):
+ * - Same file (exact path match)
+ * - Lines within 10 of each other (both non-null), OR both null
+ * - Same author (bots duplicate themselves, humans rarely do)
+ * 
+ * @param toCheck Array of issues with snippets
+ * @returns DedupResult with filtered list, duplicate map, and duplicate items
+ */
+function heuristicDedup(
+  toCheck: Array<{
+    comment: ReviewComment;
+    codeSnippet: string;
+    contextHints?: string[];
+  }>
+): DedupResult {
+  const duplicateMap = new Map<string, string[]>();
+  const duplicateItems = new Map<string, typeof toCheck[0]>();
+  const canonicalIds = new Set<string>();
+  const duplicateIds = new Set<string>();
+
+  // Group by file path
+  const byFile = new Map<string, typeof toCheck>();
+  for (const item of toCheck) {
+    const path = item.comment.path;
+    if (!byFile.has(path)) {
+      byFile.set(path, []);
+    }
+    byFile.get(path)!.push(item);
+  }
+
+  // Find duplicate groups within each file
+  for (const [, items] of byFile.entries()) {
+    if (items.length < 2) continue;
+
+    // Cluster by line proximity AND same author (stricter than Phase 0)
+    const clusters: typeof toCheck[] = [];
+    const processed = new Set<number>();
+
+    for (let i = 0; i < items.length; i++) {
+      if (processed.has(i)) continue;
+
+      const cluster = [items[i]];
+      processed.add(i);
+
+      for (let j = i + 1; j < items.length; j++) {
+        if (processed.has(j)) continue;
+
+        const line1 = items[i].comment.line;
+        const line2 = items[j].comment.line;
+        const author1 = items[i].comment.author;
+        const author2 = items[j].comment.author;
+
+        // Must have same author (key difference from Phase 0)
+        if (author1 !== author2) continue;
+
+        // Check if lines are close or both null
+        const areClose = 
+          (line1 !== null && line2 !== null && Math.abs(line1 - line2) <= 10) ||
+          (line1 === null && line2 === null);
+
+        if (areClose) {
+          cluster.push(items[j]);
+          processed.add(j);
+        }
+      }
+
+      if (cluster.length >= 2) {
+        clusters.push(cluster);
+      }
+    }
+
+    // For each cluster, pick canonical and record duplicates
+    for (const cluster of clusters) {
+      // Pick canonical: longest body, most precise line, earliest createdAt
+      const canonical = cluster.reduce((best, current) => {
+        // 1. Longest comment body wins
+        if (current.comment.body.length > best.comment.body.length) {
+          return current;
+        }
+        if (current.comment.body.length < best.comment.body.length) {
+          return best;
+        }
+
+        // 2. Most precise line reference wins (non-null beats null)
+        if (current.comment.line !== null && best.comment.line === null) {
+          return current;
+        }
+        if (current.comment.line === null && best.comment.line !== null) {
+          return best;
+        }
+
+        // 3. Earliest createdAt wins (tiebreaker)
+        if (current.comment.createdAt < best.comment.createdAt) {
+          return current;
+        }
+
+        return best;
+      });
+
+      // Record canonical and duplicates
+      canonicalIds.add(canonical.comment.id);
+      const dupes = cluster
+        .filter(item => item.comment.id !== canonical.comment.id)
+        .map(item => item.comment.id);
+      
+      duplicateMap.set(canonical.comment.id, dupes);
+      
+      // Store duplicate items for context merging
+      for (const item of cluster) {
+        if (item.comment.id !== canonical.comment.id) {
+          duplicateIds.add(item.comment.id);
+          duplicateItems.set(item.comment.id, item);
+        }
+      }
+    }
+  }
+
+  // Build dedupedToCheck: keep canonicals and non-duplicates
+  const dedupedToCheck = toCheck.filter(item => !duplicateIds.has(item.comment.id));
+
+  // Log results if any deduplication happened
+  if (duplicateMap.size > 0) {
+    const totalDupes = [...duplicateMap.values()].reduce((sum, dupes) => sum + dupes.length, 0);
+    console.log(chalk.gray(
+      `  Dedup: ${duplicateMap.size} group(s) merged ` +
+      `(${totalDupes + duplicateMap.size} comments -> ${duplicateMap.size} canonical)`
+    ));
+    
+    // Log each group
+    for (const [canonicalId, dupes] of duplicateMap.entries()) {
+      const canonical = toCheck.find(item => item.comment.id === canonicalId);
+      if (canonical) {
+        const lineInfo = canonical.comment.line !== null ? `:${canonical.comment.line}` : '';
+        debug(`Dedup group: ${canonical.comment.path}${lineInfo} (1 canonical + ${dupes.length} duplicates)`);
+      }
+    }
+  }
+
+  return {
+    dedupedToCheck,
+    duplicateMap,
+    duplicateItems,
+  };
+}
+
+/**
  * Get code snippet from file for context
  */
 export async function getCodeSnippet(
@@ -94,6 +388,7 @@ export async function findUnresolvedIssues(
   recommendedModels?: string[];
   recommendedModelIndex: number;
   modelRecommendationReasoning?: string;
+  duplicateMap: Map<string, string[]>;
 }> {
   const unresolved: UnresolvedIssue[] = [];
   let alreadyResolved = 0;
@@ -174,6 +469,25 @@ export async function findUnresolvedIssues(
     toCheck.push({ comment, codeSnippet, contextHints: solvability.contextHints });
   }
 
+  // Phase 0: Log duplicate candidates (observation only, no filtering)
+  logDuplicateCandidates(toCheck);
+
+  // Phase 1: Heuristic deduplication (zero LLM cost)
+  let dedupResult: DedupResult;
+  try {
+    dedupResult = heuristicDedup(toCheck);
+  } catch (err) {
+    warn(`Dedup failed, proceeding without dedup: ${err}`);
+    dedupResult = {
+      dedupedToCheck: toCheck,
+      duplicateMap: new Map(),
+      duplicateItems: new Map(),
+    };
+  }
+
+  // Use deduplicated list for analysis
+  const toAnalyze = dedupResult.dedupedToCheck;
+
   // Report solvability dismissals
   const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedPlaceholder;
   if (totalDismissed > 0) {
@@ -194,10 +508,11 @@ export async function findUnresolvedIssues(
     console.log(chalk.yellow(`  ${staleRecheck} stale verifications (>${VERIFICATION_EXPIRY_ITERATIONS} iterations old) - re-checking`));
   }
 
-  if (toCheck.length === 0) {
+  if (toAnalyze.length === 0) {
     return {
       unresolved: [],
       recommendedModelIndex: 0,
+      duplicateMap: dedupResult.duplicateMap,
     };
   }
 
@@ -207,10 +522,10 @@ export async function findUnresolvedIssues(
 
   if (options.noBatch) {
     // Sequential mode - one LLM call per comment
-    console.log(chalk.gray(`  Analyzing ${toCheck.length} comments sequentially...`));
+    console.log(chalk.gray(`  Analyzing ${toAnalyze.length} comments sequentially...`));
     
-    for (let i = 0; i < toCheck.length; i++) {
-      const { comment, codeSnippet, contextHints } = toCheck[i];
+    for (let i = 0; i < toAnalyze.length; i++) {
+      const { comment, codeSnippet, contextHints } = toAnalyze[i];
       console.log(chalk.gray(`    [${i + 1}/${toCheck.length}] ${comment.path}:${comment.line || '?'}`));
       
       const result = await llm.checkIssueExists(
@@ -235,21 +550,50 @@ export async function findUnresolvedIssues(
           );
         } else {
           warn(`Stale issue missing valid explanation - marking as unresolved`);
+          
+          // Check if this is a canonical issue with duplicates
+          const duplicates = dedupResult.duplicateMap.get(comment.id);
+          const mergedDuplicates = duplicates?.map(dupId => {
+            const dupItem = dedupResult.duplicateItems.get(dupId);
+            return dupItem ? {
+              commentId: dupItem.comment.id,
+              author: dupItem.comment.author,
+              body: dupItem.comment.body,
+              path: dupItem.comment.path,
+              line: dupItem.comment.line,
+            } : null;
+          }).filter((d): d is NonNullable<typeof d> => d !== null);
+
           unresolved.push({
             comment,
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
+            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
           });
         }
       } else if (result.exists) {
+        // Check if this is a canonical issue with duplicates
+        const duplicates = dedupResult.duplicateMap.get(comment.id);
+        const mergedDuplicates = duplicates?.map(dupId => {
+          const dupItem = dedupResult.duplicateItems.get(dupId);
+          return dupItem ? {
+            commentId: dupItem.comment.id,
+            author: dupItem.comment.author,
+            body: dupItem.comment.body,
+            path: dupItem.comment.path,
+            line: dupItem.comment.line,
+          } : null;
+        }).filter((d): d is NonNullable<typeof d> => d !== null);
+
         unresolved.push({
           comment,
           codeSnippet,
           stillExists: true,
           explanation: result.explanation,
           triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
+          mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
         });
       } else {
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
@@ -268,21 +612,36 @@ export async function findUnresolvedIssues(
         } else {
           // Invalid/missing explanation - treat as unresolved (potential bug)
           warn(`Cannot dismiss without valid explanation - marking as unresolved`);
+          
+          // Check if this is a canonical issue with duplicates
+          const duplicates = dedupResult.duplicateMap.get(comment.id);
+          const mergedDuplicates = duplicates?.map(dupId => {
+            const dupItem = dedupResult.duplicateItems.get(dupId);
+            return dupItem ? {
+              commentId: dupItem.comment.id,
+              author: dupItem.comment.author,
+              body: dupItem.comment.body,
+              path: dupItem.comment.path,
+              line: dupItem.comment.line,
+            } : null;
+          }).filter((d): d is NonNullable<typeof d> => d !== null);
+
           unresolved.push({
             comment,
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
+            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
           });
         }
       }
     }
   } else {
     // Batch mode - one LLM call for all comments
-    console.log(chalk.gray(`  Batch analyzing ${toCheck.length} comments with LLM...`));
+    console.log(chalk.gray(`  Batch analyzing ${toAnalyze.length} comments with LLM...`));
     
-    const batchInput = toCheck.map((item, index) => {
+    const batchInput = toAnalyze.map((item, index) => {
       const issueId = `issue_${index + 1}`;
       return {
         id: issueId,
@@ -299,7 +658,7 @@ export async function findUnresolvedIssues(
     if (!options.modelRotation) {
       const availableModels = getModelsForRunner(runner);
       // Get attempt history for these specific issues
-      const commentIds = toCheck.map(item => item.comment.id);
+      const commentIds = toAnalyze.map(item => item.comment.id);
       modelContext = {
         availableModels,
         modelHistory: Performance.getModelHistorySummary(stateContext) || undefined,
@@ -327,20 +686,35 @@ export async function findUnresolvedIssues(
     }
 
     // Process results
-    for (let i = 0; i < toCheck.length; i++) {
-      const { comment, codeSnippet } = toCheck[i];
+    for (let i = 0; i < toAnalyze.length; i++) {
+      const { comment, codeSnippet } = toAnalyze[i];
       const issueId = batchInput[i].id.toLowerCase();
       const result = results.get(issueId);
 
       if (!result) {
         // If LLM didn't return a result for this, assume it still exists
         warn(`No result for comment ${issueId}, assuming unresolved`);
+        
+        // Check if this is a canonical issue with duplicates
+        const duplicates = dedupResult.duplicateMap.get(comment.id);
+        const mergedDuplicates = duplicates?.map(dupId => {
+          const dupItem = dedupResult.duplicateItems.get(dupId);
+          return dupItem ? {
+            commentId: dupItem.comment.id,
+            author: dupItem.comment.author,
+            body: dupItem.comment.body,
+            path: dupItem.comment.path,
+            line: dupItem.comment.line,
+          } : null;
+        }).filter((d): d is NonNullable<typeof d> => d !== null);
+
         unresolved.push({
           comment,
           codeSnippet,
           stillExists: true,
           explanation: 'Unable to determine status',
           triage: { importance: 3, ease: 3 },  // Default: fallback path
+          mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
         });
         continue;
       }
@@ -359,21 +733,50 @@ export async function findUnresolvedIssues(
           );
         } else {
           warn(`Stale issue missing valid explanation - marking as unresolved`);
+          
+          // Check if this is a canonical issue with duplicates
+          const duplicates = dedupResult.duplicateMap.get(comment.id);
+          const mergedDuplicates = duplicates?.map(dupId => {
+            const dupItem = dedupResult.duplicateItems.get(dupId);
+            return dupItem ? {
+              commentId: dupItem.comment.id,
+              author: dupItem.comment.author,
+              body: dupItem.comment.body,
+              path: dupItem.comment.path,
+              line: dupItem.comment.line,
+            } : null;
+          }).filter((d): d is NonNullable<typeof d> => d !== null);
+
           unresolved.push({
             comment,
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: result.importance, ease: result.ease },
+            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
           });
         }
       } else if (result.exists) {
+        // Check if this is a canonical issue with duplicates
+        const duplicates = dedupResult.duplicateMap.get(comment.id);
+        const mergedDuplicates = duplicates?.map(dupId => {
+          const dupItem = dedupResult.duplicateItems.get(dupId);
+          return dupItem ? {
+            commentId: dupItem.comment.id,
+            author: dupItem.comment.author,
+            body: dupItem.comment.body,
+            path: dupItem.comment.path,
+            line: dupItem.comment.line,
+          } : null;
+        }).filter((d): d is NonNullable<typeof d> => d !== null);
+
         unresolved.push({
           comment,
           codeSnippet,
           stillExists: true,
           explanation: result.explanation,
           triage: { importance: result.importance, ease: result.ease },
+          mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
         });
       } else {
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
@@ -392,12 +795,27 @@ export async function findUnresolvedIssues(
         } else {
           // Invalid/missing explanation - treat as unresolved (potential bug)
           warn(`Cannot dismiss without valid explanation - marking as unresolved`);
+          
+          // Check if this is a canonical issue with duplicates
+          const duplicates = dedupResult.duplicateMap.get(comment.id);
+          const mergedDuplicates = duplicates?.map(dupId => {
+            const dupItem = dedupResult.duplicateItems.get(dupId);
+            return dupItem ? {
+              commentId: dupItem.comment.id,
+              author: dupItem.comment.author,
+              body: dupItem.comment.body,
+              path: dupItem.comment.path,
+              line: dupItem.comment.line,
+            } : null;
+          }).filter((d): d is NonNullable<typeof d> => d !== null);
+
           unresolved.push({
             comment,
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: result.importance, ease: result.ease },
+            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
           });
         }
       }
@@ -412,5 +830,6 @@ export async function findUnresolvedIssues(
     recommendedModels,
     recommendedModelIndex,
     modelRecommendationReasoning,
+    duplicateMap: dedupResult.duplicateMap,
   };
 }

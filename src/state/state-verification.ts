@@ -15,8 +15,9 @@ export type VerificationRecord = VerifiedComment;
  * 
  * @param ctx - State context
  * @param commentId - ID of the comment to mark as verified
+ * @param autoVerifiedFrom - Optional canonical comment ID if this is an auto-verified duplicate
  */
-export function markVerified(ctx: StateContext, commentId: string): void {
+export function markVerified(ctx: StateContext, commentId: string, autoVerifiedFrom?: string): void {
   const state = getState(ctx);
   
   if (!state.verifiedComments) {
@@ -29,11 +30,15 @@ export function markVerified(ctx: StateContext, commentId: string): void {
   if (existing) {
     existing.verifiedAt = new Date().toISOString();
     existing.verifiedAtIteration = currentIteration;
+    if (autoVerifiedFrom !== undefined) {
+      existing.autoVerifiedFrom = autoVerifiedFrom;
+    }
   } else {
     state.verifiedComments.push({
       commentId,
       verifiedAt: new Date().toISOString(),
       verifiedAtIteration: currentIteration,
+      autoVerifiedFrom,
     });
     
     if (!state.verifiedFixed.includes(commentId)) {
@@ -111,10 +116,11 @@ export function getVerificationRecord(ctx: StateContext, commentId: string): Ver
  * 
  * Used to detect verifications that may no longer be valid due to code changes.
  * Returns comment IDs verified more than maxIterationsAgo iterations ago.
+ * Also returns auto-verified duplicates when their canonical goes stale.
  * 
  * @param ctx - State context (optional)
  * @param maxIterationsAgo - Maximum age in iterations before considered stale
- * @returns Array of stale comment IDs
+ * @returns Array of stale comment IDs (including linked duplicates)
  */
 export function getStaleVerifications(ctx: StateContext | undefined, maxIterationsAgo: number): string[] {
   if (!ctx) return [];
@@ -122,9 +128,23 @@ export function getStaleVerifications(ctx: StateContext | undefined, maxIteratio
   if (!state || !state.verifiedComments) return [];
   
   const currentIteration = state.iterations.length;
-  return state.verifiedComments
-    .filter(v => (currentIteration - v.verifiedAtIteration) > maxIterationsAgo)
-    .map(v => v.commentId);
+  const staleIds = new Set<string>();
+  
+  // Find stale canonicals
+  for (const v of state.verifiedComments) {
+    if ((currentIteration - v.verifiedAtIteration) > maxIterationsAgo) {
+      staleIds.add(v.commentId);
+    }
+  }
+  
+  // Also mark auto-verified duplicates as stale when their canonical is stale
+  for (const v of state.verifiedComments) {
+    if (v.autoVerifiedFrom && staleIds.has(v.autoVerifiedFrom)) {
+      staleIds.add(v.commentId);
+    }
+  }
+  
+  return [...staleIds];
 }
 
 /**

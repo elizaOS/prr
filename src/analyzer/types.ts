@@ -27,6 +27,17 @@ export interface UnresolvedIssue {
    * the type system accepts objects without triage, and we can add it incrementally.
    */
   triage?: IssueTriage;
+  /**
+   * Comments that were identified as duplicates of this issue and merged in.
+   * Only populated when deduplication identifies this as a canonical issue.
+   */
+  mergedDuplicates?: Array<{
+    commentId: string;
+    author: string;
+    body: string;
+    path: string;
+    line: number | null;
+  }>;
 }
 
 export interface FixPrompt {

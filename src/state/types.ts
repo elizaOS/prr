@@ -26,6 +26,7 @@ export interface VerifiedComment {
   commentId: string;
   verifiedAt: string;        // ISO timestamp when verified
   verifiedAtIteration: number;  // Which iteration it was verified in
+  autoVerifiedFrom?: string;  // If this was auto-verified, the canonical comment ID
 }
 
 /**

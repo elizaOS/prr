@@ -59,7 +59,13 @@ export async function processCommentsAndPrepareFixLoop(
   config: Config,
   workdir: string,
   spinner: Ora,
-  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<UnresolvedIssue[]>,
+  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<{
+    unresolved: UnresolvedIssue[];
+    recommendedModels?: string[];
+    recommendedModelIndex: number;
+    modelRecommendationReasoning?: string;
+    duplicateMap: Map<string, string[]>;
+  }>,
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>,
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>,
   printUnresolvedIssues: (issues: UnresolvedIssue[]) => void,
@@ -74,6 +80,7 @@ export async function processCommentsAndPrepareFixLoop(
   shouldRunFixLoop: boolean;
   exitReason?: string;
   exitDetails?: string;
+  duplicateMap: Map<string, string[]>;
 }> {
   // Fetch review comments (reuse prefetched if available)
   // WHY reuse: The CodeRabbit polling phase already fetches all comments via the same
@@ -118,6 +125,7 @@ export async function processCommentsAndPrepareFixLoop(
         shouldRunFixLoop: false,
         exitReason: noCommentsResult.exitReason,
         exitDetails: noCommentsResult.exitDetails,
+        duplicateMap: new Map(),
       };
     }
   }
@@ -128,7 +136,9 @@ export async function processCommentsAndPrepareFixLoop(
   setTokenPhase('Analyze issues');
   startTimer('Analyze issues');
   console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
-  const unresolvedIssues = await findUnresolvedIssues(comments, comments.length);
+  const analysisResult = await findUnresolvedIssues(comments, comments.length);
+  const unresolvedIssues = analysisResult.unresolved;
+  const duplicateMap = analysisResult.duplicateMap;
   const analyzeTime = endTimer('Analyze issues');
   
   // Analyze and report issues
@@ -202,6 +212,7 @@ export async function processCommentsAndPrepareFixLoop(
         shouldRunFixLoop: false,
         exitReason: 'audit_passed',
         exitDetails: 'Final audit passed - all issues verified fixed',
+        duplicateMap,
       };
     }
   }
@@ -216,6 +227,7 @@ export async function processCommentsAndPrepareFixLoop(
       shouldRunFixLoop: false,
       exitReason: 'dry_run',
       exitDetails: `Dry run mode - showed ${unresolvedIssues.length} issue(s) without fixing`,
+      duplicateMap,
     };
   }
 
@@ -230,6 +242,7 @@ export async function processCommentsAndPrepareFixLoop(
       shouldRunFixLoop: false,
       exitReason: 'all_resolved',
       exitDetails: 'All issues were already resolved before fix loop',
+      duplicateMap,
     };
   }
 
@@ -239,5 +252,6 @@ export async function processCommentsAndPrepareFixLoop(
     unresolvedIssues,
     shouldBreak: false,
     shouldRunFixLoop: true,
+    duplicateMap,
   };
 }

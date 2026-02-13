@@ -49,6 +49,9 @@ export function buildFixPrompt(
     };
   }
 
+  // Cap lessons to prevent prompt bloat (73+ lessons = prompt poisoning)
+  const MAX_LESSONS = 15;
+
   // Limit issues per prompt to prevent token overflow
   // WHY: 124 issues at once = 202k tokens which exceeds Anthropic's 200k limit
   // The effective limit may be reduced by adaptive batching when consecutive iterations fail.
@@ -111,14 +114,14 @@ export function buildFixPrompt(
     previews.push(`  ... and ${limitedIssues.length - 3} more`);
   }
 
-  // Add lessons learned section to detailed summary
+  // Add lessons section to detailed summary (capped to avoid log noise)
   const lessonsSection: string[] = [];
   if (lessonsLearned.length > 0) {
+    const displayCount = Math.min(lessonsLearned.length, MAX_LESSONS);
+    const displayLessons = lessonsLearned.slice(-displayCount);
     lessonsSection.push('');
-    lessonsSection.push(`  ⚠ Previous Attempts (${lessonsLearned.length}):`);
-    // Show all lessons - these are critical for debugging progress
-    for (const lesson of lessonsLearned) {
-      // Strip redundant prefix, show just the useful content
+    lessonsSection.push(`  ⚠ Lessons Learned (${displayCount}${lessonsLearned.length > displayCount ? `/${lessonsLearned.length}` : ''}):`);
+    for (const lesson of displayLessons) {
       const displayLesson = formatLessonForDisplay(lesson);
       const wrapped = displayLesson.length > 80 
         ? displayLesson.substring(0, 77) + '...'
@@ -129,12 +132,18 @@ export function buildFixPrompt(
 
   const detailedSummary = [summary, ...detailedLines, '', '  Issues:', ...previews, ...lessonsSection].join('\n');
 
-  // Add lessons learned to prevent flip-flopping
+  // Add lessons learned — technical constraints discovered from previous fix attempts.
   if (lessonsLearned.length > 0) {
-    parts.push('## Previous Attempts (DO NOT REPEAT THESE MISTAKES)\n');
-    parts.push('The following approaches have already been tried and FAILED. Do NOT repeat them:\n');
-    for (const lesson of lessonsLearned) {
-      // Strip redundant prefix, show just the useful content
+    // Take only the most recent lessons (most relevant to current state)
+    const capped = lessonsLearned.slice(-MAX_LESSONS);
+    const skipped = lessonsLearned.length - capped.length;
+
+    parts.push('## Lessons Learned (from previous attempts)\n');
+    parts.push('These lessons were learned from prior fix attempts on these same issues. Each one represents a failed approach — account for them so you make progress instead of repeating the same mistakes:\n');
+    if (skipped > 0) {
+      parts.push(`_(${skipped} older entries omitted — showing ${capped.length} most recent)_\n`);
+    }
+    for (const lesson of capped) {
       parts.push(`- ${formatLessonForDisplay(lesson)}`);
     }
     parts.push('');
@@ -167,6 +176,19 @@ export function buildFixPrompt(
     }
     
     parts.push('```\n');
+    
+    // Render merged duplicates if present
+    if (issue.mergedDuplicates && issue.mergedDuplicates.length > 0) {
+      parts.push(`**Also flagged by** (${issue.mergedDuplicates.length} related comment${issue.mergedDuplicates.length > 1 ? 's' : ''}):`);
+      for (const dup of issue.mergedDuplicates) {
+        const preview = dup.body.length > 200
+          ? dup.body.substring(0, 200) + '...'
+          : dup.body;
+        const lineInfo = dup.line !== null ? `:${dup.line}` : '';
+        parts.push(`- ${dup.path}${lineInfo} (${dup.author}): "${preview}"`);
+      }
+      parts.push('');
+    }
     
     if (issue.codeSnippet) {
       parts.push('**Current Code:**');

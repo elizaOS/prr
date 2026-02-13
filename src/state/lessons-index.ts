@@ -14,3 +14,4 @@ export * as Detect from './lessons-detect.js';
 export * as Add from './lessons-add.js';
 export * as Retrieve from './lessons-retrieve.js';
 export * as Compact from './lessons-compact.js';
+export * as Cleanup from './lessons-cleanup.js';

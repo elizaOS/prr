@@ -7,9 +7,14 @@ import { dirname } from 'path';
 import type { LessonsContext } from './lessons-context.js';
 import { getPrrLessonsPath } from './lessons-paths.js';
 import * as Format from './lessons-format.js';
+import * as Compact from './lessons-compact.js';
 
 export async function save(ctx: LessonsContext): Promise<void> {
   if (!ctx.dirty) return;
+  
+  // Compact lessons before saving to prevent unbounded growth.
+  // 10 per file, 20 global — keeps the most recent (most relevant) entries.
+  Compact.compact(ctx);
   
   ctx.store.lastUpdated = new Date().toISOString();
   const dir = dirname(ctx.localStorePath);
