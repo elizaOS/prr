@@ -20,6 +20,74 @@ import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration } from '../logger.js';
 import { getChangedFiles, getDiffForFile } from '../git/git-clone-index.js';
+import { basename, dirname, extname } from 'path';
+
+/**
+ * Find changed files that relate to an issue's target path.
+ *
+ * Returns the target itself (if changed) PLUS any test/spec files that correspond
+ * to it. This solves the long-standing problem where "add tests for route.ts"
+ * creates `route.test.ts` but verification only checks if `route.ts` was modified.
+ *
+ * Test file patterns matched:
+ *   foo/bar.ts  →  foo/bar.test.ts, foo/bar.spec.ts
+ *   foo/bar.ts  →  foo/__tests__/bar.ts, foo/__tests__/bar.test.ts, foo/__tests__/bar.spec.ts
+ *   foo/bar.ts  →  __tests__/foo/bar.ts, __tests__/.../bar.test.ts  (any __tests__ ancestor)
+ */
+function findRelatedChangedFiles(targetPath: string, changedFiles: string[]): string[] {
+  const related: string[] = [];
+
+  const dir = dirname(targetPath);                     // foo/bar
+  const ext = extname(targetPath);                     // .ts
+  const base = basename(targetPath, ext);              // route
+  const baseLower = base.toLowerCase();
+  const extLower = ext.toLowerCase();
+
+  // Extensions that are plausible test files for the target
+  const testExts = new Set([ext, '.ts', '.tsx', '.js', '.jsx'].map(e => e.toLowerCase()));
+
+  for (const file of changedFiles) {
+    // Direct match: the target file itself
+    if (file === targetPath) {
+      related.push(file);
+      continue;
+    }
+
+    const fDir = dirname(file);
+    const fExt = extname(file);
+    const fBase = basename(file, fExt);
+    const fBaseLower = fBase.toLowerCase();
+
+    if (!testExts.has(fExt.toLowerCase())) continue;
+
+    // Pattern 1: sibling test file — foo/bar.test.ts, foo/bar.spec.ts
+    if (fDir === dir) {
+      if (fBaseLower === `${baseLower}.test` || fBaseLower === `${baseLower}.spec`) {
+        related.push(file);
+        continue;
+      }
+    }
+
+    // Pattern 2: __tests__ subdirectory — foo/__tests__/bar.ts, foo/__tests__/bar.test.ts
+    if (fDir === `${dir}/__tests__`) {
+      if (fBaseLower === baseLower || fBaseLower === `${baseLower}.test` || fBaseLower === `${baseLower}.spec`) {
+        related.push(file);
+        continue;
+      }
+    }
+
+    // Pattern 3: root-relative __tests__ — __tests__/foo/bar.ts, __tests__/**/bar.test.ts
+    // Match any file under a __tests__ directory whose base name matches
+    if (file.includes('__tests__/') || file.includes('__test__/')) {
+      if (fBaseLower === baseLower || fBaseLower === `${baseLower}.test` || fBaseLower === `${baseLower}.spec`) {
+        related.push(file);
+        continue;
+      }
+    }
+  }
+
+  return related;
+}
 
 /**
  * Verify fixes after fixer completes
@@ -54,16 +122,24 @@ export async function verifyFixes(
   setTokenPhase('Verify fixes');
   startTimer('Verify fixes');
 
+  // Map from issue target path → all related changed files (target + test files).
+  // WHY: When a reviewer says "add tests for route.ts", the fixer creates route.test.ts.
+  // Without this mapping, verification sees "route.ts not modified" and rejects the fix.
+  // With it, we send the test file's diff to the verifier so it can judge the test content.
+  const relatedFilesMap = new Map<string, string[]>();
+
   try {
     spinner.start('Verifying fixes...');
     changedFiles = await getChangedFiles(git);
     debug('Changed files', changedFiles);
   
     for (const issue of unresolvedIssues) {
-      if (!changedFiles.includes(issue.comment.path)) {
-        unchangedIssues.push(issue);
-      } else {
+      const related = findRelatedChangedFiles(issue.comment.path, changedFiles);
+      if (related.length > 0) {
+        relatedFilesMap.set(issue.comment.id, related);
         changedIssues.push(issue);
+      } else {
+        unchangedIssues.push(issue);
       }
     }
 
@@ -100,6 +176,17 @@ export async function verifyFixes(
         return diff;
       };
 
+      // Get combined diff for an issue — includes target file AND any related test files.
+      const getIssueDiff = async (issue: UnresolvedIssue): Promise<string> => {
+        const related = relatedFilesMap.get(issue.comment.id) || [issue.comment.path];
+        const diffs: string[] = [];
+        for (const file of related) {
+          const d = await getDiff(file);
+          if (d) diffs.push(d);
+        }
+        return diffs.join('\n');
+      };
+
       if (noBatch) {
         // Sequential mode - one LLM call per fix
         spinner.text = `Verifying ${changedIssues.length} fixes sequentially...`;
@@ -108,7 +195,7 @@ export async function verifyFixes(
           const issue = changedIssues[i];
           spinner.text = `Verifying [${i + 1}/${changedIssues.length}] ${issue.comment.path}:${issue.comment.line || '?'}`;
           
-          const diff = await getDiff(issue.comment.path);
+          const diff = await getIssueDiff(issue);
           const verification = await llm.verifyFix(
             issue.comment.body,
             issue.comment.path,
@@ -174,7 +261,7 @@ export async function verifyFixes(
         }> = [];
 
         for (const issue of changedIssues) {
-          const diff = await getDiff(issue.comment.path);
+          const diff = await getIssueDiff(issue);
           fixesToVerify.push({
             id: issue.comment.id,
             comment: issue.comment.body,

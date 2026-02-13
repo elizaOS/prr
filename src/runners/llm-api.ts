@@ -11,12 +11,22 @@ import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL
  * Direct LLM API runner - uses ElizaCloud, Anthropic, or OpenAI API directly to fix code.
  * Useful as a fallback or alternative to CLI-based tools.
  */
+/**
+ * Per-file search/replace failure threshold. After this many failures in a session,
+ * switch to full-file-rewrite mode for that file.
+ * WHY: Repeated search/replace failures mean the LLM's mental model of the file is
+ * wrong. Sending the full file back for rewrite avoids the matching problem entirely.
+ */
+const REWRITE_ESCALATION_THRESHOLD = 2;
+
 export class LLMAPIRunner implements Runner {
   name = 'llm-api';
   displayName = 'Direct LLM API';
   private provider: 'elizacloud' | 'anthropic' | 'openai' = 'elizacloud';
   private anthropic?: Anthropic;
   private openai?: OpenAI;
+  /** Track search/replace failures per file across iterations within a session. */
+  private searchReplaceFailures = new Map<string, number>();
 
   async isAvailable(): Promise<boolean> {
     // Check ElizaCloud first (gateway to all models)
@@ -131,7 +141,19 @@ Working directory: ${workdir}`;
     // Parse file paths mentioned in the prompt (e.g. "File: path/to/file.ts:123")
     // and append the current file contents. This is the #1 fix for search/replace
     // failures: the LLM can see exactly what's in the file instead of guessing.
-    const enrichedPrompt = this.injectFileContents(workdir, prompt);
+    let enrichedPrompt = this.injectFileContents(workdir, prompt);
+
+    // Escalate to full-file-rewrite for files with repeated search/replace failures.
+    // WHY: After 2+ failures, the search/replace approach isn't working for this file.
+    // Asking the LLM to output the complete file avoids the matching problem entirely.
+    const rewriteFiles = this.getEscalatedFiles(workdir, prompt);
+    if (rewriteFiles.length > 0) {
+      const rewriteInstructions = rewriteFiles
+        .map(f => `- ${f}: Use <file path="${f}"> to output the COMPLETE fixed file (search/replace has failed ${this.searchReplaceFailures.get(f)} times)`)
+        .join('\n');
+      enrichedPrompt += `\n\n⚠ IMPORTANT — FULL FILE REWRITE REQUIRED for these files:\n${rewriteInstructions}\n\nFor these files ONLY, instead of <change><search>...</search><replace>...</replace></change>, output the complete file using:\n<file path="the/file.ts">\ncomplete file contents here\n</file>\n\nFor all other files, continue using <change> search/replace blocks as normal.`;
+      debug('Escalated to full-file rewrite', { files: rewriteFiles });
+    }
 
     try {
       let response: string;
@@ -323,6 +345,36 @@ Working directory: ${workdir}`;
     return prompt + `\n\n---\n\n## ACTUAL FILE CONTENTS (current on-disk state)\n\nIMPORTANT: When writing <search> blocks, copy text EXACTLY from these files — they reflect the current state of the code, which may differ from the review comment's snippet.\n\n${fileSections.join('\n\n')}`;
   }
 
+  /**
+   * Return file paths mentioned in the prompt that have hit the failure threshold.
+   * These files should use full-file rewrite mode instead of search/replace.
+   */
+  private getEscalatedFiles(workdir: string, prompt: string): string[] {
+    if (this.searchReplaceFailures.size === 0) return [];
+
+    const filePathPattern = /(?:File|FILE|Issue \d+):\s*([^\s:]+\.[a-zA-Z]+)/g;
+    const escalated: string[] = [];
+    let match;
+    while ((match = filePathPattern.exec(prompt)) !== null) {
+      const filePath = match[1];
+      const failures = this.searchReplaceFailures.get(filePath) || 0;
+      if (failures >= REWRITE_ESCALATION_THRESHOLD && !escalated.includes(filePath)) {
+        escalated.push(filePath);
+      }
+    }
+    return escalated;
+  }
+
+  /** Reset failure tracker (e.g., at start of a new PR or after a successful push). */
+  resetFailureTracking(): void {
+    this.searchReplaceFailures.clear();
+  }
+
+  /** Get current failure counts for debugging/logging. */
+  getFailureCounts(): Map<string, number> {
+    return new Map(this.searchReplaceFailures);
+  }
+
   private async applyFileChanges(workdir: string, response: string): Promise<string[]> {
     const filesModified = new Set<string>();
     let attemptedChanges = 0;
@@ -495,6 +547,15 @@ Working directory: ${workdir}`;
     if (failedSearchReplace > 0) {
       const failedList = Array.from(failedFiles).join(', ');
       console.log(`  ⚠ ${failedSearchReplace}/${attemptedChanges} search/replace(s) failed to match: ${failedList}`);
+    }
+
+    // Track per-file failures for escalation to full-file-rewrite mode.
+    for (const file of failedFiles) {
+      const count = (this.searchReplaceFailures.get(file) || 0) + 1;
+      this.searchReplaceFailures.set(file, count);
+      if (count >= REWRITE_ESCALATION_THRESHOLD) {
+        debug(`File ${file} reached ${count} search/replace failures — will use full-file rewrite next time`);
+      }
     }
 
     return Array.from(filesModified);
