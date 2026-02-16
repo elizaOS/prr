@@ -197,6 +197,10 @@ export async function executePushIteration(
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
   
+  // Expose verifiedThisSession on stateContext so reporters can use the actual
+  // session verification count instead of unreliable delta counting.
+  stateContext.verifiedThisSession = verifiedThisSession;
+
   let exitReason = '';
   let exitDetails = '';
   

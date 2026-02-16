@@ -52,8 +52,11 @@ export async function handleIterationCleanup(
 }> {
   const spinner = ora();
   
+  // Use session-new count (monotonically increasing) to get lessons added THIS iteration.
+  // getTotalCount would give a negative delta when fix-attempt lessons are cleaned up.
+  const newLessonsNow = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
+  const newLessons = newLessonsNow - lessonsBeforeFix;
   const lessonsAfterVerify = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
-  const newLessons = lessonsAfterVerify - lessonsBeforeFix;
   
   // Track model performance for this iteration
   // WHY: Know which models work well for this project

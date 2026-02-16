@@ -109,6 +109,10 @@ export async function processCommentsAndPrepareFixLoop(
     bodyPreview: c.body.substring(0, 100) + (c.body.length > 100 ? '...' : ''),
   })));
 
+  // Store current comment IDs on stateContext so reporters can bound verifiedFixed
+  // against the actual comment set (stale IDs from previous HEAD revisions are excluded).
+  stateContext.currentCommentIds = new Set(comments.map(c => c.id));
+
   if (comments.length === 0) {
     const noCommentsResult = await ResolverProc.handleNoComments(
       git,

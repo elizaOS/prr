@@ -8,9 +8,14 @@ export interface StateContext {
   statePath: string;
   state: ResolverState | null;
   currentPhase: string;
-  /** Number of verified-fixed IDs when the session started (after dedup + git recovery).
-   *  Used to compute "fixed this session" = current count - this baseline. */
-  verifiedFixedAtSessionStart?: number;
+  /** IDs of comments actually verified during THIS session's fix loop iterations.
+   *  Unlike the delta approach (verifiedNow - baseline), this correctly counts
+   *  re-verifications of issues that were already in verifiedFixed from previous sessions. */
+  verifiedThisSession?: Set<string>;
+  /** IDs of all review comments in the current PR.
+   *  Used to bound verifiedFixed against the actual comment set — stale IDs from
+   *  previous HEAD revisions or deleted comments are excluded from reporting. */
+  currentCommentIds?: Set<string>;
 }
 
 export function createStateContext(workdir: string): StateContext {
