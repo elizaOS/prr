@@ -226,7 +226,7 @@ export async function executeRun(
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
   } catch (error) {
     // Use empty string as workdir if not yet initialized (error during setup phase)
-    await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, state.finalUnresolvedIssues, state.finalComments, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
+    await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, state.finalUnresolvedIssues, state.finalComments, state.stateContext, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
     throw error;
   }
   return state;

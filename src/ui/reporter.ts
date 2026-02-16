@@ -165,20 +165,16 @@ export function printFinalSummary(
 ): void {
   if (!stateContext?.state) return;
   
-  // Get counts
+  // Get counts — mutually exclusive: Fixed + Dismissed should not overlap.
   const verifiedFixed = stateContext.state.verifiedFixed || [];
   const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
   
-  // Exclude "already-fixed" dismissed issues from the fixed count.
-  // WHY: Issues that were already fixed before the tool ran appear in BOTH
-  // verifiedFixed (for caching) and dismissedIssues (with category "already-fixed").
-  // Counting them in both "fixed" and "dismissed" double-counts and inflates results.
-  const alreadyFixedIds = new Set(
-    dismissedIssues
-      .filter(d => d.category === 'already-fixed')
-      .map(d => d.commentId)
-  );
-  const toolFixedCount = verifiedFixed.filter(id => !alreadyFixedIds.has(id)).length;
+  // Exclude ALL dismissed issue IDs from the "fixed" count.
+  // WHY: Dismissed issues (already-fixed, stale, file-unchanged, exhausted) are
+  // shown separately. Including them in "fixed" too would double-count and inflate
+  // the results. The old code only filtered "already-fixed" but missed other categories.
+  const dismissedIds = new Set(dismissedIssues.map(d => d.commentId));
+  const toolFixedCount = verifiedFixed.filter(id => !dismissedIds.has(id)).length;
   
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
@@ -386,10 +382,16 @@ export async function printAfterActionReport(
     }
   }
   
-  // Summary
+  // Summary — counts must be mutually exclusive (Fixed + Dismissed + Remaining = Total)
   console.log(chalk.cyan('\n━━━ Summary ━━━'));
-  const fixedCount = comments.filter(c => stateContext ? Verification.isVerified(stateContext, c.id) : false).length;
-  const dismissedCount = stateContext ? Dismissed.getDismissedIssues(stateContext).length : 0;
+  const dismissedIds = new Set(
+    stateContext ? Dismissed.getDismissedIssues(stateContext).map(d => d.commentId) : []
+  );
+  // "Fixed" = verified AND NOT dismissed (tool actually fixed these)
+  const fixedCount = comments.filter(c =>
+    stateContext ? Verification.isVerified(stateContext, c.id) && !dismissedIds.has(c.id) : false
+  ).length;
+  const dismissedCount = dismissedIds.size;
   console.log(chalk.gray(`  Total issues: ${comments.length}`));
   console.log(chalk.green(`  Fixed: ${fixedCount}`));
   console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));
