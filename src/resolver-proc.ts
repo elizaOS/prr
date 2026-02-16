@@ -14,6 +14,7 @@ import type { LLMClient } from './llm/client.js';
 import type { StateContext } from './state/state-context.js';
 import type { LessonsContext } from './state/lessons-context.js';
 import * as LessonsAPI from './state/lessons-index.js';
+import * as Performance from './state/state-performance.js';
 import * as Reporter from './ui/reporter.js';
 
 // ============================================================================
@@ -426,14 +427,22 @@ export async function executeBailOut(
     : `${totalLessons} (from previous runs)`;
   console.log(chalk.gray(`    📚 Lessons: ${lessonInfo}`));
   
+  // Show which tools/models were ACTUALLY attempted (from performance stats),
+  // not just the total available. Previously this showed "llm-api: 2 models tried"
+  // when llm-api was never actually run — it just listed all available models.
   console.log(chalk.cyan('\n  Tools Exhausted:'));
+  const perfData = Performance.getModelPerformance(stateContext);
+  const toolModelCounts = new Map<string, number>();
+  for (const key of Object.keys(perfData)) {
+    const tool = key.includes('/') ? key.split('/')[0] : key;
+    toolModelCounts.set(tool, (toolModelCounts.get(tool) || 0) + 1);
+  }
   for (const tool of toolsExhausted) {
-    const runner = runners.find(r => r.name === tool);
-    if (runner) {
-      const models = getModelsForRunner(runner);
-      console.log(chalk.gray(`    • ${tool}: ${models.length} models tried`));
+    const actualModels = toolModelCounts.get(tool) || 0;
+    if (actualModels > 0) {
+      console.log(chalk.gray(`    • ${tool}: ${actualModels} model${actualModels > 1 ? 's' : ''} tried`));
     } else {
-      console.log(chalk.gray(`    • ${tool}: exhausted`));
+      console.log(chalk.gray(`    • ${tool}: listed but not used`));
     }
   }
   

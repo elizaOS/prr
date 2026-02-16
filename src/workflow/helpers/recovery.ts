@@ -21,7 +21,7 @@ import type { LessonsContext } from '../../state/lessons-context.js';
 import type { LLMClient } from '../../llm/client.js';
 import type { Runner } from '../../runners/types.js';
 import * as LessonsAPI from '../../state/lessons-index.js';
-import { debug, setTokenPhase } from '../../logger.js';
+import { debug, setTokenPhase, startTimer, endTimer } from '../../logger.js';
 import { getChangedFiles, getDiffForFile } from '../../git/git-clone-index.js';
 import * as fs from 'fs';
 
@@ -56,6 +56,7 @@ export async function trySingleIssueFix(
   // then (2) easiest to fix (lowest number = simplest). This maximizes the
   // chance of quick wins on the most impactful issues.
   // Issues without triage scores go to the end with a randomized tiebreaker.
+  startTimer('Single-issue focus');
   const MAX_FOCUS_ISSUES = 5;  // Try up to 5 (was 3 — focus mode outperforms batch)
   const prioritized = [...issues].sort((a, b) => {
     const aImportance = a.triage?.importance ?? 3;
@@ -266,6 +267,7 @@ export async function trySingleIssueFix(
     }
   }
   
+  endTimer('Single-issue focus');
   return anyFixed;
 }
 
@@ -312,6 +314,7 @@ export async function tryDirectLLMFix(
   const modelLabel = fixModel ? ` (${fixModel})` : '';
   console.log(chalk.cyan(`\n  🧠 Attempting direct ${llmProvider} API fix${modelLabel}...`));
   setTokenPhase('Direct LLM fix');
+  startTimer('Direct LLM recovery');
   
   let anyFixed = false;
   
@@ -483,5 +486,6 @@ Start your response with \`\`\` and end with \`\`\`.`;
     }
   }
   
+  endTimer('Direct LLM recovery');
   return anyFixed;
 }

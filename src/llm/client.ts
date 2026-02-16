@@ -17,6 +17,7 @@ import OpenAI from 'openai';
 import type { Config, LLMProvider } from '../config.js';
 import { debug, trackTokens, debugPrompt, debugResponse } from '../logger.js';
 import { ELIZACLOUD_API_BASE_URL } from '../constants.js';
+import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 
 /**
  * Strip unpaired UTF-16 surrogates from a string
@@ -403,13 +404,14 @@ export class LLMClient {
       ? contextHints.map(hint => `NOTE: ${hint}`).join('\n') + '\n\n'
       : '';
     
+    const cleanComment = sanitizeCommentForPrompt(comment);
     const prompt = `You are a strict code reviewer verifying whether a review comment has been properly addressed.
 
 ${hintsSection}REVIEW COMMENT:
 ---
 File: ${filePath}
 ${line ? `Line: ${line}` : 'Line: (not specified)'}
-Comment: ${comment}
+Comment: ${cleanComment}
 ---
 
 CURRENT CODE AT THAT LOCATION:
@@ -544,12 +546,15 @@ STALE: Not applicable`;
 
     // Build issue text for sizing
     const buildIssueText = (issue: typeof issues[0]): string => {
-      // Truncate long comments and code to keep batches reasonable
-      const maxCommentLen = 800;
-      const maxCodeLen = 1500;
-      const truncatedComment = issue.comment.length > maxCommentLen
-        ? issue.comment.substring(0, maxCommentLen) + '...'
-        : issue.comment;
+      // Sanitize HTML noise (base64 JWT links, metadata comments, <picture> tags)
+      // THEN truncate. Without sanitizing first, a 600-char JWT blob can consume
+      // 30% of the truncation budget, leaving too little actual description.
+      const maxCommentLen = 2000;
+      const maxCodeLen = 2000;
+      const cleanComment = sanitizeCommentForPrompt(issue.comment);
+      const truncatedComment = cleanComment.length > maxCommentLen
+        ? cleanComment.substring(0, maxCommentLen) + '...'
+        : cleanComment;
       const truncatedCode = issue.codeSnippet.length > maxCodeLen
         ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
         : issue.codeSnippet;
@@ -1031,13 +1036,14 @@ STALE: Not applicable`;
     index: number,
     issue: { filePath: string; line: number | null; comment: string; codeSnippet: string }
   ): string {
-    // Truncate long comments and code to keep batches reasonable
-    const maxCommentLen = 800;
-    const maxCodeLen = 1500;
+    // Sanitize first, then truncate — removes HTML/JWT noise that wastes budget
+    const maxCommentLen = 2000;
+    const maxCodeLen = 2000;
     
-    const truncatedComment = issue.comment.length > maxCommentLen
-      ? issue.comment.substring(0, maxCommentLen) + '...'
-      : issue.comment;
+    const cleanComment = sanitizeCommentForPrompt(issue.comment);
+    const truncatedComment = cleanComment.length > maxCommentLen
+      ? cleanComment.substring(0, maxCommentLen) + '...'
+      : cleanComment;
     const truncatedCode = issue.codeSnippet.length > maxCodeLen
       ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
       : issue.codeSnippet;
@@ -1058,9 +1064,10 @@ STALE: Not applicable`;
     filePath: string,
     diff: string
   ): Promise<{ fixed: boolean; explanation: string }> {
+    const cleanComment = sanitizeCommentForPrompt(comment);
     const prompt = `Given this code review comment:
 ---
-Comment: ${comment}
+Comment: ${cleanComment}
 File: ${filePath}
 ---
 
@@ -1135,10 +1142,11 @@ NO: <brief explanation of what's still missing or wrong>`;
     rejectionReason: string
   ): Promise<string> {
     const diffPreview = diff.length > 1500 ? `${diff.substring(0, 1500)}\n... (truncated)` : diff;
+    const cleanComment = sanitizeCommentForPrompt(issue.comment);
     const prompt = `A fix attempt for a code review issue was rejected. You need to extract what was LEARNED from this failure so the next attempt makes progress instead of repeating the same mistake.
 
 FILE: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
-REVIEW COMMENT: ${issue.comment}
+REVIEW COMMENT: ${cleanComment}
 
 ATTEMPTED FIX (diff):
 ${diffPreview}
@@ -1250,7 +1258,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       indexToId.set(idx, fix.id);
       parts.push(`## Fix ${idx}`);
       parts.push(`File: ${fix.filePath}${fix.line ? `:${fix.line}` : ''}`);
-      parts.push(`Review Comment: ${fix.comment}`);
+      parts.push(`Review Comment: ${sanitizeCommentForPrompt(fix.comment)}`);
       parts.push('');
       if (fix.currentCode) {
         parts.push('Current Code (AFTER the fix attempt — check if the issue pattern still exists here):');
@@ -1495,9 +1503,10 @@ RESOLVED:
     for (const issue of fixedIssues.slice(0, 10)) { // Limit to avoid huge prompts
       const fileName = issue.filePath.split('/').pop();
       // Extract just the key issue, truncate long comments
-      const shortComment = issue.comment.length > 400
-        ? issue.comment.substring(0, 400) + '...'
-        : issue.comment;
+      const cleanComment = sanitizeCommentForPrompt(issue.comment);
+      const shortComment = cleanComment.length > 400
+        ? cleanComment.substring(0, 400) + '...'
+        : cleanComment;
       parts.push(`[${fileName}] ${shortComment}`);
       parts.push('');
     }
@@ -1584,7 +1593,7 @@ ${params.surroundingCode}
 ---
 
 Review comment that was raised:
-"${params.reviewComment}"
+"${sanitizeCommentForPrompt(params.reviewComment)}"
 
 Why this was dismissed (${params.category}):
 ${reason}
