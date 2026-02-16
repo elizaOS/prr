@@ -188,8 +188,16 @@ export function printFinalSummary(
   }
   
   // Fixed issues (only count issues actually fixed by the tool, not pre-existing fixes)
+  // Also show "this session" delta for multi-session runs
+  const verifiedNow = verifiedFixed.length;
+  const baseline = stateContext.verifiedFixedAtSessionStart ?? verifiedNow;
+  const fixedThisSession = Math.max(0, verifiedNow - baseline);
+
   if (toolFixedCount > 0) {
-    console.log(chalk.green(`\n  ✓ ${formatNumber(toolFixedCount)} issue${toolFixedCount === 1 ? '' : 's'} fixed and verified`));
+    const sessionNote = fixedThisSession > 0 && fixedThisSession < toolFixedCount
+      ? ` (${formatNumber(fixedThisSession)} this session)`
+      : '';
+    console.log(chalk.green(`\n  ✓ ${formatNumber(toolFixedCount)} issue${toolFixedCount === 1 ? '' : 's'} fixed and verified${sessionNote}`));
   }
   
   // Dismissed issues by category
@@ -392,8 +400,13 @@ export async function printAfterActionReport(
     stateContext ? Verification.isVerified(stateContext, c.id) && !dismissedIds.has(c.id) : false
   ).length;
   const dismissedCount = dismissedIds.size;
+  // Compute "fixed this session" using the baseline snapshot from session start
+  const verifiedNow = (stateContext?.state?.verifiedFixed || []).length;
+  const baseline = stateContext?.verifiedFixedAtSessionStart ?? verifiedNow;
+  const fixedThisSession = Math.max(0, verifiedNow - baseline);
+
   console.log(chalk.gray(`  Total issues: ${comments.length}`));
-  console.log(chalk.green(`  Fixed: ${fixedCount}`));
+  console.log(chalk.green(`  Fixed: ${fixedCount}${fixedThisSession > 0 ? ` (${fixedThisSession} this session)` : ''}`));
   console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));
   console.log(chalk.yellow(`  Remaining: ${unresolvedIssues.length}`));
   
