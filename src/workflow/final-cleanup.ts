@@ -98,10 +98,17 @@ export async function executeFinalCleanup(
   printTokenSummary();
   printModelPerformance();
   
-  // Developer handoff prompt and after action report (if there are remaining issues)
-  if (finalUnresolvedIssues.length > 0) {
-    printHandoffPrompt(finalUnresolvedIssues);
-    await printAfterActionReport(finalUnresolvedIssues, finalComments);
+  // Developer handoff prompt and after action report (if there are TRULY remaining issues).
+  // Filter out dismissed issues: they were intentionally skipped (stale, already-fixed,
+  // file-unchanged, exhausted) and don't need human attention or a handoff prompt.
+  // WHY: Without this filter, dismissed issues that get re-added by safety checks
+  // (or simply remain in the unresolved list) pollute the handoff with non-actionable items.
+  const trulyUnresolved = finalUnresolvedIssues.filter(
+    issue => !Dismissed.isCommentDismissed(stateContext, issue.comment.id)
+  );
+  if (trulyUnresolved.length > 0) {
+    printHandoffPrompt(trulyUnresolved);
+    await printAfterActionReport(trulyUnresolved, finalComments);
   }
   
   // Final results summary - AFTER profiling so it's visible
@@ -131,6 +138,7 @@ export async function executeErrorCleanup(
   spinner: Ora,
   finalUnresolvedIssues: UnresolvedIssue[],
   finalComments: ReviewComment[],
+  stateContext: StateContext | null,
   cleanupWorkdir: (workdir: string) => Promise<void>,
   printModelPerformance: () => void,
   printHandoffPrompt: (issues: UnresolvedIssue[]) => void,
@@ -143,10 +151,13 @@ export async function executeErrorCleanup(
   printTokenSummary();
   printModelPerformance();
   
-  // Developer handoff prompt and after action report on error too
-  if (finalUnresolvedIssues.length > 0) {
-    printHandoffPrompt(finalUnresolvedIssues);
-    await printAfterActionReport(finalUnresolvedIssues, finalComments);
+  // Developer handoff prompt and after action report on error too — same dismissed filter
+  const trulyUnresolved = stateContext
+    ? finalUnresolvedIssues.filter(issue => !Dismissed.isCommentDismissed(stateContext, issue.comment.id))
+    : finalUnresolvedIssues;
+  if (trulyUnresolved.length > 0) {
+    printHandoffPrompt(trulyUnresolved);
+    await printAfterActionReport(trulyUnresolved, finalComments);
   }
   
   printFinalSummary();  // Show results even on error

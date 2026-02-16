@@ -339,10 +339,15 @@ export async function executePushIteration(
     console.log(chalk.yellow('\nNo changes to commit'));
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
+    // Preserve the bail-out exit reason if a bail-out already occurred.
+    // WHY: When bail-out triggers, the last-resort direct LLM fix may be attempted
+    // but rejected by verification (reverted). This leaves no changes to commit,
+    // but the exit reason should still be 'bail_out', not 'no_changes'.
+    const preserveExitReason = exitReason === 'bail_out';
     return {
       shouldBreak: true,
-      exitReason: 'no_changes',
-      exitDetails: 'No changes to commit (fixer made no modifications)',
+      exitReason: preserveExitReason ? exitReason : 'no_changes',
+      exitDetails: preserveExitReason ? exitDetails : 'No changes to commit (fixer made no modifications)',
       updatedRapidFailureCount: rapidFailureCount,
       updatedLastFailureTime: lastFailureTime,
       updatedConsecutiveFailures: consecutiveFailures,
