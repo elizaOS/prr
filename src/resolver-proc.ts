@@ -360,7 +360,9 @@ export async function executeBailOut(
   lessonsContext: LessonsContext,
   runners: Runner[],
   options: CLIOptions,
-  getModelsForRunner: (runner: Runner) => string[]
+  getModelsForRunner: (runner: Runner) => string[],
+  workdir: string,
+  llm: LLMClient
 ): Promise<{
   bailedOut: boolean;
   exitReason: string;
@@ -453,6 +455,36 @@ export async function executeBailOut(
   console.log(chalk.gray('    3. Consider increasing --max-stale-cycles if issues seem solvable'));
   console.log(chalk.gray('    4. Manually fix remaining issues or dismiss with comments'));
   console.log('');
+  
+  // Add "exhausted" comments for remaining unresolved issues
+  // WHY: These issues couldn't be fixed automatically. Adding inline comments
+  // documents this for review bots and humans on the next review pass.
+  try {
+    const { addDismissalComments } = await import('./workflow/dismissal-comments.js');
+    
+    // Build synthetic DismissedIssue objects for the exhausted issues
+    const exhaustedIssues = unresolvedIssues.map(issue => ({
+      commentId: issue.comment.id,
+      reason: `Automated fix attempted ${cyclesCompleted} cycle(s) but could not resolve. Tools tried: ${toolsExhausted.join(', ')}. May need manual attention.`,
+      dismissedAt: new Date().toISOString(),
+      dismissedAtIteration: 0, // Doesn't matter for exhausted issues
+      category: 'exhausted' as const,
+      filePath: issue.comment.path,
+      line: issue.comment.line,
+      commentBody: issue.comment.body,
+    }));
+    
+    if (exhaustedIssues.length > 0) {
+      console.log(chalk.gray('\n  Adding exhausted comments to code...'));
+      const { added } = await addDismissalComments(exhaustedIssues, workdir, llm);
+      if (added > 0) {
+        console.log(chalk.gray(`    Added ${added} exhausted comment${added === 1 ? '' : 's'}`));
+      }
+    }
+  } catch (error) {
+    // Non-fatal: exhausted comments are nice-to-have
+    console.log(chalk.gray(`\n  Could not add exhausted comments: ${String(error)}`));
+  }
   
   return {
     bailedOut: true,

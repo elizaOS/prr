@@ -1505,4 +1505,95 @@ RESOLVED:
 
     return message;
   }
+
+  /**
+   * Generate a dismissal comment for a review issue.
+   * 
+   * Returns ONLY the comment text (a string), never modified code.
+   * The caller is responsible for inserting it programmatically.
+   */
+  async generateDismissalComment(params: {
+    filePath: string;
+    line: number;
+    surroundingCode: string;   // ~15 lines with line numbers
+    reviewComment: string;     // original bot comment
+    dismissalReason: string;   // from DismissedIssue.reason
+    category: string;          // 'already-fixed' | 'stale' | etc.
+  }): Promise<{ needed: boolean; commentText?: string }> {
+    // Truncate dismissalReason to avoid overly long comments
+    const reason = params.dismissalReason.length > 150 
+      ? params.dismissalReason.substring(0, 147) + '...'
+      : params.dismissalReason;
+
+    const prompt = `You are reviewing code to determine if a dismissal comment is needed.
+
+File: ${params.filePath}
+Target line: ${params.line}
+
+Surrounding code:
+---
+${params.surroundingCode}
+---
+
+Review comment that was raised:
+"${params.reviewComment}"
+
+Why this was dismissed (${params.category}):
+${reason}
+
+TASK:
+1. Check if there is ALREADY a code comment near line ${params.line} that explains why this review concern doesn't apply or has been addressed.
+2. If such a comment exists, respond with: EXISTING
+3. If no such comment exists, write a ONE-LINE comment (max 120 characters) that briefly explains the dismissal.
+
+CRITICAL RULES:
+- Return ONLY the comment text itself. Do NOT return any code.
+- Do NOT include comment syntax (like // or # or /* */). Just the words.
+- Do NOT use these keywords: TODO, FIXME, HACK, XXX, BUG, WARN
+- Start with "Review:" as a prefix for clarity
+- Keep it factual and concise (ONE line, max 120 chars)
+
+Response format:
+- If comment exists: EXISTING
+- If comment needed: COMMENT: Review: <your brief explanation here>
+
+Example good responses:
+COMMENT: Review: suggested Math.trunc but Math.floor already handles this case correctly
+COMMENT: Review: code was restructured and this concern no longer applies
+COMMENT: Review: after analysis this pattern is intentional for error handling`;
+
+    const response = await this.complete(prompt);
+    const content = response.content.trim();
+
+    // Parse response
+    if (/^EXISTING\b/i.test(content)) {
+      debug('Dismissal comment already exists', { filePath: params.filePath, line: params.line });
+      return { needed: false };
+    }
+
+    const commentMatch = content.match(/^COMMENT:\s*(.+)$/i);
+    if (commentMatch) {
+      let commentText = commentMatch[1].trim();
+      
+      // Take only first line if LLM returned multiple
+      commentText = commentText.split('\n')[0];
+      
+      // Enforce max length
+      if (commentText.length > 120) {
+        commentText = commentText.substring(0, 117) + '...';
+      }
+
+      debug('Generated dismissal comment', { 
+        filePath: params.filePath, 
+        line: params.line,
+        length: commentText.length 
+      });
+
+      return { needed: true, commentText };
+    }
+
+    // Fallback: LLM didn't follow format
+    debug('LLM response did not match expected format', { content });
+    return { needed: false };
+  }
 }
