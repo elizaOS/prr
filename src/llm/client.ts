@@ -1571,7 +1571,7 @@ COMMENT: Review: after analysis this pattern is intentional for error handling`;
       return { needed: false };
     }
 
-    const commentMatch = content.match(/^COMMENT:\s*(.+)$/i);
+    const commentMatch = content.match(/^COMMENT:\s*(.+)$/im);
     if (commentMatch) {
       let commentText = commentMatch[1].trim();
       
