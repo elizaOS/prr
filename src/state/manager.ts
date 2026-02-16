@@ -60,6 +60,16 @@ export class StateManager {
             console.log(`Compacted ${removed} duplicate lessons (${this.state.lessonsLearned.length} unique remaining)`);
           }
           
+          // Deduplicate verifiedFixed on load
+          if (this.state.verifiedFixed && this.state.verifiedFixed.length > 0) {
+            const before = this.state.verifiedFixed.length;
+            this.state.verifiedFixed = [...new Set(this.state.verifiedFixed)];
+            const dupsRemoved = before - this.state.verifiedFixed.length;
+            if (dupsRemoved > 0) {
+              console.log(`Deduplicated verifiedFixed: removed ${dupsRemoved} duplicate(s) (${this.state.verifiedFixed.length} unique)`);
+            }
+          }
+          
           // Load cumulative stats from previous sessions
           if (this.state.totalTimings) {
             loadOverallTimings(this.state.totalTimings);

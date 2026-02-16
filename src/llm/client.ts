@@ -762,6 +762,26 @@ STALE: Not applicable`;
           avgImportance,
           avgEase,
         });
+
+        // When parsing falls short, log enough to diagnose the problem
+        if (batchParsed < batchIssues.length) {
+          const unparsedIssueIds = batchIssues
+            .filter(issue => !allResults.has(normalizeIssueId(issue.id)))
+            .map(issue => issue.id);
+          
+          const unmatchedLines = lines
+            .map(l => l.trim())
+            .filter(l => l.length > 0)
+            .filter(l => !l.match(/^([^:]+):\s*(YES|NO|STALE):\s*/i))
+            .slice(0, 10);
+
+          debug(`Batch ${batchIdx + 1} parse shortfall`, {
+            missing: batchIssues.length - batchParsed,
+            unparsedIssueIds,
+            sampleUnmatchedLines: unmatchedLines,
+            responsePreview: response.content.substring(0, 500),
+          });
+        }
       }
 
       // Parse model recommendation only from first batch
@@ -1092,6 +1112,11 @@ NO: <brief explanation of what's still missing or wrong>`;
     }
 
     // Truly ambiguous — default to not fixed (conservative)
+    debug('Verify fix: ambiguous response, no YES/NO verdict found', {
+      filePath: filePath,
+      responsePreview: content.substring(0, 300),
+      lineCount: lines.length,
+    });
     return { fixed: false, explanation: content };
   }
 
@@ -1284,6 +1309,29 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     }
 
     debug('Batch verify results', { parsed: results.size, expected: fixes.length });
+
+    // When parsing falls short, log enough to diagnose the problem
+    if (results.size < fixes.length) {
+      const unparsedIds = fixes
+        .filter(f => !results.has(f.id))
+        .map(f => f.id.substring(0, 20));
+      
+      // Show the raw response lines that didn't match any pattern
+      const unmatchedLines = lines
+        .map(l => l.trim())
+        .filter(l => l.length > 0)
+        .filter(l => !l.match(/^(?:fix[_\s]*)?(\d+)\s*:\s*(YES|NO)\s*:/i))
+        .filter(l => !l.match(/^LESSON:/i))
+        .slice(0, 10);
+      
+      debug('Batch verify parse shortfall', {
+        missing: fixes.length - results.size,
+        unparsedIds,
+        sampleUnmatchedLines: unmatchedLines,
+        responsePreview: response.content.substring(0, 500),
+      });
+    }
+
     return results;
   }
 
