@@ -370,7 +370,9 @@ export async function printAfterActionReport(
     const fileModels = stateContext ? Performance.getModelsBySuccessRate(stateContext) : [];
     const relevantAttempts = fileModels.filter(m => m.stats.fixes > 0 || m.stats.failures > 0);
     if (relevantAttempts.length > 0) {
-      console.log(chalk.gray(`     Tools attempted: ${relevantAttempts.map(m => m.key.split('/')[0]).join(', ')}`));
+      // Show full runner/model keys (e.g., "cursor/gpt-5.2-codex-high-fast") not just runner name.
+      // WHY: "cursor, cursor, cursor" tells you nothing; the model matters.
+      console.log(chalk.gray(`     Models attempted: ${relevantAttempts.map(m => m.key).join(', ')}`));
     }
     
     // Learnings related to this file
