@@ -391,7 +391,10 @@ GROUP: 1,3 → canonical 3
 If no comments are duplicates, reply: NONE`;
 
     try {
-      const response = await llm.complete(prompt, undefined, { model: 'fast' });
+      // Use the LLM client's default model (configured at init, typically haiku/sonnet).
+      // WHY no override: 'fast' is not a valid Anthropic model name and causes 404s.
+      // The default model is already appropriate for this lightweight dedup task.
+      const response = await llm.complete(prompt);
       const content = response.content.trim();
 
       if (content.toUpperCase().includes('NONE')) continue;

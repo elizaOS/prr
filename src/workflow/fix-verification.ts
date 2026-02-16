@@ -5,6 +5,7 @@
 
 import chalk from 'chalk';
 import ora from 'ora';
+import { readFile } from 'fs/promises';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
@@ -20,7 +21,7 @@ import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration } from '../logger.js';
 import { getChangedFiles, getDiffForFile, detectFileCorruption } from '../git/git-clone-index.js';
-import { basename, dirname, extname } from 'path';
+import { basename, dirname, extname, join } from 'path';
 
 /**
  * Find changed files that relate to an issue's target path.
@@ -90,6 +91,44 @@ function findRelatedChangedFiles(targetPath: string, changedFiles: string[]): st
 }
 
 /**
+ * Read the current code around an issue's specific line(s) AFTER the fixer has run.
+ *
+ * WHY: The batch verifier receives the full file diff, but when multiple issues
+ * target the same file, they all get the same diff. The verifier can't reliably
+ * determine which diff hunks address which issue — especially in large diffs.
+ * Including the current code at the issue's location lets the verifier check
+ * whether the problematic pattern described in the review comment still exists.
+ */
+async function getCurrentCodeAtLine(
+  workdir: string,
+  filePath: string,
+  line: number | null
+): Promise<string> {
+  try {
+    const fullPath = join(workdir, filePath);
+    const content = await readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+
+    if (line === null) {
+      // No specific line — return first 40 lines as context
+      return lines.slice(0, 40).map((l, i) => `${i + 1}: ${l}`).join('\n');
+    }
+
+    const contextBefore = 10;
+    const contextAfter = 15;
+    const start = Math.max(0, line - contextBefore - 1);
+    const end = Math.min(lines.length, line + contextAfter);
+
+    return lines
+      .slice(start, end)
+      .map((l, i) => `${start + i + 1}: ${l}`)
+      .join('\n');
+  } catch {
+    return '(file not found or unreadable)';
+  }
+}
+
+/**
  * Verify fixes after fixer completes
  * Separates changed/unchanged files, verifies changed files, records results
  */
@@ -101,7 +140,8 @@ export async function verifyFixes(
   llm: LLMClient,
   verifiedThisSession: Set<string>,
   noBatch: boolean,
-  duplicateMap?: Map<string, string[]>
+  duplicateMap?: Map<string, string[]>,
+  workdir?: string
 ): Promise<{
   verifiedCount: number;
   failedCount: number;
@@ -257,16 +297,27 @@ export async function verifyFixes(
           id: string;
           comment: string;
           filePath: string;
+          line: number | null;
           diff: string;
+          currentCode?: string;
         }> = [];
 
         for (const issue of changedIssues) {
           const diff = await getIssueDiff(issue);
+          // Read current code at issue's line AFTER the fixer has run.
+          // WHY: When multiple issues target the same file, they all share the same
+          // diff. The verifier can't tell which diff hunks fix which issue. Including
+          // the current code lets it check if the problematic pattern still exists.
+          const currentCode = workdir
+            ? await getCurrentCodeAtLine(workdir, issue.comment.path, issue.comment.line)
+            : undefined;
           fixesToVerify.push({
             id: issue.comment.id,
             comment: issue.comment.body,
             filePath: issue.comment.path,
+            line: issue.comment.line,
             diff,
+            currentCode,
           });
         }
 

@@ -271,6 +271,7 @@ export class CursorRunner implements Runner {
         '--print',
         '--output-format', 'stream-json',
         '--stream-partial-output',
+        '--trust',  // WHY: prr clones repos to its own workdir — always trust it
         '--workspace', workdir,
       ];
       
@@ -390,10 +391,16 @@ export class CursorRunner implements Runner {
             output: textContent,  // Clean text, not raw JSON stream
           });
         } else {
+          const errorMsg = stderr || `Process exited with code ${code}`;
+          // Detect non-transient environment errors for immediate bail-out
+          // WHY: Workspace trust errors won't resolve with retries — bail immediately
+          // instead of wasting iterations in the rapid-failure detection loop.
+          const errorType = /Workspace Trust Required/i.test(errorMsg) ? 'environment' as const : undefined;
           resolve({
             success: false,
             output: textContent,  // Clean text for NO_CHANGES parsing
-            error: stderr || `Process exited with code ${code}`,
+            error: errorMsg,
+            errorType,
           });
         }
       });
