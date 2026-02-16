@@ -228,7 +228,7 @@ export async function executePushIteration(
     // a destructured `runner` variable would still hold the OLD runner reference.
     // getRunner() always returns the current runner from the PRResolver instance.
     const iterResult = await ResolverProc.executeFixIteration(
-      unresolvedIssues, comments, git, workdir, getRunner(), stateContext, lessonsContext, llm, options, verifiedThisSession,
+      unresolvedIssues, comments, git, workdir, getRunner(), stateContext, lessonsContext, llm, options, prInfo, verifiedThisSession,
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
     );
@@ -262,6 +262,24 @@ export async function executePushIteration(
     const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir);
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
+
+    // Report verification failures to runner for escalation tracking.
+    // HISTORY: The runner only tracked search/replace matching failures.
+    // Files with structural corruption got patched (S/R matched) but failed
+    // verification, so they never escalated to full-file-rewrite. Now both
+    // signal types count, so persistent failures trigger escalation.
+    if (failedCount > 0 && changedIssues.length > 0) {
+      const failedFiles = new Set<string>();
+      for (const issue of changedIssues) {
+        if (!Verification.isVerified(stateContext, issue.comment.id)) {
+          failedFiles.add(issue.comment.path);
+        }
+      }
+      if (failedFiles.size > 0) {
+        const runner = getRunner();
+        runner.reportVerificationFailures?.(Array.from(failedFiles));
+      }
+    }
     
     // Handle iteration cleanup
     const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, getRunner(), currentModel,
@@ -324,8 +342,11 @@ export async function executePushIteration(
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
+    // After bail-out, skip the 300s bot review wait — we've exhausted all
+    // strategies and waiting for new comments just delays exit with no benefit.
+    const isBailOut = exitReason === 'bail_out';
     const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, pushIteration, maxPushIterations,
-      resolveConflictsWithLLM, waitForBotReviews, allFixed);
+      resolveConflictsWithLLM, waitForBotReviews, allFixed, /* skipBotWait */ isBailOut);
     if (commitResult.shouldBreak) {
       return {
         shouldBreak: true,

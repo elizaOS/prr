@@ -72,6 +72,8 @@ export async function handleCommitAndPush(
     headSha: string
   ) => Promise<void>,
   allFixed: boolean = false,
+  /** Skip the post-push bot review wait (e.g. after bail-out when no more fix iterations will run). */
+  skipBotWait: boolean = false,
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -183,10 +185,18 @@ export async function handleCommitAndPush(
     }
 
     // Wait for re-review using smart timing based on observed bot response times.
-    // Always wait, even after bail-out: the pushed fixes may trigger new bot
-    // comments that the outer loop should process in the next push iteration.
-    if (maxPushIterations === 0 || pushIteration < maxPushIterations) {
+    //
+    // HISTORY: Originally "always wait, even after bail-out" reasoning was that
+    // pushed fixes may trigger new bot comments worth processing. In practice,
+    // after a stalemate bail-out we've exhausted all fix strategies — new bot
+    // comments won't change the outcome. The 300s wait just delays exit with
+    // zero benefit. Now the caller passes skipBotWait=true on bail-out to avoid
+    // this. The wait still runs for normal mid-loop pushes where re-entering
+    // the fix loop with fresh bot feedback is valuable.
+    if (!skipBotWait && (maxPushIterations === 0 || pushIteration < maxPushIterations)) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);
+    } else if (skipBotWait) {
+      debug('Skipping bot review wait (bail-out — no more fix iterations will run)');
     }
     
     return { shouldBreak: false };

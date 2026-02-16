@@ -89,7 +89,32 @@ export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number):
 export function buildFixPrompt(
   issues: UnresolvedIssue[],
   lessonsLearned: string[],
-  options?: { maxIssues?: number }
+  options?: {
+    maxIssues?: number;
+    /**
+     * Per-file lesson lookup for inline injection alongside each issue.
+     *
+     * HISTORY: Originally lessons were only shown in a top-level "Lessons
+     * Learned" section, 2000+ tokens before the issue they apply to. The
+     * fixer kept ignoring file-specific lessons (e.g. "delete lines 429-506"
+     * for verify/route.ts) because by the time it processed that issue, the
+     * lesson was out of its attention window. Now file-specific lessons are
+     * ALSO injected inline right after the issue's code snippet, so the fixer
+     * sees them in immediate context.
+     */
+    perFileLessons?: Map<string, string[]>;
+    /**
+     * PR metadata injected into the prompt so the fixer understands what the
+     * PR is trying to accomplish, not just individual review comments.
+     *
+     * WHY: Without this context, a fixer seeing "incorrect error handling in
+     * the auth flow" has no idea the PR is adding OAuth2 PKCE for mobile.
+     * The fix might be technically valid but semantically wrong for the PR's
+     * intent. Including title, description, and base branch gives the fixer
+     * the big picture.
+     */
+    prInfo?: { title: string; body: string; baseBranch: string };
+  }
 ): FixPrompt {
   // Guard: Return empty prompt if no issues
   // WHY: Prevents confusing "Fixing 0 issues" output and wasted fixer runs
@@ -203,6 +228,28 @@ export function buildFixPrompt(
     parts.push('');
   }
 
+  // Add PR context so the fixer knows what the PR is trying to accomplish.
+  // WHY: The fixer only sees individual review comments + code snippets.
+  // Without the PR title/description, it has no idea whether the PR is a
+  // refactor, a new feature, or a bug fix — and may produce fixes that are
+  // technically correct but semantically wrong for the PR's intent.
+  //
+  // WHY 500 chars: PR descriptions can be huge (templates, checklists, HTML
+  // image embeds). Unbounded inclusion would blow the token budget. 500 chars
+  // captures the intent without the noise.
+  if (options?.prInfo && options.prInfo.title) {
+    parts.push('## PR Context\n');
+    parts.push(`**Title:** ${options.prInfo.title}`);
+    if (options.prInfo.body) {
+      const truncatedBody = options.prInfo.body.length > 500
+        ? options.prInfo.body.substring(0, 500) + '...'
+        : options.prInfo.body;
+      parts.push(`**Description:** ${truncatedBody}`);
+    }
+    parts.push(`**Base branch:** ${options.prInfo.baseBranch}`);
+    parts.push('\nKeep fixes aligned with this PR\'s intent.\n');
+  }
+
   parts.push('## Issues to Fix\n');
 
   for (let i = 0; i < limitedIssues.length; i++) {
@@ -268,9 +315,35 @@ export function buildFixPrompt(
     if (issue.explanation) {
       parts.push(`**Analysis:** ${issue.explanation}\n`);
     }
+
+    // Inject file-specific lessons INLINE with each issue.
+    // HISTORY: Lessons in the top-level section were 2000+ tokens away from the
+    // issue they applied to. The fixer ignored "delete lines 429-506" for
+    // verify/route.ts because it was out of the attention window by the time
+    // it processed that issue. Putting lessons right here, next to the code
+    // snippet, ensures the fixer sees them in immediate context.
+    const fileLessons = options?.perFileLessons?.get(issue.comment.path);
+    if (fileLessons && fileLessons.length > 0) {
+      const maxInline = 3; // Keep inline section brief — top-level has the full list
+      const shown = fileLessons.slice(-maxInline);
+      parts.push(`**⚠ File-specific lessons (from previous failed attempts on this file):**`);
+      for (const lesson of shown) {
+        parts.push(`- ${formatLessonForDisplay(lesson)}`);
+      }
+      if (fileLessons.length > maxInline) {
+        parts.push(`_(${fileLessons.length - maxInline} older lessons omitted)_`);
+      }
+      parts.push('');
+    }
   }
 
   parts.push('## Instructions\n');
+  // WHY instruction #0: The fixer sees isolated file snippets but not the
+  // big picture of what changed across the PR. Running `--stat` (summary,
+  // not full diff) gives a quick overview without overwhelming the context.
+  // Runners with shell access (Cursor, Claude Code, Aider) can execute this.
+  // Falls back to 'main' if prInfo is absent.
+  parts.push(`0. First, run \`git diff ${options?.prInfo?.baseBranch ?? 'main'}...HEAD --stat\` to understand what this PR changes`);
   parts.push('1. Address each issue listed above');
   parts.push('2. Make MINIMAL, SURGICAL changes - only modify lines directly related to the fix');
   parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes');

@@ -33,6 +33,8 @@ export class GitHubAPI {
       owner,
       repo,
       number: prNumber,
+      title: pr.title,
+      body: pr.body ?? '',
       branch: pr.head.ref,
       baseBranch: pr.base.ref,
       headSha: pr.head.sha,
@@ -365,6 +367,22 @@ export class GitHubAPI {
   }
 
   /**
+   * Normalize bot login names for cleaner display in prompts.
+   *
+   * WHY: GitHub bot logins like `claude[bot]` display as `(claude)` after
+   * stripping the suffix. Capitalizing to `(Claude)` is cleaner and matches
+   * how users refer to these tools. Only applied in the REVIEW_BOTS
+   * (issue-comment) path — NOT in getReviewThreads(), where raw logins are
+   * used as identity keys for dedup and verification tracking.
+   */
+  private normalizeBotName(login: string): string {
+    const lower = login.toLowerCase();
+    if (lower.includes('claude')) return 'Claude';
+    if (lower.includes('greptile')) return 'Greptile';
+    return login.replace(/\[bot\]$/, '');
+  }
+
+  /**
    * Fetch issue comments (conversation tab) and extract review issues from bots.
    *
    * Some review bots (notably claude[bot]) post structured markdown reviews as
@@ -375,8 +393,15 @@ export class GitHubAPI {
   private async getReviewBotIssueComments(
     owner: string, repo: string, prNumber: number
   ): Promise<ReviewComment[]> {
-    // Known bots that post review-style issue comments
-    const REVIEW_BOTS = ['claude[bot]'];
+    // Known bots that post review-style issue comments.
+    //
+    // WHY only these two: This list is specifically for bots that post
+    // structured reviews as ISSUE COMMENTS (conversation tab). Bots that
+    // use inline review threads (CodeRabbit, Copilot) are already captured
+    // by getReviewThreads() and should NOT be added here — doing so would
+    // parse their summary/walkthrough comment into pseudo-issues that
+    // duplicate the inline threads already captured.
+    const REVIEW_BOTS = ['claude[bot]', 'greptile[bot]'];
 
     const allIssueComments: Array<{
       id: number;
@@ -414,7 +439,7 @@ export class GitHubAPI {
       if (botComments.length === 0) continue;
 
       const latest = botComments[0];
-      const authorClean = botLogin.replace(/\[bot\]$/, '');
+      const authorClean = this.normalizeBotName(botLogin);
       debug(`Parsing latest ${botLogin} issue comment`, {
         commentId: latest.id,
         bodyLength: latest.body.length,

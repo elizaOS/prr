@@ -46,13 +46,24 @@ This document explains the high-level architecture of PRR (PR Resolver), a syste
 ### 1. GitHub Integration (`src/github/`)
 
 Handles all interactions with GitHub's API:
-- Fetching PR information (files, comments, status)
+- Fetching PR information (title, description, files, comments, status)
+- Extracting bot review comments from issue comments (Claude, Greptile)
 - Posting verification comments
 - Managing PR metadata
 
+**Bot comment extraction:**
+Two separate paths capture review feedback:
+1. **Inline review threads** (`getReviewThreads()`): GraphQL-based, captures CodeRabbit, Copilot, humans
+2. **Issue comments** (`getReviewBotIssueComments()`): REST-based, captures Claude, Greptile
+
+WHY two paths: Some bots (Claude, Greptile) post structured reviews as issue/conversation comments, not inline threads. CodeRabbit is intentionally absent from the issue-comment path — it uses inline threads, and its summary comment would produce duplicate pseudo-issues.
+
+**Bot name normalization:**
+`normalizeBotName()` converts `claude[bot]` → `Claude` for cleaner prompt display. Only used in the issue-comment path. WHY NOT in inline threads: raw logins like `coderabbitai[bot]` serve as identity keys for dedup and verification tracking — normalizing them would break matching.
+
 **Key files:**
-- `api.ts` - GitHub API client wrapper
-- `types.ts` - Type definitions for PR data
+- `api.ts` - GitHub API client wrapper (bot filtering, normalization)
+- `types.ts` - Type definitions for PR data (`PRInfo` includes title/body)
 
 ### 2. Git Operations (`src/git/`)
 
@@ -119,8 +130,20 @@ WHY: When batching limits prompts to 50 of 93 issues, the selection was arbitrar
 
 Issue analysis and prompt building:
 - `types.ts` - Core types: `UnresolvedIssue`, `IssueTriage`, `FixPrompt`
-- `prompt-builder.ts` - Constructs fix prompts with lessons, adaptive batch sizing, triage labels
-- `severity.ts` - **NEW**: Priority sorting by importance, difficulty, or chronological order
+- `prompt-builder.ts` - Constructs fix prompts with PR context, lessons, adaptive batch sizing, triage labels
+- `severity.ts` - Priority sorting by importance, difficulty, or chronological order
+
+**PR context in prompts:**
+Fix prompts include a "PR Context" section with the PR title, description (truncated to 500 chars), and base branch. This goes BEFORE the issues list so the fixer reads intent before specifics.
+
+WHY 500 chars: PR descriptions can include templates, checklists, and embedded images. A 3000-char description would consume tokens better spent on actual issues. 500 chars captures the intent paragraph.
+
+A `git diff <base>...HEAD --stat` instruction is added as step #0 in the Instructions section. WHY: Agentic fixers (Cursor, Claude Code, Aider) can execute shell commands. The `--stat` summary shows which files the PR touches without the full diff, giving the fixer scope awareness.
+
+**Three prompt paths:**
+1. `buildFixPrompt()` in `prompt-builder.ts` — batch mode, full PR context
+2. `buildSingleIssuePrompt()` in `workflow/utils.ts` — single-issue fallback, title + baseBranch only (no body, to keep focus tight)
+3. Inline template in `workflow/helpers/recovery.ts` — emergency fallback, no PR context (minimal prompt for maximum reliability)
 
 **Priority sorting:**
 The `sortByPriority()` function accepts 7 sort orders:
@@ -238,6 +261,8 @@ User-facing output and progress indicators:
 
 ```text
 1. Fetch PR comments from GitHub
+   ├─ Inline review threads (GraphQL)
+   └─ Bot issue comments (Claude, Greptile)
    ↓
 2. Pre-screen for solvability (skip deleted files, stale refs)
    ↓
@@ -246,7 +271,7 @@ User-facing output and progress indicators:
 4. Filter out already-fixed issues (from state)
    ↓
 5. For remaining issues:
-   ├─ Build fix prompt with code context + lessons
+   ├─ Build fix prompt with PR context + code context + lessons
    ├─ Run fixer tool (Cursor/Aider/Gemini/etc.)
    ├─ Verify each fix (LLM check)
    ├─ Commit verified fixes
@@ -418,5 +443,6 @@ This shows:
 ## Further Reading
 
 - [Runners Documentation](./RUNNERS.md) - Deep dive into fixer tools
+- [PR Context in Prompts](./features/PR_CONTEXT_IN_PROMPTS.md) - Why fix prompts include PR metadata
 - [Large File Conflicts](./features/LARGE_FILE_CONFLICT_RESOLUTION.md) - Chunked resolution details
 - [Development Guide](./DEVELOPMENT.md) - Contributing to PRR

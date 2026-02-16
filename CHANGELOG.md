@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02-16)
+
+**PR Context in Fix Prompts**
+- Fix prompts now include the PR title, description (truncated to 500 chars), and base branch in a new "PR Context" section before the issues list.
+- Single-issue prompts include title and base branch (description omitted to keep focus tight).
+- New instruction `0. First, run git diff <base>...HEAD --stat` added to fix prompts so the fixer understands the full scope of changes before acting.
+- WHY: Without PR context, fixers see individual review comments in isolation. A comment like "incorrect error handling in the auth flow" means nothing without knowing the PR adds OAuth2 PKCE for mobile. Fixes were technically valid but semantically misaligned with the PR's intent. The diff instruction gives agentic fixers (Cursor, Claude Code) a way to see the big picture.
+
+**Greptile Bot Support**
+- Added `greptile[bot]` to `REVIEW_BOTS` for issue comment extraction.
+- WHY: Greptile posts structured reviews as issue comments (not inline review threads). Without this, its feedback was invisible to prr. CodeRabbit was intentionally NOT added — it uses inline review threads already captured by `getReviewThreads()`, and adding it to `REVIEW_BOTS` would cause duplicate issues from its summary comment.
+
+**Bot Name Normalization**
+- New `normalizeBotName()` helper in `GitHubAPI` converts bot logins like `claude[bot]` → `Claude`, `greptile[bot]` → `Greptile` in fix prompts.
+- WHY: Cleaner display in prompts without the `[bot]` suffix noise. Only applied in the issue-comment path — raw logins are preserved in inline review threads where they serve as identity keys for deduplication and verification tracking.
+
+**PR Title & Body in PRInfo**
+- `PRInfo` interface now includes `title` and `body` fields, fetched in `getPRInfo()`.
+- `body` is coerced from `null` to `''` at the API boundary so downstream code never null-checks.
+- WHY: This metadata was already returned by the GitHub API but discarded. Threading it through the call chain (`resolver → executeFixIteration → buildAndDisplayFixPrompt → buildFixPrompt`) gives every prompt path access to PR context at zero extra API cost.
+
 ### Fixed (2026-02-13)
 
 **Stalemate Bailout Loop**

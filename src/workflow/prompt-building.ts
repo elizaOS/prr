@@ -2,14 +2,22 @@
  * Fix prompt building and lessons display
  * 
  * Handles:
- * 1. Build fix prompt with lessons
+ * 1. Build fix prompt with lessons and PR context
  * 2. Display detailed summary
  * 3. Show lessons in verbose mode (by scope: global, per-file)
+ *
+ * WHY `prInfo` threads through here: There are three code paths that build
+ * prompts — buildFixPrompt (batch), buildSingleIssuePrompt (single-issue),
+ * and an inline template in recovery.ts (emergency). The first two receive
+ * PR context via this wiring. The recovery path was intentionally left
+ * without prInfo because it's a last-resort fallback where minimal prompt
+ * size matters more than context.
  */
 
 import chalk from 'chalk';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
+import type { PRInfo } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -33,7 +41,8 @@ export function buildAndDisplayFixPrompt(
   lessonsContext: LessonsContext,
   verbose: boolean,
   consecutiveZeroFixIterations: number = 0,
-  priorityOrder: PriorityOrder = 'important'
+  priorityOrder: PriorityOrder = 'important',
+  prInfo?: PRInfo
 ): {
   prompt: string;
   detailedSummary: string;
@@ -64,10 +73,23 @@ export function buildAndDisplayFixPrompt(
   // without affecting other consumers.
   const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
 
+  // Build per-file lesson map for inline injection alongside each issue.
+  // HISTORY: The flat `lessons` array was only shown in a top-level section,
+  // 2000+ tokens before the issue it applied to. File-specific lessons like
+  // "delete lines 429-506" were ignored because the fixer's attention had
+  // moved on. Now we also pass them inline, right next to each issue.
+  const perFileLessons = new Map<string, string[]>();
+  for (const filePath of affectedFiles) {
+    const fileLessons = LessonsAPI.Retrieve.getLessonsForFile(lessonsContext, filePath);
+    if (fileLessons.length > 0) {
+      perFileLessons.set(filePath, fileLessons);
+    }
+  }
+
   const { prompt, detailedSummary, lessonsIncluded } = buildPrompt(
     sortedIssues,
     lessons,
-    { maxIssues: effectiveMax }
+    { maxIssues: effectiveMax, perFileLessons, prInfo }
   );
 
   console.log(chalk.cyan(`\n${detailedSummary}\n`));

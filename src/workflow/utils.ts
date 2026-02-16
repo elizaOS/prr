@@ -257,7 +257,11 @@ export function sleep(ms: number): Promise<void> {
 /**
  * Build prompt for fixing a single issue
  */
-export function buildSingleIssuePrompt(issue: UnresolvedIssue, lessonsContext: LessonsContext): string {
+export function buildSingleIssuePrompt(
+  issue: UnresolvedIssue,
+  lessonsContext: LessonsContext,
+  prInfo?: { title: string; body: string; baseBranch: string }
+): string {
   // Get file-scoped lessons (automatically includes global + this file's lessons)
   const lessons = LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, [issue.comment.path])
     .slice(-5); // Last 5 relevant lessons
@@ -265,8 +269,22 @@ export function buildSingleIssuePrompt(issue: UnresolvedIssue, lessonsContext: L
   let prompt = `# SINGLE ISSUE FIX
 
 Focus on fixing ONLY this one issue. Make minimal, targeted changes.
+`;
 
-## Issue
+  // Add PR context if available.
+  // WHY title only (no body): Single-issue mode is a focused fallback when
+  // batch fixes fail. Including the full PR description would dilute the
+  // signal. The title gives enough context about intent without the noise.
+  if (prInfo?.title) {
+    prompt += `
+## PR Context
+**Title:** ${prInfo.title}
+**Base branch:** ${prInfo.baseBranch}
+
+`;
+  }
+
+  prompt += `## Issue
 File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}
 
 Review Comment:

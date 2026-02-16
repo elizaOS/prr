@@ -38,14 +38,41 @@ import { basename, dirname, extname, join } from 'path';
 function findRelatedChangedFiles(targetPath: string, changedFiles: string[]): string[] {
   const related: string[] = [];
 
-  const dir = dirname(targetPath);                     // foo/bar
+  const dir = dirname(targetPath);                     // app/api/auth/siwe/verify
   const ext = extname(targetPath);                     // .ts
   const base = basename(targetPath, ext);              // route
   const baseLower = base.toLowerCase();
-  const extLower = ext.toLowerCase();
+
+  // For Next.js route handlers (route.ts, page.tsx, layout.tsx, etc.), the
+  // meaningful name is the DIRECTORY, not the file. Tests for
+  // app/api/auth/siwe/verify/route.ts are typically named verify.test.ts,
+  // not route.test.ts.
+  //
+  // HISTORY: Originally only matched on basename ("route"), which missed
+  // test files named after the directory ("verify.test.ts"). This caused
+  // iteration 4 to create verify.test.ts and nonce.test.ts but verification
+  // saw 0 matches → "0 issues fixed". Now we also match on the parent
+  // directory name for these conventional filenames.
+  const NEXTJS_CONVENTIONAL_NAMES = new Set(['route', 'page', 'layout', 'loading', 'error', 'not-found', 'template', 'default', 'middleware', 'index']);
+  const dirName = basename(dir);                       // verify
+  const dirNameLower = dirName.toLowerCase();
+  const useDirectoryName = NEXTJS_CONVENTIONAL_NAMES.has(baseLower);
 
   // Extensions that are plausible test files for the target
   const testExts = new Set([ext, '.ts', '.tsx', '.js', '.jsx'].map(e => e.toLowerCase()));
+
+  /** Check if a test file basename matches our target (by file name or directory name) */
+  const matchesTarget = (fBaseLower: string): boolean => {
+    // Match on the actual file basename: route.test, route.spec
+    if (fBaseLower === `${baseLower}.test` || fBaseLower === `${baseLower}.spec`) return true;
+    if (fBaseLower === baseLower) return true;
+    // For Next.js conventional names, also match on directory name: verify.test, verify.spec
+    if (useDirectoryName) {
+      if (fBaseLower === `${dirNameLower}.test` || fBaseLower === `${dirNameLower}.spec`) return true;
+      if (fBaseLower === dirNameLower) return true;
+    }
+    return false;
+  };
 
   for (const file of changedFiles) {
     // Direct match: the target file itself
@@ -62,28 +89,31 @@ function findRelatedChangedFiles(targetPath: string, changedFiles: string[]): st
     if (!testExts.has(fExt.toLowerCase())) continue;
 
     // Pattern 1: sibling test file — foo/bar.test.ts, foo/bar.spec.ts
-    if (fDir === dir) {
-      if (fBaseLower === `${baseLower}.test` || fBaseLower === `${baseLower}.spec`) {
-        related.push(file);
-        continue;
-      }
+    if (fDir === dir && matchesTarget(fBaseLower)) {
+      related.push(file);
+      continue;
     }
 
     // Pattern 2: __tests__ subdirectory — foo/__tests__/bar.ts, foo/__tests__/bar.test.ts
-    if (fDir === `${dir}/__tests__`) {
-      if (fBaseLower === baseLower || fBaseLower === `${baseLower}.test` || fBaseLower === `${baseLower}.spec`) {
+    if (fDir === `${dir}/__tests__` && matchesTarget(fBaseLower)) {
+      related.push(file);
+      continue;
+    }
+
+    // Pattern 3: parent's __tests__ — foo/__tests__/verify.test.ts for foo/verify/route.ts
+    if (useDirectoryName) {
+      const parentDir = dirname(dir);  // app/api/auth/siwe
+      if (fDir === `${parentDir}/__tests__` && matchesTarget(fBaseLower)) {
         related.push(file);
         continue;
       }
     }
 
-    // Pattern 3: root-relative __tests__ — __tests__/foo/bar.ts, __tests__/**/bar.test.ts
+    // Pattern 4: root-relative __tests__ — __tests__/foo/bar.ts, __tests__/.../bar.test.ts
     // Match any file under a __tests__ directory whose base name matches
-    if (file.includes('__tests__/') || file.includes('__test__/')) {
-      if (fBaseLower === baseLower || fBaseLower === `${baseLower}.test` || fBaseLower === `${baseLower}.spec`) {
-        related.push(file);
-        continue;
-      }
+    if ((file.includes('__tests__/') || file.includes('__test__/')) && matchesTarget(fBaseLower)) {
+      related.push(file);
+      continue;
     }
   }
 

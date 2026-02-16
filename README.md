@@ -34,6 +34,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ### Core Loop
 - Fetches review comments from PRs (humans, bots, or any reviewer)
+- **PR context injection**: Fix prompts include the PR title, description, and base branch so the fixer understands intent, not just individual comments
+- **Diff-first instruction**: Prompts tell agentic fixers to run `git diff <base>...HEAD --stat` before making changes
 - Uses LLM to detect which issues still exist in the code
 - Generates fix prompts and runs Cursor CLI, Claude Code, Gemini CLI, or other tools to fix issues
 - Verifies fixes with LLM to prevent false positives
@@ -235,15 +237,23 @@ When fixes fail, prr escalates through multiple strategies:
 
 ### Why Each Step Matters
 
-1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Copilot), or any reviewer.
+1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Claude, Greptile, Copilot), or any reviewer.
+   - *Inline review threads*: Captured via GraphQL `reviewThreads` (CodeRabbit, Copilot, humans)
+   - *Issue comments*: Parsed from conversation tab for bots like Claude and Greptile that post structured reviews there
+   - *Why two paths*: Some bots post inline, some post as issue comments. Capturing both ensures nothing is missed. CodeRabbit is intentionally NOT in the issue-comment path — doing so would duplicate its inline threads.
 
 2. **Analyze Issues**: For each comment, asks the LLM: "Is this issue still present in the code?" 
    - *Why*: Review comments may already be addressed, or partially addressed. We don't want to re-fix solved problems.
    - Uses strict prompts that require citing specific code evidence.
 
 3. **Generate Prompt**: Builds a fix prompt including:
+   - **PR context**: Title, description (truncated to 500 chars), and base branch
+   - **Diff-first instruction**: `git diff <base>...HEAD --stat` so the fixer sees the full scope
    - All unresolved issues with code context
    - "Lessons learned" from previous failed attempts (analyzed by LLM)
+   - *Why PR context*: Without it, the fixer sees comments in isolation. "Incorrect error handling" means nothing without knowing the PR adds OAuth2 for mobile. Fixes were technically valid but semantically misaligned.
+   - *Why truncate to 500 chars*: PR descriptions can be huge (templates, checklists, embedded images). Unbounded inclusion blows the token budget. 500 chars captures intent without noise.
+   - *Why diff-first*: Agentic fixers (Cursor, Claude Code) can run shell commands. Seeing a `--stat` summary of all changed files before diving into individual issues prevents narrow fixes that ignore the broader PR changes.
    - *Why lessons*: Prevents flip-flopping. If attempt #1 tried X and it was rejected, attempt #2 knows not to try X again.
    - *Why LLM-analyzed*: Generic "tool failed" messages aren't helpful. LLM analyzes the diff and rejection to generate actionable guidance.
 

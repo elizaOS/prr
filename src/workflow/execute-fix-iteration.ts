@@ -11,7 +11,7 @@
 import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import type { ReviewComment } from '../github/types.js';
+import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { Runner } from '../runners/types.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
@@ -45,11 +45,18 @@ export function resetPromptTracker(): void {
  * Execute one fix iteration (prompt build + fixer run + result handling)
  * 
  * WORKFLOW:
- * 1. Build fix prompt with lessons
+ * 1. Build fix prompt with lessons + PR context
  * 2. Run fixer tool
  * 3. Handle errors (rapid failure detection, exit on critical)
  * 4. If no changes → run verification workflow or rotation
  * 5. If changes → return for verification
+ * 
+ * NOTE on `prInfo` position: This function has 17+ positional parameters
+ * (a known debt). `prInfo` is placed after `options` (CLIOptions) and before
+ * `verifiedThisSession` (Set<string>). These three types are all distinct
+ * (PRInfo vs CLIOptions vs Set), so accidental swaps are caught by tsc.
+ * An options object refactor is planned but was deferred to keep this change
+ * minimal and safe.
  * 
  * @returns Control flow and updated state
  */
@@ -63,6 +70,7 @@ export async function executeFixIteration(
   lessonsContext: LessonsContext,
   llm: LLMClient,
   options: CLIOptions,
+  prInfo: PRInfo,
   verifiedThisSession: Set<string>,
   rapidFailureCount: number,
   lastFailureTime: number,
@@ -96,7 +104,7 @@ export async function executeFixIteration(
   // WHY: consecutiveFailures drives batch size reduction (50→25→12→6→5) so the model
   // gets fewer issues per prompt when it's struggling. Resets to MAX on any success.
   debugStep('GENERATING FIX PROMPT');
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures, options.priorityOrder);
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures, options.priorityOrder, prInfo);
   
   if (promptDetails.shouldSkip) {
     return {

@@ -40,6 +40,20 @@ export interface Runner {
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult>;
   isAvailable(): Promise<boolean>;
   checkStatus(): Promise<RunnerStatus>;
+  /**
+   * Report files that were modified but FAILED verification.
+   *
+   * HISTORY: The original escalation system (searchReplaceFailures) only tracked
+   * search/replace MATCHING failures — when the LLM's search text didn't match the
+   * file. But a file like lib/cache/client.ts can get small patches that technically
+   * match yet fail verification (the patch is inadequate for structural corruption).
+   * Those files never escalated to full-file-rewrite because the S/R "succeeded."
+   *
+   * Now the caller reports verification failures too, and both signals count toward
+   * escalation. This ensures structurally damaged files eventually get full rewrites
+   * instead of an infinite loop of ineffective patches.
+   */
+  reportVerificationFailures?(failedFiles: string[]): void;
 }
 
 /**

@@ -56,7 +56,14 @@ function logDuplicateCandidates(
     comment: ReviewComment;
     codeSnippet: string;
     contextHints?: string[];
-  }>
+  }>,
+  /** Stable commentId → display number mapping, built from toCheck order.
+   *  HISTORY: Originally this function built its own `globalIdx` counter
+   *  sequentially across groups. But heuristicDedup used `toCheck` array
+   *  position for its verdict display — different ordering, different numbers.
+   *  Now both functions share this single map so #7 means the same comment
+   *  everywhere in the output. */
+  idToDisplayNum: Map<string, number>,
 ): void {
   // Skip if too few issues to have meaningful duplicates
   if (toCheck.length <= 3) {
@@ -152,9 +159,9 @@ function logDuplicateCandidates(
   const totalComments = candidateGroups.reduce((sum, g) => sum + g.items.length, 0);
   console.log(chalk.gray(`\nDuplicate candidates: ${candidateGroups.length} group(s), ${totalComments} comments total`));
   
-  // Global counter so every comment has a unique number across all groups.
-  // Makes references unambiguous (e.g. "#7" means exactly one comment).
-  let globalIdx = 0;
+  // Use the shared idToDisplayNum map so "#7" means the same comment here
+  // and in the dedup verdict log. Numbers come from toCheck array position
+  // (1-indexed), so they're stable regardless of how groups are ordered.
   for (const group of candidateGroups) {
     const authorInfo = group.sameAuthor 
       ? `same author: ${[...group.authors][0]}`
@@ -163,12 +170,12 @@ function logDuplicateCandidates(
     console.log(chalk.gray(`  ${group.file}:${group.lineRange} (${group.items.length} comments, ${authorInfo})`));
     
     for (let i = 0; i < group.items.length; i++) {
-      globalIdx++;
       const item = group.items[i];
+      const num = idToDisplayNum.get(item.comment.id) ?? '?';
       const author = item.comment.author || 'unknown';
       const preview = item.comment.body.substring(0, 80).replace(/\n/g, ' ');
       const suffix = item.comment.body.length > 80 ? '...' : '';
-      console.log(chalk.gray(`    #${globalIdx} (${author}): "${preview}${suffix}"`));
+      console.log(chalk.gray(`    #${num} (${author}): "${preview}${suffix}"`));
     }
   }
   console.log(''); // Blank line after the report
@@ -191,7 +198,9 @@ function heuristicDedup(
     comment: ReviewComment;
     codeSnippet: string;
     contextHints?: string[];
-  }>
+  }>,
+  /** Shared commentId → display number mapping (same one used in candidate log). */
+  idToDisplayNum: Map<string, number>,
 ): DedupResult {
   const duplicateMap = new Map<string, string[]>();
   const duplicateItems = new Map<string, typeof toCheck[0]>();
@@ -306,18 +315,15 @@ function heuristicDedup(
       `(${totalDupes + duplicateMap.size} comments -> ${duplicateMap.size} canonical)`
     ));
     
-    // Build commentId → index lookup for readable verdict display
-    const idToIndex = new Map<string, number>();
-    for (let i = 0; i < toCheck.length; i++) {
-      idToIndex.set(toCheck[i].comment.id, i + 1);
-    }
-
-    // Log each dedup verdict with identifiable indexes
+    // HISTORY: Previously built a local idToIndex from toCheck array order, but
+    // logDuplicateCandidates used a different globalIdx. Numbers didn't match,
+    // making cross-references impossible (e.g. verdict showed #47 but candidate
+    // log only went to #43). Now both use the shared idToDisplayNum map.
     for (const [canonicalId, dupes] of duplicateMap.entries()) {
       const canonical = toCheck.find(item => item.comment.id === canonicalId);
       if (canonical) {
-        const canonIdx = idToIndex.get(canonicalId) ?? '?';
-        const dupeIdxs = dupes.map(d => `#${idToIndex.get(d) ?? '?'}`).join(', ');
+        const canonIdx = idToDisplayNum.get(canonicalId) ?? '?';
+        const dupeIdxs = dupes.map(d => `#${idToDisplayNum.get(d) ?? '?'}`).join(', ');
         const lineInfo = canonical.comment.line !== null ? `:${canonical.comment.line}` : '';
         console.log(chalk.gray(
           `    #${canonIdx} [canonical] ${canonical.comment.path}${lineInfo} ← dupes: ${dupeIdxs}`
@@ -615,13 +621,21 @@ export async function findUnresolvedIssues(
     toCheck.push({ comment, codeSnippet, contextHints: solvability.contextHints });
   }
 
+  // Build stable commentId → display number mapping ONCE.
+  // Used by candidate log (Phase 0) AND dedup verdicts (Phase 1) so that
+  // "#7" means the same comment everywhere in the output.
+  const idToDisplayNum = new Map<string, number>();
+  for (let i = 0; i < toCheck.length; i++) {
+    idToDisplayNum.set(toCheck[i].comment.id, i + 1);
+  }
+
   // Phase 0: Log duplicate candidates (observation only, no filtering)
-  logDuplicateCandidates(toCheck);
+  logDuplicateCandidates(toCheck, idToDisplayNum);
 
   // Phase 1: Heuristic deduplication (zero LLM cost)
   let dedupResult: DedupResult;
   try {
-    dedupResult = heuristicDedup(toCheck);
+    dedupResult = heuristicDedup(toCheck, idToDisplayNum);
   } catch (err) {
     warn(`Dedup failed, proceeding without dedup: ${err}`);
     dedupResult = {

@@ -4,6 +4,15 @@
 import type { LessonsContext } from './lessons-context.js';
 import * as Normalize from './lessons-normalize.js';
 
+/**
+ * Get lessons for a SINGLE file (no global lessons).
+ * Used for inline per-issue lesson injection in the fix prompt.
+ */
+export function getLessonsForFile(ctx: LessonsContext, filePath: string): string[] {
+  const cleanedPath = Normalize.sanitizeFilePathHeader(filePath);
+  return [...(ctx.store.files[cleanedPath] || [])];
+}
+
 export function getLessonsForFiles(ctx: LessonsContext, filePaths: string[]): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
