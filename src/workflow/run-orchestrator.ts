@@ -5,6 +5,7 @@
  * setup, execution, and cleanup.
  */
 
+import chalk from 'chalk';
 import type { Ora } from 'ora';
 import type { SimpleGit } from 'simple-git';
 import type { Config } from '../config.js';
@@ -139,6 +140,21 @@ export async function executeRun(
     // CRITICAL: ?? only triggers on null/undefined, NOT 0. With default --max-push-iterations=0,
     // using ?? gives maxPushIterations=0 and the while(0<0) loop never executes.
     const maxPushIterations = options.autoPush ? (options.maxPushIterations || Infinity) : 1;
+
+    // Track consecutive bail-outs at the outer loop level.
+    //
+    // HISTORY: After a stalemate bail-out, push-iteration-loop returns
+    // shouldBreak: false so the outer loop re-enters with fresh bot comments.
+    // The reasoning was that new comments might be worth processing. In
+    // practice, bots add MORE comments after each push (not fewer), so each
+    // re-entry hits the same stalemate on an even larger issue set. Observed:
+    // 5 bail-outs × 300s wait = 25 min wasted in a single run. Now we track
+    // consecutive bail-outs and hard-exit after MAX_CONSECUTIVE_BAILOUTS.
+    // One re-entry is still useful (catches fixes the bots resolved), but
+    // beyond that it's diminishing returns.
+    const MAX_CONSECUTIVE_BAILOUTS = 2;
+    let consecutiveBailouts = 0;
+    let lastBailoutRemainingCount = Infinity;
     const prInfoRef = { current: state.prInfo };
     const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
     const finalCommentsRef = { current: state.finalComments };
@@ -171,6 +187,36 @@ export async function executeRun(
       if (iterResult.exitDetails) state.exitDetails = iterResult.exitDetails;
       if (iterResult.shouldBreak) {
         break;
+      }
+
+      // Track consecutive bail-outs to prevent infinite re-entry.
+      // HISTORY: After bail-out, push-iteration-loop returns shouldBreak:false
+      // to let the outer loop process new bot comments. But bots add MORE
+      // comments after each push, so each re-entry bails again on an even
+      // larger set. After MAX_CONSECUTIVE_BAILOUTS (2), hard-exit: one
+      // re-entry is useful (catches bot-resolved issues), beyond that is waste.
+      if (iterResult.exitReason === 'bail_out') {
+        const currentRemaining = state.finalUnresolvedIssues?.length ?? Infinity;
+        if (currentRemaining >= lastBailoutRemainingCount) {
+          // No progress since last bail-out — remaining count didn't shrink
+          consecutiveBailouts++;
+        } else {
+          // Made some progress — reset counter but still track
+          consecutiveBailouts = 1;
+        }
+        lastBailoutRemainingCount = currentRemaining;
+
+        if (consecutiveBailouts >= MAX_CONSECUTIVE_BAILOUTS) {
+          console.log(chalk.red(`\n  🛑 ${consecutiveBailouts} consecutive bail-outs with no progress — exiting outer loop`));
+          console.log(chalk.gray(`     Re-entering would hit the same stalemate on ${currentRemaining} remaining issues`));
+          state.exitReason = 'bail_out';
+          state.exitDetails = `${consecutiveBailouts} consecutive stalemate bail-outs with no progress reduction`;
+          break;
+        }
+      } else {
+        // Non-bail-out iteration resets the counter
+        consecutiveBailouts = 0;
+        lastBailoutRemainingCount = Infinity;
       }
     }
     // Sync resolver instance with final state so callbacks (e.g. printFinalSummary)
