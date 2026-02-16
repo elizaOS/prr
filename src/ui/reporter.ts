@@ -336,18 +336,39 @@ export async function printAfterActionReport(
   stateContext: StateContext | null,
   lessonsContext: LessonsContext | null
 ): Promise<void> {
-  if (noAfterAction || unresolvedIssues.length === 0) return;
+  if (noAfterAction) return;
+
+  // Compute fixed-this-session before the early return — we want the AAR
+  // even when everything was fixed so the log has a record of what was done.
+  const verifiedThisSession = stateContext?.verifiedThisSession ?? new Set<string>();
+  const fixedThisSessionComments = comments.filter(c => verifiedThisSession.has(c.id));
+
+  if (unresolvedIssues.length === 0 && fixedThisSessionComments.length === 0) return;
   
   console.log(chalk.cyan('\n┌─────────────────────────────────────────────────────────────┐'));
   console.log(chalk.cyan('│                 AFTER ACTION REPORT                         │'));
   console.log(chalk.cyan('└─────────────────────────────────────────────────────────────┘'));
-  
-  
+
+  // --- Fixed this session ---
+  if (fixedThisSessionComments.length > 0) {
+    console.log(chalk.green(`\n━━━ Fixed This Session (${fixedThisSessionComments.length}) ━━━`));
+    for (const comment of fixedThisSessionComments) {
+      const preview = sanitizeCommentForDisplay(comment.body).split('\n')[0];
+      const truncated = preview.length > 100 ? preview.substring(0, 100) + '...' : preview;
+      console.log(chalk.green(`  ✓ ${comment.path}:${comment.line || '?'}`));
+      console.log(chalk.gray(`    ${truncated}`));
+    }
+  }
+
+  // --- Remaining issues (detailed) ---
+  if (unresolvedIssues.length > 0) {
+    console.log(chalk.yellow(`\n━━━ Remaining (${unresolvedIssues.length}) — Need Attention ━━━`));
+  }
   for (let i = 0; i < unresolvedIssues.length; i++) {
     const issue = unresolvedIssues[i];
     const issueNum = i + 1;
     
-    console.log(chalk.yellow(`\n━━━ Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'} ━━━`));
+    console.log(chalk.yellow(`\n  Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'}`));
     
     // Original issue - sanitized for terminal readability
     console.log(chalk.cyan('\n  📝 Original Issue:'));
@@ -396,21 +417,43 @@ export async function printAfterActionReport(
     }
   }
   
+  // --- Dismissed issues (brief) ---
+  const dismissedIssues = stateContext ? Dismissed.getDismissedIssues(stateContext) : [];
+  const dismissedIds = new Set(dismissedIssues.map(d => d.commentId));
+  if (dismissedIssues.length > 0) {
+    // Group by reason for a compact view
+    const byReason = new Map<string, number>();
+    for (const d of dismissedIssues) {
+      const reason = d.category || 'unknown';
+      byReason.set(reason, (byReason.get(reason) || 0) + 1);
+    }
+    const reasonSummary = [...byReason.entries()].map(([r, n]) => `${n} ${r}`).join(', ');
+    console.log(chalk.gray(`\n━━━ Dismissed (${dismissedIssues.length}: ${reasonSummary}) ━━━`));
+    for (const d of dismissedIssues.slice(0, 10)) {
+      const comment = comments.find(c => c.id === d.commentId);
+      if (comment) {
+        const preview = sanitizeCommentForDisplay(comment.body).split('\n')[0];
+        const truncated = preview.length > 80 ? preview.substring(0, 80) + '...' : preview;
+        console.log(chalk.gray(`  ○ ${comment.path}:${comment.line || '?'} [${d.category}]`));
+        console.log(chalk.gray(`    ${truncated}`));
+      }
+    }
+    if (dismissedIssues.length > 10) {
+      console.log(chalk.gray(`  ... and ${dismissedIssues.length - 10} more`));
+    }
+  }
+
   // Summary — counts must be mutually exclusive (Fixed + Dismissed + Remaining = Total)
   console.log(chalk.cyan('\n━━━ Summary ━━━'));
-  const dismissedIds = new Set(
-    stateContext ? Dismissed.getDismissedIssues(stateContext).map(d => d.commentId) : []
-  );
   // "Fixed" = verified AND NOT dismissed (tool actually fixed these)
   const fixedCount = comments.filter(c =>
     stateContext ? Verification.isVerified(stateContext, c.id) && !dismissedIds.has(c.id) : false
   ).length;
   const dismissedCount = dismissedIds.size;
-  // Use verifiedThisSession (actual Set of IDs verified this session) for accuracy.
-  const fixedThisSession = stateContext?.verifiedThisSession?.size ?? 0;
+  const fixedThisSessionCount = verifiedThisSession.size;
 
   console.log(chalk.gray(`  Total issues: ${comments.length}`));
-  console.log(chalk.green(`  Fixed: ${fixedCount}${fixedThisSession > 0 ? ` (${fixedThisSession} this session)` : ''}`));
+  console.log(chalk.green(`  Fixed: ${fixedCount}${fixedThisSessionCount > 0 ? ` (${fixedThisSessionCount} this session)` : ''}`));
   console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));
   console.log(chalk.yellow(`  Remaining: ${unresolvedIssues.length}`));
   
