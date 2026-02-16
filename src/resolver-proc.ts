@@ -415,8 +415,7 @@ export async function executeBailOut(
   console.log(chalk.gray(`  Max allowed: ${options.maxStaleCycles} (--max-stale-cycles)`));
   
   console.log(chalk.cyan('\n  Progress Summary:'));
-  const baseline = stateContext.verifiedFixedAtSessionStart ?? issuesFixed;
-  const fixedThisSession = Math.max(0, issuesFixed - baseline);
+  const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
   const sessionNote = fixedThisSession > 0 ? ` (${fixedThisSession} this session)` : '';
   console.log(chalk.green(`    ✓ Fixed: ${issuesFixed} issues${sessionNote}`));
   console.log(chalk.red(`    ✗ Remaining: ${unresolvedIssues.length} issues`));

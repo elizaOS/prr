@@ -361,7 +361,6 @@ export class GitHubAPI {
       debug('Failed to fetch/parse bot issue comments', { error: String(err) });
     }
 
-    debug('Review comments', reviewComments);
     return reviewComments;
   }
 

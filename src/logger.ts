@@ -15,6 +15,7 @@ let debugLogCounter = 0;
 
 let outputLogStream: WriteStream | null = null;
 let outputLogPath: string | null = null;
+let promptLogStream: WriteStream | null = null;
 
 /**
  * Strip ANSI escape codes from a string for plain-text logging.
@@ -41,6 +42,12 @@ export function initOutputLog(): void {
   writeFileSync(outputLogPath, '', 'utf-8');
   outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
 
+  // Companion log for full prompts & responses — search by slug (e.g. "#0009")
+  // to jump from output.log to the exact prompt/response in prompts.log.
+  const promptLogPath = join(process.cwd(), 'prompts.log');
+  writeFileSync(promptLogPath, '', 'utf-8');
+  promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
+
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
   const origError = console.error.bind(console);
@@ -64,6 +71,10 @@ export function closeOutputLog(): void {
   if (outputLogStream) {
     outputLogStream.end();
     outputLogStream = null;
+  }
+  if (promptLogStream) {
+    promptLogStream.end();
+    promptLogStream = null;
   }
 }
 
@@ -126,11 +137,14 @@ function formatCompact(data: unknown): string {
       }
       if (typeof v === 'object' && v !== null) {
         if (Array.isArray(v)) {
-          // Show short arrays inline (e.g. model names), collapse long ones
-          if (v.length <= 5 && v.every(item => typeof item === 'string')) {
-            const items = v.map(item => typeof item === 'string' && item.length > 40 
-              ? `"${item.substring(0, 40)}..."` 
-              : safeStringify(item));
+          // Show short arrays of primitives inline, collapse long/complex ones.
+          // WHY: [14] (a number array) was displayed as [1] (its length),
+          // which looks like "array containing 1" — genuinely misleading.
+          if (v.length <= 5 && v.every(item => typeof item !== 'object' || item === null)) {
+            const items = v.map(item => {
+              if (typeof item === 'string' && item.length > 40) return `"${item.substring(0, 40)}..."`;
+              return safeStringify(item);
+            });
             return `${k}: [${items.join(', ')}]`;
           }
           return `${k}: [${v.length}]`;
@@ -178,17 +192,51 @@ export function error(message: string): void {
 }
 
 /**
- * Log a prompt to a debug file.
+ * Generate the searchable slug for a prompt/response entry.
+ * Format: "#0009/llm-anthropic" — unique, greppable from output.log into prompts.log.
+ */
+function promptSlug(counter: number, label: string): string {
+  return `#${String(counter).padStart(4, '0')}/${label}`;
+}
+
+/**
+ * Write a prompt or response to prompts.log (the companion file to output.log).
+ *
+ * Each entry is headed by the same slug that appears in output.log, so you can
+ * Cmd+F the slug in prompts.log to jump straight to the full content.
+ */
+function writeToPromptLog(
+  slug: string, kind: 'PROMPT' | 'RESPONSE', label: string,
+  body: string, metadata?: Record<string, unknown>,
+): void {
+  if (!promptLogStream) return;
+  const sep = '═'.repeat(70);
+  let header = `${sep}\n ${slug}  ${kind}: ${label} (${body.length} chars)\n`;
+  header += ` ${new Date().toISOString()}\n`;
+  if (metadata) header += ` ${safeStringify(metadata, true)}\n`;
+  header += `${sep}\n`;
+  promptLogStream.write(header);
+  promptLogStream.write(body);
+  promptLogStream.write(`\n${sep}\n\n`);
+}
+
+/**
+ * Log a prompt to the prompts.log companion file and (optionally) a standalone
+ * debug file. A one-liner with a searchable slug is written to output.log so
+ * you can grep the slug in prompts.log to see the full content.
+ *
  * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
- * Files are written to ~/.prr/debug/<timestamp>/
+ * Standalone files are written to ~/.prr/debug/<timestamp>/
  */
 export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
   if (!debugLogDir) return;
   
   debugLogCounter++;
+  const slug = promptSlug(debugLogCounter, label);
+
+  // Standalone file (still useful for sharing/diffing individual prompts)
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-prompt.txt`;
   const filepath = join(debugLogDir, filename);
-  
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
   if (metadata) {
@@ -197,22 +245,30 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
   content += `Length: ${prompt.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
   content += prompt;
-  
   writeFileSync(filepath, content, 'utf-8');
-  debug(`Prompt logged to ${filename}`, { length: prompt.length });
+
+  // Searchable one-liner in output.log
+  debug(`PROMPT ${slug}`, { chars: prompt.length });
+
+  // Full content in prompts.log
+  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
 }
 
 /**
- * Log a response to a debug file.
+ * Log a response to the prompts.log companion file and (optionally) a standalone
+ * debug file. A one-liner with a searchable slug is written to output.log.
+ *
  * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
  */
 export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
   if (!debugLogDir) return;
   
   debugLogCounter++;
+  const slug = promptSlug(debugLogCounter, label);
+
+  // Standalone file
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-response.txt`;
   const filepath = join(debugLogDir, filename);
-  
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
   if (metadata) {
@@ -221,9 +277,13 @@ export function debugResponse(label: string, response: string, metadata?: Record
   content += `Length: ${response.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
   content += response;
-  
   writeFileSync(filepath, content, 'utf-8');
-  debug(`Response logged to ${filename}`, { length: response.length });
+
+  // Searchable one-liner in output.log
+  debug(`RESPONSE ${slug}`, { chars: response.length });
+
+  // Full content in prompts.log
+  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
 }
 
 /**

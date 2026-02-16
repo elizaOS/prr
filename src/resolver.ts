@@ -44,6 +44,7 @@ export class PRResolver {
   private recommendedModelIndex = 0;
   private modelRecommendationReasoning?: string;
   private progressThisCycle = 0;
+  private runnersAttemptedInCycle: Set<string> = new Set();
   private bailedOut = false;
   private botTimings: BotResponseTiming[] = [];
   private expectedBotResponseTime: Date | null = null;
@@ -64,7 +65,8 @@ export class PRResolver {
   private getRotationContext(): Rotation.RotationContext {
     return { runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices,
       modelFailuresInCycle: this.modelFailuresInCycle, modelsTriedThisToolRound: this.modelsTriedThisToolRound, progressThisCycle: this.progressThisCycle,
-      recommendedModels: this.recommendedModels, recommendedModelIndex: this.recommendedModelIndex, modelRecommendationReasoning: this.modelRecommendationReasoning };
+      recommendedModels: this.recommendedModels, recommendedModelIndex: this.recommendedModelIndex, modelRecommendationReasoning: this.modelRecommendationReasoning,
+      runnersAttemptedInCycle: this.runnersAttemptedInCycle };
   }
   private syncRotationContext(ctx: Rotation.RotationContext): void {
     this.runner = ctx.runner;
@@ -77,6 +79,7 @@ export class PRResolver {
     this.recommendedModels = ctx.recommendedModels;
     this.recommendedModelIndex = ctx.recommendedModelIndex;
     this.modelRecommendationReasoning = ctx.modelRecommendationReasoning;
+    this.runnersAttemptedInCycle = ctx.runnersAttemptedInCycle;
   }
   private ringBell(times: number = 3): void { ResolverProc.ringBell(times); }
   private printModelPerformance(): void { Reporter.printModelPerformance(this.stateContext); }

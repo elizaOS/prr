@@ -42,7 +42,10 @@ export function buildAndDisplayFixPrompt(
   affectedFiles: string[];
   shouldSkip: boolean;
 } {
-  const lessonsBeforeFix = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
+  // Track the session-new count (monotonically increasing) — NOT getTotalCount,
+  // which decreases when fix-attempt lessons are cleaned up after verification.
+  // Using getTotalCount caused "newLessons: -7" when cleanup removed more than were added.
+  const lessonsBeforeFix = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
   
   // Get lessons for all files being fixed
   const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];

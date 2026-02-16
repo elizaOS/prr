@@ -168,13 +168,17 @@ export function printFinalSummary(
   // Get counts — mutually exclusive: Fixed + Dismissed should not overlap.
   const verifiedFixed = stateContext.state.verifiedFixed || [];
   const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
-  
-  // Exclude ALL dismissed issue IDs from the "fixed" count.
-  // WHY: Dismissed issues (already-fixed, stale, file-unchanged, exhausted) are
-  // shown separately. Including them in "fixed" too would double-count and inflate
-  // the results. The old code only filtered "already-fixed" but missed other categories.
   const dismissedIds = new Set(dismissedIssues.map(d => d.commentId));
-  const toolFixedCount = verifiedFixed.filter(id => !dismissedIds.has(id)).length;
+  
+  // Bound verifiedFixed against the current comment IDs.
+  // WHY: verifiedFixed accumulates IDs across sessions and HEAD revisions.
+  // Stale IDs (from force-pushed commits, deleted comments) inflate the count.
+  // Without this filter, "60 issues fixed" can appear when there are only 48 comments.
+  const currentIds = stateContext.currentCommentIds;
+  const relevantVerified = currentIds
+    ? verifiedFixed.filter(id => currentIds.has(id) && !dismissedIds.has(id))
+    : verifiedFixed.filter(id => !dismissedIds.has(id));
+  const toolFixedCount = relevantVerified.length;
   
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
@@ -188,10 +192,10 @@ export function printFinalSummary(
   }
   
   // Fixed issues (only count issues actually fixed by the tool, not pre-existing fixes)
-  // Also show "this session" delta for multi-session runs
-  const verifiedNow = verifiedFixed.length;
-  const baseline = stateContext.verifiedFixedAtSessionStart ?? verifiedNow;
-  const fixedThisSession = Math.max(0, verifiedNow - baseline);
+  // Use verifiedThisSession (the actual Set of IDs verified during iteration loops)
+  // instead of delta counting, which undercounts re-verifications of issues already
+  // in verifiedFixed from git recovery.
+  const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
 
   if (toolFixedCount > 0) {
     const sessionNote = fixedThisSession > 0 && fixedThisSession < toolFixedCount
@@ -402,10 +406,8 @@ export async function printAfterActionReport(
     stateContext ? Verification.isVerified(stateContext, c.id) && !dismissedIds.has(c.id) : false
   ).length;
   const dismissedCount = dismissedIds.size;
-  // Compute "fixed this session" using the baseline snapshot from session start
-  const verifiedNow = (stateContext?.state?.verifiedFixed || []).length;
-  const baseline = stateContext?.verifiedFixedAtSessionStart ?? verifiedNow;
-  const fixedThisSession = Math.max(0, verifiedNow - baseline);
+  // Use verifiedThisSession (actual Set of IDs verified this session) for accuracy.
+  const fixedThisSession = stateContext?.verifiedThisSession?.size ?? 0;
 
   console.log(chalk.gray(`  Total issues: ${comments.length}`));
   console.log(chalk.green(`  Fixed: ${fixedCount}${fixedThisSession > 0 ? ` (${fixedThisSession} this session)` : ''}`));

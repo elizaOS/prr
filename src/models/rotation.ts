@@ -28,6 +28,10 @@ export interface RotationContext {
   recommendedModels?: string[];
   recommendedModelIndex: number;
   modelRecommendationReasoning?: string;
+  /** Runners that actually executed an iteration this cycle.
+   *  Needed because single-model runners (like llm-api) can't be
+   *  distinguished as "never tried" vs "tried and stuck" by index alone. */
+  runnersAttemptedInCycle: Set<string>;
 }
 
 /**
@@ -43,6 +47,7 @@ export function createRotationContext(runner: Runner, runners: Runner[]): Rotati
     modelsTriedThisToolRound: 0,
     progressThisCycle: 0,
     recommendedModelIndex: 0,
+    runnersAttemptedInCycle: new Set(),
   };
 }
 
@@ -252,6 +257,11 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
 export function allModelsExhausted(ctx: RotationContext): boolean {
   for (const runner of ctx.runners) {
     const models = getModelsForRunner(runner);
+    if (models.length <= 1) {
+      // Single-model runner: only exhausted if actually attempted this cycle
+      if (!ctx.runnersAttemptedInCycle.has(runner.name)) return false;
+      continue;
+    }
     const currentIndex = ctx.modelIndices.get(runner.name) || 0;
     // If any runner has models left to try, we're not exhausted
     if (currentIndex < models.length - 1) {
@@ -274,6 +284,10 @@ export function tryRotation(
   stateContext: StateContext,
   options: CLIOptions
 ): boolean {
+  // The current runner just attempted an iteration (and failed),
+  // so mark it as attempted for this cycle.
+  ctx.runnersAttemptedInCycle.add(ctx.runner.name);
+
   // Track which tools we've fully exhausted (tried all models)
   const exhaustedTools = new Set<string>();
   
@@ -282,6 +296,12 @@ export function tryRotation(
     const runner = ctx.runners.find(r => r.name === runnerName);
     if (!runner) return true; // Unknown runner treated as exhausted
     const models = getModelsForRunner(runner);
+    if (models.length <= 1) {
+      // Single-model runners can't be distinguished by index alone
+      // (index 0 means both "never tried" and "tried the only model").
+      // Use runnersAttemptedInCycle to tell them apart.
+      return ctx.runnersAttemptedInCycle.has(runnerName);
+    }
     const currentIndex = ctx.modelIndices.get(runnerName) || 0;
     return currentIndex >= models.length - 1;  // On last model or beyond
   };
@@ -349,6 +369,7 @@ export function tryRotation(
         Rotation.setModelIndex(stateContext, runner.name, 0);
       }
       ctx.modelsTriedThisToolRound = 0;
+      ctx.runnersAttemptedInCycle.clear();
       return true;  // Will retry with first model on current tool
     }
     
@@ -387,6 +408,7 @@ export function tryRotation(
       Rotation.setModelIndex(stateContext, runner.name, 0);
     }
     ctx.modelsTriedThisToolRound = 0;
+    ctx.runnersAttemptedInCycle.clear();
     return true;
   }
   
@@ -401,6 +423,7 @@ export function tryRotation(
     ctx.modelIndices.set(ctx.runner.name, 0);
     Rotation.setModelIndex(stateContext, ctx.runner.name, 0);
     ctx.modelsTriedThisToolRound = 0;
+    ctx.runnersAttemptedInCycle.clear();
     return true;
   }
   
