@@ -324,9 +324,8 @@ export async function executePushIteration(
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
-    const isBailout = exitReason === 'bail_out';
     const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, pushIteration, maxPushIterations,
-      resolveConflictsWithLLM, waitForBotReviews, allFixed, isBailout);
+      resolveConflictsWithLLM, waitForBotReviews, allFixed);
     if (commitResult.shouldBreak) {
       return {
         shouldBreak: true,
@@ -343,10 +342,31 @@ export async function executePushIteration(
     console.log(chalk.yellow('\nNo changes to commit'));
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
-    // Preserve the bail-out exit reason if a bail-out already occurred.
-    // WHY: When bail-out triggers, the last-resort direct LLM fix may be attempted
-    // but rejected by verification (reverted). This leaves no changes to commit,
-    // but the exit reason should still be 'bail_out', not 'no_changes'.
+
+    // If intermediate pushes happened during this iteration's fix loop, wait for
+    // bot reviews before deciding to exit. Bots reviewing the pushed fixes may
+    // find NEW issues that warrant another push iteration.
+    // WHY: Without this, the run exits immediately after bail-out even though
+    // fixes were pushed mid-loop and bots haven't had time to review them.
+    if (alreadyCommitted.size > 0 && options.autoPush && (maxPushIterations === 0 || pushIteration < maxPushIterations)) {
+      const headSha = await git.revparse(['HEAD']);
+      await waitForBotReviews(owner, repo, number, headSha);
+      // Don't break — let the outer loop re-fetch comments and process any new
+      // bot feedback. If no new issues, the next iteration exits immediately
+      // (alreadyCommitted will be empty since no fixes were made).
+      return {
+        shouldBreak: false,
+        exitReason: exitReason || 'no_changes',
+        exitDetails: exitDetails || 'No new changes (waiting for bot review cycle)',
+        updatedRapidFailureCount: rapidFailureCount,
+        updatedLastFailureTime: lastFailureTime,
+        updatedConsecutiveFailures: consecutiveFailures,
+        updatedModelFailuresInCycle: modelFailuresInCycle,
+        updatedProgressThisCycle: progressThisCycle,
+      };
+    }
+
+    // No intermediate pushes (or not in auto-push mode) — truly done.
     const preserveExitReason = exitReason === 'bail_out';
     return {
       shouldBreak: true,
@@ -360,10 +380,11 @@ export async function executePushIteration(
     };
   }
 
-  // After commit+push, if we broke out of the fix loop due to bail-out (stalemate),
-  // signal the outer push iteration loop to stop. We still committed+pushed above
-  // to save partial progress, but we must NOT re-enter the loop — doing so would
-  // re-fetch comments, find "new" issues from the re-review, and loop indefinitely.
+  // After commit+push, if we broke out due to bail-out, DON'T immediately exit.
+  // The pushed fixes may trigger bot reviews with NEW issues worth processing.
+  // The outer loop will re-enter, re-fetch comments, and process new bot feedback.
+  // Convergence: if no new issues, the next iteration's fix loop exits immediately
+  // → no changes → alreadyCommitted empty → shouldBreak: true.
   const bailedOut = exitReason === 'bail_out';
   if (bailedOut) {
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
@@ -371,7 +392,7 @@ export async function executePushIteration(
   }
 
   return {
-    shouldBreak: bailedOut,
+    shouldBreak: false,
     exitReason,
     exitDetails,
     updatedRapidFailureCount: rapidFailureCount,

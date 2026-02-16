@@ -21,6 +21,7 @@ import { validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn } from '../logger.js';
 import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 
 /**
  * Result of the deduplication process
@@ -369,10 +370,12 @@ async function llmDedup(
   const newDuplicateIds = new Set<string>();
 
   for (const [filePath, items] of filesToCheck) {
-    // Build a compact prompt with just the first 150 chars of each comment
+    // Include enough of each comment for the LLM to detect true duplicates.
+    // 150 chars was barely a title — bot comments need ~500 chars to capture
+    // the core issue description (before examples and suggestions).
     const summaries = items.map((item, idx) => {
       const line = item.comment.line !== null ? `:${item.comment.line}` : '';
-      const preview = item.comment.body.substring(0, 150).replace(/\n/g, ' ');
+      const preview = sanitizeCommentForPrompt(item.comment.body).substring(0, 500).replace(/\n/g, ' ');
       return `[${idx + 1}] ${item.comment.author}${line}: ${preview}`;
     }).join('\n');
 
@@ -463,11 +466,21 @@ export async function getCodeSnippet(
     const content = await readFile(filePath, 'utf-8');
     const lines = content.split('\n');
 
-    // Try to extract line range from comment body (bugbot format)
+    // Determine the relevant line range.
+    //
+    // WHY prefer comment.line over LOCATIONS: The `line` parameter comes from
+    // the GitHub review comment API — it's where the reviewer actually placed
+    // the comment in the diff. LOCATIONS tags are embedded in bot comment HTML
+    // and often point to a *related* but different part of the file (e.g. a
+    // class definition when the comment is about a method). Using LOCATIONS
+    // when we already have a precise line led to returning completely wrong
+    // code snippets (e.g. showing getTokenPair for an API-key-reset issue).
+    //
+    // Only fall back to LOCATIONS when no line was attached to the comment.
     let startLine = line;
     let endLine = line;
     
-    if (commentBody) {
+    if (startLine === null && commentBody) {
       const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
       if (locationsMatch) {
         const locationLines = locationsMatch[1].trim().split('\n');

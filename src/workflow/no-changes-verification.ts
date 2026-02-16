@@ -161,11 +161,35 @@ export async function handleNoChangesWithVerification(
       console.log(chalk.gray(`  → This will be recorded for feedback loop`));
     }
   } else {
-    // Fixer made zero changes WITHOUT explaining why
+    // Fixer made zero changes WITHOUT a parseable explanation.
+    // The raw output may still contain useful reasoning (e.g., "the code already
+    // handles this" or "I couldn't find the referenced function").
+    // Extract the tail of the output which typically has the model's final summary.
     console.log(chalk.yellow(`  Fixer didn't explain why no changes were made`));
     console.log(chalk.gray(`  → Will try different model/tool approach`));
-    // Note: Don't include tool/model - tracked separately in modelStats
-    LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes without explanation - trying different approach`);
+
+    if (fixerOutput && fixerOutput.length > 100) {
+      // Grab the last ~500 chars — models often put their summary at the end
+      const tail = fixerOutput.slice(-500).trim();
+      // Strip common noise patterns (tool call metadata, file listings)
+      const cleaned = tail
+        .replace(/\[tool_call\][\s\S]*?\[\/tool_call\]/g, '')
+        .replace(/\[tool_result\][\s\S]*?\[\/tool_result\]/g, '')
+        .trim();
+
+      if (cleaned.length > 30) {
+        const preview = cleaned.length > 200 ? cleaned.substring(cleaned.length - 200) : cleaned;
+        debug('No-change output tail', { preview });
+        LessonsAPI.Add.addGlobalLesson(
+          lessonsContext,
+          `Fixer made no changes. Output tail: ${preview.replace(/\n/g, ' ').substring(0, 150)}`
+        );
+      } else {
+        LessonsAPI.Add.addGlobalLesson(lessonsContext, 'Fixer made no changes without explanation — trying different approach');
+      }
+    } else {
+      LessonsAPI.Add.addGlobalLesson(lessonsContext, 'Fixer made no changes without explanation — trying different approach');
+    }
   }
 
   // Track no-changes for performance stats

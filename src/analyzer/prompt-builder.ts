@@ -3,6 +3,60 @@ import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../constants.js';
 
 /**
+ * Strip HTML noise, base64 JWT links, and metadata from PR comment bodies
+ * before including them in LLM prompts.
+ *
+ * WHY: Bot comments (Cursor bugbot, CodeRabbit) include "Fix in Cursor" links
+ * with 600+ char base64 JWT tokens, HTML comments with bugbot UUIDs, <picture>
+ * tags, etc. This wastes 20-30% of prompt tokens on data the LLM can't use
+ * and often confuses it.
+ *
+ * Keeps: The actual issue description text, code suggestions, markdown.
+ * Strips: JWT links, HTML comments, LOCATIONS blocks, <picture>/<img> tags.
+ */
+export function sanitizeCommentForPrompt(body: string): string {
+  let s = body;
+
+  // 1. Remove "Fix in Cursor" / "Fix in Web" anchor+picture blocks.
+  //    These are <p><a href="...cursor.com/open?data=eyJ..."><picture>...</picture></a>...</p>
+  //    and can be 1000+ chars each.  Match the whole <p>..cursor.com/open?data=..</p> block.
+  s = s.replace(/<p>\s*<a\s+href="https?:\/\/cursor\.com\/[^"]*"[^>]*>[\s\S]*?<\/a>(?:&nbsp;|\s)*(?:<a\s+href="https?:\/\/cursor\.com\/[^"]*"[^>]*>[\s\S]*?<\/a>\s*)*<\/p>/gi, '');
+
+  // 2. Remove HTML comments: <!-- BUGBOT_BUG_ID: ... -->, <!-- LOCATIONS START ... LOCATIONS END -->
+  //    Keep the text between DESCRIPTION START/END markers but remove the markers themselves.
+  s = s.replace(/<!--\s*LOCATIONS START[\s\S]*?LOCATIONS END\s*-->/gi, '');
+  s = s.replace(/<!--\s*BUGBOT_BUG_ID:[^>]*-->/gi, '');
+  s = s.replace(/<!--\s*suggestion_start\s*-->/gi, '');
+  s = s.replace(/<!--\s*DESCRIPTION START\s*-->/gi, '');
+  s = s.replace(/<!--\s*DESCRIPTION END\s*-->/gi, '');
+  // Catch any remaining HTML comments
+  s = s.replace(/<!--[\s\S]*?-->/g, '');
+
+  // 3. Remove <details> blocks that contain "Committable suggestion" (rendered code suggestion buttons)
+  s = s.replace(/<details>\s*<summary>\s*📝\s*Committable suggestion[\s\S]*?<\/details>/gi, '');
+
+  // 4. Remove stray <details>/<summary> tags but keep their text content
+  s = s.replace(/<\/?details>/gi, '');
+  s = s.replace(/<\/?summary>/gi, '');
+
+  // 5. Remove any remaining <picture>, <source>, <img> tags
+  s = s.replace(/<picture>[\s\S]*?<\/picture>/gi, '');
+  s = s.replace(/<source[^>]*>/gi, '');
+  s = s.replace(/<img[^>]*>/gi, '');
+
+  // 6. Remove standalone <p> and </p> tags (keep content)
+  s = s.replace(/<\/?p>/gi, '');
+
+  // 7. Remove orphaned <a> tags pointing to cursor.com (residual from partial matches)
+  s = s.replace(/<a\s+href="https?:\/\/cursor\.com\/[^"]*"[^>]*>[^<]*<\/a>/gi, '');
+
+  // 8. Collapse runs of 3+ blank lines to 2
+  s = s.replace(/\n{3,}/g, '\n\n');
+
+  return s.trim();
+}
+
+/**
  * Estimate token count for a string.
  * WHY: Anthropic has 200k token limit. We need to detect when prompts are too large.
  * Rough estimate: 1 token ≈ 4 characters (conservative for English text)
@@ -168,11 +222,12 @@ export function buildFixPrompt(
     // WHY: Some automated tools generate 10k+ char comments with HTML/details
     // Keep first 2000 chars which is enough context for the fix
     
-    if (issue.comment.body.length > MAX_COMMENT_CHARS) {
-      parts.push(issue.comment.body.substring(0, MAX_COMMENT_CHARS));
+    const cleanBody = sanitizeCommentForPrompt(issue.comment.body);
+    if (cleanBody.length > MAX_COMMENT_CHARS) {
+      parts.push(cleanBody.substring(0, MAX_COMMENT_CHARS));
       parts.push('\n... (comment truncated for brevity - see PR for full text)');
     } else {
-      parts.push(issue.comment.body);
+      parts.push(cleanBody);
     }
     
     parts.push('```\n');
@@ -181,9 +236,10 @@ export function buildFixPrompt(
     if (issue.mergedDuplicates && issue.mergedDuplicates.length > 0) {
       parts.push(`**Also flagged by** (${issue.mergedDuplicates.length} related comment${issue.mergedDuplicates.length > 1 ? 's' : ''}):`);
       for (const dup of issue.mergedDuplicates) {
-        const preview = dup.body.length > 200
-          ? dup.body.substring(0, 200) + '...'
-          : dup.body;
+        const cleanDup = sanitizeCommentForPrompt(dup.body);
+        const preview = cleanDup.length > 200
+          ? cleanDup.substring(0, 200) + '...'
+          : cleanDup;
         const lineInfo = dup.line !== null ? `:${dup.line}` : '';
         parts.push(`- ${dup.path}${lineInfo} (${dup.author}): "${preview}"`);
       }

@@ -24,6 +24,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import chalk from 'chalk';
 import { debug } from '../logger.js';
+import { resetPromptTracker } from './execute-fix-iteration.js';
 
 /**
  * Execute rotation strategy after failure (either "no changes" or "verification failed")
@@ -95,6 +96,7 @@ export async function handleRotationStrategy(
   } else if (!isOddFailure) {
     // Try rotating model or tool
     const rotated = tryRotation();
+    resetPromptTracker(); // New model/tool gets a clean slate
     
     // Check if bail-out was triggered by tryRotation()
     if (Bailout.getNoProgressCycles(stateContext) >= options.maxStaleCycles) {

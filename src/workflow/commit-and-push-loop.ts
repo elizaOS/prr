@@ -72,8 +72,6 @@ export async function handleCommitAndPush(
     headSha: string
   ) => Promise<void>,
   allFixed: boolean = false,
-  /** When true, skip the bot re-review wait (e.g., after stalemate bailout). */
-  skipWait: boolean = false
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -185,11 +183,10 @@ export async function handleCommitAndPush(
     }
 
     // Wait for re-review using smart timing based on observed bot response times.
-    // Skip the wait when bailing out (stalemate) — we won't act on new reviews anyway.
-    if (!skipWait && (maxPushIterations === 0 || pushIteration < maxPushIterations)) {
+    // Always wait, even after bail-out: the pushed fixes may trigger new bot
+    // comments that the outer loop should process in the next push iteration.
+    if (maxPushIterations === 0 || pushIteration < maxPushIterations) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);
-    } else if (skipWait) {
-      debug('Skipping bot re-review wait (bail-out in progress)');
     }
     
     return { shouldBreak: false };

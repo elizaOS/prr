@@ -25,9 +25,21 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import type { CLIOptions } from '../cli.js';
 import ora from 'ora';
+import { createHash } from 'crypto';
 import { debug, debugStep, startTimer, endTimer, formatDuration } from '../logger.js';
 import { hasChanges } from '../git/git-clone-index.js';
 import * as ResolverProc from '../resolver-proc.js';
+
+// Track the last prompt+model combination to detect identical retries.
+// WHY: When a fixer returns "no changes" and no new lessons are added,
+// the next iteration generates the exact same prompt for the same model.
+// Re-running it is guaranteed to fail again — skip straight to rotation.
+let lastPromptKey: string | null = null;
+
+/** Reset the duplicate prompt tracker (call after model/tool rotation). */
+export function resetPromptTracker(): void {
+  lastPromptKey = null;
+}
 
 /**
  * Execute one fix iteration (prompt build + fixer run + result handling)
@@ -104,6 +116,49 @@ export async function executeFixIteration(
   
   const { prompt, lessonsBeforeFix } = promptDetails;
   const currentModel = getCurrentModel();
+
+  // Detect identical prompt+model retries — skip straight to rotation.
+  // WHY: If the prompt is identical (same issues, same lessons, same model),
+  // running the fixer again will produce the same "no changes" result.
+  // A lightweight hash avoids storing the full prompt in memory.
+  const promptKey = createHash('md5')
+    .update(`${runner.name}:${currentModel || ''}:${prompt}`)
+    .digest('hex');
+
+  if (promptKey === lastPromptKey) {
+    console.log(chalk.yellow(`\n  ⚡ Same prompt+model as last iteration (no new lessons/context)`));
+    console.log(chalk.yellow(`  → Skipping to rotation instead of re-running`));
+    debug('Duplicate prompt detected, skipping to rotation', {
+      tool: runner.name, model: currentModel, promptLength: prompt.length,
+    });
+    lastPromptKey = null; // Reset so the ROTATED model gets a fair shot
+
+    // Count as failure and trigger rotation
+    const updatedConsecutiveFailures = consecutiveFailures + 1;
+    const updatedModelFailuresInCycle = modelFailuresInCycle + 1;
+
+    const rotationResult = await ResolverProc.handleRotationStrategy(
+      unresolvedIssues, comments, git,
+      updatedConsecutiveFailures, updatedModelFailuresInCycle, progressThisCycle,
+      stateContext, lessonsContext, options, verifiedThisSession,
+      runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
+    );
+
+    return {
+      shouldContinue: !rotationResult.shouldBreak,
+      shouldBreak: rotationResult.shouldBreak,
+      shouldExit: false,
+      allFixed: false,
+      updatedRapidFailureCount: rapidFailureCount,
+      updatedLastFailureTime: lastFailureTime,
+      updatedConsecutiveFailures: rotationResult.updatedConsecutiveFailures,
+      updatedModelFailuresInCycle: rotationResult.updatedModelFailuresInCycle,
+      updatedProgressThisCycle: rotationResult.updatedProgressThisCycle,
+      updatedUnresolvedIssues: rotationResult.updatedUnresolvedIssues,
+      lessonsBeforeFix,
+    };
+  }
+  lastPromptKey = promptKey;
 
   // Run fixer tool
   debugStep('RUNNING FIXER TOOL');
