@@ -151,27 +151,37 @@ export async function checkEmptyIssues(
   // Check for empty issues at start of each iteration
   // WHY: After verification/filtering, unresolvedIssues can be 0
   if (unresolvedIssues.length === 0) {
-    // Sanity check: verify that all comments are actually marked as verified
+    // Sanity check: verify that all comments are either verified OR dismissed.
+    // WHY both: Dismissed issues (stale, file-unchanged, exhausted) are intentionally
+    // NOT marked as verified — they don't need fixing. The old check only looked at
+    // isVerified(), treating dismissed-but-not-verified comments as "bugs" and
+    // re-adding them as unresolved, causing wasted fix iterations.
     const actuallyVerified = comments.filter(c => 
       Verification.isVerified(stateContext, c.id)
     ).length;
-    const actuallyUnverified = comments.length - actuallyVerified;
+    const actuallyDismissed = comments.filter(c =>
+      !Verification.isVerified(stateContext, c.id) && Dismissed.isCommentDismissed(stateContext, c.id)
+    ).length;
+    const actuallyUnaccounted = comments.length - actuallyVerified - actuallyDismissed;
     
-    if (actuallyUnverified > 0) {
-      // BUG: We think we're done but there are unverified comments!
-      console.log(chalk.red(`\n⚠ BUG DETECTED: unresolvedIssues is empty but ${actuallyUnverified} comments are not verified`));
+    if (actuallyUnaccounted > 0) {
+      // Genuine bug: comments that are neither verified nor dismissed
+      console.log(chalk.red(`\n⚠ BUG DETECTED: unresolvedIssues is empty but ${actuallyUnaccounted} comments are neither verified nor dismissed`));
       debug('Mismatch detected', {
         unresolvedIssuesLength: unresolvedIssues.length,
         actuallyVerified,
-        actuallyUnverified,
+        actuallyDismissed,
+        actuallyUnaccounted,
         totalComments: comments.length,
         verifiedIds: comments.filter(c => Verification.isVerified(stateContext, c.id)).map(c => c.id),
+        dismissedIds: comments.filter(c => Dismissed.isCommentDismissed(stateContext, c.id)).map(c => c.id),
       });
       
-      // Re-populate unresolvedIssues from scratch
+      // Re-populate unresolvedIssues from scratch — only add comments that are
+      // neither verified nor dismissed (truly unaccounted for)
       unresolvedIssues.splice(0, unresolvedIssues.length);
       for (const comment of comments) {
-        if (!Verification.isVerified(stateContext, comment.id)) {
+        if (!Verification.isVerified(stateContext, comment.id) && !Dismissed.isCommentDismissed(stateContext, comment.id)) {
           const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
           unresolvedIssues.push({
             comment,

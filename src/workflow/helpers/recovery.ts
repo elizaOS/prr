@@ -304,7 +304,8 @@ export async function tryDirectLLMFix(
   llmProvider: string,
   llm: LLMClient,
   stateContext: StateContext,
-  verifiedThisSession: Set<string> | undefined
+  verifiedThisSession: Set<string> | undefined,
+  lessonsContext?: LessonsContext
 ): Promise<boolean> {
   // Use a strong model for fixing, NOT the verification model
   const fixModel = DIRECT_FIX_MODELS[llmProvider];
@@ -410,6 +411,29 @@ Start your response with \`\`\` and end with \`\`\`.`;
             anyFixed = true;
           } else {
             console.log(chalk.yellow(`    ○ Not verified: ${verification.explanation}`));
+
+            // Generate a lesson from the failed fix so future attempts can learn.
+            // WHY: Without this, direct LLM failures are silent — no actionable
+            // feedback survives for the next iteration or tool rotation.
+            if (lessonsContext) {
+              try {
+                setTokenPhase('Analyze failure');
+                const lesson = await llm.analyzeFailedFix(
+                  {
+                    comment: issue.comment.body,
+                    filePath: issue.comment.path,
+                    line: issue.comment.line,
+                  },
+                  diff,
+                  verification.explanation
+                );
+                console.log(chalk.gray(`    📝 Lesson: ${lesson}`));
+                LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+              } catch (lessonErr) {
+                debug('Failed to generate lesson for direct LLM fix', { error: lessonErr });
+              }
+            }
+
             // Reset the file - the fix wasn't correct
             // First check if file exists in git
             const tracked = await git.raw(['ls-files', issue.comment.path]).catch(() => '');

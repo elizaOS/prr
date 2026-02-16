@@ -34,6 +34,35 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           console.log(`Compacted ${removed} duplicate lessons (${ctx.state.lessonsLearned.length} unique remaining)`);
         }
         
+        // Deduplicate verifiedFixed on load.
+        // WHY: Prior sessions and git-commit-scan can accumulate duplicate IDs,
+        // inflating the verified count beyond the total number of comments.
+        if (ctx.state.verifiedFixed && ctx.state.verifiedFixed.length > 0) {
+          const before = ctx.state.verifiedFixed.length;
+          ctx.state.verifiedFixed = [...new Set(ctx.state.verifiedFixed)];
+          const dupsRemoved = before - ctx.state.verifiedFixed.length;
+          if (dupsRemoved > 0) {
+            console.log(`Deduplicated verifiedFixed: removed ${dupsRemoved} duplicate(s) (${ctx.state.verifiedFixed.length} unique)`);
+          }
+        }
+
+        // Also deduplicate verifiedComments by commentId, keeping the latest entry
+        if (ctx.state.verifiedComments && ctx.state.verifiedComments.length > 0) {
+          const seen = new Map<string, typeof ctx.state.verifiedComments[number]>();
+          for (const vc of ctx.state.verifiedComments) {
+            const existing = seen.get(vc.commentId);
+            if (!existing || (vc.verifiedAt && (!existing.verifiedAt || vc.verifiedAt > existing.verifiedAt))) {
+              seen.set(vc.commentId, vc);
+            }
+          }
+          const beforeNew = ctx.state.verifiedComments.length;
+          ctx.state.verifiedComments = [...seen.values()];
+          const dupsRemovedNew = beforeNew - ctx.state.verifiedComments.length;
+          if (dupsRemovedNew > 0) {
+            console.log(`Deduplicated verifiedComments: removed ${dupsRemovedNew} duplicate(s)`);
+          }
+        }
+        
         // Reset no-progress cycle counter at session start.
         // WHY: This counter is for detecting stalemate within a session's rotation.
         // Carrying over 43 from a previous run makes the bail-out message misleading
