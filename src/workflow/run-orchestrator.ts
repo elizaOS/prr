@@ -20,6 +20,8 @@ import type { LLMClient } from '../llm/client.js';
 import type { RotationContext } from '../models/rotation.js';
 import { cleanupWorkdir } from '../git/workdir.js';
 import * as ResolverProc from '../resolver-proc.js';
+import { addDismissalComments } from './dismissal-comments.js';
+import * as Dismissed from '../state/state-dismissed.js';
 
 export interface RunState {
   prInfo: PRInfo;
@@ -177,6 +179,48 @@ export async function executeRun(
     if (callbacks.syncResolverState) {
       callbacks.syncResolverState(state);
     }
+    
+    // Add dismissal comments as post-processing step (after all fix iterations complete)
+    // WHY: Comments are added after fixer modifications are done so they don't get clobbered.
+    // If comments are added, commit them separately for clean separation in git history.
+    try {
+      const dismissedIssues = Dismissed.getDismissedIssues(state.stateContext);
+      if (dismissedIssues.length > 0) {
+        const { added, skipped } = await addDismissalComments(
+          dismissedIssues,
+          state.workdir,
+          llm
+        );
+        
+        if (added > 0) {
+          spinner.text = `Added ${added} dismissal comment${added === 1 ? '' : 's'}, committing...`;
+          
+          // Stage all files (comments may span multiple files)
+          await git.add('.');
+          
+          // Commit with descriptive message
+          await git.commit('docs: add review dismissal comments\n\nExplains reasoning for dismissed issues inline in code');
+          
+          // Push if auto-push is enabled and we haven't exited early
+          if (options.autoPush && !options.noPush && state.exitReason !== 'bail_out') {
+            spinner.text = 'Pushing dismissal comments...';
+            await git.push();
+          }
+          
+          spinner.succeed(`Added ${added} dismissal comment${added === 1 ? '' : 's'}`);
+        }
+      }
+    } catch (error) {
+      // On failure, revert uncommitted changes to avoid confusion on next run (Pitfall #12)
+      spinner.warn(`Failed to add dismissal comments: ${String(error)}`);
+      try {
+        await git.checkout(['--', '.']);
+      } catch (revertError) {
+        // Best effort revert; if it fails, log and continue
+        console.error('Failed to revert uncommitted changes:', revertError);
+      }
+    }
+    
     await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsContext, state.stateContext, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
   } catch (error) {
