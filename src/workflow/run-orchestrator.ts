@@ -201,8 +201,9 @@ export async function executeRun(
           // Commit with descriptive message
           await git.commit('docs: add review dismissal comments\n\nExplains reasoning for dismissed issues inline in code');
           
-          // Push if auto-push is enabled and we haven't exited early
-          if (options.autoPush && !options.noPush && state.exitReason !== 'bail_out') {
+          // Push if auto-push is enabled (even on bailout — exhausted comments are
+          // informational and safe, and bots need to see them on the next review pass)
+          if (options.autoPush && !options.noPush) {
             spinner.text = 'Pushing dismissal comments...';
             await git.push();
           }

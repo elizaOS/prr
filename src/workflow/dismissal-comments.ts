@@ -49,7 +49,7 @@ function getCommentSyntax(filePath: string): { start: string; end?: string } {
  * Binary file extensions that should never be commented.
  */
 const BINARY_EXTENSIONS = new Set([
-  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg',
+  'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp',
   'wasm', 'bin', 'exe', 'dll', 'so', 'dylib',
   'zip', 'tar', 'gz', 'bz2', 'rar', '7z',
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
