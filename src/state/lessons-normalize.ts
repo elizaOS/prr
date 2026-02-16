@@ -3,10 +3,13 @@
  */
 
 export function normalizeLessonText(lesson: string): string | null {
-  const withoutFences = lesson.replace(/```[\s\S]*?```/g, '');
-  if (/\b[a-z]{1,5}`(?=\b|\s|$)/i.test(withoutFences) || /`[a-z]{1,5}\b/i.test(withoutFences)) {
-    return null;
-  }
+  let withoutFences = lesson.replace(/```[\s\S]*?```/g, '');
+  // Strip single backticks instead of rejecting the entire lesson.
+  // WHY: LLM explanations routinely use backticks around code references
+  // (e.g., `tsc`, `slippageBps`). The old check rejected the ENTIRE lesson
+  // if any backtick was adjacent to a short word, silently discarding
+  // valuable lessons from batch verification and failure analysis.
+  withoutFences = withoutFences.replace(/`/g, '');
   const lines = withoutFences.split('\n');
   const kept: string[] = [];
 
@@ -29,9 +32,7 @@ export function normalizeLessonText(lesson: string): string | null {
 
   let normalized = kept.join(' ');
   normalized = normalized.replace(/\s+/g, ' ').trim();
-  normalized = normalized.replace(/`+$/g, '').trim();
-  normalized = normalized.replace(/\b[a-z]{1,5}`(?=\b|\s|$)/gi, '').trim();
-  normalized = normalized.replace(/`[a-z]{1,5}\b/gi, '').trim();
+  // Backticks already stripped at the top of this function
   normalized = normalized.replace(/^\s*-\s*/, '').trim();
   normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
   normalized = normalized.replace(/\s*-\s*\(inferred\)\s*\w+\b/gi, '').trim();
