@@ -114,6 +114,10 @@ export async function executeSetupPhase(
   // Recover verification state from git history
   await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext);
 
+  // Snapshot the verified count AFTER state load + dedup + git recovery.
+  // Used to compute "fixed this session" = current count - baseline.
+  stateContext.verifiedFixedAtSessionStart = (stateContext.state?.verifiedFixed || []).length;
+
   // Create conflict resolution wrapper with setup phase context
   // WHY: During setup, resolver's workdir/runner are not set yet, so we need to
   // create a callback that captures the setup phase's workdir and runner

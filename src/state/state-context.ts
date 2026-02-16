@@ -8,6 +8,9 @@ export interface StateContext {
   statePath: string;
   state: ResolverState | null;
   currentPhase: string;
+  /** Number of verified-fixed IDs when the session started (after dedup + git recovery).
+   *  Used to compute "fixed this session" = current count - this baseline. */
+  verifiedFixedAtSessionStart?: number;
 }
 
 export function createStateContext(workdir: string): StateContext {
