@@ -28,7 +28,10 @@ import { ELIZACLOUD_API_BASE_URL } from '../constants.js';
  * Replaces lone surrogates with U+FFFD (replacement character).
  */
 function normalizeIssueId(raw: string): string {
-  const normalized = raw.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+  // Strip markdown heading prefixes first (LLMs often return "## issue_1:" instead of "issue_1:")
+  // WHY /^#+\s*/ not /^#/: The old regex only removed one '#', so "## issue_1"
+  // became "# issue_1" → normalized to "issue_# issue_1" → never matched allowedIds.
+  const normalized = raw.trim().replace(/^#+\s*/, '').toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
   return normalized.length > 0 ? `issue_${normalized}` : normalized;
 }
 
@@ -685,7 +688,8 @@ STALE: Not applicable`;
 
       const response = await this.complete(parts.join('\n'));
       const normalizeIssueId = (raw: string): string => {
-        const normalized = raw.trim().toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+        // Strip markdown heading prefixes first (LLMs often return "## issue_1:")
+        const normalized = raw.trim().replace(/^#+\s*/, '').toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
         return normalized ? `issue_${normalized}` : normalized;
       };
       const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
@@ -1054,10 +1058,41 @@ NO: <brief explanation of what's still missing or wrong>`;
     const response = await this.complete(prompt);
     const content = response.content.trim();
     
-    const fixed = content.toUpperCase().startsWith('YES');
-    const explanation = content.replace(/^(YES|NO):\s*/i, '').trim();
+    // Check if the response starts with a clear YES/NO verdict
+    if (/^YES\b/i.test(content)) {
+      return { fixed: true, explanation: content.replace(/^YES:\s*/i, '').trim() };
+    }
+    if (/^NO\b/i.test(content)) {
+      return { fixed: false, explanation: content.replace(/^NO:\s*/i, '').trim() };
+    }
+    
+    // LLM "thought aloud" before reaching a verdict. Scan for the LAST YES:/NO: line.
+    // WHY last, not first: Models often deliberate ("the change uses X... however Y...
+    // actually, the core issue IS fixed: YES: ..."). The final verdict after deliberation
+    // is the most considered. Without this, a correct fix gets rejected because the
+    // parser only saw the non-YES/NO preamble.
+    const lines = content.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (/^YES\b/i.test(line)) {
+        return { fixed: true, explanation: line.replace(/^YES:\s*/i, '').trim() };
+      }
+      if (/^NO\b/i.test(line)) {
+        return { fixed: false, explanation: line.replace(/^NO:\s*/i, '').trim() };
+      }
+    }
 
-    return { fixed, explanation };
+    // No clear verdict found — check for inline YES/NO pattern (e.g., "so actually: YES: ...")
+    const inlineMatch = content.match(/\b(YES|NO):\s*(.+)$/im);
+    if (inlineMatch) {
+      return {
+        fixed: inlineMatch[1].toUpperCase() === 'YES',
+        explanation: inlineMatch[2].trim(),
+      };
+    }
+
+    // Truly ambiguous — default to not fixed (conservative)
+    return { fixed: false, explanation: content };
   }
 
   /**
@@ -1127,7 +1162,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       id: string;
       comment: string;
       filePath: string;
+      line?: number | null;
       diff: string;
+      currentCode?: string;
     }>
   ): Promise<Map<string, { fixed: boolean; explanation: string; lesson?: string }>> {
     if (fixes.length === 0) {
@@ -1147,6 +1184,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     // - Explicitly tells the LLM the lesson feeds back into the next fix attempt
     const parts: string[] = [
       'You are a STRICT code reviewer. For each fix below, verify whether the code change adequately addresses the review comment.',
+      'IMPORTANT: When a "Current Code" section is provided, CHECK IT CAREFULLY. If the problematic pattern described in the review comment is still present in the current code, the fix is NOT adequate — answer NO regardless of what the diff shows.',
       '',
       'For EACH fix, respond with EXACTLY this format:',
       'FIX_ID: YES|NO: brief explanation of what was/wasn\'t fixed',
@@ -1186,9 +1224,16 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       const idx = i + 1;
       indexToId.set(idx, fix.id);
       parts.push(`## Fix ${idx}`);
-      parts.push(`File: ${fix.filePath}`);
+      parts.push(`File: ${fix.filePath}${fix.line ? `:${fix.line}` : ''}`);
       parts.push(`Review Comment: ${fix.comment}`);
       parts.push('');
+      if (fix.currentCode) {
+        parts.push('Current Code (AFTER the fix attempt — check if the issue pattern still exists here):');
+        parts.push('```');
+        parts.push(fix.currentCode);
+        parts.push('```');
+        parts.push('');
+      }
       parts.push('Code Change (diff):');
       parts.push('```diff');
       parts.push(fix.diff);

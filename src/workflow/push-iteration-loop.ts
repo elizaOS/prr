@@ -87,6 +87,7 @@ export interface PushIterationCallbacks {
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>;
   printUnresolvedIssues: (issues: UnresolvedIssue[]) => void;
   getCurrentModel: () => string | undefined;
+  getRunner: () => Runner;
   parseNoChangesExplanation: (output: string) => string | null;
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
   tryRotation: () => boolean;
@@ -147,10 +148,10 @@ export async function executePushIteration(
   const { prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef } = contexts;
   const {
     findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues,
-    getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation,
+    getCurrentModel, getRunner, parseNoChangesExplanation, trySingleIssueFix, tryRotation,
     tryDirectLLMFix, executeBailOut, checkForNewBotReviews, calculateExpectedBotResponseTime, waitForBotReviews,
   } = callbacks;
-  const { llm, options, config, spinner, runner } = services;
+  const { llm, options, config, spinner } = services;
 
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
@@ -205,7 +206,7 @@ export async function executePushIteration(
     
     // Pre-iteration checks
     const preChecks = await ResolverProc.executePreIterationChecks(
-      fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, runner, options,
+      fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, getRunner(), options,
       checkForNewBotReviews, getCodeSnippet, getCurrentModel
     );
     
@@ -219,8 +220,11 @@ export async function executePushIteration(
     }
 
     // Execute fix iteration
+    // WHY getRunner(): After tryRotation() updates this.runner via syncRotationContext,
+    // a destructured `runner` variable would still hold the OLD runner reference.
+    // getRunner() always returns the current runner from the PRResolver instance.
     const iterResult = await ResolverProc.executeFixIteration(
-      unresolvedIssues, comments, git, workdir, runner, stateContext, lessonsContext, llm, options, verifiedThisSession,
+      unresolvedIssues, comments, git, workdir, getRunner(), stateContext, lessonsContext, llm, options, verifiedThisSession,
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
     );
@@ -251,12 +255,12 @@ export async function executePushIteration(
     }
 
     // Verify fixes
-    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap);
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir);
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
     
     // Handle iteration cleanup
-    const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, runner, currentModel,
+    const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, getRunner(), currentModel,
       stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime);
     
     progressThisCycle += cleanupResult.progressMade;
@@ -272,7 +276,7 @@ export async function executePushIteration(
     if (!allFixed) {
       // Post-verification handling
       const postVerif = await ResolverProc.handlePostVerification(verifiedCount, allFixed, unresolvedIssues, comments, verifiedThisSession, git, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
-        stateContext, lessonsContext, options, runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+        stateContext, lessonsContext, options, getRunner().name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
       
       consecutiveFailures = postVerif.updatedConsecutiveFailures;
       modelFailuresInCycle = postVerif.updatedModelFailuresInCycle;

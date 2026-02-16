@@ -169,6 +169,17 @@ export function printFinalSummary(
   const verifiedFixed = stateContext.state.verifiedFixed || [];
   const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
   
+  // Exclude "already-fixed" dismissed issues from the fixed count.
+  // WHY: Issues that were already fixed before the tool ran appear in BOTH
+  // verifiedFixed (for caching) and dismissedIssues (with category "already-fixed").
+  // Counting them in both "fixed" and "dismissed" double-counts and inflates results.
+  const alreadyFixedIds = new Set(
+    dismissedIssues
+      .filter(d => d.category === 'already-fixed')
+      .map(d => d.commentId)
+  );
+  const toolFixedCount = verifiedFixed.filter(id => !alreadyFixedIds.has(id)).length;
+  
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
   console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
@@ -180,9 +191,9 @@ export function printFinalSummary(
     console.log(chalk.gray(`     ${exitDetails}`));
   }
   
-  // Fixed issues
-  if (verifiedFixed.length > 0) {
-    console.log(chalk.green(`\n  ✓ ${formatNumber(verifiedFixed.length)} issue${verifiedFixed.length === 1 ? '' : 's'} fixed and verified`));
+  // Fixed issues (only count issues actually fixed by the tool, not pre-existing fixes)
+  if (toolFixedCount > 0) {
+    console.log(chalk.green(`\n  ✓ ${formatNumber(toolFixedCount)} issue${toolFixedCount === 1 ? '' : 's'} fixed and verified`));
   }
   
   // Dismissed issues by category

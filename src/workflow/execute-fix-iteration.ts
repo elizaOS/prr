@@ -111,7 +111,7 @@ export async function executeFixIteration(
   startTimer('Run fixer');
   spinner.start(`Running ${runner.name} to fix issues...`);
   
-  debug('Executing runner', { tool: runner.name, workdir, model: options.toolModel });
+  debug('Executing runner', { tool: runner.name, workdir, model: currentModel });
   const codexAddDirs = [...(options.codexAddDir ?? [])];
 
   let result;
@@ -145,17 +145,31 @@ export async function executeFixIteration(
       };
     }
     
+    // Non-fatal fixer error: increment failure counters and trigger rotation.
+    // WHY: Previously, fixer errors returned shouldContinue without incrementing
+    // consecutiveFailures or triggering rotation, causing the same tool/model to
+    // be retried indefinitely. Now we treat it like a "no changes" failure.
+    const updatedConsecutiveFailures = consecutiveFailures + 1;
+    const updatedModelFailuresInCycle = modelFailuresInCycle + 1;
+    
+    const rotationResult = await ResolverProc.handleRotationStrategy(
+      unresolvedIssues, comments, git,
+      updatedConsecutiveFailures, updatedModelFailuresInCycle, progressThisCycle,
+      stateContext, lessonsContext, options, verifiedThisSession, runner.name,
+      trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
+    );
+    
     return {
-      shouldContinue: true,
-      shouldBreak: false,
+      shouldContinue: !rotationResult.shouldBreak,
+      shouldBreak: rotationResult.shouldBreak,
       shouldExit: false,
       allFixed: false,
       updatedRapidFailureCount: errorResult.rapidFailureCount,
       updatedLastFailureTime: errorResult.lastFailureTime,
-      updatedConsecutiveFailures: consecutiveFailures,
-      updatedModelFailuresInCycle: modelFailuresInCycle,
-      updatedProgressThisCycle: progressThisCycle,
-      updatedUnresolvedIssues: unresolvedIssues,
+      updatedConsecutiveFailures: rotationResult.updatedConsecutiveFailures,
+      updatedModelFailuresInCycle: rotationResult.updatedModelFailuresInCycle,
+      updatedProgressThisCycle: rotationResult.updatedProgressThisCycle,
+      updatedUnresolvedIssues: rotationResult.updatedUnresolvedIssues,
       lessonsBeforeFix,
     };
   }

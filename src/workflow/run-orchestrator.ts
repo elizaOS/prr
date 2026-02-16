@@ -51,6 +51,7 @@ export interface RunCallbacks {
   syncResolverState?: (state: RunState) => void;
   getRotationContext: () => RotationContext;
   getCurrentModel: () => string | undefined;
+  getRunner: () => Runner;
   findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<{
     unresolved: UnresolvedIssue[];
     recommendedModels?: string[];
@@ -149,7 +150,7 @@ export async function executeRun(
         { git, github, owner, repo, number, workdir: state.workdir },
         { pushIteration, maxPushIterations, rapidFailureCount: state.rapidFailureCount, lastFailureTime: state.lastFailureTime, consecutiveFailures: state.consecutiveFailures, modelFailuresInCycle: state.modelFailuresInCycle, progressThisCycle: state.progressThisCycle, expectedBotResponseTime: state.expectedBotResponseTime },
         pushContexts,
-        { findUnresolvedIssues: callbacks.findUnresolvedIssues, resolveConflictsWithLLM: callbacks.resolveConflictsWithLLM, getCodeSnippet: callbacks.getCodeSnippet, printUnresolvedIssues: callbacks.printUnresolvedIssues, getCurrentModel: callbacks.getCurrentModel, parseNoChangesExplanation: callbacks.parseNoChangesExplanation, trySingleIssueFix: callbacks.trySingleIssueFix, tryRotation: callbacks.tryRotation, tryDirectLLMFix: callbacks.tryDirectLLMFix, executeBailOut: callbacks.executeBailOut, checkForNewBotReviews: callbacks.checkForNewBotReviews, calculateExpectedBotResponseTime: callbacks.calculateExpectedBotResponseTime, waitForBotReviews: callbacks.waitForBotReviews },
+        { findUnresolvedIssues: callbacks.findUnresolvedIssues, resolveConflictsWithLLM: callbacks.resolveConflictsWithLLM, getCodeSnippet: callbacks.getCodeSnippet, printUnresolvedIssues: callbacks.printUnresolvedIssues, getCurrentModel: callbacks.getCurrentModel, getRunner: callbacks.getRunner, parseNoChangesExplanation: callbacks.parseNoChangesExplanation, trySingleIssueFix: callbacks.trySingleIssueFix, tryRotation: callbacks.tryRotation, tryDirectLLMFix: callbacks.tryDirectLLMFix, executeBailOut: callbacks.executeBailOut, checkForNewBotReviews: callbacks.checkForNewBotReviews, calculateExpectedBotResponseTime: callbacks.calculateExpectedBotResponseTime, waitForBotReviews: callbacks.waitForBotReviews },
         { llm, options, config, spinner, runner: state.runner }
       );
       state.rapidFailureCount = iterResult.updatedRapidFailureCount;

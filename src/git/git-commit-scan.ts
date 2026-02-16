@@ -82,13 +82,19 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
       for (const line of lines) {
         const match = line.match(/^prr-fix:(.+)$/);
         if (match) {
-          // Normalize to lowercase for reliable matching
-          commentIds.push(match[1].trim().toLowerCase());
+          // Preserve original casing from commit messages.
+          // WHY NOT lowercase: The state's verifiedFixed array stores IDs in
+          // their original case (from the GitHub API). Lowercasing here causes
+          // case-sensitive includes() checks to miss existing entries, leading
+          // to duplicate IDs accumulating across sessions.
+          commentIds.push(match[1].trim());
         }
       }
     }
     
-    return commentIds;
+    // Deduplicate: the same ID can appear in multiple commits
+    // (e.g., re-verified after a push, or re-committed after interruption)
+    return [...new Set(commentIds)];
   } catch (error) {
     // WHY catch and return empty instead of throw:
     // Scan failure shouldn't prevent startup - we'll just verify everything fresh
