@@ -825,14 +825,14 @@ export async function findUnresolvedIssues(
     }
   }
 
-  // Report solvability dismissals
+  // Report solvability dismissals — issues leaving the queue before fix attempt
   const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedPlaceholder;
   if (totalDismissed > 0) {
     const parts: string[] = [];
     if (dismissedStaleFiles > 0) parts.push(`${dismissedStaleFiles} stale file(s)`);
     if (dismissedExhausted > 0) parts.push(`${dismissedExhausted} exhausted attempt(s)`);
     if (dismissedPlaceholder > 0) parts.push(`${dismissedPlaceholder} unreadable file(s)`);
-    console.log(chalk.gray(`  ${totalDismissed} issue(s) dismissed as unsolvable (${parts.join(', ')})`));
+    console.log(chalk.gray(`  DISMISSED: ${totalDismissed} issue(s) removed from queue (${parts.join(', ')})`));
   }
 
   if (options.reverify && skippedCache > 0) {

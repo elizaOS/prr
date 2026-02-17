@@ -109,7 +109,8 @@ export async function trySingleIssueFix(
         );
 
         if (verification.fixed) {
-          console.log(chalk.green(`    ✓ Fixed and verified!`));
+          const line = issue.comment.line ? `:${issue.comment.line}` : '';
+          console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}${line} — fixed and verified`));
           debug('Fix verified successfully', {
             file: issue.comment.path,
             line: issue.comment.line,
@@ -408,7 +409,8 @@ Start your response with \`\`\` and end with \`\`\`.`;
           );
 
           if (verification.fixed) {
-            console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}`));
+            const line = issue.comment.line ? `:${issue.comment.line}` : '';
+            console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}${line} — fixed and verified`));
             Verification.markVerified(stateContext, issue.comment.id);
             verifiedThisSession?.add(issue.comment.id);
             anyFixed = true;

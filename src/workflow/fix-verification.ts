@@ -420,23 +420,35 @@ export async function verifyFixes(
   }
   const verifyTime = endTimer('Verify fixes');
   
-  // Log verification results
+  // Verification results — show what left (or stayed in) the queue.
+  // WHY: This is the counterpart to the QUEUE log. Together they bracket
+  // the fix attempt: QUEUE shows what went in, this shows what came out.
   console.log(chalk.gray(`\n  Verified in ${formatDuration(verifyTime)}`));
   
   if (unchangedIssues.length > 0) {
     console.log(chalk.yellow(`  ${unchangedIssues.length} file(s) not modified - issues marked as failed`));
   }
   
-  if (verifiedCount > 0) {
-    console.log(chalk.green(`  ✓ ${verifiedCount} issue(s) verified as fixed`));
-  }
-  
-  if (autoVerifiedCount > 0) {
-    console.log(chalk.gray(`  Auto-verified ${autoVerifiedCount} duplicate comment(s)`));
-  }
-  
-  if (failedCount > 0) {
-    console.log(chalk.yellow(`  ○ ${failedCount} issue(s) still need attention`));
+  if (verifiedCount > 0 || autoVerifiedCount > 0 || failedCount > 0) {
+    const totalResolved = verifiedCount + autoVerifiedCount;
+    if (totalResolved > 0) {
+      console.log(chalk.greenBright(`  ┌─ RESOLVED: ${totalResolved} issue(s) leaving queue ─┐`));
+      // Show each verified issue with its file
+      for (const issue of changedIssues) {
+        if (verifiedThisSession.has(issue.comment.id)) {
+          const line = issue.comment.line ? `:${issue.comment.line}` : '';
+          console.log(chalk.greenBright(`  │  - ${issue.comment.path}${line} ✓ fixed`));
+        }
+      }
+      if (autoVerifiedCount > 0) {
+        console.log(chalk.greenBright(`  │  + ${autoVerifiedCount} duplicate(s) auto-resolved`));
+      }
+      console.log(chalk.greenBright(`  └${'─'.repeat(40)}┘`));
+    }
+    
+    if (failedCount > 0) {
+      console.log(chalk.yellow(`  ○ ${failedCount} issue(s) still in queue (not fixed)`));
+    }
   }
 
   // Self-corruption detection: if ALL issues on a file failed verification,

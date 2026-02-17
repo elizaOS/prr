@@ -32,9 +32,6 @@ export function analyzeAndReportIssues(
 ): void {
   const resolvedCount = comments.length - unresolvedIssues.length;
   console.log(chalk.green(`✓ ${formatNumber(resolvedCount)}/${formatNumber(comments.length)} already resolved (${formatDuration(analyzeTime)})`));
-  if (unresolvedIssues.length > 0) {
-    console.log(chalk.yellow(`→ ${formatNumber(unresolvedIssues.length)} issues remaining to fix`));
-  }
 
   // Report dismissed issues (issues that don't need fixing)
   const dismissedIssues = Dismissed.getDismissedIssues(stateContext);
@@ -57,6 +54,40 @@ export function analyzeAndReportIssues(
         console.log(chalk.gray(`      ${issue.reason}`));
       }
     }
+  }
+
+  // Prominent queue summary — these are the issues entering the fix loop.
+  // WHY: This is the single most important log line for understanding what
+  // the system is about to work on. Without it, you have to piece together
+  // the queue from scattered debug lines.
+  if (unresolvedIssues.length > 0) {
+    console.log('');
+    console.log(chalk.yellowBright(`┌─ QUEUE: ${formatNumber(unresolvedIssues.length)} issue(s) entering fix loop ─┐`));
+
+    // Group by file for readability
+    const byFile = new Map<string, typeof unresolvedIssues>();
+    for (const issue of unresolvedIssues) {
+      const path = issue.comment.path;
+      if (!byFile.has(path)) byFile.set(path, []);
+      byFile.get(path)!.push(issue);
+    }
+
+    for (const [filePath, issues] of byFile) {
+      console.log(chalk.yellowBright(`│  ${filePath}`));
+      for (const issue of issues) {
+        const line = issue.comment.line ? `:${issue.comment.line}` : '';
+        const author = issue.comment.author ? ` (${issue.comment.author})` : '';
+        const preview = issue.comment.body.split('\n')[0].substring(0, 60);
+        const triageLabel = issue.triage
+          ? ` [I${issue.triage.importance}/D${issue.triage.ease}]`
+          : '';
+        console.log(chalk.yellowBright(`│    + ${filePath}${line}${triageLabel}${author}`));
+        console.log(chalk.gray(`│      "${preview}..."`));
+      }
+    }
+    console.log(chalk.yellowBright(`└${'─'.repeat(42)}┘`));
+  } else {
+    console.log(chalk.green('\n✓ All issues resolved — nothing to fix'));
   }
 
   debug('Unresolved issues', unresolvedIssues.map(i => ({
@@ -118,7 +149,13 @@ export async function checkForNewComments(
       });
     }
     
-    console.log(chalk.cyan(`\n→ Re-entering fix loop with ${formatNumber(updatedUnresolvedIssues.length)} new issues\n`));
+    console.log(chalk.yellowBright(`\n┌─ QUEUE: +${formatNumber(newComments.length)} new issue(s) added mid-cycle ─┐`));
+    for (const comment of newComments) {
+      const line = comment.line ? `:${comment.line}` : '';
+      console.log(chalk.yellowBright(`│  + ${comment.path}${line} (${comment.author})`));
+    }
+    console.log(chalk.yellowBright(`│  Total in queue: ${formatNumber(updatedUnresolvedIssues.length)}`));
+    console.log(chalk.yellowBright(`└${'─'.repeat(45)}┘\n`));
     
     return {
       hasNewComments: true,

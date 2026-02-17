@@ -243,7 +243,7 @@ async function verifyAllIssues(
       verifiedAsFixed++;
       Verification.markVerified(stateContext, issue.comment.id);
       verifiedThisSession.add(issue.comment.id);
-      console.log(chalk.green(`    ✓ Verified: ${issue.comment.path}:${issue.comment.line} - ${result.explanation}`));
+      console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}:${issue.comment.line} — ${result.explanation}`));
     } else {
       stillUnresolved.push(issue);
       if (result) {
