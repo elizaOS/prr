@@ -11,7 +11,7 @@ import type { LLMClient } from '../llm/client.js';
 import type { StateContext } from '../state/state-context.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
-import type { Runner } from '../runners/types.js';
+import type { ResultCode, Runner } from '../runners/types.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 
 /**
@@ -187,6 +187,32 @@ export function parseNoChangesExplanation(output: string): string | null {
   return null;
 }
 
+// WHY multiple delimiters: Models may output em dash (—), double hyphen (--), or single hyphen (-).
+// Accepting all three avoids parse failures when the model doesn't match the prompt exactly.
+const RESULT_CODE_REGEX =
+  /^RESULT:\s*(FIXED|ALREADY_FIXED|NEEDS_DISCUSSION|UNCLEAR|WRONG_LOCATION|CANNOT_FIX|ATTEMPTED)\s*(?:—|--|-)\s*(.+)$/m;
+
+/**
+ * Parse structured RESULT line from fixer output (e.g. "RESULT: ALREADY_FIXED — line 45 has null check").
+ * Returns null when no RESULT line is found; callers should fall back to parseNoChangesExplanation.
+ * WHY separate from NO_CHANGES: RESULT codes drive specific follow-ups (e.g. WRONG_LOCATION → lesson
+ * "provide wider code context"). Legacy NO_CHANGES is still supported so existing fixer output keeps working.
+ */
+export function parseResultCode(output: string): {
+  resultCode: ResultCode;
+  resultDetail: string;
+  caveat?: string;
+} | null {
+  if (!output || !output.trim()) return null;
+  const match = output.match(RESULT_CODE_REGEX);
+  if (!match || !match[1] || !match[2]) return null;
+  const resultCode = match[1] as ResultCode;
+  const resultDetail = match[2].trim();
+  const caveatMatch = output.match(/^CAVEAT:\s*(.+)$/m);
+  const caveat = caveatMatch?.[1]?.trim();
+  return { resultCode, resultDetail, ...(caveat ? { caveat } : {}) };
+}
+
 /**
  * Sanitize tool output for debug logging.
  */
@@ -312,11 +338,14 @@ ${lessons.map(l => `- ${l}`).join('\n')}
 1. EDIT the file ${issue.comment.path} to fix this issue
 2. Make the minimal change required - do NOT rewrite the whole file
 3. Do not modify any other files
-4. You MUST make a change - if unsure, make your best attempt
-5. When using search/replace, copy the search text character-for-character from the ACTUAL FILE CONTENT (not from the review comment snippet, which may be stale)
-6. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, etc.)
+4. If the issue is ALREADY FIXED in the current code, do NOT make cosmetic changes. Instead respond with: RESULT: ALREADY_FIXED — <cite the specific code>
+5. If the instructions are UNCLEAR or contradictory, respond with: RESULT: UNCLEAR — <explain what is ambiguous>
+6. If the LINE NUMBERS in the review don't match the current code, respond with: RESULT: WRONG_LOCATION — <note the discrepancy>
+7. If the issue needs DISCUSSION rather than a code fix, add a code comment: // REVIEW: <your reasoning> and respond with: RESULT: NEEDS_DISCUSSION — <brief explanation>
+8. When using search/replace, copy the search text character-for-character from the ACTUAL FILE CONTENT (not from the review comment snippet, which may be stale)
+9. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, etc.)
 
-IMPORTANT: Actually edit the file. Do not just explain what to do.`;
+IMPORTANT: Actually edit the file when a fix is possible. If it is not possible or not needed, use the RESULT codes above instead of forcing a change.`;
 
   return prompt;
 }

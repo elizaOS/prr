@@ -29,6 +29,7 @@ import { createHash } from 'crypto';
 import { debug, debugStep, startTimer, endTimer, formatDuration } from '../logger.js';
 import { hasChanges } from '../git/git-clone-index.js';
 import * as ResolverProc from '../resolver-proc.js';
+import { parseResultCode } from './utils.js';
 
 // Track the last prompt+model combination to detect identical retries.
 // WHY: When a fixer returns "no changes" and no new lessons are added,
@@ -303,6 +304,30 @@ export async function executeFixIteration(
       updatedModelFailuresInCycle: rotationResult.updatedModelFailuresInCycle,
       updatedProgressThisCycle: rotationResult.updatedProgressThisCycle,
       updatedUnresolvedIssues: rotationResult.updatedUnresolvedIssues,
+      lessonsBeforeFix,
+    };
+  }
+
+  // WHY NEEDS_DISCUSSION here: When the fixer adds only a // REVIEW: comment (no code change),
+  // hasChanges(git) is true but the "fix" isn't something to verify — it's a discussion reply.
+  // Treating it as progress (reset consecutive failures, increment progress) avoids running
+  // verification on a comment and avoids counting it as a failure. Must live in the "has changes"
+  // branch because NEEDS_DISCUSSION implies a file was modified (the comment was added).
+  const structuredResult = parseResultCode(result.output || '');
+  if (structuredResult?.resultCode === 'NEEDS_DISCUSSION') {
+    console.log(chalk.cyan(`  Discussion response: ${structuredResult.resultDetail}`));
+    console.log(chalk.gray('  → Code comment added as discussion contribution'));
+    return {
+      shouldContinue: true,
+      shouldBreak: false,
+      shouldExit: false,
+      allFixed: false,
+      updatedRapidFailureCount: rapidFailureCount,
+      updatedLastFailureTime: lastFailureTime,
+      updatedConsecutiveFailures: 0,
+      updatedModelFailuresInCycle: modelFailuresInCycle,
+      updatedProgressThisCycle: progressThisCycle + 1,
+      updatedUnresolvedIssues: unresolvedIssues,
       lessonsBeforeFix,
     };
   }

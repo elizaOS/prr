@@ -17,6 +17,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug } from '../logger.js';
+import { parseResultCode } from './utils.js';
 
 /**
  * Number of issues to spot-check before committing to full verification.
@@ -67,8 +68,58 @@ export async function handleNoChangesWithVerification(
 }> {
   console.log(chalk.yellow(`\nNo changes made by ${runnerName}${currentModel ? ` (${currentModel})` : ''}`));
 
-  // Parse fixer output for NO_CHANGES explanation
-  const noChangesExplanation = parseNoChangesExplanation(fixerOutput);
+  // WHY try RESULT first: Structured codes (ALREADY_FIXED, UNCLEAR, WRONG_LOCATION, etc.) allow
+  // targeted lessons and routing. When none is present, fall back to parseNoChangesExplanation so
+  // legacy NO_CHANGES: and inferred explanations still work.
+  let noChangesExplanation: string | null = null;
+  const structuredResult = parseResultCode(fixerOutput);
+  if (structuredResult) {
+    console.log(chalk.cyan(`  Result: ${structuredResult.resultCode} — ${structuredResult.resultDetail}`));
+    switch (structuredResult.resultCode) {
+      case 'ALREADY_FIXED':
+        noChangesExplanation = `already fixed - ${structuredResult.resultDetail}`;
+        break;
+      case 'UNCLEAR':
+      case 'CANNOT_FIX':
+        LessonsAPI.Add.addGlobalLesson(lessonsContext, `${structuredResult.resultCode}: ${structuredResult.resultDetail}`);
+        Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+        return {
+          shouldBreak: false,
+          shouldContinue: false,
+          verifiedCount: 0,
+          updatedUnresolvedIssues: unresolvedIssues,
+          progressMade: 0,
+        };
+      case 'WRONG_LOCATION':
+        LessonsAPI.Add.addGlobalLesson(
+          lessonsContext,
+          `WRONG_LOCATION: ${structuredResult.resultDetail} — provide wider code context`
+        );
+        Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+        return {
+          shouldBreak: false,
+          shouldContinue: false,
+          verifiedCount: 0,
+          updatedUnresolvedIssues: unresolvedIssues,
+          progressMade: 0,
+        };
+      case 'NEEDS_DISCUSSION':
+        LessonsAPI.Add.addGlobalLesson(lessonsContext, `Issue addressed via discussion: ${structuredResult.resultDetail}`);
+        Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+        return {
+          shouldBreak: false,
+          shouldContinue: false,
+          verifiedCount: 0,
+          updatedUnresolvedIssues: unresolvedIssues,
+          progressMade: 0,
+        };
+      default:
+        // FIXED, ATTEMPTED: shouldn't reach here (they make changes). Fall back to legacy parsing.
+        noChangesExplanation = parseNoChangesExplanation(fixerOutput);
+    }
+  } else {
+    noChangesExplanation = parseNoChangesExplanation(fixerOutput);
+  }
 
   let verifiedCount = 0;
   let progressMade = 0;

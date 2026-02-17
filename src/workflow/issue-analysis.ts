@@ -45,7 +45,12 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient, ModelRecommendationContext } from '../llm/client.js';
 import type { Runner } from '../runners/types.js';
-import { VERIFICATION_EXPIRY_ITERATIONS } from '../constants.js';
+import {
+  CODE_SNIPPET_CONTEXT_AFTER,
+  CODE_SNIPPET_CONTEXT_BEFORE,
+  MAX_SNIPPET_LINES,
+  VERIFICATION_EXPIRY_ITERATIONS,
+} from '../constants.js';
 import { validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn } from '../logger.js';
@@ -529,6 +534,119 @@ If no comments are duplicates, reply: NONE`;
 }
 
 /**
+ * Parse line references from a review comment body.
+ * Used to expand the code snippet range so the fixer sees all referenced lines.
+ *
+ * WHY: Review bots (e.g. CodeRabbit) often anchor the comment at line 1 but say "around lines 52 - 93"
+ * in the body. getCodeSnippet previously used only comment.line, so the fixer received 15 lines
+ * around line 1 and never saw the actual code in question. Parsing refs and merging with the
+ * anchor yields a snippet that includes every referenced range.
+ *
+ * Only matches high-confidence patterns (e.g. "around lines 52 - 93", "at line 128") to avoid
+ * false positives like "HTTP 404" or "port 8080". Skips lines that look like shell commands
+ * (sed -n, cat -n) from CodeRabbit analysis chains — those contain line numbers from the bot's
+ * investigation, not the issue location.
+ */
+export function parseLineReferencesFromBody(commentBody: string): number[] {
+  if (!commentBody || !commentBody.trim()) return [];
+
+  const lines = commentBody.split('\n');
+  const collected: number[] = [];
+
+  for (const raw of lines) {
+    // WHY skip: CodeRabbit embeds "Script executed: sed -n '225,245p'" in the comment. Matching
+    // those numbers would add 225–245 to the snippet range even though they refer to the bot's
+    // script output, not the file lines the reviewer is talking about.
+    if (/sed\s+-n|cat\s+-n|head\s+-n|grep\s+-n/.test(raw)) continue;
+
+    // Around lines N - M (CodeRabbit "Prompt for AI Agents" format)
+    const aroundMatch = raw.match(/around\s+lines\s+(\d+)\s*-\s*(\d+)/gi);
+    if (aroundMatch) {
+      for (const m of aroundMatch) {
+        const parts = m.match(/(\d+)\s*-\s*(\d+)/);
+        if (parts) {
+          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
+        }
+      }
+    }
+
+    // lines N-M or lines N - M
+    const linesDashMatch = raw.match(/\blines\s+(\d+)\s*[-–]\s*(\d+)/gi);
+    if (linesDashMatch) {
+      for (const m of linesDashMatch) {
+        const parts = m.match(/(\d+)\s*[-–]\s*(\d+)/);
+        if (parts) {
+          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
+        }
+      }
+    }
+
+    // lines N to M / lines N through M
+    const linesToMatch = raw.match(/\blines\s+(\d+)\s+to\s+(\d+)/gi);
+    if (linesToMatch) {
+      for (const m of linesToMatch) {
+        const parts = m.match(/(\d+)\s+to\s+(\d+)/i);
+        if (parts) {
+          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
+        }
+      }
+    }
+    const linesThroughMatch = raw.match(/\blines\s+(\d+)\s+through\s+(\d+)/gi);
+    if (linesThroughMatch) {
+      for (const m of linesThroughMatch) {
+        const parts = m.match(/(\d+)\s+through\s+(\d+)/i);
+        if (parts) {
+          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
+        }
+      }
+    }
+
+    // at line N / on line N
+    const atOnMatch = raw.match(/(?:at|on)\s+line\s+(\d+)/gi);
+    if (atOnMatch) {
+      for (const m of atOnMatch) {
+        const n = m.match(/(\d+)/);
+        if (n) collected.push(parseInt(n[1], 10));
+      }
+    }
+
+    // Line N (capital L, e.g. "Line 128 calls")
+    const lineCapMatch = raw.match(/\bLine\s+(\d+)/g);
+    if (lineCapMatch) {
+      for (const m of lineCapMatch) {
+        const n = m.match(/(\d+)/);
+        if (n) collected.push(parseInt(n[1], 10));
+      }
+    }
+
+    // line N (word boundary avoids "pipeline", "deadline")
+    const lineMatch = raw.match(/\bline\s+(\d+)/gi);
+    if (lineMatch) {
+      for (const m of lineMatch) {
+        const n = m.match(/(\d+)/);
+        if (n) collected.push(parseInt(n[1], 10));
+      }
+    }
+
+    // #LN or #LN-LM (LOCATIONS-style)
+    const hashMatch = raw.match(/#L(\d+)(?:-L(\d+))?/g);
+    if (hashMatch) {
+      for (const m of hashMatch) {
+        const parts = m.match(/#L(\d+)(?:-L(\d+))?/);
+        if (parts) {
+          collected.push(parseInt(parts[1], 10));
+          if (parts[2]) collected.push(parseInt(parts[2], 10));
+        }
+      }
+    }
+  }
+
+  const unique = [...new Set(collected)].filter((n) => n > 0);
+  unique.sort((a, b) => a - b);
+  return unique;
+}
+
+/**
  * Get code snippet from file for context
  */
 export async function getCodeSnippet(
@@ -542,20 +660,15 @@ export async function getCodeSnippet(
     const content = await readFile(filePath, 'utf-8');
     const lines = content.split('\n');
 
-    // Determine the relevant line range.
-    //
-    // WHY prefer comment.line over LOCATIONS: The `line` parameter comes from
-    // the GitHub review comment API — it's where the reviewer actually placed
-    // the comment in the diff. LOCATIONS tags are embedded in bot comment HTML
-    // and often point to a *related* but different part of the file (e.g. a
-    // class definition when the comment is about a method). Using LOCATIONS
-    // when we already have a precise line led to returning completely wrong
-    // code snippets (e.g. showing getTokenPair for an API-key-reset issue).
-    //
-    // Only fall back to LOCATIONS when no line was attached to the comment.
-    let startLine = line;
-    let endLine = line;
-    
+    // WHY unified anchors: A comment may have comment.line=11 (GitHub API) and body text
+    // "around lines 52 - 93". Using only one or the other would show the wrong code. Merging
+    // all sources and taking min/max yields one contiguous range that includes every referenced line.
+    const anchors = new Set<number>();
+    if (line !== null) anchors.add(line);
+
+    let startLine: number | null = line;
+    let endLine: number | null = line;
+
     if (startLine === null && commentBody) {
       const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
       if (locationsMatch) {
@@ -565,23 +678,45 @@ export async function getCodeSnippet(
           if (lineMatch) {
             startLine = parseInt(lineMatch[1], 10);
             endLine = lineMatch[2] ? parseInt(lineMatch[2], 10) : startLine + 20;
+            anchors.add(startLine);
+            if (endLine !== null) anchors.add(endLine);
             break;
           }
         }
       }
     }
 
+    if (commentBody) {
+      const fromBody = parseLineReferencesFromBody(commentBody);
+      fromBody.forEach((n) => anchors.add(n));
+      if (fromBody.length > 0 && startLine === null) {
+        startLine = fromBody[0]!;
+        endLine = fromBody[fromBody.length - 1]!;
+      }
+    }
+
     if (startLine === null) {
-      // Return first 50 lines if no specific line
+      // No anchors: return first 50 lines
       return lines.slice(0, 50).join('\n');
     }
 
-    // Return code from startLine to endLine (with some context)
-    const contextBefore = 5;
-    const contextAfter = 10;
-    const start = Math.max(0, startLine - contextBefore - 1);
-    const end = Math.min(lines.length, (endLine || startLine) + contextAfter);
-    
+    // Use union of anchors for range when we have body-derived refs
+    const minAnchor = anchors.size > 0 ? Math.min(...anchors) : startLine;
+    const maxAnchor = anchors.size > 0 ? Math.max(...anchors) : (endLine ?? startLine);
+
+    let start = Math.max(0, minAnchor - CODE_SNIPPET_CONTEXT_BEFORE - 1);
+    let end = Math.min(lines.length, maxAnchor + CODE_SNIPPET_CONTEXT_AFTER);
+
+    if (end - start > MAX_SNIPPET_LINES) {
+      // WHY cap: A comment referencing "lines 1 to 400" plus 20/30 context would request 450 lines.
+      // Multiple refs can push the range past 500. Capping and centering keeps the prompt bounded
+      // while still including the anchor range so the fixer sees the relevant code.
+      const center = Math.floor((minAnchor + maxAnchor) / 2);
+      const half = Math.floor(MAX_SNIPPET_LINES / 2);
+      start = Math.max(0, center - half - 1);
+      end = Math.min(lines.length, start + MAX_SNIPPET_LINES);
+    }
+
     return lines
       .slice(start, end)
       .map((l, i) => `${start + i + 1}: ${l}`)
@@ -682,7 +817,17 @@ export async function findUnresolvedIssues(
     }
 
     const snippetLine = solvability.retargetedLine ?? comment.line;
-    needSnippets.push({ comment, snippetLine, contextHints: solvability.contextHints });
+    let contextHints = solvability.contextHints;
+    // WHY: PRR appends "✅ Addressed in commits X to Y" after pushing a fix. When that comment
+    // is still open (e.g. bot hasn't re-reviewed), the analysis LLM should verify that the
+    // current code actually resolves the issue instead of assuming the prior fix is still valid.
+    if (/✅\s*Addressed in commits?\s+\w+/i.test(comment.body)) {
+      contextHints = [
+        ...(contextHints || []),
+        'A previous fix attempt claimed to address this issue. Verify whether the current code actually resolves it before making new changes.',
+      ];
+    }
+    needSnippets.push({ comment, snippetLine, contextHints });
   }
 
   // Phase 2: Batch-fetch all code snippets concurrently

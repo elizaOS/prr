@@ -81,11 +81,18 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Duplicate prompt detection**: MD5-based tracking skips identical prompt+model retries, going straight to rotation
 - *Why parallelize*: Independent file reads and cross-file LLM calls have no shared state. Sequential execution added 1-50s of unnecessary latency per cycle depending on issue count.
 
+### Fixer context and outcomes
+- **Snippet accuracy**: Line references in the review body (e.g. "around lines 52 - 93", "at line 128") are parsed and merged with the comment's line so the code snippet includes every referenced range. Context is 20 lines before and 30 after (configurable); total snippet is capped at 500 lines. Shell-style blocks (`sed -n`, `cat -n`) in comments are skipped to avoid false ranges from CodeRabbit analysis chains.
+- *Why*: Fixers were often shown only 15 lines around the GitHub API line while the review referred to lines far away. Parsing refs and widening context ensures the model sees the code in question; capping and exclusions keep prompts bounded.
+- **Structured RESULT protocol**: Fix prompts ask for a `RESULT: CODE — detail` line (e.g. `ALREADY_FIXED`, `UNCLEAR`, `WRONG_LOCATION`, `NEEDS_DISCUSSION`). PRR parses this and records targeted lessons, skips verification for discussion-only changes, and no longer forces "you must make a change" so the fixer can report already-fixed or unclear instead of making cosmetic edits.
+- *Why*: A shared vocabulary lets PRR take the right follow-up (e.g. WRONG_LOCATION → "provide wider code context"; NEEDS_DISCUSSION → count as progress without running verification).
+
 ### Robustness
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
 - **Comment status tracking**: Each PR comment gets an explicit open/resolved lifecycle status with file content hashing. Skips LLM re-analysis for comments on unmodified files, saving tokens and time.
 - **Comment sanitization**: Base64 JWT tokens, HTML metadata, and bot-specific noise stripped from comments before they enter LLM prompts
+- **Addressed-in-commits hint**: Comments that contain "✅ Addressed in commits ..." get an analysis hint so the LLM explicitly verifies whether the current code still resolves the issue.
 - **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
 - **Issue deduplication**: Two-phase dedup (heuristic + LLM semantic) groups related comments, with in-memory caching to avoid redundant LLM dedup calls across iterations
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix

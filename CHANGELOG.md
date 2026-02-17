@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02-15) — Fixer intelligence: snippet accuracy and structured outcomes
+
+**Snippet accuracy**
+- **Line references from comment body**: `parseLineReferencesFromBody()` extracts line numbers from review text (e.g. "around lines 52 - 93", "at line 128", "lines 70-78", "#L100-L200") and merges them with `comment.line` and LOCATIONS so the snippet covers every referenced range.
+- **Wider context**: Snippet context increased from 5/10 lines to 20/30 lines before/after the anchor range; constants `CODE_SNIPPET_CONTEXT_BEFORE` and `CODE_SNIPPET_CONTEXT_AFTER` are now used in `getCodeSnippet()` instead of hardcoded values.
+- **Snippet cap**: When the union of anchors spans more than 500 lines, the window is centered on the anchor range and capped at `MAX_SNIPPET_LINES` to avoid prompt bloat.
+- **Shell-block exclusion**: Lines containing `sed -n`, `cat -n`, or `head -n` are skipped when parsing line refs so CodeRabbit's analysis-chain script blocks don't produce huge false ranges.
+- WHY: Fixers were often given 15 lines around the GitHub API line while the review text referred to lines 50–90. The model literally couldn't see the code in question. Parsing line refs and widening context ensures the fixer sees the right code; capping and excluding shell blocks keep prompts bounded.
+
+**Structured RESULT protocol**
+- **Result codes**: Fix prompts (batch and single-issue) now ask for a `RESULT: CODE — detail` line. Supported codes: `FIXED`, `ALREADY_FIXED`, `NEEDS_DISCUSSION`, `UNCLEAR`, `WRONG_LOCATION`, `CANNOT_FIX`, `ATTEMPTED` (optional `CAVEAT:`).
+- **Parsing**: `parseResultCode()` in `utils.ts` extracts the code and detail from fixer output; `handleNoChangesWithVerification` tries it first and falls back to `parseNoChangesExplanation` when no RESULT line is found.
+- **No-changes handling**: When the fixer returns a RESULT code without making changes, PRR records a lesson and routes by code (e.g. WRONG_LOCATION → "provide wider code context"; UNCLEAR/CANNOT_FIX → rotate). ALREADY_FIXED still triggers spot-check and full verification.
+- **NEEDS_DISCUSSION**: When the fixer adds only a `// REVIEW:` comment and outputs RESULT: NEEDS_DISCUSSION, the "has changes" path in `executeFixIteration` treats it as progress (no verification run, consecutive failures reset).
+- **llm-api and direct LLM**: llm-api system prompt reinforces OUTCOME REPORTING; `tryDirectLLMFix` accepts RESULT: ALREADY_FIXED and RESULT: CANNOT_FIX without code, logs and records a lesson (and dismisses when ALREADY_FIXED).
+- **Single-issue prompt**: Replaced "You MUST make a change" with structured instructions so the fixer can respond with ALREADY_FIXED, UNCLEAR, WRONG_LOCATION, or NEEDS_DISCUSSION instead of forcing cosmetic edits.
+- WHY: Without a shared vocabulary, fixers either made unnecessary edits (because "must make a change") or gave freeform NO_CHANGES text that was hard to act on. Structured codes let PRR record targeted lessons, skip verification for discussion-only changes, and avoid forcing changes when the issue is already fixed or unclear.
+
+**Addressed-in-commits hint**
+- Comments whose body matches "✅ Addressed in commits ..." (PRR's own marker after a push) get an extra `contextHints` line: "A previous fix attempt claimed to address this issue. Verify whether the current code actually resolves it before making new changes."
+- The hint is passed into the LLM analysis (issue-existence check), not into the fix prompt.
+- WHY: Those comments indicate a prior fix attempt; the LLM should explicitly check that the current code still resolves the issue instead of assuming it does.
+
 ### Performance (2026-02-15) — Parallelization
 
 **Parallel LLM Dedup Calls**

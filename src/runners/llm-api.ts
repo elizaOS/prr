@@ -136,6 +136,8 @@ If creating a new file, use:
 file contents
 </newfile>
 
+OUTCOME REPORTING: After your changes (or instead of changes), include a RESULT line as instructed in the prompt. If you make changes, RESULT: FIXED is optional. If you make NO changes, a RESULT line is REQUIRED.
+
 Working directory: ${workdir}`;
 
     // Inject actual file content from disk so the LLM can copy exact search text.

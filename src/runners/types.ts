@@ -10,12 +10,32 @@
  */
 export type RunnerErrorType = 'permission' | 'auth' | 'model' | 'quota' | 'timeout' | 'tool' | 'environment';
 
+/**
+ * Structured outcome codes from fixer output (parsed by workflow, not set by runners).
+ * Fix prompts ask the model to output e.g. RESULT: ALREADY_FIXED — <detail>.
+ * WHY: Without a shared vocabulary, "no changes" was freeform text and PRR couldn't route
+ * (e.g. WRONG_LOCATION → record "provide wider context"). Codes enable targeted lessons and
+ * correct follow-up without forcing cosmetic edits when the issue is already fixed or unclear.
+ */
+export type ResultCode =
+  | 'FIXED'
+  | 'ALREADY_FIXED'
+  | 'NEEDS_DISCUSSION'
+  | 'UNCLEAR'
+  | 'WRONG_LOCATION'
+  | 'CANNOT_FIX'
+  | 'ATTEMPTED';
+
 export interface RunnerResult {
   success: boolean;
   output: string;
   error?: string;
   /** Type of error - used to determine retry strategy */
   errorType?: RunnerErrorType;
+  /** Parsed from output by workflow post-processing (not set by runners). WHY optional: runners return raw output; parseResultCode() in workflow/utils.ts populates these so no-changes and has-changes handlers can branch on resultCode. */
+  resultCode?: ResultCode;
+  resultDetail?: string;
+  caveat?: string;
 }
 
 export interface RunnerOptions {
