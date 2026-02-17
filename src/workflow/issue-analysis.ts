@@ -428,7 +428,11 @@ async function llmDedup(
   const newDuplicateItems = new Map(dedupResult.duplicateItems);
   const newDuplicateIds = new Set<string>();
 
-  for (const [filePath, items] of filesToCheck) {
+  // Run all dedup LLM calls concurrently instead of sequentially.
+  // WHY parallel: Each call is independent (different file), no shared state
+  // until response parsing. 23 files × 2-5s each = ~40-60s sequential, but
+  // only ~5-8s parallel (time of the slowest call). Massive speedup.
+  const dedupPromises = filesToCheck.map(async ([filePath, items]) => {
     // Include enough of each comment for the LLM to detect true duplicates.
     // 150 chars was barely a title — bot comments need ~500 chars to capture
     // the core issue description (before examples and suggestions).
@@ -459,9 +463,12 @@ If no comments are duplicates, reply: NONE`;
       const response = await llm.complete(prompt);
       const content = response.content.trim();
 
-      if (content.toUpperCase().includes('NONE')) continue;
+      if (content.toUpperCase().includes('NONE')) {
+        return { filePath, groups: [] };
+      }
 
       // Parse GROUP lines
+      const groups: Array<{ canonical: typeof items[0]; dupes: typeof items }> = [];
       const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
       let match;
       while ((match = groupPattern.exec(content)) !== null) {
@@ -472,23 +479,33 @@ If no comments are duplicates, reply: NONE`;
 
         const canonical = items[canonicalIdx];
         const dupes = indices.filter(i => i !== canonicalIdx).map(i => items[i]);
-
-        // Merge into dedup result
-        const existingDupes = newDuplicateMap.get(canonical.comment.id) || [];
-        for (const dupe of dupes) {
-          if (!existingDupes.includes(dupe.comment.id) && !newDuplicateIds.has(dupe.comment.id)) {
-            existingDupes.push(dupe.comment.id);
-            newDuplicateIds.add(dupe.comment.id);
-            newDuplicateItems.set(dupe.comment.id, dupe);
-          }
-        }
-        newDuplicateMap.set(canonical.comment.id, existingDupes);
-
-        debug(`LLM dedup: merged ${dupes.length} duplicate(s) for ${filePath}:${canonical.comment.line ?? '?'}`);
+        groups.push({ canonical, dupes });
       }
+
+      return { filePath, groups };
     } catch (err) {
       debug(`LLM dedup failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-      // Non-fatal — fall back to heuristic-only results
+      return { filePath, groups: [] };
+    }
+  });
+
+  // Wait for all dedup calls to complete
+  const dedupResults = await Promise.all(dedupPromises);
+
+  // Merge all results into the dedup map
+  for (const { filePath, groups } of dedupResults) {
+    for (const { canonical, dupes } of groups) {
+      const existingDupes = newDuplicateMap.get(canonical.comment.id) || [];
+      for (const dupe of dupes) {
+        if (!existingDupes.includes(dupe.comment.id) && !newDuplicateIds.has(dupe.comment.id)) {
+          existingDupes.push(dupe.comment.id);
+          newDuplicateIds.add(dupe.comment.id);
+          newDuplicateItems.set(dupe.comment.id, dupe);
+        }
+      }
+      newDuplicateMap.set(canonical.comment.id, existingDupes);
+
+      debug(`LLM dedup: merged ${dupes.length} duplicate(s) for ${filePath}:${canonical.comment.line ?? '?'}`);
     }
   }
 
