@@ -22,3 +22,8 @@ bun.lockb
 
 # State files (should not be committed)
 .pr-resolver-state.json
+
+# Runtime logs
+output.log
+prompts.log
+debug.log
