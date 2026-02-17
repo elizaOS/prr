@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02-17)
+
+**Persistent Comment Status System (`commentStatuses`)**
+- Each PR comment now has an explicit `open` or `resolved` lifecycle status persisted in the state file, alongside the LLM's classification (`exists`, `stale`, `fixed`), explanation, triage scores, file path, and a SHA-1 file content hash.
+- New `state-comment-status.ts` module with `markOpen()`, `markResolved()`, `getValidStatus()`, `invalidateForFile()`, `invalidateForFiles()`, and `getCommentsByStatus()` functions.
+- WHY: Previously, every push iteration re-sent ALL unresolved comments to the LLM for classification — even when neither the comment body nor its target file had changed. For 20+ issues this burned 5-15s and thousands of tokens on identical "still exists" verdicts. PR comments are near-immutable (body/path/line don't change after posting), so the only variable is whether the CODE still exhibits the issue. By persisting the LLM's verdict with a file content hash, we skip re-analysis for comments on unmodified files.
+
+**Comment Status Sync Hooks**
+- `markVerified()` and `clearAllVerifications()` in `state-verification.ts` now sync `commentStatuses` to `resolved` when a fix is verified, and clear all statuses when verifications are bulk-cleared.
+- `unmarkVerified()` deletes the `commentStatuses` entry so the comment gets fresh LLM re-analysis.
+- `dismissIssue()` in `state-dismissed.ts` flips `commentStatuses` to `resolved` when a comment is dismissed.
+- `undismissIssue()` deletes the entry for the same reason.
+- WHY: Three overlapping systems track comment lifecycle: `verifiedFixed[]`, `dismissedIssues[]`, and `commentStatuses{}`. Without sync hooks, `commentStatuses` would keep stale "open" data after a comment transitions through `markVerified()` or `dismissIssue()`. The hooks maintain the invariant: if a comment is verified or dismissed, its status is resolved or absent — never contradictorily "open". Direct state mutation (no new imports) avoids circular dependency risk between state modules.
+
+**Stale Verification Bypass for Comment Status**
+- `--reverify` flag and stale verifications (verified 5+ iterations ago) now bypass the comment status cache, forcing fresh LLM analysis.
+- WHY: Without this, the sync hooks + hash relaxation would conspire to silently neuter stale re-checks. When `markVerified()` flips a comment to `resolved`, and later `getStaleVerifications()` flags it for re-check, the status cache would return `resolved` and the comment would be re-dismissed instead of re-analyzed. The `forceReanalyze` guard ensures both `--reverify` and stale verifications always trigger the LLM. This was the subtlest bug in the design — three phases interacting to create a silent failure.
+
+**Hash Relaxation for Hook-Set Statuses**
+- `getValidStatus()` now only validates file content hashes for `open` entries. Resolved entries set by hooks (which preserve the original, potentially stale hash) pass through without hash validation.
+- WHY: When `markVerified()` flips status to `resolved`, it spreads the existing entry (preserving the original hash). If the file was modified between "mark open" and "mark verified", the hash is stale. Strict validation would invalidate the resolved entry and trigger re-analysis. But resolved entries are already caught by `isVerified()`/`isDismissed()` gates before reaching `getValidStatus()` — the only entries that reach this check and matter are `open` ones, which always have a fresh hash from LLM analysis.
+
+**Issue Deduplication Improvements**
+- Duplicate candidate numbering is now sequential across all groups (1, 2, 3... not restarting per group), shared between heuristic display and LLM dedup verdicts.
+- Comment author displayed inline in duplicate candidate logs for easier identification.
+- WHY: When group 1 had candidates #1-#10 and group 2 restarted at #1-#3, the LLM dedup verdict referencing "#3" was ambiguous. Sequential numbering and inline authors make log output unambiguous.
+
+**Dedup Cache (In-Memory)**
+- LLM dedup results are cached in-memory when the comment ID set is unchanged between iterations, skipping redundant token-burning dedup calls.
+- WHY: Heuristic dedup is CPU-only (cheap), but LLM dedup costs tokens. Dedup results are deterministic given the same set of comment IDs — caching avoids re-running the same LLM call on each push iteration.
+
+### Fixed (2026-02-17)
+
+**Outer Loop Bail-Out Limit**
+- After a stalemate bail-out, the push iteration loop returned `shouldBreak: false` so the outer loop would re-enter with fresh bot comments. In practice, bots add MORE comments after each push (not fewer), so each re-entry hit the same stalemate on an even larger issue set. Observed: 5 bail-outs x 300s wait = 25 min wasted.
+- Fix: Track consecutive bail-outs at the outer loop level. After `MAX_CONSECUTIVE_BAILOUTS` (2) with no progress reduction in remaining issue count, hard-exit. One re-entry is still useful (catches fixes the bots resolved), but beyond that it's diminishing returns.
+
+**300s CodeRabbit Wait After Stalemate**
+- After stalemate bail-out, `handleCommitAndPush` still waited 300s for CodeRabbit re-review even though no more fix iterations would run.
+- Fix: Pass `skipBotWait` flag when bailing out so the commit+push skips the wait.
+
+**.prr/ Directory Protection**
+- The fixer LLM was modifying `.prr/lessons.md` as if it were a source file. Rule 7 added to the LLM system prompt explicitly forbidding `.prr/` modifications.
+- WHY: `.prr/` files are tool-managed state. Fixer edits to lessons files corrupt the learning system and get auto-reverted, wasting a fix iteration.
+
+**Test File Verification for Next.js Routes**
+- Test files named after the parent directory (e.g., `verify.test.ts` for `app/api/auth/siwe/verify/route.ts`) weren't matched during verification, causing "0 issues fixed" when the fixer correctly created test files.
+- Fix: Added Next.js conventional filename detection (`route.ts`, `page.ts`, `layout.ts`, etc.) that falls back to matching on the parent directory name.
+
+**Search/Replace Failure Escalation via Verification**
+- Files that were modified but failed verification now count toward search/replace failure tracking, triggering escalation to full-file rewrite after repeated failures.
+- WHY: Previously only literal search/replace parse failures incremented the counter. A file where the fixer made changes that didn't address the issue would never escalate, even after 5+ failed attempts.
+
+**Comment Status Invalidation After Fix**
+- After `verifyFixes`, open comment statuses for modified files are invalidated so the next iteration re-analyzes them instead of serving stale "still exists" verdicts.
+- WHY: The fixer modifies files to resolve issues. If the status cache still says "open" with the old file hash, it would skip LLM analysis and keep reporting the issue as unresolved even though the fix may have resolved it.
+
 ### Added (2026-02-16)
 
 **PR Context in Fix Prompts**

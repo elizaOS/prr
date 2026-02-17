@@ -1,5 +1,22 @@
 /**
- * Verification tracking
+ * Verification tracking — records which PR comments have been verified as fixed.
+ *
+ * WHY this module exists: The fix loop needs to know which issues are already
+ * resolved so it doesn't waste LLM tokens re-analyzing or re-fixing them.
+ * Verification is the authoritative "this comment is done" signal — 15+ call
+ * sites check isVerified() to decide whether to skip a comment.
+ *
+ * WHY two storage arrays (verifiedFixed + verifiedComments): Legacy code used
+ * a simple string[] of comment IDs. We added VerifiedComment[] with timestamps
+ * and iteration numbers to enable verification expiry (re-check after 5
+ * iterations). Both arrays are maintained for backward compatibility with
+ * existing state files.
+ *
+ * WHY commentStatuses sync hooks: This module also keeps commentStatuses{} in
+ * sync. Without hooks, markVerified() would update verifiedFixed but leave
+ * commentStatuses showing "open" — a contradiction that causes the analysis
+ * pass to re-analyze already-fixed issues. See state-comment-status.ts for
+ * the full lifecycle.
  */
 import type { StateContext } from './state-context.js';
 import { getState } from './state-context.js';

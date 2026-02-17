@@ -66,11 +66,14 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 ### Robustness
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
+- **Comment status tracking**: Each PR comment gets an explicit open/resolved lifecycle status with file content hashing. Skips LLM re-analysis for comments on unmodified files, saving tokens and time.
 - **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
+- **Issue deduplication**: Two-phase dedup (heuristic + LLM semantic) groups related comments, with in-memory caching to avoid redundant LLM dedup calls across iterations
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
+- **Outer loop bail-out**: Detects consecutive stalemate bail-outs with no progress and hard-exits instead of re-entering the push loop indefinitely
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
-- **Output log tee**: All console output mirrored to `~/.prr/output.log` (ANSI-stripped) for easy LLM-assisted debugging
+- **Output log tee**: All console output mirrored to `output.log` (ANSI-stripped) for easy LLM-assisted debugging
 
 ## Installation
 
@@ -245,6 +248,9 @@ When fixes fail, prr escalates through multiple strategies:
 2. **Analyze Issues**: For each comment, asks the LLM: "Is this issue still present in the code?" 
    - *Why*: Review comments may already be addressed, or partially addressed. We don't want to re-fix solved problems.
    - Uses strict prompts that require citing specific code evidence.
+   - **Comment status caching**: Comments classified as "open" on unmodified files skip LLM re-analysis. The LLM already said "issue exists" and the file hasn't changed — asking again wastes tokens on the same answer. Only comments on files modified by the fixer (where the fix may have resolved the issue) get fresh analysis.
+   - **Deduplication**: Two-phase dedup (heuristic grouping by file/line, then LLM semantic analysis) identifies duplicate comments from different reviewers. Only the canonical comment goes through analysis; duplicates are auto-verified when their canonical is fixed.
+   - *Why two-phase dedup*: Heuristics catch obvious duplicates (same file + same line) at zero cost, but miss semantic duplicates (different line numbers, same underlying issue). LLM catches those, but costs tokens. Running heuristics first minimizes what the LLM has to evaluate.
 
 3. **Generate Prompt**: Builds a fix prompt including:
    - **PR context**: Title, description (truncated to 500 chars), and base branch
@@ -403,6 +409,19 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
       "verifiedAtIteration": 5
     }
   ],
+  "commentStatuses": {
+    "comment_id_2": {
+      "status": "open",
+      "classification": "exists",
+      "explanation": "The nonce consumption is still non-atomic...",
+      "importance": 4,
+      "ease": 3,
+      "filePath": "app/api/auth/siwe/verify/route.ts",
+      "fileContentHash": "a1b2c3d4e5",
+      "updatedAt": "2026-02-17T10:30:00Z",
+      "updatedAtIteration": 2
+    }
+  },
   "currentRunnerIndex": 0,
   "modelIndices": { "cursor": 2, "llm-api": 0 },
   "noProgressCycles": 0,
@@ -411,11 +430,14 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 ```
 
 **Why these fields:**
-- `verifiedComments`: Tracks WHEN each verification happened (not just what). Enables verification expiry.
+- `verifiedComments`: Tracks WHEN each verification happened (not just what). Enables verification expiry — after 5 iterations, a "verified" comment is re-checked to catch regressions.
+- `commentStatuses`: Per-comment open/resolved lifecycle with LLM classification. Prevents redundant LLM analysis calls for comments on unmodified files. The file content hash invalidates the cache when the fixer modifies a file.
 - `currentRunnerIndex`: Resume from the same tool after interruption. Prevents restarting rotation from scratch.
 - `modelIndices`: Per-tool model position. If Cursor was on model #2, resume there.
 - `noProgressCycles`: How many complete tool/model cycles completed with zero progress. Persists across restarts.
 - `bailOutRecord`: Documents WHY automation stopped, what remains, for human follow-up.
+
+**Why three systems for comment state?** `verifiedFixed[]` and `dismissedIssues[]` are the authoritative source for "is this comment done?" — 15+ call sites check `isVerified()` and 9+ check `isDismissed()`. `commentStatuses{}` is purely an LLM analysis optimization layer: it caches the LLM's classification so we don't re-ask "does this issue still exist?" on every iteration. Sync hooks in `markVerified()` and `dismissIssue()` keep the three systems consistent.
 
 **Why not just store tool/model names?** Indices are resilient to model list changes. If we add new models, existing indices still work.
 

@@ -1,5 +1,32 @@
 /**
- * Issue analysis and code snippet extraction functions
+ * Issue analysis — determines which PR comments still need fixing.
+ *
+ * This is the "brain" of the fix loop. For each push iteration, it takes
+ * the full set of review comments and produces the subset that still need
+ * work (UnresolvedIssue[]).
+ *
+ * WHY this pipeline matters: Without careful filtering, the fixer would
+ * receive 50+ comments every iteration — most already fixed or irrelevant.
+ * Each unnecessary LLM analysis call costs tokens and time. The pipeline
+ * filters aggressively before touching the LLM:
+ *
+ *   1. isVerified() gate     — skip comments already confirmed fixed
+ *   2. Solvability check     — skip impossible issues (deleted files, stale refs)
+ *   3. Heuristic dedup       — group obviously-duplicate comments (same file+line)
+ *   4. LLM semantic dedup    — group semantically-duplicate comments (different lines, same issue)
+ *   5. Comment status cache  — skip "open" comments on unmodified files
+ *   6. LLM analysis          — only fresh/changed comments reach the LLM
+ *
+ * WHY the status cache is critical: Steps 1-4 are cheap (no LLM calls for
+ * most). But step 6 sends each surviving comment to the LLM with its code
+ * snippet. For 20 comments, that's 20 LLM calls (sequential) or 1 large
+ * batch call. The status cache (step 5) prevents this for comments we've
+ * already classified and whose target file hasn't changed.
+ *
+ * WHY forceReanalyze: The --reverify flag and stale verifications bypass
+ * the status cache. Without this, sync hooks that flip status to "resolved"
+ * would prevent re-analysis of comments that SHOULD be re-checked (stale
+ * verifications exist specifically to catch regressions).
  */
 
 import chalk from 'chalk';

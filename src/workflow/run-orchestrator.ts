@@ -1,8 +1,26 @@
 /**
- * Run orchestrator - complete execution workflow
- * 
- * Orchestrates the entire PR resolution workflow from initialization through
- * setup, execution, and cleanup.
+ * Run orchestrator — the outermost loop of the PR resolution workflow.
+ *
+ * WHY a separate orchestrator: The fix loop (push-iteration-loop.ts) handles
+ * a single push cycle: analyze → fix → verify → commit → push → wait for bots.
+ * But after bots respond, we may need to re-enter the loop with fresh comments.
+ * The orchestrator manages this outer loop, including:
+ *
+ *   1. Setup (clone, load state, fetch comments)
+ *   2. Push iteration loop (delegates to push-iteration-loop.ts)
+ *   3. Outer bail-out detection (consecutive stalemates → hard exit)
+ *   4. Post-processing (dismissal comments, cleanup)
+ *
+ * WHY outer bail-out tracking: After a stalemate, the inner loop commits
+ * partial progress and returns shouldBreak:false so we can process new bot
+ * comments. In practice, bots add MORE comments after each push, making each
+ * re-entry hit the same stalemate on a larger set. We track consecutive
+ * bail-outs and hard-exit after 2 with no progress. One re-entry is useful
+ * (catches bot-resolved issues); beyond that is waste.
+ *
+ * WHY refs (prInfoRef, finalUnresolvedIssuesRef): The push iteration loop
+ * runs callbacks that update PR info and unresolved issues. Refs let the
+ * orchestrator see those updates without the loop returning them explicitly.
  */
 
 import chalk from 'chalk';
