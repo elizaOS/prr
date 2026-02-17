@@ -35,7 +35,20 @@ export function assessSolvability(
   comment: ReviewComment,
   stateContext: StateContext
 ): SolvabilityResult {
-  // Check 0: Path traversal guard (comment.path comes from GitHub API)
+  // Check 0a: PR metadata requests (title, description, labels, etc.)
+  // WHY: Some review comments ask to update the PR title/description/labels,
+  // which are GitHub API operations — not file edits. The fixer can't solve
+  // these, and they loop forever (observed: "update PR title" re-attempted 5+
+  // times with 0 progress, generating noise lessons and wasting iterations).
+  if (isPRMetadataRequest(comment.body)) {
+    return {
+      solvable: false,
+      dismissCategory: 'stale',
+      reason: 'Comment requests PR metadata change (title/description/labels) — not solvable via file edits',
+    };
+  }
+
+  // Check 0b: Path traversal guard (comment.path comes from GitHub API)
   const fullPath = join(workdir, comment.path);
   const resolvedWorkdir = resolve(workdir);
   const resolvedPath = resolve(fullPath);
@@ -255,4 +268,31 @@ export async function recheckSolvability(
   }
 
   return { updated, dismissed, refreshed };
+}
+
+/**
+ * Detect whether a review comment is asking for a PR metadata change
+ * (title, description, labels, branch name) rather than a code change.
+ *
+ * WHY heuristic instead of LLM: This runs before any LLM call, for every
+ * comment, every iteration. Must be zero-cost. False negatives are fine
+ * (comment goes to LLM as normal); false positives are bad (real issue
+ * dismissed). The patterns are conservative — they require both a PR
+ * metadata keyword AND an action verb in the same sentence.
+ */
+function isPRMetadataRequest(commentBody: string): boolean {
+  // Normalize: collapse whitespace, lowercase for matching
+  const normalized = commentBody.toLowerCase().replace(/\s+/g, ' ');
+
+  // Patterns: "PR title should", "update the PR description", etc.
+  const metadataPatterns = [
+    /\bpr\s+title\b.*\b(should|must|needs?\s+to|update|change|rename|reflect|misleading|inaccurate)\b/,
+    /\b(update|change|rename|fix|improve|revise)\b.*\bpr\s+title\b/,
+    /\bpr\s+description\b.*\b(should|must|needs?\s+to|update|change|reflect|misleading|inaccurate)\b/,
+    /\b(update|change|rename|fix|improve|revise)\b.*\bpr\s+description\b/,
+    /\bpull\s+request\s+title\b.*\b(should|must|needs?\s+to|update|change|reflect)\b/,
+    /\b(update|change)\b.*\bpull\s+request\s+(title|description)\b/,
+  ];
+
+  return metadataPatterns.some(p => p.test(normalized));
 }

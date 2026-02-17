@@ -238,7 +238,7 @@ export function lessonNearKey(lesson: string): string {
  * Extract significant tokens from a lesson for Jaccard similarity comparison.
  * Strips common stop words and short tokens to focus on meaningful content.
  */
-function lessonTokens(lesson: string): Set<string> {
+export function lessonTokens(lesson: string): Set<string> {
   const STOP_WORDS = new Set([
     'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
     'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
@@ -259,7 +259,7 @@ function lessonTokens(lesson: string): Set<string> {
 /**
  * Jaccard similarity between two token sets: |A∩B| / |A∪B|
  */
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 1;
   let intersection = 0;
   for (const token of a) {
@@ -270,7 +270,7 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 }
 
 /** Similarity threshold above which two lessons are considered duplicates. */
-const LESSON_SIMILARITY_THRESHOLD = 0.6;
+export const LESSON_SIMILARITY_THRESHOLD = 0.6;
 
 export function sanitizeLessonsList(lessons: string[]): string[] {
   const seenKeys = new Set<string>();

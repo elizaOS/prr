@@ -1,5 +1,14 @@
 /**
  * Add lessons functions
+ *
+ * WHY Jaccard similarity on add (not just tidy/export): The original code
+ * only checked exact-key and near-key when adding. Two lessons like
+ * "PR title must be updated to reflect runtime changes" and "The PR title
+ * and description must be updated directly — reviewer wants metadata" have
+ * different keys but 0.7 Jaccard overlap. Without checking similarity on
+ * add, duplicates accumulated within a single run and only got cleaned up
+ * on the next `tidy-lessons` invocation — too late, they'd already been
+ * injected into the fix prompt, wasting context window.
  */
 import type { LessonsContext } from './lessons-context.js';
 import * as Normalize from './lessons-normalize.js';
@@ -25,12 +34,15 @@ export function addGlobalLesson(ctx: LessonsContext, lesson: string): void {
   const existingKeys = ctx.store.global.map(l => Normalize.lessonKey(l));
   const existingNearKeys = ctx.store.global.map(l => Normalize.lessonNearKey(l));
   
-  if (!existingKeys.includes(key) && !existingNearKeys.includes(nearKey)) {
-    ctx.store.global.push(normalized);
-    ctx.dirty = true;
-    ctx.repoLessonsDirty = true;
-    ctx.newLessonsThisSession++;
-  }
+  if (existingKeys.includes(key) || existingNearKeys.includes(nearKey)) return;
+
+  // Jaccard similarity — catches semantic duplicates that key/nearKey miss
+  if (isSemanticallyDuplicate(normalized, ctx.store.global)) return;
+
+  ctx.store.global.push(normalized);
+  ctx.dirty = true;
+  ctx.repoLessonsDirty = true;
+  ctx.newLessonsThisSession++;
 }
 
 export function addFileLesson(ctx: LessonsContext, filePath: string, lesson: string): void {
@@ -55,10 +67,28 @@ export function addFileLesson(ctx: LessonsContext, filePath: string, lesson: str
   const existingKeys = ctx.store.files[cleanedPath].map(l => Normalize.lessonKey(l));
   const existingNearKeys = ctx.store.files[cleanedPath].map(l => Normalize.lessonNearKey(l));
   
-  if (!existingKeys.includes(key) && !existingNearKeys.includes(nearKey)) {
-    ctx.store.files[cleanedPath].push(lesson);
-    ctx.dirty = true;
-    ctx.repoLessonsDirty = true;
-    ctx.newLessonsThisSession++;
+  if (existingKeys.includes(key) || existingNearKeys.includes(nearKey)) return;
+
+  // Jaccard similarity — catches semantic duplicates that key/nearKey miss
+  if (isSemanticallyDuplicate(lesson, ctx.store.files[cleanedPath])) return;
+
+  ctx.store.files[cleanedPath].push(lesson);
+  ctx.dirty = true;
+  ctx.repoLessonsDirty = true;
+  ctx.newLessonsThisSession++;
+}
+
+/**
+ * Check if a lesson is semantically duplicate of any existing lesson.
+ * Uses Jaccard similarity on significant tokens (stop words removed).
+ */
+function isSemanticallyDuplicate(newLesson: string, existingLessons: string[]): boolean {
+  const newTokens = Normalize.lessonTokens(newLesson);
+  for (const existing of existingLessons) {
+    const existingTokens = Normalize.lessonTokens(existing);
+    if (Normalize.jaccardSimilarity(newTokens, existingTokens) >= Normalize.LESSON_SIMILARITY_THRESHOLD) {
+      return true;
+    }
   }
+  return false;
 }

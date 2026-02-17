@@ -782,12 +782,15 @@ export class LessonsManager {
     const existingKeys = this.store.global.map(l => Normalize.lessonKey(l));
     const existingNearKeys = this.store.global.map(l => Normalize.lessonNearKey(l));
     
-    if (!existingKeys.includes(key) && !existingNearKeys.includes(nearKey)) {
-      this.store.global.push(normalized);
-      this.newLessonsThisSession++;
-      this.dirty = true;
-      this.repoLessonsDirty = true;
-    }
+    if (existingKeys.includes(key) || existingNearKeys.includes(nearKey)) return;
+
+    // Jaccard similarity — catches semantic duplicates that key/nearKey miss
+    if (this.isSemanticallyDuplicate(normalized, this.store.global)) return;
+
+    this.store.global.push(normalized);
+    this.newLessonsThisSession++;
+    this.dirty = true;
+    this.repoLessonsDirty = true;
   }
 
   addFileLesson(filePath: string, lesson: string): void {
@@ -807,16 +810,35 @@ export class LessonsManager {
     const existingKeys = lessons.map(l => Normalize.lessonKey(l));
     const existingNearKeys = lessons.map(l => Normalize.lessonNearKey(l));
     
-    if (!existingKeys.includes(key) && !existingNearKeys.includes(nearKey)) {
-      lessons.push(normalized);
-      this.newLessonsThisSession++;
-      this.dirty = true;
-      this.repoLessonsDirty = true;
-    }
+    if (existingKeys.includes(key) || existingNearKeys.includes(nearKey)) return;
+
+    // Jaccard similarity — catches semantic duplicates that key/nearKey miss
+    if (this.isSemanticallyDuplicate(normalized, lessons)) return;
+
+    lessons.push(normalized);
+    this.newLessonsThisSession++;
+    this.dirty = true;
+    this.repoLessonsDirty = true;
   }
 
   private normalizeLessonText(lesson: string): string | null {
     return Normalize.normalizeLessonText(lesson);
+  }
+
+  /**
+   * Check if a lesson is semantically duplicate of any existing lesson.
+   * WHY: key/nearKey dedup catches exact and whitespace-collapsed matches.
+   * Jaccard on significant tokens catches "same idea, different wording."
+   */
+  private isSemanticallyDuplicate(newLesson: string, existingLessons: string[]): boolean {
+    const newTokens = Normalize.lessonTokens(newLesson);
+    for (const existing of existingLessons) {
+      const existingTokens = Normalize.lessonTokens(existing);
+      if (Normalize.jaccardSimilarity(newTokens, existingTokens) >= Normalize.LESSON_SIMILARITY_THRESHOLD) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

@@ -29,10 +29,19 @@ import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
  * Replaces lone surrogates with U+FFFD (replacement character).
  */
 function normalizeIssueId(raw: string): string {
-  // Strip markdown heading prefixes first (LLMs often return "## issue_1:" instead of "issue_1:")
-  // WHY /^#+\s*/ not /^#/: The old regex only removed one '#', so "## issue_1"
-  // became "# issue_1" → normalized to "issue_# issue_1" → never matched allowedIds.
-  const normalized = raw.trim().replace(/^#+\s*/, '').toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+  // Strip markdown formatting that LLMs wrap around IDs.
+  // HISTORY: Haiku started returning "**issue_1**: YES:" (bold markdown) instead
+  // of "issue_1: YES:" — the regex only stripped '#' heading prefixes, so "**issue_1"
+  // normalized to "issue_**issue_1" which never matched allowedIds. Observed: 0/15
+  // parsed in batch analysis, every issue fell through to "assuming unresolved."
+  // This single bug disabled the entire triage/priority system.
+  const normalized = raw.trim()
+    .replace(/^#+\s*/, '')      // "## issue_1" → "issue_1"
+    .replace(/^\*{1,2}/, '')    // "**issue_1" or "*issue_1" → "issue_1"
+    .replace(/\*{1,2}$/, '')    // "issue_1**" → "issue_1"
+    .toLowerCase()
+    .replace(/^issue[_\s]*/i, '') // "issue_1" → "1"
+    .replace(/^#/, '');           // "#1" → "1"
   return normalized.length > 0 ? `issue_${normalized}` : normalized;
 }
 
@@ -523,6 +532,10 @@ STALE: Not applicable`;
       'pattern referenced is gone. Do NOT use STALE just because the fix approach would be',
       'different — if the underlying issue still exists, say YES.',
       '',
+      'CRITICAL FORMAT RULE: Do NOT use markdown formatting in your response lines.',
+      'No bold (**), no headings (#), no backticks around issue IDs.',
+      'Just plain text: issue_1: YES: I1: D2: explanation',
+      '',
       'Example GOOD responses:',
       'issue_1: YES: I1: D2: Line 45 still has SQL injection via unsanitized user input',
       'issue_2: YES: I4: D1: Line 12 uses `var` instead of `const`',
@@ -530,6 +543,8 @@ STALE: Not applicable`;
       'issue_4: STALE: The processUser function no longer exists; module was refactored',
       '',
       'Example BAD responses (NEVER do this):',
+      '**issue_1**: YES: ...',
+      '## issue_1: YES: ...',
       'issue_1: NO: Fixed',
       'issue_2: NO: Done',
       'issue_3: NO: Already implemented',
@@ -693,8 +708,15 @@ STALE: Not applicable`;
 
       const response = await this.complete(parts.join('\n'));
       const normalizeIssueId = (raw: string): string => {
-        // Strip markdown heading prefixes first (LLMs often return "## issue_1:")
-        const normalized = raw.trim().replace(/^#+\s*/, '').toLowerCase().replace(/^issue[_\s]*/i, '').replace(/^#/, '');
+        // Strip markdown formatting (bold, headings) that LLMs wrap around IDs.
+        // HISTORY: Haiku returns "**issue_1**:" instead of "issue_1:" — without
+        // stripping **, every ID mismatches and batch parse returns 0/N.
+        const normalized = raw.trim()
+          .replace(/^#+\s*/, '')
+          .replace(/^\*{1,2}/, '').replace(/\*{1,2}$/, '')
+          .toLowerCase()
+          .replace(/^issue[_\s]*/i, '')
+          .replace(/^#/, '');
         return normalized ? `issue_${normalized}` : normalized;
       };
       const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
