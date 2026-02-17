@@ -56,6 +56,10 @@ export interface LLMResponse {
   usage?: {
     inputTokens: number;
     outputTokens: number;
+    /** Tokens written to Anthropic's prompt cache (1.25x cost, 5-min TTL). */
+    cacheCreationInputTokens?: number;
+    /** Tokens read from Anthropic's prompt cache (0.1x cost — 90% savings). */
+    cacheReadInputTokens?: number;
   };
 }
 
@@ -223,6 +227,25 @@ export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Se
   }
 }
 
+/**
+ * Cheap models for low-stakes tasks (commit messages, dismissal comments).
+ *
+ * WHY: Sonnet ($3/$15 per MTok) is overkill for generating a one-line commit
+ * message or a 120-char dismissal comment. Haiku ($1/$5 per MTok) and
+ * GPT-4o-mini ($0.15/$0.6 per MTok) produce equivalent results for constrained
+ * text generation — the output is a single formatted sentence, not multi-step
+ * code reasoning. This saves ~66-95% per call with zero quality impact.
+ *
+ * WHY per-provider map: The model name format differs between providers.
+ * Anthropic uses versioned names, OpenAI uses its own naming scheme.
+ * ElizaCloud proxies to OpenAI models.
+ */
+const CHEAP_MODELS: Record<string, string> = {
+  anthropic: 'claude-haiku-4-5-20251001',
+  openai: 'gpt-4o-mini',
+  elizacloud: 'gpt-4o-mini',
+};
+
 export class LLMClient {
   private provider: LLMProvider;
   private model: string;
@@ -314,10 +337,14 @@ export class LLMClient {
     }
 
     // Build request options
+    // max_tokens is required by the Anthropic API — we can't omit it.
+    // Set it high so it's never the constraint; response length is controlled
+    // via prompt instructions, not this parameter. You only pay for tokens
+    // actually generated, not the budget ceiling.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const requestOptions: any = {
       model: this.model,
-      max_tokens: this.thinkingBudget ? 16000 : 4096,
+      max_tokens: 128_000,
       messages: [
         {
           role: 'user',
@@ -340,8 +367,18 @@ export class LLMClient {
       debug('Using extended thinking', { budget: this.thinkingBudget });
     } else {
       // Only use system prompt when not using extended thinking
-      // (extended thinking doesn't support system prompts)
-      requestOptions.system = systemPrompt || 'You are a helpful code review assistant.';
+      // (extended thinking doesn't support system prompts).
+      // Use block format with cache_control so Anthropic caches the system
+      // prompt prefix across calls. Cache reads are 90% cheaper than base
+      // input — big win for repeated calls like batch analysis and verification.
+      const systemText = systemPrompt || 'You are a helpful code review assistant.';
+      requestOptions.system = [
+        {
+          type: 'text',
+          text: systemText,
+          cache_control: { type: 'ephemeral' },
+        },
+      ];
     }
 
     const response = await this.anthropic.messages.create(requestOptions);
@@ -360,11 +397,34 @@ export class LLMClient {
       debug('Extended thinking output', (thinkingBlock as any).thinking);
     }
 
+    // Capture cache usage stats from Anthropic's response.
+    // WHY log: Without observability, you can't tell if caching is actually
+    // working. Cache hits depend on the system prompt exceeding the model's
+    // minimum cacheable size (1024 tokens for Sonnet, 2048 for Haiku). If
+    // you see only cacheWrite with zero cacheRead, the system prompt is too
+    // small or the prefix changed between calls.
+    const usage: any = response.usage;
+    const cacheCreation = usage.cache_creation_input_tokens || 0;
+    const cacheRead = usage.cache_read_input_tokens || 0;
+    if (cacheCreation > 0 || cacheRead > 0) {
+      debug('Anthropic prompt cache', {
+        cacheWrite: cacheCreation,
+        cacheRead: cacheRead,
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+        savingsPercent: cacheRead > 0
+          ? Math.round((cacheRead / (response.usage.input_tokens + cacheRead)) * 90) + '%'
+          : '0%',
+      });
+    }
+
     return {
       content,
       usage: {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
+        cacheCreationInputTokens: cacheCreation || undefined,
+        cacheReadInputTokens: cacheRead || undefined,
       },
     };
   }
@@ -382,10 +442,15 @@ export class LLMClient {
     
     messages.push({ role: 'user', content: prompt });
 
+    // WHY no max_tokens: OpenAI's max_tokens is optional — omitting it lets
+    // the model use its natural context limit. Previously this was hardcoded
+    // to 4096, which truncated code-fix responses mid-file (the model would
+    // stop at ~3K words, missing the closing code fence, and the extraction
+    // regex would fail silently). Response length is now controlled by prompt
+    // instructions, not this parameter. You only pay for tokens generated.
     const response = await this.openai.chat.completions.create({
       model: this.model,
       messages,
-      max_tokens: 4096,
     });
 
     const content = response.choices[0]?.message?.content || '';
@@ -401,6 +466,52 @@ export class LLMClient {
     };
   }
 
+  // Static system prompt for checkIssueExists — extracted here so Anthropic can
+  // cache it across sequential per-comment checks via cache_control (set in
+  // completeAnthropic). WHY static readonly: The instructions never change
+  // between calls — only the dynamic comment/code data varies. Keeping them
+  // as a class constant avoids re-building the string on every call and makes
+  // the cache-friendly structure explicit.
+  private static readonly CHECK_ISSUE_SYSTEM_PROMPT = [
+    'You are a strict code reviewer verifying whether a review comment has been properly addressed.',
+    '',
+    'INSTRUCTIONS:',
+    '1. Carefully read the review comment to understand EXACTLY what is being requested',
+    '2. Examine the code to see if the SPECIFIC issue has been fixed',
+    '3. Be STRICT: partial fixes, workarounds, or tangentially related changes do NOT count',
+    '4. If the comment asks for X and the code does Y, that is NOT fixed unless Y fully addresses X',
+    '',
+    'Is this SPECIFIC issue STILL PRESENT in the code?',
+    '',
+    'CRITICAL - Your explanation will be recorded for feedback between the issue generator and judge:',
+    '- If you say NO (not present), you MUST provide a DETAILED explanation citing the SPECIFIC code that resolves the issue',
+    '- Your explanation helps the generator learn to avoid false positives',
+    '- Empty or vague explanations are NOT acceptable - be specific and cite actual code',
+    '',
+    'Respond with EXACTLY one of these formats:',
+    'YES: <quote the problematic code or explain what\'s still missing>',
+    'NO: <cite the SPECIFIC code/line that resolves this issue and explain HOW it addresses the comment>',
+    'STALE: <explain why this comment no longer applies to the current code>',
+    '',
+    'Use STALE when the code has been restructured so fundamentally that the review',
+    'comment\'s concern no longer applies — e.g., the function was removed, the file',
+    'was rewritten, or the code pattern the comment referenced is gone. Do NOT use',
+    'STALE just because the fix approach would be different than what the comment',
+    'suggested — if the underlying issue still exists, say YES.',
+    '',
+    'Examples of GOOD explanations:',
+    'NO: Line 45 now has null check: if (value === null) return;',
+    'NO: TypeScript type \'NonNullable<T>\' at line 23 prevents null from being passed',
+    'NO: Function already implements this at lines 67-70: try { ... } catch (error) { logger.error(error); }',
+    'STALE: The processUser function mentioned in the comment no longer exists in this file; the entire module was refactored to use a different architecture',
+    '',
+    'Examples of BAD explanations (NEVER do this):',
+    'NO: Fixed',
+    'NO: Already done',
+    'NO: Looks good',
+    'STALE: Not applicable',
+  ].join('\n');
+
   async checkIssueExists(
     comment: string,
     filePath: string,
@@ -408,15 +519,12 @@ export class LLMClient {
     codeSnippet: string,
     contextHints?: string[]
   ): Promise<{ exists: boolean; explanation: string; stale: boolean }> {
-    // Inject context hints as factual observations before the prompt
     const hintsSection = contextHints && contextHints.length > 0
       ? contextHints.map(hint => `NOTE: ${hint}`).join('\n') + '\n\n'
       : '';
     
     const cleanComment = sanitizeCommentForPrompt(comment);
-    const prompt = `You are a strict code reviewer verifying whether a review comment has been properly addressed.
-
-${hintsSection}REVIEW COMMENT:
+    const prompt = `${hintsSection}REVIEW COMMENT:
 ---
 File: ${filePath}
 ${line ? `Line: ${line}` : 'Line: (not specified)'}
@@ -426,45 +534,9 @@ Comment: ${cleanComment}
 CURRENT CODE AT THAT LOCATION:
 ---
 ${codeSnippet}
----
+---`;
 
-INSTRUCTIONS:
-1. Carefully read the review comment to understand EXACTLY what is being requested
-2. Examine the code to see if the SPECIFIC issue has been fixed
-3. Be STRICT: partial fixes, workarounds, or tangentially related changes do NOT count
-4. If the comment asks for X and the code does Y, that is NOT fixed unless Y fully addresses X
-
-Is this SPECIFIC issue STILL PRESENT in the code?
-
-CRITICAL - Your explanation will be recorded for feedback between the issue generator and judge:
-- If you say NO (not present), you MUST provide a DETAILED explanation citing the SPECIFIC code that resolves the issue
-- Your explanation helps the generator learn to avoid false positives
-- Empty or vague explanations are NOT acceptable - be specific and cite actual code
-
-Respond with EXACTLY one of these formats:
-YES: <quote the problematic code or explain what's still missing>
-NO: <cite the SPECIFIC code/line that resolves this issue and explain HOW it addresses the comment>
-STALE: <explain why this comment no longer applies to the current code>
-
-Use STALE when the code has been restructured so fundamentally that the review
-comment's concern no longer applies — e.g., the function was removed, the file
-was rewritten, or the code pattern the comment referenced is gone. Do NOT use
-STALE just because the fix approach would be different than what the comment
-suggested — if the underlying issue still exists, say YES.
-
-Examples of GOOD explanations:
-NO: Line 45 now has null check: if (value === null) return;
-NO: TypeScript type 'NonNullable<T>' at line 23 prevents null from being passed
-NO: Function already implements this at lines 67-70: try { ... } catch (error) { logger.error(error); }
-STALE: The processUser function mentioned in the comment no longer exists in this file; the entire module was refactored to use a different architecture
-
-Examples of BAD explanations (NEVER do this):
-NO: Fixed
-NO: Already done
-NO: Looks good
-STALE: Not applicable`;
-
-    const response = await this.complete(prompt);
+    const response = await this.complete(prompt, LLMClient.CHECK_ISSUE_SYSTEM_PROMPT);
     const content = response.content.trim();
 
     // Lenient parsing: check for STALE prefix variations
@@ -503,8 +575,10 @@ STALE: Not applicable`;
       return { issues: new Map() };
     }
 
-    // Build the static prompt header (used for each batch)
-    const headerParts: string[] = [
+    // Static instructions are passed as a system prompt so Anthropic can cache
+    // them across batches (cache_control is added in completeAnthropic).
+    // The user message only contains the dynamic issue data.
+    const systemPrompt = [
       'You are a STRICT code reviewer verifying whether review comments have been properly addressed.',
       '',
       'RULES:',
@@ -549,12 +623,9 @@ STALE: Not applicable`;
       'issue_2: NO: Done',
       'issue_3: NO: Already implemented',
       'issue_4: STALE: Not applicable',
-      '',
-      '---',
-      '',
-    ];
+    ].join('\n');
     
-    const headerSize = headerParts.join('\n').length;
+    const headerSize = systemPrompt.length;
     const footerSize = 200; // Reserve space for closing instructions
     const modelRecSize = modelContext?.availableModels?.length ? 1500 : 0; // Reserve for model recommendation
     const availableForIssues = maxContextChars - headerSize - footerSize - modelRecSize;
@@ -661,9 +732,8 @@ STALE: Not applicable`;
         chars: issueTexts.join('').length + headerSize + footerSize
       });
 
-      // Build prompt for this batch
+      // Build user message with only dynamic content (static rules are in systemPrompt)
       const parts = [
-        ...headerParts,
         ...issueTexts,
         '---',
         '',
@@ -706,7 +776,7 @@ STALE: Not applicable`;
         parts.push('MODEL_RECOMMENDATION: gpt-5-mini, claude-haiku | Simple style/formatting fixes only');
       }
 
-      const response = await this.complete(parts.join('\n'));
+      const response = await this.complete(parts.join('\n'), systemPrompt);
       const normalizeIssueId = (raw: string): string => {
         // Strip markdown formatting (bold, headings) that LLMs wrap around IDs.
         // HISTORY: Haiku returns "**issue_1**:" instead of "issue_1:" — without
@@ -1537,7 +1607,9 @@ RESOLVED:
     parts.push('');
     parts.push('Based on the above, what SPECIFIC CODE CHANGES were made? Write the commit message:');
 
-    const response = await this.complete(parts.join('\n'));
+    // Use a cheap model — commit messages are simple text, not code-fixing
+    const cheapModel = CHEAP_MODELS[this.provider];
+    const response = await this.complete(parts.join('\n'), undefined, cheapModel ? { model: cheapModel } : undefined);
     let message = response.content.trim();
     
     // Remove any markdown code fences if the LLM wrapped it
@@ -1641,7 +1713,9 @@ COMMENT: Review: suggested Math.trunc but Math.floor already handles this case c
 COMMENT: Review: code was restructured and this concern no longer applies
 COMMENT: Review: after analysis this pattern is intentional for error handling`;
 
-    const response = await this.complete(prompt);
+    // Use a cheap model — dismissal comments are simple text, not code-fixing
+    const cheapModel = CHEAP_MODELS[this.provider];
+    const response = await this.complete(prompt, undefined, cheapModel ? { model: cheapModel } : undefined);
     const content = response.content.trim();
 
     // Parse response

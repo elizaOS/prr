@@ -63,6 +63,13 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed (final push only)
 - Batched commits with LLM-generated messages (not "fix review comments")
 
+### Cost Optimization
+- **Anthropic prompt caching**: System prompts are sent with `cache_control` so repeated calls (batch analysis, per-comment checks) reuse cached prefixes at 90% discount. Cache hit/miss stats logged for observability.
+- **Focused-section mode**: Direct LLM fixes on large files (>15K chars) send only ±150 lines around the issue instead of the full file — saves ~90% of input tokens and produces shorter, more accurate output.
+- **Cheap model routing**: Commit messages and dismissal comments use Haiku/GPT-4o-mini instead of Sonnet/GPT-4o — ~66% cheaper for simple text generation with no quality loss.
+- **Infrastructure failure detection**: Skips expensive `analyzeFailedFix` LLM calls when the failure is obviously infrastructure (quota, timeout, crash) — records a plain-text lesson instead.
+- **Redundant verification skip**: Issues already verified by recovery phases (`trySingleIssueFix`, `tryDirectLLMFix`) are not re-verified in the main pass.
+
 ### Robustness
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
@@ -226,7 +233,7 @@ When fixes fail, prr escalates through multiple strategies:
 │      ↓ fail                                                 │
 │  ROTATE TOOL          → Switch to next fixer tool           │
 │      ↓ fail                                                 │
-│  DIRECT LLM API       → Last resort, direct API call        │
+│  DIRECT LLM API       → Last resort, focused-section fix     │
 │      ↓ fail                                                 │
 │  BAIL OUT             → Commit partial progress, exit       │
 └─────────────────────────────────────────────────────────────┘
@@ -271,6 +278,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 5. **Verify Fixes**: For each changed file, asks the LLM: "Does this diff address the concern?"
    - *Why verify*: Fixer tools can make changes that don't actually fix the issue. Catches false positives early.
+   - *Why skip already-verified*: Issues confirmed fixed by recovery phases (single-issue mode, direct LLM) are not re-verified in the main pass — avoids burning tokens on known-good results.
 
 6. **Check for New Comments**: Before declaring "done", checks if any NEW review comments were added during the fix cycle.
    - *Why*: Bot reviewers or humans might add new issues while you're fixing others. Ensures nothing slips through.
@@ -282,6 +290,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 8. **Commit**: Generates a clean commit message via LLM describing the actual changes.
    - *Why LLM-generated*: Commit messages are permanent history. They should describe WHAT changed, not the review process.
+   - *Why cheap model*: Uses Haiku/GPT-4o-mini instead of Sonnet. A one-line commit message is simple text generation — expensive models add zero quality but cost 3x more.
    - *Why forbidden phrases*: LLMs default to "address review comments" - we explicitly forbid this and fall back to file-specific messages.
 
 9. **Push** (if `--auto-push`): Pushes changes with automatic retry on rejection.

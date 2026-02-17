@@ -18,6 +18,7 @@ import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
+import { isInfrastructureFailure } from './helpers/recovery.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration } from '../logger.js';
 import { getChangedFiles, getDiffForFile, detectFileCorruption } from '../git/git-clone-index.js';
@@ -204,6 +205,16 @@ export async function verifyFixes(
     debug('Changed files', changedFiles);
   
     for (const issue of unresolvedIssues) {
+      // WHY skip: Recovery phases (trySingleIssueFix, tryDirectLLMFix) verify
+      // their own fixes inline — if successful, they call markVerified(). Without
+      // this check, those same issues would be re-verified here: each a separate
+      // verifyFix LLM call (or batch slot) confirming what we already know. Skipping
+      // saves one verification call per issue resolved during recovery.
+      if (Verification.isVerified(stateContext, issue.comment.id)) {
+        debug('Skipping already-verified issue in verifyFixes', { id: issue.comment.id });
+        continue;
+      }
+      
       const related = findRelatedChangedFiles(issue.comment.path, changedFiles);
       if (related.length > 0) {
         relatedFilesMap.set(issue.comment.id, related);
@@ -308,17 +319,22 @@ export async function verifyFixes(
             }
           } else {
             failedCount++;
-            // Analyze failure to generate actionable lesson
-            const lesson = await llm.analyzeFailedFix(
-              {
-                comment: issue.comment.body,
-                filePath: issue.comment.path,
-                line: issue.comment.line,
-              },
-              diff,
-              verification.explanation
-            );
-            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+            // Skip failure analysis for infrastructure errors (quota, timeout) to save tokens
+            if (isInfrastructureFailure(verification.explanation)) {
+              const shortReason = verification.explanation.substring(0, 120);
+              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - infra failure: ${shortReason}`);
+            } else {
+              const lesson = await llm.analyzeFailedFix(
+                {
+                  comment: issue.comment.body,
+                  filePath: issue.comment.path,
+                  line: issue.comment.line,
+                },
+                diff,
+                verification.explanation
+              );
+              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+            }
           }
         }
       } else {

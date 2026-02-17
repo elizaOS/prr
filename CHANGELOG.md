@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02-17) — Cost Optimization & LLM Reliability
+
+**Anthropic Prompt Caching**
+- System prompts are now sent as block-format content with `cache_control: { type: 'ephemeral' }`, enabling Anthropic's prefix caching. Cache reads cost 90% less than base input tokens.
+- `batchCheckIssuesExist` static instruction header (~1800 chars of rules, format, and examples) moved from user message to system prompt. Batch 2+ of the same run hits the cache instead of re-processing identical instructions.
+- `checkIssueExists` static instructions extracted to a `static readonly` class property and passed as system prompt. Sequential per-comment checks cache the instructions across calls.
+- Cache usage stats (`cache_creation_input_tokens`, `cache_read_input_tokens`) are now logged with estimated savings percentage and exposed on `LLMResponse.usage`.
+- WHY: PRR makes many sequential Anthropic calls with identical instructions (batch analysis batches, per-comment checks). Without caching, every call re-processes the same system prompt at full price. Anthropic's prefix caching gives 90% discount on cached tokens — the first call pays a 1.25x write premium, but every subsequent call with the same prefix saves 90%. Observability via debug logs lets you confirm caching is working.
+
+**Focused-Section Mode for Direct LLM Fix**
+- For files >15K chars, `tryDirectLLMFix` now sends only ±150 lines around the issue line instead of the full file content. The LLM fixes the section, which is spliced back into the original file.
+- Full-file mode preserved for small files and files without a line number.
+- WHY: Previously, `tryDirectLLMFix` embedded up to 100K chars (~25K tokens) of full file content in every prompt, even when the issue was on a single line. This wasted input tokens on irrelevant code AND forced the LLM to reproduce the entire file in its output (wasting output tokens too, and often hitting the output token limit before finishing). Focused-section mode cuts prompt size by ~90% for large files and produces shorter, more accurate responses.
+
+**Cheap Model Routing for Low-Stakes Tasks**
+- `generateCommitMessage` and `generateDismissalComment` now use a cheap model (Haiku for Anthropic, GPT-4o-mini for OpenAI/ElizaCloud) instead of the default verification model (typically Sonnet).
+- `CHEAP_MODELS` map defined per provider, used via the existing `options.model` override in `complete()`.
+- WHY: Commit messages and dismissal comments are simple one-line text generation. Sonnet ($3/$15 per MTok) is massive overkill when Haiku ($1/$5) produces equivalent results. Same logic for OpenAI: GPT-4o-mini vs GPT-4o. This saves ~66% on these calls with zero quality impact — the output is a single constrained sentence, not code.
+
+**Infrastructure Failure Detection for `analyzeFailedFix`**
+- New exported `isInfrastructureFailure()` utility in `recovery.ts` detects quota, rate limit, timeout, crash, OOM, and HTTP 5xx patterns in verification explanations.
+- All three `analyzeFailedFix` callsites (recovery.ts single-issue mode, recovery.ts direct LLM fix, fix-verification.ts sequential mode) now skip the LLM analysis call for infrastructure failures, recording a plain-text lesson instead.
+- WHY: When a fix fails because the API returned "429 Quota/rate limit exceeded", spending tokens asking an LLM "why did this fix fail?" is pure waste — the answer is obvious and doesn't need AI analysis. In the audit log, 20+ consecutive quota failures would each have triggered an `analyzeFailedFix` call. Now those skip the LLM entirely and record a simple "infra failure: quota exceeded" lesson.
+
+**Skip Already-Verified Issues in `verifyFixes`**
+- `verifyFixes` now checks `Verification.isVerified()` before adding issues to the verification queue, skipping issues already confirmed fixed by earlier recovery phases (`trySingleIssueFix`, `tryDirectLLMFix`).
+- WHY: Without this, issues verified during recovery were re-verified in the main verification pass — burning a verification LLM call on an already-known result. Each skipped issue saves one `verifyFix` call (or one slot in a `batchVerifyFixes` prompt).
+
+### Fixed (2026-02-17) — LLM Response Truncation
+
+**`max_tokens` Truncation Causing Silent Fix Failures (P0)**
+- Anthropic `max_tokens` increased from a conditional `16000/16384` to `128_000`. The API requires this parameter, but the old value silently truncated LLM responses mid-file, causing the code extraction regex to fail and zero fixes to be applied.
+- OpenAI `max_tokens` removed entirely. It's an optional parameter, and the hardcoded `4096` was truncating responses at ~3K words — not enough for any non-trivial file rewrite.
+- Added fallback regex in `tryDirectLLMFix` for truncated responses: when a response starts with a code fence but lacks a closing ` ``` ` (hit output limit), the partial content is used instead of silently discarding the entire response.
+- WHY: This was the root cause of zero fixes in direct LLM recovery. The model would correctly generate a fixed file, but the response would be truncated at 4096 tokens (mid-word), the closing code fence would be missing, the extraction regex would fail, and the fix would be silently discarded. Setting `max_tokens` high for Anthropic (required parameter) and removing it for OpenAI (optional) eliminates artificial truncation. The fallback regex is a safety net for the rare case where a response genuinely exceeds the model's natural output limit.
+
 ### Added (2026-02-17)
 
 **Persistent Comment Status System (`commentStatuses`)**
