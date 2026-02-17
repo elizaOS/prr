@@ -128,7 +128,7 @@ export async function analyzeBotTimingAndDisplay(
       console.log(chalk.gray('No bot response timing data available yet'));
     }
   } catch (err) {
-    spinner.stop();
+    spinner.warn('Bot timing analysis failed (non-critical)');
     debug('Bot timing analysis failed (non-critical)', { error: err });
   }
   

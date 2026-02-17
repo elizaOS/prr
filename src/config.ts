@@ -10,7 +10,7 @@
 import dotenv from 'dotenv';
 import { homedir } from 'os';
 import { join } from 'path';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL } from './constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL } from './constants.js';
 
 dotenv.config();
 
@@ -130,7 +130,8 @@ export function loadConfig(): Config {
   } else if (llmProvider === 'anthropic') {
     defaultModel = DEFAULT_ANTHROPIC_MODEL;
   } else {
-    defaultModel = DEFAULT_OPENAI_MODEL;
+    // Use gpt-4o: a stable, widely-available OpenAI API model
+    defaultModel = 'gpt-4o';
   }
 
   const config: Config = {

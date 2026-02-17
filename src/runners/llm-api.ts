@@ -521,7 +521,8 @@ Working directory: ${workdir}`;
           await mkdir(dir, { recursive: true });
         }
 
-        const normalizedContent = content.endsWith('\n') ? content : `${content}\n`;
+        const trimmedContent = content.replace(/^\n+/, '');
+        const normalizedContent = trimmedContent.endsWith('\n') ? trimmedContent : `${trimmedContent}\n`;
         writeFileSync(fullPath, normalizedContent, 'utf-8');
         filesModified.add(filePath);
         debug('Created new file', { filePath });
@@ -555,7 +556,8 @@ Working directory: ${workdir}`;
           await mkdir(dir, { recursive: true });
         }
 
-        const normalizedContent = content.endsWith('\n') ? content : `${content}\n`;
+        const trimmedContent = content.replace(/^\n+/, '');
+        const normalizedContent = trimmedContent.endsWith('\n') ? trimmedContent : `${trimmedContent}\n`;
         writeFileSync(fullPath, normalizedContent, 'utf-8');
         filesModified.add(filePath);
         debug('Wrote file (legacy format)', { filePath });

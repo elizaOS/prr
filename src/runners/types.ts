@@ -88,7 +88,7 @@ export interface Runner {
  *   OpenAI:    https://developers.openai.com/api/docs/models
  *
  * Current Anthropic models (Feb 2026):
- *   claude-opus-4-6            — Most intelligent, agents/coding ($5/$25 per MTok)
+ *   claude-opus-4-5-20251101   — Most intelligent, agents/coding ($5/$25 per MTok)
  *   claude-sonnet-4-5-20250929 — Best speed/intelligence ($3/$15 per MTok)
  *   claude-haiku-4-5-20251001  — Fastest ($1/$5 per MTok)
  *
@@ -115,13 +115,13 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   'cursor': [
     'claude-sonnet-4-5',                   // Claude Sonnet 4.5 - balanced
     'gpt-4.1',                             // GPT-4.1 - general purpose
-    'claude-opus-4-6',                     // Claude Opus 4.6 - most intelligent
+    'claude-opus-4-5',                     // Claude Opus 4.5 - most intelligent
     'gpt-5.2',                             // GPT-5.2 - frontier coding
   ],
   // Claude Code: Claude models (uses full API names)
   'claude-code': [
     'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - best speed/intelligence
-    'claude-opus-4-6',                     // Claude Opus 4.6 - most intelligent
+    'claude-opus-4-5-20251101',            // Claude Opus 4.5 - most intelligent
     'claude-haiku-4-5-20251001',           // Claude Haiku 4.5 - fastest
   ],
   // Aider: Supports many providers (provider-prefixed)
@@ -134,7 +134,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // OpenCode: Mix of providers
   'opencode': [
     'claude-sonnet-4-5-20250929',
-    'claude-opus-4-6',
+    'claude-opus-4-5-20251101',
     'gpt-4.1',
     'gpt-5-mini',
   ],
@@ -156,13 +156,13 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Goose: Block's open-source agent (supports multiple providers)
   'goose': [
     'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 via Anthropic provider
-    'claude-opus-4-6',                     // Claude Opus 4.6
+    'claude-opus-4-5-20251101',            // Claude Opus 4.5
     'gpt-4.1',                             // GPT-4.1 via OpenAI provider
   ],
   // OpenHands: Open-source agent (litellm format: provider/model)
   'openhands': [
     'anthropic/claude-sonnet-4-5-20250929',
-    'anthropic/claude-opus-4-6',
+    'anthropic/claude-opus-4-5-20251101',
     'openai/gpt-4.1',
   ],
   // LLM API: Direct Anthropic API calls (uses full API names)
@@ -170,6 +170,6 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // Haiku is used for verification (via LLMClient) but is too weak for code fixing.
   'llm-api': [
     'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - balanced
-    'claude-opus-4-6',                     // Claude Opus 4.6 - most intelligent
+    'claude-opus-4-5-20251101',            // Claude Opus 4.5 - most intelligent
   ],
 };
