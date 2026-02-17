@@ -70,17 +70,29 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Infrastructure failure detection**: Skips expensive `analyzeFailedFix` LLM calls when the failure is obviously infrastructure (quota, timeout, crash) — records a plain-text lesson instead.
 - **Redundant verification skip**: Issues already verified by recovery phases (`trySingleIssueFix`, `tryDirectLLMFix`) are not re-verified in the main pass.
 
+### Review Bot Dialog
+- **Inline dismissal comments**: When PRR dismisses an issue (already-fixed, stale, exhausted), it adds an inline code comment explaining the reasoning — enabling bots and humans to see the decision trail in the diff
+- **After Action Report (AAR)**: Detailed session summary with three sections: "Fixed This Session", "Dismissed" (by category), and "Remaining" (with suggested resolutions)
+- *Why dismissal comments*: Review bots re-analyze the PR on every push. Without visible reasoning, they re-flag the same issues PRR already decided weren't worth fixing. Inline comments create a proper dialog between PRR and the bots.
+
+### Performance
+- **Parallel LLM dedup**: File-level dedup calls run concurrently (23 calls in ~5s instead of ~50s)
+- **Parallel file I/O**: Code snippet fetching, diff preparation, and cross-file dismissal comments all run via `Promise.all()` — 9 sequential loops converted across 7 files
+- **Duplicate prompt detection**: MD5-based tracking skips identical prompt+model retries, going straight to rotation
+- *Why parallelize*: Independent file reads and cross-file LLM calls have no shared state. Sequential execution added 1-50s of unnecessary latency per cycle depending on issue count.
+
 ### Robustness
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
 - **Comment status tracking**: Each PR comment gets an explicit open/resolved lifecycle status with file content hashing. Skips LLM re-analysis for comments on unmodified files, saving tokens and time.
+- **Comment sanitization**: Base64 JWT tokens, HTML metadata, and bot-specific noise stripped from comments before they enter LLM prompts
 - **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
 - **Issue deduplication**: Two-phase dedup (heuristic + LLM semantic) groups related comments, with in-memory caching to avoid redundant LLM dedup calls across iterations
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 - **Outer loop bail-out**: Detects consecutive stalemate bail-outs with no progress and hard-exits instead of re-entering the push loop indefinitely
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
-- **Output log tee**: All console output mirrored to `output.log` (ANSI-stripped) for easy LLM-assisted debugging
+- **Dual log system**: `output.log` mirrors console output (ANSI-stripped); `prompts.log` captures full LLM prompts/responses with searchable slugs linking the two files
 
 ## Installation
 
@@ -664,25 +676,46 @@ prr https://github.com/owner/repo/pull/123
 
 ## Debugging
 
-Every run mirrors all console output to `~/.prr/output.log` — a plain-text file with ANSI escape codes stripped. This file is truncated on each run start, so it always contains only the latest session.
+PRR provides a three-tier logging system for progressively deeper diagnosis:
 
-*Why a log file?* Terminal scrollback is hard to search, and copy-paste loses formatting. A clean text file can be directly fed into Cursor, Claude, or any LLM for analysis:
+### Tier 1: `output.log` — Operational Flow
+Every run mirrors all console output (ANSI-stripped) to `output.log` in the current directory. Truncated on each run start — always contains only the latest session.
+
+*Why a separate file?* Terminal scrollback is hard to search, and copy-paste loses formatting. A clean text file can be directly fed into Cursor, Claude, or any LLM for analysis.
+
+### Tier 2: `prompts.log` — Full LLM Context
+Every LLM prompt and response is written in full to `prompts.log` alongside `output.log`. Each entry has a searchable slug (e.g., `#0007/llm-anthropic`) that also appears as a one-liner in `output.log`.
+
+*Why a companion file?* Prompts can be 5-50K chars each. Inlining them in `output.log` would make it unsearchable. When you see something suspicious in `output.log`, Cmd+F the slug in `prompts.log` to jump directly to the full prompt that produced it.
+
+### Tier 3: Standalone Debug Files
+With `PRR_DEBUG_PROMPTS=1`, individual prompt/response files are also saved to `~/.prr/debug/<timestamp>/` — useful for sharing or diffing specific prompts.
 
 ```bash
-# Feed the last run's output to an LLM
-cat ~/.prr/output.log | pbcopy   # macOS
-# Or just reference it in Cursor: @~/.prr/output.log
+# Operational log — what happened, when, and why
+cat output.log
 
-# Verbose mode shows LLM prompts and responses
+# Full prompt/response log — what the LLM actually saw
+cat prompts.log
+
+# Cross-reference: find slug in output.log, search it in prompts.log
+# output.log:  [DEBUG] PROMPT #0007/llm-anthropic → { chars: 3519 }
+# prompts.log: ═══...  #0007/llm-anthropic  PROMPT: llm-anthropic (3519 chars)
+
+# Reference in Cursor
+# @output.log @prompts.log
+
+# Verbose mode shows debug-level detail
 prr <url> --verbose
 
-# Debug prompt files are also saved
+# Standalone debug files (requires PRR_DEBUG_PROMPTS=1)
 ls ~/.prr/debug/*.txt
 ```
 
-The log path is printed at the end of each run:
+The log paths are printed at the end of each run:
 ```text
-📄 Full output log: /Users/you/.prr/output.log
+📄 Full output log: /path/to/output.log
+📄 Prompt log: /path/to/prompts.log
 ```
 
 ## License

@@ -202,8 +202,16 @@ function promptSlug(counter: number, label: string): string {
 /**
  * Write a prompt or response to prompts.log (the companion file to output.log).
  *
- * Each entry is headed by the same slug that appears in output.log, so you can
- * Cmd+F the slug in prompts.log to jump straight to the full content.
+ * WHY a separate file: Prompts can be 5-50K chars each. Inlining them in
+ * output.log would make it unsearchable (a single run can produce 500K+ of
+ * prompt data vs ~20K of console output). prompts.log keeps the full content
+ * available for analysis without drowning the operational log.
+ *
+ * WHY the slug format (#0001/llm-anthropic): The same slug appears as a
+ * one-liner in output.log. When you see a suspicious LLM response in
+ * output.log, Cmd+F the slug in prompts.log to jump directly to the full
+ * prompt that produced it. This cross-file navigation pattern replaces the
+ * need to correlate timestamps or count log entries manually.
  */
 function writeToPromptLog(
   slug: string, kind: 'PROMPT' | 'RESPONSE', label: string,
@@ -224,6 +232,12 @@ function writeToPromptLog(
  * Log a prompt to the prompts.log companion file and (optionally) a standalone
  * debug file. A one-liner with a searchable slug is written to output.log so
  * you can grep the slug in prompts.log to see the full content.
+ *
+ * WHY dual logging (standalone files + prompts.log): Standalone files are
+ * useful for sharing individual prompts or diffing prompt evolution across
+ * iterations. prompts.log provides chronological search across ALL prompts
+ * and responses in a single file — critical for diagnosing "the LLM got
+ * confused at step 5" type issues where you need to see the conversation flow.
  *
  * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
  * Standalone files are written to ~/.prr/debug/<timestamp>/

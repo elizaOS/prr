@@ -297,12 +297,16 @@ Breaks down the main resolver loop into focused phases:
 - Clean up working directory
 
 **Other workflow modules:**
-- `fix-verification.ts` - Post-fix verification logic (both sequential and batch modes). Skips issues already verified by recovery phases to avoid redundant LLM calls.
-- `no-changes-verification.ts` - Handles fixer tools that make zero changes (spot-check verification, "already fixed" detection)
-- `issue-analysis.ts` - Issue batching and analysis (wires triage scores from LLM results into `UnresolvedIssue` objects)
+- `fix-verification.ts` - Post-fix verification logic (both sequential and batch modes). Skips issues already verified by recovery phases to avoid redundant LLM calls. Diff + snippet fetching parallelized via `Promise.all()`.
+- `no-changes-verification.ts` - Handles fixer tools that make zero changes (spot-check verification, "already fixed" detection). Extracts tail of fixer output as lesson when no structured explanation is found.
+- `issue-analysis.ts` - Issue batching and analysis (wires triage scores from LLM results into `UnresolvedIssue` objects). Two-phase snippet fetching: sync solvability filter, then parallel fetch. LLM dedup calls parallelized across files.
+- `execute-fix-iteration.ts` - Runs a single fix iteration. Includes MD5-based duplicate prompt detection to skip identical prompt+model retries.
+- `fix-loop-rotation.ts` - Model/tool rotation and recovery strategies. Resets prompt tracker on rotation so new models aren't falsely detected as duplicates.
 - `prompt-building.ts` - Sorts issues by `--priority-order`, displays triage breakdown in console
+- `dismissal-comments.ts` - Adds inline code comments for dismissed issues. LLM generates comment text; insertion is programmatic (line-aware, bottom-to-top). Processes files in parallel, sequential within each file.
 - `graceful-shutdown.ts` - SIGINT handling
-- `helpers/recovery.ts` - Recovery strategies: single-issue focus mode, direct LLM API fix (with focused-section mode for large files), infrastructure failure detection
+- `helpers/recovery.ts` - Recovery strategies: single-issue focus mode, direct LLM API fix (with focused-section mode for large files), infrastructure failure detection. Timed via `startTimer`/`endTimer`.
+- `helpers/solvability.ts` - Pre-screens issues for solvability (deleted files, stale refs, exhausted attempts). `recheckSolvability` parallelizes snippet fetching.
 - `utils.ts` - `parseNoChangesExplanation()` with prompt regurgitation detection
 
 ### 8. UI & Reporting (`src/ui/`)
@@ -313,6 +317,24 @@ User-facing output and progress indicators:
 - Timing summaries
 - Token usage reports (including Anthropic cache hit/miss stats)
 - Model performance stats
+- **After Action Report**: Three-section AAR (Fixed This Session, Dismissed, Remaining) with suggested resolutions
+
+### 9. Prompt Sanitization (`src/analyzer/prompt-builder.ts`)
+
+Comment body cleanup before LLM ingestion:
+- `sanitizeCommentForPrompt()` strips base64 JWT tokens from "Fix in Cursor" links, HTML metadata comments (`<!-- BUGBOT_BUG_ID -->`, `<!-- DESCRIPTION START/END -->`), `<details>/<summary>` blocks, `<picture>/<img>` tags, and other bot-specific noise.
+- Applied to all prompt paths: fix prompts, dedup, batch analysis, verification, failure analysis, commit messages, and dismissal comments.
+
+WHY: Bot review comments embed massive base64-encoded JWTs (500+ chars per link) and HTML metadata that wastes tokens and pollutes LLM context. A typical CodeRabbit comment shrinks by 30-60% after sanitization, improving both cost and LLM comprehension.
+
+### 10. Logging (`src/logger.ts`)
+
+Three-tier logging system:
+- **`output.log`**: All console output, ANSI-stripped. Truncated per run. Patches `console.log/warn/error` directly (excludes spinner noise).
+- **`prompts.log`**: Full LLM prompts and responses. Each entry tagged with a searchable slug (e.g., `#0007/llm-anthropic`) that also appears as a one-liner in `output.log`.
+- **Standalone debug files**: Individual prompt/response files in `~/.prr/debug/<timestamp>/` (when `PRR_DEBUG_PROMPTS=1`).
+
+WHY dual logging: Inlining 5-50K prompts in `output.log` would drown the operational log. The slug system enables cross-file navigation: see something suspicious in `output.log`, Cmd+F the slug in `prompts.log` to jump to the full prompt.
 
 ---
 

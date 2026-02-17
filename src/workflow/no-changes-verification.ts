@@ -168,10 +168,22 @@ export async function handleNoChangesWithVerification(
     console.log(chalk.yellow(`  Fixer didn't explain why no changes were made`));
     console.log(chalk.gray(`  → Will try different model/tool approach`));
 
+    // WHY extract the tail: Fixer output is often 20K+ chars of tool calls and
+    // file reads, with the actual reasoning in the last few hundred characters.
+    // A generic "no changes" lesson is useless, but "Output tail: the function
+    // already handles this case via the guard on line 42" gives the next attempt
+    // real context. 500 chars balances capturing the summary without storing the
+    // entire tool trace.
+    //
+    // WHY strip tool_call/tool_result: These XML blocks are agentic tool metadata
+    // (file reads, shell commands) that obscure the model's actual reasoning.
+    // Stripping them surfaces the natural-language explanation buried underneath.
+    //
+    // WHY 150-char lesson cap: Lessons are embedded in every subsequent prompt.
+    // Long lessons waste tokens; a compressed summary is enough to steer the
+    // next attempt.
     if (fixerOutput && fixerOutput.length > 100) {
-      // Grab the last ~500 chars — models often put their summary at the end
       const tail = fixerOutput.slice(-500).trim();
-      // Strip common noise patterns (tool call metadata, file listings)
       const cleaned = tail
         .replace(/\[tool_call\][\s\S]*?\[\/tool_call\]/g, '')
         .replace(/\[tool_result\][\s\S]*?\[\/tool_result\]/g, '')

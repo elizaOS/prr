@@ -96,7 +96,12 @@ export async function handleRotationStrategy(
   } else if (!isOddFailure) {
     // Try rotating model or tool
     const rotated = tryRotation();
-    resetPromptTracker(); // New model/tool gets a clean slate
+    // WHY reset: The prompt tracker detects identical prompt+model combos to
+    // skip redundant iterations. After rotation, the prompt content may be
+    // identical (same issues, same lessons) but the MODEL is different. Without
+    // resetting, the new model would be immediately skipped as a "duplicate,"
+    // defeating the purpose of rotation. Each rotated model deserves a fair shot.
+    resetPromptTracker();
     
     // Check if bail-out was triggered by tryRotation()
     if (Bailout.getNoProgressCycles(stateContext) >= options.maxStaleCycles) {
