@@ -225,46 +225,59 @@ export async function recheckSolvability(
   stateContext: StateContext,
   getCodeSnippetFn: (path: string, line: number | null, body?: string) => Promise<string>
 ): Promise<{ updated: UnresolvedIssue[]; dismissed: number; refreshed: number }> {
-  const updated: UnresolvedIssue[] = [];
   let dismissed = 0;
   let refreshed = 0;
 
+  // Split into changed vs unchanged (sync), then batch-fetch changed snippets.
+  // WHY parallel: Each snippet read is for a different file. With 10+ changed
+  // issues, sequential reads waste ~0.5-1s of accumulated I/O latency.
+  const unchanged: UnresolvedIssue[] = [];
+  const changed: UnresolvedIssue[] = [];
+
   for (const issue of unresolvedIssues) {
     if (changedFiles.includes(issue.comment.path)) {
-      // File was touched - re-fetch snippet
+      changed.push(issue);
+    } else {
+      unchanged.push(issue);
+    }
+  }
+
+  // Fetch all changed snippets concurrently
+  const snippetResults = await Promise.all(
+    changed.map(async (issue) => {
       const newSnippet = await getCodeSnippetFn(
         issue.comment.path,
         issue.comment.line,
         issue.comment.body
       );
+      return { issue, newSnippet };
+    })
+  );
 
-      if (newSnippet === SNIPPET_PLACEHOLDER) {
-        // File was deleted by fixer - dismiss as stale
-        // CRITICAL: dismissIssue ONLY, NOT markVerified (see plan gotcha #1)
-        Dismissed.dismissIssue(
-          stateContext,
-          issue.comment.id,
-          'File deleted by fixer',
-          'stale',
-          issue.comment.path,
-          issue.comment.line,
-          issue.comment.body
-        );
-        dismissed++;
-        // Exclude from output array
-        continue;
-      }
+  const updated: UnresolvedIssue[] = [...unchanged];
 
-      // Update snippet
-      updated.push({
-        ...issue,
-        codeSnippet: newSnippet,
-      });
-      refreshed++;
-    } else {
-      // File not touched - keep as-is
-      updated.push(issue);
+  for (const { issue, newSnippet } of snippetResults) {
+    if (newSnippet === SNIPPET_PLACEHOLDER) {
+      // File was deleted by fixer - dismiss as stale
+      // CRITICAL: dismissIssue ONLY, NOT markVerified (see plan gotcha #1)
+      Dismissed.dismissIssue(
+        stateContext,
+        issue.comment.id,
+        'File deleted by fixer',
+        'stale',
+        issue.comment.path,
+        issue.comment.line,
+        issue.comment.body
+      );
+      dismissed++;
+      continue;
     }
+
+    updated.push({
+      ...issue,
+      codeSnippet: newSnippet,
+    });
+    refreshed++;
   }
 
   return { updated, dismissed, refreshed };

@@ -339,33 +339,27 @@ export async function verifyFixes(
         }
       } else {
         // Batch mode - one LLM call for all fixes
-        const fixesToVerify: Array<{
-          id: string;
-          comment: string;
-          filePath: string;
-          line: number | null;
-          diff: string;
-          currentCode?: string;
-        }> = [];
-
-        for (const issue of changedIssues) {
-          const diff = await getIssueDiff(issue);
-          // Read current code at issue's line AFTER the fixer has run.
-          // WHY: When multiple issues target the same file, they all share the same
-          // diff. The verifier can't tell which diff hunks fix which issue. Including
-          // the current code lets it check if the problematic pattern still exists.
-          const currentCode = workdir
-            ? await getCurrentCodeAtLine(workdir, issue.comment.path, issue.comment.line)
-            : undefined;
-          fixesToVerify.push({
-            id: issue.comment.id,
-            comment: issue.comment.body,
-            filePath: issue.comment.path,
-            line: issue.comment.line,
-            diff,
-            currentCode,
-          });
-        }
+        // Fetch diffs and current code for all issues concurrently.
+        // WHY parallel: Each read is independent (different file or line). With 12+
+        // issues this turns ~1-2s of sequential I/O into a single ~100ms burst.
+        const fixesToVerify = await Promise.all(
+          changedIssues.map(async (issue) => {
+            const [diff, currentCode] = await Promise.all([
+              getIssueDiff(issue),
+              workdir
+                ? getCurrentCodeAtLine(workdir, issue.comment.path, issue.comment.line)
+                : Promise.resolve(undefined),
+            ]);
+            return {
+              id: issue.comment.id,
+              comment: issue.comment.body,
+              filePath: issue.comment.path,
+              line: issue.comment.line,
+              diff,
+              currentCode,
+            };
+          })
+        );
 
         spinner.text = `Verifying ${fixesToVerify.length} fixes in batch...`;
         const result = await llm.batchVerifyFixes(fixesToVerify);

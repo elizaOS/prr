@@ -238,81 +238,90 @@ export async function addDismissalComments(
     byFile.get(issue.filePath)!.push(issue);
   }
   
-  // Process each file
-  for (const [filePath, issues] of byFile.entries()) {
-    const fullPath = join(workdir, filePath);
-    
-    // Check file still exists
-    if (!existsSync(fullPath)) {
-      debug('File no longer exists, skipping all issues', { filePath, count: issues.length });
-      skipped += issues.length;
-      continue;
-    }
-    
-    // Sort by line DESC (Pitfall #2: insert bottom-to-top to avoid line shifting)
-    const sorted = issues.sort((a, b) => (b.line || 0) - (a.line || 0));
-    
-    // Process each issue in this file
-    for (const issue of sorted) {
-      if (issue.line === null) {
-        skipped++;
-        continue;
+  // Process files concurrently. Within each file, issues are processed
+  // sequentially bottom-to-top (line DESC) to avoid line-number shifting
+  // from earlier insertions. Across files, no shared state — safe to parallelize.
+  const fileResults = await Promise.all(
+    [...byFile.entries()].map(async ([filePath, issues]) => {
+      let fileAdded = 0;
+      let fileSkipped = 0;
+      const fullPath = join(workdir, filePath);
+
+      if (!existsSync(fullPath)) {
+        debug('File no longer exists, skipping all issues', { filePath, count: issues.length });
+        return { added: 0, skipped: issues.length };
       }
-      
-      try {
-        // Read surrounding code for LLM context
-        const content = readFileSync(fullPath, 'utf-8');
-        const lines = content.split('\n');
-        
-        const contextBefore = 7;
-        const contextAfter = 7;
-        const start = Math.max(0, issue.line - contextBefore - 1);
-        const end = Math.min(lines.length, issue.line + contextAfter);
-        
-        const surroundingCode = lines
-          .slice(start, end)
-          .map((l, i) => `${start + i + 1}: ${l}`)
-          .join('\n');
-        
-        // Call LLM to check if comment is needed and generate text
-        const result = await llm.generateDismissalComment({
-          filePath: issue.filePath,
-          line: issue.line,
-          surroundingCode,
-          reviewComment: issue.commentBody,
-          dismissalReason: issue.reason,
-          category: issue.category,
-        });
-        
-        if (!result.needed || !result.commentText) {
-          skipped++;
+
+      // Sort by line DESC (insert bottom-to-top to avoid line shifting)
+      const sorted = issues.sort((a, b) => (b.line || 0) - (a.line || 0));
+
+      // Sequential within this file (order matters)
+      for (const issue of sorted) {
+        if (issue.line === null) {
+          fileSkipped++;
           continue;
         }
-        
-        // Insert the comment programmatically
-        const inserted = await insertCommentAtLine(
-          workdir,
-          issue.filePath,
-          issue.line,
-          result.commentText
-        );
-        
-        if (inserted) {
-          added++;
-        } else {
-          skipped++;
+
+        try {
+          const content = readFileSync(fullPath, 'utf-8');
+          const lines = content.split('\n');
+
+          const contextBefore = 7;
+          const contextAfter = 7;
+          const start = Math.max(0, issue.line - contextBefore - 1);
+          const end = Math.min(lines.length, issue.line + contextAfter);
+
+          const surroundingCode = lines
+            .slice(start, end)
+            .map((l, i) => `${start + i + 1}: ${l}`)
+            .join('\n');
+
+          const result = await llm.generateDismissalComment({
+            filePath: issue.filePath,
+            line: issue.line,
+            surroundingCode,
+            reviewComment: issue.commentBody,
+            dismissalReason: issue.reason,
+            category: issue.category,
+          });
+
+          if (!result.needed || !result.commentText) {
+            fileSkipped++;
+            continue;
+          }
+
+          const inserted = await insertCommentAtLine(
+            workdir,
+            issue.filePath,
+            issue.line,
+            result.commentText
+          );
+
+          if (inserted) {
+            fileAdded++;
+          } else {
+            fileSkipped++;
+          }
+        } catch (error) {
+          debug('Error processing dismissal comment', {
+            filePath: issue.filePath,
+            line: issue.line,
+            error: String(error),
+          });
+          fileSkipped++;
         }
-      } catch (error) {
-        debug('Error processing dismissal comment', { 
-          filePath: issue.filePath, 
-          line: issue.line,
-          error: String(error) 
-        });
-        skipped++;
       }
-    }
+
+      return { added: fileAdded, skipped: fileSkipped };
+    })
+  );
+
+  // Aggregate per-file results
+  for (const r of fileResults) {
+    added += r.added;
+    skipped += r.skipped;
   }
-  
+
   debug('Dismissal comments complete', { added, skipped });
   return { added, skipped };
 }

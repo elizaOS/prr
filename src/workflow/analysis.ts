@@ -136,16 +136,18 @@ export async function checkForNewComments(
     // Add new comments to our list
     const updatedComments = [...existingComments, ...newComments];
     
-    // Check which new comments need fixing
+    // Check which new comments need fixing — fetch snippets concurrently
     const updatedUnresolvedIssues = [...unresolvedIssues];
-    for (const comment of newComments) {
-      const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
+    const newSnippets = await Promise.all(
+      newComments.map(c => getCodeSnippet(c.path, c.line, c.body))
+    );
+    for (let i = 0; i < newComments.length; i++) {
       updatedUnresolvedIssues.push({
-        comment,
-        codeSnippet,
+        comment: newComments[i],
+        codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment added during fix cycle',
-        triage: { importance: 3, ease: 3 },  // Default: new comment mid-cycle
+        triage: { importance: 3, ease: 3 },
       });
     }
     
@@ -195,25 +197,19 @@ export async function runFinalAudit(
   
   spinner.start('Running final audit on all issues...');
   
-  // Gather all comments with their current code
-  const allIssuesForAudit: Array<{
-    id: string;
-    comment: string;
-    filePath: string;
-    line: number | null;
-    codeSnippet: string;
-  }> = [];
-  
-  for (const comment of comments) {
-    const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
-    allIssuesForAudit.push({
-      id: comment.id,
-      comment: comment.body,
-      filePath: comment.path,
-      line: comment.line,
-      codeSnippet,
-    });
-  }
+  // Gather all comments with their current code — fetch snippets concurrently
+  // WHY parallel: Each snippet is an independent file read. With 40+ comments
+  // this turns ~2-3s of sequential I/O into a single burst.
+  const auditSnippets = await Promise.all(
+    comments.map(c => getCodeSnippet(c.path, c.line, c.body))
+  );
+  const allIssuesForAudit = comments.map((comment, i) => ({
+    id: comment.id,
+    comment: comment.body,
+    filePath: comment.path,
+    line: comment.line,
+    codeSnippet: auditSnippets[i],
+  }));
   
   const auditResults = await llm.finalAudit(allIssuesForAudit, options.maxContextChars);
   

@@ -623,10 +623,22 @@ export async function findUnresolvedIssues(
   // Verification expiry: re-check issues verified more than 5 iterations ago
   const staleVerifications = Verification.getStaleVerifications(stateContext, VERIFICATION_EXPIRY_ITERATIONS);
   
-  // First pass: filter out already-verified issues and gather code snippets
+  // First pass: filter out already-verified issues, run solvability checks (sync),
+  // then batch-fetch all code snippets concurrently.
+  // WHY two-phase: Solvability checks are synchronous (file existence, attempt counts)
+  // and filter out ~30-50% of comments. By running them first, we avoid fetching
+  // snippets for issues we'll immediately dismiss. Then we fetch all remaining
+  // snippets in parallel instead of one-at-a-time.
   const toCheck: Array<{
     comment: ReviewComment;
     codeSnippet: string;
+    contextHints?: string[];
+  }> = [];
+
+  // Phase 1: Sync filtering (verified, solvability)
+  const needSnippets: Array<{
+    comment: ReviewComment;
+    snippetLine: number | null;
     contextHints?: string[];
   }> = [];
 
@@ -647,7 +659,7 @@ export async function findUnresolvedIssues(
       staleRecheck++;
     }
 
-    // Phase 1: Deterministic solvability check (zero LLM cost)
+    // Deterministic solvability check (zero LLM cost)
     const solvability = assessSolvability(workdir, comment, stateContext);
     if (!solvability.solvable) {
       // CRITICAL: dismissIssue ONLY — do NOT call markVerified.
@@ -669,11 +681,22 @@ export async function findUnresolvedIssues(
       continue;
     }
 
-    // Fetch snippet using retargeted line if available
     const snippetLine = solvability.retargetedLine ?? comment.line;
-    const codeSnippet = await getCodeSnippetFn(comment.path, snippetLine, comment.body);
+    needSnippets.push({ comment, snippetLine, contextHints: solvability.contextHints });
+  }
 
-    // Belt-and-suspenders: catch placeholder after fetch (race or permission issue)
+  // Phase 2: Batch-fetch all code snippets concurrently
+  // WHY parallel: Each snippet is an independent file read. With 30+ comments
+  // surviving the solvability filter, sequential reads add ~1-2s of I/O latency.
+  const snippetResults = await Promise.all(
+    needSnippets.map(async ({ comment, snippetLine, contextHints }) => {
+      const codeSnippet = await getCodeSnippetFn(comment.path, snippetLine, comment.body);
+      return { comment, codeSnippet, contextHints };
+    })
+  );
+
+  // Phase 3: Post-filter placeholder results
+  for (const { comment, codeSnippet, contextHints } of snippetResults) {
     if (codeSnippet === SNIPPET_PLACEHOLDER) {
       Dismissed.dismissIssue(
         stateContext,
@@ -688,7 +711,7 @@ export async function findUnresolvedIssues(
       continue;
     }
 
-    toCheck.push({ comment, codeSnippet, contextHints: solvability.contextHints });
+    toCheck.push({ comment, codeSnippet, contextHints });
   }
 
   // Build stable commentId → display number mapping ONCE.

@@ -60,22 +60,25 @@ export async function processNewBotReviews(
   if (newReviewResult) {
     console.log(chalk.cyan(`\n📬 ${newReviewResult.message}`));
     
-    // Add new comments to tracking
-    for (const comment of newReviewResult.newComments) {
+    // Add new comments to tracking — fetch all snippets concurrently
+    const newComments = newReviewResult.newComments;
+    for (const comment of newComments) {
       existingCommentIds.add(comment.id);
       comments.push(comment);
-      
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
-      
-      // Analyze if this new comment needs fixing
-      const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
-      // Quick check - assume new comments need attention unless obviously resolved
+    }
+    const newSnippets = await Promise.all(
+      newComments.map((c: { path: string; line: number | null; body: string }) =>
+        getCodeSnippet(c.path, c.line, c.body)
+      )
+    );
+    for (let i = 0; i < newComments.length; i++) {
       unresolvedIssues.push({
-        comment,
-        codeSnippet,
+        comment: newComments[i],
+        codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment from bot review',
-        triage: { importance: 3, ease: 3 },  // Default: new comment, not yet analyzed
+        triage: { importance: 3, ease: 3 },
       });
     }
     
@@ -179,18 +182,21 @@ export async function checkEmptyIssues(
       
       // Re-populate unresolvedIssues from scratch — only add comments that are
       // neither verified nor dismissed (truly unaccounted for)
+      const unaccounted = comments.filter(
+        c => !Verification.isVerified(stateContext, c.id) && !Dismissed.isCommentDismissed(stateContext, c.id)
+      );
+      const snippets = await Promise.all(
+        unaccounted.map(c => getCodeSnippet(c.path, c.line, c.body))
+      );
       unresolvedIssues.splice(0, unresolvedIssues.length);
-      for (const comment of comments) {
-        if (!Verification.isVerified(stateContext, comment.id) && !Dismissed.isCommentDismissed(stateContext, comment.id)) {
-          const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
-          unresolvedIssues.push({
-            comment,
-            codeSnippet,
-            stillExists: true,
-            explanation: 'Re-added after bug detection',
-            triage: { importance: 3, ease: 3 },  // Default: re-added mid-cycle
-          });
-        }
+      for (let i = 0; i < unaccounted.length; i++) {
+        unresolvedIssues.push({
+          comment: unaccounted[i],
+          codeSnippet: snippets[i],
+          stillExists: true,
+          explanation: 'Re-added after bug detection',
+          triage: { importance: 3, ease: 3 },
+        });
       }
       debug('Re-populated unresolvedIssues', { count: unresolvedIssues.length });
       
@@ -289,15 +295,17 @@ export async function checkAndPullRemoteCommits(
         Verification.clearAllVerifications(stateContext);
       }
       
-      // Re-fetch code snippets for unresolved issues
-      // WHY: Code at those lines may have changed
+      // Re-fetch code snippets for unresolved issues concurrently
+      // WHY parallel: Each snippet is an independent file read; code at those
+      // lines may have changed after the pull.
       console.log(chalk.gray(`  Refreshing code snippets for ${unresolvedIssues.length} issues...`));
-      for (const issue of unresolvedIssues) {
-        issue.codeSnippet = await getCodeSnippet(
-          issue.comment.path,
-          issue.comment.line,
-          issue.comment.body
-        );
+      const refreshedSnippets = await Promise.all(
+        unresolvedIssues.map(issue =>
+          getCodeSnippet(issue.comment.path, issue.comment.line, issue.comment.body)
+        )
+      );
+      for (let i = 0; i < unresolvedIssues.length; i++) {
+        unresolvedIssues[i].codeSnippet = refreshedSnippets[i];
       }
       
       // Update PR info with new head SHA

@@ -180,16 +180,19 @@ export async function processCommentsAndPrepareFixLoop(
     );
     
     if (auditResult.failedAudit.length > 0) {
-      // Re-populate unresolvedIssues with failed audit items so fix loop can continue
-      unresolvedIssues.length = 0; // Clear
-      for (const { comment, explanation } of auditResult.failedAudit) {
-        const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
+      // Re-populate unresolvedIssues with failed audit items — fetch snippets concurrently
+      unresolvedIssues.length = 0;
+      const failedItems = auditResult.failedAudit;
+      const failedSnippets = await Promise.all(
+        failedItems.map(({ comment }) => getCodeSnippet(comment.path, comment.line, comment.body))
+      );
+      for (let i = 0; i < failedItems.length; i++) {
         unresolvedIssues.push({
-          comment,
-          codeSnippet,
+          comment: failedItems[i].comment,
+          codeSnippet: failedSnippets[i],
           stillExists: true,
-          explanation,
-          triage: { importance: 2, ease: 3 },  // Audit failures are important (fooled verifier)
+          explanation: failedItems[i].explanation,
+          triage: { importance: 2, ease: 3 },
         });
       }
       console.log(chalk.cyan(`\n→ Re-entering fix loop with ${formatNumber(unresolvedIssues.length)} issues from audit\n`));
