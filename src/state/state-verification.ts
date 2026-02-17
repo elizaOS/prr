@@ -45,6 +45,19 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
       state.verifiedFixed.push(commentId);
     }
   }
+  
+  // Sync commentStatuses: if this comment had an "open" analysis status,
+  // flip it to resolved. No-op if entry doesn't exist (comment was never
+  // analyzed, e.g. recovered from git history — isVerified() handles it).
+  if (state.commentStatuses?.[commentId]) {
+    state.commentStatuses[commentId] = {
+      ...state.commentStatuses[commentId],
+      status: 'resolved',
+      classification: 'fixed',
+      updatedAt: new Date().toISOString(),
+      updatedAtIteration: currentIteration,
+    };
+  }
 }
 
 /**
@@ -71,6 +84,11 @@ export function unmarkVerified(ctx: StateContext, commentId: string): void {
   const legacyIndex = state.verifiedFixed.indexOf(commentId);
   if (legacyIndex !== -1) {
     state.verifiedFixed.splice(legacyIndex, 1);
+  }
+  
+  // Delete commentStatuses entry so the comment gets re-analyzed
+  if (state.commentStatuses?.[commentId]) {
+    delete state.commentStatuses[commentId];
   }
 }
 
@@ -179,4 +197,5 @@ export function clearAllVerifications(ctx: StateContext): void {
   
   state.verifiedFixed = [];
   state.verifiedComments = [];
+  state.commentStatuses = {};
 }

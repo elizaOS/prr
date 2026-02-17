@@ -30,6 +30,44 @@ export interface VerifiedComment {
 }
 
 /**
+ * Explicit open/resolved lifecycle for each PR comment.
+ *
+ * HISTORY: Previously, comments not in verifiedFixed or dismissedIssues were
+ * implicitly "open" — but we had no record that we'd ALREADY analyzed them and
+ * confirmed they still need fixing. Every push iteration re-sent the entire
+ * unresolved set to the LLM for classification, burning tokens on identical
+ * "still exists" verdicts. Now we persist the LLM's classification so
+ * subsequent iterations skip the analysis LLM call for comments whose target
+ * file hasn't changed. The status transitions are:
+ *
+ *   (new comment) ──analyze──► open ──fix+verify──► resolved
+ *                                  ──dismiss──────► resolved
+ *                  ──analyze──► resolved (already fixed / stale)
+ *
+ * "open" comments are only re-analyzed when their target file is modified
+ * (our fix may have resolved them) or during a final audit (--reverify).
+ */
+export interface CommentStatus {
+  /** Current lifecycle status */
+  status: 'open' | 'resolved';
+  /** LLM classification when status was set */
+  classification: 'exists' | 'stale' | 'fixed';
+  /** LLM explanation of why the issue exists / is stale / is fixed */
+  explanation: string;
+  /** Triage scores from LLM analysis (1-5 scale) */
+  importance: number;
+  ease: number;
+  /** File path this comment targets */
+  filePath: string;
+  /** SHA-1 prefix of file content when status was last set */
+  fileContentHash: string;
+  /** When the status was last set/updated */
+  updatedAt: string;
+  /** Iteration when status was last set */
+  updatedAtIteration: number;
+}
+
+/**
  * Track issues that were dismissed (determined not to need fixing).
  *
  * WHY: This enables a feedback loop between the issue generator and judge.
@@ -127,6 +165,10 @@ export interface ResolverState {
   verifiedFixed: string[];   // Comment IDs that have been verified as fixed (legacy, for backwards compat)
   verifiedComments?: VerifiedComment[];  // New: detailed verification records with timestamps
   dismissedIssues?: DismissedIssue[];    // Issues that don't need fixing with reasons
+  /** Per-comment open/resolved status with LLM classification.
+   *  HISTORY: Replaces the ephemeral analysis cache — this is persisted across
+   *  sessions so even a resumed run doesn't re-analyze unchanged comments. */
+  commentStatuses?: Record<string, CommentStatus>;
   interrupted?: boolean;     // True if last run was interrupted
   interruptPhase?: string;   // Phase where interruption occurred
   // Tool/model rotation state - persisted so we resume where we left off
@@ -156,6 +198,7 @@ export function createInitialState(pr: string, branch: string, headSha: string):
     verifiedFixed: [],
     verifiedComments: [],
     dismissedIssues: [],
+    commentStatuses: {},
     modelPerformance: {},
     issueAttempts: {},
     noProgressCycles: 0,

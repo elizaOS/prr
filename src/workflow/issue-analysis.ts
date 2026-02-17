@@ -3,6 +3,7 @@
  */
 
 import chalk from 'chalk';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
@@ -11,6 +12,7 @@ import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
+import * as CommentStatusAPI from '../state/state-comment-status.js';
 import * as State from '../state/state-core.js';
 import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
@@ -22,6 +24,30 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn } from '../logger.js';
 import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// File hashing for comment status invalidation
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/** Compute a fast content hash for a file (for status invalidation). */
+async function hashFileContent(workdir: string, filePath: string): Promise<string> {
+  try {
+    const content = await readFile(join(workdir, filePath), 'utf-8');
+    return createHash('sha1').update(content).digest('hex').slice(0, 12);
+  } catch {
+    // File doesn't exist or unreadable — return a sentinel so status always invalidates
+    return '__missing__';
+  }
+}
+
+/** Module-level dedup cache (in-memory, session-scoped — not persisted). */
+const _dedupCache: {
+  commentIds?: string;
+  result?: {
+    duplicateMap: Map<string, string[]>;
+    dedupedIds: Set<string>;
+  };
+} = {};
 
 /**
  * Result of the deduplication process
@@ -632,29 +658,145 @@ export async function findUnresolvedIssues(
   // Phase 0: Log duplicate candidates (observation only, no filtering)
   logDuplicateCandidates(toCheck, idToDisplayNum);
 
-  // Phase 1: Heuristic deduplication (zero LLM cost)
-  let dedupResult: DedupResult;
-  try {
-    dedupResult = heuristicDedup(toCheck, idToDisplayNum);
-  } catch (err) {
-    warn(`Dedup failed, proceeding without dedup: ${err}`);
-    dedupResult = {
-      dedupedToCheck: toCheck,
-      duplicateMap: new Map(),
-      duplicateItems: new Map(),
-    };
-  }
+  // ── Dedup cache: skip LLM dedup when comment set is unchanged ─────────
+  // HISTORY: Heuristic dedup is CPU-only (cheap), but LLM dedup costs tokens.
+  // Dedup results are deterministic given the same set of comment IDs — if no
+  // new comments appeared and no comments were removed, the dedup outcome is
+  // identical. We cache the result in-memory and reuse when the set matches.
+  const sortedCommentIds = toCheck.map(item => item.comment.id).sort().join(',');
+  const dedupCacheHit = _dedupCache.commentIds === sortedCommentIds && _dedupCache.result;
 
-  // Phase 2: LLM semantic deduplication (catches what heuristics miss)
-  // Only runs when files have 3+ remaining issues — lightweight, typically <2k tokens
-  try {
-    dedupResult = await llmDedup(dedupResult, toCheck, llm);
-  } catch (err) {
-    warn(`LLM dedup failed, proceeding with heuristic-only results: ${err}`);
+  let dedupResult: DedupResult;
+
+  if (dedupCacheHit) {
+    // Reuse cached dedup — rebuild dedupedToCheck from cached IDs + current toCheck items
+    const cachedDedup = _dedupCache.result!;
+    const dedupedItems = toCheck.filter(item => cachedDedup.dedupedIds.has(item.comment.id));
+    const toCheckById = new Map(toCheck.map(item => [item.comment.id, item]));
+    const reconstructedDuplicateItems = new Map<string, typeof toCheck[0]>();
+    for (const dupeIds of cachedDedup.duplicateMap.values()) {
+      for (const dupeId of dupeIds) {
+        const item = toCheckById.get(dupeId);
+        if (item) reconstructedDuplicateItems.set(dupeId, item);
+      }
+    }
+    dedupResult = {
+      dedupedToCheck: dedupedItems,
+      duplicateMap: cachedDedup.duplicateMap,
+      duplicateItems: reconstructedDuplicateItems,
+    };
+    console.log(chalk.gray(`  Dedup results reused (comment set unchanged, ${dedupResult.duplicateMap.size} canonical groups)`));
+  } else {
+    // Phase 1: Heuristic deduplication (zero LLM cost)
+    try {
+      dedupResult = heuristicDedup(toCheck, idToDisplayNum);
+    } catch (err) {
+      warn(`Dedup failed, proceeding without dedup: ${err}`);
+      dedupResult = {
+        dedupedToCheck: toCheck,
+        duplicateMap: new Map(),
+        duplicateItems: new Map(),
+      };
+    }
+
+    // Phase 2: LLM semantic deduplication (catches what heuristics miss)
+    // Only runs when files have 3+ remaining issues — lightweight, typically <2k tokens
+    try {
+      dedupResult = await llmDedup(dedupResult, toCheck, llm);
+    } catch (err) {
+      warn(`LLM dedup failed, proceeding with heuristic-only results: ${err}`);
+    }
+
+    // Cache dedup results for next iteration (in-memory only)
+    _dedupCache.commentIds = sortedCommentIds;
+    _dedupCache.result = {
+      duplicateMap: dedupResult.duplicateMap,
+      dedupedIds: new Set(dedupResult.dedupedToCheck.map(item => item.comment.id)),
+    };
   }
 
   // Use deduplicated list for analysis
   const toAnalyze = dedupResult.dedupedToCheck;
+
+  // ── Comment status: skip LLM for open comments on unchanged files ─────
+  //
+  // HISTORY: Every push iteration sent ALL unresolved comments to the LLM
+  // for classification, even when neither the comment body nor its target
+  // file had changed. For 20+ issues this burned 5-15s and thousands of
+  // tokens on identical "still exists" results. Now each comment has an
+  // explicit open/resolved status in the persisted state. "Open" comments
+  // whose target file hasn't been modified are skipped — we already know
+  // the issue exists. Only new comments and comments on modified files
+  // (where our fixes may have resolved them) go through the LLM.
+
+  // Compute file content hashes (batched by unique path)
+  const uniqueAnalyzePaths = new Set(toAnalyze.map(item => item.comment.path));
+  const fileHashes = new Map<string, string>();
+  await Promise.all(
+    Array.from(uniqueAnalyzePaths).map(async (p) => {
+      fileHashes.set(p, await hashFileContent(workdir, p));
+    })
+  );
+
+  // Build a set for fast lookup in the status check loop (after dedup, before status split).
+  // HISTORY: staleVerifications forces re-check of comments verified 5+ iterations ago.
+  // Without this bypass, Phase 0 hooks would mark them 'resolved', Phase 2 hash relaxation
+  // would return the status, and line 774 would re-dismiss them — defeating stale re-check.
+  const staleVerificationSet = new Set(staleVerifications);
+
+  // Split toAnalyze into status hits (reuse) and fresh items (need LLM)
+  const freshToAnalyze: typeof toAnalyze = [];
+  let statusHits = 0;
+
+  for (const item of toAnalyze) {
+    const fileHash = fileHashes.get(item.comment.path) || '__missing__';
+    
+    // Both --reverify and stale verifications force fresh LLM analysis.
+    // --reverify: user explicitly wants to re-check everything.
+    // staleVerifications: comment was verified 5+ iterations ago, fix may have regressed.
+    // Without this, Phase 0 hooks + Phase 2 hash relaxation would make these
+    // bypass the LLM entirely, defeating the purpose of stale verification.
+    const forceReanalyze = options.reverify || staleVerificationSet.has(item.comment.id);
+    const validStatus = forceReanalyze
+      ? undefined
+      : CommentStatusAPI.getValidStatus(stateContext, item.comment.id, fileHash);
+
+    if (validStatus && validStatus.status === 'open') {
+      // Status hit: comment is "open" and file hasn't changed since classification
+      statusHits++;
+
+      // Issue still exists — reuse persisted classification
+      const duplicates = dedupResult.duplicateMap.get(item.comment.id);
+      const mergedDuplicates = duplicates?.map(dupId => {
+        const dupItem = dedupResult.duplicateItems.get(dupId);
+        return dupItem ? {
+          commentId: dupItem.comment.id,
+          author: dupItem.comment.author,
+          body: dupItem.comment.body,
+          path: dupItem.comment.path,
+          line: dupItem.comment.line,
+        } : null;
+      }).filter((d): d is NonNullable<typeof d> => d !== null);
+
+      unresolved.push({
+        comment: item.comment,
+        codeSnippet: item.codeSnippet,
+        stillExists: true,
+        explanation: validStatus.explanation,
+        triage: { importance: validStatus.importance, ease: validStatus.ease },
+        mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+      });
+    } else if (validStatus && validStatus.status === 'resolved') {
+      // Resolved but not in verifiedFixed (stale dismissal) — re-dismiss
+      Dismissed.dismissIssue(stateContext, item.comment.id, validStatus.explanation,
+        validStatus.classification === 'stale' ? 'stale' : 'already-fixed',
+        item.comment.path, item.comment.line, item.comment.body);
+      statusHits++;
+    } else {
+      // No valid status: new comment, or file changed → need fresh LLM analysis
+      freshToAnalyze.push(item);
+    }
+  }
 
   // Report solvability dismissals
   const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedPlaceholder;
@@ -676,9 +818,21 @@ export async function findUnresolvedIssues(
     console.log(chalk.yellow(`  ${staleRecheck} stale verifications (>${VERIFICATION_EXPIRY_ITERATIONS} iterations old) - re-checking`));
   }
 
-  if (toAnalyze.length === 0) {
+  // Report comment status stats
+  if (statusHits > 0) {
+    console.log(chalk.gray(`  ${statusHits} comment(s) skipped (status unchanged — open issues on unmodified files)`));
+  }
+  if (freshToAnalyze.length > 0 && statusHits > 0) {
+    console.log(chalk.gray(`  ${freshToAnalyze.length} comment(s) need fresh LLM analysis (new or file changed)`));
+  }
+
+  if (freshToAnalyze.length === 0) {
+    // All items served from persisted status — no LLM call needed
+    if (statusHits > 0 && toAnalyze.length > 0) {
+      console.log(chalk.green(`  ✓ All ${statusHits} issue(s) served from persisted status — skipping LLM analysis`));
+    }
     return {
-      unresolved: [],
+      unresolved,
       recommendedModelIndex: 0,
       duplicateMap: dedupResult.duplicateMap,
     };
@@ -690,11 +844,11 @@ export async function findUnresolvedIssues(
 
   if (options.noBatch) {
     // Sequential mode - one LLM call per comment
-    console.log(chalk.gray(`  Analyzing ${toAnalyze.length} comments sequentially...`));
+    console.log(chalk.gray(`  Analyzing ${freshToAnalyze.length} comments sequentially...`));
     
-    for (let i = 0; i < toAnalyze.length; i++) {
-      const { comment, codeSnippet, contextHints } = toAnalyze[i];
-      console.log(chalk.gray(`    [${i + 1}/${toCheck.length}] ${comment.path}:${comment.line || '?'}`));
+    for (let i = 0; i < freshToAnalyze.length; i++) {
+      const { comment, codeSnippet, contextHints } = freshToAnalyze[i];
+      console.log(chalk.gray(`    [${i + 1}/${freshToAnalyze.length}] ${comment.path}:${comment.line || '?'}`));
       
       const result = await llm.checkIssueExists(
         comment.body,
@@ -703,7 +857,17 @@ export async function findUnresolvedIssues(
         codeSnippet,
         contextHints
       );
-      
+
+      // Persist comment status
+      const fHash = fileHashes.get(comment.path) || '__missing__';
+      if (result.stale) {
+        CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', result.explanation, comment.path, fHash);
+      } else if (result.exists) {
+        CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', result.explanation, 3, 3, comment.path, fHash);
+      } else {
+        CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', result.explanation, comment.path, fHash);
+      }
+
       if (result.stale) {
         // Issue is stale (code fundamentally restructured) - dismiss without marking verified
         if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
@@ -807,9 +971,9 @@ export async function findUnresolvedIssues(
     }
   } else {
     // Batch mode - one LLM call for all comments
-    console.log(chalk.gray(`  Batch analyzing ${toAnalyze.length} comments with LLM...`));
+    console.log(chalk.gray(`  Batch analyzing ${freshToAnalyze.length} comments with LLM...`));
     
-    const batchInput = toAnalyze.map((item, index) => {
+    const batchInput = freshToAnalyze.map((item, index) => {
       const issueId = `issue_${index + 1}`;
       return {
         id: issueId,
@@ -826,7 +990,7 @@ export async function findUnresolvedIssues(
     if (!options.modelRotation) {
       const availableModels = getModelsForRunner(runner);
       // Get attempt history for these specific issues
-      const commentIds = toAnalyze.map(item => item.comment.id);
+      const commentIds = freshToAnalyze.map(item => item.comment.id);
       modelContext = {
         availableModels,
         modelHistory: Performance.getModelHistorySummary(stateContext) || undefined,
@@ -854,14 +1018,16 @@ export async function findUnresolvedIssues(
     }
 
     // Process results
-    for (let i = 0; i < toAnalyze.length; i++) {
-      const { comment, codeSnippet } = toAnalyze[i];
+    for (let i = 0; i < freshToAnalyze.length; i++) {
+      const { comment, codeSnippet, contextHints } = freshToAnalyze[i];
       const issueId = batchInput[i].id.toLowerCase();
       const result = results.get(issueId);
 
       if (!result) {
         // If LLM didn't return a result for this, assume it still exists
         warn(`No result for comment ${issueId}, assuming unresolved`);
+        
+        // Don't cache: LLM failure, next iteration should retry
         
         // Check if this is a canonical issue with duplicates
         const duplicates = dedupResult.duplicateMap.get(comment.id);
@@ -885,6 +1051,16 @@ export async function findUnresolvedIssues(
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
         });
         continue;
+      }
+
+      // Persist comment status
+      const fHash = fileHashes.get(comment.path) || '__missing__';
+      if (result.stale) {
+        CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', result.explanation, comment.path, fHash);
+      } else if (result.exists) {
+        CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', result.explanation, result.importance ?? 3, result.ease ?? 3, comment.path, fHash);
+      } else {
+        CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', result.explanation, comment.path, fHash);
       }
 
       if (result.stale) {

@@ -34,6 +34,17 @@ export function dismissIssue(
       commentBody,
     });
   }
+  
+  // Sync commentStatuses: flip to resolved if this comment had an "open" status
+  if (state.commentStatuses?.[commentId]) {
+    state.commentStatuses[commentId] = {
+      ...state.commentStatuses[commentId],
+      status: 'resolved',
+      classification: 'stale',
+      updatedAt: new Date().toISOString(),
+      updatedAtIteration: currentIteration,
+    };
+  }
 }
 
 export function undismissIssue(ctx: StateContext, commentId: string): void {
@@ -46,6 +57,11 @@ export function undismissIssue(ctx: StateContext, commentId: string): void {
   const index = state.dismissedIssues.findIndex(d => d.commentId === commentId);
   if (index !== -1) {
     state.dismissedIssues.splice(index, 1);
+  }
+  
+  // Delete commentStatuses entry so the comment gets re-analyzed
+  if (state.commentStatuses?.[commentId]) {
+    delete state.commentStatuses[commentId];
   }
 }
 

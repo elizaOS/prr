@@ -21,13 +21,14 @@ import { setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
+import * as CommentStatusAPI from '../state/state-comment-status.js';
 import * as Iterations from '../state/state-iterations.js';
 import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../git/git-clone-index.js';
-import { formatNumber, debugStep, startTimer } from '../logger.js';
+import { formatNumber, debugStep, startTimer, debug } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { recheckSolvability } from './helpers/solvability.js';
@@ -262,6 +263,19 @@ export async function executePushIteration(
     const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir);
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
+
+    // Invalidate "open" comment statuses for files that were modified by the fixer.
+    // HISTORY: Comment statuses persist the LLM's "issue still exists" verdict
+    // keyed by file content hash. After the fixer modifies a file, the hash is
+    // stale — the issue may now be resolved. By invalidating here, the next
+    // iteration's findUnresolvedIssues will re-analyze only these comments
+    // instead of the entire set.
+    if (changedFiles.length > 0) {
+      const invalidated = CommentStatusAPI.invalidateForFiles(stateContext, changedFiles);
+      if (invalidated > 0) {
+        debug(`Invalidated ${invalidated} comment status(es) for ${changedFiles.length} changed file(s)`);
+      }
+    }
 
     // Report verification failures to runner for escalation tracking.
     // HISTORY: The runner only tracked search/replace matching failures.
