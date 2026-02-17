@@ -341,10 +341,16 @@ export class LLMClient {
     // Set it high so it's never the constraint; response length is controlled
     // via prompt instructions, not this parameter. You only pay for tokens
     // actually generated, not the budget ceiling.
+    //
+    // WHY model-dependent: Opus models support 128K output tokens, but Sonnet/Haiku
+    // cap at 64K. Requesting 128K on Sonnet causes a 400 error.
+    const isHighOutputModel = this.model.includes('opus');
+    const maxOutputTokens = isHighOutputModel ? 128_000 : 64_000;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const requestOptions: any = {
       model: this.model,
-      max_tokens: 128_000,
+      max_tokens: maxOutputTokens,
       messages: [
         {
           role: 'user',
