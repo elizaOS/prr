@@ -306,8 +306,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-batch debug logs now include `avgImportance` and `avgEase` metrics
 - WHY: When batching limits prompts to 50 of 93 issues, the selection was arbitrary - trivial style nits could crowd out critical security fixes. The LLM already reads every comment to judge "does this still exist?", so we piggyback importance/difficulty assessment onto the same call at zero extra cost. Sorting by importance ensures the fixer tackles high-impact issues first. The `easy` sort order enables "quick wins first" strategies to show visible progress faster.
 
-**Output Log Tee (`~/.prr/output.log`)**
-- All console output is mirrored to `~/.prr/output.log` as clean ANSI-stripped text
+**Output Log Tee (`output.log` in CWD)**
+- All console output is mirrored to `output.log` in the current working directory as clean ANSI-stripped text
 - File is truncated on each run start, so it always contains only the latest run
 - Path printed at end of run for easy access
 - WHY: Feeding terminal output back into an LLM for debugging required manual copy-paste from scrollback. A plain-text log file can be directly referenced or piped into Cursor/Claude.
