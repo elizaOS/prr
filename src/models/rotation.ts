@@ -519,7 +519,8 @@ export async function validateAndFilterModels(
     const p = RUNNER_PROVIDER_MAP[r.name];
     return p === 'anthropic' || p === 'mixed';
   });
-  const needsElizaCloud = runnersToValidate.some(r => r.name === 'elizacloud');
+  // 'elizacloud' is the preferred-tool alias; the actual runner is 'llm-api' (Direct LLM API)
+  const needsElizaCloud = runnersToValidate.some(r => r.name === 'elizacloud' || r.name === 'llm-api');
   
   // Fetch available models from all providers in parallel
   console.log(chalk.gray('  Validating model access...'));
@@ -580,13 +581,11 @@ export async function validateAndFilterModels(
     const validModels: string[] = [];
     
     for (const model of models) {
-      // Special handling for elizacloud - it has its own model list
-      if (runner.name === 'elizacloud') {
-        const lookupName = stripProviderPrefix(model);
+      // Special handling for Eliza Cloud backend (elizacloud alias or llm-api with ElizaCloud)
+      if (runner.name === 'elizacloud' || runner.name === 'llm-api') {
         if (elizacloudModels.size === 0) {
-          // No model list available, keep all models
           validModels.push(model);
-        } else if (elizacloudModels.has(lookupName)) {
+        } else if (elizacloudModels.has(model) || elizacloudModels.has(stripProviderPrefix(model))) {
           validModels.push(model);
         } else {
           removed.push({ runner: runner.name, model });
@@ -681,7 +680,10 @@ export async function setupRunner(
   const isAutoSelect = !preferredTool || preferredTool === 'auto';
 
   if (!isAutoSelect) {
-    const preferred = detected.find(d => d.runner.name === preferredTool);
+    // 'elizacloud' is an alias for the llm-api runner (Direct LLM API with ElizaCloud backend)
+    const preferred = detected.find(d =>
+      d.runner.name === preferredTool || (preferredTool === 'elizacloud' && d.runner.name === 'llm-api')
+    );
     if (preferred) {
       primaryRunner = preferred.runner;
     } else {

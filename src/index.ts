@@ -3,6 +3,7 @@
 import chalk from 'chalk';
 import { loadConfig } from './config.js';
 import { createCLI, parseArgs } from './cli.js';
+import { validateElizaCloudKey, fetchAvailableElizaCloudModels } from './llm/client.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
@@ -88,6 +89,17 @@ async function main(): Promise<void> {
 
     // Load configuration
     const config = loadConfig();
+
+    // Fail fast if ElizaCloud key is invalid; use an available model if default isn't listed
+    if (config.llmProvider === 'elizacloud' && config.elizacloudApiKey) {
+      await validateElizaCloudKey(config.elizacloudApiKey);
+      const available = await fetchAvailableElizaCloudModels(config.elizacloudApiKey);
+      if (available.size > 0 && !available.has(config.llmModel)) {
+        const first = Array.from(available).sort()[0];
+        config.llmModel = first;
+        console.log(chalk.gray(`  Using ElizaCloud model: ${first} (default not in available list)`));
+      }
+    }
 
     // Note: If neither options.tool nor config.defaultTool is set,
     // the resolver will auto-detect the available CLI tool.

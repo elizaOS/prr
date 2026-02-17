@@ -48,15 +48,20 @@ export interface Config {
 
 /**
  * Get environment variable or throw if missing.
- * 
+ * Trims whitespace/newlines so .env copy-paste doesn't cause 401s.
+ *
  * @param key - Environment variable name
- * @returns The environment variable value
- * @throws Error if the variable is not set
+ * @returns The trimmed value
+ * @throws Error if the variable is not set or empty after trim
  */
 function getEnvOrThrow(key: string): string {
-  const value = process.env[key];
-  if (!value) {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null) {
     throw new Error(`Missing required environment variable: ${key}`);
+  }
+  const value = raw.trim();
+  if (!value) {
+    throw new Error(`Required environment variable ${key} is empty (or only whitespace). Check your .env file.`);
   }
   return value;
 }
@@ -156,14 +161,18 @@ export function loadConfig(): Config {
   // WHY: The LLM provider is for verification, but fixer tools may use a
   // different provider (e.g. ElizaCloud for LLM + Codex/OpenAI for fixing).
   // We need all keys to validate model rotation lists at startup.
-  if (!config.elizacloudApiKey && process.env.ELIZACLOUD_API_KEY) {
-    config.elizacloudApiKey = process.env.ELIZACLOUD_API_KEY;
+  // Trim optional keys too so stray newlines don't cause 401.
+  if (!config.elizacloudApiKey) {
+    const v = process.env.ELIZACLOUD_API_KEY?.trim();
+    if (v) config.elizacloudApiKey = v;
   }
-  if (!config.openaiApiKey && process.env.OPENAI_API_KEY) {
-    config.openaiApiKey = process.env.OPENAI_API_KEY;
+  if (!config.openaiApiKey) {
+    const v = process.env.OPENAI_API_KEY?.trim();
+    if (v) config.openaiApiKey = v;
   }
-  if (!config.anthropicApiKey && process.env.ANTHROPIC_API_KEY) {
-    config.anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  if (!config.anthropicApiKey) {
+    const v = process.env.ANTHROPIC_API_KEY?.trim();
+    if (v) config.anthropicApiKey = v;
   }
 
   return config;

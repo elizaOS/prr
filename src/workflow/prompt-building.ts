@@ -42,7 +42,8 @@ export function buildAndDisplayFixPrompt(
   verbose: boolean,
   consecutiveZeroFixIterations: number = 0,
   priorityOrder: PriorityOrder = 'important',
-  prInfo?: PRInfo
+  prInfo?: PRInfo,
+  diffStat?: string
 ): {
   prompt: string;
   detailedSummary: string;
@@ -89,7 +90,7 @@ export function buildAndDisplayFixPrompt(
   const { prompt, detailedSummary, lessonsIncluded } = buildPrompt(
     sortedIssues,
     lessons,
-    { maxIssues: effectiveMax, perFileLessons, prInfo }
+    { maxIssues: effectiveMax, perFileLessons, prInfo, diffStat }
   );
 
   console.log(chalk.cyan(`\n${detailedSummary}\n`));

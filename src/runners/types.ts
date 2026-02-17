@@ -122,11 +122,14 @@ export interface Runner {
  *   claude-3-5-sonnet-20241022, claude-3-opus-20240229, claude-3-5-haiku-20241022
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
-  // ElizaCloud: Model gateway - one API key for Claude, GPT, Gemini
+  // ElizaCloud: use API model IDs (owner/name). One key for Claude, GPT, Gemini, Qwen, etc.
   'elizacloud': [
-    'gpt-4.1',                            // GPT-4.1 - smartest non-reasoning
-    'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - strong coding
-    'gpt-5-mini',                          // GPT-5 mini - fast, cost-effective
+    'openai/gpt-5.1-codex-max',           // GPT-5.1 Codex Max - purpose-built for agentic coding
+    'openai/gpt-5.2-codex',               // GPT-5.2-Codex - agentic coding
+    'anthropic/claude-opus-4.5',          // Claude Opus 4.5 - most capable
+    'anthropic/claude-sonnet-4.5',        // Claude Sonnet 4.5 - strong coding
+    'openai/gpt-4.1',                     // GPT-4.1 - flagship
+    'openai/gpt-5-mini',                  // GPT-5 mini - fast, cost-effective
   ],
   // Cursor: Uses short model names (from `cursor-agent models`)
   // WHY these names: Cursor has its own model aliases, not full API names.
@@ -185,11 +188,13 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'anthropic/claude-opus-4-5-20251101',
     'openai/gpt-4.1',
   ],
-  // LLM API: Direct Anthropic API calls (uses full API names)
-  // NOTE: Haiku intentionally excluded — 0% fix success rate across 147 attempts.
-  // Haiku is used for verification (via LLMClient) but is too weak for code fixing.
+  // LLM API (ElizaCloud): use API model IDs (owner/name). Same as elizacloud.
   'llm-api': [
-    'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - balanced
-    'claude-opus-4-5-20251101',            // Claude Opus 4.5 - most intelligent
+    'openai/gpt-5.1-codex-max',           // GPT-5.1 Codex Max - purpose-built for agentic coding
+    'openai/gpt-5.2-codex',               // GPT-5.2-Codex - agentic coding
+    'anthropic/claude-opus-4.5',          // Claude Opus 4.5 - most capable
+    'anthropic/claude-sonnet-4.5',        // Claude Sonnet 4.5 - strong coding
+    'openai/gpt-4.1',                     // GPT-4.1 - flagship
+    'openai/gpt-5-mini',                  // GPT-5 mini - fast, cost-effective
   ],
 };

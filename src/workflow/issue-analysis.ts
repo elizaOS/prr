@@ -48,6 +48,7 @@ import type { Runner } from '../runners/types.js';
 import {
   CODE_SNIPPET_CONTEXT_AFTER,
   CODE_SNIPPET_CONTEXT_BEFORE,
+  LLM_DEDUP_MAX_CONCURRENT,
   MAX_SNIPPET_LINES,
   VERIFICATION_EXPIRY_ITERATIONS,
 } from '../constants.js';
@@ -433,20 +434,18 @@ async function llmDedup(
   const newDuplicateItems = new Map(dedupResult.duplicateItems);
   const newDuplicateIds = new Set<string>();
 
-  // Run all dedup LLM calls concurrently instead of sequentially.
-  // WHY parallel: Each call is independent (different file), no shared state
-  // until response parsing. 23 files × 2-5s each = ~40-60s sequential, but
-  // only ~5-8s parallel (time of the slowest call). Massive speedup.
-  const dedupPromises = filesToCheck.map(async ([filePath, items]) => {
-    // Include enough of each comment for the LLM to detect true duplicates.
-    // 150 chars was barely a title — bot comments need ~500 chars to capture
-    // the core issue description (before examples and suggestions).
+  // Run dedup LLM calls with limited concurrency to avoid provider 429s.
+  // WHY cap: ElizaCloud rate-limits; LLM_DEDUP_MAX_CONCURRENT (1) avoids 429 bursts.
+  type DedupEntry = [string, Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[] }>];
+  type DedupTaskResult = { filePath: string; groups: Array<{ canonical: DedupEntry[1][0]; dupes: DedupEntry[1] }> };
+
+  async function runOneDedupFile(entry: DedupEntry): Promise<DedupTaskResult> {
+    const [filePath, items] = entry;
     const summaries = items.map((item, idx) => {
       const line = item.comment.line !== null ? `:${item.comment.line}` : '';
       const preview = sanitizeCommentForPrompt(item.comment.body).substring(0, 500).replace(/\n/g, ' ');
       return `[${idx + 1}] ${item.comment.author}${line}: ${preview}`;
     }).join('\n');
-
     const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
 Some may describe the SAME underlying problem from different angles.
 
@@ -460,20 +459,13 @@ GROUP: 2,5,7 → canonical 5
 GROUP: 1,3 → canonical 3
 
 If no comments are duplicates, reply: NONE`;
-
     try {
-      // Use the LLM client's default model (configured at init, typically haiku/sonnet).
-      // WHY no override: 'fast' is not a valid Anthropic model name and causes 404s.
-      // The default model is already appropriate for this lightweight dedup task.
       const response = await llm.complete(prompt);
       const content = response.content.trim();
-
       if (content.toUpperCase().includes('NONE')) {
         return { filePath, groups: [] };
       }
-
-      // Parse GROUP lines
-      const groups: Array<{ canonical: typeof items[0]; dupes: typeof items }> = [];
+      const groups: DedupTaskResult['groups'] = [];
       const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
       let match;
       while ((match = groupPattern.exec(content)) !== null) {
@@ -481,21 +473,32 @@ If no comments are duplicates, reply: NONE`;
         const canonicalIdx = parseInt(match[2], 10) - 1;
         if (canonicalIdx < 0 || canonicalIdx >= items.length) continue;
         if (indices.length < 2) continue;
-
         const canonical = items[canonicalIdx];
         const dupes = indices.filter(i => i !== canonicalIdx).map(i => items[i]);
         groups.push({ canonical, dupes });
       }
-
       return { filePath, groups };
     } catch (err) {
       debug(`LLM dedup failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
       return { filePath, groups: [] };
     }
-  });
+  }
 
-  // Wait for all dedup calls to complete
-  const dedupResults = await Promise.all(dedupPromises);
+  async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
+    const results: T[] = new Array(tasks.length);
+    let index = 0;
+    async function worker(): Promise<void> {
+      while (index < tasks.length) {
+        const i = index++;
+        results[i] = await tasks[i]();
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
+    return results;
+  }
+
+  const dedupTasks = filesToCheck.map(entry => () => runOneDedupFile(entry));
+  const dedupResults = await runWithConcurrency(dedupTasks, LLM_DEDUP_MAX_CONCURRENT);
 
   // Merge all results into the dedup map
   for (const { filePath, groups } of dedupResults) {
@@ -912,7 +915,8 @@ export async function findUnresolvedIssues(
     }
 
     // Phase 2: LLM semantic deduplication (catches what heuristics miss)
-    // Only runs when files have 3+ remaining issues — lightweight, typically <2k tokens
+    // Only runs when files have 3+ remaining issues — lightweight, typically <2k tokens.
+    // Rate limits: global 1 concurrent + 6s delay + 429 retry backoff keep us under 10/min.
     try {
       dedupResult = await llmDedup(dedupResult, toCheck, llm);
     } catch (err) {

@@ -142,12 +142,32 @@ export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
  * Default LLM model for ElizaCloud provider.
  * ElizaCloud is an OpenAI-compatible gateway that routes to multiple providers.
  */
-export const DEFAULT_ELIZACLOUD_MODEL = 'gpt-4.1';
+/** Eliza Cloud uses owner/model IDs (e.g. anthropic/claude-sonnet-4.5). */
+export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4.5';
 
 /**
  * ElizaCloud API base URL (OpenAI-compatible).
  */
 export const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
+
+/**
+ * Max concurrent requests to ElizaCloud API.
+ * WHY: ElizaCloud returns 429 when too many in flight. 1 = one request at a time.
+ */
+export const ELIZACLOUD_MAX_CONCURRENT_REQUESTS = 1;
+
+/**
+ * Min ms between starting successive ElizaCloud requests (per slot).
+ * WHY: Spacing (1.5s) keeps request rate under provider limits; avoids 429 bursts.
+ */
+/** Min delay between starting ElizaCloud requests; 6s keeps under cloud limit of 10 req/min. */
+export const ELIZACLOUD_MIN_DELAY_MS = 6000;
+
+/**
+ * Max concurrent LLM dedup calls (per-file).
+ * WHY: Dedup fires one LLM call per file; 1 avoids bursts that trigger 429 on ElizaCloud.
+ */
+export const LLM_DEDUP_MAX_CONCURRENT = 1;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // MODEL ROTATION & TOOL SWITCHING

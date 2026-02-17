@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-02-17) — ElizaCloud 401 Unauthorized
+
+- **API key trimming**: All LLM API keys (ElizaCloud, Anthropic, OpenAI) are trimmed when loaded from config. Trailing newlines or spaces in `.env` no longer cause 401s.
+- **Startup validation**: When `PRR_LLM_PROVIDER` is `elizacloud`, PRR validates the key with one request at startup. If the key is rejected (401), it throws a clear error instead of failing later during dedup/analysis.
+- **Clear 401 error**: If an ElizaCloud request returns 401, the client throws a message telling the user to check `ELIZACLOUD_API_KEY` (correct, no extra spaces/newlines, not revoked).
+
+### Fixed (2026-02-17) — ElizaCloud rate limiting
+
+- **Concurrency cap for ElizaCloud**: LLM requests to ElizaCloud are limited to `ELIZACLOUD_MAX_CONCURRENT_REQUESTS` (2) in flight, with `ELIZACLOUD_MIN_DELAY_MS` (600ms) between starting each request. Additional requests queue until a slot is free.
+- **Dedup concurrency cap**: LLM dedup (per-file) now runs with at most `LLM_DEDUP_MAX_CONCURRENT` (2) calls at a time instead of 24 in parallel. Combined with the client limiter, this prevents 429s from ElizaCloud and other strict gateways.
+- WHY: 24 parallel dedup calls triggered 429 even with a client-side cap of 5. Lowering to 2 concurrent + 600ms spacing + capping dedup at 2 at a time keeps under provider limits.
+
 ### Added (2026-02-15) — Fixer intelligence: snippet accuracy and structured outcomes
 
 **Snippet accuracy**

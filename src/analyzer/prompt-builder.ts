@@ -114,6 +114,12 @@ export function buildFixPrompt(
      * the big picture.
      */
     prInfo?: { title: string; body: string; baseBranch: string };
+    /**
+     * Output of `git diff base...HEAD --stat` run by the workflow.
+     * Injected so the fixer sees what files/lines this PR changes without
+     * needing shell access (e.g. llm-api runner).
+     */
+    diffStat?: string;
   }
 ): FixPrompt {
   // Guard: Return empty prompt if no issues
@@ -250,6 +256,16 @@ export function buildFixPrompt(
     parts.push('\nKeep fixes aligned with this PR\'s intent.\n');
   }
 
+  // WHY: The fixer only sees individual review comments + code snippets; showing
+  // the diff summary (files/lines changed) helps it understand PR scope and make
+  // minimal, contextual fixes instead of guessing what this PR is changing.
+  if (options?.diffStat && options.diffStat.trim()) {
+    parts.push('## What this PR changes (diff summary)\n');
+    parts.push('```');
+    parts.push(options.diffStat.trim());
+    parts.push('```\n');
+  }
+
   parts.push('## Issues to Fix\n');
 
   for (let i = 0; i < limitedIssues.length; i++) {
@@ -338,14 +354,8 @@ export function buildFixPrompt(
   }
 
   parts.push('## Instructions\n');
-  // WHY instruction #0: The fixer sees isolated file snippets but not the
-  // big picture of what changed across the PR. Running `--stat` (summary,
-  // not full diff) gives a quick overview without overwhelming the context.
-  // Runners with shell access (Cursor, Claude Code, Aider) can execute this.
-  // Falls back to 'main' if prInfo is absent.
-  parts.push(`0. First, run \`git diff ${options?.prInfo?.baseBranch ?? 'main'}...HEAD --stat\` to understand what this PR changes`);
   parts.push('1. Address each issue listed above');
-  parts.push('2. Make MINIMAL, SURGICAL changes - only modify lines directly related to the fix');
+  parts.push('2. Make MINIMAL, SURGICAL changes — only modify lines directly related to the fix');
   parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes');
   parts.push('4. Do NOT change working code that is not mentioned in the review');
   parts.push('5. Preserve existing code structure, variable names, and formatting');

@@ -148,6 +148,10 @@ export function getExitReasonDisplay(exitReason: string | null): {
     case 'no_changes':
       return { label: 'No changes made', icon: '○', color: chalk.yellow };
     
+    case 'unknown':
+      // Run was interrupted (e.g. Ctrl+C) or exited before the loop could set a reason.
+      return { label: 'Interrupted or exited early', icon: '?', color: chalk.gray };
+    
     default:
       return { label: exitReason || 'Unknown', icon: '?', color: chalk.gray };
   }
@@ -198,9 +202,13 @@ export function printFinalSummary(
   const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
 
   if (toolFixedCount > 0) {
-    const sessionNote = fixedThisSession > 0 && fixedThisSession < toolFixedCount
-      ? ` (${formatNumber(fixedThisSession)} this session)`
-      : '';
+    let sessionNote = '';
+    if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) {
+      sessionNote = ` (${formatNumber(fixedThisSession)} this session)`;
+    } else if (fixedThisSession === 0) {
+      // Nothing verified this run — count is from state (e.g. resumed run that never reached fix loop)
+      sessionNote = ' (from previous runs)';
+    }
     console.log(chalk.green(`\n  ✓ ${formatNumber(toolFixedCount)} issue${toolFixedCount === 1 ? '' : 's'} fixed and verified${sessionNote}`));
   }
   

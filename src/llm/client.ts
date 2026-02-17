@@ -14,10 +14,37 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../config.js';
 import { debug, trackTokens, debugPrompt, debugResponse } from '../logger.js';
-import { ELIZACLOUD_API_BASE_URL } from '../constants.js';
+import { ELIZACLOUD_API_BASE_URL, ELIZACLOUD_MAX_CONCURRENT_REQUESTS, ELIZACLOUD_MIN_DELAY_MS } from '../constants.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+
+/** Safe description of an API key for debug/error messages (never log the full key). */
+function maskApiKey(key: string | undefined): string {
+  if (key === undefined || key === null) return 'not set';
+  const k = key.trim();
+  if (!k.length) return 'empty after trim';
+  const prefix = k.length <= 8 ? k.slice(0, 2) + '***' : k.slice(0, 6) + '...';
+  return `length=${k.length}, prefix=${prefix}`;
+}
+
+/** Eliza Cloud production accepts X-API-Key for chat/models, not Bearer. Exported for runners. */
+export function createElizaCloudOpenAIClient(apiKey: string): OpenAI {
+  const key = apiKey.trim();
+  const elizaFetch: (url: unknown, init?: unknown) => Promise<Response> = (input, init) => {
+    const opts = init as Record<string, unknown> | undefined;
+    const headers = new Headers((opts?.headers ?? {}) as Record<string, string>);
+    headers.delete('Authorization');
+    headers.set('X-API-Key', key);
+    return fetch(input as URL | Request, { ...opts, headers } as RequestInit);
+  };
+  return new OpenAI({
+    apiKey: key,
+    baseURL: ELIZACLOUD_API_BASE_URL,
+    fetch: elizaFetch as unknown as Fetch,
+  });
+}
 
 /**
  * Strip unpaired UTF-16 surrogates from a string
@@ -206,12 +233,44 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
 }
 
 /**
+ * Validate ElizaCloud API key (e.g. at startup).
+ * Throws with a clear message on 401 so we fail fast instead of many 401s later.
+ */
+export async function validateElizaCloudKey(apiKey: string): Promise<void> {
+  const key = apiKey?.trim();
+  if (!key) {
+    throw new Error('ELIZACLOUD_API_KEY is empty. Set it in your .env file.');
+  }
+  const keyHint = maskApiKey(key);
+  const url = ELIZACLOUD_API_BASE_URL;
+  debug('Validating ElizaCloud API key', { requestURL: `${url}/models`, apiKey: keyHint });
+  try {
+    const client = createElizaCloudOpenAIClient(key);
+    for await (const _ of client.models.list()) {
+      break; // one request to verify auth
+    }
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
+      debug('ElizaCloud 401 during validation', { requestURL: `${url}/models`, apiKey: keyHint });
+      throw new Error(
+        `ElizaCloud API key was rejected (401 Unauthorized). ` +
+        `Request URL: ${url}/models. API key: ${keyHint}. ` +
+        `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
+      );
+    }
+    throw err;
+  }
+}
+
+/**
  * Fetch all available models from ElizaCloud API.
  * Returns empty set if fetch fails (skip filtering).
  */
 export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Set<string>> {
   try {
-    const client = new OpenAI({ apiKey, baseURL: ELIZACLOUD_API_BASE_URL });
+    const client = createElizaCloudOpenAIClient(apiKey?.trim() ?? '');
     const models = await client.models.list();
     const ids = new Set<string>();
     for await (const model of models) {
@@ -243,8 +302,54 @@ export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Se
 const CHEAP_MODELS: Record<string, string> = {
   anthropic: 'claude-haiku-4-5-20251001',
   openai: 'gpt-4o-mini',
-  elizacloud: 'gpt-4o-mini',
+  elizacloud: 'openai/gpt-4o-mini',               // ElizaCloud uses owner/model IDs
 };
+
+/**
+ * Concurrency limiter for ElizaCloud API.
+ * WHY: ElizaCloud returns 429 when too many requests are in flight (e.g. 24
+ * parallel LLM dedup calls). We cap in-flight requests and space out starts.
+ */
+let elizacloudInFlight = 0;
+let elizacloudLastStartTime = 0;
+const elizacloudQueue: Array<() => void> = [];
+
+/** Acquire ElizaCloud rate-limit slot (exported for llm-api runner). */
+export async function acquireElizacloud(): Promise<void> {
+  if (elizacloudInFlight < ELIZACLOUD_MAX_CONCURRENT_REQUESTS) {
+    elizacloudInFlight++;
+    const now = Date.now();
+    const sinceLast = now - elizacloudLastStartTime;
+    if (sinceLast < ELIZACLOUD_MIN_DELAY_MS) {
+      await new Promise(r => setTimeout(r, ELIZACLOUD_MIN_DELAY_MS - sinceLast));
+    }
+    elizacloudLastStartTime = Date.now();
+    return;
+  }
+  await new Promise<void>(resolve => {
+    elizacloudQueue.push(() => {
+      elizacloudInFlight++;
+      const now = Date.now();
+      const sinceLast = now - elizacloudLastStartTime;
+      if (sinceLast < ELIZACLOUD_MIN_DELAY_MS) {
+        setTimeout(() => {
+          elizacloudLastStartTime = Date.now();
+          resolve();
+        }, ELIZACLOUD_MIN_DELAY_MS - sinceLast);
+      } else {
+        elizacloudLastStartTime = Date.now();
+        resolve();
+      }
+    });
+  });
+}
+
+/** Release ElizaCloud rate-limit slot (exported for llm-api runner). */
+export function releaseElizacloud(): void {
+  elizacloudInFlight--;
+  const next = elizacloudQueue.shift();
+  if (next) next();
+}
 
 export class LLMClient {
   private provider: LLMProvider;
@@ -252,6 +357,8 @@ export class LLMClient {
   private anthropic?: Anthropic;
   private openai?: OpenAI;
   private thinkingBudget?: number;
+  /** Masked API key hint for ElizaCloud 401 error messages (never the actual key). */
+  private elizacloudKeyHint?: string;
 
   constructor(config: Config) {
     this.provider = config.llmProvider;
@@ -266,10 +373,12 @@ export class LLMClient {
         debug(`Extended thinking enabled with budget: ${this.thinkingBudget} tokens`);
       }
     } else if (this.provider === 'elizacloud') {
-      this.openai = new OpenAI({
-        apiKey: config.elizacloudApiKey,
+      this.elizacloudKeyHint = maskApiKey(config.elizacloudApiKey);
+      debug('ElizaCloud LLM client', {
         baseURL: ELIZACLOUD_API_BASE_URL,
+        apiKey: this.elizacloudKeyHint,
       });
+      this.openai = createElizaCloudOpenAIClient(config.elizacloudApiKey!);
     } else {
       this.openai = new OpenAI({
         apiKey: config.openaiApiKey,
@@ -303,30 +412,71 @@ export class LLMClient {
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
     debugPrompt(`llm-${this.provider}`, fullPrompt, { model: this.model });
     
+    const is429 = (e: unknown) => {
+      const status = (e as { status?: number })?.status;
+      const msg = e instanceof Error ? e.message : String(e);
+      return status === 429 || /429|Too many requests|rate limit/i.test(msg);
+    };
+
     try {
-      const response = this.provider === 'anthropic' 
-        ? await this.completeAnthropic(prompt, systemPrompt)
-        : await this.completeOpenAI(prompt, systemPrompt);
-      
-      debug('LLM response', {
-        responseLength: response.content.length,
-        usage: response.usage,
-      });
-      
-      // Log full response to debug file
-      debugResponse(`llm-${this.provider}`, response.content, { 
-        model: this.model, 
-        usage: response.usage 
-      });
-      
-      // Track token usage
-      if (response.usage) {
-        trackTokens(response.usage.inputTokens, response.usage.outputTokens);
+      if (this.provider === 'elizacloud') {
+        await acquireElizacloud(); // uses exported fn so same global limit as llm-api runner
       }
-      
-      return response;
+      const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
+      // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
+      const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
+      let lastErr: unknown;
+      for (let attempt = 0; attempt <= max429Retries; attempt++) {
+        try {
+          const response = this.provider === 'anthropic'
+            ? await this.completeAnthropic(prompt, systemPrompt)
+            : await this.completeOpenAI(prompt, systemPrompt);
+
+          debug('LLM response', {
+            responseLength: response.content.length,
+            usage: response.usage,
+          });
+
+          debugResponse(`llm-${this.provider}`, response.content, {
+            model: this.model,
+            usage: response.usage,
+          });
+
+          if (response.usage) {
+            trackTokens(response.usage.inputTokens, response.usage.outputTokens);
+          }
+
+          return response;
+        } catch (err) {
+          lastErr = err;
+          if (this.provider === 'elizacloud') {
+            const status = (err as { status?: number })?.status;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
+              const url = ELIZACLOUD_API_BASE_URL;
+              const keyHint = this.elizacloudKeyHint ?? maskApiKey(undefined);
+              debug('ElizaCloud 401', { requestURL: `${url}/chat/completions`, apiKey: keyHint });
+              throw new Error(
+                `ElizaCloud API key was rejected (401 Unauthorized). ` +
+                `Request URL: ${url}/chat/completions. API key: ${keyHint}. ` +
+                `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
+              );
+            }
+            if (is429(err) && attempt < max429Retries) {
+              const wait = backoffMs[attempt] ?? 8000;
+              debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
+              await new Promise(r => setTimeout(r, wait));
+              continue;
+            }
+          }
+          throw err;
+        }
+      }
+      throw lastErr;
     } finally {
-      // Always restore the original model
+      if (this.provider === 'elizacloud') {
+        releaseElizacloud();
+      }
       this.model = originalModel;
     }
   }

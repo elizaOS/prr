@@ -2,10 +2,11 @@ import { writeFileSync, readFileSync, existsSync, realpathSync } from 'fs';
 import { dirname, resolve, relative, sep, isAbsolute } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
-import { debug } from '../logger.js';
+import { debug, debugPrompt, debugResponse } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL } from '../constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL } from '../constants.js';
+import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } from '../llm/client.js';
 
 /**
  * Direct LLM API runner - uses ElizaCloud, Anthropic, or OpenAI API directly to fix code.
@@ -72,10 +73,7 @@ export class LLMAPIRunner implements Runner {
       this.anthropic = new Anthropic();
     }
     if (this.provider === 'elizacloud' && !this.openai) {
-      this.openai = new OpenAI({
-        apiKey: process.env.ELIZACLOUD_API_KEY,
-        baseURL: ELIZACLOUD_API_BASE_URL,
-      });
+      this.openai = createElizaCloudOpenAIClient(process.env.ELIZACLOUD_API_KEY!);
     }
     if (this.provider === 'openai' && !this.openai) {
       this.openai = new OpenAI();
@@ -158,6 +156,8 @@ Working directory: ${workdir}`;
       debug('Escalated to full-file rewrite', { files: rewriteFiles });
     }
 
+    debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
+
     try {
       let response: string;
 
@@ -189,21 +189,30 @@ Working directory: ${workdir}`;
 
         console.log(`\n🧠 Calling ${model}...\n`);
 
-        const result = await openai.chat.completions.create({
-          model,
-          max_tokens: 16000,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: enrichedPrompt },
-          ],
-        });
+        if (this.provider === 'elizacloud') {
+          await acquireElizacloud();
+        }
+        try {
+          const result = await openai.chat.completions.create({
+            model,
+            max_tokens: 16000,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: enrichedPrompt },
+            ],
+          });
 
-        response = result.choices[0]?.message?.content || '';
+          response = result.choices[0]?.message?.content || '';
 
-        debug(`${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} response received`, {
-          inputTokens: result.usage?.prompt_tokens,
-          outputTokens: result.usage?.completion_tokens,
-        });
+          debug(`${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} response received`, {
+            inputTokens: result.usage?.prompt_tokens,
+            outputTokens: result.usage?.completion_tokens,
+          });
+        } finally {
+          if (this.provider === 'elizacloud') {
+            releaseElizacloud();
+          }
+        }
       } else {
         return {
           success: false,
@@ -211,6 +220,8 @@ Working directory: ${workdir}`;
           error: 'No LLM client available',
         };
       }
+
+      debugResponse('llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
 
       // Parse and apply file changes
       const filesWritten = await this.applyFileChanges(workdir, response);
