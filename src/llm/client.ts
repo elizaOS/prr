@@ -1531,13 +1531,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
-    // Matches patterns like "1: YES: explanation", "fix 2: NO: explanation", "Fix_3: YES: ..."
+    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", or "FIX_ID: 1" then "NO: ..." on next line
     const lines = response.content.split('\n');
     let currentOriginalId: string | null = null;
-    
+
     for (const line of lines) {
-      // Match patterns like "1: YES: explanation" or "fix_2: NO: explanation" or "Fix 3: YES: ..."
-      const verifyMatch = line.match(/^(?:fix[_\s]*)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
+      // Match "1: YES: ..." or "fix_2: NO: ..." or "FIX_ID: 1: NO: ..." (model sometimes echoes FIX_ID from prompt)
+      const verifyMatch = line.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
       if (verifyMatch) {
         const [, numStr, yesNo, explanation] = verifyMatch;
         const idx = parseInt(numStr, 10);
@@ -1551,7 +1551,27 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         }
         continue;
       }
-      
+
+      // "FIX_ID: 1" only (YES/NO on next line) — set currentOriginalId so next line can supply result
+      const fixIdOnlyMatch = line.match(/^FIX_ID\s*:\s*(\d+)\s*$/i);
+      if (fixIdOnlyMatch) {
+        const idx = parseInt(fixIdOnlyMatch[1], 10);
+        const originalId = indexToId.get(idx);
+        if (originalId) currentOriginalId = originalId;
+        continue;
+      }
+
+      // Standalone "YES: ..." or "NO: ..." after "FIX_ID: n" (two-line format from model)
+      const standaloneYesNo = line.match(/^(YES|NO)\s*:\s*(.*)$/i);
+      if (standaloneYesNo && currentOriginalId && !results.has(currentOriginalId)) {
+        const [, yesNo, explanation] = standaloneYesNo;
+        results.set(currentOriginalId, {
+          fixed: yesNo!.toUpperCase() === 'YES',
+          explanation: explanation!.trim(),
+        });
+        continue;
+      }
+
       // Match lesson line: "LESSON: actionable guidance"
       const lessonMatch = line.match(/^LESSON:\s*(.+)$/i);
       if (lessonMatch && currentOriginalId) {
@@ -1576,7 +1596,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       const unmatchedLines = lines
         .map(l => l.trim())
         .filter(l => l.length > 0)
-        .filter(l => !l.match(/^(?:fix[_\s]*)?(\d+)\s*:\s*(YES|NO)\s*:/i))
+        .filter(l => !l.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*)?(\d+)\s*:\s*(YES|NO)\s*:/i))
+        .filter(l => !l.match(/^FIX_ID\s*:\s*\d+\s*$/i))
+        .filter(l => !l.match(/^(YES|NO)\s*:/i))
         .filter(l => !l.match(/^LESSON:/i))
         .slice(0, 10);
       

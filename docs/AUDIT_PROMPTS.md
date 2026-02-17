@@ -1,7 +1,7 @@
 # Audit: output.log & prompts.log (fixer and verification prompts)
 
-**Run:** elizaos-plugins/plugin-jupiter#4 (output.log 467 lines; prompts.log ~7k lines)  
-**Scope:** Verification/analysis prompts in prompts.log; fixer prompt design from code + output.log.
+**Run:** elizaos-plugins/plugin-jupiter#4 (output.log ~2k lines; prompts.log ~59k lines)  
+**Scope:** Verification/analysis prompts in prompts.log; fixer prompt design from code + output.log; log-audit of this run.
 
 ---
 
@@ -60,7 +60,7 @@ Fixer flow: `buildFixPrompt()` (prompt-builder) → runner receives prompt → `
 - **PR context:** Title, description (truncated 500 chars), base branch. “Keep fixes aligned with this PR’s intent.”
 - **Per issue:** `### Issue N: path:line [importance:X/5, difficulty:Y/5]`, **Review Comment** (author, body; truncated at MAX_COMMENT_CHARS), **Current Code** (snippet; truncated at MAX_SNIPPET_LINES), optional **Analysis**, then file-specific lessons.
 - **Merged duplicates:** “Also flagged by” with short previews so the fixer knows related comments.
-- **Instructions:** git diff --stat first, address each issue, minimal/surgical, no style-only changes, preserve structure; copy search text exactly from file; short search blocks with unique identifier.
+- **Instructions:** Address each issue, minimal/surgical, no style-only changes, preserve structure; copy search text exactly from file; short search blocks with unique identifier. (Diff summary is run by the workflow and injected as “What this PR changes”.)
 - **Outcome:** RESULT: FIXED | ALREADY_FIXED | NEEDS_DISCUSSION | UNCLEAR | WRONG_LOCATION | CANNOT_FIX | ATTEMPTED; rules for when to cite evidence and when not to make cosmetic changes.
 
 **From output.log:** Fix prompt length ~46k–49k chars; 5 issues; 3 lessons; priority “4 critical/major, 1 moderate”; lessons and file-specific lessons appear in the console summary. Consistent with the design above.
@@ -87,10 +87,34 @@ Fixer flow: `buildFixPrompt()` (prompt-builder) → runner receives prompt → `
 
 ---
 
-## 5. Issues found and fixed
+## 5. Log audit (this run)
+
+**output.log (~1986 lines):**
+- **Run:** plugin-jupiter#4, resumed from interrupted (phase: fixing), 97 iterations, 91 verified fixed from prior runs; 9 issues in queue; Cursor Agent + Direct LLM API (ElizaCloud) available; primary fixer llm-api.
+- **Dedup:** 58 comments → 10 groups merged (37 → 10 canonical); batch analysis and batch verify use ElizaCloud (claude-sonnet-4.5); fixer uses claude-opus-4.5.
+- **504s:** Multiple `504 An error occurred with your deployment` from ElizaCloud during long fixer calls (~3 min); single-issue focus and batch fix both hit 504s; tool failure not recorded as lesson (correct).
+- **Verification parse shortfall:** Repeated “Batch verify parse shortfall” with `missing: 1`, `unparsedIds: ["PRRC_..."]`, `sampleUnmatchedLines: ["FIX_ID: 1", "NO: The review..."]`. Cause: model sometimes outputs “FIX_ID: 1” on one line and “NO: explanation” on the next (or “FIX_ID: 1: NO: explanation” on one line); parser only accepted “1: YES|NO: ...” or “fix 2: NO: ...”.
+- **Lessons:** “The fix added error detection but didn’t validate that .find() results are non-null…” repeated across issues; “Review requires actual runtime validation in start()…” and “getTokenPair summing individual token metrics…” are specific and good. Full-file rewrite escalation after 6 failures on `src/service.ts`; fix prompt includes “FULL FILE REWRITE REQUIRED”.
+- **Fix flow:** Adaptive batch sizing (e.g. consecutiveZeroFixIterations: 8 → effectiveMax: 5); fix prompt length ~59k–98k chars with file injection; verification correctly rejects “changed but not verified” when diff doesn’t address the comment (e.g. queue refactor vs API key validation).
+
+**prompts.log (~59k lines):**
+- **Dedup/analysis:** `llm-elizacloud` PROMPT/RESPONSE for grouping (GROUP: 1,2 → canonical 2; NONE); batch check prompts with ISSUE_ID: YES|NO|STALE and I/D ratings; responses parse (parsed: 16, expected: 16, unparsed: 0 in batch check).
+- **Batch verify:** Some responses use “FIX_ID: 1” + “NO: …” or “FIX_ID: 1: NO: …”; others use “1: NO: …” + “LESSON: …”. LESSON lines are specific when present (e.g. “Review requires refactoring duplicated queue logic into a shared generic function…”).
+- **Fixer:** `llm-api-fix` PROMPT includes full injected file (e.g. src/service.ts), “FULL FILE REWRITE REQUIRED”, issues with triage, lessons; RESPONSE contains `<change>` blocks or full `<file path="...">` and RESULT lines. No file changes extracted when model returns only explanation.
+
+**Findings:**
+1. **Verification parser:** Accept “FIX_ID: n: YES|NO: …” and “FIX_ID: n” followed by “YES|NO: …” so parse shortfall goes to zero when model echoes FIX_ID. Fixed in `src/llm/client.ts`.
+2. **504s:** Deployment/timeout on ElizaCloud for long requests; consider shorter timeouts or chunking; no prompt change required.
+3. **Repeated lesson text:** Same “.find() results are non-null” lesson attached to multiple issues; acceptable (per-issue lessons); could cap repeats in display if it clutters.
+4. **Instruction 0:** Already fixed: we run `git diff` ourselves and inject “What this PR changes (diff summary)” in the fix prompt; instruction 0 removed.
+
+---
+
+## 6. Issues found and fixed
 
 | Issue | Location | Fix |
 |-------|----------|-----|
-| **Instruction 0 told the model to run `git diff ... --stat`** | Fix prompt (prompt-builder) | The **llm-api** runner has no shell; the model cannot run commands. Telling it to run git was wrong and could confuse it. Instruction 0 is now qualified: *"If you have shell access, run ... Otherwise use the file contents and issue context provided below."* |
+| **Instruction 0 told the model to run `git diff ... --stat`** | Fix prompt (prompt-builder) | **llm-api** has no shell. We now run `git diff origin/base...HEAD --stat` in the workflow and inject it as “What this PR changes (diff summary)”. Instruction 0 removed. |
+| **Verification response “FIX_ID: 1” / “FIX_ID: 1: NO: …” not parsed** | Batch verify (llm/client.ts) | Parser extended to accept optional `FIX_ID: ` prefix and two-line format (“FIX_ID: 1” then “NO: …”). |
 
-No other issues found: verification format (YES/NO/STALE, I/D ratings) matches the parser; RESULT and NO_CHANGES are documented and parsed; security note (ignore meta-instructions) is present; .prr/ exclusion is clear.
+No other issues: ISSUE_ID format (batch analysis) matches parser; RESULT and NO_CHANGES documented; security and .prr/ exclusion in place.
