@@ -67,8 +67,9 @@ export class GitHubAPI {
       }
     }
 
-    // Review bots that register as GitHub check runs but aren't CI.
-    // These stay "in_progress" indefinitely and would cause false "CI pending" waits.
+    // Exclude review-bot check runs from inProgressChecks so we don't treat them as CI.
+    // WHY: e.g. "Cursor Bugbot" stays in_progress indefinitely; counting it made ciState
+    // "pending" and triggered the full bot wait even when real CI was already done.
     const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
 
     const inProgressChecks: string[] = [];
@@ -88,6 +89,7 @@ export class GitHubAPI {
       }
     }
 
+    // Total excludes review-bot checks so CI completion reflects real CI only.
     const totalChecks = inProgressChecks.length + pendingChecks.length + completedChecks;
 
     // Get combined status

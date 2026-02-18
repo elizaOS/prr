@@ -35,7 +35,8 @@ export interface PushResult {
   success: boolean;
   rejected?: boolean;
   error?: string;
-  /** True when push succeeded but remote already had our commits (nothing to push). */
+  /** True when push succeeded but remote already had our commits (nothing to push).
+   * WHY: Caller skips the post-push bot wait when nothing was pushed to avoid a 300s wait. */
   nothingToPush?: boolean;
 }
 

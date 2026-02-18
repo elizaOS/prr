@@ -122,8 +122,10 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
  * sending Anthropic models to OpenAI-only tools and vice versa.
  */
 function isModelProviderCompatible(runner: Runner, model: string): boolean {
-  // llm-api sets runner.provider at runtime based on which API key is available.
-  // RUNNER_PROVIDER_MAP is a static fallback for runners without a dynamic provider.
+  // Prefer runner.provider over RUNNER_PROVIDER_MAP when the runner sets it at runtime.
+  // WHY: llm-api can be openai, anthropic, or elizacloud depending on which API key
+  // is set. The map hardcodes llm-api as 'anthropic', so gpt-5.2 was rejected as
+  // "no compatible recommended models" when only OPENAI_API_KEY was set.
   const runnerProvider = runner.provider ?? RUNNER_PROVIDER_MAP[runner.name];
 
   // No provider mapping = runner handles its own models (e.g., cursor) — allow anything

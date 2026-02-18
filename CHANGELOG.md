@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-02-12) — Audit-driven workflow fixes
+
+**Verification cache vs final audit**
+- When the final audit re-opens issues (finds them still unfixed), PRR now calls `Verification.unmarkVerified()` for each failed-audit comment before re-entering the fix loop.
+- **WHY**: Without invalidation, the next iteration’s verification step still saw those comments as “already verified” and skipped them. That produced “Changed files → []” and zero progress, so the loop never made headway and could run for 30+ minutes. Unmarking forces re-verification so the fixer actually re-attempts those issues.
+
+**Model recommendation compatibility (llm-api)**
+- `isModelProviderCompatible()` now prefers `runner.provider` (set at runtime by llm-api) over the static `RUNNER_PROVIDER_MAP[runner.name]`.
+- **WHY**: The map hardcoded `llm-api` as `'anthropic'`, but llm-api sets `runner.provider` from the available API key (`'openai'` | `'anthropic'` | `'elizacloud'`). With only `OPENAI_API_KEY` set, recommendations like `gpt-5.2` were rejected as “no compatible recommended models” and the runner fell back to rotation instead of using the LLM’s suggestion.
+
+**Commit message scope**
+- Commit messages are now built only from issues whose files were actually staged in that commit. We commit with a placeholder, then amend with the message derived from `commit.stagedFiles`.
+- **WHY**: Previously the message listed every verified issue on the PR, including files not changed in this commit. That was misleading in history and in “what did this commit do?”. Scoping to staged files keeps the message accurate.
+
+**Review-bot checks excluded from CI pending**
+- GitHub check runs named “Cursor Bugbot” (and other review-bot checks in `REVIEW_BOT_CHECKS`) are excluded from `inProgressChecks` / `pendingChecks` when computing PR status.
+- **WHY**: Cursor Bugbot registers as a check that stays `in_progress` indefinitely. Counting it made `ciState` “pending” and triggered the full 300s bot wait even when real CI was done. Excluding known review-bot checks avoids false “CI still running” and shortens wait time when only a review bot is pending.
+
+**Related (from prior session)**
+- Empty commits and “Everything up-to-date” push handling: no commit when only tool artifacts are staged; skip bot wait when push reports nothing to push.
+- **WHY**: Prevents wasted push + 300s wait when nothing was actually committed.
+- Consecutive no-commit bail-out: after 3 push iterations with no files committed, the orchestrator exits with `no_progress`.
+- **WHY**: When the fixer keeps writing identical content or only touching tool artifacts, the loop would otherwise run indefinitely.
+
 ### Fixed (2026-02-17) — ElizaCloud 401 Unauthorized
 
 - **API key trimming**: All LLM API keys (ElizaCloud, Anthropic, OpenAI) are trimmed when loaded from config. Trailing newlines or spaces in `.env` no longer cause 401s.

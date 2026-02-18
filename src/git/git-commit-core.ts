@@ -19,7 +19,9 @@ export interface CommitResult {
   hash: string;
   message: string;
   filesChanged: number;
-  /** File paths that were actually staged & committed (relative to repo root). */
+  /** File paths that were actually staged and committed (relative to repo root).
+   * WHY: Callers scope commit messages to these files so the message doesn't list
+   * issues in files that weren't changed in this commit. */
   stagedFiles: string[];
 }
 

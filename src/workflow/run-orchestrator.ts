@@ -171,6 +171,8 @@ export async function executeRun(
     // One re-entry is still useful (catches fixes the bots resolved), but
     // beyond that it's diminishing returns.
     const MAX_CONSECUTIVE_BAILOUTS = 2;
+    // WHY 3: Fixer may write identical content or only touch .prr/; after 3 iterations
+    // with no files committed we exit instead of looping forever.
     const MAX_CONSECUTIVE_NO_COMMIT = 3;
     let consecutiveBailouts = 0;
     let consecutiveNoCommits = 0;

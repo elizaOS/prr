@@ -103,8 +103,9 @@ export async function handleCommitAndPush(
     };
   }
   
-  // Commit first (with placeholder message) so we know which files are staged,
-  // then build the real message scoped to those files only.
+  // Commit with placeholder so we get commit.stagedFiles, then amend with the real message.
+  // WHY: The message must list only issues whose files were actually changed in this commit.
+  // Building from all verified comments listed unrelated files and was misleading in history.
   spinner.text = 'Committing changes...';
   const commit = await squashCommit(git, 'fix: address review comments');
 
@@ -118,7 +119,6 @@ export async function handleCommitAndPush(
     };
   }
 
-  // Scope commit message to issues whose files were actually changed in this commit
   const stagedSet = new Set(commit.stagedFiles);
   const fixedIssues = comments
     .filter((comment) => Verification.isVerified(stateContext, comment.id) && stagedSet.has(comment.path))
@@ -130,7 +130,7 @@ export async function handleCommitAndPush(
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);
 
-  // Amend with the accurate message
+  // Amend so the commit message reflects only the files in this commit.
   await git.raw(['commit', '--amend', '-m', commitMsg]);
 
   spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);

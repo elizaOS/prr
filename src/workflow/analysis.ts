@@ -193,6 +193,8 @@ export async function runFinalAudit(
   debugStep('FINAL AUDIT');
   setTokenPhase('Final audit');
   
+  // Don't clear verification cache before audit; pass/fail results are applied per-comment.
+  // WHY: If audit fails for some comments, the caller (main-loop-setup) unmarks those so the next iteration re-verifies; clearing everything would lose valid verifications.
   debug('Starting final audit (verification cache not cleared - results are additive)');
   
   spinner.start('Running final audit on all issues...');

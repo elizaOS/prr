@@ -412,6 +412,18 @@ Timing Summary at end shows:
 
 ---
 
+### Problem: PRR re-enters fix loop repeatedly after "final audit found N issue(s) not properly fixed"
+**Cause**: Final audit re-opened some issues; without cache invalidation the next iteration skipped re-verifying them, so no files changed and the loop never made progress.
+**Solution**: As of 2026-02-12, PRR unmarks those comments as verified before re-entering, so they are re-verified and re-fixed. If you're on an older version, upgrade.
+
+---
+
+### Problem: "No compatible recommended models for runner" with llm-api
+**Cause**: The runner’s provider (openai/anthropic/elizacloud) is now taken from the runner at runtime, so LLM recommendations (e.g. gpt-5.2) are accepted when you're using OPENAI_API_KEY.
+**Solution**: Upgrade to a version that uses `runner.provider` for llm-api; then recommendations are honored.
+
+---
+
 ### Problem: State file conflicts in git
 **Solution**: Should be auto-ignored
 ```bash

@@ -46,7 +46,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
 - **Adaptive batch sizing**: Halves issues per prompt on consecutive failures (50 → 25 → 12 → 6 → 5) before falling back to single-issue mode
-- **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
+- **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage. For llm-api, the runner’s current provider (openai/anthropic/elizacloud) is used when matching LLM-recommended models so recommendations are honored instead of rejected as “no compatible model”.
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Prompt regurgitation detection**: Rejects model output that echoes the instruction template instead of reasoning
 - **Spot-check verification**: Samples 5 issues before committing to expensive full batch verification on "already fixed" claims
@@ -97,6 +97,9 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Issue deduplication**: Two-phase dedup (heuristic + LLM semantic) groups related comments, with in-memory caching to avoid redundant LLM dedup calls across iterations
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 - **Outer loop bail-out**: Detects consecutive stalemate bail-outs with no progress and hard-exits instead of re-entering the push loop indefinitely
+- **Verification cache invalidation on audit failure**: When the final audit finds issues still unfixed, PRR unmarks those comments as verified before re-entering the fix loop. *Why*: Otherwise the next iteration skips re-verification (“already verified”), produces no changed files, and can loop indefinitely.
+- **Commit message accuracy**: Commit messages list only issues whose files were actually changed in that commit (built from staged files after commit, then amended). *Why*: Previously messages listed all verified issues on the PR, including untouched files, which was misleading in history.
+- **Review-bot checks excluded from CI**: Check runs like “Cursor Bugbot” (review bots that stay `in_progress`) are excluded when deciding if CI is pending. *Why*: Treating them as CI caused unnecessary long waits; real CI completion is what we care about for proceeding.
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
 - **Dual log system**: `output.log` mirrors console output (ANSI-stripped); `prompts.log` captures full LLM prompts/responses with searchable slugs linking the two files

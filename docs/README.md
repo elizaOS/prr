@@ -423,4 +423,4 @@ These docs explain **how** the cat works its magic. Happy reading! 📚
 
 ---
 
-**Last Updated**: 2026-02-17
+**Last Updated**: 2026-02-12

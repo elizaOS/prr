@@ -70,7 +70,8 @@ export async function commitAndPushChanges(
     return { committed: false };
   }
 
-  // Scope commit message to issues whose files were actually changed in this commit
+  // Build message only from issues in files that were actually committed.
+  // WHY: Listing all verified issues (including untouched files) was misleading in git log.
   const stagedSet = new Set(commit.stagedFiles);
   const fixedIssues = comments
     .filter((comment) => Verification.isVerified(stateContext, comment.id) && stagedSet.has(comment.path))

@@ -140,7 +140,8 @@ export async function executePushIteration(
   updatedModelFailuresInCycle: number;
   updatedProgressThisCycle: number;
   updatedHeadSha?: string;
-  /** True when this iteration created a commit (with ≥1 file). Used for consecutive no-commit bail-out. */
+  /** True when this iteration created a commit (with ≥1 file).
+   * WHY: Orchestrator counts consecutive iterations with no commit and exits after 3 to avoid infinite loop when fixer produces no real changes. */
   committedThisIteration?: boolean;
 }> {
   // Destructure parameter objects for local use

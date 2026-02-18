@@ -247,6 +247,7 @@ Maintains session state across iterations:
 - Dismissed issues (skips false positives)
 - Iteration history
 - Runner/model rotation state
+- **Final audit and verification cache:** When the final audit finds issues still unfixed, PRR calls `unmarkVerified()` for each before re-entering the fix loop. WHY: Otherwise the next iteration would skip re-verification (they remain in verifiedFixed), report no changed files, and loop indefinitely.
 - **Lessons learned** - Tracks failure patterns
 
 **Lessons System:**
