@@ -64,6 +64,9 @@ export async function commitIteration(
 
   await stageAll(git);
 
+  const staged = await git.diff(['--cached', '--name-only']);
+  const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
+
   // Build prr-fix markers for recovery
   // WHY lowercase: GitHub IDs have inconsistent casing, normalize for reliable matching
   const markers = verifiedCommentIds
@@ -95,5 +98,6 @@ export async function commitIteration(
     hash: result.commit,
     message,
     filesChanged: result.summary.changes,
+    stagedFiles,
   };
 }

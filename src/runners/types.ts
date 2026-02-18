@@ -55,8 +55,10 @@ export interface Runner {
   displayName: string;   // Human-friendly name
   /** Install command/instructions shown when tool is not installed */
   installHint?: string;
-  /** List of models this runner can use, in rotation order */
+  /** List of models this runner can use, in rotation order. May be set at runtime from provider API (e.g. llm-api). */
   supportedModels?: string[];
+  /** Provider backend when runner is multi-provider (e.g. llm-api: 'elizacloud' | 'openai' | 'anthropic'). Used to build rotation from API model list. */
+  provider?: 'elizacloud' | 'openai' | 'anthropic';
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult>;
   isAvailable(): Promise<boolean>;
   checkStatus(): Promise<RunnerStatus>;
@@ -189,6 +191,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'openai/gpt-4.1',
   ],
   // LLM API (ElizaCloud): use API model IDs (owner/name). Same as elizacloud.
+  // When provider is native OpenAI or Anthropic, llm-api runner uses the lists below instead.
   'llm-api': [
     'openai/gpt-5.1-codex-max',           // GPT-5.1 Codex Max - purpose-built for agentic coding
     'openai/gpt-5.2-codex',               // GPT-5.2-Codex - agentic coding
@@ -198,3 +201,6 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'openai/gpt-5-mini',                  // GPT-5 mini - fast, cost-effective
   ],
 };
+
+// Native OpenAI/Anthropic model lists are no longer hardcoded — llm-api rotation
+// is built from the provider's model list in validateAndFilterModels (see rotation.ts).

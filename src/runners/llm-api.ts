@@ -2,6 +2,7 @@ import { writeFileSync, readFileSync, existsSync, realpathSync } from 'fs';
 import { dirname, resolve, relative, sep, isAbsolute } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
+import { DEFAULT_MODEL_ROTATIONS } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
@@ -23,24 +24,27 @@ const REWRITE_ESCALATION_THRESHOLD = 2;
 export class LLMAPIRunner implements Runner {
   name = 'llm-api';
   displayName = 'Direct LLM API';
-  private provider: 'elizacloud' | 'anthropic' | 'openai' = 'elizacloud';
+  /** Set at checkStatus (elizacloud) or validateAndFilterModels (openai/anthropic from API list). */
+  supportedModels?: string[];
+  /** Exposed so rotation can build supportedModels from provider's model list (no hardcoded lists). */
+  provider?: 'elizacloud' | 'anthropic' | 'openai';
+  private _provider: 'elizacloud' | 'anthropic' | 'openai' = 'elizacloud';
   private anthropic?: Anthropic;
   private openai?: OpenAI;
   /** Track search/replace failures per file across iterations within a session. */
   private searchReplaceFailures = new Map<string, number>();
 
   async isAvailable(): Promise<boolean> {
-    // Check ElizaCloud first (gateway to all models)
     if (process.env.ELIZACLOUD_API_KEY) {
-      this.provider = 'elizacloud';
+      this._provider = 'elizacloud';
       return true;
     }
     if (process.env.ANTHROPIC_API_KEY) {
-      this.provider = 'anthropic';
+      this._provider = 'anthropic';
       return true;
     }
     if (process.env.OPENAI_API_KEY) {
-      this.provider = 'openai';
+      this._provider = 'openai';
       return true;
     }
     return false;
@@ -59,12 +63,20 @@ export class LLMAPIRunner implements Runner {
       };
     }
 
-    this.provider = hasElizaCloud ? 'elizacloud' : hasAnthropic ? 'anthropic' : 'openai';
-    
+    this._provider = hasElizaCloud ? 'elizacloud' : hasAnthropic ? 'anthropic' : 'openai';
+    this.provider = this._provider;
+
+    // ElizaCloud: use static list (owner/model IDs). OpenAI/Anthropic: supportedModels
+    // are built from the provider's model list in validateAndFilterModels (no hardcoded list).
+    if (this._provider === 'elizacloud') {
+      this.supportedModels = DEFAULT_MODEL_ROTATIONS['llm-api'];
+    }
+    // else: openai/anthropic leave supportedModels unset; rotation will set from API list
+
     return {
       installed: true,
       ready: true,
-      version: this.provider === 'elizacloud' ? 'ElizaCloud Gateway' : this.provider === 'anthropic' ? 'Anthropic Claude' : 'OpenAI GPT',
+      version: this._provider === 'elizacloud' ? 'ElizaCloud Gateway' : this._provider === 'anthropic' ? 'Anthropic Claude' : 'OpenAI GPT',
     };
   }
 
@@ -193,9 +205,11 @@ Working directory: ${workdir}`;
           await acquireElizacloud();
         }
         try {
+          // Use max_completion_tokens: newer OpenAI models (e.g. gpt-5.1, reasoning) reject
+          // max_tokens and require this parameter instead.
           const result = await openai.chat.completions.create({
             model,
-            max_tokens: 16000,
+            max_completion_tokens: 16000,
             messages: [
               { role: 'system', content: systemPrompt },
               { role: 'user', content: enrichedPrompt },

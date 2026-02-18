@@ -140,6 +140,8 @@ export async function executePushIteration(
   updatedModelFailuresInCycle: number;
   updatedProgressThisCycle: number;
   updatedHeadSha?: string;
+  /** True when this iteration created a commit (with ≥1 file). Used for consecutive no-commit bail-out. */
+  committedThisIteration?: boolean;
 }> {
   // Destructure parameter objects for local use
   const { git, github, owner, repo, number, workdir } = gitCtx;
@@ -187,6 +189,7 @@ export async function executePushIteration(
       updatedConsecutiveFailures: consecutiveFailures,
       updatedModelFailuresInCycle: modelFailuresInCycle,
       updatedProgressThisCycle: progressThisCycle,
+      committedThisIteration: false,
     };
   }
 
@@ -204,8 +207,8 @@ export async function executePushIteration(
 
   let exitReason = '';
   let exitDetails = '';
-  
-  
+  let committedThisIteration = false;
+
   while (fixIteration < maxFixIterations && !allFixed) {
     fixIteration++;
     
@@ -243,7 +246,7 @@ export async function executePushIteration(
     unresolvedIssues.splice(0, unresolvedIssues.length, ...iterResult.updatedUnresolvedIssues);
     const lessonsBeforeFix = iterResult.lessonsBeforeFix;
     
-    if (iterResult.shouldExit) return { shouldBreak: true, exitReason: iterResult.exitReason || 'bail_out', exitDetails: iterResult.exitDetails || 'Fix iteration requested early exit', updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle };
+    if (iterResult.shouldExit) return { shouldBreak: true, exitReason: iterResult.exitReason || 'bail_out', exitDetails: iterResult.exitDetails || 'Fix iteration requested early exit', updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle, committedThisIteration: false };
     if (iterResult.shouldBreak) {
       exitReason = iterResult.exitReason || '';
       exitDetails = iterResult.exitDetails || '';
@@ -371,8 +374,11 @@ export async function executePushIteration(
         updatedConsecutiveFailures: consecutiveFailures,
         updatedModelFailuresInCycle: modelFailuresInCycle,
         updatedProgressThisCycle: progressThisCycle,
+        committedThisIteration: false,
       };
     }
+    // Committed and pushed this iteration
+    committedThisIteration = true;
   } else {
     console.log(chalk.yellow('\nNo changes to commit'));
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
@@ -398,6 +404,7 @@ export async function executePushIteration(
         updatedConsecutiveFailures: consecutiveFailures,
         updatedModelFailuresInCycle: modelFailuresInCycle,
         updatedProgressThisCycle: progressThisCycle,
+        committedThisIteration: false,
       };
     }
 
@@ -412,6 +419,7 @@ export async function executePushIteration(
       updatedConsecutiveFailures: consecutiveFailures,
       updatedModelFailuresInCycle: modelFailuresInCycle,
       updatedProgressThisCycle: progressThisCycle,
+      committedThisIteration: false,
     };
   }
 
@@ -435,5 +443,6 @@ export async function executePushIteration(
     updatedConsecutiveFailures: consecutiveFailures,
     updatedModelFailuresInCycle: modelFailuresInCycle,
     updatedProgressThisCycle: progressThisCycle,
+    committedThisIteration,
   };
 }

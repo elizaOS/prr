@@ -67,11 +67,18 @@ export class GitHubAPI {
       }
     }
 
+    // Review bots that register as GitHub check runs but aren't CI.
+    // These stay "in_progress" indefinitely and would cause false "CI pending" waits.
+    const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
+
     const inProgressChecks: string[] = [];
     const pendingChecks: string[] = [];
     let completedChecks = 0;
 
     for (const check of allCheckRuns) {
+      if (REVIEW_BOT_CHECKS.has(check.name.toLowerCase())) {
+        continue;
+      }
       if (check.status === 'in_progress') {
         inProgressChecks.push(check.name);
       } else if (check.status === 'queued' || check.status === 'pending') {
@@ -81,7 +88,7 @@ export class GitHubAPI {
       }
     }
 
-    const totalChecks = allCheckRuns.length;
+    const totalChecks = inProgressChecks.length + pendingChecks.length + completedChecks;
 
     // Get combined status
     const { data: status } = await this.octokit.repos.getCombinedStatusForRef({

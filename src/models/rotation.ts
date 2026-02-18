@@ -122,20 +122,22 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
  * sending Anthropic models to OpenAI-only tools and vice versa.
  */
 function isModelProviderCompatible(runner: Runner, model: string): boolean {
-  const runnerProvider = RUNNER_PROVIDER_MAP[runner.name];
-  
+  // llm-api sets runner.provider at runtime based on which API key is available.
+  // RUNNER_PROVIDER_MAP is a static fallback for runners without a dynamic provider.
+  const runnerProvider = runner.provider ?? RUNNER_PROVIDER_MAP[runner.name];
+
   // No provider mapping = runner handles its own models (e.g., cursor) — allow anything
   if (!runnerProvider) return true;
-  
+
   // Mixed-provider runners accept any model
   if (runnerProvider === 'mixed') return true;
-  
+
   // Detect the model's provider from its name
   const modelProvider = detectModelProvider(model, runnerProvider);
-  
+
   // Can't determine model provider — allow it (safe default, let the API reject)
   if (!modelProvider) return true;
-  
+
   return modelProvider === runnerProvider;
 }
 
@@ -484,6 +486,32 @@ function stripProviderPrefix(model: string): string {
   return model.replace(/^(openai|anthropic|google)\//, '');
 }
 
+/** Chat/completion-style OpenAI model ID prefix (exclude embeddings, whisper, etc.). */
+const OPENAI_CHAT_PREFIX = /^(gpt-|o[1-9]|o4-)/i;
+
+/**
+ * Build rotation order from OpenAI model set. Prefer known strong/fast IDs first, then alphabetical.
+ */
+function buildRotationFromOpenAISet(ids: Set<string>): string[] {
+  const list = Array.from(ids).filter(id => OPENAI_CHAT_PREFIX.test(id));
+  const preferred = ['gpt-5.2', 'gpt-5.1', 'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4.1', 'gpt-5-mini'];
+  const ordered: string[] = [];
+  for (const id of preferred) {
+    if (list.includes(id)) ordered.push(id);
+  }
+  for (const id of list.sort()) {
+    if (!ordered.includes(id)) ordered.push(id);
+  }
+  return ordered;
+}
+
+/**
+ * Build rotation order from Anthropic model set. Claude-* only, sort alphabetically.
+ */
+function buildRotationFromAnthropicSet(ids: Set<string>): string[] {
+  return Array.from(ids).filter(id => /^claude-/i.test(id)).sort();
+}
+
 /**
  * Validate rotation models against provider APIs and remove unavailable ones.
  * 
@@ -493,6 +521,9 @@ function stripProviderPrefix(model: string): string {
  * 
  * Calls GET /v1/models on both OpenAI and Anthropic (if keys are present)
  * once at startup and prunes the rotation lists.
+ * 
+ * For llm-api with native OpenAI/Anthropic, rotation is built FROM the API list
+ * (no hardcoded list to maintain).
  * 
  * Skips runners that manage their own models (cursor).
  * If an API call fails (bad key, network), models for that provider are kept as-is.
@@ -511,16 +542,17 @@ export async function validateAndFilterModels(
     return { removed };
   }
   
+  const hasLlMApi = runnersToValidate.some(r => r.name === 'elizacloud' || r.name === 'llm-api');
   const needsOpenAI = runnersToValidate.some(r => {
     const p = RUNNER_PROVIDER_MAP[r.name];
     return p === 'openai' || p === 'mixed';
-  });
+  }) || (hasLlMApi && !!openaiApiKey); // llm-api may be using native OpenAI when only OPENAI_API_KEY set
   const needsAnthropic = runnersToValidate.some(r => {
     const p = RUNNER_PROVIDER_MAP[r.name];
     return p === 'anthropic' || p === 'mixed';
-  });
+  }) || (hasLlMApi && !!anthropicApiKey);
   // 'elizacloud' is the preferred-tool alias; the actual runner is 'llm-api' (Direct LLM API)
-  const needsElizaCloud = runnersToValidate.some(r => r.name === 'elizacloud' || r.name === 'llm-api');
+  const needsElizaCloud = hasLlMApi;
   
   // Fetch available models from all providers in parallel
   console.log(chalk.gray('  Validating model access...'));
@@ -569,20 +601,38 @@ export async function validateAndFilterModels(
     console.log(chalk.yellow('  ⚠ No model lists available - skipping validation'));
     return { removed };
   }
+
+  // Build llm-api rotation from provider model list when native OpenAI/Anthropic (no hardcoded lists)
+  for (const runner of runnersToValidate) {
+    if ((runner.name !== 'llm-api' && runner.name !== 'elizacloud') || !runner.provider) continue;
+    if (runner.provider === 'openai') {
+      runner.supportedModels = openaiModels.size > 0
+        ? buildRotationFromOpenAISet(openaiModels)
+        : ['gpt-4o', 'gpt-4o-mini']; // fallback when API list fails (e.g. network)
+      debug(`llm-api (openai): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'anthropic') {
+      runner.supportedModels = anthropicModels.size > 0
+        ? buildRotationFromAnthropicSet(anthropicModels)
+        : ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']; // fallback when API list fails
+      debug(`llm-api (anthropic): built rotation from API (${runner.supportedModels.length} models)`);
+    }
+  }
   
-  // Validate each runner's rotation list
+  // Validate each runner's rotation list (use runner.supportedModels when set, e.g. llm-api per-provider list)
   for (const runner of runnersToValidate) {
     const runnerProvider = RUNNER_PROVIDER_MAP[runner.name];
     if (!runnerProvider) continue;
     
-    const models = DEFAULT_MODEL_ROTATIONS[runner.name];
+    const models = runner.supportedModels ?? DEFAULT_MODEL_ROTATIONS[runner.name];
     if (!models || models.length === 0) continue;
     
     const validModels: string[] = [];
-    
+    const isLlMApi = runner.name === 'elizacloud' || runner.name === 'llm-api';
+    const useElizaCloudForLlMApi = isLlMApi && models.some(m => m.includes('/'));
+
     for (const model of models) {
-      // Special handling for Eliza Cloud backend (elizacloud alias or llm-api with ElizaCloud)
-      if (runner.name === 'elizacloud' || runner.name === 'llm-api') {
+      // Eliza Cloud backend: validate against elizacloud set
+      if (isLlMApi && useElizaCloudForLlMApi) {
         if (elizacloudModels.size === 0) {
           validModels.push(model);
         } else if (elizacloudModels.has(model) || elizacloudModels.has(stripProviderPrefix(model))) {
@@ -590,6 +640,16 @@ export async function validateAndFilterModels(
         } else {
           removed.push({ runner: runner.name, model });
           debug(`Model "${model}" not found in available ElizaCloud models`);
+        }
+        continue;
+      }
+      // llm-api with list built from API (openai/anthropic): already from provider set, keep if in set
+      if (isLlMApi && runner.provider && runner.provider !== 'elizacloud') {
+        const available = runner.provider === 'openai' ? openaiModels : anthropicModels;
+        if (available.has(model)) {
+          validModels.push(model);
+        } else {
+          removed.push({ runner: runner.name, model });
         }
         continue;
       }
@@ -623,11 +683,14 @@ export async function validateAndFilterModels(
       }
     }
     
-    // Update the rotation list in-place
-    // Only update if we have at least one valid model; otherwise keep original
-    // to avoid leaving a runner with zero models
+    // Update the rotation list in-place (where it came from)
     if (validModels.length > 0 && validModels.length < models.length) {
-      DEFAULT_MODEL_ROTATIONS[runner.name] = validModels;
+      if (runner.supportedModels) {
+        runner.supportedModels.length = 0;
+        runner.supportedModels.push(...validModels);
+      } else {
+        DEFAULT_MODEL_ROTATIONS[runner.name] = validModels;
+      }
     } else if (validModels.length === 0) {
       console.log(chalk.yellow(`  ⚠ No valid models found for ${runner.name} - keeping defaults`));
     }

@@ -93,13 +93,6 @@ export async function handleCommitAndPush(
     }
   }
 
-  const fixedIssues = comments
-    .filter((comment) => Verification.isVerified(stateContext, comment.id))
-    .map((comment) => ({
-      filePath: comment.path,
-      comment: comment.body,
-    }));
-
   if (options.noCommit) {
     warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
     console.log(chalk.gray(`Workdir: ${workdir}`));
@@ -110,13 +103,36 @@ export async function handleCommitAndPush(
     };
   }
   
-  // Generate commit message locally (no LLM call needed)
-  // WHY: Pattern matching is fast, free, and works well for commit messages
+  // Commit first (with placeholder message) so we know which files are staged,
+  // then build the real message scoped to those files only.
+  spinner.text = 'Committing changes...';
+  const commit = await squashCommit(git, 'fix: address review comments');
+
+  // No commit when only tool artifacts were staged (e.g. .prr/) or no file changes.
+  if (commit === null || commit.filesChanged === 0) {
+    console.log(chalk.yellow('\nNo changes to commit (only tool artifacts or no file changes)'));
+    return {
+      shouldBreak: true,
+      exitReason: 'no_changes',
+      exitDetails: 'No committable changes after excluding tool artifacts',
+    };
+  }
+
+  // Scope commit message to issues whose files were actually changed in this commit
+  const stagedSet = new Set(commit.stagedFiles);
+  const fixedIssues = comments
+    .filter((comment) => Verification.isVerified(stateContext, comment.id) && stagedSet.has(comment.path))
+    .map((comment) => ({
+      filePath: comment.path,
+      comment: comment.body,
+    }));
+
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);
-  
-  spinner.text = 'Committing changes...';
-  const commit = await squashCommit(git, commitMsg);
+
+  // Amend with the accurate message
+  await git.raw(['commit', '--amend', '-m', commitMsg]);
+
   spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
   debug('Commit created', commit);
 
@@ -127,8 +143,9 @@ export async function handleCommitAndPush(
     console.log(chalk.gray(`  Running: git push origin ${prInfo.branch}`));
     console.log(chalk.gray(`  Workdir: ${workdir}`));
     spinner.start('Pushing changes...');
+    let pushNothingToPush = false;
     try {
-      await pushWithRetry(git, prInfo.branch, {
+      const pushResult = await pushWithRetry(git, prInfo.branch, {
         onPullNeeded: () => {
           spinner.text = 'Push rejected, pulling and retrying...';
         },
@@ -143,8 +160,9 @@ export async function handleCommitAndPush(
           );
           return resolution.success;
         },
-    });
-    spinner.succeed('Pushed to remote');
+      });
+      pushNothingToPush = pushResult.nothingToPush === true;
+      spinner.succeed(pushNothingToPush ? 'Already up-to-date (nothing to push)' : 'Pushed to remote');
     } catch (pushErr) {
       spinner.fail('Push failed');
       throw pushErr;
@@ -186,6 +204,8 @@ export async function handleCommitAndPush(
 
     // Wait for re-review using smart timing based on observed bot response times.
     //
+    // Skip wait when nothing was pushed (Everything up-to-date): no new commit
+    // was sent, so bots have nothing new to review and 300s would be wasted.
     // HISTORY: Originally "always wait, even after bail-out" reasoning was that
     // pushed fixes may trigger new bot comments worth processing. In practice,
     // after a stalemate bail-out we've exhausted all fix strategies — new bot
@@ -193,10 +213,13 @@ export async function handleCommitAndPush(
     // zero benefit. Now the caller passes skipBotWait=true on bail-out to avoid
     // this. The wait still runs for normal mid-loop pushes where re-entering
     // the fix loop with fresh bot feedback is valuable.
-    if (!skipBotWait && (maxPushIterations === 0 || pushIteration < maxPushIterations)) {
+    const shouldWaitForBots = !skipBotWait && !pushNothingToPush && (maxPushIterations === 0 || pushIteration < maxPushIterations);
+    if (shouldWaitForBots) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);
     } else if (skipBotWait) {
       debug('Skipping bot review wait (bail-out — no more fix iterations will run)');
+    } else if (pushNothingToPush) {
+      debug('Skipping bot review wait (nothing was pushed — already up-to-date)');
     }
     
     return { shouldBreak: false };

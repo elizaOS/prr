@@ -171,7 +171,9 @@ export async function executeRun(
     // One re-entry is still useful (catches fixes the bots resolved), but
     // beyond that it's diminishing returns.
     const MAX_CONSECUTIVE_BAILOUTS = 2;
+    const MAX_CONSECUTIVE_NO_COMMIT = 3;
     let consecutiveBailouts = 0;
+    let consecutiveNoCommits = 0;
     let lastBailoutRemainingCount = Infinity;
     const prInfoRef = { current: state.prInfo };
     const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
@@ -205,6 +207,21 @@ export async function executeRun(
       if (iterResult.exitDetails) state.exitDetails = iterResult.exitDetails;
       if (iterResult.shouldBreak) {
         break;
+      }
+
+      // Track consecutive iterations with no commit (fixer made no file changes).
+      // Avoids unbounded run when runner keeps "fixing" but writes identical content.
+      if (iterResult.committedThisIteration) {
+        consecutiveNoCommits = 0;
+      } else {
+        consecutiveNoCommits++;
+        if (consecutiveNoCommits >= MAX_CONSECUTIVE_NO_COMMIT) {
+          console.log(chalk.red(`\n  🛑 ${consecutiveNoCommits} consecutive push iterations with no files committed — exiting`));
+          console.log(chalk.gray(`     Fixer is not producing new changes; re-run after manual edits if needed`));
+          state.exitReason = 'no_progress';
+          state.exitDetails = `${consecutiveNoCommits} consecutive push iterations with no committable changes`;
+          break;
+        }
       }
 
       // Track consecutive bail-outs to prevent infinite re-entry.

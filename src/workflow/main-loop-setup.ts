@@ -180,6 +180,12 @@ export async function processCommentsAndPrepareFixLoop(
     );
     
     if (auditResult.failedAudit.length > 0) {
+      // Invalidate verification cache for issues the audit says are still unfixed.
+      // Without this, the next iteration's verifyFixes skips them ("already verified"),
+      // producing Changed files → [] and zero progress — an infinite loop.
+      for (const { comment } of auditResult.failedAudit) {
+        Verification.unmarkVerified(stateContext, comment.id);
+      }
       // Re-populate unresolvedIssues with failed audit items — fetch snippets concurrently
       unresolvedIssues.length = 0;
       const failedItems = auditResult.failedAudit;

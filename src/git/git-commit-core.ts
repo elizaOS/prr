@@ -19,6 +19,8 @@ export interface CommitResult {
   hash: string;
   message: string;
   filesChanged: number;
+  /** File paths that were actually staged & committed (relative to repo root). */
+  stagedFiles: string[];
 }
 
 /**
@@ -69,13 +71,13 @@ export async function stageAll(git: SimpleGit): Promise<void> {
  * @param git - SimpleGit instance for the repository
  * @param message - Commit title/summary (first line)
  * @param body - Optional detailed description
- * @returns Commit hash, message, and number of files changed
+ * @returns Commit hash, message, and number of files changed; null if nothing to commit
  */
 export async function squashCommit(
   git: SimpleGit,
   message: string,
   body?: string
-): Promise<CommitResult> {
+): Promise<CommitResult | null> {
   // Stage all changes
   await stageAll(git);
 
@@ -84,6 +86,16 @@ export async function squashCommit(
   // XML blocks. If parsing fails partially, these end up in source files.
   // Also catch accidental tool-generated note files.
   await unstageToolArtifacts(git);
+
+  // If everything was unstaged (e.g. only .prr/ or tool artifacts), nothing to commit.
+  // WHY: Avoids "nothing to commit" error and prevents empty/no-op commits that
+  // would still trigger push + 300s wait (Everything up-to-date).
+  const staged = await git.diff(['--cached', '--name-only']);
+  if (!staged || staged.trim() === '') {
+    return null;
+  }
+
+  const stagedFiles = staged.trim().split('\n').filter(Boolean);
 
   // Build commit message (title + optional body separated by blank line)
   const fullMessage = body ? `${message}\n\n${body}` : message;
@@ -95,6 +107,7 @@ export async function squashCommit(
     hash: result.commit,
     message,
     filesChanged: result.summary.changes,
+    stagedFiles,
   };
 }
 

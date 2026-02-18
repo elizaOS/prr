@@ -63,24 +63,29 @@ export async function commitAndPushChanges(
     return { committed: false };
   }
   
-  // Get all comments that were fixed for commit message
+  spinner.text = 'Committing changes...';
+  const commit = await squashCommit(git, 'fix: address review comments');
+  if (commit === null || commit.filesChanged === 0) {
+    console.log(chalk.yellow('\nNo changes to commit (only tool artifacts or no file changes)'));
+    return { committed: false };
+  }
+
+  // Scope commit message to issues whose files were actually changed in this commit
+  const stagedSet = new Set(commit.stagedFiles);
   const fixedIssues = comments
-    .filter((comment) => Verification.isVerified(stateContext, comment.id))
+    .filter((comment) => Verification.isVerified(stateContext, comment.id) && stagedSet.has(comment.path))
     .map((comment) => ({
       filePath: comment.path,
       comment: comment.body,
     }));
-  
-  // Generate commit message locally (no LLM call needed)
-  // WHY: Pattern matching is fast, free, and works well for commit messages
+
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);
-  
-  spinner.text = 'Committing changes...';
-  const commit = await squashCommit(git, commitMsg);
+
+  await git.raw(['commit', '--amend', '-m', commitMsg]);
   spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${formatNumber(commit.filesChanged)} files)`);
   debug('Commit created', commit);
-  
+
   if (options.autoPush && !options.noPush) {
     // Log command BEFORE spinner so user can copy it if needed
     console.log(chalk.gray(`  Running: git push origin ${prInfo.branch}`));

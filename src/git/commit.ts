@@ -6,6 +6,7 @@ export interface CommitResult {
   hash: string;
   message: string;
   filesChanged: number;
+  stagedFiles: string[];
 }
 
 export async function stageAll(git: SimpleGit): Promise<void> {
@@ -20,6 +21,9 @@ export async function squashCommit(
   // Stage all changes
   await stageAll(git);
 
+  const staged = await git.diff(['--cached', '--name-only']);
+  const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
+
   // Build commit message
   const fullMessage = body ? `${message}\n\n${body}` : message;
 
@@ -30,6 +34,7 @@ export async function squashCommit(
     hash: result.commit,
     message,
     filesChanged: result.summary.changes,
+    stagedFiles,
   };
 }
 
@@ -395,13 +400,15 @@ export async function commitIteration(
 
   await stageAll(git);
 
+  const staged = await git.diff(['--cached', '--name-only']);
+  const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
+
   // Build commit message with prr-fix markers (normalized to lowercase - Trap 6)
   const markers = verifiedCommentIds
     .map(id => `prr-fix:${id.toLowerCase()}`)
     .join('\n');
   
   // Generate a meaningful commit message from the fixed issues
-  // WHY: "fix(prr): address 6 review comment(s)" says NOTHING about what changed
   const firstLine = generateCommitFirstLine(fixedIssues || [], status.files.map(f => f.path));
   
   const message = [
@@ -412,13 +419,14 @@ export async function commitIteration(
     markers,
   ].join('\n');
 
-  // Skip pre-commit hooks for automated commits (Trap 10)
+  // Skip pre-commit hooks for automated commits
   const result = await git.commit(message, { '--no-verify': null });
 
   return {
     hash: result.commit,
     message,
     filesChanged: result.summary.changes,
+    stagedFiles,
   };
 }
 

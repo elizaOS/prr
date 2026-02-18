@@ -35,19 +35,8 @@ export interface PushResult {
   success: boolean;
   rejected?: boolean;
   error?: string;
-}
-
-export interface PushWithRetryResult {
-  success: boolean;
-  retryCount: number;
-  pushedAfterPull: boolean;
-}
-
-
-export interface PushResult {
-  success: boolean;
-  rejected?: boolean;  // True if push was rejected because remote has newer commits
-  error?: string;
+  /** True when push succeeded but remote already had our commits (nothing to push). */
+  nothingToPush?: boolean;
 }
 
 /**
@@ -181,8 +170,9 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       if (killed) return; // Already handled by timeout/sigint
       
       if (code === 0) {
-        debug('Git push completed', { branch });
-        resolve({ success: true });
+        const nothingToPush = /everything up-to-date/i.test(stderr) || /everything up-to-date/i.test(stdout);
+        debug('Git push completed', { branch, nothingToPush });
+        resolve({ success: true, nothingToPush: nothingToPush || undefined });
       } else {
         // Check if push was rejected due to being behind remote
         const isRejected = stderr.includes('rejected') && 
@@ -217,12 +207,14 @@ export async function push(git: SimpleGit, branch: string, force = false, github
 }
 
 /**
- * Result of pushWithRetry
+ * Result of pushWithRetry when push succeeds.
  */
 export interface PushWithRetryResult {
   success: boolean;
   error?: string;
   conflictedFiles?: string[];  // Files with conflicts if rebase failed
+  /** True when remote already had our commits (nothing to push). Skip bot wait. */
+  nothingToPush?: boolean;
 }
 
 /**
@@ -248,17 +240,17 @@ export async function pushWithRetry(
     onConflict?: (conflictedFiles: string[]) => Promise<boolean>;  // Returns true if conflicts resolved
     maxRetries?: number;  // Max push retries (default 3)
   }
-): Promise<void> {
+): Promise<PushWithRetryResult> {
   const maxRetries = options?.maxRetries ?? 3;
   const maxAttempts = maxRetries + 1;
   let attempts = 0;
-  
+
   while (attempts < maxAttempts) {
     attempts++;
     const result = await push(git, branch, options?.force, options?.githubToken);
-    
+
     if (result.success) {
-      return;
+      return { success: true, nothingToPush: result.nothingToPush };
     }
     
     if (!result.rejected) {
