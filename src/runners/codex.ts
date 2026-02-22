@@ -4,6 +4,7 @@ import { execFile as execFileCallback } from 'child_process';
 import { createReadStream, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import dotenv from 'dotenv';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
@@ -54,9 +55,12 @@ export class CodexRunner implements Runner {
       // Version check might fail
     }
 
-    // Check for OpenAI API key
+    // Check for OpenAI API key (load .env from cwd if not set)
     if (!process.env.OPENAI_API_KEY) {
-      return { installed: true, ready: false, version, error: 'OPENAI_API_KEY not set' };
+      dotenv.config({ path: join(process.cwd(), '.env') });
+    }
+    if (!process.env.OPENAI_API_KEY) {
+      return { installed: true, ready: false, version, error: 'OPENAI_API_KEY not set (set in .env or environment)' };
     }
 
     return { installed: true, ready: true, version };
@@ -102,7 +106,10 @@ export class CodexRunner implements Runner {
     // WHY: Interactive mode requires TTY for cursor position queries, which fails in automation.
     // `codex exec` is designed for non-interactive/CI use and doesn't need a TTY.
     const args: string[] = ['exec'];
-    
+    // Force API key auth so Codex uses OPENAI_API_KEY instead of cached ChatGPT/Teams login.
+    // See https://github.com/openai/codex/issues/2733 — when a Teams subscription login is active,
+    // Codex can ignore OPENAI_API_KEY and use the session (which may 401 for API calls).
+    args.push('--config', 'forced_login_method=api');
     // Bypass sandbox and approvals - prr controls the execution environment
     // WHY: Codex's landlock sandbox can fail in some environments (containers, etc.)
     // prr already isolates work in a cloned workdir, so external sandboxing is sufficient
@@ -138,16 +145,33 @@ export class CodexRunner implements Runner {
         promptLength: prompt.length,
       });
 
+      // Prefer key from options (config), then process.env, then .env from cwd
+      let apiKey = options?.openaiApiKey?.trim();
+      if (!apiKey && !process.env.OPENAI_API_KEY) {
+        dotenv.config({ path: join(process.cwd(), '.env') });
+      }
+      if (!apiKey) {
+        apiKey = process.env.OPENAI_API_KEY?.trim();
+      }
+      const spawnEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        CI: '1',
+        NO_COLOR: '1',
+        FORCE_COLOR: '0',
+      };
+      if (apiKey) {
+        spawnEnv.OPENAI_API_KEY = apiKey;
+        // codex exec uses CODEX_API_KEY for implicit login, not OPENAI_API_KEY (openai/codex#7323).
+        spawnEnv.CODEX_API_KEY = apiKey;
+      }
+      // Force Codex to use the real OpenAI API so our key works (see openai/codex#9153).
+      // If OPENAI_BASE_URL is set (e.g. to a proxy or api.z.ai), Codex may call that URL and get 401.
+      delete spawnEnv.OPENAI_BASE_URL;
+      delete spawnEnv.OPENAI_API_BASE;
       const child = spawn(this.binaryPath, args, {
         cwd: workdir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { 
-          ...process.env,
-          // Hint that we're in CI/automation
-          CI: '1',
-          NO_COLOR: '1',
-          FORCE_COLOR: '0',
-        },
+        env: spawnEnv,
       });
       
       // Pipe prompt to stdin
@@ -202,17 +226,22 @@ export class CodexRunner implements Runner {
         } else {
           // Check for common error patterns
           const combinedOutput = stdout + stderr;
-          // QUOTA/RATE-LIMIT: Must be checked BEFORE auth — quota errors often
-          // contain "billing" or "plan" text that could match loosely, and the
-          // correct response is to rotate to a different tool, not bail out.
-          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan|tokens?.used/i.test(combinedOutput)) {
+          // AUTH (401 / missing key) FIRST — so we don't misclassify as quota.
+          // 401 Unauthorized / Missing bearer = API key not set or invalid; user needs to fix env, not rotate.
+          if (/\b401\b|unauthorized|missing bearer|basic authentication in header/i.test(combinedOutput)) {
+            const authMsg = /missing bearer|basic authentication/i.test(combinedOutput)
+              ? 'OpenAI API key missing or invalid (401 Unauthorized). For codex exec we set CODEX_API_KEY from your key; ensure OPENAI_API_KEY (or config) is set so we can pass it. If OPENAI_BASE_URL is set, unset it (see github.com/openai/codex/issues/9153). See also #7323 (codex exec needs CODEX_API_KEY).'
+              : (stderr || 'Authentication error');
+            debug('Codex auth error (401 or missing key)');
+            resolve({ success: false, output: stdout, error: authMsg, errorType: 'auth' });
+          } else if (/authentication|invalid.*key|api.*key.*rejected/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || `Authentication error`, errorType: 'auth' });
+          } else if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan|tokens?.used/i.test(combinedOutput)) {
             const tokensMatch = combinedOutput.match(/tokens?\s*used\s*[\n:]*\s*([\d,]+)/i);
             const tokenInfo = tokensMatch ? ` (${tokensMatch[1]} tokens used)` : '';
             const errorMsg = `Quota/rate limit exceeded${tokenInfo}`;
             debug('Quota exceeded - will rotate to next tool/model', { error: errorMsg });
             resolve({ success: false, output: stdout, error: errorMsg, errorType: 'quota' });
-          } else if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
-            resolve({ success: false, output: stdout, error: stderr || `Authentication error`, errorType: 'auth' });
           } else if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
             // Model doesn't exist or API key lacks access - bail immediately
             // WHY: Retrying won't help. Need different model or API access.

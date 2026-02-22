@@ -3,11 +3,11 @@
 import chalk from 'chalk';
 import { loadConfig } from './config.js';
 import { createCLI, parseArgs } from './cli.js';
-import { validateElizaCloudKey, fetchAvailableElizaCloudModels } from './llm/client.js';
+import { validateElizaCloudKey, fetchAvailableElizaCloudModels, validateOpenAIKey } from './llm/client.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
-import { initOutputLog, closeOutputLog, getOutputLogPath } from './logger.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from './logger.js';
 
 // Start output log tee immediately — captures all console output to ./output.log (CWD)
 initOutputLog();
@@ -89,6 +89,17 @@ async function main(): Promise<void> {
 
     // Load configuration
     const config = loadConfig();
+
+    // Ensure API keys from config are visible to child processes (e.g. Codex)
+    // loadConfig() may have read keys from .env into config but they must be on process.env for spawned children
+    if (config.openaiApiKey) process.env.OPENAI_API_KEY = config.openaiApiKey;
+    if (config.anthropicApiKey) process.env.ANTHROPIC_API_KEY = config.anthropicApiKey;
+    if (config.elizacloudApiKey) process.env.ELIZACLOUD_API_KEY = config.elizacloudApiKey;
+
+    // Fail fast if OpenAI key is invalid (e.g. for Codex or llm-api)
+    if (config.openaiApiKey) {
+      await validateOpenAIKey(config.openaiApiKey);
+    }
 
     // Fail fast if ElizaCloud key is invalid; use an available model if default isn't listed
     if (config.llmProvider === 'elizacloud' && config.elizacloudApiKey) {

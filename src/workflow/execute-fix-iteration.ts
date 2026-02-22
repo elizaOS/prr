@@ -71,6 +71,7 @@ export async function executeFixIteration(
   lessonsContext: LessonsContext,
   llm: LLMClient,
   options: CLIOptions,
+  openaiApiKey: string | undefined,
   prInfo: PRInfo,
   verifiedThisSession: Set<string>,
   rapidFailureCount: number,
@@ -185,12 +186,15 @@ export async function executeFixIteration(
   
   debug('Executing runner', { tool: runner.name, workdir, model: currentModel });
   const codexAddDirs = [...(options.codexAddDir ?? [])];
+  // Pass OpenAI key explicitly so Codex gets it even when config came from env and runner spawns with a copy of process.env
+  const keyForRunner = openaiApiKey ?? process.env.OPENAI_API_KEY;
 
   let result;
   try {
-    result = await runner.run(workdir, prompt, {
+    result = await   runner.run(workdir, prompt, {
       model: currentModel,
       codexAddDirs,
+      openaiApiKey: keyForRunner,
     });
   } finally {
     spinner.stop();
@@ -228,7 +232,8 @@ export async function executeFixIteration(
       unresolvedIssues, comments, git,
       updatedConsecutiveFailures, updatedModelFailuresInCycle, progressThisCycle,
       stateContext, lessonsContext, options, verifiedThisSession, runner.name,
-      trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
+      trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut,
+      result.errorType
     );
     
     return {

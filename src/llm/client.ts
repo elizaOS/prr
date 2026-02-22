@@ -158,6 +158,38 @@ export async function fetchAvailableOpenAIModels(apiKey: string): Promise<Set<st
 }
 
 /**
+ * Validate OpenAI API key at startup (e.g. for Codex or llm-api).
+ * Calls GET /v1/models and throws on 401 so we fail fast with a clear message.
+ */
+export async function validateOpenAIKey(apiKey: string): Promise<void> {
+  const key = apiKey?.trim();
+  if (!key) {
+    throw new Error('OPENAI_API_KEY is empty. Set it in your .env or environment.');
+  }
+  const keyHint = maskApiKey(key);
+  debug('Validating OpenAI API key');
+  try {
+    const client = new OpenAI({ apiKey: key });
+    for await (const _ of client.models.list()) {
+      break; // one request to verify auth
+    }
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (status === 401 || /401|Unauthorized|Authentication required|Missing bearer|invalid.*api.*key/i.test(msg)) {
+      debug('OpenAI 401 during validation');
+      throw new Error(
+        `OpenAI API key was rejected (401 Unauthorized). ` +
+        `API key: ${keyHint}. ` +
+        `Check that OPENAI_API_KEY in .env is correct, has no extra spaces/newlines, and has not been revoked. ` +
+        `If OPENAI_BASE_URL is set, unset it so the key is used with api.openai.com (see github.com/openai/codex/issues/9153).`
+      );
+    }
+    throw err;
+  }
+}
+
+/**
  * Fetch the list of model IDs available to the given Anthropic API key.
  * Uses GET https://api.anthropic.com/v1/models directly.
  *
@@ -1471,6 +1503,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'FIX_ID: YES|NO: brief explanation of what was/wasn\'t fixed',
       'LESSON: <actionable guidance> (REQUIRED for every NO — this feeds into the next fix attempt)',
       '',
+      'When you answer NO, your explanation is used as the source of truth for the next fix attempt. Be specific: cite the exact code, method name, or line that is still wrong or missing (e.g. "getHistoricalPrices method not found in Current Code", "start() does not validate JUPITER_API_KEY before marking running"). Vague NOs (e.g. "fix incomplete") do not help the fixer.',
+      '',
       'The LESSON line is critical for NO responses. It captures what was LEARNED from this failure so the next attempt makes progress instead of repeating the same mistake. Focus on WHY this approach failed and what must be different next time.',
       '',
       'GOOD lessons (specific, learned from the failure):',
@@ -1871,9 +1905,10 @@ Why this was dismissed (${params.category}):
 ${reason}
 
 TASK:
-1. Check if there is ALREADY a code comment near line ${params.line} that explains why this review concern doesn't apply or has been addressed.
-2. If such a comment exists, respond with: EXISTING
-3. If no such comment exists, write a ONE-LINE comment (max 120 characters) that briefly explains the dismissal.
+1. The code is provided above under "Surrounding code" — use it to decide.
+2. Check if there is ALREADY a code comment near line ${params.line} that explains why this review concern doesn't apply or has been addressed.
+3. If such a comment exists, respond with: EXISTING
+4. If no such comment exists, write a ONE-LINE comment (max 120 characters) that briefly explains the dismissal.
 
 CRITICAL RULES:
 - Return ONLY the comment text itself. Do NOT return any code.
@@ -1881,15 +1916,16 @@ CRITICAL RULES:
 - Do NOT use these keywords: TODO, FIXME, HACK, XXX, BUG, WARN
 - Start with "Review:" as a prefix for clarity
 - Keep it factual and concise (ONE line, max 120 chars)
+- LONG-TERM: This comment stays in the codebase. Do NOT include line numbers, commit hashes, or references to prr/review tools. Describe intent or location by name (e.g. "handled in getConfig()") so it stays accurate as the code evolves.
 
-Response format:
+Response format (reply with exactly one of these, no other text or explanation):
 - If comment exists: EXISTING
 - If comment needed: COMMENT: Review: <your brief explanation here>
 
-Example good responses:
-COMMENT: Review: suggested Math.trunc but Math.floor already handles this case correctly
-COMMENT: Review: code was restructured and this concern no longer applies
-COMMENT: Review: after analysis this pattern is intentional for error handling`;
+Example good responses (durable, no line numbers or tool refs):
+COMMENT: Review: Math.floor already handles this case; trunc not needed
+COMMENT: Review: restructured — this path is no longer used
+COMMENT: Review: intentional for error handling in this module`;
 
     // Use a cheap model — dismissal comments are simple text, not code-fixing
     const cheapModel = CHEAP_MODELS[this.provider];
@@ -1923,8 +1959,9 @@ COMMENT: Review: after analysis this pattern is intentional for error handling`;
       return { needed: true, commentText };
     }
 
-    // Fallback: LLM didn't follow format
+    // Fallback: LLM didn't follow format — use a generic durable comment so we still document the dismissal
     debug('LLM response did not match expected format', { content });
-    return { needed: false };
+    const fallback = 'Review: dismissed (see PR discussion)';
+    return { needed: true, commentText: fallback };
   }
 }
