@@ -83,8 +83,8 @@ export class PRResolver {
   }
   private ringBell(times: number = 3): void { ResolverProc.ringBell(times); }
   private printModelPerformance(): void { Reporter.printModelPerformance(this.stateContext); }
-  private printFinalSummary(): void {
-    Reporter.printFinalSummary(this.stateContext, this.exitReason, this.exitDetails); 
+  private printFinalSummary(remainingCount?: number): void {
+    Reporter.printFinalSummary(this.stateContext, this.exitReason, this.exitDetails, remainingCount);
   }
   private getExitReasonDisplay(): { label: string; icon: string; color: (text: string) => string } { return Reporter.getExitReasonDisplay(this.exitReason); }
   private printHandoffPrompt(unresolvedIssues: UnresolvedIssue[]): void { Reporter.printHandoffPrompt(unresolvedIssues, this.options.noHandoffPrompt); }
@@ -98,7 +98,7 @@ export class PRResolver {
   private allModelsExhausted(): boolean { const ctx = this.getRotationContext(); return Rotation.allModelsExhausted(ctx); }
   private tryRotation(): boolean { const ctx = this.getRotationContext(); const result = Rotation.tryRotation(ctx, this.stateContext, this.options); this.syncRotationContext(ctx); return result; }
   private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateContext, this.lessonsContext, this.runners, this.options, (runner) => this.getModelsForRunner(runner), this.workdir, this.llm); this.bailedOut = result.bailedOut; this.exitReason = result.exitReason; this.exitDetails = result.exitDetails; this.finalUnresolvedIssues = result.finalUnresolvedIssues; this.finalComments = result.finalComments; }
-  private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue) => this.buildSingleIssuePrompt(issue), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength)); }
+  private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue) => this.buildSingleIssuePrompt(issue), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength), this.config.openaiApiKey); }
   private buildSingleIssuePrompt(issue: UnresolvedIssue): string { return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo); }
   private async tryDirectLLMFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.tryDirectLLMFix(issues, git, this.workdir, this.config.llmProvider, this.llm, this.stateContext, verifiedThisSession, this.lessonsContext); }
   async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateContext, () => this.printModelPerformance(), () => this.printFinalSummary()); }
@@ -128,7 +128,7 @@ export class PRResolver {
       printModelPerformance: () => this.printModelPerformance(), 
       printHandoffPrompt: (issues) => this.printHandoffPrompt(issues), 
       printAfterActionReport: (issues, comments) => this.printAfterActionReport(issues, comments), 
-      printFinalSummary: () => this.printFinalSummary(), 
+      printFinalSummary: (remainingCount?: number) => this.printFinalSummary(remainingCount), 
       ringBell: (times) => this.ringBell(times), 
       runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n) 
     };

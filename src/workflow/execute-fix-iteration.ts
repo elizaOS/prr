@@ -14,7 +14,7 @@ import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { Runner } from '../runners/types.js';
 import type { StateContext } from '../state/state-context.js';
-import { setPhase } from '../state/state-context.js';
+import { setPhase, addTokenUsage } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -114,7 +114,7 @@ export async function executeFixIteration(
   } catch {
     // Base ref may not exist (e.g. first push); prompt still works without diff.
   }
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures, options.priorityOrder, prInfo, diffStat);
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures, options.priorityOrder, prInfo, diffStat, comments);
   
   if (promptDetails.shouldSkip) {
     return {
@@ -200,6 +200,9 @@ export async function executeFixIteration(
     spinner.stop();
   }
   const fixerTime = endTimer('Run fixer');
+  if (result.usage) {
+    addTokenUsage(stateContext, result.usage);
+  }
   debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
   if (!result.success) {

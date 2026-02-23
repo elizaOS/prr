@@ -508,10 +508,19 @@ function buildRotationFromOpenAISet(ids: Set<string>): string[] {
 }
 
 /**
- * Build rotation order from Anthropic model set. Claude-* only, sort alphabetically.
+ * Build rotation order from Anthropic model set.
+ * Filters out legacy claude-3 models (haiku/sonnet/opus without the 3.5+ suffix)
+ * which have low output limits and poor code-fix performance.
  */
 function buildRotationFromAnthropicSet(ids: Set<string>): string[] {
-  return Array.from(ids).filter(id => /^claude-/i.test(id)).sort();
+  return Array.from(ids)
+    .filter(id => {
+      if (!/^claude-/i.test(id)) return false;
+      // Exclude legacy claude-3-* (not 3.5/3-5): low output limits, poor fix quality
+      if (/^claude-3-(haiku|sonnet|opus)(?!.*3[.-]5)/i.test(id)) return false;
+      return true;
+    })
+    .sort();
 }
 
 /**

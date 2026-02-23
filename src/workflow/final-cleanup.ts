@@ -62,7 +62,7 @@ export async function executeFinalCleanup(
   printModelPerformance: () => void,
   printHandoffPrompt: (issues: UnresolvedIssue[]) => void,
   printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
-  printFinalSummary: () => void,
+  printFinalSummary: (remainingCount?: number) => void,
   ringBell: (times: number) => void
 ): Promise<void> {
   // Final lessons export (catches any lessons from last iteration not yet committed)
@@ -111,8 +111,8 @@ export async function executeFinalCleanup(
     await printAfterActionReport(trulyUnresolved, finalComments);
   }
   
-  // Final results summary - AFTER profiling so it's visible
-  printFinalSummary();
+  // Final results summary - AFTER profiling so it's visible (pass remaining so SUMMARY shows it)
+  printFinalSummary(trulyUnresolved.length);
   
   // Ring terminal bell to notify user completion
   // WHY: Long-running processes need audio notification when done
@@ -143,7 +143,7 @@ export async function executeErrorCleanup(
   printModelPerformance: () => void,
   printHandoffPrompt: (issues: UnresolvedIssue[]) => void,
   printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
-  printFinalSummary: () => void,
+  printFinalSummary: (remainingCount?: number) => void,
   ringBell: (times: number) => void
 ): Promise<void> {
   endTimer('Total');
@@ -160,7 +160,7 @@ export async function executeErrorCleanup(
     await printAfterActionReport(trulyUnresolved, finalComments);
   }
   
-  printFinalSummary();  // Show results even on error
+  printFinalSummary(trulyUnresolved.length);  // Show results even on error
   spinner.fail('Error');
   
   // Clean up workdir on error if not keeping it

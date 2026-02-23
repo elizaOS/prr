@@ -25,7 +25,7 @@ export async function executeGracefulShutdown(
   isShuttingDown: boolean,
   stateContext: StateContext | undefined,
   printModelPerformance: () => void,
-  printFinalSummary: () => void
+  printFinalSummary: (remainingCount?: number) => void
 ): Promise<boolean> {
   if (isShuttingDown) return true;
   

@@ -437,6 +437,8 @@ Lessons are stored in `.prr/lessons.md` (markdown format) and `.prr/lessons.json
 }
 ```
 
+**Lesson normalization** (`src/state/lessons-normalize.ts`): Raw text from fixers, batch verify, and no-changes handlers is normalized before storage. Design is *flexible on input, best-effort canonical form*: (1) inline backticks (e.g. `execSync`) are preserved for readable code references; (2) "tool/fixer made no changes" variants are canonicalized and kept instead of rejected so they can be deduped; (3) single-asterisk list lines and code-fence blocks are dropped to avoid junk. WHY: Lessons come from many sources; rejecting messy-but-valid input lost signal. Normalizing gives one consistent shape for `.prr/lessons.md` and CLAUDE.md without forcing callers to pre-sanitize.
+
 ---
 
 ## Cost Optimizations

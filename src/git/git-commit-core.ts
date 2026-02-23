@@ -12,6 +12,8 @@
  * DESIGN: Simple, focused functions that wrap simple-git with clear
  * return types. No complex retry logic or timeout handling here.
  */
+import { unlinkSync, existsSync } from 'fs';
+import { join } from 'path';
 import type { SimpleGit } from 'simple-git';
 import { debug } from '../logger.js';
 
@@ -45,6 +47,23 @@ const TOOL_MARKER_FILES = [
  * These are tool-managed (lessons, state) and any edits to them are accidental.
  */
 const PROTECTED_DIRS = ['.prr/'];
+
+/**
+ * Matches common test file names so we can reject empty/placeholder test files.
+ * Covers: *.test.ts, *.spec.ts, *_test.ts, test_*.ts, and common extensions.
+ */
+const TEST_FILE_PATTERN = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs)$|_test\.(ts|tsx|js|go|py|rs)$/;
+
+function isTestFileName(filePath: string): boolean {
+  if (TEST_FILE_PATTERN.test(filePath)) return true;
+  const base = filePath.split('/').pop() || '';
+  return /^test_.*\.(ts|tsx|js|py)$/.test(base);
+}
+
+/** Max content length (after trim) to consider "placeholder"; no test keywords => likely accidental. */
+const PLACEHOLDER_MAX_LEN = 50;
+/** Test/assert keywords that indicate real test code. */
+const TEST_KEYWORDS = /\b(test|it|describe|expect|assert\.|require\s*\()\s*[\(\"]/;
 
 /**
  * Stage all changes in the repository
@@ -83,11 +102,8 @@ export async function squashCommit(
   // Stage all changes
   await stageAll(git);
 
-  // Pre-commit safety check: detect and unstage files with tool markup artifacts.
-  // The LLM-API runner uses <change><search>...</search><replace>...</replace></change>
-  // XML blocks. If parsing fails partially, these end up in source files.
-  // Also catch accidental tool-generated note files.
-  await unstageToolArtifacts(git);
+  // Pre-commit safety: tool artifacts, empty test files, etc. (see runPreCommitChecks).
+  await runPreCommitChecks(git);
 
   // If everything was unstaged (e.g. only .prr/ or tool artifacts), nothing to commit.
   // WHY: Avoids "nothing to commit" error and prevents empty/no-op commits that
@@ -111,6 +127,15 @@ export async function squashCommit(
     filesChanged: result.summary.changes,
     stagedFiles,
   };
+}
+
+/**
+ * Run all pre-commit safety checks: unstage tool artifacts and empty/placeholder test files.
+ * Exported so both squashCommit and commitIteration can use it.
+ */
+export async function runPreCommitChecks(git: SimpleGit): Promise<void> {
+  await unstageToolArtifacts(git);
+  await unstageEmptyTestFiles(git);
 }
 
 /**
@@ -204,5 +229,74 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
   } catch (err) {
     // Non-fatal: if artifact detection fails, proceed with commit as-is
     debug('Tool artifact detection failed', { error: String(err) });
+  }
+}
+
+/**
+ * True if content is empty or looks like a placeholder (e.g. one blank line, no real test code).
+ */
+function isEmptyOrPlaceholder(content: string): boolean {
+  const trimmed = content.trim();
+  if (trimmed.length === 0) return true;
+  if (trimmed.length > PLACEHOLDER_MAX_LEN) return false;
+  if (TEST_KEYWORDS.test(trimmed)) return false;
+  const lines = trimmed.split(/\n/).map(l => l.trim()).filter(Boolean);
+  return lines.length <= 2;
+}
+
+/**
+ * Unstage empty or placeholder test files so they are never committed.
+ * New empty test files are also removed from the working tree so they are not re-staged next run.
+ *
+ * WHY: Fixers or users sometimes add a test file as a placeholder (e.g. test_fail.ts with one
+ * blank line) and commit it by mistake. Review bots then flag "empty test file accidentally committed".
+ */
+async function unstageEmptyTestFiles(git: SimpleGit): Promise<void> {
+  try {
+    const status = await git.status();
+    const stagedFiles = [
+      ...status.created,
+      ...status.modified,
+      ...status.renamed.map(r => r.to),
+    ];
+
+    const testFilesToUnstage: { file: string; isNew: boolean }[] = [];
+
+    for (const file of stagedFiles) {
+      if (!isTestFileName(file)) continue;
+      let stagedContent: string;
+      try {
+        stagedContent = await git.raw(['show', ':0:' + file]);
+      } catch {
+        continue; // e.g. binary or missing; skip
+      }
+      if (typeof stagedContent !== 'string') continue;
+      if (!isEmptyOrPlaceholder(stagedContent)) continue;
+      testFilesToUnstage.push({ file, isNew: status.created.includes(file) });
+    }
+
+    if (testFilesToUnstage.length === 0) return;
+
+    const root = (await git.revparse(['--show-toplevel'])).trim();
+
+    for (const { file, isNew } of testFilesToUnstage) {
+      try {
+        if (isNew) {
+          await git.raw(['rm', '--cached', file]);
+          const fullPath = join(root, file);
+          if (existsSync(fullPath)) {
+            unlinkSync(fullPath);
+          }
+          console.log(`  ⚠ Excluded empty test file (removed from commit and working tree): ${file}`);
+        } else {
+          await git.checkout(['HEAD', '--', file]);
+          console.log(`  ⚠ Reverted empty/placeholder test file to HEAD: ${file}`);
+        }
+      } catch (err) {
+        debug('Failed to unstage empty test file', { file, error: String(err) });
+      }
+    }
+  } catch (err) {
+    debug('Empty test file detection failed', { error: String(err) });
   }
 }

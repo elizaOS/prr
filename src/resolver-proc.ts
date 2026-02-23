@@ -92,6 +92,7 @@ export {
   filterVerifiedIssues,
   checkEmptyIssues,
   checkAndPullRemoteCommits,
+  refreshSnippetsForVerifierContradiction,
 } from './workflow/fix-loop-utils.js';
 
 // Fixer error handling
@@ -293,7 +294,9 @@ export async function calculateSmartWaitTime(
 }
 
 /**
- * Wait for bot reviews after push with smart timing and progress feedback
+ * Wait for bot reviews after push with smart timing and progress feedback.
+ * Also checks for bot rate-limit signals — if a review bot (e.g. CodeRabbit)
+ * indicates it's throttled, the wait is extended to let it catch up.
  */
 export async function waitForBotReviews(
   botTimings: BotResponseTiming[],
@@ -306,7 +309,7 @@ export async function waitForBotReviews(
 ): Promise<void> {
   const chalk = (await import('chalk')).default;
   
-  const { waitSeconds, reason } = await calculateSmartWaitTime(
+  let { waitSeconds, reason } = await calculateSmartWaitTime(
     botTimings,
     pollInterval,
     github,
@@ -316,6 +319,25 @@ export async function waitForBotReviews(
     headSha
   );
   
+  // Check if any review bots are rate-limited and extend wait if so
+  try {
+    const rateLimits = await github.checkBotRateLimits(owner, repo, prNumber);
+    const limited = rateLimits.filter(r => r.rateLimited);
+    if (limited.length > 0) {
+      for (const rl of limited) {
+        console.log(chalk.yellow(`\n  ⚠ ${rl.bot} appears rate-limited: ${rl.message ?? 'review paused/cancelled'}`));
+      }
+      const extendedWait = Math.max(waitSeconds, 5 * 60);
+      if (extendedWait > waitSeconds) {
+        console.log(chalk.yellow(`  Extending wait from ${waitSeconds}s → ${extendedWait}s to let bot(s) recover`));
+        waitSeconds = extendedWait;
+        reason = `bot rate-limited (${limited.map(r => r.bot).join(', ')})`;
+      }
+    }
+  } catch {
+    // Non-fatal — proceed with normal wait
+  }
+
   console.log(chalk.gray(`\nWaiting ${waitSeconds}s for re-review (${reason})...`));
   
   // Show countdown with periodic status checks

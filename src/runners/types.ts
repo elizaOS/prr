@@ -26,6 +26,13 @@ export type ResultCode =
   | 'CANNOT_FIX'
   | 'ATTEMPTED';
 
+/** Token usage from a single run (e.g. Codex exec --json turn.completed). */
+export interface TokenUsage {
+  input_tokens: number;
+  cached_input_tokens?: number;
+  output_tokens: number;
+}
+
 export interface RunnerResult {
   success: boolean;
   output: string;
@@ -36,11 +43,15 @@ export interface RunnerResult {
   resultCode?: ResultCode;
   resultDetail?: string;
   caveat?: string;
+  /** Token usage for this run (e.g. Codex --json). Callers can aggregate across runs. */
+  usage?: TokenUsage;
 }
 
 export interface RunnerOptions {
   model?: string;
   codexAddDirs?: string[];
+  /** OpenAI API key for runners that use OpenAI (e.g. Codex). When set, passed to the child process so it sees the key even if process.env was not set in the runner's cwd. */
+  openaiApiKey?: string;
 }
 
 export interface RunnerStatus {

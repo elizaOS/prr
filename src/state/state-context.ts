@@ -2,7 +2,16 @@
  * State context - replaces StateManager instance properties
  */
 import { join } from 'path';
+import chalk from 'chalk';
 import type { ResolverState } from './types.js';
+import type { TokenUsage } from '../runners/types.js';
+
+/** Aggregated token usage across runner runs this session. */
+export interface AggregatedTokenUsage {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+}
 
 export interface StateContext {
   statePath: string;
@@ -16,6 +25,8 @@ export interface StateContext {
    *  Used to bound verifiedFixed against the actual comment set — stale IDs from
    *  previous HEAD revisions or deleted comments are excluded from reporting. */
   currentCommentIds?: Set<string>;
+  /** Token usage aggregated from runner runs (e.g. Codex --json turn.completed). */
+  tokenUsage?: AggregatedTokenUsage;
 }
 
 export function createStateContext(workdir: string): StateContext {
@@ -38,4 +49,26 @@ export function getState(ctx: StateContext): ResolverState {
 
 export function setPhase(ctx: StateContext, phase: string): void {
   ctx.currentPhase = phase;
+}
+
+/** Add a run's token usage to the session aggregate. */
+export function addTokenUsage(ctx: StateContext, usage: TokenUsage): void {
+  if (!ctx.tokenUsage) {
+    ctx.tokenUsage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
+  }
+  ctx.tokenUsage.input_tokens += usage.input_tokens ?? 0;
+  ctx.tokenUsage.cached_input_tokens += usage.cached_input_tokens ?? 0;
+  ctx.tokenUsage.output_tokens += usage.output_tokens ?? 0;
+}
+
+/** Log aggregated token usage for this session (if any). */
+export function logTokenUsage(ctx: StateContext): void {
+  const u = ctx.tokenUsage;
+  if (!u || (u.input_tokens === 0 && u.cached_input_tokens === 0 && u.output_tokens === 0)) return;
+  const total = u.input_tokens + u.cached_input_tokens + u.output_tokens;
+  console.log(
+    chalk.gray(
+      `  Token usage (this session): input ${u.input_tokens.toLocaleString()}${u.cached_input_tokens ? `, cached ${u.cached_input_tokens.toLocaleString()}` : ''}, output ${u.output_tokens.toLocaleString()} (total ${total.toLocaleString()})`
+    )
+  );
 }

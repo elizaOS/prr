@@ -328,3 +328,38 @@ export async function checkAndPullRemoteCommits(
   
   return { shouldBreak: false };
 }
+
+/** Result of getCodeSnippet when file is missing (issue-analysis and solvability use this). */
+const SNIPPET_UNREADABLE = '(file not found or unreadable)';
+
+/**
+ * Re-fetch code snippets for issues that have verifierContradiction set.
+ * Audit 3.1(a): When the verifier said "still exists", the fixer retry should see the same
+ * file state as the verifier; stale snippets cause fixer/verifier disagreement.
+ *
+ * @param unresolvedIssues - Issues to refresh (mutated in place)
+ * @param getCodeSnippet - Fetcher (path, line, body) → snippet
+ * @returns Number of issues whose codeSnippet was updated
+ */
+export async function refreshSnippetsForVerifierContradiction(
+  unresolvedIssues: UnresolvedIssue[],
+  getCodeSnippet: (path: string, line: number | null, body?: string) => Promise<string>
+): Promise<number> {
+  const withContradiction = unresolvedIssues.filter((i) => i.verifierContradiction);
+  if (withContradiction.length === 0) return 0;
+  let refreshed = 0;
+  await Promise.all(
+    withContradiction.map(async (issue) => {
+      const fresh = await getCodeSnippet(
+        issue.comment.path,
+        issue.comment.line ?? null,
+        issue.comment.body
+      );
+      if (fresh !== SNIPPET_UNREADABLE) {
+        issue.codeSnippet = fresh;
+        refreshed++;
+      }
+    })
+  );
+  return refreshed;
+}

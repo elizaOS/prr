@@ -951,6 +951,88 @@ export class GitHubAPI {
       reviewedCurrentCommit: false,
     };
   }
+
+  /**
+   * Check if review bots are rate-limited by scanning recent issue comments
+   * for rate-limit / review-cancelled / review-paused signals.
+   *
+   * CodeRabbit (and other bots) post issue comments when they can't review
+   * due to rate limits. When prr pushes many commits in rapid succession the
+   * bot may throttle reviews, leaving a notice that disappears once it
+   * catches up. Detecting this lets prr back off and wait longer.
+   *
+   * Returns per-bot rate-limit status with the message found (if any).
+   */
+  async checkBotRateLimits(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<Array<{ bot: string; rateLimited: boolean; message?: string }>> {
+    const results: Array<{ bot: string; rateLimited: boolean; message?: string }> = [];
+
+    const RATE_LIMIT_PATTERNS = [
+      /rate.?limit/i,
+      /review.?(cancel|fail|skip|paus|throttl)/i,
+      /too many (requests|reviews|commits)/i,
+      /exceeded.*review/i,
+      /review.*exceeded/i,
+      /reviews? (are |is )?paused/i,
+      /temporarily unavailable/i,
+      /will (retry|review) (later|shortly|soon)/i,
+      /queued for review/i,
+    ];
+
+    const BOT_PATTERNS = [
+      { name: 'coderabbit', pattern: /coderabbitai\[bot\]/i },
+      { name: 'copilot', pattern: /copilot/i },
+      { name: 'cursor', pattern: /cursor\[bot\]/i },
+    ];
+
+    try {
+      const { data: comments } = await this.octokit.issues.listComments({
+        owner,
+        repo,
+        issue_number: prNumber,
+        per_page: 30,
+        direction: 'desc',
+      });
+
+      // Only check recent comments (last 30 minutes)
+      const cutoff = new Date(Date.now() - 30 * 60 * 1000);
+
+      for (const bot of BOT_PATTERNS) {
+        const botComments = comments.filter(
+          c => bot.pattern.test(c.user?.login || '') &&
+               new Date(c.created_at) > cutoff
+        );
+
+        let rateLimited = false;
+        let message: string | undefined;
+
+        for (const comment of botComments) {
+          const body = comment.body || '';
+          for (const pattern of RATE_LIMIT_PATTERNS) {
+            if (pattern.test(body)) {
+              rateLimited = true;
+              const match = body.match(pattern);
+              message = match ? body.substring(
+                Math.max(0, (match.index ?? 0) - 40),
+                Math.min(body.length, (match.index ?? 0) + (match[0]?.length ?? 0) + 60)
+              ).trim() : undefined;
+              break;
+            }
+          }
+          if (rateLimited) break;
+        }
+
+        results.push({ bot: bot.name, rateLimited, message });
+      }
+    } catch (error) {
+      debug('Failed to check bot rate limits', { error });
+    }
+
+    return results;
+  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

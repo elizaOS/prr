@@ -21,6 +21,17 @@ import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } fr
  */
 const REWRITE_ESCALATION_THRESHOLD = 2;
 
+/**
+ * Anthropic model output token limits. Models that don't support 16k max_tokens
+ * need a lower value or the API returns a 400 error.
+ */
+function getAnthropicMaxTokens(model: string): number {
+  if (/claude-3-haiku|claude-3-sonnet|claude-3-opus/.test(model) && !/claude-3-5|claude-3\.5/.test(model)) {
+    return 4096;
+  }
+  return 16000;
+}
+
 export class LLMAPIRunner implements Runner {
   name = 'llm-api';
   displayName = 'Direct LLM API';
@@ -179,9 +190,10 @@ Working directory: ${workdir}`;
         
         console.log(`\n🧠 Calling ${model}...\n`);
 
+        const maxTokens = getAnthropicMaxTokens(model);
         const result = await anthropic.messages.create({
           model,
-          max_tokens: 16000,
+          max_tokens: maxTokens,
           system: systemPrompt,
           messages: [{ role: 'user', content: enrichedPrompt }],
         });

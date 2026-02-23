@@ -319,6 +319,10 @@ export async function verifyFixes(
             }
           } else {
             failedCount++;
+            // Feed verifier's explanation back so next fix prompt shows VERIFIER DISAGREES.
+            if (!isInfrastructureFailure(verification.explanation)) {
+              issue.verifierContradiction = verification.explanation;
+            }
             // Skip failure analysis for infrastructure errors (quota, timeout) to save tokens
             if (isInfrastructureFailure(verification.explanation)) {
               const shortReason = verification.explanation.substring(0, 120);
@@ -400,12 +404,15 @@ export async function verifyFixes(
               }
             } else {
               failedCount++;
+              // Feed verifier's explanation back onto the issue so the NEXT fix prompt
+              // shows "VERIFIER DISAGREES — ..." and the fixer targets the exact gap.
+              // WHY: Fixer/verifier stalemate (fixer says ALREADY_FIXED, verifier says
+              // still exists) persists when the fixer never sees what the verifier cited.
+              const contradiction = verification.lesson && verification.lesson !== verification.explanation
+                ? `${verification.explanation} Next time: ${verification.lesson}`
+                : verification.explanation;
+              issue.verifierContradiction = contradiction;
               // Use lesson from batch response (already parsed by batchVerifyFixes).
-              // WHY not calling analyzeFailedFix here: batchVerifyFixes already asks
-              // the LLM for a LESSON line alongside each NO verdict in the same call.
-              // Calling analyzeFailedFix separately was making N extra LLM calls (one
-              // per failure), turning a "batch" verify into 1+N sequential calls.
-              // With 6 failures out of 12 fixes, that was 7 LLM calls instead of 1.
               const lesson = verification.lesson
                 || `Fix rejected: ${verification.explanation}`;
               LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);

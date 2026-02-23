@@ -18,7 +18,7 @@
  * USAGE: Called by fix iteration workflow after verification succeeds.
  */
 import type { SimpleGit } from 'simple-git';
-import { stageAll, type CommitResult } from './git-commit-core.js';
+import { stageAll, runPreCommitChecks, type CommitResult } from './git-commit-core.js';
 import { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';
 
 /**
@@ -63,9 +63,13 @@ export async function commitIteration(
   }
 
   await stageAll(git);
+  await runPreCommitChecks(git);
 
   const staged = await git.diff(['--cached', '--name-only']);
   const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
+  if (stagedFiles.length === 0) {
+    return null; // Everything was unstaged by pre-commit checks (e.g. tool artifacts, empty test files)
+  }
 
   // Build prr-fix markers for recovery
   // WHY lowercase: GitHub IDs have inconsistent casing, normalize for reliable matching

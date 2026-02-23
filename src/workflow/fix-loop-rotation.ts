@@ -32,6 +32,7 @@ import { resetPromptTracker } from './execute-fix-iteration.js';
  * ROTATION STRATEGY:
  * - Odd failures (1, 3, 5...): Try single-issue focus mode with current model
  * - Even failures (2, 4, 6...): Rotate model/tool, or try direct LLM
+ * - Quota/rate-limit: Skip single-issue (same model will hit limit again) and rotate immediately
  * 
  * BAIL-OUT DETECTION:
  * - If rotation triggers bail-out (maxStaleCycles reached), try direct LLM once more
@@ -65,7 +66,9 @@ export async function handleRotationStrategy(
   executeBailOut: (
     unresolvedIssues: UnresolvedIssue[],
     comments: ReviewComment[]
-  ) => Promise<void>
+  ) => Promise<void>,
+  /** When 'quota', skip single-issue and rotate immediately; same model will hit limit again. */
+  failureErrorType?: string
 ): Promise<{
   shouldBreak: boolean;
   shouldContinue: boolean;
@@ -75,13 +78,14 @@ export async function handleRotationStrategy(
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
   const isOddFailure = consecutiveFailures % 2 === 1;
+  const skipSingleIssueForQuota = failureErrorType === 'quota';
   let shouldBreak = false;
   let shouldContinue = false;
   let newConsecutiveFailures = consecutiveFailures;
   let newModelFailuresInCycle = modelFailuresInCycle;
   let newProgressThisCycle = progressThisCycle;
 
-  if (isOddFailure && unresolvedIssues.length > 1) {
+  if (isOddFailure && unresolvedIssues.length > 1 && !skipSingleIssueForQuota) {
     console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
     const singleIssueFixed = await trySingleIssueFix(unresolvedIssues, git, verifiedThisSession);
     if (singleIssueFixed) {
@@ -93,8 +97,12 @@ export async function handleRotationStrategy(
       // will make it even, which triggers model rotation.
       newProgressThisCycle++;
     }
-  } else if (!isOddFailure) {
-    // Try rotating model or tool
+  }
+  if (!isOddFailure || skipSingleIssueForQuota) {
+    // Try rotating model or tool (even failure, or quota: skip single-issue and rotate)
+    if (skipSingleIssueForQuota) {
+      console.log(chalk.yellow('\n  ⏭ Quota exceeded — skipping single-issue, rotating to next tool/model...'));
+    }
     const rotated = tryRotation();
     // WHY reset: The prompt tracker detects identical prompt+model combos to
     // skip redundant iterations. After rotation, the prompt content may be

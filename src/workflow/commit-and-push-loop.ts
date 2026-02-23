@@ -27,7 +27,10 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, warn } from '../logger.js';
+import type { LLMClient } from '../llm/client.js';
 import { buildCommitMessage, squashCommit, pushWithRetry } from '../git/git-commit-index.js';
+import { runHeuristicPrediction } from './bot-prediction-heuristics.js';
+import { predictBotFeedback } from './bot-prediction-llm.js';
 
 /**
  * Handle commit and push after fixes are verified
@@ -58,6 +61,8 @@ export async function handleCommitAndPush(
   github: GitHubAPI,
   workdir: string,
   spinner: Ora,
+  /** LLM for --predict-bots; omit to skip prediction */
+  llm: LLMClient | null,
   pushIteration: number,
   maxPushIterations: number,
   resolveConflictsWithLLM: (
@@ -120,6 +125,44 @@ export async function handleCommitAndPush(
   }
 
   const stagedSet = new Set(commit.stagedFiles);
+
+  // Heuristic prediction: surface likely bot feedback (display only; never block push)
+  const heuristicMatches = await runHeuristicPrediction(git, commit.stagedFiles);
+  if (heuristicMatches.length > 0) {
+    console.log(chalk.gray('  Likely bot feedback (heuristic):'));
+    for (const m of heuristicMatches) {
+      const loc = m.line != null ? `:${m.line}` : '';
+      console.log(chalk.gray(`    • ${m.path}${loc} — ${m.suggestion}`));
+    }
+  }
+
+  // LLM prediction (opt-in): simulate likely new bot comments; display only, never block
+  if (options.predictBots && llm) {
+    try {
+      const diff = await git.raw(['diff', `origin/${prInfo.baseBranch}...HEAD`]);
+      const predictions = await predictBotFeedback(
+        {
+          diff,
+          comments,
+          changedFiles: commit.stagedFiles,
+          prTitle: prInfo.title,
+          prBodyOneLine: (prInfo.body || '').split('\n')[0]?.trim() || '',
+        },
+        llm
+      );
+      if (predictions.length > 0) {
+        console.log(chalk.gray('  Likely new bot feedback after push:'));
+        for (const p of predictions) {
+          const loc = p.line != null ? `:${p.line}` : '';
+          console.log(chalk.gray(`    • ${p.path}${loc} — ${p.concern}`));
+        }
+      }
+    } catch (e) {
+      debug('predictBotFeedback failed', e);
+      // Continue; push is never blocked (plan: "On predictor failure ... proceed with push")
+    }
+  }
+
   const fixedIssues = comments
     .filter((comment) => Verification.isVerified(stateContext, comment.id) && stagedSet.has(comment.path))
     .map((comment) => ({

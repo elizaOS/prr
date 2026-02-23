@@ -38,6 +38,13 @@ export interface UnresolvedIssue {
     path: string;
     line: number | null;
   }>;
+  /**
+   * When the fixer claims ALREADY_FIXED but the verifier disagrees, the
+   * verifier's explanation is stored here so the next fixer attempt sees
+   * exactly *where* the issue still exists (specific line, specific code).
+   * Prevents the fixer/verifier stalemate where they look at different lines.
+   */
+  verifierContradiction?: string;
 }
 
 export interface FixPrompt {

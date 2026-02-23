@@ -45,7 +45,9 @@ export async function handleIterationCleanup(
   prBranch: string,
   githubToken: string | null | undefined,
   options: CLIOptions,
-  calculateExpectedBotResponseTime: (pushTime: Date) => Date | null
+  calculateExpectedBotResponseTime: (pushTime: Date) => Date | null,
+  /** Cumulative fixes in this fix loop before this iteration (for "N total this fix loop" label) */
+  fixedThisCycleBefore: number = 0
 ): Promise<{
   progressMade: number;
   expectedBotResponseTime?: Date | null;
@@ -96,9 +98,13 @@ export async function handleIterationCleanup(
   const progressPct = Math.round((verifiedCount / totalIssues) * 100);
   spinner.succeed(`Verified: ${formatNumber(verifiedCount)}/${formatNumber(totalIssues)} fixed (${progressPct}%), ${formatNumber(failedCount)} remaining`);
   
-  // Show iteration summary
+  // Show iteration summary; when multiple iterations, show cumulative so "Fixed: 1" doesn't hide 3 total
+  const totalFixedThisFixLoop = fixedThisCycleBefore + verifiedCount;
+  const fixedLabel = totalFixedThisFixLoop > verifiedCount
+    ? `${formatNumber(verifiedCount)} this iteration (${formatNumber(totalFixedThisFixLoop)} total this fix loop)`
+    : `${formatNumber(verifiedCount)} issues`;
   console.log(chalk.gray(`\n  Iteration ${fixIteration} summary:`));
-  console.log(chalk.gray(`    • Fixed: ${formatNumber(verifiedCount)} issues`));
+  console.log(chalk.gray(`    • Fixed: ${fixedLabel}`));
   console.log(chalk.gray(`    • Failed: ${formatNumber(failedCount)} issues`));
   if (newLessons > 0) {
     console.log(chalk.yellow(`    • New lessons: +${newLessons} (total: ${lessonsAfterVerify})`));

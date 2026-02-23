@@ -5,7 +5,7 @@ import { createReadStream, writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import dotenv from 'dotenv';
-import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
+import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, TokenUsage } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
@@ -131,6 +131,8 @@ export class CodexRunner implements Runner {
       }
     }
     
+    // JSONL stdout so we can parse turn.completed (token usage) and item.completed agent_message (final output)
+    args.push('--json');
     // Read prompt from stdin
     args.push('-');
 
@@ -191,11 +193,32 @@ export class CodexRunner implements Runner {
 
       let stdout = '';
       let stderr = '';
+      let lineBuffer = '';
+      const aggregatedUsage: TokenUsage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
+      let lastAgentMessage = '';
 
       child.stdout?.on('data', (data) => {
         const str = data.toString();
         stdout += str;
-        process.stdout.write(str);
+        lineBuffer += str;
+        const lines = lineBuffer.split('\n');
+        lineBuffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const obj = JSON.parse(trimmed) as { type?: string; usage?: TokenUsage; item?: { type?: string; text?: string } };
+            if (obj.type === 'turn.completed' && obj.usage) {
+              aggregatedUsage.input_tokens += obj.usage.input_tokens ?? 0;
+              aggregatedUsage.cached_input_tokens = (aggregatedUsage.cached_input_tokens ?? 0) + (obj.usage.cached_input_tokens ?? 0);
+              aggregatedUsage.output_tokens += obj.usage.output_tokens ?? 0;
+            } else if (obj.type === 'item.completed' && obj.item?.type === 'agent_message' && typeof obj.item.text === 'string') {
+              lastAgentMessage = obj.item.text;
+            }
+          } catch {
+            // Not JSON or malformed; ignore line
+          }
+        }
       });
 
       child.stderr?.on('data', (data) => {
@@ -206,23 +229,41 @@ export class CodexRunner implements Runner {
 
       child.on('close', (code) => {
         cleanupPromptFile();
-        debugResponse('codex', stdout, { exitCode: code, stderrLength: stderr.length });
+        // Parse any remaining line (no trailing newline)
+        if (lineBuffer.trim()) {
+          try {
+            const obj = JSON.parse(lineBuffer.trim()) as { type?: string; usage?: TokenUsage; item?: { type?: string; text?: string } };
+            if (obj.type === 'turn.completed' && obj.usage) {
+              aggregatedUsage.input_tokens += obj.usage.input_tokens ?? 0;
+              aggregatedUsage.cached_input_tokens = (aggregatedUsage.cached_input_tokens ?? 0) + (obj.usage.cached_input_tokens ?? 0);
+              aggregatedUsage.output_tokens += obj.usage.output_tokens ?? 0;
+            } else if (obj.type === 'item.completed' && obj.item?.type === 'agent_message' && typeof obj.item.text === 'string') {
+              lastAgentMessage = obj.item.text;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        const output = lastAgentMessage || stdout;
+        debugResponse('codex', output, { exitCode: code, stderrLength: stderr.length, usage: aggregatedUsage });
 
         // Safety check: detect cursor position error even in exec mode (shouldn't happen, but just in case)
         const hasCursorError = isCursorPositionError(stdout) || isCursorPositionError(stderr);
         if (hasCursorError) {
           debug('Codex cursor position error detected in exec mode - unexpected environment issue');
-          resolve({ 
-            success: false, 
-            output: stdout, 
+          resolve({
+            success: false,
+            output,
             error: 'Codex cursor position error: TTY/PTY environment issue. This is unexpected in exec mode.',
-            errorType: 'environment'
+            errorType: 'environment',
           });
           return;
         }
 
+        const usage = (aggregatedUsage.input_tokens || aggregatedUsage.output_tokens) ? aggregatedUsage : undefined;
+
         if (code === 0) {
-          resolve({ success: true, output: stdout });
+          resolve({ success: true, output, usage });
         } else {
           // Check for common error patterns
           const combinedOutput = stdout + stderr;
@@ -233,15 +274,15 @@ export class CodexRunner implements Runner {
               ? 'OpenAI API key missing or invalid (401 Unauthorized). For codex exec we set CODEX_API_KEY from your key; ensure OPENAI_API_KEY (or config) is set so we can pass it. If OPENAI_BASE_URL is set, unset it (see github.com/openai/codex/issues/9153). See also #7323 (codex exec needs CODEX_API_KEY).'
               : (stderr || 'Authentication error');
             debug('Codex auth error (401 or missing key)');
-            resolve({ success: false, output: stdout, error: authMsg, errorType: 'auth' });
+            resolve({ success: false, output, error: authMsg, errorType: 'auth', usage });
           } else if (/authentication|invalid.*key|api.*key.*rejected/i.test(combinedOutput)) {
-            resolve({ success: false, output: stdout, error: stderr || `Authentication error`, errorType: 'auth' });
+            resolve({ success: false, output, error: stderr || `Authentication error`, errorType: 'auth', usage });
           } else if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan|tokens?.used/i.test(combinedOutput)) {
             const tokensMatch = combinedOutput.match(/tokens?\s*used\s*[\n:]*\s*([\d,]+)/i);
             const tokenInfo = tokensMatch ? ` (${tokensMatch[1]} tokens used)` : '';
             const errorMsg = `Quota/rate limit exceeded${tokenInfo}`;
             debug('Quota exceeded - will rotate to next tool/model', { error: errorMsg });
-            resolve({ success: false, output: stdout, error: errorMsg, errorType: 'quota' });
+            resolve({ success: false, output, error: errorMsg, errorType: 'quota', usage });
           } else if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
             // Model doesn't exist or API key lacks access - bail immediately
             // WHY: Retrying won't help. Need different model or API access.
@@ -250,18 +291,18 @@ export class CodexRunner implements Runner {
               ? `Model "${modelError[1]}" does not exist or is not accessible`
               : stderr || 'Model not found or not accessible';
             debug('Model access error - bailing immediately', { error: errorMsg });
-            resolve({ success: false, output: stdout, error: errorMsg, errorType: 'auth' });
+            resolve({ success: false, output, error: errorMsg, errorType: 'auth', usage });
           } else if (/permission denied|cannot write|read-only/i.test(combinedOutput)) {
-            resolve({ success: false, output: stdout, error: stderr || `Permission error`, errorType: 'permission' });
+            resolve({ success: false, output, error: stderr || `Permission error`, errorType: 'permission', usage });
           } else {
-            resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
+            resolve({ success: false, output, error: stderr || `Process exited with code ${code}`, usage });
           }
         }
       });
 
       child.on('error', (err) => {
         cleanupPromptFile();
-        resolve({ success: false, output: stdout, error: err.message });
+        resolve({ success: false, output: lastAgentMessage || stdout, error: err.message });
       });
     });
   }

@@ -129,10 +129,7 @@ export async function handleNoChangesWithVerification(
   if (noChangesExplanation) {
     // Fixer provided an explanation for why it made no changes
     console.log(chalk.cyan(`  Fixer's explanation: ${noChangesExplanation}`));
-    // Note: Don't include tool/model names - that's tracked separately in modelStats
-    LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes: ${noChangesExplanation}`);
 
-    // Store this explanation with each issue (but don't necessarily dismiss - depends on the reason)
     // WHY regex with word boundaries: Single words like 'has'/'exists' match too broadly
     // (e.g. "This has not been resolved", "The file no longer exists").
     // Regex \b boundaries + compound phrases prevent false positives.
@@ -144,6 +141,14 @@ export async function handleNoChangesWithVerification(
                            /\bnothing\s+to\s+(do|fix|change)\b/.test(lowerExplanation) ||
                            /\bnot\s+reproducible\b/.test(lowerExplanation) ||
                            /\balready\s+(exists?|implemented|addressed|resolved|correct|handled|present)\b/.test(lowerExplanation);
+
+    // Defer lesson addition for ALREADY_FIXED claims until after verification.
+    // WHY: Adding "Fixer made no changes: already fixed at lines X" as a lesson
+    // BEFORE verification poisons subsequent prompts when the verifier disagrees.
+    // The fixer sees its own prior (wrong) claim as a lesson and doubles down.
+    if (!isAlreadyFixed) {
+      LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes: ${noChangesExplanation}`);
+    }
 
     if (isAlreadyFixed) {
       // Fixer claims issues are already fixed - VERIFY the claim
@@ -308,10 +313,13 @@ async function verifyAllIssues(
       verifiedThisSession.add(issue.comment.id);
       console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}:${issue.comment.line} — ${result.explanation}`));
     } else {
-      stillUnresolved.push(issue);
       if (result) {
+        // Feed the verifier's contradiction back so the next fixer sees exactly
+        // WHERE the issue still exists, preventing the fixer/verifier stalemate.
+        issue.verifierContradiction = result.explanation;
         console.log(chalk.yellow(`    ○ Still exists: ${issue.comment.path}:${issue.comment.line} - ${result.explanation}`));
       }
+      stillUnresolved.push(issue);
     }
   }
   

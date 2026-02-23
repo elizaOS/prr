@@ -22,6 +22,29 @@ import { formatNumber } from '../ui/reporter.js';
 import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../logger.js';
 
 /**
+ * Detect audit explanations that say no fix is needed (false positive).
+ *
+ * WHY: The audit LLM sometimes returns stillExists: true but the explanation
+ * says "no change needed", "correct state", "cautionary not prescriptive", etc.
+ * Those issues would re-enter the fix loop and spin forever. Filtering them
+ * here (treat as passed, mark verified) avoids churn. See audit-run-2026-02-20.md.
+ */
+function isAuditNoActionNeeded(explanation: string): boolean {
+  const lower = explanation.toLowerCase();
+  const patterns = [
+    /\bno change (is )?needed\b/,
+    /\bcorrect state\b/,
+    /\bnot prescriptive\b/,
+    /\bcautionary,?\s*(not )?prescriptive\b/,
+    /\b(addressed|resolved) by (the )?(comment|documentation|code)\b/,
+    /\bno additional fix (is )?needed\b/,
+    /\b(this is )?the correct (state|behavior)\b/,
+    /\bcorrect for (npm )?consumers\b/,
+  ];
+  return patterns.some((p) => p.test(lower));
+}
+
+/**
  * Analyze issues and report dismissed issues
  */
 export function analyzeAndReportIssues(
@@ -217,11 +240,22 @@ export async function runFinalAudit(
   
   // Find issues that failed the audit - mark passing ones as verified
   const failedAudit: Array<{ comment: ReviewComment; explanation: string }> = [];
+  let filteredNoAction = 0;
   for (const comment of comments) {
     const result = auditResults.get(comment.id);
     if (result) {
       if (result.stillExists) {
-        failedAudit.push({ comment, explanation: result.explanation });
+        if (isAuditNoActionNeeded(result.explanation)) {
+          filteredNoAction++;
+          debug('Audit false positive (no action needed) - treating as passed', {
+            path: comment.path,
+            line: comment.line,
+            excerpt: result.explanation.slice(0, 80),
+          });
+          Verification.markVerified(stateContext, comment.id);
+        } else {
+          failedAudit.push({ comment, explanation: result.explanation });
+        }
       } else {
         // Audit confirmed this is fixed - add to cache
         Verification.markVerified(stateContext, comment.id);
@@ -230,6 +264,9 @@ export async function runFinalAudit(
       // No result from audit - treat as needing review (fail-safe)
       failedAudit.push({ comment, explanation: 'Audit did not return a result for this issue' });
     }
+  }
+  if (filteredNoAction > 0) {
+    debug('Audit filtered no-action-needed', { count: filteredNoAction });
   }
   
   if (failedAudit.length > 0) {

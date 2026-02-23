@@ -33,6 +33,7 @@ import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { Runner } from '../runners/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { StateContext } from '../state/state-context.js';
+import { logTokenUsage } from '../state/state-context.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import type { LLMClient } from '../llm/client.js';
@@ -94,7 +95,7 @@ export interface RunCallbacks {
   printModelPerformance: () => void;
   printHandoffPrompt: (issues: UnresolvedIssue[]) => void;
   printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
-  printFinalSummary: () => void;
+  printFinalSummary: (remainingCount?: number) => void;
   ringBell: (times: number) => void;
   runCleanupMode: (prUrl: string, owner: string, repo: string, prNumber: number) => Promise<void>;
 }
@@ -262,7 +263,9 @@ export async function executeRun(
     if (callbacks.syncResolverState) {
       callbacks.syncResolverState(state);
     }
-    
+
+    logTokenUsage(state.stateContext);
+
     // Add dismissal comments as post-processing step (after all fix iterations complete)
     // WHY: Comments are added after fixer modifications are done so they don't get clobbered.
     // If comments are added, commit them separately for clean separation in git history.

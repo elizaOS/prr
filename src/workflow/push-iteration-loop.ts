@@ -176,7 +176,7 @@ export async function executePushIteration(
   const { comments, unresolvedIssues, duplicateMap } = loopResult;
   
   if (loopResult.shouldBreak) {
-    // Store final state for after action report (for dry-run)
+    // Store final state for after action report (for dry-run); issue refs preserved for AAR
     if (options.dryRun) {
       finalUnresolvedIssuesRef.current = [...unresolvedIssues];
       finalCommentsRef.current = [...comments];
@@ -228,12 +228,18 @@ export async function executePushIteration(
       prInfoRef.current.headSha = preChecks.updatedHeadSha;
     }
 
+    // 3.1(a): Re-fetch file content for issues where verifier said still exists
+    const verifierRefreshCount = await ResolverProc.refreshSnippetsForVerifierContradiction(unresolvedIssues, getCodeSnippet);
+    if (verifierRefreshCount > 0) {
+      debug('Refreshed snippets for verifier-contradiction retry', { count: verifierRefreshCount });
+    }
+
     // Execute fix iteration
     // WHY getRunner(): After tryRotation() updates this.runner via syncRotationContext,
     // a destructured `runner` variable would still hold the OLD runner reference.
     // getRunner() always returns the current runner from the PRResolver instance.
     const iterResult = await ResolverProc.executeFixIteration(
-      unresolvedIssues, comments, git, workdir, getRunner(), stateContext, lessonsContext, llm, options, prInfo, verifiedThisSession,
+      unresolvedIssues, comments, git, workdir, getRunner(), stateContext, lessonsContext, llm, options, config.openaiApiKey, prInfo, verifiedThisSession,
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
     );
@@ -301,7 +307,7 @@ export async function executePushIteration(
     
     // Handle iteration cleanup
     const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, getRunner(), currentModel,
-      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime);
+      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime, progressThisCycle);
     
     progressThisCycle += cleanupResult.progressMade;
     if (cleanupResult.expectedBotResponseTime !== undefined) expectedBotResponseTimeRef.current = cleanupResult.expectedBotResponseTime;
@@ -353,7 +359,7 @@ export async function executePushIteration(
     console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
     exitReason = 'max_iterations';
     exitDetails = `Hit max fix iterations (${maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
-    finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+    finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
     finalCommentsRef.current = [...comments];
   }
 
@@ -363,9 +369,14 @@ export async function executePushIteration(
     // After bail-out, skip the 300s bot review wait — we've exhausted all
     // strategies and waiting for new comments just delays exit with no benefit.
     const isBailOut = exitReason === 'bail_out';
-    const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, pushIteration, maxPushIterations,
+    const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, services.llm, pushIteration, maxPushIterations,
       resolveConflictsWithLLM, waitForBotReviews, allFixed, /* skipBotWait */ isBailOut);
     if (commitResult.shouldBreak) {
+      // Ensure AAR has remaining issues when we exit (e.g. bail-out with no committable changes)
+      if (unresolvedIssues.length > 0) {
+        finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+        finalCommentsRef.current = [...comments];
+      }
       return {
         shouldBreak: true,
         exitReason: commitResult.exitReason,
@@ -382,6 +393,7 @@ export async function executePushIteration(
     committedThisIteration = true;
   } else {
     console.log(chalk.yellow('\nNo changes to commit'));
+    // Preserve issue objects (including verifierContradiction) so AAR shows "Verifier said" for each
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
 
@@ -411,10 +423,14 @@ export async function executePushIteration(
 
     // No intermediate pushes (or not in auto-push mode) — truly done.
     const preserveExitReason = exitReason === 'bail_out';
+    const noChangesDetails =
+      unresolvedIssues.length > 0
+        ? `No changes to commit (fixer made no modifications); ${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} still need attention`
+        : 'No changes to commit (fixer made no modifications)';
     return {
       shouldBreak: true,
       exitReason: preserveExitReason ? exitReason : 'no_changes',
-      exitDetails: preserveExitReason ? exitDetails : 'No changes to commit (fixer made no modifications)',
+      exitDetails: preserveExitReason ? exitDetails : noChangesDetails,
       updatedRapidFailureCount: rapidFailureCount,
       updatedLastFailureTime: lastFailureTime,
       updatedConsecutiveFailures: consecutiveFailures,
@@ -431,6 +447,7 @@ export async function executePushIteration(
   // → no changes → alreadyCommitted empty → shouldBreak: true.
   const bailedOut = exitReason === 'bail_out';
   if (bailedOut) {
+    // Same issue refs (with verifierContradiction when set) for AAR and handoff
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
   }

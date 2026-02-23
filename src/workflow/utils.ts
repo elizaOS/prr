@@ -5,6 +5,7 @@
 import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
+import { issueRequiresRefactor } from '../analyzer/prompt-builder.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { LLMClient } from '../llm/client.js';
@@ -311,7 +312,8 @@ Focus on fixing ONLY this one issue. Make minimal, targeted changes.
   }
 
   prompt += `## Issue
-File: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}
+**TARGET FILE (you MUST edit only this file):** ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}
+Any change to a different file will be reverted and will not fix this issue.
 
 Review Comment:
 ${issue.comment.body}
@@ -329,8 +331,10 @@ ${issue.codeSnippet}
 
   if (issue.verifierContradiction) {
     prompt += `**⚠ VERIFIER DISAGREES — issue NOT fixed:** ${issue.verifierContradiction}
-The verifier checked the actual code and found the issue still exists. Treat the verifier's explanation above as the source of truth for what is still missing or wrong. Your fix must directly address that feedback (e.g. add the missing code or change the cited location) so the next verification passes.
+The verifier checked the actual code and found the issue still exists. Treat the verifier's explanation above as the source of truth. Your fix must directly address that feedback so the next verification passes.
 Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected that. You must make a code change that addresses the verifier's citation above.
+If the verifier suggested a more robust or structural approach (e.g. "restructure", "use X instead", "a more robust fix would be"), prefer that over a minimal workaround — the verifier will reject fragile heuristics.
+Re-check the current file content at the lines the verifier cited — the snippet above may be stale or partial; the verifier saw the actual file.
 
 `;
   }
@@ -343,9 +347,9 @@ ${lessons.map(l => `- ${l}`).join('\n')}
   }
 
   prompt += `## Instructions
-1. EDIT the file ${issue.comment.path} to fix this issue
-2. Make the minimal change required - do NOT rewrite the whole file
-3. Do not modify any other files
+1. EDIT ONLY the file **${issue.comment.path}** to fix this issue. Do not edit any other file — changes to other files are reverted and do not count.
+2. Make the minimal change required - do NOT rewrite the whole file${issueRequiresRefactor(issue) ? '\n   Exception: This issue requests removing duplication or sharing logic. You may make broader changes in this file to consolidate code — the "minimal only" constraint is relaxed for this issue.' : ''}
+3. Do not modify any other files (this issue is only about ${issue.comment.path})
 4. If the issue is ALREADY FIXED in the current code, do NOT make cosmetic changes. Instead respond with: RESULT: ALREADY_FIXED — <cite the specific code>
 5. If the instructions are UNCLEAR or contradictory, respond with: RESULT: UNCLEAR — <explain what is ambiguous>
 6. If the LINE NUMBERS in the review don't match the current code, respond with: RESULT: WRONG_LOCATION — <note the discrepancy>

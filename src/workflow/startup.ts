@@ -179,6 +179,21 @@ export async function checkCodeRabbitStatus(
     } else {
       spinner.info(`CodeRabbit: ${crResult.reason}`);
     }
+
+    // Check for bot rate-limit signals (e.g. CodeRabbit posting "review paused")
+    try {
+      const rateLimits = await github.checkBotRateLimits(owner, repo, prNumber);
+      const limited = rateLimits.filter(r => r.rateLimited);
+      if (limited.length > 0) {
+        for (const rl of limited) {
+          console.log(chalk.yellow(`  ⚠ ${rl.bot} rate-limited: ${rl.message ?? 'review paused/cancelled'}`));
+        }
+        console.log(chalk.yellow('  Will extend wait times after pushes to let bots recover.'));
+      }
+    } catch {
+      // Non-fatal
+    }
+
     debug('CodeRabbit startup check', crResult);
     return { triggered: crResult.triggered ?? false, reviewedCurrentCommit: crResult.reviewedCurrentCommit ?? false, prefetchedComments };
   } catch (err) {

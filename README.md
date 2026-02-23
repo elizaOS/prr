@@ -43,7 +43,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ### Smart Retry Strategies
 - **Issue priority triage**: LLM assesses importance (1-5) and difficulty (1-5) during analysis, then sorts issues by `--priority-order` (important, easy, newest, oldest). Critical security issues are tackled before style nits.
-- **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
+- **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions. Lesson text is normalized (inline backticks preserved, "made no changes" canonicalized, noise lines dropped) so inputs from verify/fixer/recovery are stored in a consistent, dedupe-friendly form. *Why*: Flexible normalization accepts messy input and produces one canonical shape instead of rejecting valid lessons.
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
 - **Adaptive batch sizing**: Halves issues per prompt on consecutive failures (50 → 25 → 12 → 6 → 5) before falling back to single-issue mode
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage. For llm-api, the runner’s current provider (openai/anthropic/elizacloud) is used when matching LLM-recommended models so recommendations are honored instead of rejected as “no compatible model”.

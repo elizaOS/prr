@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Lesson normalization: flexible input, best-effort canonical form (2026-02)
+
+**Preserve inline backticks**
+- `normalizeLessonText()` no longer strips inline backticks (e.g. `execSync`, `tsc`). Only fenced code blocks (triple backticks) are removed.
+- **WHY**: LLM-generated lessons often use backticks for code references. Stripping them lost useful structure and made lessons like "Use execSync with shell false" less readable. Preserving them keeps lessons durable and readable in `.prr/lessons.md` and CLAUDE.md.
+
+**Keep normalized "made no changes" lessons**
+- Standalone "tool made no changes" / "fixer made no changes" (with or without "without explanation", "trying different approach") are now returned as normalized strings instead of `null`.
+- **WHY**: Previously these were rejected as "non-actionable". Callers (e.g. batch verify, no-changes handling) still produce them; rejecting lost valid lessons and broke tests that expected a canonical form. Normalizing and returning allows dedup and storage; callers can filter later if needed.
+
+**Skip single-asterisk list lines**
+- Lines that start with a single `*` (and not `**`) are skipped during line-by-line parsing.
+- **WHY**: In mixed lists (e.g. "1. item one", "- bullet", "* star"), the single-asterisk line is often noise or comment-style. Keeping it added junk like "star" to the normalized text; skipping it yields "item one item two bullet plus" without spurious tokens.
+
 ### Fixed (2026-02-12) — Audit-driven workflow fixes
 
 **Verification cache vs final audit**

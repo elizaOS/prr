@@ -222,7 +222,42 @@ Layer 3: Final audit (before declaring done)
 - Stale verifications get re-checked instead of blindly trusted
 - `--reverify` flag forces re-verification of ALL cached items
 
-### 3. Model & Tool Rotation with Single-Issue Focus
+### 3. System communication (handoffs)
+
+Data flows between subsystems so the next step has the right context. Improving these handoffs reduces fixer/verifier stalemates and "no access to code" failures.
+
+**Analyzer → Fixer**
+
+- **Input:** Review comments + workdir. Solvability (sync) filters impossible issues; batch check (LLM) returns which still exist.
+- **Output:** `UnresolvedIssue[]` with `codeSnippet` (current code at comment path/line), `explanation` (analysis), and optional `retargetedLine` when the cited line is out of range.
+- **Handoff:** Fix prompt builder (`prompt-builder.ts`, `utils.buildSingleIssuePrompt`) receives these issues and injects **Current Code** and **Analysis** so the fixer sees the same code the analyzer saw. Snippets are refreshed after verify for changed files (`recheckSolvability`) so the next iteration shows post-fix state.
+
+**Verifier → Fixer**
+
+- **Input:** After the fixer runs, verification (batch or single) gets the **current diff** and answers YES/NO + explanation (and optional LESSON for batch).
+- **Output:** For each NO we set `issue.verifierContradiction = explanation` (and lesson if present). This is persisted on the issue object for the rest of the session.
+- **Handoff:** The next fix prompt (batch and single-issue) includes a **VERIFIER DISAGREES** block with that text and instructs: "Treat the verifier's explanation as the source of truth for what is still missing or wrong." Batch verify prompt explicitly says the NO explanation is "used as the source of truth for the next fix attempt" and must cite code/method/line.
+
+**Lessons → Fixer**
+
+- Failed verifications (and some no-changes results) add file-scoped or global lessons. Fix prompt builder injects **per-file lessons** inline with each issue (not only at the top) so the fixer sees them next to the code they apply to.
+
+**No-changes re-check → Fixer**
+
+- When the fixer claims "already fixed" but made no edits, we re-verify with the LLM. If the re-check says "still exists", we set `issue.verifierContradiction` so the next iteration sees the verifier's view and can try again (or rotate).
+
+**Dismissal comments (review → LLM → file)**
+
+- We pass **effectiveLine** (clamped to file length), **surroundingCode** (snippet with line numbers), review comment, and dismissal reason so the LLM has the code in the prompt. Prompt states "The code is provided above" and requires response format `EXISTING` or `COMMENT: Review: ...` only. Insertion uses the same effective line so we never ask the LLM about a line we don't show or insert past end of file.
+
+**Where to change behavior**
+
+- Verifier → Fixer: `fix-verification.ts` (sets `verifierContradiction`), `prompt-builder.ts` and `workflow/utils.ts` (VERIFIER DISAGREES block).
+- Analyzer → Fixer: `issue-analysis.ts` (builds issues with snippets), `fix-loop-utils.ts` / `recheckSolvability` (refresh after verify). When refreshing snippets, `recheckSolvability` preserves `verifierContradiction` via `{ ...issue, codeSnippet }` so the next fix prompt and AAR see it.
+- AAR "Verifier said": `push-iteration-loop.ts` sets `finalUnresolvedIssuesRef.current` from the same issue refs (so `verifierContradiction` is preserved); `final-cleanup.ts` passes them to `printAfterActionReport`. See `docs/audit-run-2026-02-22.md` (Actions executed).
+- Dismissal: `workflow/dismissal-comments.ts` (effectiveLine, surroundingCode), `llm/client.ts` (`generateDismissalComment` prompt).
+
+### 4. Model & Tool Rotation with Single-Issue Focus
 
 **The Problem**: AI tools get stuck. They'll make the same mistake repeatedly.
 
@@ -301,7 +336,7 @@ Strategy per failure:
 
 **State persistence**: Tool index and per-tool model indices saved to state file. Resuming continues from same position instead of restarting rotation.
 
-### 4. Adaptive Batch Sizing
+### 5. Adaptive Batch Sizing
 
 **The Problem**: The first iteration stuffed 50 issues into a single 213K-char prompt. The model fixed 5 (5% success). Iterations 2-3 sent the same 50-issue prompt and fixed 0 — the model was overwhelmed.
 
@@ -1397,6 +1432,40 @@ for (const dc of deleteConflicts) {
 1. **Prevention**: Stopped generating non-actionable lessons at source
 2. **Normalization filters**: `lessons-normalize.ts` rejects known garbage patterns
 3. **CLI cleanup**: `--tidy-lessons` scans all JSON files in `~/.prr/lessons/` and `.prr/lessons.md`, re-normalizes, deduplicates, and prunes
+
+### 15h. Review comments (durable inline)
+
+**The Problem**: PR review tools (including prr) can leave inline comments like `// REVIEW: line 248 uses || but should use ?? (b340047)`. Those references go stale as the code changes and look like tool cruft in the long term.
+
+**Policy**: We still leave a short comment so there can be dialog (with bots or humans), but **how we leave it** matters. All `// Review:` (or equivalent) text must be **long-term documentation**:
+
+- **No** line numbers, commit hashes, or references to prr/review tools.
+- **Yes** short, intent-based explanation that stays valid as the code evolves (e.g. "Backoff enforced in acquire(); explicit sleep here is redundant" or "handled in getConfig()").
+
+**Where it’s enforced**: Fixer prompts (`prompt-builder.ts`, `workflow/utils.ts`) and the dismissal-comment LLM prompt (`llm/client.ts` → `generateDismissalComment`) instruct the model to produce durable explanations only. The prefix remains `Review:` for consistency; the content is constrained to be documentation-style.
+
+### 15i. Empty or placeholder test files not committed
+
+**The Problem**: Empty or placeholder test files (e.g. `test_fail.ts` with a single blank line) get committed when a fixer or user adds them by mistake. Review bots then flag "empty test file accidentally committed".
+
+**Solution**: Pre-commit checks in `git-commit-core.ts` (`runPreCommitChecks`):
+
+- **Detection**: Staged files whose names look like tests (`*.test.ts`, `*.spec.ts`, `*_test.*`, `test_*.*`) are inspected. If the staged content is empty or "placeholder" (very short, no test keywords like `test(`, `it(`, `expect(`), the file is excluded.
+- **Action**: The file is unstaged. If it was a **new** file, it is also removed from the working tree so the next run does not stage it again; the user sees a message like `Excluded empty test file (removed from commit and working tree): path/to/test_fail.ts`. If it was a **modified** file (e.g. someone emptied it), the file is reverted to HEAD.
+
+Both commit paths use this: `squashCommit` (main fix loop) and `commitIteration` (iteration cleanup) call `runPreCommitChecks` after staging.
+
+### 15j. Fixer/verifier alignment (verifier citation feedback)
+
+**The Problem**: When the fixer claims ALREADY_FIXED but the verifier says the issue still exists, the next fix attempt often repeated the same claim because the fixer never saw **what the verifier cited** (e.g. "getHistoricalPrices method not found", "start() does not validate JUPITER_API_KEY"). This caused stalemates (e.g. Jupiter audit: many cycles with zero progress).
+
+**Solution**:
+
+1. **Verifier explanation on the issue:** When batch or sequential verify returns NO, we set `issue.verifierContradiction = explanation` (and optionally append the lesson). The same issue object is reused in the next iteration; `recheckSolvability` preserves fields when refreshing snippets (`{ ...issue, codeSnippet: newSnippet }`).
+2. **Fix prompt injection:** Both `buildFixPrompt` (batch) and `buildSingleIssuePrompt` (single-issue) inject a **⚠ VERIFIER DISAGREES** block when `verifierContradiction` is set, telling the fixer to treat the verifier's explanation as the source of truth for what is still missing or wrong.
+3. **Verifier prompt:** The batch verify prompt instructs the LLM that when answering NO, the explanation is used as the source of truth for the next fix; it must cite specific code, method names, or lines (e.g. "getHistoricalPrices method not found in Current Code") so the fixer can target the gap.
+
+**Where:** `fix-verification.ts` (set `verifierContradiction` on failure in both batch and sequential paths), `prompt-builder.ts` (batch fix prompt), `workflow/utils.ts` (single-issue prompt), `llm/client.ts` (batch verify prompt). The no-changes path (`no-changes-verification.ts`) already set `verifierContradiction` when the ALREADY_FIXED re-check said still exists.
 
 ### 9. Commit Message Generation
 

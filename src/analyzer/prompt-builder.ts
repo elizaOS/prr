@@ -66,7 +66,23 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+/** Refactor/duplication keywords in comment or verifier text → allow broader changes for that issue */
+const REFACTOR_KEYWORDS = /\b(duplicate[sd]?|duplication|refactor(?:ing)?|share\s+logic|consolidate|extract\s+(?:common|shared)|remove\s+duplication|redundant)\b/i;
 
+/**
+ * Detect whether an issue likely requires refactoring (e.g. removing duplication, sharing logic).
+ * When true, we relax "minimal only" / "do not reorganize" for that issue so the fixer can consolidate code.
+ *
+ * Signals: triage ease 4–5 (complex/major refactor), or comment/verifier text mentioning
+ * duplicate, refactor, share logic, consolidate, extract common, etc.
+ */
+export function issueRequiresRefactor(issue: UnresolvedIssue): boolean {
+  if (issue.triage && issue.triage.ease >= 4) return true;
+  const body = issue.comment?.body ?? '';
+  if (REFACTOR_KEYWORDS.test(body)) return true;
+  if (issue.verifierContradiction && REFACTOR_KEYWORDS.test(issue.verifierContradiction)) return true;
+  return false;
+}
 
 /**
  * Compute effective batch size using adaptive batching.
@@ -292,7 +308,13 @@ export function buildFixPrompt(
     const triageLabel = issue.triage
       ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
       : '';
-    parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}\n`);
+    parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}`);
+    parts.push(`**Apply fixes for this issue only in \`${issue.comment.path}\`** — do not change other files for this issue.`);
+    if (issueRequiresRefactor(issue)) {
+      parts.push(`**This issue likely requires refactoring** (e.g. removing duplication, sharing logic). You may make broader changes in this file to consolidate code — the usual "minimal only" constraint is relaxed for this issue.\n`);
+    } else {
+      parts.push('');
+    }
     parts.push(`**Review Comment** (${issue.comment.author}):`);
     parts.push('```');
     
@@ -350,7 +372,9 @@ export function buildFixPrompt(
     if (issue.verifierContradiction) {
       parts.push(`**⚠ VERIFIER DISAGREES — issue NOT fixed:** ${issue.verifierContradiction}`);
       parts.push('The verifier checked the actual code and found the issue still exists. Treat the verifier\'s explanation above as the source of truth for what is still missing or wrong. Your fix for this issue must directly address that feedback (e.g. add the missing code or change the cited location) so the next verification passes.');
-      parts.push('Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected that. You must make a code change that addresses the verifier\'s citation above.\n');
+      parts.push('Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected that. You must make a code change that addresses the verifier\'s citation above.');
+      parts.push('If the verifier suggested a more robust or structural approach (e.g. "restructure", "use X instead", "a more robust fix would be"), prefer that over a minimal workaround — the verifier will reject fragile heuristics.');
+      parts.push('Re-check the current file content at the lines the verifier cited — the code snippet in this prompt may be stale or partial; the verifier saw the actual file.\n');
     }
 
     // Inject file-specific lessons INLINE with each issue.
@@ -375,9 +399,10 @@ export function buildFixPrompt(
   }
 
   parts.push('## Instructions\n');
-  parts.push('1. Address each issue listed above');
+  parts.push('1. Address each issue listed above. Each issue specifies its file — apply that issue\'s fix only in that file; do not fix an issue by editing a different file.');
   parts.push('2. Make MINIMAL, SURGICAL changes — only modify lines directly related to the fix');
-  parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes');
+  parts.push('   Exception: For issues that request removing duplication or sharing logic (e.g. "duplicates X", "refactor to share"), you may refactor and consolidate code in that file as needed.');
+  parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes (except when an issue explicitly requires refactoring as above)');
   parts.push('4. Do NOT change working code that is not mentioned in the review');
   parts.push('5. Preserve existing code structure, variable names, and formatting');
   parts.push('6. If an issue is unclear, use RESULT: UNCLEAR to explain what is ambiguous instead of guessing.');
