@@ -228,10 +228,21 @@ export async function addDismissalComments(
     total: dismissedIssues.length, 
     commentable: commentable.length 
   });
-  
-  // Group by file
-  const byFile = new Map<string, DismissedIssue[]>();
+
+  // One dismissal comment per (filePath, line) to avoid duplicate LLM calls and "already exists" skips
+  const byFileAndLine = new Map<string, DismissedIssue>();
   for (const issue of commentable) {
+    const key = `${issue.filePath}:${issue.line}`;
+    if (!byFileAndLine.has(key)) byFileAndLine.set(key, issue);
+  }
+  const toProcess = [...byFileAndLine.values()];
+  if (toProcess.length < commentable.length) {
+    debug('Deduplicated dismissal comments by (file, line)', { before: commentable.length, after: toProcess.length });
+  }
+  
+  // Group by file for per-file processing (insert bottom-to-top within file)
+  const byFile = new Map<string, DismissedIssue[]>();
+  for (const issue of toProcess) {
     if (!byFile.has(issue.filePath)) {
       byFile.set(issue.filePath, []);
     }
@@ -266,10 +277,18 @@ export async function addDismissalComments(
           const content = readFileSync(fullPath, 'utf-8');
           const lines = content.split('\n');
 
+          if (lines.length === 0) {
+            fileSkipped++;
+            continue;
+          }
+
+          // Clamp line to file so the model sees the line we ask about (avoids "I don't have access to the code")
+          const effectiveLine = Math.min(Math.max(1, issue.line), lines.length);
+
           const contextBefore = 7;
           const contextAfter = 7;
-          const start = Math.max(0, issue.line - contextBefore - 1);
-          const end = Math.min(lines.length, issue.line + contextAfter);
+          const start = Math.max(0, effectiveLine - contextBefore - 1);
+          const end = Math.min(lines.length, effectiveLine + contextAfter);
 
           const surroundingCode = lines
             .slice(start, end)
@@ -278,7 +297,7 @@ export async function addDismissalComments(
 
           const result = await llm.generateDismissalComment({
             filePath: issue.filePath,
-            line: issue.line,
+            line: effectiveLine,
             surroundingCode,
             reviewComment: issue.commentBody,
             dismissalReason: issue.reason,
@@ -293,7 +312,7 @@ export async function addDismissalComments(
           const inserted = await insertCommentAtLine(
             workdir,
             issue.filePath,
-            issue.line,
+            effectiveLine,
             result.commentText
           );
 

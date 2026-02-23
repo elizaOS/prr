@@ -1,15 +1,17 @@
 /**
- * Lessons normalization functions
+ * Lessons normalization: turn raw fixer/verifier text into durable, dedupe-friendly lesson strings.
+ *
+ * Design: be flexible on input and normalize to the best canonical form we can.
+ * WHY: Lessons come from many sources (batch verify, no-changes explanation, recovery).
+ * Rejecting valid-but-messy input loses signal; normalizing keeps lessons usable and
+ * deduplicatable without forcing callers to pre-sanitize.
  */
 
 export function normalizeLessonText(lesson: string): string | null {
+  // Remove only fenced code blocks; leave inline `code` backticks intact.
+  // WHY: Inline backticks (e.g. `execSync`, `tsc`) are durable documentation;
+  // stripping them loses structure. Code fences are multi-line noise.
   let withoutFences = lesson.replace(/```[\s\S]*?```/g, '');
-  // Strip single backticks instead of rejecting the entire lesson.
-  // WHY: LLM explanations routinely use backticks around code references
-  // (e.g., `tsc`, `slippageBps`). The old check rejected the ENTIRE lesson
-  // if any backtick was adjacent to a short word, silently discarding
-  // valuable lessons from batch verification and failure analysis.
-  withoutFences = withoutFences.replace(/`/g, '');
   const lines = withoutFences.split('\n');
   const kept: string[] = [];
 
@@ -17,6 +19,10 @@ export function normalizeLessonText(lesson: string): string | null {
     let trimmed = line.trim();
     if (!trimmed) continue;
     if (trimmed.startsWith('```') || trimmed.startsWith('#') || trimmed.startsWith('**')) continue;
+    // Skip lines that start with a single asterisk (e.g. "* star" in mixed lists).
+    // WHY: Single-* is often noise or comment-style; keeping it adds junk like "star"
+    // to "item one item two bullet plus". Double-asterisk is bold, kept via content.
+    if (trimmed.startsWith('*') && !trimmed.startsWith('**')) continue;
     trimmed = trimmed.replace(/^(?:[-*+]\s+|\d+\.\s+)/, '').trim();
     if (!trimmed) continue;
     if (/^\d+\.$/.test(trimmed)) continue;
@@ -32,12 +38,14 @@ export function normalizeLessonText(lesson: string): string | null {
 
   let normalized = kept.join(' ');
   normalized = normalized.replace(/\s+/g, ' ').trim();
-  // Backticks already stripped at the top of this function
   normalized = normalized.replace(/^\s*-\s*/, '').trim();
   normalized = normalized.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
   normalized = normalized.replace(/\s*-\s*\(inferred\)\s*\w+\b/gi, '').trim();
   normalized = normalized.replace(/\s*-\s*\(inferred\)[^\s]*/gi, '').trim();
   normalized = normalized.replace(/\s*-\s*:\s*(?:string|number|boolean|unknown|any)\s*;?/gi, ' - ').trim();
+  // Insert missing separator between "made no changes" and "trying"/"already".
+  // WHY: Fixer output often has "made no changestrying" or "made no changes  already";
+  // normalizing to " - " gives one canonical form for dedup and display.
   normalized = normalized.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
   normalized = normalized.replace(/made no changes\s*(?=already)/gi, 'made no changes - ');
   normalized = normalized.replace(/made no changes\s+already/gi, 'made no changes - already');
@@ -105,6 +113,9 @@ export function normalizeLessonText(lesson: string): string | null {
       normalized += ` - ${alreadyIncludesMatch[0].trim()}`;
     }
   }
+  // Canonicalize runner names and repeated "made no changes" into one token.
+  // WHY: "codex made no changes", "42 made no changes", and "tool ... tool ..." all
+  // mean the same for dedup; one canonical form avoids duplicate lessons.
   normalized = normalized.replace(/\b(?:\d+-)?(?:claude-code|codex|llm-api|cursor|opencode|aider)\b\s+made no changes(?:\s+without explanation)?(?:\s*-\s*trying different approach)?/gi, 'tool made no changes');
   normalized = normalized.replace(/\b\d+\s+made no changes(?:\s+without explanation)?(?:\s*-\s*trying different approach)?/gi, 'tool made no changes');
   normalized = normalized.replace(/(?:\btool made no changes\b(?:\s*(?:[-,;]|and)?\s*)?){2,}/gi, 'tool made no changes');
@@ -116,16 +127,19 @@ export function normalizeLessonText(lesson: string): string | null {
   if (!normalized) return null;
   if (/^\d+(?:\.\d+)?\.?$/.test(normalized)) return null;
   
-  // Detect orphaned/incomplete entries (truncated lessons)
-  if (/\.\.\.$/.test(normalized)) return null;  // Ends with "..."
-  if (/\b(?:in|to|for|from|with|the|and|or|but|if|when|that)\s*$/i.test(normalized)) return null;  // Ends with incomplete phrase
-  if (/\b(?:contain|contains|include|includes)\s*$/i.test(normalized)) return null;  // Ends mid-thought
-  // Ends with noun expecting more - only reject if short or lacking action verbs
+  // Reject truncated or incomplete lessons (non-actionable fragments).
+  // WHY: "...", "contains", or "the" at end are parsing/truncation artifacts;
+  // short noun endings without action verbs are likely headers or fragments.
+  if (/\.\.\.$/.test(normalized)) return null;
+  if (/\b(?:in|to|for|from|with|the|and|or|but|if|when|that)\s*$/i.test(normalized)) return null;
+  if (/\b(?:contain|contains|include|includes)\s*$/i.test(normalized)) return null;
   const endsWithIncompleteNoun = /(?:function|method|code|logic|generator|manager|strategy|helper|pattern|implementation)\s*$/i.test(normalized);
   const hasActionVerb = /\b(?:is|are|fix|avoid|implement|add|remove|update|use|handle|prevent|refactor|fixes|avoids|adds|check|ensure|validate|verify|create|delete|modify|change|apply|set|get|call|run|execute|skip|include|exclude)\b/i.test(normalized);
   if (endsWithIncompleteNoun && (normalized.length < 40 || !hasActionVerb)) return null;
-  
-  // Reject common malformed patterns
+
+  // Reject known malformed or non-actionable patterns.
+  // WHY: "chars truncated", "Fix for file:null", and bare numbers are tool/parsing
+  // artifacts, not lessons; storing them would pollute .prr/lessons.md.
   if (/\bchars\s+truncated\b/i.test(normalized)) return null;
   if (/^Fix for [^:]+:(?:null|undefined)\b/i.test(normalized)) return null;
   if (/^Fix for [^:]+:\d+$/i.test(normalized)) return null;
@@ -139,11 +153,9 @@ export function normalizeLessonText(lesson: string): string | null {
   if (/\btreating as failed\b/i.test(normalized)) return null;
   if (/\bFile was not modified\b/i.test(normalized)) return null;
   
-  // Reject standalone "made no changes" lessons — completely non-actionable.
-  // WHY: "fixer made no changes" as a global lesson tells the next developer nothing.
-  // File-specific "Fix for X:Y - tool made no changes" are already handled above
-  // and collapsed; this catches any remaining standalone variants.
-  if (/^(?:fixer|tool)\s+made\s+no\s+changes\b/i.test(normalized)) return null;
+  // Keep normalized "tool/fixer made no changes" instead of returning null.
+  // WHY: Flexible input handling: we normalize to a canonical string so callers
+  // can store and dedupe it. Rejecting these lost valid lessons from verify/fixer output.
   
   // Must have minimum substance (not just metadata)
   if (normalized.length < 20) return null;
@@ -151,6 +163,11 @@ export function normalizeLessonText(lesson: string): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+/**
+ * Stable key for a lesson for deduplication (case- and variant-insensitive).
+ * WHY: Different phrasings ("codex made no changes", "tool made no changes - trying...")
+ * should collapse to one key so we don't store duplicate lessons.
+ */
 export function lessonKey(lesson: string): string {
   let key = lesson.toLowerCase().replace(/\s+/g, ' ').trim();
   key = key.replace(/\btool made no changes\b(?:\s+without explanation)?(?:\s*-\s*trying different approach)?/g, 'tool made no changes');
@@ -165,6 +182,10 @@ export function lessonKey(lesson: string): string {
   return key;
 }
 
+/**
+ * Replace runner-prefixed "X with Y made no changes..." with canonical "tool made no changes...".
+ * WHY: Same as lessonKey — many runners, one canonical form for display and dedup.
+ */
 export function canonicalizeToolAttempts(lesson: string): string {
   const toolPattern = '\\b(?:\\d+-)?(?:claude-code|codex|llm-api|cursor|opencode|aider)\\b';
   const attemptPattern = new RegExp(
@@ -316,6 +337,10 @@ export function extractLessonFilePath(lesson: string): string | null {
   return null;
 }
 
+/** Expanded wording for the "tool made no changes" lesson so prompts and AAR show a clear instruction. */
+const NO_CHANGES_EXPANDED =
+  'Fixer made no edits and gave no explanation; try another model or strategy.';
+
 export function formatLessonForDisplay(lesson: string): string {
   const match = lesson.match(/^Fix for [^:]+(?::\S+)? rejected: (.+)$/);
   if (match) {
@@ -323,7 +348,15 @@ export function formatLessonForDisplay(lesson: string): string {
   }
   const noChangesMatch = lesson.match(/^Fix for [^:]+(?::\S+)? - (.+)$/);
   if (noChangesMatch) {
-    return noChangesMatch[1];
+    const body = noChangesMatch[1].trim();
+    if (/^(?:tool|fixer)\s+made no changes(?:\s+without explanation)?(?:\s*[-,]\s*trying different approach)?$/i.test(body)) {
+      return NO_CHANGES_EXPANDED;
+    }
+    return body;
+  }
+  // Standalone (e.g. global) "tool/fixer made no changes without explanation - trying different approach"
+  if (/^(?:tool|fixer)\s+made no changes(?:\s+without explanation)?(?:\s*[-,]\s*trying different approach)?$/i.test(lesson.trim())) {
+    return NO_CHANGES_EXPANDED;
   }
   return lesson;
 }

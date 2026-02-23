@@ -18,8 +18,10 @@ import chalk from 'chalk';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { PRInfo } from '../github/types.js';
+import type { ReviewComment } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
+import { summarizeBotRiskByFile } from './bot-risk.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug } from '../logger.js';
 import { sortByPriority, type PriorityOrder } from '../analyzer/severity.js';
@@ -43,7 +45,9 @@ export function buildAndDisplayFixPrompt(
   consecutiveZeroFixIterations: number = 0,
   priorityOrder: PriorityOrder = 'important',
   prInfo?: PRInfo,
-  diffStat?: string
+  diffStat?: string,
+  /** When provided, used to compute bot risk by file (hot files get a note in the prompt). */
+  comments?: ReviewComment[]
 ): {
   prompt: string;
   detailedSummary: string;
@@ -59,7 +63,19 @@ export function buildAndDisplayFixPrompt(
   
   // Get lessons for all files being fixed
   const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];
-  const lessons = LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, affectedFiles);
+  // Build per-file map first so we can prefer file-specific lessons and cap global
+  const perFileLessons = new Map<string, string[]>();
+  for (const filePath of affectedFiles) {
+    const fileLessons = LessonsAPI.Retrieve.getLessonsForFile(lessonsContext, filePath);
+    if (fileLessons.length > 0) {
+      perFileLessons.set(filePath, fileLessons);
+    }
+  }
+  // Prefer file-specific lessons; cap global to 3 to reduce noise (audit: same 5 global repeated every prompt)
+  const globalOnly = LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, []);
+  const fileOnlyList = affectedFiles.flatMap(f => perFileLessons.get(f) ?? []);
+  const maxTotalLessons = 15;
+  const lessons = [...fileOnlyList, ...globalOnly.slice(-3)].slice(-maxTotalLessons);
 
   // Adaptive batch sizing: reduce batch when consecutive iterations fail
   const effectiveMax = computeEffectiveBatchSize(consecutiveZeroFixIterations);
@@ -74,23 +90,15 @@ export function buildAndDisplayFixPrompt(
   // without affecting other consumers.
   const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
 
-  // Build per-file lesson map for inline injection alongside each issue.
-  // HISTORY: The flat `lessons` array was only shown in a top-level section,
-  // 2000+ tokens before the issue it applied to. File-specific lessons like
-  // "delete lines 429-506" were ignored because the fixer's attention had
-  // moved on. Now we also pass them inline, right next to each issue.
-  const perFileLessons = new Map<string, string[]>();
-  for (const filePath of affectedFiles) {
-    const fileLessons = LessonsAPI.Retrieve.getLessonsForFile(lessonsContext, filePath);
-    if (fileLessons.length > 0) {
-      perFileLessons.set(filePath, fileLessons);
-    }
-  }
+  // perFileLessons already built above for lessons ordering; used for inline injection per issue
+  const botRiskByFile = comments && comments.length > 0
+    ? summarizeBotRiskByFile(comments, affectedFiles)
+    : undefined;
 
   const { prompt, detailedSummary, lessonsIncluded } = buildPrompt(
     sortedIssues,
     lessons,
-    { maxIssues: effectiveMax, perFileLessons, prInfo, diffStat }
+    { maxIssues: effectiveMax, perFileLessons, prInfo, diffStat, botRiskByFile }
   );
 
   console.log(chalk.cyan(`\n${detailedSummary}\n`));

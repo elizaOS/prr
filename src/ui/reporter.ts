@@ -3,6 +3,7 @@
  * Extracted from PRResolver to reduce file size and improve modularity.
  */
 import chalk from 'chalk';
+import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import { getState } from '../state/state-context.js';
@@ -11,6 +12,14 @@ import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { formatLessonForDisplay } from '../state/lessons-normalize.js';
+
+/** Regexes used to detect analysis text that contradicts the verifier (e.g. "fix may already be in place"). */
+const LOOKS_FIXED_REGEXES = [
+  /already.*(?:fixed|applied|in place)/i,
+  /fix.*may.*already/i,
+  /suggests.*the fix/i,
+];
 
 /**
  * Sanitize a review comment body for human-readable terminal output.
@@ -64,13 +73,8 @@ export function sanitizeCommentForDisplay(body: string): string {
   return text;
 }
 
-/**
- * Unresolved issue with explanation
- */
-export interface UnresolvedIssue {
-  comment: ReviewComment;
-  explanation: string;
-}
+// Re-export for callers that type against reporter; canonical type is in analyzer/types.js
+export type { UnresolvedIssue } from '../analyzer/types.js';
 
 /**
  * Format a number with commas (e.g., 1234 -> "1,234")
@@ -146,7 +150,7 @@ export function getExitReasonDisplay(exitReason: string | null): {
       return { label: 'Committed locally (not pushed)', icon: '📝', color: chalk.blue };
     
     case 'no_changes':
-      return { label: 'No changes made', icon: '○', color: chalk.yellow };
+      return { label: 'No changes to commit', icon: '○', color: chalk.yellow };
     
     case 'unknown':
       // Run was interrupted (e.g. Ctrl+C) or exited before the loop could set a reason.
@@ -165,7 +169,8 @@ export function getExitReasonDisplay(exitReason: string | null): {
 export function printFinalSummary(
   stateContext: StateContext | null,
   exitReason: string | null,
-  exitDetails: string | null
+  exitDetails: string | null,
+  remainingCount?: number
 ): void {
   if (!stateContext?.state) return;
   
@@ -224,6 +229,11 @@ export function printFinalSummary(
       .join(', ');
     
     console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
+  }
+
+  // Remaining (from final cleanup when we have unresolved issues) so RESULTS SUMMARY is complete
+  if (remainingCount !== undefined && remainingCount > 0) {
+    console.log(chalk.yellow(`  ○ Remaining: ${formatNumber(remainingCount)}`));
   }
   
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
@@ -369,14 +379,28 @@ export async function printAfterActionReport(
   }
 
   // --- Remaining issues (detailed) ---
+  const withVerifierReason = unresolvedIssues.filter(i => i.verifierContradiction);
   if (unresolvedIssues.length > 0) {
     console.log(chalk.yellow(`\n━━━ Remaining (${unresolvedIssues.length}) — Need Attention ━━━`));
+    if (withVerifierReason.length > 0) {
+      console.log(chalk.gray(`  Why unresolved: Fixer and verifier disagreed — verifier checked the code and said the following for each issue below.`));
+    }
   }
   for (let i = 0; i < unresolvedIssues.length; i++) {
     const issue = unresolvedIssues[i];
     const issueNum = i + 1;
     
     console.log(chalk.yellow(`\n  Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'}`));
+    
+    // Verifier's reason (why it's still not fixed) — most direct answer to "why couldn't it resolve"
+    if (issue.verifierContradiction) {
+      console.log(chalk.cyan('\n  ⚠ Verifier said (why still not fixed):'));
+      const lines = issue.verifierContradiction.split('\n');
+      for (const line of lines) {
+        const t = line.trim();
+        if (t) console.log(chalk.yellow(`     ${t}`));
+      }
+    }
     
     // Original issue - sanitized for terminal readability
     console.log(chalk.cyan('\n  📝 Original Issue:'));
@@ -391,8 +415,7 @@ export async function printAfterActionReport(
     // that's a stale/inconsistent analysis — the verifier's verdict takes precedence.
     console.log(chalk.cyan('\n  🔍 Analysis:'));
     if (issue.explanation) {
-      const looksFixedPhrases = ['already.*(?:fixed|applied|in place)', 'fix.*may.*already', 'suggests.*the fix'];
-      const contradictsVerifier = looksFixedPhrases.some(p => new RegExp(p, 'i').test(issue.explanation || ''));
+      const contradictsVerifier = LOOKS_FIXED_REGEXES.some(r => r.test(issue.explanation || ''));
       if (contradictsVerifier) {
         console.log(chalk.yellow(`     ⚠ Note: Analysis below suggests fix may be in place, but verifier confirmed issue STILL EXISTS.`));
       }
@@ -408,12 +431,12 @@ export async function printAfterActionReport(
       console.log(chalk.gray(`     Models attempted: ${relevantAttempts.map(m => m.key).join(', ')}`));
     }
     
-    // Learnings related to this file
-    const fileSpecificLessons = lessonsContext ? LessonsAPI.Retrieve.getLessonsForFiles(lessonsContext, [issue.comment.path]) : [];
-    if (fileSpecificLessons.length > 0) {
+    // Learnings for this file only (exclude global so each issue doesn’t show the same long block)
+    const fileOnlyLessons = lessonsContext ? LessonsAPI.Retrieve.getLessonsForFile(lessonsContext, issue.comment.path) : [];
+    if (fileOnlyLessons.length > 0) {
       console.log(chalk.cyan('\n  📚 Relevant Learnings:'));
-      for (const lesson of fileSpecificLessons.slice(0, 3)) {
-        console.log(chalk.gray(`     • ${lesson}`));
+      for (const lesson of fileOnlyLessons.slice(0, 3)) {
+        console.log(chalk.gray(`     • ${formatLessonForDisplay(lesson)}`));
       }
     }
     
@@ -451,19 +474,27 @@ export async function printAfterActionReport(
     }
   }
 
-  // Summary — counts must be mutually exclusive (Fixed + Dismissed + Remaining = Total)
+  // Summary — Fixed, Dismissed, Remaining (by unique comment IDs so total never exceeds comment count).
   console.log(chalk.cyan('\n━━━ Summary ━━━'));
-  // "Fixed" = verified AND NOT dismissed (tool actually fixed these)
-  const fixedCount = comments.filter(c =>
-    stateContext ? Verification.isVerified(stateContext, c.id) && !dismissedIds.has(c.id) : false
-  ).length;
+  const fixedIds = new Set(
+    comments
+      .filter(c => stateContext ? Verification.isVerified(stateContext, c.id) && !dismissedIds.has(c.id) : false)
+      .map(c => c.id)
+  );
+  const remainingIds = new Set(unresolvedIssues.map(i => i.comment.id));
+  const totalAccounted = new Set([...fixedIds, ...dismissedIds, ...remainingIds]).size;
+  const fixedCount = fixedIds.size;
   const dismissedCount = dismissedIds.size;
+  const remainingCount = unresolvedIssues.length;
   const fixedThisSessionCount = verifiedThisSession.size;
 
-  console.log(chalk.gray(`  Total issues: ${comments.length}`));
+  console.log(chalk.gray(`  From ${comments.length} comments: Fixed ${fixedCount}, Dismissed ${dismissedCount}, Remaining ${remainingCount}`));
+  if (totalAccounted !== comments.length) {
+    console.log(chalk.gray(`  (Unique comment IDs in these buckets: ${totalAccounted})`));
+  }
   console.log(chalk.green(`  Fixed: ${fixedCount}${fixedThisSessionCount > 0 ? ` (${fixedThisSessionCount} this session)` : ''}`));
   console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));
-  console.log(chalk.yellow(`  Remaining: ${unresolvedIssues.length}`));
+  console.log(chalk.yellow(`  Remaining: ${remainingCount}`));
   
   console.log(chalk.gray('\n(Disable with --no-after-action)'));
 }

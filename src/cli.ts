@@ -60,6 +60,8 @@ export interface CLIOptions {
   updateTools: boolean;
   /** Tidy lessons: re-normalize, deduplicate, prune garbage */
   tidyLessons: boolean;
+  /** Before push, run LLM to predict likely new bot feedback (display only) */
+  predictBots: boolean;
 }
 
 export interface ParsedArgs {
@@ -143,7 +145,9 @@ export function createCLI(): Command {
     // Tool/version checking
     .option('--check-tools', 'Check installed AI coding tools and show upgrade instructions, then exit')
     .option('--update-tools', 'Update all installed AI coding tools to latest versions, then exit')
-    .option('--tidy-lessons', 'Clean up lessons: re-normalize, deduplicate, remove garbage entries, then exit');
+    .option('--tidy-lessons', 'Clean up lessons: re-normalize, deduplicate, remove garbage entries, then exit')
+    .option('--predict-bots', 'Before push, predict likely new bot feedback via LLM (display only)', true)
+    .option('--no-predict-bots', 'Disable bot prediction (skip extra LLM call before push)');
 
   return program;
 }
@@ -233,6 +237,7 @@ export function parseArgs(program: Command): ParsedArgs {
       checkTools: opts.checkTools ?? false,
       updateTools: opts.updateTools ?? false,
       tidyLessons: opts.tidyLessons ?? false,
+      predictBots: opts.predictBots ?? true,
     },
   };
 }

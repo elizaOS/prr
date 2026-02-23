@@ -60,6 +60,18 @@ export function assessSolvability(
     };
   }
 
+  // Check 0c: Tool-artifact paths (.prr/ is tool-managed; fixer must not modify, and file may not exist yet)
+  // WHY: Bots sometimes comment on .prr/lessons.md (e.g. "remove from version control"). We exclude these
+  // so we never fetch snippets (ENOENT) or send fix prompts for our own artifact paths.
+  const normalizedPath = comment.path.replace(/\\/g, '/');
+  if (normalizedPath.startsWith('.prr/')) {
+    return {
+      solvable: false,
+      dismissCategory: 'stale',
+      reason: `Path is under .prr/ (tool-managed); excluded from fix loop`,
+    };
+  }
+
   // Check 1: File existence
   if (!existsSync(fullPath)) {
     return {
@@ -273,6 +285,7 @@ export async function recheckSolvability(
       continue;
     }
 
+    // Preserve all issue fields (e.g. verifierContradiction) so AAR and next fix prompt see them
     updated.push({
       ...issue,
       codeSnippet: newSnippet,
