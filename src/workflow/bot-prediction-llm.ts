@@ -87,6 +87,22 @@ function isPrrPath(path: string): boolean {
 }
 
 /**
+ * Strip .prr/ entries from git diff --stat output so the fix prompt doesn't
+ * expose tool state (audit: fix prompt diff summary included .prr/lessons.md).
+ */
+export function stripPrrFromDiffStat(stat: string): string {
+  return stat
+    .split('\n')
+    .filter((line) => {
+      const i = line.indexOf('|');
+      if (i === -1) return true;
+      const path = line.slice(0, i).trim();
+      return !path.startsWith(PRR_DIR);
+    })
+    .join('\n');
+}
+
+/**
  * Parse line-based output: FILE: path, LINE: N, CONCERN: text.
  * Tolerates minor variations; returns [] on parse failure.
  */

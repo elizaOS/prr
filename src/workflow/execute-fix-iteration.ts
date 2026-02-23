@@ -30,6 +30,7 @@ import { debug, debugStep, startTimer, endTimer, formatDuration } from '../logge
 import { hasChanges } from '../git/git-clone-index.js';
 import * as ResolverProc from '../resolver-proc.js';
 import { parseResultCode } from './utils.js';
+import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 
 // Track the last prompt+model combination to detect identical retries.
 // WHY: When a fixer returns "no changes" and no new lessons are added,
@@ -111,6 +112,7 @@ export async function executeFixIteration(
   try {
     const baseRef = `origin/${prInfo.baseBranch}`;
     diffStat = await git.raw(['diff', `${baseRef}...HEAD`, '--stat']);
+    if (diffStat) diffStat = stripPrrFromDiffStat(diffStat);
   } catch {
     // Base ref may not exist (e.g. first push); prompt still works without diff.
   }

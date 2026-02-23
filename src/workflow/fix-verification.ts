@@ -210,11 +210,13 @@ export async function verifyFixes(
       // this check, those same issues would be re-verified here: each a separate
       // verifyFix LLM call (or batch slot) confirming what we already know. Skipping
       // saves one verification call per issue resolved during recovery.
-      if (Verification.isVerified(stateContext, issue.comment.id)) {
+      // Audit: When the fixer modified this issue's file this iteration, re-verify
+      // even if previously verified — cache may be stale and we must not commit without re-check.
+      if (Verification.isVerified(stateContext, issue.comment.id) && !changedFiles.includes(issue.comment.path)) {
         debug('Skipping already-verified issue in verifyFixes', { id: issue.comment.id });
         continue;
       }
-      
+
       const related = findRelatedChangedFiles(issue.comment.path, changedFiles);
       if (related.length > 0) {
         relatedFilesMap.set(issue.comment.id, related);
