@@ -327,6 +327,14 @@ ${issue.codeSnippet}
 `;
   }
 
+  if (issue.verifierContradiction) {
+    prompt += `**⚠ VERIFIER DISAGREES — issue NOT fixed:** ${issue.verifierContradiction}
+The verifier checked the actual code and found the issue still exists. Treat the verifier's explanation above as the source of truth for what is still missing or wrong. Your fix must directly address that feedback (e.g. add the missing code or change the cited location) so the next verification passes.
+Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected that. You must make a code change that addresses the verifier's citation above.
+
+`;
+  }
+
   if (lessons.length > 0) {
     prompt += `## Previous Failed Attempts (DO NOT REPEAT)
 ${lessons.map(l => `- ${l}`).join('\n')}
@@ -341,7 +349,7 @@ ${lessons.map(l => `- ${l}`).join('\n')}
 4. If the issue is ALREADY FIXED in the current code, do NOT make cosmetic changes. Instead respond with: RESULT: ALREADY_FIXED — <cite the specific code>
 5. If the instructions are UNCLEAR or contradictory, respond with: RESULT: UNCLEAR — <explain what is ambiguous>
 6. If the LINE NUMBERS in the review don't match the current code, respond with: RESULT: WRONG_LOCATION — <note the discrepancy>
-7. If the issue needs DISCUSSION rather than a code fix, add a code comment: // REVIEW: <your reasoning> and respond with: RESULT: NEEDS_DISCUSSION — <brief explanation>
+7. If the issue needs DISCUSSION rather than a code fix, add one short comment: // Review: <durable explanation> (no line numbers, commit hashes, or tool names — it stays in the code long-term). Then respond with: RESULT: NEEDS_DISCUSSION — <brief explanation>
 8. When using search/replace, copy the search text character-for-character from the ACTUAL FILE CONTENT (not from the review comment snippet, which may be stale)
 9. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, etc.)
 

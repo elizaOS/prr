@@ -1,4 +1,5 @@
 import type { UnresolvedIssue, FixPrompt } from './types.js';
+import type { BotRiskEntry } from '../workflow/bot-risk.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../constants.js';
 
@@ -120,6 +121,11 @@ export function buildFixPrompt(
      * needing shell access (e.g. llm-api runner).
      */
     diffStat?: string;
+    /**
+     * Per-file bot comment counts (from summarizeBotRiskByFile).
+     * When a file has total >= 2, we add a note so the fixer is more thorough there.
+     */
+    botRiskByFile?: Map<string, BotRiskEntry>;
   }
 ): FixPrompt {
   // Guard: Return empty prompt if no issues
@@ -266,6 +272,15 @@ export function buildFixPrompt(
     parts.push('```\n');
   }
 
+  // High-attention files: bots have commented multiple times here; fixer should be thorough.
+  const botRiskByFile = options?.botRiskByFile;
+  if (botRiskByFile && botRiskByFile.size > 0) {
+    const hotFiles = files.filter(f => (botRiskByFile.get(f)?.total ?? 0) >= 2);
+    for (const f of hotFiles) {
+      parts.push(`Bots have commented multiple times in ${f}; consider addressing similar concerns.\n`);
+    }
+  }
+
   parts.push('## Issues to Fix\n');
 
   for (let i = 0; i < limitedIssues.length; i++) {
@@ -332,6 +347,12 @@ export function buildFixPrompt(
       parts.push(`**Analysis:** ${issue.explanation}\n`);
     }
 
+    if (issue.verifierContradiction) {
+      parts.push(`**⚠ VERIFIER DISAGREES — issue NOT fixed:** ${issue.verifierContradiction}`);
+      parts.push('The verifier checked the actual code and found the issue still exists. Treat the verifier\'s explanation above as the source of truth for what is still missing or wrong. Your fix for this issue must directly address that feedback (e.g. add the missing code or change the cited location) so the next verification passes.');
+      parts.push('Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected that. You must make a code change that addresses the verifier\'s citation above.\n');
+    }
+
     // Inject file-specific lessons INLINE with each issue.
     // HISTORY: Lessons in the top-level section were 2000+ tokens away from the
     // issue they applied to. The fixer ignored "delete lines 429-506" for
@@ -367,7 +388,7 @@ export function buildFixPrompt(
   parts.push('After addressing the issues, include a RESULT line for each issue (or one overall):');
   parts.push('RESULT: FIXED — <brief description of what was changed>');
   parts.push('RESULT: ALREADY_FIXED — <cite the specific code that already handles this>');
-  parts.push('RESULT: NEEDS_DISCUSSION — <reasoning> (add a // REVIEW: comment near the relevant line)');
+  parts.push('RESULT: NEEDS_DISCUSSION — <reasoning> (add a // Review: comment near the relevant code)');
   parts.push('RESULT: UNCLEAR — <what is ambiguous in the review instructions>');
   parts.push('RESULT: WRONG_LOCATION — <the review mentions lines X-Y but the code there is different>');
   parts.push('RESULT: CANNOT_FIX — <why this requires non-code changes>');
@@ -376,7 +397,8 @@ export function buildFixPrompt(
   parts.push('- If you make code changes, RESULT: FIXED is assumed (the line is optional).');
   parts.push('- If an issue is ALREADY FIXED, do NOT make cosmetic changes. Cite the evidence.');
   parts.push('- If instructions are UNCLEAR, explain the ambiguity instead of guessing.');
-  parts.push('- For NEEDS_DISCUSSION, add a code comment: // REVIEW: <your reasoning>');
+  parts.push('- For NEEDS_DISCUSSION, add ONE short code comment: // Review: <durable explanation>.');
+  parts.push('  Comment must be long-term documentation: no line numbers, no commit hashes, no tool names. Example: "Review: Backoff is enforced in acquire(); explicit sleep here is redundant."');
   parts.push('- Do NOT make zero changes without at least one RESULT line (or NO_CHANGES:) explaining why.');
   const fullPrompt = parts.join('\n');
   const estimatedTokens = estimateTokens(fullPrompt);
