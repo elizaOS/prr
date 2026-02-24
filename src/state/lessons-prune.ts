@@ -118,6 +118,57 @@ export function pruneRelativeLessons(ctx: LessonsContext): number {
   return removed;
 }
 
+/**
+ * Prune contradictory lessons so the verifier doesn't flip-flop.
+ * When two lessons describe the same topic but give opposite guidance
+ * (e.g. "remove duplicate line" vs "don't remove duplicate line"), keep only the most recent.
+ */
+export function pruneContradictoryLessons(ctx: LessonsContext): number {
+  const topicStem = (lesson: string): string => {
+    return lesson
+      .toLowerCase()
+      .replace(/\b(?:don't|do not|must not|shouldn't|should not|avoid|never|instead of|rather than)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+  };
+  const hasNegation = (lesson: string): boolean => /\b(?:don't|do not|must not|shouldn't|should not|avoid|never|instead of|rather than)\b/i.test(lesson);
+
+  const pruneList = (lessons: string[]): number => {
+    if (lessons.length <= 1) return 0;
+    const byStem = new Map<string, Array<{ index: number; negation: boolean; lesson: string }>>();
+    lessons.forEach((lesson, index) => {
+      const stem = topicStem(lesson);
+      if (!byStem.has(stem)) byStem.set(stem, []);
+      byStem.get(stem)!.push({ index, negation: hasNegation(lesson), lesson });
+    });
+    const drop = new Set<number>();
+    for (const entries of byStem.values()) {
+      if (entries.length < 2) continue;
+      const hasNeg = entries.some(e => e.negation);
+      const hasAff = entries.some(e => !e.negation);
+      if (!hasNeg || !hasAff) continue;
+      // Keep only the most recent (highest index) per stem when both neg and aff exist
+      const byIndex = [...entries].sort((a, b) => a.index - b.index);
+      for (let i = 0; i < byIndex.length - 1; i++) drop.add(byIndex[i].index);
+    }
+    if (drop.size === 0) return 0;
+    const filtered = lessons.filter((_, i) => !drop.has(i));
+    lessons.length = 0;
+    lessons.push(...filtered);
+    ctx.dirty = true;
+    ctx.repoLessonsDirty = true;
+    return drop.size;
+  }
+
+  let removed = 0;
+  removed += pruneList(ctx.store.global);
+  for (const filePath of Object.keys(ctx.store.files)) {
+    removed += pruneList(ctx.store.files[filePath]);
+  }
+  return removed;
+}
+
 export function pruneDeletedFiles(ctx: LessonsContext, workdir: string): number {
   if (!workdir) return 0;
   

@@ -78,10 +78,11 @@ export async function handleRotationStrategy(
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
   const isOddFailure = consecutiveFailures % 2 === 1;
-  // Skip single-issue for quota (same model will hit limit) and 504 (same model would timeout again).
+  // Skip single-issue for quota (same model will hit limit), 504 (same model would timeout again), and tool_config (same tool will fail again).
   const skipSingleIssueForQuota = failureErrorType === 'quota';
   const skipSingleIssueFor504 = failureErrorType === 'timeout';
-  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504;
+  const skipSingleIssueForToolConfig = failureErrorType === 'tool_config';
+  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig;
   let shouldBreak = false;
   let shouldContinue = false;
   let newConsecutiveFailures = consecutiveFailures;
@@ -105,6 +106,9 @@ export async function handleRotationStrategy(
     // Try rotating model or tool (even failure, or quota/504: skip single-issue and rotate)
     if (skipSingleIssueForQuota) {
       console.log(chalk.yellow('\n  ⏭ Quota exceeded — skipping single-issue, rotating to next tool/model...'));
+    }
+    if (skipSingleIssueForToolConfig) {
+      console.log(chalk.yellow('\n  ⏭ Tool config error — skipping single-issue, rotating to next tool...'));
     }
     const rotated = tryRotation();
     // WHY reset: The prompt tracker detects identical prompt+model combos to

@@ -45,6 +45,7 @@ export class PRResolver {
   private modelRecommendationReasoning?: string;
   private progressThisCycle = 0;
   private runnersAttemptedInCycle: Set<string> = new Set();
+  private disabledRunners: Set<string> = new Set();
   private bailedOut = false;
   private botTimings: BotResponseTiming[] = [];
   private expectedBotResponseTime: Date | null = null;
@@ -66,7 +67,7 @@ export class PRResolver {
     return { runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices,
       modelFailuresInCycle: this.modelFailuresInCycle, modelsTriedThisToolRound: this.modelsTriedThisToolRound, progressThisCycle: this.progressThisCycle,
       recommendedModels: this.recommendedModels, recommendedModelIndex: this.recommendedModelIndex, modelRecommendationReasoning: this.modelRecommendationReasoning,
-      runnersAttemptedInCycle: this.runnersAttemptedInCycle };
+      runnersAttemptedInCycle: this.runnersAttemptedInCycle, disabledRunners: this.disabledRunners };
   }
   private syncRotationContext(ctx: Rotation.RotationContext): void {
     this.runner = ctx.runner;
@@ -104,23 +105,25 @@ export class PRResolver {
   async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateContext, () => this.printModelPerformance(), () => this.printFinalSummary()); }
   isRunning(): boolean { return !this.isShuttingDown; }
   async run(prUrl: string): Promise<void> {
+    this.disabledRunners.clear();
     const state: ResolverProc.RunState = { prInfo: this.prInfo, botTimings: this.botTimings, expectedBotResponseTime: this.expectedBotResponseTime, workdir: this.workdir, stateContext: this.stateContext, lessonsContext: this.lessonsContext, lockConfig: this.lockConfig, runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices, rapidFailureCount: this.rapidFailureCount, lastFailureTime: this.lastFailureTime, consecutiveFailures: this.consecutiveFailures, modelFailuresInCycle: this.modelFailuresInCycle, progressThisCycle: this.progressThisCycle, exitReason: this.exitReason, exitDetails: this.exitDetails, finalUnresolvedIssues: this.finalUnresolvedIssues, finalComments: this.finalComments };
-    const callbacks: ResolverProc.RunCallbacks = { 
-      setupRunner: () => this.setupRunner(), 
-      ensureStateFileIgnored: (workdir) => this.ensureStateFileIgnored(workdir), 
-      resolveConflictsWithLLM: (git, files, source) => this.resolveConflictsWithLLM(git, files, source), 
+    const callbacks: ResolverProc.RunCallbacks = {
+      setupRunner: () => this.setupRunner(),
+      ensureStateFileIgnored: (workdir) => this.ensureStateFileIgnored(workdir),
+      resolveConflictsWithLLM: (git, files, source) => this.resolveConflictsWithLLM(git, files, source),
       syncResolverState: (s) => Object.assign(this, s),
-      getRotationContext: () => this.getRotationContext(), 
+      getRotationContext: () => this.getRotationContext(),
       getCurrentModel: () => this.getCurrentModel(),
-      getRunner: () => this.runner, 
-      findUnresolvedIssues: (comments, totalCount) => this.findUnresolvedIssues(comments, totalCount), 
-      getCodeSnippet: (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody), 
-      printUnresolvedIssues: (issues) => this.printUnresolvedIssues(issues), 
-      parseNoChangesExplanation: (output) => this.parseNoChangesExplanation(output), 
-      trySingleIssueFix: (issues, git, verified) => this.trySingleIssueFix(issues, git, verified), 
-      tryRotation: () => this.tryRotation(), 
-      tryDirectLLMFix: (issues, git, verified) => this.tryDirectLLMFix(issues, git, verified), 
-      executeBailOut: (issues, comments) => this.executeBailOut(issues, comments), 
+      getRunner: () => this.runner,
+      findUnresolvedIssues: (comments, totalCount) => this.findUnresolvedIssues(comments, totalCount),
+      getCodeSnippet: (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody),
+      printUnresolvedIssues: (issues) => this.printUnresolvedIssues(issues),
+      parseNoChangesExplanation: (output) => this.parseNoChangesExplanation(output),
+      trySingleIssueFix: (issues, git, verified) => this.trySingleIssueFix(issues, git, verified),
+      tryRotation: () => this.tryRotation(),
+      tryDirectLLMFix: (issues, git, verified) => this.tryDirectLLMFix(issues, git, verified),
+      executeBailOut: (issues, comments) => this.executeBailOut(issues, comments),
+      onDisableRunner: (name) => this.disabledRunners.add(name),
       checkForNewBotReviews: (o, r, n, ids) => this.checkForNewBotReviews(o, r, n, ids), 
       calculateExpectedBotResponseTime: (lastCommitTime) => this.calculateExpectedBotResponseTime(lastCommitTime), 
       waitForBotReviews: (o, r, n, sha) => this.waitForBotReviews(o, r, n, sha), 

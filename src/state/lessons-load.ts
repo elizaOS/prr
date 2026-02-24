@@ -54,6 +54,10 @@ async function loadLocalLessons(ctx: LessonsContext): Promise<void> {
         if (prunedRelative > 0) {
           console.log(`Pruned ${prunedRelative} lessons with relative references`);
         }
+        const prunedContradictory = Prune.pruneContradictoryLessons(ctx);
+        if (prunedContradictory > 0) {
+          console.log(`Pruned ${prunedContradictory} contradictory lessons`);
+        }
       }
     } catch (error) {
       console.warn('Failed to load local lessons file, starting fresh:', error);
