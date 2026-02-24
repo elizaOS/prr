@@ -437,7 +437,7 @@ async function llmDedup(
   // Run dedup LLM calls with limited concurrency to avoid provider 429s.
   // WHY cap: ElizaCloud rate-limits; LLM_DEDUP_MAX_CONCURRENT (1) avoids 429 bursts.
   type DedupEntry = [string, Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[] }>];
-  type DedupTaskResult = { filePath: string; groups: Array<{ canonical: DedupEntry[1][0]; dupes: DedupEntry[1] }> };
+  type DedupTaskResult = { filePath: string; groups: Array<{ canonical: DedupEntry[1][0]; dupes: DedupEntry[1] }>; error?: string };
 
   async function runOneDedupFile(entry: DedupEntry): Promise<DedupTaskResult> {
     const [filePath, items] = entry;
@@ -460,10 +460,10 @@ GROUP: 1,3 → canonical 3
 
 If no comments are duplicates, reply: NONE`;
     try {
-      const response = await llm.complete(prompt);
+      const response = await llm.completeWithCheapModel(prompt);
       const content = response.content.trim();
       if (content.toUpperCase().includes('NONE')) {
-        return { filePath, groups: [] };
+        return { filePath, groups: [], error: undefined };
       }
       const groups: DedupTaskResult['groups'] = [];
       const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
@@ -479,8 +479,9 @@ If no comments are duplicates, reply: NONE`;
       }
       return { filePath, groups };
     } catch (err) {
-      debug(`LLM dedup failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
-      return { filePath, groups: [] };
+      const msg = err instanceof Error ? err.message : String(err);
+      debug(`LLM dedup failed for ${filePath}: ${msg}`);
+      return { filePath, groups: [], error: msg };
     }
   }
 
@@ -499,6 +500,14 @@ If no comments are duplicates, reply: NONE`;
 
   const dedupTasks = filesToCheck.map(entry => () => runOneDedupFile(entry));
   const dedupResults = await runWithConcurrency(dedupTasks, LLM_DEDUP_MAX_CONCURRENT);
+
+  const dedupFailures = dedupResults.filter((r): r is DedupTaskResult & { error: string } => !!r.error);
+  if (dedupFailures.length > 0) {
+    warn(`LLM dedup failed for ${dedupFailures.length}/${filesToCheck.length} file(s) — proceeding with heuristic-only dedup`);
+    for (const { filePath, error } of dedupFailures) {
+      warn(`  ${filePath}: ${error}`);
+    }
+  }
 
   // Merge all results into the dedup map
   for (const { filePath, groups } of dedupResults) {
@@ -1214,14 +1223,22 @@ export async function findUnresolvedIssues(
       };
     }
 
-    const batchResult = await llm.batchCheckIssuesExist(
-      batchInput, 
-      modelContext,
-      options.maxContextChars
-    );
+    let batchResult: Awaited<ReturnType<LLMClient['batchCheckIssuesExist']>>;
+    try {
+      batchResult = await llm.batchCheckIssuesExist(
+        batchInput,
+        modelContext,
+        options.maxContextChars
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      warn(`Batch analysis failed: ${msg}`);
+      throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
+    }
+
     const results = batchResult.issues;
     debug('Batch analysis results', { count: results.size });
-    
+
     // Store model recommendation for use in fix loop
     if (batchResult.recommendedModels?.length) {
       recommendedModels = batchResult.recommendedModels;
