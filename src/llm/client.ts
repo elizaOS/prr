@@ -513,6 +513,18 @@ export class LLMClient {
     }
   }
 
+  /**
+   * Same as complete() but uses the cheap model for this provider (haiku/mini).
+   * Use for lightweight tasks (e.g. LLM dedup) to save cost; default model is for verification/fixing.
+   */
+  async completeWithCheapModel(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
+    const cheapModel = CHEAP_MODELS[this.provider];
+    if (!cheapModel) {
+      return this.complete(prompt, systemPrompt);
+    }
+    return this.complete(prompt, systemPrompt, { model: cheapModel });
+  }
+
   private async completeAnthropic(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
     if (!this.anthropic) {
       throw new Error('Anthropic client not initialized');
@@ -524,10 +536,10 @@ export class LLMClient {
     // via prompt instructions, not this parameter. You only pay for tokens
     // actually generated, not the budget ceiling.
     //
-    // WHY model-dependent: Opus models support 128K output tokens, but Sonnet/Haiku
-    // cap at 64K. Requesting 128K on Sonnet causes a 400 error.
+    // WHY 64K default: Sonnet/Haiku cap at 64K. Opus also caps at 64K unless
+    // extended thinking is enabled — requesting 128K without thinking causes 400.
     const isHighOutputModel = this.model.includes('opus');
-    const maxOutputTokens = isHighOutputModel ? 128_000 : 64_000;
+    const maxOutputTokens = (isHighOutputModel && this.thinkingBudget) ? 128_000 : 64_000;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const requestOptions: any = {
