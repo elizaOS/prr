@@ -74,6 +74,16 @@ export function handleFixerError(
     Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
     return { shouldExit: false, rapidFailureCount, lastFailureTime };
   }
+
+  // 504/GATEWAY TIMEOUT: Rotate immediately; skip single-issue (same model would 504 again).
+  // WHY: After retries exhausted, another attempt with same model burns ~10min with no gain.
+  if (result.errorType === 'timeout') {
+    console.log(chalk.yellow(`\n⚠ GATEWAY TIMEOUT (504): ${result.error}`));
+    console.log(chalk.gray('  Will rotate to next model...'));
+    debug('504/timeout - rotating', { tool: runner.name, error: result.error });
+    Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
+    return { shouldExit: false, rapidFailureCount, lastFailureTime };
+  }
   
   // ENVIRONMENT ERRORS: Tool environment issue (e.g., TTY/cursor position)
   // WHY: These are infrastructure issues that won't fix themselves with retries.

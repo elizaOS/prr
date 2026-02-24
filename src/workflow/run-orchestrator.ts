@@ -171,7 +171,8 @@ export async function executeRun(
     // consecutive bail-outs and hard-exit after MAX_CONSECUTIVE_BAILOUTS.
     // One re-entry is still useful (catches fixes the bots resolved), but
     // beyond that it's diminishing returns.
-    const MAX_CONSECUTIVE_BAILOUTS = 2;
+    // Use CLI --max-stale-cycles so "bail-out after 1" actually exits after 1 (no re-entry).
+    const maxBailoutsBeforeExit = options.maxStaleCycles ?? 2;
     // WHY 3: Fixer may write identical content or only touch .prr/; after 3 iterations
     // with no files committed we exit instead of looping forever.
     const MAX_CONSECUTIVE_NO_COMMIT = 3;
@@ -228,31 +229,25 @@ export async function executeRun(
       }
 
       // Track consecutive bail-outs to prevent infinite re-entry.
-      // HISTORY: After bail-out, push-iteration-loop returns shouldBreak:false
-      // to let the outer loop process new bot comments. But bots add MORE
-      // comments after each push, so each re-entry bails again on an even
-      // larger set. After MAX_CONSECUTIVE_BAILOUTS (2), hard-exit: one
-      // re-entry is useful (catches bot-resolved issues), beyond that is waste.
-      if (iterResult.exitReason === 'bail_out') {
+      // Reset only when this cycle verified at least one fix (progressThisCycle > 0).
+      // Do NOT reset when we merely committed (commit after bail-out is partial progress
+      // from the same cycle). Otherwise we'd see 4+ bail-outs instead of stopping at 2.
+      if (iterResult.updatedProgressThisCycle > 0) {
+        consecutiveBailouts = 0;
+        lastBailoutRemainingCount = Infinity;
+      } else if (iterResult.exitReason === 'bail_out') {
+        consecutiveBailouts++;
         const currentRemaining = state.finalUnresolvedIssues?.length ?? Infinity;
-        if (currentRemaining >= lastBailoutRemainingCount) {
-          // No progress since last bail-out — remaining count didn't shrink
-          consecutiveBailouts++;
-        } else {
-          // Made some progress — reset counter but still track
-          consecutiveBailouts = 1;
-        }
         lastBailoutRemainingCount = currentRemaining;
 
-        if (consecutiveBailouts >= MAX_CONSECUTIVE_BAILOUTS) {
-          console.log(chalk.red(`\n  🛑 ${consecutiveBailouts} consecutive bail-outs with no progress — exiting outer loop`));
+        if (consecutiveBailouts >= maxBailoutsBeforeExit) {
+          console.log(chalk.red(`\n  🛑 ${consecutiveBailouts} consecutive bail-out(s) with no progress — exiting outer loop`));
           console.log(chalk.gray(`     Re-entering would hit the same stalemate on ${currentRemaining} remaining issues`));
           state.exitReason = 'bail_out';
-          state.exitDetails = `${consecutiveBailouts} consecutive stalemate bail-outs with no progress reduction`;
+          state.exitDetails = `${consecutiveBailouts} consecutive stalemate bail-out(s) (max: ${maxBailoutsBeforeExit})`;
           break;
         }
       } else {
-        // Non-bail-out iteration resets the counter
         consecutiveBailouts = 0;
         lastBailoutRemainingCount = Infinity;
       }

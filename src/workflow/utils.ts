@@ -5,7 +5,7 @@
 import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { issueRequiresRefactor } from '../analyzer/prompt-builder.js';
+import { issueRequiresRefactor, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { LLMClient } from '../llm/client.js';
@@ -295,7 +295,7 @@ export function buildSingleIssuePrompt(
   
   let prompt = `# SINGLE ISSUE FIX
 
-Focus on fixing ONLY this one issue. Make minimal, targeted changes.
+Focus on fixing ONLY this one issue. Make targeted changes that fully address the issue.
 `;
 
   // Add PR context if available.
@@ -316,7 +316,7 @@ Focus on fixing ONLY this one issue. Make minimal, targeted changes.
 Any change to a different file will be reverted and will not fix this issue.
 
 Review Comment:
-${issue.comment.body}
+${sanitizeCommentForPrompt(issue.comment.body)}
 
 `;
 
@@ -348,7 +348,7 @@ ${lessons.map(l => `- ${l}`).join('\n')}
 
   prompt += `## Instructions
 1. EDIT ONLY the file **${issue.comment.path}** to fix this issue. Do not edit any other file — changes to other files are reverted and do not count.
-2. Make the minimal change required - do NOT rewrite the whole file${issueRequiresRefactor(issue) ? '\n   Exception: This issue requests removing duplication or sharing logic. You may make broader changes in this file to consolidate code — the "minimal only" constraint is relaxed for this issue.' : ''}
+2. Change only what's needed to fix the issue — do NOT rewrite the whole file${issueRequiresRefactor(issue) ? '\n   Exception: This issue requests removing duplication or sharing logic. You may make broader changes in this file to consolidate code.' : ''}
 3. Do not modify any other files (this issue is only about ${issue.comment.path})
 4. If the issue is ALREADY FIXED in the current code, do NOT make cosmetic changes. Instead respond with: RESULT: ALREADY_FIXED — <cite the specific code>
 5. If the instructions are UNCLEAR or contradictory, respond with: RESULT: UNCLEAR — <explain what is ambiguous>

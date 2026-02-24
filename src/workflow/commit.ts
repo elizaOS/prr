@@ -84,8 +84,10 @@ export async function commitAndPushChanges(
   debug('Generated commit message', commitMsg);
 
   await git.raw(['commit', '--amend', '-m', commitMsg]);
+  const headCommit = await git.log({ maxCount: 1 });
+  const actualMessage = headCommit.latest?.message ?? commitMsg;
   spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${formatNumber(commit.filesChanged)} files)`);
-  debug('Commit created', commit);
+  debug('Commit created', { hash: commit.hash, message: actualMessage, filesChanged: commit.filesChanged, stagedFiles: commit.stagedFiles });
 
   if (options.autoPush && !options.noPush) {
     // Log command BEFORE spinner so user can copy it if needed

@@ -227,9 +227,9 @@ export async function calculateSmartWaitTime(
   repo: string,
   prNumber: number,
   headSha: string
-): Promise<{ waitSeconds: number; reason: string }> {
+): Promise<{ waitSeconds: number; reason: string; skipWait: boolean }> {
   const defaultWait = pollInterval;
-  
+
   // Check PR status to see what's pending
   let prStatus: PRStatus | undefined;
   try {
@@ -237,30 +237,33 @@ export async function calculateSmartWaitTime(
   } catch (err) {
     // Ignore errors fetching status
   }
-  
+
+  // Nothing to wait for: no checks registered and CI already success → skip wait entirely.
+  const skipWait = !!(prStatus && prStatus.totalChecks === 0 && prStatus.ciState === 'success');
+
   // If bots are actively reviewing (eyes reaction or in-progress), wait longer
-  const activelyReviewing = (prStatus?.activelyReviewingBots?.length ?? 0) > 0 || 
+  const activelyReviewing = (prStatus?.activelyReviewingBots?.length ?? 0) > 0 ||
                              (prStatus?.botsWithEyesReaction?.length ?? 0) > 0;
-  
+
   // If checks are running, factor that in too
   const checksRunning = (prStatus?.inProgressChecks?.length ?? 0) > 0 ||
                         (prStatus?.pendingChecks?.length ?? 0) > 0;
-  
+
   // Use bot timing data if available
   if (botTimings.length > 0) {
     const { formatDuration } = await import('./logger.js');
-    
+
     // Use max observed + 20% buffer for safety
     const maxObserved = Math.max(...botTimings.map(t => t.maxResponseMs));
     const avgObserved = Math.round(
       botTimings.reduce((sum, t) => sum + t.avgResponseMs, 0) / botTimings.length
     );
-    
+
     // If actively reviewing, use max + buffer
     // Otherwise use average + smaller buffer
     let waitMs: number;
     let reason: string;
-    
+
     if (activelyReviewing) {
       waitMs = Math.ceil(maxObserved * 1.2);  // Max + 20% buffer
       reason = `bot actively reviewing (max observed: ${formatDuration(maxObserved)})`;
@@ -271,26 +274,26 @@ export async function calculateSmartWaitTime(
       waitMs = Math.ceil(avgObserved * 1.1);  // Avg + 10% buffer
       reason = `based on avg response time (${formatDuration(avgObserved)})`;
     }
-    
+
     // Clamp to reasonable bounds (min 30s, max 5 min)
     const minWaitMs = 30 * 1000;
     const maxWaitMs = 5 * 60 * 1000;
     waitMs = Math.max(minWaitMs, Math.min(maxWaitMs, waitMs));
-    
-    return { waitSeconds: Math.ceil(waitMs / 1000), reason };
+
+    return { waitSeconds: Math.ceil(waitMs / 1000), reason, skipWait };
   }
-  
+
   // No timing data - use status-based heuristics
   if (activelyReviewing) {
-    return { waitSeconds: Math.max(defaultWait, 90), reason: 'bot actively reviewing (no timing data)' };
+    return { waitSeconds: Math.max(defaultWait, 90), reason: 'bot actively reviewing (no timing data)', skipWait };
   }
-  
+
   if (checksRunning) {
-    return { waitSeconds: Math.max(defaultWait, 60), reason: 'CI checks running (no timing data)' };
+    return { waitSeconds: Math.max(defaultWait, 60), reason: 'CI checks running (no timing data)', skipWait };
   }
-  
+
   // Default: use configured poll interval
-  return { waitSeconds: defaultWait, reason: 'default poll interval (no timing data)' };
+  return { waitSeconds: defaultWait, reason: 'default poll interval (no timing data)', skipWait };
 }
 
 /**
@@ -309,7 +312,7 @@ export async function waitForBotReviews(
 ): Promise<void> {
   const chalk = (await import('chalk')).default;
   
-  let { waitSeconds, reason } = await calculateSmartWaitTime(
+  let { waitSeconds, reason, skipWait } = await calculateSmartWaitTime(
     botTimings,
     pollInterval,
     github,
@@ -318,7 +321,11 @@ export async function waitForBotReviews(
     prNumber,
     headSha
   );
-  
+
+  if (skipWait) {
+    return;
+  }
+
   // Check if any review bots are rate-limited and extend wait if so
   try {
     const rateLimits = await github.checkBotRateLimits(owner, repo, prNumber);

@@ -134,6 +134,14 @@ function isModelProviderCompatible(runner: Runner, model: string): boolean {
   // Mixed-provider runners accept any model
   if (runnerProvider === 'mixed') return true;
 
+  // ElizaCloud gateway accepts both OpenAI and Anthropic models (same as mixed).
+  // WHY: When llm-api uses ELIZACLOUD_API_KEY, runner.provider is 'elizacloud';
+  // without this, we compared modelProvider to 'elizacloud' and rejected every recommendation.
+  if (runnerProvider === 'elizacloud') {
+    const modelProvider = detectModelProvider(model, 'mixed');
+    return modelProvider === 'openai' || modelProvider === 'anthropic' || modelProvider === null;
+  }
+
   // Detect the model's provider from its name
   const modelProvider = detectModelProvider(model, runnerProvider);
 

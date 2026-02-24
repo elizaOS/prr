@@ -212,10 +212,10 @@ export function buildFixPrompt(
   detailedLines.push(`  From: ${authorsSummary}`);
   detailedLines.push(`  Files: ${files.length} (${files.map(f => f.split('/').pop()).slice(0, 5).join(', ')}${files.length > 5 ? '...' : ''})`);
   
-  // Show first few issue previews
+  // Show first few issue previews (sanitize so BUGBOT/metadata never appears in logs or summaries)
   const previews = limitedIssues.slice(0, 3).map((issue, i) => {
-    const preview = issue.comment.body.split('\n')[0].substring(0, 60);
-    return `  ${i + 1}. ${preview}${issue.comment.body.length > 60 ? '...' : ''}`;
+    const firstLine = sanitizeCommentForPrompt(issue.comment.body).split('\n')[0].substring(0, 60);
+    return `  ${i + 1}. ${firstLine}${issue.comment.body.length > 60 ? '...' : ''}`;
   });
   if (limitedIssues.length > 3) {
     previews.push(`  ... and ${limitedIssues.length - 3} more`);
@@ -280,7 +280,7 @@ export function buildFixPrompt(
 
   // WHY: The fixer only sees individual review comments + code snippets; showing
   // the diff summary (files/lines changed) helps it understand PR scope and make
-  // minimal, contextual fixes instead of guessing what this PR is changing.
+  // targeted, contextual fixes instead of guessing what this PR is changing.
   if (options?.diffStat && options.diffStat.trim()) {
     parts.push('## What this PR changes (diff summary)\n');
     parts.push('```');
@@ -400,7 +400,7 @@ export function buildFixPrompt(
 
   parts.push('## Instructions\n');
   parts.push('1. Address each issue listed above. Each issue specifies its file — apply that issue\'s fix only in that file; do not fix an issue by editing a different file.');
-  parts.push('2. Make MINIMAL, SURGICAL changes — only modify lines directly related to the fix');
+  parts.push('2. Make targeted changes that fully address the fix — only modify lines directly related to the issue');
   parts.push('   Exception: For issues that request removing duplication or sharing logic (e.g. "duplicates X", "refactor to share"), you may refactor and consolidate code in that file as needed.');
   parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes (except when an issue explicitly requires refactoring as above)');
   parts.push('4. Do NOT change working code that is not mentioned in the review');
@@ -451,9 +451,10 @@ export function buildVerificationPrompt(
   filePath: string,
   diff: string
 ): string {
+  const cleanComment = sanitizeCommentForPrompt(commentBody);
   return `Given this code review comment:
 ---
-Comment: ${commentBody}
+Comment: ${cleanComment}
 File: ${filePath}
 ---
 

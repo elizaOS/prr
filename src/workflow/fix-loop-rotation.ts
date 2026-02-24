@@ -78,14 +78,17 @@ export async function handleRotationStrategy(
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
   const isOddFailure = consecutiveFailures % 2 === 1;
+  // Skip single-issue for quota (same model will hit limit) and 504 (same model would timeout again).
   const skipSingleIssueForQuota = failureErrorType === 'quota';
+  const skipSingleIssueFor504 = failureErrorType === 'timeout';
+  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504;
   let shouldBreak = false;
   let shouldContinue = false;
   let newConsecutiveFailures = consecutiveFailures;
   let newModelFailuresInCycle = modelFailuresInCycle;
   let newProgressThisCycle = progressThisCycle;
 
-  if (isOddFailure && unresolvedIssues.length > 1 && !skipSingleIssueForQuota) {
+  if (isOddFailure && unresolvedIssues.length > 1 && !skipSingleIssue) {
     console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
     const singleIssueFixed = await trySingleIssueFix(unresolvedIssues, git, verifiedThisSession);
     if (singleIssueFixed) {
@@ -98,8 +101,8 @@ export async function handleRotationStrategy(
       newProgressThisCycle++;
     }
   }
-  if (!isOddFailure || skipSingleIssueForQuota) {
-    // Try rotating model or tool (even failure, or quota: skip single-issue and rotate)
+  if (!isOddFailure || skipSingleIssue) {
+    // Try rotating model or tool (even failure, or quota/504: skip single-issue and rotate)
     if (skipSingleIssueForQuota) {
       console.log(chalk.yellow('\n  ⏭ Quota exceeded — skipping single-issue, rotating to next tool/model...'));
     }

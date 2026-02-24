@@ -1193,7 +1193,7 @@ export async function findUnresolvedIssues(
       const issueId = `issue_${index + 1}`;
       return {
         id: issueId,
-        comment: item.comment.body,
+        comment: sanitizeCommentForPrompt(item.comment.body),
         filePath: item.comment.path,
         line: item.comment.line,
         codeSnippet: item.codeSnippet,

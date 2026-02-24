@@ -45,8 +45,9 @@ const TOOL_MARKER_FILES = [
 /**
  * Directories that the fixer should never modify.
  * These are tool-managed (lessons, state) and any edits to them are accidental.
+ * Exported so other modules (e.g. dismissal-comments) can skip them consistently.
  */
-const PROTECTED_DIRS = ['.prr/'];
+export const PROTECTED_DIRS = ['.prr/'];
 
 /**
  * Matches common test file names so we can reject empty/placeholder test files.

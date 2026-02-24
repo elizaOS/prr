@@ -176,8 +176,10 @@ export async function handleCommitAndPush(
   // Amend so the commit message reflects only the files in this commit.
   await git.raw(['commit', '--amend', '-m', commitMsg]);
 
+  const headCommit = await git.log({ maxCount: 1 });
+  const actualMessage = headCommit.latest?.message ?? commitMsg;
   spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
-  debug('Commit created', commit);
+  debug('Commit created', { hash: commit.hash, message: actualMessage, filesChanged: commit.filesChanged, stagedFiles: commit.stagedFiles });
 
   // Push if auto-push mode AND not in no-push mode
   if (options.autoPush && !options.noPush) {

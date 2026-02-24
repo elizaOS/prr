@@ -5,15 +5,78 @@
 > You can edit this file manually or let prr update it.
 > To share lessons across your team, commit this file to your repo.
 
-## File-Specific Lessons
+## .prr/lessons.md
 
-### src/runners/llm-api.ts
+- Fix for .prr/lessons.md:32 - The diff shows the entire lessons.md file being reconstructed/cleaned but doesn't implement detection logic for truncated entries—no code change to validateLessonEntry or normalization routines to detect incomplete text patterns (trailing ellipsis, missing punctuation).
+- Fix for .prr/lessons.md - Again, the diff only shows cleaned lessons.md output without implementing the code fix—no changes to addLesson or parseMarkdownLessons to strip trailing `:number` fragments from file paths before using them as section keys.
+- Fix for .prr/lessons.md:32 - Diff shows lesson-entry edits to .prr/lessons.md, not code changes to detect/reject truncated text in normalization logic.
+
+## README.md
+
+- Fix for README.md:578 - Adding a sentence about models changing frequently doesn't adequately address the core request. The comment asked to either remove the hardcoded table entirely OR keep it with a clear note that entries are examples. The current note only hints at this without prominently disclaiming the table as outdated/illustrative.
+- Fix for README.md:1 - The change updates README documentation but does not address the original review comment requesting a more descriptive PR title (e.g., "Add model rotation, lessons management, and new runner support"). The PR title itself was not changed.
+
+## src/config.ts
+
+- Fix for src/config.ts:186 - The comment was removed but the underlying issue remains unaddressed. The function should separate 'auto' validation from real tool validation, not just remove documentation.
+- Fix for src/config.ts:115 - The diff shown does not modify the gpt-5.3 default value in config.ts at all. The changes are to unrelated functions (validateRealTool, checkStatus error handling, parseIntOrExit). The invalid model identifier remains unchanged.
+
+## src/git/commit.ts
+
+- Fix for src/git/commit.ts:462 - Added a helper function but never calls it. The `restoreRemoteUrl` function exists but isn't invoked in any exit path (success, timeout, SIGINT, error).
+- Fix for src/git/commit.ts:108 - Identical to fix_3—adds the helper but doesn't call it in the push() exit paths (timeout, SIGINT, close, error handlers).
+- Fix for src/git/commit.ts:624 - Diff doesn't show the verb/noun regex capture or the change to use captured verb instead of `allText.includes('fix')`.
+- Fix for src/git/commit.ts:108 - The restoreRemoteUrl function uses async git.remote() calls, but the original push() uses execSync/execFileSync (synchronous). Mismatched async/sync will cause the restore to not execute before push completes.
+- Fix for src/git/commit.ts:624 - The diff does not modify the verb/noun capture logic around lines 620–624. The fix requires capturing both verb and noun in the regex groups and using the captured verb instead of checking allText.includes('fix').
+- Fix for src/git/commit.ts:108 - The restoreRemoteUrl function was added but never called in any exit path (success, timeout, error, SIGINT handlers), leaving tokens persisted in .git/config.
+- Fix for src/git/commit.ts:462 - The code attempts to restore the remote URL but doesn't capture the original URL before injection. The restoreRemoteUrl function tries to strip tokens from the current URL rather than restoring a pre-injection state, and originalRemoteUrl variable is never declared.
+- Fix for src/git/commit.ts:108 - Same issue as fix_3. The code lacks the originalRemoteUrl variable declaration and capture. restoreRemoteUrl attempts to detect and strip tokens instead of restoring the saved original URL.
+- Fix for src/git/commit.ts:345 - The code change shown is identical to fixes 3 and 4—it does not address the retry count off-by-one issue at all. Comment asked to fix the loop condition so maxRetries represents actual retries, not total attempts.
+- Fix for src/git/commit.ts:624 - The code diff shown does not contain any changes to the noun extraction logic around lines 620-624. The entire diff is about restoreRemoteUrl and remote URL restoration, not the "fix fix" duplication in commit message generation.
+- Fix for src/git/commit.ts:462 - The diff shows remote URL restoration code, but the review asked for replacing raw ` - format` arguments with simple-git's `format` object in `scanCommittedFixes`. The change doesn't address the git.log() format issue at all.
+- Fix for src/git/commit.ts:624 - The diff doesn't modify the verb-noun extraction logic around lines 620-624. The review requires capturing the verb group from the regex match and using it directly instead of checking `allText.includes('fix')` to avoid "fix fix X" duplicates.
+
+## src/llm/client.ts
+
+- Fix for src/llm/client.ts:638 - The normalizeIssueId function is defined but never applied to build allowedIds. The diff only shows the function addition, not the actual usage in allowedIds construction.
+- Fix for src/llm/client.ts:947 - The diff shown only adds the normalizeIssueId function and does not modify diffPreview construction to add the truncation marker.
+- Fix for src/llm/client.ts - The diff shows the normalizeIssueId function being added but doesn't implement the actual fail-safe logic requested—no change to the parsed < issues.length * 0.5 threshold or per-issue marking of unparsed entries as stillExists: true.
+- Fix for src/llm/client.ts:947 - The diff shows the normalizeIssueId function being added but doesn't implement the truncation indicator fix—no change to diffPreview construction to add '\n... (truncated)' suffix when diff.length > 1500.
+- Fix for src/llm/client.ts:163 - The diff shows the normalizeIssueId function being added but doesn't implement the pagination safety cap—no MAX_PAGES constant, no page counter, and no break condition in the while(hasMore) loop in fetchAvailableAnthropicModels.
+
+## src/logger.ts
+
+- Fix for src/logger.ts:196 - Comments were removed but the core issue wasn't addressed—variable naming inconsistency between 'secs' and 'secsStr' still exists, and the comment removal doesn't validate the logic fix.
+
+## src/runners/aider.ts
+
+- Fix for src/runners/aider.ts:90 - The try-catch wrapper was never added to the writeFileSync call. The diff shows cleanupPromptFile moved but the critical guard around writeFileSync is missing.
+
+## src/runners/llm-api.ts
 
 - Fix for src/runners/llm-api.ts:349 - The diff shows isAvailable check additions instead of preserving original file content by only normalizing line endings (avoiding trim() that strips leading whitespace).
 - Fix for src/runners/llm-api.ts:313 - The diff adds isAvailable checks instead of trimming only leading newlines before writeFileSync (apply to both occurrences around lines 287 and 321).
 - Fix for src/runners/llm-api.ts:347 - The diff shows duplicate isAvailable additions instead of applying the leading-newline trimming fix to the second writeFileSync occurrence around line 321.
 
-### tests/normalize-lesson-text.test.ts
+## src/state/lessons.ts
+
+- Fix for src/state/lessons.ts:52 - The diff removes extractPrrSection instead of modifying sanitizeLessonText to return null when fully stripped or implementing empty-result handling in callers.
+- Fix for src/state/lessons.ts:551 - Added console.warn but didn't identify context variables from the try block (lesson id/path/target)
+- Fix for src/state/lessons.ts:52 - Added regex changes to sanitizeLessonText but didn't change return type or handle empty string case
+- Fix for src/state/lessons.ts:52 - The diff shows duplicate regex changes instead of updating sanitizeLessonText to return null when the result is empty.
+- Fix for src/state/lessons.ts:551 - Diff shows changes to sanitizeLessonText regex, not the empty catch block around lines 875-877.
+- Fix for src/state/lessons.ts:52 - Diff shows regex additions to sanitizeLessonText, not a return-type change (string → string | null) and null guards in callers.
+- Fix for src/state/lessons.ts:551 - The diff again shows only the hyphen-collapsing regex, not the console.warn logging fix. The review requested adding error logging to the empty catch block around line 875-877 to surface sync failures.
+- Fix for src/state/lessons.ts:52 - The diff shows only the hyphen-collapsing regex, not the empty-string guard. The review required sanitizeLessonText to return null (or fallback) when all content is stripped, and callers must handle this case.
+- Fix for src/state/lessons.ts:551 - Logging added to catch block but wrong function modified and incomplete context
+- Fix for src/state/lessons.ts:52 - No changes made to `sanitizeLessonText` return type or empty-string handling
+- Fix for src/state/lessons.ts:561 - The diff does not show the error logging change for the empty catch block. The comment requested adding console.warn/logging to the catch handler around lines 875-877, but the provided diff modifies sanitizeLessonText instead.
+- Fix for src/state/lessons.ts:73 - The diff does not add a guard against empty-string returns. The comment requested either returning null when the lesson is fully stripped or adding a fallback to original content. The provided diff adds regex patterns instead of guarding the return value.
+- Fix for src/state/lessons.ts:73 - The diff adds regex patterns but does NOT modify the return type or add null checks. sanitizeLessonText still returns `string` and can return empty strings after stripping.
+- Fix for src/state/lessons.ts:561 - The diff shows regex changes to sanitizeLessonText but does not address the empty catch block in the file-writing try/catch around lines 875-877.
+- Fix for src/state/lessons.ts:73 - The diff shows regex changes but does not modify sanitizeLessonText to return null or guard against empty strings after stripping.
+
+## tests/normalize-lesson-text.test.ts
 
 - Fix for tests/normalize-lesson-text.test.ts:170 - The diff alters test structure but does not address the core issue that file extension stripping tests assume behavior that doesn't actually occur (extension preservation is due to fallback, not intentional preservation).
 - Fix for tests/normalize-lesson-text.test.ts:192 - The diff converts tests to generic .toBe(true) assertions instead of implementing actual transformations in normalizeLessonText or fixing test expectations to match current behavior.
@@ -33,72 +96,6 @@
 - Fix for tests/normalize-lesson-text.test.ts:10 - The diff shows only a test case modification, not the import change from sanitizeLessonText to normalizeLessonText as explicitly requested.
 - Fix for tests/normalize-lesson-text.test.ts:68 - The diff modifies only one test case instead of updating the comment-removal tests (lines 52–67) to work with the correct function.
 - Fix for tests/normalize-lesson-text.test.ts:10 - Diff still imports `sanitizeLessonText` based on the test content shown. The import statement wasn't changed to `normalizeLessonText`.
-- Fix for tests/normalize-lesson-text.test.ts:68 - Diff doesn't address comment-stripping tests. No changes to sanitizeLessonText or test expectations for `//, /* */` removal.
 - Fix for tests/normalize-lesson-text.test.ts:129 - Diff doesn't show changes to access modifier/declaration filtering logic. Tests still expect behavior not present in sanitizeLessonText.
 - Fix for tests/normalize-lesson-text.test.ts:137 - Diff doesn't show ` ` tag removal logic in sanitizeLessonText or normalize wrapper function.
 - Fix for tests/normalize-lesson-text.test.ts:249 - Diff doesn't show trailing colon/dash stripping logic. No regex change to remove `/[\s:-]+$/` or similar from sanitizeLessonText.
-
-### src/state/lessons.ts
-
-- Fix for src/state/lessons.ts:52 - The diff removes extractPrrSection instead of modifying sanitizeLessonText to return null when fully stripped or implementing empty-result handling in callers.
-- Fix for src/state/lessons.ts:551 - Added console.warn but didn't identify context variables from the try block (lesson id/path/target)
-- Fix for src/state/lessons.ts:52 - Added regex changes to sanitizeLessonText but didn't change return type or handle empty string case
-- Fix for src/state/lessons.ts:52 - The diff shows duplicate regex changes instead of updating sanitizeLessonText to return null when the result is empty.
-- Fix for src/state/lessons.ts:551 - Diff shows changes to sanitizeLessonText regex, not the empty catch block around lines 875-877.
-- Fix for src/state/lessons.ts:52 - Diff shows regex additions to sanitizeLessonText, not a return-type change (string → string | null) and null guards in callers.
-- Fix for src/state/lessons.ts:551 - The diff again shows only the hyphen-collapsing regex, not the console.warn logging fix. The review requested adding error logging to the empty catch block around line 875-877 to surface sync failures.
-- Fix for src/state/lessons.ts:52 - The diff shows only the hyphen-collapsing regex, not the empty-string guard. The review required sanitizeLessonText to return null (or fallback) when all content is stripped, and callers must handle this case.
-- Fix for src/state/lessons.ts:551 - Logging added to catch block but wrong function modified and incomplete context
-- Fix for src/state/lessons.ts:52 - No changes made to `sanitizeLessonText` return type or empty-string handling
-- Fix for src/state/lessons.ts:561 - The diff does not show the error logging change for the empty catch block. The comment requested adding console.warn/logging to the catch handler around lines 875-877, but the provided diff modifies sanitizeLessonText instead.
-- Fix for src/state/lessons.ts:73 - The diff does not add a guard against empty-string returns. The comment requested either returning null when the lesson is fully stripped or adding a fallback to original content. The provided diff adds regex patterns instead of guarding the return value.
-- Fix for src/state/lessons.ts:73 - The diff adds regex patterns but does NOT modify the return type or add null checks. sanitizeLessonText still returns `string` and can return empty strings after stripping.
-- Fix for src/state/lessons.ts:561 - The diff shows regex changes to sanitizeLessonText but does not address the empty catch block in the file-writing try/catch around lines 875-877.
-- Fix for src/state/lessons.ts:73 - The diff shows regex changes but does not modify sanitizeLessonText to return null or guard against empty strings after stripping.
-
-### src/logger.ts
-
-- Fix for src/logger.ts:196 - Comments were removed but the core issue wasn't addressed—variable naming inconsistency between 'secs' and 'secsStr' still exists, and the comment removal doesn't validate the logic fix.
-
-### README.md
-
-- Fix for README.md:578 - Adding a sentence about models changing frequently doesn't adequately address the core request. The comment asked to either remove the hardcoded table entirely OR keep it with a clear note that entries are examples. The current note only hints at this without prominently disclaiming the table as outdated/illustrative.
-- Fix for README.md:1 - The change updates README documentation but does not address the original review comment requesting a more descriptive PR title (e.g., "Add model rotation, lessons management, and new runner support"). The PR title itself was not changed.
-
-### src/git/commit.ts
-
-- Fix for src/git/commit.ts:462 - Added a helper function but never calls it. The `restoreRemoteUrl` function exists but isn't invoked in any exit path (success, timeout, SIGINT, error).
-- Fix for src/git/commit.ts:108 - Identical to fix_3—adds the helper but doesn't call it in the push() exit paths (timeout, SIGINT, close, error handlers).
-- Fix for src/git/commit.ts:624 - Diff doesn't show the verb/noun regex capture or the change to use captured verb instead of `allText.includes('fix')`.
-- Fix for src/git/commit.ts:108 - The restoreRemoteUrl function uses async git.remote() calls, but the original push() uses execSync/execFileSync (synchronous). Mismatched async/sync will cause the restore to not execute before push completes.
-- Fix for src/git/commit.ts:624 - The diff does not modify the verb/noun capture logic around lines 620–624. The fix requires capturing both verb and noun in the regex groups and using the captured verb instead of checking allText.includes('fix').
-- Fix for src/git/commit.ts:108 - The restoreRemoteUrl function was added but never called in any exit path (success, timeout, error, SIGINT handlers), leaving tokens persisted in .git/config.
-- Fix for src/git/commit.ts:462 - The code attempts to restore the remote URL but doesn't capture the original URL before injection. The restoreRemoteUrl function tries to strip tokens from the current URL rather than restoring a pre-injection state, and originalRemoteUrl variable is never declared.
-- Fix for src/git/commit.ts:108 - Same issue as fix_3. The code lacks the originalRemoteUrl variable declaration and capture. restoreRemoteUrl attempts to detect and strip tokens instead of restoring the saved original URL.
-- Fix for src/git/commit.ts:345 - The code change shown is identical to fixes 3 and 4—it does not address the retry count off-by-one issue at all. Comment asked to fix the loop condition so maxRetries represents actual retries, not total attempts.
-- Fix for src/git/commit.ts:624 - The code diff shown does not contain any changes to the noun extraction logic around lines 620-624. The entire diff is about restoreRemoteUrl and remote URL restoration, not the "fix fix" duplication in commit message generation.
-- Fix for src/git/commit.ts:462 - The diff shows remote URL restoration code, but the review asked for replacing raw ` - format` arguments with simple-git's `format` object in `scanCommittedFixes`. The change doesn't address the git.log() format issue at all.
-- Fix for src/git/commit.ts:624 - The diff doesn't modify the verb-noun extraction logic around lines 620-624. The review requires capturing the verb group from the regex match and using it directly instead of checking `allText.includes('fix')` to avoid "fix fix X" duplicates.
-
-### src/config.ts
-
-- Fix for src/config.ts:186 - The comment was removed but the underlying issue remains unaddressed. The function should separate 'auto' validation from real tool validation, not just remove documentation.
-- Fix for src/config.ts:115 - The diff shown does not modify the gpt-5.3 default value in config.ts at all. The changes are to unrelated functions (validateRealTool, checkStatus error handling, parseIntOrExit). The invalid model identifier remains unchanged.
-
-### src/runners/aider.ts
-
-- Fix for src/runners/aider.ts:90 - The try-catch wrapper was never added to the writeFileSync call. The diff shows cleanupPromptFile moved but the critical guard around writeFileSync is missing.
-
-### src/llm/client.ts
-
-- Fix for src/llm/client.ts:638 - The normalizeIssueId function is defined but never applied to build allowedIds. The diff only shows the function addition, not the actual usage in allowedIds construction.
-- Fix for src/llm/client.ts:947 - The diff shown only adds the normalizeIssueId function and does not modify diffPreview construction to add the truncation marker.
-- Fix for src/llm/client.ts - The diff shows the normalizeIssueId function being added but doesn't implement the actual fail-safe logic requested—no change to the parsed < issues.length * 0.5 threshold or per-issue marking of unparsed entries as stillExists: true.
-- Fix for src/llm/client.ts:947 - The diff shows the normalizeIssueId function being added but doesn't implement the truncation indicator fix—no change to diffPreview construction to add '\n... (truncated)' suffix when diff.length > 1500.
-- Fix for src/llm/client.ts:163 - The diff shows the normalizeIssueId function being added but doesn't implement the pagination safety cap—no MAX_PAGES constant, no page counter, and no break condition in the while(hasMore) loop in fetchAvailableAnthropicModels.
-
-### .prr/lessons.md
-
-- Fix for .prr/lessons.md:32 - The diff shows the entire lessons.md file being reconstructed/cleaned but doesn't implement detection logic for truncated entries—no code change to validateLessonEntry or normalization routines to detect incomplete text patterns (trailing ellipsis, missing punctuation).
-- Fix for .prr/lessons.md - Again, the diff only shows cleaned lessons.md output without implementing the code fix—no changes to addLesson or parseMarkdownLessons to strip trailing `:number` fragments from file paths before using them as section keys.
-- Fix for .prr/lessons.md:32 - Diff shows lesson-entry edits to .prr/lessons.md, not code changes to detect/reject truncated text in normalization logic.

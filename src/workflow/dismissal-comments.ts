@@ -14,6 +14,7 @@ import { join } from 'path';
 import type { DismissedIssue } from '../state/types.js';
 import type { LLMClient } from '../llm/client.js';
 import { debug } from '../logger.js';
+import { PROTECTED_DIRS } from '../git/git-commit-core.js';
 
 /**
  * Map file extension to comment syntax.
@@ -210,7 +211,12 @@ export async function addDismissalComments(
     if (isBinaryFile(issue.filePath)) {
       return false;
     }
-    
+
+    // Skip tool-managed paths (same list as commit artifact exclusion)
+    if (PROTECTED_DIRS.some(dir => issue.filePath.startsWith(dir))) {
+      return false;
+    }
+
     // Must have a non-empty reason
     if (!issue.reason || issue.reason.trim().length === 0) {
       return false;

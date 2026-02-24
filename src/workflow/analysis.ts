@@ -228,9 +228,10 @@ export async function runFinalAudit(
   const auditSnippets = await Promise.all(
     comments.map(c => getCodeSnippet(c.path, c.line, c.body))
   );
+  const { sanitizeCommentForPrompt } = await import('../analyzer/prompt-builder.js');
   const allIssuesForAudit = comments.map((comment, i) => ({
     id: comment.id,
-    comment: comment.body,
+    comment: sanitizeCommentForPrompt(comment.body),
     filePath: comment.path,
     line: comment.line,
     codeSnippet: auditSnippets[i],

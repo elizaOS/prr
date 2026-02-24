@@ -272,7 +272,7 @@ export function printHandoffPrompt(
     console.log('');
   }
   
-  console.log(chalk.white('For each issue, make the minimum necessary code change to address'));
+  console.log(chalk.white('For each issue, make the necessary code changes to address'));
   console.log(chalk.white('the reviewer\'s concern while maintaining code quality and tests.'));
   console.log(chalk.white('─'.repeat(60)));
   console.log(chalk.gray('\n(Disable with --no-handoff-prompt)'));
