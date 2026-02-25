@@ -2017,6 +2017,11 @@ COMMENT: Review: The import path was updated to use relative imports`;
       // Take only first line if LLM returned multiple
       commentText = commentText.split('\n')[0];
       
+      // Enforce "Review:" prefix per contract
+      if (!commentText.startsWith('Review:')) {
+        commentText = 'Review: ' + commentText.replace(/^Review:\s*/i, '');
+      }
+      
       // Enforce max length
       if (commentText.length > 100) {
         commentText = commentText.substring(0, 97) + '...';
