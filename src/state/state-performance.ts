@@ -225,12 +225,15 @@ export function recordIssueAttempt(
   });
 }
 
+/** Max chars for attempt history in LLM prompts; prevents 100k+ blocks that cause gateway 500. */
+const ATTEMPT_HISTORY_MAX_CHARS = 3000;
+
 /**
  * Generate attempt history summary for specific issues
  * 
  * Creates a formatted text summary of all attempts made on the given issues.
  * Used as context for LLM model recommendation to avoid repeating failed
- * strategies.
+ * strategies. Capped at ATTEMPT_HISTORY_MAX_CHARS so batch prompts stay under gateway limits.
  * 
  * @param ctx - State context
  * @param commentIds - Array of comment IDs to get history for
@@ -261,7 +264,11 @@ export function getAttemptHistoryForIssues(ctx: StateContext, commentIds: string
     lines.push(`Issue ${commentId}: ${summaries.join(', ')}`);
   }
   
-  return lines.length > 0 ? lines.join('\n') : undefined;
+  if (lines.length === 0) return undefined;
+  const full = lines.join('\n');
+  return full.length <= ATTEMPT_HISTORY_MAX_CHARS
+    ? full
+    : full.slice(0, ATTEMPT_HISTORY_MAX_CHARS) + '\n...(truncated)';
 }
 
 export function getIssueAttempts(ctx: StateContext, commentId: string): IssueAttempt[] {

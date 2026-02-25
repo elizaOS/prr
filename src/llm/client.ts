@@ -1051,15 +1051,19 @@ ${codeSnippet}
         parts.push('- Previous attempts: if a model already failed, try a different one');
         parts.push('');
         
+        // Cap model/attempt history so first batch doesn't exceed gateway limits (was 100k+ and caused 500)
+        const MODEL_HISTORY_MAX = 1500;
+        const ATTEMPT_HISTORY_MAX = 2500;
         if (modelContext.modelHistory) {
           parts.push('## Model Performance on This Codebase');
-          parts.push(modelContext.modelHistory);
+          const m = modelContext.modelHistory;
+          parts.push(m.length <= MODEL_HISTORY_MAX ? m : m.slice(0, MODEL_HISTORY_MAX) + '\n...(truncated)');
           parts.push('');
         }
-        
         if (modelContext.attemptHistory) {
           parts.push('## Previous Attempts on These Issues');
-          parts.push(modelContext.attemptHistory);
+          const a = modelContext.attemptHistory;
+          parts.push(a.length <= ATTEMPT_HISTORY_MAX ? a : a.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)');
           parts.push('');
         }
         
