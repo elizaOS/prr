@@ -46,13 +46,14 @@ export async function hasChanges(git: SimpleGit): Promise<boolean> {
  * Detect if a file has been corrupted by automated fix attempts.
  *
  * Compares the current working tree version against the base branch version.
- * Returns true if the file shows signs of corruption:
- * - Diff from base has grown significantly (>2x) compared to previous diff
- * - File contains structural indicators of layered failed fixes
+ * Returns { corrupted: true, reason, baseContent } if the file shows signs of corruption:
+ * - Duplicate method/function definitions (≥3 occurrences)
+ * - Brace imbalance growth compared to the base version
+ * - Tool-artifact remnants (search/replace XML markup)
  *   (duplicate method definitions, orphaned code, etc.)
  *
  * @param baseBranch - The base branch to compare against (e.g. "origin/dev")
- * @returns null if file is healthy, or a description of the corruption
+ * @returns { corrupted: false } if file is healthy, or { corrupted: true, reason?: string, baseContent?: string } if corrupted
  */
 export async function detectFileCorruption(
   git: SimpleGit,
@@ -86,7 +87,8 @@ export async function detectFileCorruption(
 
     // Heuristic 1: Duplicate method/function definitions
     // A sign of layered failed search/replace attempts
-    const methodPattern = /(?:public|private|protected|async|export)\s+(?:function\s+)?(\w+)\s*[(<]/g;
+    // Note: Only match `(` not `<` to avoid false positives on generic type exports like `export type Foo<T>`
+    const methodPattern = /(?:public|private|protected|async|export)\s+(?:function\s+)?(\w+)\s*\(/g;
     const methodCounts = new Map<string, number>();
     let match;
     while ((match = methodPattern.exec(currentContent)) !== null) {
