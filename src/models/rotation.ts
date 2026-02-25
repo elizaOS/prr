@@ -498,6 +498,7 @@ const ELIZACLOUD_SKIP_MODELS = new Set<string>([
 
 /**
  * Determine which provider a model belongs to based on its name/prefix.
+ * Returns the provider for validation against the corresponding API's model list.
  */
 function detectModelProvider(model: string, runnerProvider: string): 'openai' | 'anthropic' | 'google' | null {
   // Explicit provider prefix (aider style)
