@@ -178,8 +178,7 @@ export async function executePushIteration(
   
   const loopResult = await ResolverProc.processCommentsAndPrepareFixLoop(
     git, github, owner, repo, number, prInfo, stateContext, lessonsContext, llm, options, config, workdir, spinner,
-    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched,
-    contexts.lastAnalysisCacheRef
+    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched
   );
   
   const { comments, unresolvedIssues, duplicateMap } = loopResult;
