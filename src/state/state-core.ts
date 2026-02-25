@@ -8,7 +8,6 @@ import type { ResolverState } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../logger.js';
 import type { StateContext } from './state-context.js';
-import { compactLessons } from './state-lessons.js';
 
 export async function loadState(ctx: StateContext, pr: string, branch: string, headSha: string): Promise<ResolverState> {
   if (existsSync(ctx.statePath)) {
@@ -29,7 +28,8 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           console.log(`Resuming from interrupted run (phase: ${ctx.state.interruptPhase || 'unknown'})`);
         }
         
-        const removed = compactLessons(ctx);
+        const { compactLessons } = await import('./state-lessons.js');
+        const removed = await compactLessons(ctx);
         if (removed > 0) {
           console.log(`Compacted ${removed} duplicate lessons (${ctx.state.lessonsLearned.length} unique remaining)`);
         }
