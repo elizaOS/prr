@@ -304,7 +304,7 @@ Breaks down the main resolver loop into focused phases:
 - `execute-fix-iteration.ts` - Runs a single fix iteration. Includes MD5-based duplicate prompt detection to skip identical prompt+model retries. **RESULT protocol:** When the fixer returns RESULT: NEEDS_DISCUSSION (e.g. only added a `// REVIEW:` comment), the "has changes" path treats it as progress (no verification run, consecutive failures reset). WHY: Discussion-only changes shouldn't trigger verification or count as failures.
 - `fix-loop-rotation.ts` - Model/tool rotation and recovery strategies. Resets prompt tracker on rotation so new models aren't falsely detected as duplicates.
 - `prompt-building.ts` - Sorts issues by `--priority-order`, displays triage breakdown in console
-- `dismissal-comments.ts` - Adds inline code comments for dismissed issues. LLM generates comment text; insertion is programmatic (line-aware, bottom-to-top). Processes files in parallel, sequential within each file.
+- `dismissal-comments.ts` - Adds inline code comments for dismissed issues. LLM generates comment text (developer-style "why", with EXISTING/SKIP/COMMENT options); insertion is programmatic (line-aware, bottom-to-top). JSON and other no-comment file types are skipped; issues verified this session are skipped to avoid re-insertion. Processes files in parallel, sequential within each file.
 - `graceful-shutdown.ts` - SIGINT handling
 - `helpers/recovery.ts` - Recovery strategies: single-issue focus mode, direct LLM API fix (with focused-section mode for large files), infrastructure failure detection. Timed via `startTimer`/`endTimer`.
 - `helpers/solvability.ts` - Pre-screens issues for solvability (deleted files, stale refs, exhausted attempts). `recheckSolvability` parallelizes snippet fetching.

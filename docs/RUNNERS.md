@@ -51,6 +51,7 @@ export ELIZACLOUD_API_KEY=your-key-here
 - Use as LLM provider: Set `ELIZACLOUD_API_KEY` (auto-detected)
 - Use as fixer tool: `--tool elizacloud` (alias for `llm-api` with ElizaCloud backend)
 - Default models: `gpt-4o` (primary), `claude-3-5-sonnet-20241022` (secondary)
+- **Model filtering**: At startup, PRR filters the ElizaCloud model list to remove known-unstable models (e.g. `openai/gpt-5.2-codex` when it consistently times out). Removed models are logged so you see which were skipped.
 
 ---
 

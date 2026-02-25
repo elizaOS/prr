@@ -25,14 +25,24 @@ interface DismissedIssue {
   reason: string;                 // Detailed explanation WHY
   dismissedAt: string;            // ISO timestamp
   dismissedAtIteration: number;   // Which iteration
-  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate';
+  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted';
   filePath: string;               // Location
   line: number | null;
   commentBody: string;            // Original review comment
 }
 ```
 
-### 2. State Management (`state/manager.ts`)
+### 2. Inline Dismissal Comments (post-processing)
+
+After all fix iterations complete, PRR may add inline code comments for dismissed issues so review bots and humans see the reasoning in the diff.
+
+**File types:** Comments are only inserted into files that support comments. `.json` files are never commented (`NO_COMMENT_EXTENSIONS`); JSON has no comment syntax and comments would break `bun install` / `npm install`. Fix prompts also instruct the LLM never to add `//` or `#` comments to `.json` files.
+
+**Skip when fixer just fixed:** Issues that were **verified this session** (the fixer successfully resolved them) are not given dismissal comments. The orchestrator passes `verifiedThisSession` into `addDismissalComments()` so we don't add a "dismissed" comment on code the fixer just fixed — avoiding a re-insertion loop.
+
+**Comment quality:** The LLM prompt asks for developer-style "why" comments (design intent, present tense), not review-tool narration. The model can respond `EXISTING` (comment already there), `SKIP` (code is self-explanatory), or `COMMENT: Review: <text>`. When the response doesn't match the format, we skip insertion instead of adding a generic fallback.
+
+### 3. State Management (`state/manager.ts`)
 
 Added methods to manage dismissed issues:
 
@@ -40,7 +50,7 @@ Added methods to manage dismissed issues:
 - `getDismissedIssues(category?)` - Retrieve dismissed issues, optionally filtered
 - `isCommentDismissed(commentId)` - Check if comment was dismissed
 
-### 3. Capturing Dismissals (`resolver.ts`)
+### 4. Capturing Dismissals (`resolver.ts`)
 
 Updated the fixer to capture reasons when skipping issues **with mandatory validation**:
 
@@ -62,7 +72,7 @@ Updated the fixer to capture reasons when skipping issues **with mandatory valid
 
 **CRITICAL RULE**: We can ONLY dismiss an issue if we have a valid, documented reason. No reason = No dismissal.
 
-### 4. Reporting (`resolver.ts`)
+### 5. Reporting (`resolver.ts`)
 
 Added two reporting points:
 
@@ -152,6 +162,8 @@ Generator: "Learning - next time I'll check for:
 | `file-unchanged` | File not modified (tool limitation) | Consider before/after analysis |
 | `false-positive` | Generator incorrectly flagged this | Refine detection heuristics |
 | `duplicate` | Same issue flagged multiple times | Improve deduplication |
+| `stale` | Code restructured; comment no longer applies | Improve staleness detection |
+| `exhausted` | Automated fix attempted but could not resolve | Manual follow-up needed |
 
 ## Benefits
 

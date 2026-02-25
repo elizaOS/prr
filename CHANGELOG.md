@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lines that start with a single `*` (and not `**`) are skipped during line-by-line parsing.
 - **WHY**: In mixed lists (e.g. "1. item one", "- bullet", "* star"), the single-asterisk line is often noise or comment-style. Keeping it added junk like "star" to the normalized text; skipping it yields "item one item two bullet plus" without spurious tokens.
 
+### Added (2026-02) — JSON-safe review comments and dismissal cleanup
+
+**JSON-safe review comments**
+- **No comments in JSON**: Dismissal comments are never inserted into `.json` files (`NO_COMMENT_EXTENSIONS`). Fix prompts (batch and single-issue) explicitly tell the LLM never to add `//` or `#` comments to `.json` — JSON has no comment syntax and would break package managers.
+- **Pre-commit safety net**: `unstageToolArtifacts()` in git-commit-core now detects staged `.json` files that contain `//`-style comment lines or invalid JSON, and reverts them before commit. Catches LLM slip-ups and accidental tool output.
+- **Polish**: `lockb` added to `BINARY_EXTENSIONS`; after tool-markup detection we `continue` so the JSON block is not run for already-flagged files (avoids double work).
+- **WHY**: Inserting `// Review:` into `package.json` produced invalid JSON and broke `bun install` / `npm install`. Three layers (block at source, prompt rule, commit-time revert) prevent recurrence.
+
+**Dismissal comment cleanup**
+- **Skip verified-this-session**: `addDismissalComments()` accepts optional `verifiedThisSession`. Dismissed issues whose comment ID is in that set are skipped — the fixer just resolved them, so adding a "dismissed" comment would contradict the fix and cause a re-insertion loop.
+- **Developer-style "why" comments**: The dismissal-comment LLM prompt was rewritten to ask for brief design-intent comments (present tense, no diff narration). Explicit BAD/GOOD examples steer the model away from review-tool prose.
+- **SKIP option**: The LLM can respond `SKIP` when the code is self-explanatory and no comment adds value. Reduces low-value comments.
+- **No generic fallback**: When the LLM doesn't follow the expected format, we no longer insert a generic "Review: dismissed (see PR discussion)" — we skip. Prefers no comment over a meaningless one.
+- **WHY**: Comments like "Templates were relocated, and dependency is now obsolete" read as bot output; we want durable "why" documentation. Skipping verified issues prevents the fixer-removes-comment → dismissal-re-adds-it loop.
+
 ### Fixed (2026-02-12) — Audit-driven workflow fixes
 
 **Verification cache vs final audit**
@@ -42,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Related (from prior session)**
 - Empty commits and “Everything up-to-date” push handling: no commit when only tool artifacts are staged; skip bot wait when push reports nothing to push.
 - **WHY**: Prevents wasted push + 300s wait when nothing was actually committed.
-- Consecutive no-commit bail-out: after 3 push iterations with no files committed, the orchestrator exits with `no_progress`.
+- Consecutive no-commit bail-out: after 2 push iterations with no files committed, the orchestrator exits with `no_progress`.
 - **WHY**: When the fixer keeps writing identical content or only touching tool artifacts, the loop would otherwise run indefinitely.
 
 ### Fixed (2026-02-17) — ElizaCloud 401 Unauthorized

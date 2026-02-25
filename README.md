@@ -71,7 +71,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Redundant verification skip**: Issues already verified by recovery phases (`trySingleIssueFix`, `tryDirectLLMFix`) are not re-verified in the main pass.
 
 ### Review Bot Dialog
-- **Inline dismissal comments**: When PRR dismisses an issue (already-fixed, stale, exhausted), it adds an inline code comment explaining the reasoning — enabling bots and humans to see the decision trail in the diff
+- **Inline dismissal comments**: When PRR dismisses an issue (already-fixed, stale, exhausted), it may add an inline code comment explaining the reasoning — enabling bots and humans to see the decision trail in the diff. Comments are never added to `.json` files (JSON has no comment syntax). Issues the fixer verified this run are skipped so we don't re-insert comments on code just fixed.
 - **After Action Report (AAR)**: Detailed session summary with three sections: "Fixed This Session", "Dismissed" (by category), and "Remaining" (with suggested resolutions)
 - *Why dismissal comments*: Review bots re-analyze the PR on every push. Without visible reasoning, they re-flag the same issues PRR already decided weren't worth fixing. Inline comments create a proper dialog between PRR and the bots.
 
@@ -216,6 +216,8 @@ prr https://github.com/owner/repo/pull/123 \
 | `--check-tools` | off | Show installed tools and versions, then exit |
 | `--update-tools` | off | Update all installed AI tools to latest, then exit |
 | `--tidy-lessons` | off | Clean up lessons: re-normalize, deduplicate, remove garbage, then exit |
+| `--commit-per-file` | **on** | One commit per file when multiple issues fixed in one iteration |
+| `--no-commit-per-file` | off | Single commit per iteration even when multiple files changed |
 
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
