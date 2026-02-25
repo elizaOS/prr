@@ -146,6 +146,7 @@ export function loadConfig(): Config {
     defaultModel = DEFAULT_ANTHROPIC_MODEL;
   } else {
     // Use gpt-4o: a stable, widely-available OpenAI API model
+    // Note: gpt-5.3 does not exist as a general API model (only gpt-5.3-codex for paid ChatGPT)
     defaultModel = 'gpt-4o';
   }
 
