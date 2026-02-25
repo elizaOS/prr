@@ -58,7 +58,7 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
       autoVerifiedFrom,
     });
     
-    if (!state.verifiedFixed.includes(commentId)) {
+    if (!(state.verifiedFixed ??= []).includes(commentId)) {
       state.verifiedFixed.push(commentId);
     }
   }
@@ -98,9 +98,9 @@ export function unmarkVerified(ctx: StateContext, commentId: string): void {
     state.verifiedComments.splice(index, 1);
   }
   
-  const legacyIndex = state.verifiedFixed.indexOf(commentId);
+  const legacyIndex = (state.verifiedFixed ?? []).indexOf(commentId);
   if (legacyIndex !== -1) {
-    state.verifiedFixed.splice(legacyIndex, 1);
+    (state.verifiedFixed ??= []).splice(legacyIndex, 1);
   }
   
   // Delete commentStatuses entry so the comment gets re-analyzed
@@ -126,7 +126,7 @@ export function isVerified(ctx: StateContext, commentId: string): boolean {
   const inNew = state.verifiedComments?.some(v => v.commentId === commentId) ?? false;
   if (inNew) return true;
   
-  return state.verifiedFixed.includes(commentId);
+  return (state.verifiedFixed ?? []).includes(commentId);
 }
 
 /**
