@@ -163,9 +163,13 @@ export function buildFixPrompt(
   // WHY: 124 issues at once = 202k tokens which exceeds Anthropic's 200k limit
   // The effective limit may be reduced by adaptive batching when consecutive iterations fail.
   // Treat maxIssues === 0 as unlimited (return full array).
-  const effectiveMax = options?.maxIssues === 0
-    ? Infinity
-    : (options?.maxIssues ?? MAX_ISSUES_PER_PROMPT);
+  const requestedMax = options?.maxIssues;
+  const effectiveMax =
+    requestedMax === 0
+      ? Infinity
+      : (Number.isFinite(Number(requestedMax))
+          ? Math.min(MAX_ISSUES_PER_PROMPT, Math.max(1, Math.floor(Number(requestedMax))))
+          : MAX_ISSUES_PER_PROMPT);
   const originalCount = issues.length;
   const limitedIssues = effectiveMax === Infinity ? issues : issues.slice(0, effectiveMax);
   const wasLimited = originalCount > effectiveMax;
