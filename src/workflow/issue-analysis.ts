@@ -1310,9 +1310,9 @@ export async function findUnresolvedIssues(
     const MAX_ANALYSIS_RETRIES = 2;
     const ANALYSIS_RETRY_DELAY_MS = [15_000, 30_000];
     const MIN_BATCH_SIZE_TO_SPLIT = 2;
-    /** Reduced batch limits for retry after 500 — smaller prompts avoid gateway timeouts */
-    const REDUCED_MAX_CONTEXT_CHARS = 80_000;
-    const REDUCED_MAX_ISSUES_PER_BATCH = 12;
+    /** Reduced batch limits for retry after 500 — must be strictly smaller than initial (fewer issues + lower context cap) so prompt size never increases on retry. */
+    const REDUCED_MAX_CONTEXT_CHARS = 50_000;
+    const REDUCED_MAX_ISSUES_PER_BATCH = 5;
 
     type BatchOverrides = { maxContextChars?: number; maxIssuesPerBatch?: number };
 
