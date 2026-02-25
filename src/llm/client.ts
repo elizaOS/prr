@@ -792,7 +792,8 @@ ${codeSnippet}
    * WHY BATCHING: 100 issues × 3KB each = 300KB prompt, which exceeds model limits.
    * We split into multiple batches based on maxContextChars.
    * 
-   * @param maxContextChars - Maximum characters per batch (default 150k, ~37k tokens, safe for most models)
+   * @param maxContextChars - Maximum characters per batch (default 100k for ElizaCloud, 150k otherwise)
+   * @param maxIssuesPerBatch - Override max issues per batch (default: 10 for small models on ElizaCloud, else 25/50)
    */
   async batchCheckIssuesExist(
     issues: Array<{
@@ -804,11 +805,18 @@ ${codeSnippet}
       contextHints?: string[];
     }>,
     modelContext?: ModelRecommendationContext,
-    maxContextChars: number = 150_000
+    maxContextChars?: number,
+    maxIssuesPerBatch?: number
   ): Promise<BatchCheckResult> {
     if (issues.length === 0) {
       return { issues: new Map() };
     }
+
+    // ElizaCloud gateways often 500 on very large prompts; clamp to safe limits.
+    const providerCap = this.provider === 'elizacloud' ? 100_000 : 150_000;
+    const effectiveMaxContextChars = maxContextChars != null
+      ? Math.min(maxContextChars, providerCap)
+      : providerCap;
 
     // Static instructions are passed as a system prompt so Anthropic can cache
     // them across batches (cache_control is added in completeAnthropic).
@@ -872,7 +880,7 @@ ${codeSnippet}
     const headerSize = systemPrompt.length;
     const footerSize = 200; // Reserve space for closing instructions
     const modelRecSize = modelContext?.availableModels?.length ? 1500 : 0; // Reserve for model recommendation
-    const availableForIssues = maxContextChars - headerSize - footerSize - modelRecSize;
+    const availableForIssues = effectiveMaxContextChars - headerSize - footerSize - modelRecSize;
 
     // Build issue text for sizing
     const buildIssueText = (issue: typeof issues[0]): string => {
@@ -920,9 +928,13 @@ ${codeSnippet}
     // ~15K+ output chars. Haiku (and even larger models) often truncate or
     // summarize instead of listing all items. Cap at 50 issues per batch to
     // ensure the model can actually respond to each one.
-    // WHY smaller for ElizaCloud: Gateways often time out (504) on large requests.
-    // 25 issues per batch keeps each request under typical gateway limits.
-    const MAX_ISSUES_PER_BATCH = this.provider === 'elizacloud' ? 25 : 50;
+    // WHY smaller for ElizaCloud: Gateways often 500/504 on large requests.
+    // Small models (14b, mini) get 10 issues per batch to avoid 200k-char prompts.
+    const defaultMaxPerBatch =
+      this.provider === 'elizacloud'
+        ? (/\b(14b|mini|qwen-3-14b|gpt-4o-mini)\b/i.test(this.model) ? 10 : 25)
+        : 50;
+    const MAX_ISSUES_PER_BATCH = maxIssuesPerBatch ?? defaultMaxPerBatch;
     const batches: Array<{ issues: typeof issues; issueTexts: string[] }> = [];
     let currentBatch: typeof issues = [];
     let currentTexts: string[] = [];
@@ -954,7 +966,7 @@ ${codeSnippet}
       total: issues.length,
       batches: batches.length, 
       sizes: batches.map(b => b.issues.length),
-      maxContextChars,
+      maxContextChars: effectiveMaxContextChars,
       maxIssuesPerBatch: MAX_ISSUES_PER_BATCH,
     });
 

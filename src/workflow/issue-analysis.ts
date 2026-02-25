@@ -1310,11 +1310,18 @@ export async function findUnresolvedIssues(
     const MAX_ANALYSIS_RETRIES = 2;
     const ANALYSIS_RETRY_DELAY_MS = [15_000, 30_000];
     const MIN_BATCH_SIZE_TO_SPLIT = 2;
+    /** Reduced batch limits for retry after 500 — smaller prompts avoid gateway timeouts */
+    const REDUCED_MAX_CONTEXT_CHARS = 80_000;
+    const REDUCED_MAX_ISSUES_PER_BATCH = 12;
 
-    async function runBatchWithRetry(input: BatchInputItem[]): Promise<BatchCheckResultType> {
+    type BatchOverrides = { maxContextChars?: number; maxIssuesPerBatch?: number };
+
+    async function runBatchWithRetry(input: BatchInputItem[], overrides?: BatchOverrides): Promise<BatchCheckResultType> {
+      const maxContextChars = overrides?.maxContextChars ?? options.maxContextChars;
+      const maxIssuesPerBatch = overrides?.maxIssuesPerBatch;
       for (let attempt = 0; ; attempt++) {
         try {
-          return await llm.batchCheckIssuesExist(input, modelContext, options.maxContextChars);
+          return await llm.batchCheckIssuesExist(input, modelContext, maxContextChars, maxIssuesPerBatch);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
@@ -1341,32 +1348,40 @@ export async function findUnresolvedIssues(
     }
 
     let batchResult: BatchCheckResultType;
+    const reducedOverrides: BatchOverrides = { maxContextChars: REDUCED_MAX_CONTEXT_CHARS, maxIssuesPerBatch: REDUCED_MAX_ISSUES_PER_BATCH };
     try {
       batchResult = await runBatchWithRetry(batchInput);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
       if (isTransient && batchInput.length >= MIN_BATCH_SIZE_TO_SPLIT) {
-        const mid = Math.ceil(batchInput.length / 2);
-        const firstBatchInput = batchInput.slice(0, mid);
-        const secondBatchInput = batchInput.slice(mid).map((item, index) => ({
-          ...item,
-          id: `issue_${mid + index + 1}`,
-        }));
-        warn(`Batch analysis failed after retries — splitting into ${firstBatchInput.length} + ${secondBatchInput.length} issues and retrying`);
-        let firstResult: BatchCheckResultType;
+        // First retry with smaller per-batch size (avoids 200k-char prompts that 500)
         try {
-          firstResult = await runBatchWithRetry(firstBatchInput);
-        } catch (firstErr) {
-          warn(`Batch analysis failed: ${msg}`);
-          throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
-        }
-        try {
-          const secondResult = await runBatchWithRetry(secondBatchInput);
-          batchResult = mergeBatchResults(firstResult, secondResult);
-        } catch (secondErr) {
-          warn(`Second half failed after split — saving partial results (${firstResult.issues.size}/${freshToAnalyze.length} issues)`);
-          batchResult = { ...firstResult, partial: true };
+          warn(`Batch analysis failed after retries — retrying with smaller batches (max ${REDUCED_MAX_ISSUES_PER_BATCH} issues, ${REDUCED_MAX_CONTEXT_CHARS / 1000}k chars)`);
+          batchResult = await runBatchWithRetry(batchInput, reducedOverrides);
+        } catch (reduceErr) {
+          // Then split input in half and run each with reduced limits
+          const mid = Math.ceil(batchInput.length / 2);
+          const firstBatchInput = batchInput.slice(0, mid);
+          const secondBatchInput = batchInput.slice(mid).map((item, index) => ({
+            ...item,
+            id: `issue_${mid + index + 1}`,
+          }));
+          warn(`Batch analysis failed with reduced size — splitting into ${firstBatchInput.length} + ${secondBatchInput.length} issues and retrying`);
+          let firstResult: BatchCheckResultType;
+          try {
+            firstResult = await runBatchWithRetry(firstBatchInput, reducedOverrides);
+          } catch (firstErr) {
+            warn(`Batch analysis failed: ${msg}`);
+            throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
+          }
+          try {
+            const secondResult = await runBatchWithRetry(secondBatchInput, reducedOverrides);
+            batchResult = mergeBatchResults(firstResult, secondResult);
+          } catch (secondErr) {
+            warn(`Second half failed after split — saving partial results (${firstResult.issues.size}/${freshToAnalyze.length} issues)`);
+            batchResult = { ...firstResult, partial: true };
+          }
         }
       } else {
         warn(`Batch analysis failed: ${msg}`);
