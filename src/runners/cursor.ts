@@ -162,6 +162,9 @@ export class CursorRunner implements Runner {
   
   // Dynamically discovered models (populated on checkStatus)
   supportedModels?: string[];
+  
+  /** Whether `--trust` is supported by this version of cursor-agent (probed once in checkStatus) */
+  private trustSupported: boolean | undefined;
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -188,6 +191,25 @@ export class CursorRunner implements Runner {
       version = stdout.trim();
     } catch {
       // Version check failed, but might still work
+    }
+
+    // Probe --trust flag support (only on first check)
+    if (this.trustSupported === undefined) {
+      try {
+        await execFile(CURSOR_AGENT_BINARY, ['--trust', '--help']);
+        this.trustSupported = true;
+        debug('cursor-agent supports --trust flag');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('unknown option') || msg.includes('--trust')) {
+          this.trustSupported = false;
+          debug('cursor-agent does NOT support --trust flag — will omit it');
+        } else {
+          // --help might fail for other reasons; assume supported to be safe
+          this.trustSupported = true;
+          debug('cursor-agent --trust probe inconclusive, assuming supported', { error: msg });
+        }
+      }
     }
 
     // Check if logged in and get available models
@@ -271,9 +293,14 @@ export class CursorRunner implements Runner {
         '--print',
         '--output-format', 'stream-json',
         '--stream-partial-output',
-        '--trust',  // WHY: prr clones repos to its own workdir — always trust it
-        '--workspace', workdir,
       ];
+
+      // Only add --trust if this version supports it (probed in checkStatus)
+      if (this.trustSupported !== false) {
+        args.push('--trust');
+      }
+
+      args.push('--workspace', workdir);
       
       // Add model if specified
       if (options?.model) {
@@ -392,10 +419,14 @@ export class CursorRunner implements Runner {
           });
         } else {
           const errorMsg = stderr || `Process exited with code ${code}`;
-          // Detect non-transient environment errors for immediate bail-out
-          // WHY: Workspace trust errors won't resolve with retries — bail immediately
-          // instead of wasting iterations in the rapid-failure detection loop.
-          const errorType = /Workspace Trust Required/i.test(errorMsg) ? 'environment' as const : undefined;
+          // Detect non-transient errors for correct handling
+          let errorType: 'environment' | 'tool_config' | undefined;
+          if (/Workspace Trust Required/i.test(errorMsg)) {
+            errorType = 'environment';
+          } else if (/unknown option|unrecognized.*option|invalid.*flag/i.test(errorMsg)) {
+            // CLI/version mismatch (e.g. --trust not supported) — skip this tool for rest of run
+            errorType = 'tool_config';
+          }
           resolve({
             success: false,
             output: textContent,  // Clean text for NO_CHANGES parsing

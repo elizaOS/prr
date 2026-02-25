@@ -7,8 +7,9 @@
  * - 'quota': API quota or rate limit exceeded - rotate to different tool/model, don't bail
  * - 'tool': General tool failure (retry with different model/tool)
  * - 'environment': Tool environment issue (e.g., TTY/cursor position) - bail out, won't fix with retries
+ * - 'tool_config': Tool CLI/version mismatch (e.g. unknown option) - skip this tool for rest of run
  */
-export type RunnerErrorType = 'permission' | 'auth' | 'model' | 'quota' | 'timeout' | 'tool' | 'environment';
+export type RunnerErrorType = 'permission' | 'auth' | 'model' | 'quota' | 'timeout' | 'tool' | 'environment' | 'tool_config';
 
 /**
  * Structured outcome codes from fixer output (parsed by workflow, not set by runners).

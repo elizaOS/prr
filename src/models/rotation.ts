@@ -32,6 +32,8 @@ export interface RotationContext {
    *  Needed because single-model runners (like llm-api) can't be
    *  distinguished as "never tried" vs "tried and stuck" by index alone. */
   runnersAttemptedInCycle: Set<string>;
+  /** Runners disabled for this run due to tool_config (e.g. unknown option). Skip when rotating. */
+  disabledRunners?: Set<string>;
 }
 
 /**
@@ -48,6 +50,7 @@ export function createRotationContext(runner: Runner, runners: Runner[]): Rotati
     progressThisCycle: 0,
     recommendedModelIndex: 0,
     runnersAttemptedInCycle: new Set(),
+    disabledRunners: new Set(),
   };
 }
 
@@ -242,21 +245,27 @@ export function rotateModel(ctx: RotationContext, stateContext: StateContext): b
  * Switch to the next runner/tool
  * Does NOT reset model index - we continue where we left off when we come back
  * WHY: Interleaving tools is more effective than exhausting all models on one tool
+ * Skips runners in ctx.disabledRunners (e.g. tool_config like unknown option)
  */
 export function switchToNextRunner(ctx: RotationContext, stateContext: StateContext, options?: CLIOptions): boolean {
   if (ctx.runners.length <= 1) return false;
-  
+
+  const disabled = ctx.disabledRunners;
+  const startIndex = ctx.currentRunnerIndex;
+  let nextIndex = (ctx.currentRunnerIndex + 1) % ctx.runners.length;
+
+  while (disabled?.has(ctx.runners[nextIndex].name)) {
+    nextIndex = (nextIndex + 1) % ctx.runners.length;
+    if (nextIndex === startIndex) return false; // All runners disabled
+  }
+
   const previousRunner = ctx.runner.name;
-  ctx.currentRunnerIndex = (ctx.currentRunnerIndex + 1) % ctx.runners.length;
-  ctx.runner = ctx.runners[ctx.currentRunnerIndex];
-  
-  // Persist runner index so we resume here if interrupted
+  ctx.currentRunnerIndex = nextIndex;
+  ctx.runner = ctx.runners[nextIndex];
+
   Rotation.setCurrentRunnerIndex(stateContext, ctx.currentRunnerIndex);
-  
-  // Reset the per-tool-round counter, but DON'T reset model index
-  // We'll continue from where we left off on this tool
   ctx.modelsTriedThisToolRound = 0;
-  
+
   const newModel = getCurrentModel(ctx, { toolModel: undefined, modelRotation: false } as Partial<CLIOptions> as CLIOptions);
   const modelInfo = newModel ? ` (${newModel})` : '';
   console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`));
@@ -265,20 +274,18 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
 
 /**
  * Check if all tools have exhausted all their models
+ * Disabled runners (tool_config) count as exhausted.
  */
 export function allModelsExhausted(ctx: RotationContext): boolean {
   for (const runner of ctx.runners) {
+    if (ctx.disabledRunners?.has(runner.name)) continue;
     const models = getModelsForRunner(runner);
     if (models.length <= 1) {
-      // Single-model runner: only exhausted if actually attempted this cycle
       if (!ctx.runnersAttemptedInCycle.has(runner.name)) return false;
       continue;
     }
     const currentIndex = ctx.modelIndices.get(runner.name) || 0;
-    // If any runner has models left to try, we're not exhausted
-    if (currentIndex < models.length - 1) {
-      return false;
-    }
+    if (currentIndex < models.length - 1) return false;
   }
   return true;
 }
@@ -296,6 +303,11 @@ export function tryRotation(
   stateContext: StateContext,
   options: CLIOptions
 ): boolean {
+  // If current runner is disabled for this run (e.g. tool_config), switch away immediately
+  while (ctx.disabledRunners?.has(ctx.runner.name)) {
+    if (!switchToNextRunner(ctx, stateContext, options)) return false;
+  }
+
   // The current runner just attempted an iteration (and failed),
   // so mark it as attempted for this cycle.
   ctx.runnersAttemptedInCycle.add(ctx.runner.name);

@@ -86,7 +86,8 @@ export async function executeFixIteration(
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
   tryRotation: () => boolean,
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
-  executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>
+  executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
+  onDisableRunner?: (runnerName: string) => void
 ): Promise<{
   shouldContinue: boolean;
   shouldBreak: boolean;
@@ -239,14 +240,19 @@ export async function executeFixIteration(
         lessonsBeforeFix,
       };
     }
-    
+
+    // Tool-level failure (e.g. tool_config): disable this runner for rest of run so we don't retry it
+    if (errorResult.skipRunnerForRun) {
+      onDisableRunner?.(runner.name);
+    }
+
     // Non-fatal fixer error: increment failure counters and trigger rotation.
     // WHY: Previously, fixer errors returned shouldContinue without incrementing
     // consecutiveFailures or triggering rotation, causing the same tool/model to
     // be retried indefinitely. Now we treat it like a "no changes" failure.
     const updatedConsecutiveFailures = consecutiveFailures + 1;
     const updatedModelFailuresInCycle = modelFailuresInCycle + 1;
-    
+
     const rotationResult = await ResolverProc.handleRotationStrategy(
       unresolvedIssues, comments, git,
       updatedConsecutiveFailures, updatedModelFailuresInCycle, progressThisCycle,

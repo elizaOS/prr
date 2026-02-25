@@ -14,7 +14,7 @@ const RAPID_FAILURE_MS = RAPID_FAILURE_THRESHOLD_MS;
 
 /**
  * Handle fixer tool errors (permission, auth, environment, rapid failures)
- * Returns whether to exit the run
+ * Returns whether to exit the run and whether to disable this runner for the rest of the run.
  */
 export function handleFixerError(
   result: { success: boolean; error?: string; errorType?: string; output?: string },
@@ -26,10 +26,20 @@ export function handleFixerError(
   getCurrentModel: () => string | null | undefined
 ): {
   shouldExit: boolean;
+  skipRunnerForRun: boolean;
   rapidFailureCount: number;
   lastFailureTime: number;
 } {
   console.log(chalk.red(`\n${runner.name} failed (${formatDuration(fixerTime)}):`, result.error));
+
+  // TOOL_CONFIG: CLI/version mismatch (e.g. unknown option) — skip this tool for rest of run
+  // WHY: Rotating models won't help; the binary doesn't support the flag. Caller will disable runner and rotate.
+  if (result.errorType === 'tool_config') {
+    console.log(chalk.yellow(`\n⚠ TOOL CONFIG: ${runner.name} doesn't support this CLI (e.g. wrong version)`));
+    console.log(chalk.gray('  Skipping this tool for the rest of the run.'));
+    debug('Skipping runner for rest of run (tool_config)', { tool: runner.name, error: result.error });
+    return { shouldExit: false, skipRunnerForRun: true, rapidFailureCount, lastFailureTime };
+  }
   
   // PERMISSION ERRORS: Bail out immediately - don't waste tokens
   // WHY: If the tool can't write files, retrying won't help. User needs to fix permissions.
@@ -41,7 +51,7 @@ export function handleFixerError(
     }
     debug('Bailing out due to permission error', { tool: runner.name, error: result.error });
     // Don't record as lesson - this is an environment/config issue, not a code issue
-    return { shouldExit: true, rapidFailureCount, lastFailureTime };
+    return { shouldExit: true, skipRunnerForRun: false, rapidFailureCount, lastFailureTime };
   }
   
   // AUTH ERRORS: Also bail out - retrying won't help
@@ -49,7 +59,7 @@ export function handleFixerError(
     console.log(chalk.red('\n⛔ AUTHENTICATION ERROR: API key or auth issue'));
     console.log(chalk.yellow('  Check your API keys and authentication.'));
     debug('Bailing out due to auth error', { tool: runner.name, error: result.error });
-    return { shouldExit: true, rapidFailureCount, lastFailureTime };
+    return { shouldExit: true, skipRunnerForRun: false, rapidFailureCount, lastFailureTime };
   }
   
   // MODEL ERRORS: Wrong model for this runner — don't bail, just rotate
@@ -61,7 +71,7 @@ export function handleFixerError(
     console.log(chalk.gray('  Will rotate to next model...'));
     debug('Model mismatch - will rotate', { tool: runner.name, error: result.error });
     Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
-    return { shouldExit: false, rapidFailureCount, lastFailureTime };
+    return { shouldExit: false, skipRunnerForRun: false, rapidFailureCount, lastFailureTime };
   }
   
   // QUOTA/RATE-LIMIT ERRORS: Rotate to a different tool/model, don't bail
@@ -72,7 +82,7 @@ export function handleFixerError(
     console.log(chalk.gray('  Will rotate to next tool/model...'));
     debug('Quota exceeded - rotating', { tool: runner.name, error: result.error });
     Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
-    return { shouldExit: false, rapidFailureCount, lastFailureTime };
+    return { shouldExit: false, skipRunnerForRun: false, rapidFailureCount, lastFailureTime };
   }
 
   // 504/GATEWAY TIMEOUT: Rotate immediately; skip single-issue (same model would 504 again).
@@ -82,7 +92,7 @@ export function handleFixerError(
     console.log(chalk.gray('  Will rotate to next model...'));
     debug('504/timeout - rotating', { tool: runner.name, error: result.error });
     Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
-    return { shouldExit: false, rapidFailureCount, lastFailureTime };
+    return { shouldExit: false, skipRunnerForRun: false, rapidFailureCount, lastFailureTime };
   }
   
   // ENVIRONMENT ERRORS: Tool environment issue (e.g., TTY/cursor position)
@@ -99,7 +109,7 @@ export function handleFixerError(
     console.log(chalk.yellow('    - Run prr in an interactive terminal (not CI/cron)'));
     console.log(chalk.yellow('    - Use --tool llm-api as a fallback (direct LLM without TUI)'));
     debug('Bailing out due to environment error', { tool: runner.name, error: result.error });
-    return { shouldExit: true, rapidFailureCount, lastFailureTime };
+    return { shouldExit: true, skipRunnerForRun: false, rapidFailureCount, lastFailureTime };
   }
 
   // RAPID FAILURE DETECTION: Bail out if tool fails multiple times rapidly
@@ -120,7 +130,7 @@ export function handleFixerError(
       console.log(chalk.yellow(`  ${runner.name} failed ${newRapidCount} times within ${formatDuration(RAPID_FAILURE_WINDOW_MS)}.`));
       console.log(chalk.yellow('  Aborting to avoid a tight retry loop.'));
       debug('Bailing out due to rapid failures', { tool: runner.name, error: result.error, duration: fixerTime });
-      return { shouldExit: true, rapidFailureCount: newRapidCount, lastFailureTime: newLastFailureTime };
+      return { shouldExit: true, skipRunnerForRun: false, rapidFailureCount: newRapidCount, lastFailureTime: newLastFailureTime };
     }
   } else {
     newRapidCount = 0;
@@ -134,10 +144,11 @@ export function handleFixerError(
   // Track model error for performance stats
   Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
   
-  return { 
-    shouldExit: false, 
-    rapidFailureCount: newRapidCount, 
-    lastFailureTime: newLastFailureTime 
+  return {
+    shouldExit: false,
+    skipRunnerForRun: false,
+    rapidFailureCount: newRapidCount,
+    lastFailureTime: newLastFailureTime,
   };
 }
 

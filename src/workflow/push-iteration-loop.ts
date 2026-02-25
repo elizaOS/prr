@@ -94,6 +94,8 @@ export interface PushIterationCallbacks {
   tryRotation: () => boolean;
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
+  /** Called when a runner fails with tool_config (e.g. unknown option) so it's skipped for rest of run */
+  onDisableRunner?: (runnerName: string) => void;
   checkForNewBotReviews: (owner: string, repo: string, number: number, existingIds: Set<string>) => Promise<{ newComments: ReviewComment[]; message: string } | null>;
   calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null;
   waitForBotReviews: (owner: string, repo: string, number: number, sha: string) => Promise<void>;
@@ -241,7 +243,8 @@ export async function executePushIteration(
     const iterResult = await ResolverProc.executeFixIteration(
       unresolvedIssues, comments, git, workdir, getRunner(), stateContext, lessonsContext, llm, options, config.openaiApiKey, prInfo, verifiedThisSession,
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
-      getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut
+      getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut,
+      callbacks.onDisableRunner
     );
     
     // Update state

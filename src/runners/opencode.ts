@@ -33,6 +33,11 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
   });
 }
 
+// Maximum time (ms) to wait for opencode to complete before killing it.
+// 10 minutes is generous — most successful runs complete in 2-3 minutes.
+// Without this, a hung opencode blocks the entire fix loop indefinitely.
+const OPENCODE_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Runner for OpenCode CLI
  *
@@ -137,6 +142,19 @@ export class OpencodeRunner implements Runner {
 
       let stdout = '';
       let stderr = '';
+      let killed = false;
+
+      // Kill the process if it runs too long
+      const timeoutHandle = setTimeout(() => {
+        killed = true;
+        debug('OpenCode timeout reached, killing process', { timeoutMs: OPENCODE_TIMEOUT_MS });
+        child.kill('SIGTERM');
+        setTimeout(() => {
+          if (!child.killed) {
+            child.kill('SIGKILL');
+          }
+        }, 5000);
+      }, OPENCODE_TIMEOUT_MS);
 
       child.stdout?.on('data', (data) => {
         const str = data.toString();
@@ -151,11 +169,18 @@ export class OpencodeRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        // Clean up prompt file
+        clearTimeout(timeoutHandle);
         cleanupPromptFile();
-        debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length, timedOut: killed });
 
-        if (code === 0) {
+        if (killed) {
+          resolve({
+            success: false,
+            output: stdout,
+            error: `OpenCode timed out after ${OPENCODE_TIMEOUT_MS / 1000}s`,
+            errorType: 'timeout',
+          });
+        } else if (code === 0) {
           resolve({
             success: true,
             output: stdout,
@@ -179,7 +204,7 @@ export class OpencodeRunner implements Runner {
       });
 
       child.on('error', (err) => {
-        // Clean up prompt file
+        clearTimeout(timeoutHandle);
         cleanupPromptFile();
 
         resolve({
