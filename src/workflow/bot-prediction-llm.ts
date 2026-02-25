@@ -4,6 +4,7 @@
  */
 import type { ReviewComment } from '../github/types.js';
 import type { LLMClient } from '../llm/client.js';
+import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { summarizeBotRiskByFile } from './bot-risk.js';
 import { debug, warn } from '../logger.js';
 
@@ -31,7 +32,8 @@ function buildCommentsSummary(comments: ReviewComment[]): string {
     if (!byAuthor.has(author)) byAuthor.set(author, []);
     const bodies = byAuthor.get(author)!;
     if (bodies.length < 2) {
-      bodies.push(truncate((c.body || '').replace(/\s+/g, ' ').trim(), MAX_COMMENT_BODY_CHARS));
+      const safe = sanitizeCommentForPrompt(c.body || '').replace(/\s+/g, ' ').trim();
+      bodies.push(truncate(safe, MAX_COMMENT_BODY_CHARS));
     }
   }
   const parts: string[] = [];

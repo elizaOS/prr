@@ -241,12 +241,12 @@ export async function calculateSmartWaitTime(
     // Ignore errors fetching status
   }
 
-  // Nothing to wait for: no checks registered and CI already success → skip wait entirely.
-  const skipWait = !!(prStatus && prStatus.totalChecks === 0 && prStatus.ciState === 'success');
+  // Skip wait when no CI checks are registered. WHY: When totalChecks === 0, GitHub often
+  // reports ciState as 'failure'; requiring 'success' caused unnecessary 300s waits.
+  const skipWait = !!(prStatus && prStatus.totalChecks === 0);
 
-  // If bots are actively reviewing (eyes reaction or in-progress), wait longer
-  const activelyReviewing = (prStatus?.activelyReviewingBots?.length ?? 0) > 0 ||
-                             (prStatus?.botsWithEyesReaction?.length ?? 0) > 0;
+  // If bots are actively reviewing (in-progress only; eyes reaction can be stale from an old commit), wait longer
+  const activelyReviewing = (prStatus?.activelyReviewingBots?.length ?? 0) > 0;
 
   // If checks are running, factor that in too
   const checksRunning = (prStatus?.inProgressChecks?.length ?? 0) > 0 ||

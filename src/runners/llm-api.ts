@@ -22,9 +22,9 @@ import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } fr
 const REWRITE_ESCALATION_THRESHOLD = 2;
 
 /** Max retries for 504/gateway timeout only. Do not retry other 5xx or 429. */
-const MAX_504_RETRIES = 2;
-/** Backoff in ms before each retry (attempt 1, 2). Total extra time bounded (~35s). */
-const BACKOFF_MS = [10_000, 25_000];
+const MAX_504_RETRIES = 1;
+/** Backoff in ms before retry. One retry keeps 504 burn to ~5 min instead of ~10 min when gateway is down. */
+const BACKOFF_MS = [10_000];
 // Backend context: ElizaCloud/gateway backend has historically used a ~1 min timeout;
 // a PR to increase it to 2 min may or may not be deployed. 504s after ~1 min (or ~3 min
 // if the gateway layer times out later) trigger retry then rotation (errorType: 'timeout').

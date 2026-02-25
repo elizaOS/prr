@@ -32,6 +32,7 @@ import * as ResolverProc from '../resolver-proc.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
+import { tryRestoreFromBaseIfRequested } from './restore-from-base.js';
 
 // Track the last prompt+model combination to detect identical retries.
 // WHY: When a fixer returns "no changes" and no new lessons are added,
@@ -210,6 +211,32 @@ export async function executeFixIteration(
   debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
   if (!result.success) {
+    // Restore-from-base heuristic: when fixer says file corrupted / restore from base, do it and treat as change.
+    if (result.error && /search\/replace operations failed|search text did not match/i.test(result.error)) {
+      const restored = await tryRestoreFromBaseIfRequested(
+        git,
+        workdir,
+        prInfo.baseBranch,
+        result.output || '',
+        unresolvedIssues
+      );
+      if (restored && (await hasChanges(git))) {
+        console.log(chalk.cyan(`  Restored ${restored} from base; will verify next.`));
+        return {
+          shouldContinue: false,
+          shouldBreak: false,
+          shouldExit: false,
+          allFixed: false,
+          updatedRapidFailureCount: rapidFailureCount,
+          updatedLastFailureTime: lastFailureTime,
+          updatedConsecutiveFailures: consecutiveFailures,
+          updatedModelFailuresInCycle: modelFailuresInCycle,
+          updatedProgressThisCycle: progressThisCycle,
+          updatedUnresolvedIssues: unresolvedIssues,
+          lessonsBeforeFix,
+        };
+      }
+    }
     // When search/replace failed to match, add file-specific lessons so next run uses exact content or full-file rewrite.
     if (result.error && /search\/replace operations failed|search text did not match/i.test(result.error)) {
       const paths = [...new Set(unresolvedIssues.map((i) => i.comment.path))];
