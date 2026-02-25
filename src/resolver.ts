@@ -44,7 +44,7 @@ export class PRResolver {
   private recommendedModelIndex = 0;
   private modelRecommendationReasoning?: string;
   private progressThisCycle = 0;
-  private cycleHadOnlyTimeouts = false;
+  private cycleHadOnlyTimeouts: boolean | undefined = undefined;
   private runnersAttemptedInCycle: Set<string> = new Set();
   private disabledRunners: Set<string> = new Set();
   private bailedOut = false;
@@ -82,7 +82,7 @@ export class PRResolver {
     this.recommendedModelIndex = ctx.recommendedModelIndex;
     this.modelRecommendationReasoning = ctx.modelRecommendationReasoning;
     this.runnersAttemptedInCycle = ctx.runnersAttemptedInCycle;
-    if (ctx.cycleHadOnlyTimeouts !== undefined) this.cycleHadOnlyTimeouts = ctx.cycleHadOnlyTimeouts;
+    this.cycleHadOnlyTimeouts = ctx.cycleHadOnlyTimeouts;
   }
   private ringBell(times: number = 3): void { ResolverProc.ringBell(times); }
   private printModelPerformance(): void { Reporter.printModelPerformance(this.stateContext); }
