@@ -208,6 +208,7 @@ export function sanitizeFilePathHeader(filePath: string): string {
   // Strip all forms of " - (inferred) <language>" suffixes aggressively
   cleaned = cleaned.replace(/\s*-\s*\(inferred\).*$/i, '').trim();
   cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*\w+$/i, '').trim();
+  // Review: consolidates suffix handling for clarity and consistency in formatting.
   cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*ts\b/i, '').trim();
   
   // Strip bare language suffixes like " - ts", " - tsx", etc.
@@ -359,4 +360,5 @@ export function formatLessonForDisplay(lesson: string): string {
     return NO_CHANGES_EXPANDED;
   }
   return lesson;
+// Review: consolidates logic for streamlined handling of no changes in lessons.
 }

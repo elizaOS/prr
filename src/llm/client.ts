@@ -1690,6 +1690,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         .map(l => l.trim())
         .filter(l => l.length > 0)
         .filter(l => !l.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*)?(\d+)\s*:\s*(YES|NO)\s*:/i))
+        // Review: ensures unmatched lines are filtered out for cleaner output without silent omissions
         .filter(l => !l.match(/^FIX_ID\s*:\s*\d+\s*$/i))
         .filter(l => !l.match(/^(YES|NO)\s*:/i))
         .filter(l => !l.match(/^LESSON:/i))

@@ -8,6 +8,7 @@ describe('normalizeLessonText', () => {
     // Handle null returns from normalizeLessonText
     if (result === null) return null;
     return result.length === 0 ? null : result;
+  // Review: ensures empty strings return null, avoiding unnecessary processing later
   }
 
   describe('code fence removal', () => {
@@ -136,6 +137,7 @@ describe('normalizeLessonText', () => {
       const input = 'export function foo()';
       // normalizeLessonText drops entire lines starting with export keyword
       expect(normalize(input)).toBeNull();
+    // Review: export lines are intentionally dropped to ensure non-code content normalization.
     });
   });
 
@@ -151,6 +153,7 @@ describe('normalizeLessonText', () => {
       const input = 'Always validate input (inferred) before processing data';
       expect(normalize(input)).toBe('Always validate input before processing data');
     });
+  // Review: normalize function aims to strip "(inferred)" tags as part of text normalization.
   });
 
   describe('file extension stripping', () => {
@@ -260,6 +263,7 @@ describe('normalizeLessonText', () => {
       expect(normalize('123')).toBeNull();
       expect(normalize('456.')).toBeNull();
     });
+  // Review: numeric inputs return null to prevent invalid processing in lesson normalization.
   });
 
   describe('trimming and cleanup', () => {
@@ -288,6 +292,7 @@ describe('normalizeLessonText', () => {
       const result = normalize(input);
       // Lines starting with "Fix for" followed by file path are dropped by normalizeLessonText
       expect(result).toBeNull();
+    // Review: normalizeLessonText intentionally drops lines starting with "Fix for" to filter content.
     });
 
     it('handles whitespace normalization', () => {

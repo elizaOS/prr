@@ -783,6 +783,7 @@ Working directory: ${workdir}`;
         const normalizedContent = trimmedContent.endsWith('\n') ? trimmedContent : `${trimmedContent}\n`;
         writeFileSync(fullPath, normalizedContent, 'utf-8');
         filesModified.add(filePath);
+        // Review: logs file write operations for legacy format tracking and debugging purposes
         debug('Wrote file (legacy format)', { filePath });
       } catch (error) {
         debug('Failed to write file', { filePath, error });

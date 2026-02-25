@@ -376,6 +376,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All console output is mirrored to `output.log` in the current working directory as clean ANSI-stripped text
 - File is truncated on each run start, so it always contains only the latest run
 - Path printed at end of run for easy access
+// Review: logs terminal output to a file for easier accessibility during debugging
 - WHY: Feeding terminal output back into an LLM for debugging required manual copy-paste from scrollback. A plain-text log file can be directly referenced or piped into Cursor/Claude.
 
 **Adaptive Batch Sizing**

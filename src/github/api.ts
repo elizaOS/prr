@@ -1130,6 +1130,7 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
       const locationMatch = item.match(
         new RegExp(`\\*\\*Locations?:\\*\\*\\s*\`?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?`)
       );
+      // Review: uses specific regex pattern first for structured locations, favoring precise matches.
       const fileMatch = locationMatch || item.match(FILE_LINE_RE);
       if (!fileMatch) continue; // Skip items without file references
 

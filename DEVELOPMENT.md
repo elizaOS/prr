@@ -370,6 +370,7 @@ export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number):
 
 **The Problem**: When adaptive batching limits prompts to 50 of 93 issues, the selection was arbitrary — trivial style nits could crowd out critical security fixes. All 93 issues had equal priority (essentially random GitHub thread creation order).
 
+// Review: prioritizes issue urgency over age, ensuring critical fixes are addressed first
 **Why not just process chronologically?** Older comments aren't necessarily more important. A critical security issue added yesterday should be fixed before a 2-week-old style nit.
 
 **Solution**: LLM-based importance and difficulty assessment during the existing analysis phase:

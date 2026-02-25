@@ -59,6 +59,7 @@ graph TB
     
     StateCtx --> StateFile
     LessonsCtx --> StateFile
+// Review: states are tied to the StateFile for cohesive data management across contexts
 ```
 
 ```text

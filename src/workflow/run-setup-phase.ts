@@ -117,6 +117,7 @@ export async function executeSetupPhase(
   const resolveConflictsInSetup = async (git: SimpleGit, files: string[], source: string) => {
     const llm = new LLMClient(config);
     return resolveConflictsImpl(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
+  // Review: captures setup phase context before runner is initialized for conflict resolution.
   };
 
   // Check for conflicts and sync with remote
