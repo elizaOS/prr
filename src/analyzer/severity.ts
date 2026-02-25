@@ -52,7 +52,7 @@ export const DEFAULT_TRIAGE: IssueTriage = { importance: 3, ease: 3 };
  * @returns New sorted array
  */
 export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder): UnresolvedIssue[] {
-  if (order === 'none') return issues;
+  if (order === 'none') return [...issues];
   
   const sorted = [...issues]; // Clone to avoid mutating input
   
