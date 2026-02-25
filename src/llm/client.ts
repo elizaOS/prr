@@ -20,6 +20,36 @@ import { debug, warn, trackTokens, debugPrompt, debugResponse } from '../logger.
 import { ELIZACLOUD_API_BASE_URL, ELIZACLOUD_MAX_CONCURRENT_REQUESTS, ELIZACLOUD_MIN_DELAY_MS } from '../constants.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 
+/** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
+function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
+  const out: { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } = {};
+  if (error == null || typeof error !== 'object') return out;
+  const e = error as Record<string, unknown>;
+  out.message = e.message != null ? String(e.message) : undefined;
+  out.cause = e.cause;
+  if (typeof e.status === 'number') out.status = e.status as number;
+  const headers = e.headers;
+  if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
+    const h = headers as Record<string, unknown> & { forEach?: (cb: (v: string, k: string) => void) => void };
+    if (typeof h.forEach === 'function') {
+      out.headers = {};
+      h.forEach((v: string, k: string) => { out.headers![k] = v; });
+    } else {
+      out.headers = {};
+      for (const [k, v] of Object.entries(h)) {
+        if (typeof v === 'string') out.headers[k] = v;
+        else if (Array.isArray(v) && v.length) out.headers[k] = String(v[0]);
+      }
+    }
+  }
+  if ('error' in e && e.error !== undefined) out.body = e.error;
+  if (out.body === undefined && 'data' in e && e.data !== undefined) out.body = e.data;
+  const cause = e.cause as Record<string, unknown> | undefined;
+  if (cause && typeof cause === 'object' && out.body === undefined && 'responseBody' in cause) out.body = cause.responseBody;
+  if (cause && typeof cause === 'object' && out.body === undefined && 'error' in cause) out.body = cause.error;
+  return out;
+}
+
 /** Safe description of an API key for debug/error messages (never log the full key). */
 function maskApiKey(key: string | undefined): string {
   if (key === undefined || key === null) return 'not set';
@@ -478,6 +508,9 @@ export class LLMClient {
                 : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
               break;
             } catch (e504) {
+              if (this.provider === 'elizacloud') {
+                debug('ElizaCloud error (response context)', getElizaCloudErrorContext(e504));
+              }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
               if (attempt504 < max504Retries && (isServerError(e504) || timeoutMsg)) {
                 debug('Server error or request timeout, retrying', {
@@ -517,7 +550,7 @@ export class LLMClient {
             if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
               const url = ELIZACLOUD_API_BASE_URL;
               const keyHint = this.elizacloudKeyHint ?? maskApiKey(undefined);
-              debug('ElizaCloud 401', { requestURL: `${url}/chat/completions`, apiKey: keyHint });
+              debug('ElizaCloud 401', { requestURL: `${url}/chat/completions`, apiKey: keyHint, ...getElizaCloudErrorContext(err) });
               throw new Error(
                 `ElizaCloud API key was rejected (401 Unauthorized). ` +
                 `Request URL: ${url}/chat/completions. API key: ${keyHint}. ` +
@@ -531,8 +564,14 @@ export class LLMClient {
               continue;
             }
           }
+          if (this.provider === 'elizacloud') {
+            debug('ElizaCloud error (response context)', getElizaCloudErrorContext(err));
+          }
           throw err;
         }
+      }
+      if (this.provider === 'elizacloud' && lastErr != null) {
+        debug('ElizaCloud error (response context)', getElizaCloudErrorContext(lastErr));
       }
       throw lastErr;
     } finally {
@@ -676,15 +715,12 @@ export class LLMClient {
     
     messages.push({ role: 'user', content: prompt });
 
-    // WHY no max_tokens: OpenAI's max_tokens is optional — omitting it lets
-    // the model use its natural context limit. Previously this was hardcoded
-    // to 4096, which truncated code-fix responses mid-file (the model would
-    // stop at ~3K words, missing the closing code fence, and the extraction
-    // regex would fail silently). Response length is now controlled by prompt
-    // instructions, not this parameter. You only pay for tokens generated.
+    // Cap completion tokens so input + completion stays under small-context model limits
+    // (e.g. Qwen3-14B has 40,960 total; gateway often defaults to 16k output → over limit).
+    const maxCompletionTokens = 8192;
     const requestOpts = this.runAbortSignal ? { signal: this.runAbortSignal } : undefined;
     const response = await this.openai.chat.completions.create(
-      { model: chosenModel, messages },
+      { model: chosenModel, messages, max_completion_tokens: maxCompletionTokens },
       requestOpts
     );
 
@@ -812,8 +848,8 @@ ${codeSnippet}
       return { issues: new Map() };
     }
 
-    // ElizaCloud gateways often 500 on very large prompts; clamp to safe limits.
-    const providerCap = this.provider === 'elizacloud' ? 100_000 : 150_000;
+    // ElizaCloud uses small-context models (e.g. Qwen3-14B 40k). Reserve room for completion.
+    const providerCap = this.provider === 'elizacloud' ? 90_000 : 150_000;
     const effectiveMaxContextChars = maxContextChars != null
       ? Math.min(maxContextChars, providerCap)
       : providerCap;

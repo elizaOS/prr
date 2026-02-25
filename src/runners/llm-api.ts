@@ -57,7 +57,7 @@ function isServerError(error: unknown): boolean {
   return status === 500 || /500|504|502|gateway.*timeout|deployment.*timeout/i.test(msg);
 }
 
-/** Extract response status, headers, and body from SDK/axios-style errors for 504 debugging. */
+/** Extract response status, headers, and body from SDK/axios-style or OpenAI-style errors for debugging. */
 function get504ResponseContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown } {
   if (error == null || typeof error !== 'object') return {};
   const e = error as Record<string, unknown>;
@@ -65,15 +65,25 @@ function get504ResponseContext(error: unknown): { status?: number; statusText?: 
   const headers = res?.headers;
   const out: { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown } = {};
   if (typeof res?.status === 'number') out.status = res.status as number;
+  if (typeof e.status === 'number') out.status = e.status as number;
   if (typeof res?.statusText === 'string') out.statusText = res.statusText as string;
   if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
     out.headers = {} as Record<string, string>;
-    for (const [k, v] of Object.entries(headers)) {
-      if (typeof v === 'string') out.headers[k] = v;
-      else if (Array.isArray(v) && v.length) out.headers[k] = String(v[0]);
+    const h = headers as Record<string, unknown> & { forEach?: (cb: (v: string, k: string) => void) => void };
+    if (typeof h.forEach === 'function') {
+      h.forEach((v: string, k: string) => { out.headers![k] = v; });
+    } else {
+      for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+        if (typeof v === 'string') out.headers![k] = v;
+        else if (Array.isArray(v) && v.length) out.headers![k] = String(v[0]);
+      }
     }
   }
   if ('data' in res && res.data !== undefined) out.body = res.data;
+  if (out.body === undefined && 'error' in res && res.error !== undefined) out.body = res.error;
+  if (out.body === undefined && 'error' in e && e.error !== undefined) out.body = e.error;
+  const cause = e.cause as Record<string, unknown> | undefined;
+  if (out.body === undefined && cause && typeof cause === 'object' && 'responseBody' in cause) out.body = cause.responseBody;
   return out;
 }
 
@@ -426,9 +436,27 @@ Working directory: ${workdir}`;
         }
       }
 
-      // WHY: Server errors (500/502/504) are hard to debug without request/response context.
-      if (isServerError(error)) {
-        const url = getEffectiveRequestUrl(this.provider ?? 'elizacloud', options?.model);
+      // ElizaCloud: always log full response context on any error (400/500/etc.) for debugging.
+      const provider = this.provider ?? 'elizacloud';
+      if (provider === 'elizacloud') {
+        const url = getEffectiveRequestUrl(provider, options?.model);
+        const responseContext = get504ResponseContext(error);
+        debug('ElizaCloud error — URL, request, response headers & body', {
+          url,
+          model: options?.model,
+          requestBody: {
+            systemPromptLength: systemPrompt?.length,
+            userPromptLength: enrichedPrompt?.length,
+            systemPrompt: systemPrompt,
+            userPrompt: enrichedPrompt,
+          },
+          responseStatus: responseContext.status,
+          responseStatusText: responseContext.statusText,
+          responseHeaders: responseContext.headers,
+          responseBody: responseContext.body,
+        });
+      } else if (isServerError(error)) {
+        const url = getEffectiveRequestUrl(provider, options?.model);
         const responseContext = get504ResponseContext(error);
         debug('Server error — URL, request body, and response', {
           url,
