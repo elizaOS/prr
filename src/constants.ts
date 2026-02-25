@@ -267,6 +267,13 @@ export const RAPID_FAILURE_WINDOW_MS = 10_000; // 10 seconds
 export const LLM_REQUEST_TIMEOUT_MS = 90_000; // 90 seconds
 
 /**
+ * Timeout for full-file rewrite requests (milliseconds).
+ * Full-file prompts are larger and take longer to generate; use a longer timeout
+ * so the request can complete before the gateway returns 504.
+ */
+export const LLM_REQUEST_TIMEOUT_FULL_FILE_MS = 180_000; // 3 minutes
+
+/**
  * Timeout for git push operations (milliseconds).
  */
 export const GIT_PUSH_TIMEOUT_MS = 30_000; // 30 seconds
