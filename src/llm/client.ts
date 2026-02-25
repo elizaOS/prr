@@ -16,7 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../config.js';
-import { debug, trackTokens, debugPrompt, debugResponse } from '../logger.js';
+import { debug, warn, trackTokens, debugPrompt, debugResponse } from '../logger.js';
 import { ELIZACLOUD_API_BASE_URL, ELIZACLOUD_MAX_CONCURRENT_REQUESTS, ELIZACLOUD_MIN_DELAY_MS } from '../constants.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 
@@ -110,6 +110,8 @@ export interface BatchCheckResult {
   recommendedModels?: string[];
   /** Reasoning behind the model recommendation */
   modelRecommendationReasoning?: string;
+  /** True when a batch failed (e.g. 504) but earlier batches were returned so state can be persisted */
+  partial?: boolean;
 }
 
 /**
@@ -443,20 +445,46 @@ export class LLMClient {
       const msg = e instanceof Error ? e.message : String(e);
       return status === 429 || /429|Too many requests|rate limit/i.test(msg);
     };
+    const is504OrGatewayTimeout = (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      return /504|502|gateway.*timeout|deployment.*timeout|error occurred with your deployment/i.test(msg);
+    };
 
     try {
       if (this.provider === 'elizacloud') {
         await acquireElizacloud(); // uses exported fn so same global limit as llm-api runner
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
-      // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
+      const max504Retries = this.provider === 'elizacloud' ? 1 : 0;
       const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
+      const backoff504Ms = 10_000;
+      // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
       let lastErr: unknown;
       for (let attempt = 0; attempt <= max429Retries; attempt++) {
         try {
-          const response = this.provider === 'anthropic'
-            ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
-            : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
+          let response: LLMResponse | undefined;
+          for (let attempt504 = 0; attempt504 <= max504Retries; attempt504++) {
+            try {
+              response = this.provider === 'anthropic'
+                ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
+                : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
+              break;
+            } catch (e504) {
+              const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
+              if (attempt504 < max504Retries && (is504OrGatewayTimeout(e504) || timeoutMsg)) {
+                debug('504/gateway timeout or request timeout, retrying', {
+                  attempt: attempt504 + 1,
+                  maxRetries: max504Retries,
+                  delayMs: backoff504Ms,
+                });
+                await new Promise(r => setTimeout(r, backoff504Ms));
+              } else {
+                throw e504;
+              }
+            }
+          }
+
+          if (!response) throw new Error('LLM request failed after retries');
 
           debug('LLM response', {
             responseLength: response.content.length,
@@ -929,6 +957,7 @@ ${codeSnippet}
         chars: issueTexts.join('').length + headerSize + footerSize
       });
 
+      try {
       // Build user message with only dynamic content (static rules are in systemPrompt)
       const parts = [
         ...issueTexts,
@@ -1115,6 +1144,18 @@ ${codeSnippet}
             });
           }
         }
+      }
+      } catch (batchErr) {
+        if (allResults.size > 0) {
+          warn(`Batch ${batchIdx + 1}/${batches.length} failed (${batchErr instanceof Error ? batchErr.message : String(batchErr)}), returning ${allResults.size} partial result(s)`);
+          return {
+            issues: allResults,
+            recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
+            modelRecommendationReasoning,
+            partial: true,
+          };
+        }
+        throw batchErr;
       }
     }
 

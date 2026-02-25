@@ -253,6 +253,19 @@ async function waitForCodeRabbitReview(
           spinner.succeed(`CodeRabbit review received (${elapsed}s)`);
           return lastFetchedComments;
         }
+        // No new comments and bot not reviewing — bail early after 2 min
+        if (elapsed >= 120) {
+          spinner.warn(`No new comments after ${elapsed}s, proceeding anyway`);
+          return lastFetchedComments;
+        }
+      } else if (elapsed >= 120) {
+        // Eyes/reviewing stuck but no new comments — bail so we don't wait full 5 min
+        const comments = await github.getReviewComments(owner, repo, prNumber);
+        lastFetchedComments = comments;
+        if (comments.length <= baselineCount) {
+          spinner.warn(`No new comments after ${elapsed}s (bot still showing as reviewing), proceeding anyway`);
+          return lastFetchedComments;
+        }
       }
       
       spinner.text = `Waiting for CodeRabbit review of ${headSha.substring(0, 7)}... (${elapsed}s)`;

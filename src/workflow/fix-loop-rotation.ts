@@ -82,7 +82,8 @@ export async function handleRotationStrategy(
   const skipSingleIssueForQuota = failureErrorType === 'quota';
   const skipSingleIssueFor504 = failureErrorType === 'timeout';
   const skipSingleIssueForToolConfig = failureErrorType === 'tool_config';
-  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig;
+  const skipSingleIssueForToolTimeout = failureErrorType === 'tool_timeout';
+  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout;
   let shouldBreak = false;
   let shouldContinue = false;
   let newConsecutiveFailures = consecutiveFailures;
@@ -107,8 +108,8 @@ export async function handleRotationStrategy(
     if (skipSingleIssueForQuota) {
       console.log(chalk.yellow('\n  ⏭ Quota exceeded — skipping single-issue, rotating to next tool/model...'));
     }
-    if (skipSingleIssueForToolConfig) {
-      console.log(chalk.yellow('\n  ⏭ Tool config error — skipping single-issue, rotating to next tool...'));
+    if (skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout) {
+      console.log(chalk.yellow('\n  ⏭ Tool error — skipping single-issue, rotating to next tool...'));
     }
     const rotated = tryRotation(failureErrorType);
     // WHY reset: The prompt tracker detects identical prompt+model combos to

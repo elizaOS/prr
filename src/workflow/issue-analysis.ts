@@ -1442,6 +1442,14 @@ export async function findUnresolvedIssues(
         }
       }
     }
+
+    if (batchResult.partial) {
+      await State.saveState(stateContext);
+      await LessonsAPI.Save.save(lessonsContext);
+      throw new Error(
+        `Batch analysis incomplete: ${results.size}/${freshToAnalyze.length} issues analyzed (partial results saved - re-run to continue)`
+      );
+    }
   }
 
   await State.saveState(stateContext);
