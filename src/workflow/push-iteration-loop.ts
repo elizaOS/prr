@@ -421,8 +421,15 @@ export async function executePushIteration(
     if (contexts.lastAnalysisCacheRef) contexts.lastAnalysisCacheRef.current = null;
   } else {
     console.log(chalk.yellow('\nNo changes to commit'));
-    // Preserve issue objects (including verifierContradiction) so AAR shows "Verifier said" for each
-    finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+    // Only treat as "still need attention" issues that are not yet verified.
+    // WHY: After a push, the next iteration may re-analyze before state is fully
+    // synced or duplicate comment IDs can leave the queue with issues that were
+    // already verified in the previous iteration — counting them would show a
+    // misleading "X issues still need attention" when they were just fixed.
+    const actuallyUnresolved = unresolvedIssues.filter(
+      (issue) => !Verification.isVerified(stateContext, issue.comment.id)
+    );
+    finalUnresolvedIssuesRef.current = [...actuallyUnresolved];
     finalCommentsRef.current = [...comments];
 
     // If intermediate pushes happened during this iteration's fix loop, optionally
@@ -449,9 +456,10 @@ export async function executePushIteration(
 
     // No intermediate pushes (or not in auto-push mode) — truly done.
     const preserveExitReason = exitReason === 'bail_out';
+    const stillNeedAttention = actuallyUnresolved.length;
     const noChangesDetails =
-      unresolvedIssues.length > 0
-        ? `No changes to commit (fixer made no modifications); ${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} still ${unresolvedIssues.length === 1 ? 'needs' : 'need'} attention`
+      stillNeedAttention > 0
+        ? `No changes to commit (fixer made no modifications); ${stillNeedAttention} issue${stillNeedAttention === 1 ? '' : 's'} still ${stillNeedAttention === 1 ? 'needs' : 'need'} attention`
         : 'No changes to commit (fixer made no modifications)';
     return {
       shouldBreak: true,

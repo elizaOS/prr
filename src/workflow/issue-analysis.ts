@@ -1304,26 +1304,71 @@ export async function findUnresolvedIssues(
       };
     }
 
-    let batchResult: Awaited<ReturnType<LLMClient['batchCheckIssuesExist']>>;
+    type BatchInputItem = Parameters<LLMClient['batchCheckIssuesExist']>[0][number];
+    type BatchCheckResultType = Awaited<ReturnType<LLMClient['batchCheckIssuesExist']>>;
+
     const MAX_ANALYSIS_RETRIES = 2;
     const ANALYSIS_RETRY_DELAY_MS = [15_000, 30_000];
-    for (let analysisAttempt = 0; ; analysisAttempt++) {
-      try {
-        batchResult = await llm.batchCheckIssuesExist(
-          batchInput,
-          modelContext,
-          options.maxContextChars
-        );
-        break;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
-        if (isTransient && analysisAttempt < MAX_ANALYSIS_RETRIES) {
-          const delay = ANALYSIS_RETRY_DELAY_MS[analysisAttempt] ?? 30_000;
-          warn(`Batch analysis failed (attempt ${analysisAttempt + 1}/${MAX_ANALYSIS_RETRIES + 1}): ${msg} — retrying in ${delay / 1000}s`);
-          await new Promise(r => setTimeout(r, delay));
-          continue;
+    const MIN_BATCH_SIZE_TO_SPLIT = 2;
+
+    async function runBatchWithRetry(input: BatchInputItem[]): Promise<BatchCheckResultType> {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await llm.batchCheckIssuesExist(input, modelContext, options.maxContextChars);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
+          if (isTransient && attempt < MAX_ANALYSIS_RETRIES) {
+            const delay = ANALYSIS_RETRY_DELAY_MS[attempt] ?? 30_000;
+            warn(`Batch analysis failed (attempt ${attempt + 1}/${MAX_ANALYSIS_RETRIES + 1}): ${msg} — retrying in ${delay / 1000}s`);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          throw err;
         }
+      }
+    }
+
+    function mergeBatchResults(a: BatchCheckResultType, b: BatchCheckResultType): BatchCheckResultType {
+      const issues = new Map(a.issues);
+      for (const [k, v] of b.issues) issues.set(k, v);
+      return {
+        issues,
+        recommendedModels: a.recommendedModels?.length ? a.recommendedModels : b.recommendedModels,
+        modelRecommendationReasoning: a.modelRecommendationReasoning ?? b.modelRecommendationReasoning,
+        partial: a.partial || b.partial,
+      };
+    }
+
+    let batchResult: BatchCheckResultType;
+    try {
+      batchResult = await runBatchWithRetry(batchInput);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
+      if (isTransient && batchInput.length >= MIN_BATCH_SIZE_TO_SPLIT) {
+        const mid = Math.ceil(batchInput.length / 2);
+        const firstBatchInput = batchInput.slice(0, mid);
+        const secondBatchInput = batchInput.slice(mid).map((item, index) => ({
+          ...item,
+          id: `issue_${mid + index + 1}`,
+        }));
+        warn(`Batch analysis failed after retries — splitting into ${firstBatchInput.length} + ${secondBatchInput.length} issues and retrying`);
+        let firstResult: BatchCheckResultType;
+        try {
+          firstResult = await runBatchWithRetry(firstBatchInput);
+        } catch (firstErr) {
+          warn(`Batch analysis failed: ${msg}`);
+          throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
+        }
+        try {
+          const secondResult = await runBatchWithRetry(secondBatchInput);
+          batchResult = mergeBatchResults(firstResult, secondResult);
+        } catch (secondErr) {
+          warn(`Second half failed after split — saving partial results (${firstResult.issues.size}/${freshToAnalyze.length} issues)`);
+          batchResult = { ...firstResult, partial: true };
+        }
+      } else {
         warn(`Batch analysis failed: ${msg}`);
         throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
       }

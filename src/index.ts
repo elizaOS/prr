@@ -20,7 +20,7 @@ import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from './logger.js';
 
-// Start output log tee immediately — captures all console output to ./output.log (CWD)
+// Start output log tee immediately — captures all console output to ./output.log in CWD
 initOutputLog();
 
 let resolver: PRResolver | null = null;
@@ -154,6 +154,7 @@ async function main(): Promise<void> {
     await closeOutputLog();
 
   } catch (error) {
+    resolver?.abortRun();
     if (error instanceof Error) {
       console.error(chalk.red('\nError:'), error.message);
       

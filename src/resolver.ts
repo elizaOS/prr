@@ -116,8 +116,22 @@ export class PRResolver {
   private async tryDirectLLMFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.tryDirectLLMFix(issues, git, this.workdir, this.config.llmProvider, this.llm, this.stateContext, verifiedThisSession, this.lessonsContext); }
   async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateContext, () => this.printModelPerformance(), () => this.printFinalSummary()); }
   isRunning(): boolean { return !this.isShuttingDown; }
+
+  /** Abort in-flight LLM requests (e.g. on fatal error). Call from error handler before cleanup. */
+  abortRun(): void {
+    if (this.runAbortController) {
+      this.runAbortController.abort();
+      this.runAbortController = null;
+      this.llm.setRunAbortSignal(null);
+    }
+  }
+
+  private runAbortController: AbortController | null = null;
+
   async run(prUrl: string): Promise<void> {
     this.disabledRunners.clear();
+    this.runAbortController = new AbortController();
+    this.llm.setRunAbortSignal(this.runAbortController.signal);
     const state: ResolverProc.RunState = { prInfo: this.prInfo, botTimings: this.botTimings, expectedBotResponseTime: this.expectedBotResponseTime, workdir: this.workdir, stateContext: this.stateContext, lessonsContext: this.lessonsContext, lockConfig: this.lockConfig, runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices, rapidFailureCount: this.rapidFailureCount, lastFailureTime: this.lastFailureTime, consecutiveFailures: this.consecutiveFailures, modelFailuresInCycle: this.modelFailuresInCycle, progressThisCycle: this.progressThisCycle, exitReason: this.exitReason, exitDetails: this.exitDetails, finalUnresolvedIssues: this.finalUnresolvedIssues, finalComments: this.finalComments };
     const callbacks: ResolverProc.RunCallbacks = {
       setupRunner: () => this.setupRunner(),
@@ -148,6 +162,8 @@ export class PRResolver {
       runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n) 
     };
     const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
+    this.llm.setRunAbortSignal(null);
+    this.runAbortController = null;
     // Explicitly sync only the mutable run-state fields
     this.prInfo = result.prInfo;
     this.botTimings = result.botTimings;

@@ -390,6 +390,13 @@ export class LLMClient {
   private thinkingBudget?: number;
   /** Masked API key hint for ElizaCloud 401 error messages (never the actual key). */
   private elizacloudKeyHint?: string;
+  /** When set, all SDK requests use this signal so the run can cancel in-flight calls on fatal error. */
+  private runAbortSignal: AbortSignal | null = null;
+
+  /** Set the run-scoped abort signal; call with null to clear. Cancels in-flight requests when aborted. */
+  setRunAbortSignal(signal: AbortSignal | null): void {
+    this.runAbortSignal = signal;
+  }
 
   constructor(config: Config) {
     this.provider = config.llmProvider;
@@ -605,7 +612,8 @@ export class LLMClient {
       ];
     }
 
-    const response = await this.anthropic.messages.create(requestOptions);
+    const requestOpts = this.runAbortSignal ? { signal: this.runAbortSignal } : undefined;
+    const response = await this.anthropic.messages.create(requestOptions, requestOpts);
 
     // Extract text content (skip thinking blocks)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -674,10 +682,11 @@ export class LLMClient {
     // stop at ~3K words, missing the closing code fence, and the extraction
     // regex would fail silently). Response length is now controlled by prompt
     // instructions, not this parameter. You only pay for tokens generated.
-    const response = await this.openai.chat.completions.create({
-      model: chosenModel,
-      messages,
-    });
+    const requestOpts = this.runAbortSignal ? { signal: this.runAbortSignal } : undefined;
+    const response = await this.openai.chat.completions.create(
+      { model: chosenModel, messages },
+      requestOpts
+    );
 
     const content = response.choices[0]?.message?.content || '';
 
