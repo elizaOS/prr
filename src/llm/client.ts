@@ -1256,20 +1256,28 @@ ${codeSnippet}
     }
 
     const ISSUE_HEADER_APPROX = 180; // "[N] path:line — comment preview" without code
-    const batches: Array<{ groups: Array<{ filePath: string; codeSnippet: string; issues: typeof issues }> }> = [];
-    let currentGroups: Array<{ filePath: string; codeSnippet: string; issues: typeof issues }> = [];
+    const batches: Array<{ groups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> }> = [];
+    let currentGroups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> = [];
     let currentSize = 0;
 
     for (const [filePath, fileIssues] of byFile) {
-      const codeSnippet = fileIssues[0]!.codeSnippet;
-      const groupSize = codeSnippet.length + fileIssues.length * ISSUE_HEADER_APPROX;
+      // Collect all unique snippets for this file (each issue may point to a different region)
+      const snippets = new Map<string, string>();
+      let totalSnippetSize = 0;
+      for (const issue of fileIssues) {
+        if (!snippets.has(issue.id)) {
+          snippets.set(issue.id, issue.codeSnippet);
+          totalSnippetSize += issue.codeSnippet.length;
+        }
+      }
+      const groupSize = totalSnippetSize + fileIssues.length * ISSUE_HEADER_APPROX;
 
       if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
         batches.push({ groups: currentGroups });
         currentGroups = [];
         currentSize = 0;
       }
-      currentGroups.push({ filePath, codeSnippet, issues: fileIssues });
+      currentGroups.push({ filePath, snippets, issues: fileIssues });
       currentSize += groupSize;
     }
     if (currentGroups.length > 0) {
@@ -1293,16 +1301,18 @@ ${codeSnippet}
       let issueNum = 0;
       for (const group of groups) {
         promptParts.push(`## File: ${group.filePath}`);
-        promptParts.push('```');
-        promptParts.push(group.codeSnippet);
-        promptParts.push('```');
-        promptParts.push('');
         const commentMax = 500;
         for (const issue of group.issues) {
           issueNum++;
+          // Include each issue's specific code snippet so audit has full context
+          const snippet = group.snippets.get(issue.id) ?? '';
+          promptParts.push(`### [${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''}`);
+          promptParts.push('```');
+          promptParts.push(snippet);
+          promptParts.push('```');
           const preview = sanitizeCommentForPrompt(issue.comment);
           const short = preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
-          promptParts.push(`[${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''} — ${short}`);
+          promptParts.push(`Comment: ${short}`);
           promptParts.push('');
         }
       }
