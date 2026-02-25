@@ -12,6 +12,12 @@ import chalk from 'chalk';
 import { validateTool, isValidModelName, type FixerTool } from './config.js';
 import type { PriorityOrder } from './analyzer/severity.js';
 
+const PRIORITY_ORDER_VALUES: PriorityOrder[] = ['important', 'important-asc', 'easy', 'easy-asc', 'newest', 'oldest', 'none'];
+
+function validatePriorityOrder(value: string): PriorityOrder {
+  return (PRIORITY_ORDER_VALUES.includes(value as PriorityOrder) ? value : 'important') as PriorityOrder;
+}
+
 export interface CLIOptions {
   tool: FixerTool | undefined;  // undefined = use PRR_TOOL env var or default
   toolModel: string | undefined;
@@ -175,8 +181,10 @@ export function parseArgs(program: Command): ParsedArgs {
   const args = program.args;
   const opts = program.opts();
 
-  // PR URL is optional for --check-tools, --update-tools, and --tidy-lessons modes
-  if (args.length === 0 && !opts.checkTools && !opts.updateTools && !opts.tidyLessons) {
+  // PR URL is optional for --check-tools, --update-tools, --tidy-lessons, and local cleanup/lock modes
+  const noUrlNeeded = opts.checkTools || opts.updateTools || opts.tidyLessons ||
+    opts.cleanClaudeMd || opts.cleanAgentsMd || opts.cleanState || opts.cleanAll || opts.clearLock;
+  if (args.length === 0 && !noUrlNeeded) {
     program.help();
     process.exit(1);
   }
@@ -229,7 +237,7 @@ export function parseArgs(program: Command): ParsedArgs {
       modelRotation: opts.modelRotation ?? false,  // Default: use smart model selection
       noClaudeMd: !opts.claudeMd,             // --no-claude-md sets opts.claudeMd=false
       noAgentsMd: !opts.agentsMd,             // --no-agents-md sets opts.agentsMd=false
-      priorityOrder: (opts.priorityOrder ?? 'important') as PriorityOrder,
+      priorityOrder: validatePriorityOrder(opts.priorityOrder ?? 'important'),
       // Cleanup modes
       cleanClaudeMd: opts.cleanClaudeMd ?? false,
       cleanAgentsMd: opts.cleanAgentsMd ?? false,

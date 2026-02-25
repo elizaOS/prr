@@ -85,7 +85,7 @@ export interface RunCallbacks {
   printUnresolvedIssues: (issues: UnresolvedIssue[]) => void;
   parseNoChangesExplanation: (output: string) => string | null;
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
-  tryRotation: () => boolean;
+  tryRotation: (failureErrorType?: string) => boolean;
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
   onDisableRunner?: (runnerName: string) => void;
@@ -185,7 +185,8 @@ export async function executeRun(
     const expectedBotResponseTimeRef = { current: state.expectedBotResponseTime };
     // Pass prefetched comments from setup phase to avoid redundant fetch on first iteration.
     // The push iteration loop clears this after consuming it once.
-    const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments };
+    const lastAnalysisCacheRef = { current: null as { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
+    const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments, lastAnalysisCacheRef };
     while (pushIteration < maxPushIterations) {
       pushIteration++;
       const iterResult = await ResolverProc.executePushIteration(

@@ -72,7 +72,9 @@ export async function processCommentsAndPrepareFixLoop(
   /** Comments already fetched during setup (e.g., CodeRabbit polling).
    *  WHY: Avoids re-fetching 200+ comments (3 GraphQL pages, ~3s) when
    *  the CodeRabbit check already did the exact same API call. */
-  prefetchedComments?: ReviewComment[]
+  prefetchedComments?: ReviewComment[],
+  /** When set, reuse cached analysis if comment count and prInfo.headSha unchanged. */
+  analysisCacheRef?: { current: { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null }
 ): Promise<{
   comments: ReviewComment[];
   unresolvedIssues: UnresolvedIssue[];
@@ -134,17 +136,33 @@ export async function processCommentsAndPrepareFixLoop(
     }
   }
 
-  // Check which issues still exist
-  debugStep('ANALYZING ISSUES');
-  setPhase(stateContext, 'analyzing');
-  setTokenPhase('Analyze issues');
-  startTimer('Analyze issues');
-  console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
-  const analysisResult = await findUnresolvedIssues(comments, comments.length);
-  const unresolvedIssues = analysisResult.unresolved;
-  const duplicateMap = analysisResult.duplicateMap;
-  const analyzeTime = endTimer('Analyze issues');
-  
+  // Reuse cached analysis when comment set and HEAD unchanged (saves ~1–4 min of LLM analysis).
+  const headSha = prInfo.headSha ?? '';
+  const cache = analysisCacheRef?.current;
+  let unresolvedIssues: UnresolvedIssue[];
+  let duplicateMap: Map<string, string[]>;
+  let analyzeTime: number;
+  if (cache && cache.commentCount === comments.length && cache.headSha === headSha) {
+    unresolvedIssues = cache.unresolvedIssues;
+    duplicateMap = cache.duplicateMap;
+    analyzeTime = 0;
+    console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, head unchanged)`));
+    debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7) });
+  } else {
+    debugStep('ANALYZING ISSUES');
+    setPhase(stateContext, 'analyzing');
+    setTokenPhase('Analyze issues');
+    startTimer('Analyze issues');
+    console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
+    const analysisResult = await findUnresolvedIssues(comments, comments.length);
+    unresolvedIssues = analysisResult.unresolved;
+    duplicateMap = analysisResult.duplicateMap;
+    analyzeTime = endTimer('Analyze issues');
+    if (analysisCacheRef) {
+      analysisCacheRef.current = { commentCount: comments.length, headSha, unresolvedIssues: [...unresolvedIssues], comments: [...comments], duplicateMap: new Map(duplicateMap) };
+    }
+  }
+
   // Analyze and report issues
   ResolverProc.analyzeAndReportIssues(comments, unresolvedIssues, stateContext, analyzeTime);
 

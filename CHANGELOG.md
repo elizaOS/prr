@@ -65,12 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API key trimming**: All LLM API keys (ElizaCloud, Anthropic, OpenAI) are trimmed when loaded from config. Trailing newlines or spaces in `.env` no longer cause 401s.
 - **Startup validation**: When `PRR_LLM_PROVIDER` is `elizacloud`, PRR validates the key with one request at startup. If the key is rejected (401), it throws a clear error instead of failing later during dedup/analysis.
 - **Clear 401 error**: If an ElizaCloud request returns 401, the client throws a message telling the user to check `ELIZACLOUD_API_KEY` (correct, no extra spaces/newlines, not revoked).
+- **WHY**: Copy-pasting keys from docs or password managers often adds a trailing newline; providers reject the key and return 401. Trimming at load time fixes this class of config error. Startup validation fails fast with a clear message instead of failing mid-run during the first LLM call.
 
 ### Fixed (2026-02-17) — ElizaCloud rate limiting
 
-- **Concurrency cap for ElizaCloud**: LLM requests to ElizaCloud are limited to `ELIZACLOUD_MAX_CONCURRENT_REQUESTS` (2) in flight, with `ELIZACLOUD_MIN_DELAY_MS` (600ms) between starting each request. Additional requests queue until a slot is free.
-- **Dedup concurrency cap**: LLM dedup (per-file) now runs with at most `LLM_DEDUP_MAX_CONCURRENT` (2) calls at a time instead of 24 in parallel. Combined with the client limiter, this prevents 429s from ElizaCloud and other strict gateways.
-- WHY: 24 parallel dedup calls triggered 429 even with a client-side cap of 5. Lowering to 2 concurrent + 600ms spacing + capping dedup at 2 at a time keeps under provider limits.
+- **Concurrency cap for ElizaCloud**: LLM requests to ElizaCloud are limited to `ELIZACLOUD_MAX_CONCURRENT_REQUESTS` (1) in flight, with `ELIZACLOUD_MIN_DELAY_MS` (6000ms) between starting each request. Additional requests queue until a slot is free.
+- **Dedup concurrency cap**: LLM dedup (per-file) now runs with at most `LLM_DEDUP_MAX_CONCURRENT` (1) call at a time instead of 24 in parallel. Combined with the client limiter, this prevents 429s from ElizaCloud and other strict gateways.
+- **WHY**: 24 parallel dedup calls triggered 429 even with a client-side cap of 5. ElizaCloud enforces ~10 req/min; lowering to 1 concurrent request + 6s spacing + capping dedup at 1 at a time keeps under provider limits.
 
 ### Added (2026-02-15) — Fixer intelligence: snippet accuracy and structured outcomes
 
@@ -393,6 +394,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Both Stage 1 (explicit `NO_CHANGES:`) and Stage 2 (inferred patterns) check against `PROMPT_REGURGITATION_MARKERS`
 - WHY: When overwhelmed by large prompts, models sometimes echo the instruction template verbatim instead of reasoning about the issues. This was treated as a valid "already fixed" claim, triggering expensive re-verification for nothing.
 
+**Gemini CLI Runner**
+- New runner for Google's Gemini CLI (`npm install -g @google/gemini-cli`)
+- Supports `gemini-2.5-pro` and `gemini-2.5-flash` in model rotation
+- Auto-detect installation, version, and API key status
+- Non-interactive execution via `--yolo` and `--prompt` flags
+
 ### Fixed (2026-02-12)
 
 **Overly Broad "Already Fixed" Detection**
@@ -414,12 +421,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `handleNoChanges()` from `fixer-errors.ts` and its re-export from `resolver-proc.ts`
 - The canonical handler is `handleNoChangesWithVerification()` in `no-changes-verification.ts`
 - WHY: Two implementations with divergent "already fixed" detection logic caused confusion. The removed version (stricter) was never actually called; the used version (broader) had the bugs. Consolidating to a single implementation prevents future drift.
-
-**Gemini CLI Runner**
-- New runner for Google's Gemini CLI (`npm install -g @google/gemini-cli`)
-- Supports `gemini-2.5-pro` and `gemini-2.5-flash` in model rotation
-- Auto-detect installation, version, and API key status
-- Non-interactive execution via `--yolo` and `--prompt` flags
 
 **`--tidy-lessons` CLI Option**
 - Scans all lesson JSON files in `~/.prr/lessons/` and re-normalizes, deduplicates, prunes garbage entries

@@ -115,6 +115,6 @@ Fixer flow: `buildFixPrompt()` (prompt-builder) → runner receives prompt → `
 | Issue | Location | Fix |
 |-------|----------|-----|
 | **Instruction 0 told the model to run `git diff ... --stat`** | Fix prompt (prompt-builder) | **llm-api** has no shell. We now run `git diff origin/base...HEAD --stat` in the workflow and inject it as “What this PR changes (diff summary)”. Instruction 0 removed. |
-| **Verification response “FIX_ID: 1” / “FIX_ID: 1: NO: …” not parsed** | Batch verify (llm/client.ts) | Parser extended to accept optional `FIX_ID: ` prefix and two-line format (“FIX_ID: 1” then “NO: …”). |
+| **Verification response “FIX_ID: 1” / “FIX_ID: 1: NO: …” not parsed** | Batch verify (llm/client.ts) | Parser extended to accept optional `FIX_ID:` prefix and two-line format (“FIX_ID: 1” then “NO: …”). |
 
 No other issues: ISSUE_ID format (batch analysis) matches parser; RESULT and NO_CHANGES documented; security and .prr/ exclusion in place.

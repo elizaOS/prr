@@ -1,16 +1,13 @@
 /**
- * Run setup phase
- * 
- * Complete setup after initialization:
- * 1. Check CodeRabbit status
- * 2. Setup workdir and managers
- * 3. Setup runner
- * 4. Restore rotation state
- * 5. Clone/update repository
- * 6. Ensure state file ignored
- * 7. Recover verification state
- * 8. Check and sync with remote
- * 9. Check and merge base branch
+ * Run setup phase: workdir, clone, state, recovery, and base merge.
+ *
+ * WHY this order: We clone first so we have a repo to recover state from;
+ * then ensure .pr-resolver-state.json is in .gitignore so we don't commit it;
+ * then recover verification state from git log (prr-fix markers); then check
+ * remote and merge base so the fix loop runs against an up-to-date tree. WHY
+ * recover verification before merge: So we know which comments are already
+ * verified and don't re-analyze them; merge may add conflicts but doesn't
+ * change which comments we've already fixed.
  */
 
 import type { Ora } from 'ora';

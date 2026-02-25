@@ -268,7 +268,7 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
   Rotation.setCurrentRunnerIndex(stateContext, ctx.currentRunnerIndex);
   ctx.modelsTriedThisToolRound = 0;
 
-  const newModel = getCurrentModel(ctx, { toolModel: undefined, modelRotation: false } as Partial<CLIOptions> as CLIOptions);
+  const newModel = getCurrentModel(ctx, options ?? {} as CLIOptions);
   const modelInfo = newModel ? ` (${newModel})` : '';
   console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`));
   return true;

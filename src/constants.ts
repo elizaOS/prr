@@ -158,9 +158,8 @@ export const ELIZACLOUD_MAX_CONCURRENT_REQUESTS = 1;
 
 /**
  * Min ms between starting successive ElizaCloud requests (per slot).
- * WHY: Spacing (1.5s) keeps request rate under provider limits; avoids 429 bursts.
+ * WHY: 6s spacing keeps request rate under ElizaCloud limit of 10 req/min; avoids 429 bursts.
  */
-/** Min delay between starting ElizaCloud requests; 6s keeps under cloud limit of 10 req/min. */
 export const ELIZACLOUD_MIN_DELAY_MS = 6000;
 
 /**

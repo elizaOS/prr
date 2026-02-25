@@ -453,7 +453,7 @@ export async function executePushIteration(
     const preserveExitReason = exitReason === 'bail_out';
     const noChangesDetails =
       unresolvedIssues.length > 0
-        ? `No changes to commit (fixer made no modifications); ${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} still need attention`
+        ? `No changes to commit (fixer made no modifications); ${unresolvedIssues.length} issue${unresolvedIssues.length === 1 ? '' : 's'} still ${unresolvedIssues.length === 1 ? 'needs' : 'need'} attention`
         : 'No changes to commit (fixer made no modifications)';
     return {
       shouldBreak: true,

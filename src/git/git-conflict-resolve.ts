@@ -1,5 +1,10 @@
 /**
- * Git conflict resolution using LLM
+ * Git conflict resolution using LLM.
+ *
+ * WHY LLM for conflicts: Merge conflicts are semantic — "ours" vs "theirs" plus
+ * context. Heuristics work for lockfiles and package.json; for source code,
+ * an LLM can merge intent and produce a coherent resolution. We validate
+ * output (JSON validity, size regression) to catch truncation or corruption.
  */
 import chalk from 'chalk';
 import { join } from 'path';

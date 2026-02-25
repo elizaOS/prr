@@ -989,19 +989,23 @@ export class GitHubAPI {
     ];
 
     try {
+      // Single-issue list endpoint does not support sort/direction (only page, per_page, since).
+      // We fetch one page and sort by created_at desc in memory so newest comments are first.
       const { data: comments } = await this.octokit.issues.listComments({
         owner,
         repo,
         issue_number: prNumber,
         per_page: 30,
-        direction: 'desc',
       });
+      const commentsNewestFirst = [...comments].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
 
       // Only check recent comments (last 30 minutes)
       const cutoff = new Date(Date.now() - 30 * 60 * 1000);
 
       for (const bot of BOT_PATTERNS) {
-        const botComments = comments.filter(
+        const botComments = commentsNewestFirst.filter(
           c => bot.pattern.test(c.user?.login || '') &&
                new Date(c.created_at) > cutoff
         );
@@ -1056,7 +1060,8 @@ interface ParsedIssue {
  * Uses [\w./-]+ for path chars to avoid capturing leading punctuation like `(`.
  * Requires at least one `/` to avoid matching bare words like `client.ts`.
  */
-const FILE_LINE_RE = /(?:[`(])?(?:\.\/)?(\w[\w./-]*\/[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))(?::(\d+))?(?:[:-]\d+)?(?:[`)])?/;
+const FILE_EXTENSIONS = '(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)';
+const FILE_LINE_RE = new RegExp(`(?:[\`(])?(?:\\./)?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`);
 
 /**
  * Section headers to SKIP entirely — these never contain issues.
@@ -1123,7 +1128,7 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
       // Phase 4: Extract file:line from the item.
       // Try structured **Location(s):** pattern first, then fall back to generic.
       const locationMatch = item.match(
-        /\*\*Locations?:\*\*\s*`?(\w[\w./-]*\/[\w./-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))(?::(\d+))?/
+        new RegExp(`\\*\\*Locations?:\\*\\*\\s*\`?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?`)
       );
       const fileMatch = locationMatch || item.match(FILE_LINE_RE);
       if (!fileMatch) continue; // Skip items without file references

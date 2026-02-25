@@ -1,3 +1,13 @@
+/**
+ * Main resolver: runs the PR fix loop (analyze → fix → verify → commit) and
+ * coordinates GitHub, LLM, runners, and state.
+ *
+ * WHY a class: Encapsulates per-run state (runner index, model indices, progress
+ * counters, bot timings) that would otherwise be a large bag of arguments across
+ * resolver-proc and rotation. Single entry point run(prUrl) keeps index.ts simple.
+ * WHY delegate to resolver-proc: Procedural functions there are easier to test
+ * and reason about; the class handles lifecycle and state, procedures handle flow.
+ */
 import chalk from 'chalk';
 import ora from 'ora';
 import type { Config } from './config.js';
@@ -122,7 +132,7 @@ export class PRResolver {
       printUnresolvedIssues: (issues) => this.printUnresolvedIssues(issues),
       parseNoChangesExplanation: (output) => this.parseNoChangesExplanation(output),
       trySingleIssueFix: (issues, git, verified) => this.trySingleIssueFix(issues, git, verified),
-      tryRotation: () => this.tryRotation(),
+      tryRotation: (failureErrorType?: string) => this.tryRotation(failureErrorType),
       tryDirectLLMFix: (issues, git, verified) => this.tryDirectLLMFix(issues, git, verified),
       executeBailOut: (issues, comments) => this.executeBailOut(issues, comments),
       onDisableRunner: (name) => this.disabledRunners.add(name),

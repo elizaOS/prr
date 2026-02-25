@@ -1,6 +1,12 @@
 /**
- * Fix verification workflow functions
- * Handles verification of fixes after fixer tool completes
+ * Fix verification: after the fixer runs, confirm which issues were actually fixed.
+ *
+ * WHY verify at all: Fixers can claim "fixed" but miss the issue or change the
+ * wrong thing. We send the fixer output and code snippet to the LLM and ask
+ * "does this code now address the concern?" — only then do we mark verified.
+ * WHY batch verify: One LLM call can check many issues at once (e.g. 50) with
+ * a structured prompt; we fall back to spot-check then full batch to avoid
+ * trusting a single "all fixed" claim without sampling.
  */
 
 import chalk from 'chalk';

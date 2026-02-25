@@ -1,6 +1,6 @@
 # Eliza Cloud API (from eliza-cloud-v2 source)
 
-Reference derived from `~/Sites/eliza-cloud-v2` for correct endpoints and auth.
+Reference: [elizaOS/eliza-cloud-v2](https://github.com/elizaOS/eliza-cloud-v2) (or current deployment) for endpoints and auth.
 
 ## Base URL
 

@@ -13,6 +13,8 @@ prr is designed around **human-in-the-loop** automation, not full autonomy:
 
 This contrasts with fully autonomous agents that create PRs without human involvement. prr assumes a human made the PR, received review feedback, and wants help addressing it - not a replacement for the human developer.
 
+**Why human-in-the-loop drives the design:** When the human can interrupt (Ctrl+C), inspect the workdir, and decide when to push, the system must persist state, avoid silent failures, and keep the workdir usable. That’s why we save state on signal, close logs before exit, and never assume the process runs to completion.
+
 **Technical implications**:
 - State persistence is critical (resume after interruption)
 - Workdir preservation by default (inspect before pushing)
@@ -308,7 +310,7 @@ Model rotation (interleaved by family):
   Round 2: claude-4-opus-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
   
 Tool rotation (after MAX_MODELS_PER_TOOL_ROUND models tried):
-  Cursor → Claude Code → Aider → Gemini CLI → Direct LLM API
+  Cursor → Claude Code → Aider → OpenCode → Codex → Gemini → Junie → Goose → OpenHands → Direct LLM API
   (then back to Cursor with next model in rotation)
 
 Strategy per failure:

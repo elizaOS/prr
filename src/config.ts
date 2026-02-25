@@ -50,6 +50,10 @@ export interface Config {
  * Get environment variable or throw if missing.
  * Trims whitespace/newlines so .env copy-paste doesn't cause 401s.
  *
+ * WHY trim: Pasting an API key from a doc or password manager often adds a
+ * trailing newline. Without trim, the key is sent with "\n" and providers
+ * reject it (401 Unauthorized). Trimming avoids this class of config error.
+ *
  * @param key - Environment variable name
  * @returns The trimmed value
  * @throws Error if the variable is not set or empty after trim
@@ -74,22 +78,28 @@ function getEnvOrThrow(key: string): string {
  * @returns The environment variable value or default
  */
 function getEnvOrDefault(key: string, defaultValue: string): string {
-  return process.env[key] || defaultValue;
+  const value = process.env[key] ?? defaultValue;
+  return value.trim();
 }
 
 /**
  * Load and validate application configuration from environment.
- * 
+ *
+ * WHY env + .env: Users expect to set GITHUB_TOKEN and API keys in .env so they
+ * aren't in shell history. We load .env via dotenv then read process.env; all
+ * keys are trimmed so copy-paste from docs or password managers doesn't add
+ * trailing newlines (which cause 401s).
+ *
  * Required environment variables:
  * - GITHUB_TOKEN: GitHub personal access token
  * - ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY: LLM provider API key
- * 
+ *
  * Optional environment variables:
  * - PRR_LLM_PROVIDER: 'elizacloud', 'anthropic', or 'openai' (auto-detects if not set)
  * - PRR_LLM_MODEL: Model name (defaults based on provider)
  * - PRR_TOOL: Default fixer tool
  * - PRR_THINKING_BUDGET: Extended thinking token budget
- * 
+ *
  * @returns Validated configuration object
  * @throws Error if required variables are missing or invalid
  */
@@ -216,7 +226,6 @@ export function validateTool(tool: string): FixerTool {
   return validateRealTool(tool) as FixerTool;
 }
 
-/** Validate that a tool is a real runner (not 'auto'). 'auto' should be resolved before calling this. */
 /**
  * Validate a real fixer tool name (not 'auto').
  * 

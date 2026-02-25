@@ -1,6 +1,6 @@
 # PRR Documentation Index
 
-Welcome to the PRR documentation! This directory contains comprehensive guides and flowcharts explaining how the PR Resolver system works.
+Welcome to the PRR documentation! This directory contains comprehensive guides and flowcharts explaining how the PR Resolver system works. We document **why** design choices were made (not just what) so you can revisit decisions and avoid regressions — see also the main [README](../README.md) philosophy.
 
 ---
 

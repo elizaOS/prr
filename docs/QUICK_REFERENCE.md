@@ -106,6 +106,13 @@ prr owner/repo#123 --auto-push
    └──────────────────────────────────────────────────────┘
 ```
 
+**Why it works this way**
+- **Analysis cache**: We remember which comments still need fixing per file hash. When the file hasn’t changed, we skip the LLM call — saves time and tokens.
+- **Priority order**: Issues are sorted by importance/difficulty so the fixer tackles critical or easy wins first instead of arbitrary order.
+- **Adaptive batch size**: If a big batch fixes nothing, we halve the batch next time (50 → 25 → …) then fall back to single-issue mode so the model isn’t overwhelmed.
+- **Dismissal comments**: When we dismiss an issue (already-fixed, stale, etc.), we can add an inline code comment so review bots see the reasoning and don’t re-flag the same thing.
+- **Commit message scope**: The commit message lists only issues in files that were actually changed in that commit, not every verified issue on the PR — keeps git history accurate.
+
 ---
 
 ## 🎨 Visual Architecture

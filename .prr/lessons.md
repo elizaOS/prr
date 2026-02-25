@@ -33,7 +33,7 @@
 - Fix for src/git/commit.ts:108 - Same issue as fix_3. The code lacks the originalRemoteUrl variable declaration and capture. restoreRemoteUrl attempts to detect and strip tokens instead of restoring the saved original URL.
 - Fix for src/git/commit.ts:345 - The code change shown is identical to fixes 3 and 4—it does not address the retry count off-by-one issue at all. Comment asked to fix the loop condition so maxRetries represents actual retries, not total attempts.
 - Fix for src/git/commit.ts:624 - The code diff shown does not contain any changes to the noun extraction logic around lines 620-624. The entire diff is about restoreRemoteUrl and remote URL restoration, not the "fix fix" duplication in commit message generation.
-- Fix for src/git/commit.ts:462 - The diff shows remote URL restoration code, but the review asked for replacing raw ` - format` arguments with simple-git's `format` object in `scanCommittedFixes`. The change doesn't address the git.log() format issue at all.
+- Fix for src/git/commit.ts:462 - The diff shows remote URL restoration code, but the review asked for replacing raw `- format` arguments with simple-git's format object in `scanCommittedFixes`. The change doesn't address the git.log() format issue at all.
 - Fix for src/git/commit.ts:624 - The diff doesn't modify the verb-noun extraction logic around lines 620-624. The review requires capturing the verb group from the regex match and using it directly instead of checking `allText.includes('fix')` to avoid "fix fix X" duplicates.
 
 ## src/llm/client.ts

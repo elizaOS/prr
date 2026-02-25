@@ -1,3 +1,14 @@
+/**
+ * Logging: output log tee, prompts log, debug files, and structured debug().
+ *
+ * WHY two log files (output.log + prompts.log): output.log mirrors the console
+ * for operational flow; inlining full prompts would make it unreadable. prompts.log
+ * holds full LLM content with searchable slugs so you can jump from a line in
+ * output.log to the exact prompt that produced it. WHY strip ANSI: Log files are
+ * for grepping and sharing; escape codes add noise. WHY exclude spinner output:
+ * ora/spinner write via process.stdout.write, not console.log; excluding them
+ * keeps the log free of progress-bar artifacts.
+ */
 import chalk from 'chalk';
 import { writeFileSync, mkdirSync, createWriteStream } from 'fs';
 import { join } from 'path';
@@ -65,7 +76,9 @@ export function initOutputLog(): void {
 }
 
 /**
- * Close the output log stream (call during shutdown).
+ * Close the output log and prompts log streams (call during shutdown).
+ * WHY: Without closing, the last lines may stay buffered and the file may be
+ * unreadable or truncated when the user opens it after the process exits.
  */
 export function closeOutputLog(): void {
   if (outputLogStream) {

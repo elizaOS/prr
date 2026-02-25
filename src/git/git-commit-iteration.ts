@@ -19,7 +19,7 @@
  */
 import type { SimpleGit } from 'simple-git';
 import { stageAll, runPreCommitChecks, type CommitResult } from './git-commit-core.js';
-import { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';
+import { buildCommitMessage } from './git-commit-message.js';
 
 /**
  * Create one commit per file for a set of verified issues (cleaner history).

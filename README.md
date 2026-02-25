@@ -18,6 +18,8 @@ CLI tool to automatically resolve PR review comments using LLM-powered fixing an
 
 There are plenty of AI tools that autonomously create PRs, write code, and push changes without human involvement. **prr takes a different approach.**
 
+**Why we document WHYs:** In this README, CHANGELOG, and code we explain not only *what* changed but *why*. That makes it easier to revisit decisions, avoid regressions, and onboard contributors — the rationale outlives the author.
+
 **Human-driven, AI-assisted**: You stay in control. You decide which PR to work on, when to run prr, and when it's done. The AI handles the tedious back-and-forth with reviewers (human or bot), but you're the driver.
 
 **The right tool for the job**: Sometimes you want to manually address feedback. Sometimes you want AI to grind through 50 nitpicks from CodeRabbit. prr gives you the option without taking over your workflow.

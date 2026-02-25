@@ -46,15 +46,7 @@ export function createElizaCloudOpenAIClient(apiKey: string): OpenAI {
   });
 }
 
-/**
- * Strip unpaired UTF-16 surrogates from a string
- * 
- * Lone surrogates (U+D800–U+DFFF without a valid pair) are invalid in JSON
- * and cause API errors like "no low surrogate in string". They can appear
- * when reading binary files or files with encoding issues.
- * 
- * Replaces lone surrogates with U+FFFD (replacement character).
- */
+/** Normalize issue/comment IDs: strip markdown (headings, bold) and standardize to issue_<n> for matching. */
 function normalizeIssueId(raw: string): string {
   // Strip markdown formatting that LLMs wrap around IDs.
   // HISTORY: Haiku started returning "**issue_1**: YES:" (bold markdown) instead
@@ -72,6 +64,11 @@ function normalizeIssueId(raw: string): string {
   return normalized.length > 0 ? `issue_${normalized}` : normalized;
 }
 
+/**
+ * Strip unpaired UTF-16 surrogates from a string.
+ * Lone surrogates (U+D800–U+DFFF without a valid pair) are invalid in JSON
+ * and cause API errors like "no low surrogate in string". Replaces them with U+FFFD.
+ */
 function sanitizeForJson(text: string): string {
   // Match lone high surrogates (not followed by low) and lone low surrogates (not preceded by high)
   // eslint-disable-next-line no-control-regex
@@ -427,22 +424,19 @@ export class LLMClient {
       systemPrompt = sanitizeForJson(systemPrompt);
     }
 
-    // Allow callers to override the model for this request
+    // Allow callers to override the model for this request (no instance mutation to avoid race conditions)
     // WHY: The LLM client defaults to the verification model (often haiku),
     // but some callers (like tryDirectLLMFix) need a stronger model for code fixing
-    const originalModel = this.model;
-    if (options?.model) {
-      this.model = options.model;
-    }
+    const chosenModel = options?.model ?? this.model;
 
-    debug(`LLM request to ${this.provider}/${this.model}`, {
+    debug(`LLM request to ${this.provider}/${chosenModel}`, {
       promptLength: prompt.length,
       hasSystemPrompt: !!systemPrompt,
     });
     
     // Log full prompt to debug file
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
-    debugPrompt(`llm-${this.provider}`, fullPrompt, { model: this.model });
+    debugPrompt(`llm-${this.provider}`, fullPrompt, { model: chosenModel });
     
     const is429 = (e: unknown) => {
       const status = (e as { status?: number })?.status;
@@ -461,8 +455,8 @@ export class LLMClient {
       for (let attempt = 0; attempt <= max429Retries; attempt++) {
         try {
           const response = this.provider === 'anthropic'
-            ? await this.completeAnthropic(prompt, systemPrompt)
-            : await this.completeOpenAI(prompt, systemPrompt);
+            ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
+            : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
 
           debug('LLM response', {
             responseLength: response.content.length,
@@ -470,7 +464,7 @@ export class LLMClient {
           });
 
           debugResponse(`llm-${this.provider}`, response.content, {
-            model: this.model,
+            model: chosenModel,
             usage: response.usage,
           });
 
@@ -509,7 +503,6 @@ export class LLMClient {
       if (this.provider === 'elizacloud') {
         releaseElizacloud();
       }
-      this.model = originalModel;
     }
   }
 
@@ -525,10 +518,12 @@ export class LLMClient {
     return this.complete(prompt, systemPrompt, { model: cheapModel });
   }
 
-  private async completeAnthropic(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
+  private async completeAnthropic(prompt: string, systemPrompt?: string, model?: string): Promise<LLMResponse> {
     if (!this.anthropic) {
       throw new Error('Anthropic client not initialized');
     }
+
+    const chosenModel = model ?? this.model;
 
     // Build request options
     // max_tokens is required by the Anthropic API — we can't omit it.
@@ -538,12 +533,12 @@ export class LLMClient {
     //
     // WHY 64K default: Sonnet/Haiku cap at 64K. Opus also caps at 64K unless
     // extended thinking is enabled — requesting 128K without thinking causes 400.
-    const isHighOutputModel = this.model.includes('opus');
+    const isHighOutputModel = chosenModel.includes('opus');
     const maxOutputTokens = (isHighOutputModel && this.thinkingBudget) ? 128_000 : 64_000;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const requestOptions: any = {
-      model: this.model,
+      model: chosenModel,
       max_tokens: maxOutputTokens,
       messages: [
         {
@@ -629,10 +624,12 @@ export class LLMClient {
     };
   }
 
-  private async completeOpenAI(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
+  private async completeOpenAI(prompt: string, systemPrompt?: string, model?: string): Promise<LLMResponse> {
     if (!this.openai) {
       throw new Error('OpenAI client not initialized');
     }
+
+    const chosenModel = model ?? this.model;
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [];
     
@@ -649,7 +646,7 @@ export class LLMClient {
     // regex would fail silently). Response length is now controlled by prompt
     // instructions, not this parameter. You only pay for tokens generated.
     const response = await this.openai.chat.completions.create({
-      model: this.model,
+      model: chosenModel,
       messages,
     });
 
@@ -977,18 +974,6 @@ ${codeSnippet}
       }
 
       const response = await this.complete(parts.join('\n'), systemPrompt);
-      const normalizeIssueId = (raw: string): string => {
-        // Strip markdown formatting (bold, headings) that LLMs wrap around IDs.
-        // HISTORY: Haiku returns "**issue_1**:" instead of "issue_1:" — without
-        // stripping **, every ID mismatches and batch parse returns 0/N.
-        const normalized = raw.trim()
-          .replace(/^#+\s*/, '')
-          .replace(/^\*{1,2}/, '').replace(/\*{1,2}$/, '')
-          .toLowerCase()
-          .replace(/^issue[_\s]*/i, '')
-          .replace(/^#/, '');
-        return normalized ? `issue_${normalized}` : normalized;
-      };
       const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
 
       // Parse issue responses with optional triage scores
@@ -1639,12 +1624,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     debug('Batch verify results', { parsed: results.size, expected: fixes.length });
 
-    // When parsing falls short, log enough to diagnose the problem
+    // When parsing falls short, log enough to diagnose and ensure every fix has an entry
     if (results.size < fixes.length) {
-      const unparsedIds = fixes
-        .filter(f => !results.has(f.id))
-        .map(f => f.id.substring(0, 20));
-      
+      const unparsed = fixes.filter(f => !results.has(f.id));
+      const unparsedIds = unparsed.map(f => f.id.substring(0, 20));
+      for (const f of unparsed) {
+        results.set(f.id, { fixed: false, explanation: '' });
+      }
       // Show the raw response lines that didn't match any pattern
       const unmatchedLines = lines
         .map(l => l.trim())
@@ -1656,7 +1642,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         .slice(0, 10);
       
       debug('Batch verify parse shortfall', {
-        missing: fixes.length - results.size,
+        missing: unparsed.length,
         unparsedIds,
         sampleUnmatchedLines: unmatchedLines,
         responsePreview: response.content.substring(0, 500),

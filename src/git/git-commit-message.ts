@@ -6,7 +6,7 @@
  * Generate a concise first line for commit message.
  * Format: scope: description
  */
-function generateCommitFirstLine(
+export function generateCommitFirstLine(
   fixedIssues: Array<{ filePath: string; comment: string }>,
   filePaths: string[]
 ): string {
@@ -56,7 +56,7 @@ function determineScope(filePaths: string[]): string {
 
 /**
  * Extract a description from review comments.
- * Looks for action keywords and nouns.
+ * Prefers specific issue titles (e.g. "### Fix X") then pattern-based fallbacks.
  */
 function extractDescription(
   fixedIssues: Array<{ filePath: string; comment: string }>,
@@ -66,25 +66,36 @@ function extractDescription(
   const fileBasedDesc = filePaths.length > 0
     ? `update ${filePaths[0].split('/').pop()?.replace(/\.[^.]+$/, '') || 'code'}`
     : 'improve code quality';
-  
+
   if (fixedIssues.length === 0) {
     return fileBasedDesc;
   }
 
-  // Single issue: use first line of comment as description when it's a short, readable sentence
-  if (fixedIssues.length === 1) {
-    const firstLine = fixedIssues[0]!.comment.split(/\n/)[0]?.trim() ?? '';
-    const stripped = stripMarkdownForCommit(firstLine);
-    if (stripped.length >= 10 && stripped.length <= 72 && !/^https?:\/\//.test(stripped)) {
+  // Prefer first line of first comment when it looks like a specific fix (### Title or Fix/Add/Remove...)
+  const firstComment = fixedIssues[0]!.comment;
+  const firstLine = firstComment.split(/\n/)[0]?.trim() ?? '';
+  const stripped = stripMarkdownForCommit(firstLine)
+    .replace(/^#+\s*/, '')  // drop ### prefix from bot titles
+    .trim();
+  if (stripped.length >= 12 && stripped.length <= 72 && !/^https?:\/\//.test(stripped)) {
+    const looksLikeFix = /^(fix|add|remove|improve|address|correct|prevent|handle|ensure)\s+/i.test(stripped) ||
+      /^(SIWE|credit|cleanup|race|time-window|stale|export|fallback)/i.test(stripped);
+    if (looksLikeFix || fixedIssues.length === 1) {
       return stripped;
     }
   }
 
-  // Combine all comments and look for key patterns
+  // Combine all comments and look for specific patterns first (more specific before generic)
   const allText = fixedIssues.map(i => i.comment.toLowerCase()).join(' ');
-  
-  // Common improvement patterns to look for
+
   const patterns: Array<{ regex: RegExp; desc: string }> = [
+    { regex: /time-window|notbefore|expirationtime|chronological/i, desc: 'fix SIWE time-window checks' },
+    { regex: /stale\s+credit|credit\s+balance|pre-credit/i, desc: 'fix stale credit balance in signup response' },
+    { regex: /cleanup.*catch|userCreated.*try.*catch|block\s+scope/i, desc: 'fix cleanup variable scope in signup' },
+    { regex: /race\s+condition\s+recovery|account\s+active\s+checks/i, desc: 'add account active checks in race recovery' },
+    { regex: /organizationId\s+fallback|organization_id\s+\?\?/i, desc: 'consistent organizationId fallback in handlers' },
+    { regex: /SyncOptions\s+export|export.*SyncOptions/i, desc: 'restore SyncOptions export' },
+    { regex: /retry\s+cleanup|orphan.*organization/i, desc: 'add retry cleanup for orphaned orgs' },
     { regex: /add(ing)?\s+(uuid\s+)?validation/i, desc: 'add validation' },
     { regex: /add(ing)?\s+error\s+handling/i, desc: 'add error handling' },
     { regex: /add(ing)?\s+type\s+(safety|check)/i, desc: 'add type safety' },
@@ -102,19 +113,19 @@ function extractDescription(
     { regex: /memory\s+leak/i, desc: 'fix memory leak' },
     { regex: /exception|error\s+handling/i, desc: 'improve error handling' },
   ];
-  
+
   for (const { regex, desc } of patterns) {
     if (regex.test(allText)) {
       return desc;
     }
   }
-  
+
   // Try to extract specific noun phrases
   const nounMatch = allText.match(/(?:add|fix|improve|update|handle)\s+(\w+(?:\s+\w+)?)/);
-  if (nounMatch && nounMatch[1].length < 30) {
+  if (nounMatch && nounMatch[1]!.length < 30) {
     return `${allText.includes('fix') ? 'fix' : 'improve'} ${nounMatch[1]}`;
   }
-  
+
   return fileBasedDesc;
 }
 

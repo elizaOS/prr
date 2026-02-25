@@ -1,6 +1,12 @@
 /**
- * Commit workflow functions
- * Handles committing and pushing fixes after audit passes
+ * Commit workflow: commit and push after all issues are resolved.
+ *
+ * WHY scope commit message to staged files: We amend the initial commit with a
+ * message built only from issues in files that were actually changed in this
+ * commit. Listing every verified issue on the PR (including untouched files)
+ * was misleading in git history. WHY export lessons before commit: So the
+ * commit includes updated .prr/lessons.md and CLAUDE.md when we have new
+ * lessons; otherwise they'd be left uncommitted in the workdir.
  */
 
 import chalk from 'chalk';

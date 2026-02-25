@@ -35,6 +35,10 @@ export interface CommitResult {
  * We check for the COMBINATION of <search> + <replace> or <change path="...">
  * to avoid false positives from legitimate XML/HTML code that might use one
  * of these tag names individually.
+ *
+ * WHY also check TOOL_MARKER_FILES: PRR writes __fix-notes.md etc. for the
+ * fixer; those are tool artifacts, not user code. If the fixer leaves them
+ * staged, we unstage them so the commit only contains real source changes.
  */
 const TOOL_MARKUP_PATTERN = /<change\s+path="[^"]+">[\s\S]*?<search>[\s\S]*?<\/search>[\s\S]*?<replace>/;
 const TOOL_MARKER_FILES = [
@@ -46,6 +50,9 @@ const TOOL_MARKER_FILES = [
  * Directories that the fixer should never modify.
  * These are tool-managed (lessons, state) and any edits to them are accidental.
  * Exported so other modules (e.g. dismissal-comments) can skip them consistently.
+ *
+ * WHY .prr/: Lessons and state live there. Fixer edits would corrupt the
+ * learning system or state and get auto-reverted, wasting a fix iteration.
  */
 export const PROTECTED_DIRS = ['.prr/'];
 
@@ -180,7 +187,7 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
       }
 
       // Check filename patterns
-      if (TOOL_MARKER_FILES.some(pattern => basename === pattern || basename.startsWith('__') && basename.endsWith('.md'))) {
+      if (TOOL_MARKER_FILES.some(pattern => basename === pattern) || (basename.startsWith('__') && basename.endsWith('.md'))) {
         debug(`Tool artifact detected (filename): ${file}`);
         if (status.created.includes(file)) {
           filesToRemove.push(file);
@@ -210,18 +217,24 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
 
       // JSON files: reject any staged content that contains // comments or is invalid JSON
       if (file.endsWith('.json')) {
-        try {
-          const diff = await git.diff(['--cached', '--', file]);
-          if (/^\+\s*\/\//m.test(diff)) {
-            debug(`JSON file contains comment syntax: ${file}`);
-            if (status.created.includes(file)) {
-              filesToRemove.push(file);
-            } else {
-              filesToRevert.push(file);
-            }
-            continue;
+        const diff = await git.diff(['--cached', '--', file]);
+        if (/^\+\s*\/\//m.test(diff)) {
+          debug(`JSON file contains comment syntax: ${file}`);
+          if (status.created.includes(file)) {
+            filesToRemove.push(file);
+          } else {
+            filesToRevert.push(file);
           }
-          const stagedContent = await git.raw(['show', ':0:' + file]);
+          continue;
+        }
+        let stagedContent: string;
+        try {
+          stagedContent = await git.raw(['show', ':0:' + file]);
+        } catch {
+          debug(`Could not read staged content for: ${file}`);
+          continue;
+        }
+        try {
           if (typeof stagedContent === 'string') {
             JSON.parse(stagedContent);
           }

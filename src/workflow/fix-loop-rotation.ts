@@ -57,7 +57,7 @@ export async function handleRotationStrategy(
     git: SimpleGit,
     verifiedThisSession?: Set<string>
   ) => Promise<boolean>,
-  tryRotation: () => boolean,
+  tryRotation: (failureErrorType?: string) => boolean,
   tryDirectLLMFix: (
     issues: UnresolvedIssue[],
     git: SimpleGit,
@@ -110,7 +110,7 @@ export async function handleRotationStrategy(
     if (skipSingleIssueForToolConfig) {
       console.log(chalk.yellow('\n  ⏭ Tool config error — skipping single-issue, rotating to next tool...'));
     }
-    const rotated = tryRotation();
+    const rotated = tryRotation(failureErrorType);
     // WHY reset: The prompt tracker detects identical prompt+model combos to
     // skip redundant iterations. After rotation, the prompt content may be
     // identical (same issues, same lessons) but the MODEL is different. Without

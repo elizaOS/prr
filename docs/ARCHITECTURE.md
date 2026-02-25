@@ -242,6 +242,8 @@ interface Runner {
 
 ### 6. State Management (`src/state/`)
 
+Persistent state lives in `.pr-resolver-state.json` in the repo workdir. WHY this name: Unambiguous (not just "state") and tool-prefixed so it's clear it belongs to PRR and doesn't collide with other tools' state files.
+
 Maintains session state across iterations:
 - Verified fixes (prevents re-checking)
 - Dismissed issues (skips false positives)
@@ -409,7 +411,7 @@ Batch (50) → Batch (25) → Batch (12) → Batch (6) → Batch (5)
 
 ## State Persistence
 
-State is stored in `.prr-state.json` in the cloned repository:
+State is stored in `.pr-resolver-state.json` in the cloned repository:
 
 ```json
 {

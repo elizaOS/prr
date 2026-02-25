@@ -85,7 +85,7 @@ export async function executeFixIteration(
   getCurrentModel: () => string | undefined,
   parseNoChangesExplanation: (output: string) => string | null,
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
-  tryRotation: () => boolean,
+  tryRotation: (failureErrorType?: string) => boolean,
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
   onDisableRunner?: (runnerName: string) => void

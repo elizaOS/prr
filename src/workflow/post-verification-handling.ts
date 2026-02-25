@@ -47,7 +47,7 @@ export async function handlePostVerification(
   options: CLIOptions,
   currentRunnerName: string,
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
-  tryRotation: () => boolean,
+  tryRotation: (failureErrorType?: string) => boolean,
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>
 ): Promise<{
