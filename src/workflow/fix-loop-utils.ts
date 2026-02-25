@@ -266,7 +266,14 @@ export async function checkAndPullRemoteCommits(
 }> {
   // Check for new commits pushed to the PR (every iteration)
   // WHY: Detect external pushes early so we don't waste cycles on stale code
-  const remoteStatus = await checkRemoteAhead(git, branch);
+  let remoteStatus: { behind: number };
+  try {
+    remoteStatus = await checkRemoteAhead(git, branch);
+  } catch (err) {
+    debug('Failed to check remote status', { error: err, branch });
+    console.log(chalk.yellow('  Could not check remote — continuing with current code'));
+    return { shouldBreak: false };
+  }
   if (remoteStatus.behind > 0) {
     console.log(chalk.yellow(`\n⚠ Remote has ${remoteStatus.behind} new commit(s) - pulling...`));
     
