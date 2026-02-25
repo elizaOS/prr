@@ -422,6 +422,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The canonical handler is `handleNoChangesWithVerification()` in `no-changes-verification.ts`
 - WHY: Two implementations with divergent "already fixed" detection logic caused confusion. The removed version (stricter) was never actually called; the used version (broader) had the bugs. Consolidating to a single implementation prevents future drift.
 
+### Added (2026-02-12) — CLI & Startup Tooling
+
 **`--tidy-lessons` CLI Option**
 - Scans all lesson JSON files in `~/.prr/lessons/` and re-normalizes, deduplicates, prunes garbage entries
 - Also cleans `.prr/lessons.md` in the current repo (flexible parser handles multiple Markdown formats)
