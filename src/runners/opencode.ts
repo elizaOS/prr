@@ -128,6 +128,7 @@ export class OpencodeRunner implements Runner {
         cwd: workdir,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
+        detached: true,
         env: { ...process.env },
       });
 
@@ -143,15 +144,26 @@ export class OpencodeRunner implements Runner {
       let stdout = '';
       let stderr = '';
       let killed = false;
+      let closed = false;
 
-      // Kill the process if it runs too long
+      const killTree = (signal: NodeJS.Signals) => {
+        try {
+          // Kill the entire process group (opencode + any children it spawned)
+          if (child.pid) process.kill(-child.pid, signal);
+        } catch {
+          try { child.kill(signal); } catch { /* already dead */ }
+        }
+      };
+
+      let sigkillFallbackHandle: ReturnType<typeof setTimeout> | undefined;
       const timeoutHandle = setTimeout(() => {
         killed = true;
         debug('OpenCode timeout reached, killing process', { timeoutMs: OPENCODE_TIMEOUT_MS });
-        child.kill('SIGTERM');
-        setTimeout(() => {
-          if (!child.killed) {
-            child.kill('SIGKILL');
+        killTree('SIGTERM');
+        sigkillFallbackHandle = setTimeout(() => {
+          if (!closed) {
+            debug('OpenCode still alive after SIGTERM, sending SIGKILL');
+            killTree('SIGKILL');
           }
         }, 5000);
       }, OPENCODE_TIMEOUT_MS);
@@ -169,7 +181,9 @@ export class OpencodeRunner implements Runner {
       });
 
       child.on('close', (code) => {
+        closed = true;
         clearTimeout(timeoutHandle);
+        if (sigkillFallbackHandle !== undefined) clearTimeout(sigkillFallbackHandle);
         cleanupPromptFile();
         debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length, timedOut: killed });
 
@@ -178,7 +192,7 @@ export class OpencodeRunner implements Runner {
             success: false,
             output: stdout,
             error: `OpenCode timed out after ${OPENCODE_TIMEOUT_MS / 1000}s`,
-            errorType: 'timeout',
+            errorType: 'tool_timeout',
           });
         } else if (code === 0) {
           resolve({

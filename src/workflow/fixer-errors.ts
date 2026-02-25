@@ -85,6 +85,16 @@ export function handleFixerError(
     return { shouldExit: false, skipRunnerForRun: false, rapidFailureCount, lastFailureTime };
   }
 
+  // TOOL TIMEOUT: The runner process itself was killed after a hard timeout (e.g. opencode hung for 10+ min).
+  // WHY: This is a tool-level issue, not a model issue. Rotating models on the same tool won't help.
+  if (result.errorType === 'tool_timeout') {
+    console.log(chalk.yellow(`\n⚠ TOOL TIMEOUT: ${runner.name} was killed after exceeding time limit`));
+    console.log(chalk.gray('  Skipping this tool for the rest of the run.'));
+    debug('Tool timeout - disabling runner', { tool: runner.name, error: result.error });
+    Performance.recordModelError(stateContext, runner.name, getCurrentModel() || undefined);
+    return { shouldExit: false, skipRunnerForRun: true, rapidFailureCount, lastFailureTime };
+  }
+
   // 504/GATEWAY TIMEOUT: Rotate immediately; skip single-issue (same model would 504 again).
   // WHY: After retries exhausted, another attempt with same model burns ~10min with no gain.
   if (result.errorType === 'timeout') {
