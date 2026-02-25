@@ -63,7 +63,7 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ## 🗺️ Documentation Map
 
-```
+```text
 docs/
 ├── README.md (this file)           ← Start here
 │
@@ -129,7 +129,7 @@ docs/
 
 ### The Three Loops
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │ OUTER LOOP (Run Orchestrator)                          │
 │  • Purpose: Handle multiple push iterations            │
@@ -158,7 +158,7 @@ docs/
 
 When fixes fail, PRR doesn't give up—it escalates:
 
-```
+```text
 1. Batch Mode (optimistic)
    └─ Try fixing 50 issues at once
 
@@ -363,7 +363,7 @@ If you find errors or want to improve documentation:
 
 ## 📦 What's Where
 
-```
+```text
 📁 prr/
 │
 ├── 📄 README.md                  ← Project overview, features, installation
