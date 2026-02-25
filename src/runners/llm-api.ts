@@ -51,9 +51,10 @@ const COOLDOWN_MS = 180_000;
 // a PR to increase it to 2 min may or may not be deployed. 504s after ~1 min (or ~3 min
 // if the gateway layer times out later) trigger retry then rotation (errorType: 'timeout').
 
-function is504OrGatewayTimeout(error: unknown): boolean {
+function isServerError(error: unknown): boolean {
+  const status = (error as { status?: number })?.status;
   const msg = error instanceof Error ? error.message : String(error);
-  return /504|502|gateway.*timeout|deployment.*timeout/i.test(msg);
+  return status === 500 || /500|504|502|gateway.*timeout|deployment.*timeout/i.test(msg);
 }
 
 /** Extract response status, headers, and body from SDK/axios-style errors for 504 debugging. */
@@ -118,10 +119,10 @@ async function with504Retry<T>(fn: () => Promise<T>, logContext?: string, timeou
     } catch (e) {
       lastError = e;
       const isTimeout = e instanceof Error && /timeout/i.test(e.message);
-      const retryable = is504OrGatewayTimeout(e) || isTimeout;
+      const retryable = isServerError(e) || isTimeout;
       if (attempt < MAX_504_RETRIES && retryable) {
         const delayMs = BACKOFF_MS[attempt];
-        debug('504/gateway timeout or request timeout, retrying', { attempt: attempt + 1, maxRetries: MAX_504_RETRIES, delayMs, ...(logContext ? { context: logContext } : {}) });
+        debug('Server error or request timeout, retrying', { attempt: attempt + 1, maxRetries: MAX_504_RETRIES, delayMs, ...(logContext ? { context: logContext } : {}) });
         await new Promise(r => setTimeout(r, delayMs));
       } else {
         throw e;
@@ -415,7 +416,7 @@ Working directory: ${workdir}`;
       const errorMessage = error instanceof Error ? error.message : String(error);
       debug('LLM API error', { error: errorMessage });
 
-      const is504OrTimeout = is504OrGatewayTimeout(error) || /request timeout|timeout after/i.test(errorMessage);
+      const is504OrTimeout = isServerError(error) || /request timeout|timeout after/i.test(errorMessage);
       if (is504OrTimeout) {
         this.consecutive504Count++;
         // De-escalate full-file rewrite so next attempt uses smaller prompt and may complete.
@@ -425,11 +426,11 @@ Working directory: ${workdir}`;
         }
       }
 
-      // WHY: 504s are hard to debug without request/response context; log URL, full body, and response headers.
-      if (is504OrGatewayTimeout(error)) {
+      // WHY: Server errors (500/502/504) are hard to debug without request/response context.
+      if (isServerError(error)) {
         const url = getEffectiveRequestUrl(this.provider ?? 'elizacloud', options?.model);
         const responseContext = get504ResponseContext(error);
-        debug('504/gateway timeout — URL, request body, and response', {
+        debug('Server error — URL, request body, and response', {
           url,
           model: options?.model,
           requestBody: {
@@ -447,7 +448,7 @@ Working directory: ${workdir}`;
 
       // Detect error type — quota and 504 before auth so we rotate instead of bailing
       const isQuotaError = /quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(errorMessage);
-      const is504Error = is504OrGatewayTimeout(error);
+      const is504Error = isServerError(error);
       const isRequestTimeout = /request timeout|timeout after/i.test(errorMessage);
       const isModelError = /does not exist|model.*not found|you do not have access|not_found_error/i.test(errorMessage);
       const isAuthError = /api.?key|unauthorized|authentication|invalid.*key/i.test(errorMessage);

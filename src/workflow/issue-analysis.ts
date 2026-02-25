@@ -1270,16 +1270,28 @@ export async function findUnresolvedIssues(
     }
 
     let batchResult: Awaited<ReturnType<LLMClient['batchCheckIssuesExist']>>;
-    try {
-      batchResult = await llm.batchCheckIssuesExist(
-        batchInput,
-        modelContext,
-        options.maxContextChars
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      warn(`Batch analysis failed: ${msg}`);
-      throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
+    const MAX_ANALYSIS_RETRIES = 2;
+    const ANALYSIS_RETRY_DELAY_MS = [15_000, 30_000];
+    for (let analysisAttempt = 0; ; analysisAttempt++) {
+      try {
+        batchResult = await llm.batchCheckIssuesExist(
+          batchInput,
+          modelContext,
+          options.maxContextChars
+        );
+        break;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
+        if (isTransient && analysisAttempt < MAX_ANALYSIS_RETRIES) {
+          const delay = ANALYSIS_RETRY_DELAY_MS[analysisAttempt] ?? 30_000;
+          warn(`Batch analysis failed (attempt ${analysisAttempt + 1}/${MAX_ANALYSIS_RETRIES + 1}): ${msg} — retrying in ${delay / 1000}s`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        warn(`Batch analysis failed: ${msg}`);
+        throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
+      }
     }
 
     const results = batchResult.issues;

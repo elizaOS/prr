@@ -445,9 +445,10 @@ export class LLMClient {
       const msg = e instanceof Error ? e.message : String(e);
       return status === 429 || /429|Too many requests|rate limit/i.test(msg);
     };
-    const is504OrGatewayTimeout = (e: unknown) => {
+    const isServerError = (e: unknown) => {
+      const status = (e as { status?: number })?.status;
       const msg = e instanceof Error ? e.message : String(e);
-      return /504|502|gateway.*timeout|deployment.*timeout|error occurred with your deployment/i.test(msg);
+      return status === 500 || /500|504|502|gateway.*timeout|deployment.*timeout|error occurred with your deployment/i.test(msg);
     };
 
     try {
@@ -471,8 +472,8 @@ export class LLMClient {
               break;
             } catch (e504) {
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
-              if (attempt504 < max504Retries && (is504OrGatewayTimeout(e504) || timeoutMsg)) {
-                debug('504/gateway timeout or request timeout, retrying', {
+              if (attempt504 < max504Retries && (isServerError(e504) || timeoutMsg)) {
+                debug('Server error or request timeout, retrying', {
                   attempt: attempt504 + 1,
                   maxRetries: max504Retries,
                   delayMs: backoff504Ms,
