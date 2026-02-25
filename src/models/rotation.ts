@@ -34,6 +34,8 @@ export interface RotationContext {
   runnersAttemptedInCycle: Set<string>;
   /** Runners disabled for this run due to tool_config (e.g. unknown option). Skip when rotating. */
   disabledRunners?: Set<string>;
+  /** True when the only failures this cycle were 504/timeout (model never responded). Don't count as stalemate. */
+  cycleHadOnlyTimeouts?: boolean;
 }
 
 /**
@@ -334,20 +336,29 @@ export function tryRotation(
   const checkBailOut = (): boolean => {
     // A cycle just completed - check if we made progress
     if (ctx.progressThisCycle === 0) {
-      const cycles = Bailout.incrementNoProgressCycles(stateContext);
-      console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
-      
-      if (options.maxStaleCycles > 0 && cycles >= options.maxStaleCycles) {
-        console.log(chalk.red(`\n  🛑 Bail-out triggered: ${cycles} cycles with no progress (max: ${options.maxStaleCycles})`));
-        return true;  // Signal bail-out
+      // Don't count 504-only cycles as stalemate — model never had a chance to respond.
+      if (ctx.cycleHadOnlyTimeouts) {
+        debug('Cycle had only 504/timeouts — not counting as zero progress');
+        console.log(chalk.gray('\n  ⏳ Cycle had only gateway timeouts — not counting as stalemate'));
+        ctx.cycleHadOnlyTimeouts = false;
+      } else {
+        const cycles = Bailout.incrementNoProgressCycles(stateContext);
+        console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
+
+        if (options.maxStaleCycles > 0 && cycles >= options.maxStaleCycles) {
+          console.log(chalk.red(`\n  🛑 Bail-out triggered: ${cycles} cycles with no progress (max: ${options.maxStaleCycles})`));
+          return true;  // Signal bail-out
+        }
       }
     } else {
       // Made progress - reset counter
       Bailout.resetNoProgressCycles(stateContext);
+      ctx.cycleHadOnlyTimeouts = false;
     }
-    
+
     // Reset for next cycle
     ctx.progressThisCycle = 0;
+    ctx.cycleHadOnlyTimeouts = undefined;
     return false;
   };
   
@@ -854,6 +865,9 @@ export function setRecommendedModels(
  */
 export function recordProgress(ctx: RotationContext): void {
   ctx.progressThisCycle++;
+  if (ctx.cycleHadOnlyTimeouts !== undefined) {
+    ctx.cycleHadOnlyTimeouts = false;
+  }
 }
 
 /**
@@ -861,6 +875,7 @@ export function recordProgress(ctx: RotationContext): void {
  */
 export function resetProgress(ctx: RotationContext): void {
   ctx.progressThisCycle = 0;
+  ctx.cycleHadOnlyTimeouts = undefined;
 }
 
 /**

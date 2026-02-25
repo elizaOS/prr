@@ -44,6 +44,7 @@ export class PRResolver {
   private recommendedModelIndex = 0;
   private modelRecommendationReasoning?: string;
   private progressThisCycle = 0;
+  private cycleHadOnlyTimeouts = false;
   private runnersAttemptedInCycle: Set<string> = new Set();
   private disabledRunners: Set<string> = new Set();
   private bailedOut = false;
@@ -67,7 +68,7 @@ export class PRResolver {
     return { runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices,
       modelFailuresInCycle: this.modelFailuresInCycle, modelsTriedThisToolRound: this.modelsTriedThisToolRound, progressThisCycle: this.progressThisCycle,
       recommendedModels: this.recommendedModels, recommendedModelIndex: this.recommendedModelIndex, modelRecommendationReasoning: this.modelRecommendationReasoning,
-      runnersAttemptedInCycle: this.runnersAttemptedInCycle, disabledRunners: this.disabledRunners };
+      runnersAttemptedInCycle: this.runnersAttemptedInCycle, disabledRunners: this.disabledRunners, cycleHadOnlyTimeouts: this.cycleHadOnlyTimeouts };
   }
   private syncRotationContext(ctx: Rotation.RotationContext): void {
     this.runner = ctx.runner;
@@ -81,6 +82,7 @@ export class PRResolver {
     this.recommendedModelIndex = ctx.recommendedModelIndex;
     this.modelRecommendationReasoning = ctx.modelRecommendationReasoning;
     this.runnersAttemptedInCycle = ctx.runnersAttemptedInCycle;
+    if (ctx.cycleHadOnlyTimeouts !== undefined) this.cycleHadOnlyTimeouts = ctx.cycleHadOnlyTimeouts;
   }
   private ringBell(times: number = 3): void { ResolverProc.ringBell(times); }
   private printModelPerformance(): void { Reporter.printModelPerformance(this.stateContext); }
@@ -97,7 +99,7 @@ export class PRResolver {
   private rotateModel(): boolean { const ctx = this.getRotationContext(); const result = Rotation.rotateModel(ctx, this.stateContext); this.syncRotationContext(ctx); return result; }
   private switchToNextRunner(): boolean { const ctx = this.getRotationContext(); const result = Rotation.switchToNextRunner(ctx, this.stateContext); this.syncRotationContext(ctx); return result; }
   private allModelsExhausted(): boolean { const ctx = this.getRotationContext(); return Rotation.allModelsExhausted(ctx); }
-  private tryRotation(): boolean { const ctx = this.getRotationContext(); const result = Rotation.tryRotation(ctx, this.stateContext, this.options); this.syncRotationContext(ctx); return result; }
+  private tryRotation(failureErrorType?: string): boolean { const ctx = this.getRotationContext(); ctx.cycleHadOnlyTimeouts = failureErrorType === 'timeout' ? (ctx.cycleHadOnlyTimeouts !== false) : false; const result = Rotation.tryRotation(ctx, this.stateContext, this.options); this.syncRotationContext(ctx); return result; }
   private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateContext, this.lessonsContext, this.runners, this.options, (runner) => this.getModelsForRunner(runner), this.workdir, this.llm); this.bailedOut = result.bailedOut; this.exitReason = result.exitReason; this.exitDetails = result.exitDetails; this.finalUnresolvedIssues = result.finalUnresolvedIssues; this.finalComments = result.finalComments; }
   private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue) => this.buildSingleIssuePrompt(issue), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength), this.config.openaiApiKey); }
   private buildSingleIssuePrompt(issue: UnresolvedIssue): string { return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo); }
