@@ -163,7 +163,9 @@ export async function checkForNewComments(
     console.log(chalk.yellow('\n⚠ New review comments found:'));
     for (const comment of newComments) {
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
-      console.log(chalk.gray(`    "${comment.body.split('\n')[0].substring(0, 60)}..."`));
+      const preview = comment.body.split('\n')[0];
+      const truncated = preview.length > 60 ? preview.substring(0, 60) + '...' : preview;
+      console.log(chalk.gray(`    "${truncated}"`));
     }
     
     // Add new comments to our list
@@ -228,8 +230,10 @@ export async function runFinalAudit(
   debugStep('FINAL AUDIT');
   setTokenPhase('Final audit');
   
-  // Don't clear verification cache before audit; pass/fail results are applied per-comment.
-  // WHY: If audit fails for some comments, the caller (main-loop-setup) unmarks those so the next iteration re-verifies; clearing everything would lose valid verifications.
+  // Review: Verification cache is intentionally NOT cleared before audit.
+  // Pass/fail results are applied per-comment below (markVerified calls).
+  // If audit fails for some comments, the caller unmarks those so the next
+  // iteration re-verifies; clearing everything would lose valid verifications.
   debug('Starting final audit (verification cache not cleared - results are additive)');
   
   spinner.start('Running final audit on all issues...');
