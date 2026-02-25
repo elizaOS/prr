@@ -355,6 +355,7 @@ ${lessons.map(l => `- ${l}`).join('\n')}
 5. If the instructions are UNCLEAR or contradictory, respond with: RESULT: UNCLEAR — <explain what is ambiguous>
 6. If the LINE NUMBERS in the review don't match the current code, respond with: RESULT: WRONG_LOCATION — <note the discrepancy>
 7. If the issue needs DISCUSSION rather than a code fix, add one short comment: // Review: <durable explanation> (no line numbers, commit hashes, or tool names — it stays in the code long-term). Then respond with: RESULT: NEEDS_DISCUSSION — <brief explanation>
+   NEVER add comments (// or #) to .json files — JSON has no comment syntax and it will break parsing. For JSON issues, use RESULT: NEEDS_DISCUSSION without adding an inline comment.
 8. When using search/replace, copy the search text character-for-character from the ACTUAL FILE CONTENT (not from the review comment snippet, which may be stale)
 9. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, etc.)
 

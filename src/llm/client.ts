@@ -1907,7 +1907,9 @@ RESOLVED:
       ? params.dismissalReason.substring(0, 147) + '...'
       : params.dismissalReason;
 
-    const prompt = `You are reviewing code to determine if a dismissal comment is needed.
+    const prompt = `You are a developer writing a brief code comment that explains WHY the code is the way it is.
+
+A reviewer flagged a concern about this code. The concern was dismissed. Your job: if a comment would help future readers understand the design intent, write one.
 
 File: ${params.filePath}
 Target line: ${params.line}
@@ -1917,34 +1919,40 @@ Surrounding code:
 ${params.surroundingCode}
 ---
 
-Review comment that was raised:
+Reviewer's concern:
 "${sanitizeCommentForPrompt(params.reviewComment)}"
 
-Why this was dismissed (${params.category}):
+Why it was dismissed (${params.category}):
 ${reason}
 
 TASK:
-1. The code is provided above under "Surrounding code" — use it to decide.
-2. Check if there is ALREADY a code comment near line ${params.line} that explains why this review concern doesn't apply or has been addressed.
-3. If such a comment exists, respond with: EXISTING
-4. If no such comment exists, write a ONE-LINE comment (max 120 characters) that briefly explains the dismissal.
+1. If there is ALREADY a comment near line ${params.line} that addresses the concern, respond: EXISTING
+2. If the code is self-explanatory and no comment adds value, respond: SKIP
+3. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
 
-CRITICAL RULES:
-- Return ONLY the comment text itself. Do NOT return any code.
-- Do NOT include comment syntax (like // or # or /* */). Just the words.
-- Do NOT use these keywords: TODO, FIXME, HACK, XXX, BUG, WARN
-- Start with "Review:" as a prefix for clarity
-- Keep it factual and concise (ONE line, max 120 chars)
-- LONG-TERM: This comment stays in the codebase. Do NOT include line numbers, commit hashes, or references to prr/review tools. Describe intent or location by name (e.g. "handled in getConfig()") so it stays accurate as the code evolves.
+RULES:
+- Write as a developer, not a review tool. Explain the design decision, not what changed in a diff.
+- Do NOT narrate history ("was relocated", "was changed to", "was updated"). Describe the current state.
+- Do NOT include comment syntax (// or # or /* */). Just the words.
+- Do NOT use: TODO, FIXME, HACK, XXX, BUG, WARN
+- Start with "Review:" prefix
+- Max 100 characters. Be terse.
+- No line numbers, commit hashes, PR references, or tool names.
 
-Response format (reply with exactly one of these, no other text or explanation):
-- If comment exists: EXISTING
-- If comment needed: COMMENT: Review: <your brief explanation here>
+Response format (exactly one line, nothing else):
+- EXISTING
+- SKIP
+- COMMENT: Review: <your comment>
 
-Example good responses (durable, no line numbers or tool refs):
-COMMENT: Review: Math.floor already handles this case; trunc not needed
-COMMENT: Review: restructured — this path is no longer used
-COMMENT: Review: intentional for error handling in this module`;
+GOOD examples (explain WHY, present tense):
+COMMENT: Review: uses local prompts module — the re-export was redundant
+COMMENT: Review: Math.floor already handles this; trunc would be a no-op
+COMMENT: Review: intentional — error boundary catches this downstream
+
+BAD examples (narrate history, describe diffs):
+COMMENT: Review: Templates were relocated and dependency is now obsolete
+COMMENT: Review: This was changed from X to Y in a recent refactor
+COMMENT: Review: The import path was updated to use relative imports`;
 
     // Use a cheap model — dismissal comments are simple text, not code-fixing
     const cheapModel = CHEAP_MODELS[this.provider];
@@ -1957,6 +1965,11 @@ COMMENT: Review: intentional for error handling in this module`;
       return { needed: false };
     }
 
+    if (/^SKIP\b/i.test(content)) {
+      debug('Dismissal comment not needed (self-explanatory)', { filePath: params.filePath, line: params.line });
+      return { needed: false };
+    }
+
     const commentMatch = content.match(/^COMMENT:\s*(.+)$/im);
     if (commentMatch) {
       let commentText = commentMatch[1].trim();
@@ -1965,8 +1978,8 @@ COMMENT: Review: intentional for error handling in this module`;
       commentText = commentText.split('\n')[0];
       
       // Enforce max length
-      if (commentText.length > 120) {
-        commentText = commentText.substring(0, 117) + '...';
+      if (commentText.length > 100) {
+        commentText = commentText.substring(0, 97) + '...';
       }
 
       debug('Generated dismissal comment', { 
@@ -1978,9 +1991,8 @@ COMMENT: Review: intentional for error handling in this module`;
       return { needed: true, commentText };
     }
 
-    // Fallback: LLM didn't follow format — use a generic durable comment so we still document the dismissal
-    debug('LLM response did not match expected format', { content });
-    const fallback = 'Review: dismissed (see PR discussion)';
-    return { needed: true, commentText: fallback };
+    // Fallback: LLM didn't follow format — skip rather than insert a generic comment
+    debug('LLM response did not match expected format, skipping', { content });
+    return { needed: false };
   }
 }

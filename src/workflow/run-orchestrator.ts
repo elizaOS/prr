@@ -270,7 +270,8 @@ export async function executeRun(
         const { added, skipped } = await addDismissalComments(
           dismissedIssues,
           state.workdir,
-          llm
+          llm,
+          state.stateContext.verifiedThisSession
         );
         
         if (added > 0) {

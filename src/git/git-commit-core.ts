@@ -201,10 +201,39 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
             } else {
               filesToRevert.push(file);
             }
+            continue; // Skip JSON block and any other checks for this file
           }
         } catch {
           // If diff fails, skip this file (don't block commit)
         }
+      }
+
+      // JSON files: reject any staged content that contains // comments or is invalid JSON
+      if (file.endsWith('.json')) {
+        try {
+          const diff = await git.diff(['--cached', '--', file]);
+          if (/^\+\s*\/\//m.test(diff)) {
+            debug(`JSON file contains comment syntax: ${file}`);
+            if (status.created.includes(file)) {
+              filesToRemove.push(file);
+            } else {
+              filesToRevert.push(file);
+            }
+            continue;
+          }
+          const stagedContent = await git.raw(['show', ':0:' + file]);
+          if (typeof stagedContent === 'string') {
+            JSON.parse(stagedContent);
+          }
+        } catch {
+          debug(`Invalid JSON detected in staged file: ${file}`);
+          if (status.created.includes(file)) {
+            filesToRemove.push(file);
+          } else {
+            filesToRevert.push(file);
+          }
+        }
+        continue;
       }
     }
 

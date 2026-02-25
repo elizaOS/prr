@@ -47,6 +47,12 @@ function getCommentSyntax(filePath: string): { start: string; end?: string } {
 }
 
 /**
+ * File extensions that have no comment syntax (e.g. JSON). We never insert
+ * inline comments into these — filtering here avoids invalid syntax.
+ */
+const NO_COMMENT_EXTENSIONS = new Set(['json']);
+
+/**
  * Binary file extensions that should never be commented.
  */
 const BINARY_EXTENSIONS = new Set([
@@ -56,7 +62,7 @@ const BINARY_EXTENSIONS = new Set([
   'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
   'mp3', 'mp4', 'avi', 'mov', 'wav', 'flac',
   'ttf', 'otf', 'woff', 'woff2', 'eot',
-  'lock', 'pyc', 'class', 'jar', 'o',
+  'lock', 'lockb', 'pyc', 'class', 'jar', 'o',
 ]);
 
 function isBinaryFile(filePath: string): boolean {
@@ -189,7 +195,8 @@ async function insertCommentAtLine(
 export async function addDismissalComments(
   dismissedIssues: DismissedIssue[],
   workdir: string,
-  llm: LLMClient
+  llm: LLMClient,
+  verifiedThisSession?: Set<string>
 ): Promise<{ added: number; skipped: number }> {
   let added = 0;
   let skipped = 0;
@@ -201,6 +208,12 @@ export async function addDismissalComments(
     if (!commentableCategories.has(issue.category)) {
       return false;
     }
+
+    // Skip issues the fixer resolved this session — adding a "dismissed" comment
+    // on code the fixer just fixed creates a confusing re-insertion loop.
+    if (verifiedThisSession?.has(issue.commentId)) {
+      return false;
+    }
     
     // Must have a line number (not null)
     if (issue.line === null) {
@@ -209,6 +222,12 @@ export async function addDismissalComments(
     
     // Must not be a binary file
     if (isBinaryFile(issue.filePath)) {
+      return false;
+    }
+
+    // Must not be a file type with no comment syntax (e.g. JSON)
+    const ext = issue.filePath.split('.').pop()?.toLowerCase() || '';
+    if (NO_COMMENT_EXTENSIONS.has(ext)) {
       return false;
     }
 

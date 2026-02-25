@@ -425,6 +425,7 @@ export function buildFixPrompt(
   parts.push('- If instructions are UNCLEAR, explain the ambiguity instead of guessing.');
   parts.push('- For NEEDS_DISCUSSION, add ONE short code comment: // Review: <durable explanation>.');
   parts.push('  Comment must be long-term documentation: no line numbers, no commit hashes, no tool names. Example: "Review: Backoff is enforced in acquire(); explicit sleep here is redundant."');
+  parts.push('- NEVER add comments (// or #) to .json files — JSON has no comment syntax and it will break parsing. For JSON issues, use RESULT: NEEDS_DISCUSSION without adding an inline comment.');
   parts.push('- Do NOT make zero changes without at least one RESULT line (or NO_CHANGES:) explaining why.');
   const fullPrompt = parts.join('\n');
   const estimatedTokens = estimateTokens(fullPrompt);
