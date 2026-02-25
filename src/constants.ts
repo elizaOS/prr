@@ -142,8 +142,8 @@ export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
  * Default LLM model for ElizaCloud provider.
  * ElizaCloud is an OpenAI-compatible gateway that routes to multiple providers.
  */
-/** Eliza Cloud uses owner/model IDs (e.g. anthropic/claude-sonnet-4.5). */
-export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4.5';
+/** Eliza Cloud uses owner/model IDs. Use a dated model ID that ElizaCloud serves. */
+export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-3-5-sonnet-20241022';
 
 /**
  * ElizaCloud API base URL (OpenAI-compatible).
