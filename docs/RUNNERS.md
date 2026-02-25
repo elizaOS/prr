@@ -130,7 +130,7 @@ Binary: `cursor-agent`
 
 ### CLI Options (what we use)
 
-```
+```text
 cursor-agent [options]
 
 Options we use:
@@ -244,7 +244,7 @@ Binaries: `claude` or `claude-code` (we try both)
 
 ### CLI Options (what we use)
 
-```
+```text
 claude [options]
 
 Options we use:
@@ -345,7 +345,7 @@ Binary: `aider`
 
 ### CLI Options (what we use)
 
-```
+```text
 aider [options]
 
 Options we use:
@@ -410,7 +410,7 @@ Binaries: `codex` or `openai-codex` (we try both)
 
 ### CLI Options (what we use)
 
-```
+```text
 codex exec [options] <prompt | ->
 
 Options we use:
@@ -499,7 +499,7 @@ Binary: `opencode`
 
 ### CLI Options (what we use)
 
-```
+```text
 opencode [options]
 
 Options we use:
@@ -539,7 +539,7 @@ Binary: `gemini`
 
 ### CLI Options (what we use)
 
-```
+```text
 gemini [options]
 
 Options we use:
