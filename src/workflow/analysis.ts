@@ -40,6 +40,16 @@ function isAuditNoActionNeeded(explanation: string): boolean {
     /\bno additional fix (is )?needed\b/,
     /\b(this is )?the correct (state|behavior)\b/,
     /\bcorrect for (npm )?consumers\b/,
+    // Fix is structurally correct but reviewer wanted docs/comments — not a code bug.
+    // Guard: "fix is correct" followed by "but"/"however" means partial fix, so exclude.
+    /\bfix (is |was )?(correct|valid|sound|appropriate|acceptable)(?!.*\b(but|however|although)\b)/,
+    /\bcode (is |was )?(correct|valid|sound|appropriate|acceptable)(?!.*\b(but|however|although)\b)/,
+    /\b(only|just) (missing |lacks? )?(documentation|docs|comments?|explanation)\b/,
+    /\b(issue|comment) (is |was )?(informational|advisory|optional|stylistic|subjective)\b/,
+    // Underlying concern is separate from this PR's scope
+    /\bunderlying (issue|concern|problem) (is )?(separate|different|orthogonal|out of scope)\b/,
+    // Audit said "still exists" but only because the reviewer's preference wasn't met, not a bug
+    /\b(suggestion|recommendation|preference) (was )?not (followed|adopted|implemented)\b/,
   ];
   return patterns.some((p) => p.test(lower));
 }
@@ -207,7 +217,9 @@ export async function runFinalAudit(
   comments: ReviewComment[],
   options: CLIOptions,
   spinner: Ora,
-  getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>
+  getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
+  /** When set, use full file content instead of snippets so the audit has complete context. */
+  getFullFile?: (path: string) => Promise<string>
 ): Promise<{
   failedAudit: Array<{ comment: ReviewComment; explanation: string }>;
   auditPassed: boolean;
@@ -222,12 +234,11 @@ export async function runFinalAudit(
   
   spinner.start('Running final audit on all issues...');
   
-  // Gather all comments with their current code — fetch snippets concurrently
-  // WHY parallel: Each snippet is an independent file read. With 40+ comments
-  // this turns ~2-3s of sequential I/O into a single burst.
-  const auditSnippets = await Promise.all(
-    comments.map(c => getCodeSnippet(c.path, c.line, c.body))
-  );
+  // Gather all comments with their current code. Use full file when provided so the audit
+  // sees complete context and avoids false "UNFIXED" due to truncated snippets.
+  const auditSnippets = getFullFile
+    ? await Promise.all(comments.map(c => getFullFile(c.path)))
+    : await Promise.all(comments.map(c => getCodeSnippet(c.path, c.line, c.body)));
   const { sanitizeCommentForPrompt } = await import('../analyzer/prompt-builder.js');
   const allIssuesForAudit = comments.map((comment, i) => ({
     id: comment.id,
@@ -270,17 +281,29 @@ export async function runFinalAudit(
     debug('Audit filtered no-action-needed', { count: filteredNoAction });
   }
   
-  if (failedAudit.length > 0) {
-    spinner.fail(`Final audit found ${formatNumber(failedAudit.length)} issue(s) not properly fixed`);
+  // Deduplicate by (path, line) so we don't re-enter the fix loop with the same issue twice
+  const seenKey = new Set<string>();
+  const dedupedFailedAudit = failedAudit.filter(({ comment }) => {
+    const key = `${comment.path}:${comment.line ?? '?'}`;
+    if (seenKey.has(key)) return false;
+    seenKey.add(key);
+    return true;
+  });
+  if (dedupedFailedAudit.length < failedAudit.length) {
+    debug('Final audit deduped failed issues', { before: failedAudit.length, after: dedupedFailedAudit.length });
+  }
+
+  if (dedupedFailedAudit.length > 0) {
+    spinner.fail(`Final audit found ${formatNumber(dedupedFailedAudit.length)} issue(s) not properly fixed`);
     console.log(chalk.yellow('\n⚠ Issues that need more work:'));
-    for (const { comment, explanation } of failedAudit) {
+    for (const { comment, explanation } of dedupedFailedAudit) {
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'}`));
       console.log(chalk.gray(`    ${explanation}`));
     }
     await State.saveState(stateContext);
     
     return { 
-      failedAudit,
+      failedAudit: dedupedFailedAudit,
       auditPassed: false,
     };
   } else {

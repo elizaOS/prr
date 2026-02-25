@@ -311,10 +311,11 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
 `;
   }
 
+  const allowedPaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
   prompt += `## Issue
-**TARGET FILE (you MUST edit only this file):** ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}
+**TARGET FILE(S) (you MAY edit only these files):** ${allowedPaths.join(', ')}${issue.comment.line ? ` (primary: ${issue.comment.path}:${issue.comment.line})` : ''}
 Any change to a different file will be reverted and will not fix this issue.
-
+${allowedPaths.length > 1 ? '\n' + allowedPaths.map(p => `File: ${p}`).join('\n') + '\n' : ''}
 Review Comment:
 ${sanitizeCommentForPrompt(issue.comment.body)}
 
@@ -347,9 +348,9 @@ ${lessons.map(l => `- ${l}`).join('\n')}
   }
 
   prompt += `## Instructions
-1. EDIT ONLY the file **${issue.comment.path}** to fix this issue. Do not edit any other file — changes to other files are reverted and do not count.
+1. EDIT ONLY the file(s) **${allowedPaths.join(', ')}** to fix this issue. Do not edit any other file — changes to other files are reverted and do not count.
 2. Change only what's needed to fix the issue — do NOT rewrite the whole file${issueRequiresRefactor(issue) ? '\n   Exception: This issue requests removing duplication or sharing logic. You may make broader changes in this file to consolidate code.' : ''}
-3. Do not modify any other files (this issue is only about ${issue.comment.path})
+3. Do not modify any other files (this issue is only about ${allowedPaths.join(' and ')})
 4. If the issue is ALREADY FIXED in the current code, do NOT make cosmetic changes. Instead respond with: RESULT: ALREADY_FIXED — <cite the specific code>
 5. If the instructions are UNCLEAR or contradictory, respond with: RESULT: UNCLEAR — <explain what is ambiguous>
 6. If the LINE NUMBERS in the review don't match the current code, respond with: RESULT: WRONG_LOCATION — <note the discrepancy>

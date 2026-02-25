@@ -181,6 +181,8 @@ export interface ResolverState {
   // Bail-out tracking - document when/why automation stopped
   bailOutRecord?: BailOutRecord;         // Last bail-out event
   noProgressCycles?: number;             // Cycles completed with zero progress (persisted for resume)
+  /** When a review bot was last detected as rate-limited (bot name -> ISO timestamp). Used to short-wait on next run. */
+  botRateLimitDetectedAt?: Record<string, string>;
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms
   totalTokenUsage?: TokenUsageRecord[];   // token usage per phase

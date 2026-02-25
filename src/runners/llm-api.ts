@@ -6,7 +6,7 @@ import { DEFAULT_MODEL_ROTATIONS } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL } from '../constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS } from '../constants.js';
 import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } from '../llm/client.js';
 
 /**
@@ -70,16 +70,36 @@ function getEffectiveRequestUrl(provider: 'elizacloud' | 'anthropic' | 'openai',
   }
 }
 
+/** Wrap a promise to reject after a timeout so we don't hang for minutes before 504. */
+function withRequestTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Request timeout after ${ms / 1000}s`));
+    }, ms);
+    fn()
+      .then((v) => {
+        clearTimeout(timer);
+        resolve(v);
+      })
+      .catch((e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+  });
+}
+
 async function with504Retry<T>(fn: () => Promise<T>, logContext?: string): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_504_RETRIES; attempt++) {
     try {
-      return await fn();
+      return await withRequestTimeout(LLM_REQUEST_TIMEOUT_MS, fn);
     } catch (e) {
       lastError = e;
-      if (attempt < MAX_504_RETRIES && is504OrGatewayTimeout(e)) {
+      const isTimeout = e instanceof Error && /timeout/i.test(e.message);
+      const retryable = is504OrGatewayTimeout(e) || isTimeout;
+      if (attempt < MAX_504_RETRIES && retryable) {
         const delayMs = BACKOFF_MS[attempt];
-        debug('504/gateway timeout, retrying', { attempt: attempt + 1, maxRetries: MAX_504_RETRIES, delayMs, ...(logContext ? { context: logContext } : {}) });
+        debug('504/gateway timeout or request timeout, retrying', { attempt: attempt + 1, maxRetries: MAX_504_RETRIES, delayMs, ...(logContext ? { context: logContext } : {}) });
         await new Promise(r => setTimeout(r, delayMs));
       } else {
         throw e;
@@ -324,8 +344,8 @@ Working directory: ${workdir}`;
 
       debugResponse('llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
 
-      // Parse and apply file changes
-      const filesWritten = await this.applyFileChanges(workdir, response);
+      // Parse and apply file changes (pass escalated files so <file> blocks are applied even when S/R ran)
+      const filesWritten = await this.applyFileChanges(workdir, response, rewriteFiles);
 
       if (filesWritten.length === 0) {
         // Check if LLM tried to make changes but all search/replace failed
@@ -378,10 +398,11 @@ Working directory: ${workdir}`;
       // Detect error type — quota and 504 before auth so we rotate instead of bailing
       const isQuotaError = /quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(errorMessage);
       const is504Error = is504OrGatewayTimeout(error);
+      const isRequestTimeout = /request timeout|timeout after/i.test(errorMessage);
       const isModelError = /does not exist|model.*not found|you do not have access|not_found_error/i.test(errorMessage);
       const isAuthError = /api.?key|unauthorized|authentication|invalid.*key/i.test(errorMessage);
-      // WHY timeout: 504/gateway timeout after retries — rotate immediately; single-issue would burn another ~10min.
-      const errorType = isQuotaError ? 'quota' : is504Error ? 'timeout' : (isModelError || isAuthError ? 'auth' : undefined);
+      // WHY timeout: 504/gateway timeout or per-request timeout — rotate immediately; single-issue would burn more time.
+      const errorType = isQuotaError ? 'quota' : (is504Error || isRequestTimeout) ? 'timeout' : (isModelError || isAuthError ? 'auth' : undefined);
 
       return {
         success: false,
@@ -533,7 +554,7 @@ Working directory: ${workdir}`;
     return new Map(this.searchReplaceFailures);
   }
 
-  private async applyFileChanges(workdir: string, response: string): Promise<string[]> {
+  private async applyFileChanges(workdir: string, response: string, escalatedFiles: string[] = []): Promise<string[]> {
     const filesModified = new Set<string>();
     let attemptedChanges = 0;
     let failedSearchReplace = 0;
@@ -670,6 +691,7 @@ Working directory: ${workdir}`;
 
     // Fallback: also handle old <file> format for backwards compatibility
     const filePattern = /<file\s+path="([^"]+)"(?:\s+action="([^"]+)")?>([\s\S]*?)<\/file>/g;
+    const escalatedSet = new Set(escalatedFiles);
     
     while ((match = filePattern.exec(response)) !== null) {
       const [, filePath, , content] = match;
@@ -680,9 +702,9 @@ Working directory: ${workdir}`;
         continue;
       }
 
-      // Only use legacy format if no changes were made with new format
-      // This prevents overwriting surgical changes with full file rewrites
-      if (filesModified.size > 0) {
+      // When we escalated this file to full-file rewrite, always apply <file> block.
+      // Otherwise skip <file> if we already applied search/replace (avoids overwriting surgical changes).
+      if (filesModified.size > 0 && !escalatedSet.has(filePath)) {
         debug('Ignoring legacy <file> block - search/replace changes already applied', { filePath });
         continue;
       }

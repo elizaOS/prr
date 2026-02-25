@@ -363,3 +363,41 @@ export async function refreshSnippetsForVerifierContradiction(
   );
   return refreshed;
 }
+
+/**
+ * Re-fetch code snippets for all issues whose file was modified by the fixer.
+ *
+ * WHY: After the fixer edits a file, the in-memory codeSnippet for other issues
+ * in that file is stale. If the fixer partially applied a fix (e.g. fixed one issue
+ * but left another), the next iteration's prompt will show old code, causing the
+ * fixer to re-apply an already-applied change or miss context that shifted line numbers.
+ *
+ * @param unresolvedIssues - Issues to potentially refresh (mutated in place)
+ * @param changedFiles - Set of file paths modified by the fixer this iteration
+ * @param getCodeSnippet - Fetcher (path, line, body) → snippet
+ * @returns Number of issues whose codeSnippet was updated
+ */
+export async function refreshSnippetsForChangedFiles(
+  unresolvedIssues: UnresolvedIssue[],
+  changedFiles: string[],
+  getCodeSnippet: (path: string, line: number | null, body?: string) => Promise<string>
+): Promise<number> {
+  const changedSet = new Set(changedFiles);
+  const toRefresh = unresolvedIssues.filter((i) => changedSet.has(i.comment.path));
+  if (toRefresh.length === 0) return 0;
+  let refreshed = 0;
+  await Promise.all(
+    toRefresh.map(async (issue) => {
+      const fresh = await getCodeSnippet(
+        issue.comment.path,
+        issue.comment.line ?? null,
+        issue.comment.body
+      );
+      if (fresh !== SNIPPET_UNREADABLE) {
+        issue.codeSnippet = fresh;
+        refreshed++;
+      }
+    })
+  );
+  return refreshed;
+}

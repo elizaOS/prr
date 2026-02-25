@@ -170,13 +170,15 @@ export async function processCommentsAndPrepareFixLoop(
   
   // Only run final audit if we still have no unresolved issues
   if (unresolvedIssues.length === 0) {
+    const getFullFile = (path: string) => ResolverProc.getFullFileForAudit(workdir, path);
     const auditResult = await ResolverProc.runFinalAudit(
       llm,
       stateContext,
       comments,
       options,
       spinner,
-      getCodeSnippet
+      getCodeSnippet,
+      getFullFile
     );
     
     if (auditResult.failedAudit.length > 0) {

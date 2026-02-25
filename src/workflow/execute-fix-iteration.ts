@@ -29,6 +29,7 @@ import { createHash } from 'crypto';
 import { debug, debugStep, startTimer, endTimer, formatDuration } from '../logger.js';
 import { hasChanges } from '../git/git-clone-index.js';
 import * as ResolverProc from '../resolver-proc.js';
+import * as LessonsAPI from '../state/lessons-index.js';
 import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 
@@ -208,6 +209,19 @@ export async function executeFixIteration(
   debug('Runner result', { success: result.success, error: result.error, duration: fixerTime });
 
   if (!result.success) {
+    // When search/replace failed to match, add file-specific lessons so next run uses exact content or full-file rewrite.
+    if (result.error && /search\/replace operations failed|search text did not match/i.test(result.error)) {
+      const paths = [...new Set(unresolvedIssues.map((i) => i.comment.path))];
+      for (const path of paths) {
+        const one = unresolvedIssues.find((i) => i.comment.path === path);
+        if (one) {
+          LessonsAPI.Add.addLesson(
+            lessonsContext,
+            `Fix for ${path}:${one.comment.line ?? '?'} - Search/replace failed to match; use exact file content or full-file rewrite`
+          );
+        }
+      }
+    }
     const errorResult = ResolverProc.handleFixerError(result, runner, fixerTime, rapidFailureCount, lastFailureTime, stateContext, getCurrentModel);
     
     if (errorResult.shouldExit) {

@@ -173,9 +173,8 @@ export async function executeRun(
     // beyond that it's diminishing returns.
     // Use CLI --max-stale-cycles so "bail-out after 1" actually exits after 1 (no re-entry).
     const maxBailoutsBeforeExit = options.maxStaleCycles ?? 2;
-    // WHY 3: Fixer may write identical content or only touch .prr/; after 3 iterations
-    // with no files committed we exit instead of looping forever.
-    const MAX_CONSECUTIVE_NO_COMMIT = 3;
+    // WHY 2: Exit sooner when fixer isn't producing committable changes (was 3; medium fix).
+    const MAX_CONSECUTIVE_NO_COMMIT = 2;
     let consecutiveBailouts = 0;
     let consecutiveNoCommits = 0;
     let lastBailoutRemainingCount = Infinity;

@@ -1221,72 +1221,79 @@ ${codeSnippet}
     const footerSize = 100; // Reserve space for closing instructions
     const availableForIssues = maxContextChars - headerSize - footerSize;
 
-    // Build batches dynamically based on content size
-    const batches: Array<{ issues: typeof issues; issueTexts: string[] }> = [];
-    let currentBatch: typeof issues = [];
-    let currentTexts: string[] = [];
+    // Group by file so we send each file's content once per batch (saves context when many issues share a file)
+    const byFile = new Map<string, typeof issues>();
+    for (const issue of issues) {
+      const list = byFile.get(issue.filePath) ?? [];
+      list.push(issue);
+      byFile.set(issue.filePath, list);
+    }
+
+    const ISSUE_HEADER_APPROX = 180; // "[N] path:line — comment preview" without code
+    const batches: Array<{ groups: Array<{ filePath: string; codeSnippet: string; issues: typeof issues }> }> = [];
+    let currentGroups: Array<{ filePath: string; codeSnippet: string; issues: typeof issues }> = [];
     let currentSize = 0;
 
-    for (const issue of issues) {
-      // Build the text for this issue
-      const issueText = this.buildIssueText(currentBatch.length + 1, issue);
-      const issueSize = issueText.length;
+    for (const [filePath, fileIssues] of byFile) {
+      const codeSnippet = fileIssues[0]!.codeSnippet;
+      const groupSize = codeSnippet.length + fileIssues.length * ISSUE_HEADER_APPROX;
 
-      // If adding this issue would exceed limit, start a new batch
-      if (currentSize + issueSize > availableForIssues && currentBatch.length > 0) {
-        batches.push({ issues: currentBatch, issueTexts: currentTexts });
-        currentBatch = [];
-        currentTexts = [];
+      if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
+        batches.push({ groups: currentGroups });
+        currentGroups = [];
         currentSize = 0;
       }
-
-      // Re-index if we started a new batch
-      const indexedText = this.buildIssueText(currentBatch.length + 1, issue);
-      currentBatch.push(issue);
-      currentTexts.push(indexedText);
-      currentSize += indexedText.length;
+      currentGroups.push({ filePath, codeSnippet, issues: fileIssues });
+      currentSize += groupSize;
+    }
+    if (currentGroups.length > 0) {
+      batches.push({ groups: currentGroups });
     }
 
-    // Don't forget the last batch
-    if (currentBatch.length > 0) {
-      batches.push({ issues: currentBatch, issueTexts: currentTexts });
-    }
-
-    debug('Final audit batches', { 
-      batches: batches.length, 
-      sizes: batches.map(b => ({ issues: b.issues.length, chars: b.issueTexts.join('').length }))
+    const totalIssuesInBatches = batches.reduce((sum, b) => sum + b.groups.reduce((s, g) => s + g.issues.length, 0), 0);
+    debug('Final audit batches (by file)', {
+      batches: batches.length,
+      issues: totalIssuesInBatches,
+      groups: batches.map(b => b.groups.length),
     });
 
     const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const { issues: batch, issueTexts } = batches[batchIdx];
-      const batchChars = issueTexts.join('').length + headerSize + footerSize;
-      debug(`Processing audit batch ${batchIdx + 1}/${batches.length}`, { 
-        issueCount: batch.length,
-        chars: batchChars 
-      });
+      const { groups } = batches[batchIdx];
+      const batchIssues = groups.flatMap(g => g.issues);
 
-      // Build full prompt
-      const parts = [
-        ...headerParts,
-        ...issueTexts,
-        '---',
-        `Respond with exactly ${batch.length} lines, one per issue [1] through [${batch.length}]:`,
-      ];
+      const promptParts: string[] = [...headerParts];
+      let issueNum = 0;
+      for (const group of groups) {
+        promptParts.push(`## File: ${group.filePath}`);
+        promptParts.push('```');
+        promptParts.push(group.codeSnippet);
+        promptParts.push('```');
+        promptParts.push('');
+        const commentMax = 500;
+        for (const issue of group.issues) {
+          issueNum++;
+          const preview = sanitizeCommentForPrompt(issue.comment);
+          const short = preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
+          promptParts.push(`[${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''} — ${short}`);
+          promptParts.push('');
+        }
+      }
+      promptParts.push('---');
+      promptParts.push(`Respond with exactly ${batchIssues.length} lines, one per issue [1] through [${batchIssues.length}]:`);
 
-      const response = await this.complete(parts.join('\n'));
+      const response = await this.complete(promptParts.join('\n'));
 
       // Parse responses - match [N] FIXED/UNFIXED pattern
       const lines = response.content.split('\n');
       for (const line of lines) {
-        // Match patterns like "[1] FIXED: explanation" or "[2] UNFIXED: explanation"
         const match = line.match(/^\[(\d+)\]\s*(FIXED|UNFIXED):\s*(.*)$/i);
         if (match) {
           const [, numStr, status, explanation] = match;
           const idx = parseInt(numStr, 10) - 1;
-          if (idx >= 0 && idx < batch.length) {
-            const issue = batch[idx];
+          if (idx >= 0 && idx < batchIssues.length) {
+            const issue = batchIssues[idx];
             allResults.set(issue.id, {
               stillExists: status.toUpperCase() === 'UNFIXED',
               explanation: explanation.trim(),

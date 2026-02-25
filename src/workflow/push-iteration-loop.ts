@@ -285,6 +285,15 @@ export async function executePushIteration(
       if (invalidated > 0) {
         debug(`Invalidated ${invalidated} comment status(es) for ${changedFiles.length} changed file(s)`);
       }
+      // Refresh in-memory code snippets for remaining issues in the modified files.
+      // WHY: After the fixer edits a file, the cached snippet for other issues in
+      // that file is stale — line numbers may have shifted and context changed.
+      // The next fix iteration would send outdated code, causing duplicate patches
+      // or wrong-location errors.
+      const snippetRefreshCount = await ResolverProc.refreshSnippetsForChangedFiles(unresolvedIssues, changedFiles, getCodeSnippet);
+      if (snippetRefreshCount > 0) {
+        debug(`Refreshed ${snippetRefreshCount} snippet(s) for changed file(s)`, { changedFiles });
+      }
     }
 
     // Report verification failures to runner for escalation tracking.

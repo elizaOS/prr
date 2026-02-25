@@ -468,6 +468,11 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
   // 'gemini' intentionally omitted - uses Google's own model validation
 };
 
+/** ElizaCloud: model IDs to remove from rotation (e.g. known to timeout for a while). */
+const ELIZACLOUD_SKIP_MODELS = new Set<string>([
+  'openai/gpt-5.2-codex',
+]);
+
 /**
  * Determine which provider a model belongs to based on its name/prefix.
  */
@@ -652,6 +657,11 @@ export async function validateAndFilterModels(
     for (const model of models) {
       // Eliza Cloud backend: validate against elizacloud set
       if (isLlMApi && useElizaCloudForLlMApi) {
+        if (ELIZACLOUD_SKIP_MODELS.has(model)) {
+          removed.push({ runner: runner.name, model });
+          debug(`ElizaCloud: skipping ${model} (known timeout)`);
+          continue;
+        }
         if (elizacloudModels.size === 0) {
           validModels.push(model);
         } else if (elizacloudModels.has(model) || elizacloudModels.has(stripProviderPrefix(model))) {

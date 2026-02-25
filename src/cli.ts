@@ -32,6 +32,8 @@ export interface CLIOptions {
   noBell: boolean;
   mergeBase: boolean;
   incrementalCommits: boolean;
+  /** When true (default), make one commit per file when multiple issues fixed in one iteration. */
+  commitPerFile: boolean;
   noHandoffPrompt: boolean;
   noAfterAction: boolean;
   /** Use legacy model rotation instead of smart LLM-based model selection */
@@ -126,6 +128,8 @@ export function createCLI(): Command {
     .option('--no-bell', 'Disable terminal bell on completion')
     .option('--incremental-commits', 'Commit after each fix iteration (default: true)', true)
     .option('--no-incremental-commits', 'Batch all fixes into single commit at end')
+    .option('--commit-per-file', 'One commit per file when multiple issues fixed in one iteration (default: true)', true)
+    .option('--no-commit-per-file', 'Single commit per iteration even when multiple files changed')
     .option('--merge-base', 'Auto-merge base branch (main/master) when conflicts detected (default: true)', true)
     .option('--no-merge-base', 'Skip auto-merging base branch even if conflicts exist')
     .option('--no-handoff-prompt', 'Disable developer handoff prompt in final output')
@@ -218,6 +222,7 @@ export function parseArgs(program: Command): ParsedArgs {
       maxContextChars: parseIntOrExit(opts.maxContext, '--max-context'),
       noBell: !opts.bell,                     // --no-bell sets opts.bell=false
       incrementalCommits: opts.incrementalCommits ?? true,  // Default: true
+      commitPerFile: opts.commitPerFile ?? true,            // Default: one commit per file when multiple fixes
       mergeBase: opts.mergeBase ?? true,      // Default: auto-merge base branch when conflicts exist
       noHandoffPrompt: !opts.handoffPrompt,   // --no-handoff-prompt sets opts.handoffPrompt=false
       noAfterAction: !opts.afterAction,       // --no-after-action sets opts.afterAction=false

@@ -22,6 +22,50 @@ import { stageAll, runPreCommitChecks, type CommitResult } from './git-commit-co
 import { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';
 
 /**
+ * Create one commit per file for a set of verified issues (cleaner history).
+ * Use when multiple issues were fixed in one iteration — each file gets its own commit.
+ */
+export async function commitIterationPerFile(
+  git: SimpleGit,
+  issuesWithDetails: Array<{ commentId: string; filePath: string; comment: string }>,
+  iterationNumber: number
+): Promise<{ committedIds: string[]; filesCommitted: number }> {
+  const committedIds: string[] = [];
+  if (issuesWithDetails.length === 0) return { committedIds, filesCommitted: 0 };
+
+  const byFile = new Map<string, typeof issuesWithDetails>();
+  for (const issue of issuesWithDetails) {
+    const list = byFile.get(issue.filePath) ?? [];
+    list.push(issue);
+    byFile.set(issue.filePath, list);
+  }
+
+  let filesCommitted = 0;
+  for (const [filePath, issues] of byFile) {
+    await git.add(filePath);
+    await runPreCommitChecks(git);
+
+    const staged = await git.diff(['--cached', '--name-only']);
+    const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
+    if (stagedFiles.length === 0) continue;
+
+    const markers = issues.map((i) => `prr-fix:${i.commentId.toLowerCase()}`).join('\n');
+    const commitMsg = buildCommitMessage(
+      issues.map((i) => ({ filePath: i.filePath, comment: i.comment })),
+      []
+    );
+    const firstLine = commitMsg.split('\n')[0];
+    const message = [firstLine, '', `Iteration ${iterationNumber}`, '', markers].join('\n');
+
+    await git.commit(message, { '--no-verify': null });
+    for (const i of issues) committedIds.push(i.commentId);
+    filesCommitted++;
+  }
+
+  return { committedIds, filesCommitted };
+}
+
+/**
  * Create a commit for a completed fix iteration with recovery markers
  * 
  * WHY check hasChanges first:

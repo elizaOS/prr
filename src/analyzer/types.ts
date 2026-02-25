@@ -45,6 +45,12 @@ export interface UnresolvedIssue {
    * Prevents the fixer/verifier stalemate where they look at different lines.
    */
   verifierContradiction?: string;
+  /**
+   * When the fixer returns NEEDS_DISCUSSION because the fix requires editing
+   * another file (e.g. package.json for dependency removal), we expand scope
+   * on retry so the next attempt may edit these paths too.
+   */
+  allowedPaths?: string[];
 }
 
 export interface FixPrompt {

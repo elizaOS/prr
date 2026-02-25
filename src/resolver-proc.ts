@@ -14,6 +14,7 @@ import type { LLMClient } from './llm/client.js';
 import type { StateContext } from './state/state-context.js';
 import type { LessonsContext } from './state/lessons-context.js';
 import * as LessonsAPI from './state/lessons-index.js';
+import * as State from './state/state-core.js';
 import * as Performance from './state/state-performance.js';
 import * as Reporter from './ui/reporter.js';
 
@@ -45,6 +46,7 @@ export {
 // Issue analysis
 export {
   getCodeSnippet,
+  getFullFileForAudit,
   findUnresolvedIssues,
 } from './workflow/issue-analysis.js';
 
@@ -93,6 +95,7 @@ export {
   checkEmptyIssues,
   checkAndPullRemoteCommits,
   refreshSnippetsForVerifierContradiction,
+  refreshSnippetsForChangedFiles,
 } from './workflow/fix-loop-utils.js';
 
 // Fixer error handling
@@ -296,10 +299,14 @@ export async function calculateSmartWaitTime(
   return { waitSeconds: defaultWait, reason: 'default poll interval (no timing data)', skipWait };
 }
 
+/** How long to treat persisted rate-limit as "recent" (use short wait without re-checking). */
+const BOT_RATE_LIMIT_PERSIST_MS = 15 * 60 * 1000; // 15 minutes
+
 /**
  * Wait for bot reviews after push with smart timing and progress feedback.
  * Also checks for bot rate-limit signals — if a review bot (e.g. CodeRabbit)
- * indicates it's throttled, the wait is extended to let it catch up.
+ * indicates it's throttled, the wait is capped and the fact persisted so the
+ * next run can short-wait without burning time.
  */
 export async function waitForBotReviews(
   botTimings: BotResponseTiming[],
@@ -308,7 +315,8 @@ export async function waitForBotReviews(
   owner: string,
   repo: string,
   prNumber: number,
-  headSha: string
+  headSha: string,
+  stateContext?: StateContext
 ): Promise<void> {
   const chalk = (await import('chalk')).default;
   
@@ -326,7 +334,24 @@ export async function waitForBotReviews(
     return;
   }
 
-  // Check if any review bots are rate-limited and extend wait if so
+  // If we recently saw a bot rate-limited (this or previous run), use short wait.
+  const now = Date.now();
+  const persisted = stateContext?.state?.botRateLimitDetectedAt;
+  if (persisted && typeof persisted === 'object') {
+    for (const [bot, at] of Object.entries(persisted)) {
+      const t = at ? new Date(at).getTime() : 0;
+      if (Number.isFinite(t) && now - t < BOT_RATE_LIMIT_PERSIST_MS) {
+        const capped = Math.min(waitSeconds, 60);
+        if (waitSeconds > capped) {
+          waitSeconds = capped;
+          reason = `persisted ${bot} rate-limit — short wait`;
+        }
+        break;
+      }
+    }
+  }
+
+  // When a review bot is rate-limited, don't wait the full time — cap and persist.
   try {
     const rateLimits = await github.checkBotRateLimits(owner, repo, prNumber);
     const limited = rateLimits.filter(r => r.rateLimited);
@@ -334,11 +359,20 @@ export async function waitForBotReviews(
       for (const rl of limited) {
         console.log(chalk.yellow(`\n  ⚠ ${rl.bot} appears rate-limited: ${rl.message ?? 'review paused/cancelled'}`));
       }
-      const extendedWait = Math.max(waitSeconds, 5 * 60);
-      if (extendedWait > waitSeconds) {
-        console.log(chalk.yellow(`  Extending wait from ${waitSeconds}s → ${extendedWait}s to let bot(s) recover`));
-        waitSeconds = extendedWait;
-        reason = `bot rate-limited (${limited.map(r => r.bot).join(', ')})`;
+      const cappedWait = Math.min(waitSeconds, 60);
+      if (waitSeconds > cappedWait) {
+        console.log(chalk.yellow(`  Reducing wait from ${waitSeconds}s → ${cappedWait}s (bot rate-limited; full wait unlikely to help)`));
+        waitSeconds = cappedWait;
+        reason = `bot rate-limited (${limited.map(r => r.bot).join(', ')}) — short wait`;
+      }
+      // Persist so next run (or next wait in same run) can short-wait without API call.
+      if (stateContext?.state) {
+        if (!stateContext.state.botRateLimitDetectedAt) stateContext.state.botRateLimitDetectedAt = {};
+        const iso = new Date().toISOString();
+        for (const rl of limited) {
+          stateContext.state.botRateLimitDetectedAt[rl.bot] = iso;
+        }
+        await State.saveState(stateContext);
       }
     }
   } catch {

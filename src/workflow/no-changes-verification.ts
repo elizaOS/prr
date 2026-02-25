@@ -35,6 +35,24 @@ const SPOT_CHECK_SAMPLE_SIZE = 5;
 const SPOT_CHECK_PASS_THRESHOLD = 0.4; // At least 2 out of 5 must pass
 
 /**
+ * Guess the package.json path for a source file.
+ * packages/ and plugins/ use 2-segment packages (packages/typescript/package.json).
+ * examples/ uses 3-segment packages (examples/chat/typescript/package.json).
+ * Fallback: dirname of the file + /package.json.
+ */
+function guessPackageJsonPath(filePath: string): string | null {
+  const parts = filePath.split('/');
+  if (parts.length >= 3 && (parts[0] === 'packages' || parts[0] === 'plugins')) {
+    return `${parts[0]}/${parts[1]}/package.json`;
+  }
+  if (parts.length >= 4 && parts[0] === 'examples') {
+    return `${parts[0]}/${parts[1]}/${parts[2]}/package.json`;
+  }
+  const dir = filePath.includes('/') ? filePath.replace(/\/[^/]+$/, '') : '.';
+  return dir ? `${dir}/package.json` : 'package.json';
+}
+
+/**
  * Handle no-changes scenario after fixer runs
  * 
  * WHY: When a fixer makes no changes, it could mean:
@@ -80,8 +98,15 @@ export async function handleNoChangesWithVerification(
         noChangesExplanation = `already fixed - ${structuredResult.resultDetail}`;
         break;
       case 'UNCLEAR':
-      case 'CANNOT_FIX':
-        LessonsAPI.Add.addGlobalLesson(lessonsContext, `${structuredResult.resultCode}: ${structuredResult.resultDetail}`);
+      case 'CANNOT_FIX': {
+        // File-specific lesson so the failure is associated with this file/issue for future runs.
+        const firstIssue0 = unresolvedIssues[0];
+        const detail = structuredResult.resultDetail?.substring(0, 200) ?? structuredResult.resultCode;
+        if (firstIssue0) {
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${firstIssue0.comment.path}:${firstIssue0.comment.line} - ${structuredResult.resultCode}: ${detail}`);
+        } else {
+          LessonsAPI.Add.addGlobalLesson(lessonsContext, `${structuredResult.resultCode}: ${detail}`);
+        }
         Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
         return {
           shouldBreak: false,
@@ -90,11 +115,15 @@ export async function handleNoChangesWithVerification(
           updatedUnresolvedIssues: unresolvedIssues,
           progressMade: 0,
         };
-      case 'WRONG_LOCATION':
-        LessonsAPI.Add.addGlobalLesson(
-          lessonsContext,
-          `WRONG_LOCATION: ${structuredResult.resultDetail} — provide wider code context`
-        );
+      }
+      case 'WRONG_LOCATION': {
+        const firstIssue1 = unresolvedIssues[0];
+        const wrongDetail = `WRONG_LOCATION: ${structuredResult.resultDetail} — provide wider code context`;
+        if (firstIssue1) {
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${firstIssue1.comment.path}:${firstIssue1.comment.line} - ${wrongDetail}`);
+        } else {
+          LessonsAPI.Add.addGlobalLesson(lessonsContext, wrongDetail);
+        }
         Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
         return {
           shouldBreak: false,
@@ -103,16 +132,41 @@ export async function handleNoChangesWithVerification(
           updatedUnresolvedIssues: unresolvedIssues,
           progressMade: 0,
         };
-      case 'NEEDS_DISCUSSION':
-        LessonsAPI.Add.addGlobalLesson(lessonsContext, `Issue addressed via discussion: ${structuredResult.resultDetail}`);
+      }
+      case 'NEEDS_DISCUSSION': {
+        // Make the lesson file-specific so it informs future fix attempts on the same file.
+        const firstIssue2 = unresolvedIssues[0];
+        const ndDetail = structuredResult.resultDetail?.substring(0, 200) ?? 'requires discussion';
+        if (firstIssue2) {
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${firstIssue2.comment.path}:${firstIssue2.comment.line} - NEEDS_DISCUSSION: ${ndDetail}`);
+        } else {
+          LessonsAPI.Add.addGlobalLesson(lessonsContext, `NEEDS_DISCUSSION: ${ndDetail}`);
+        }
+        // When fixer says the fix requires another file (e.g. package.json), expand scope on retry.
+        const detail = (structuredResult.resultDetail ?? '').toLowerCase();
+        const needsOtherFile = /package\.json|outside the scope|cannot edit|requires? editing|different file|that file/i.test(detail);
+        let updated = unresolvedIssues;
+        if (needsOtherFile && unresolvedIssues.length > 0) {
+          const extraPath = guessPackageJsonPath(unresolvedIssues[0]!.comment.path);
+          if (extraPath) {
+            updated = unresolvedIssues.map((issue, i) => {
+              // Expand scope for the issue(s) that were in this fix attempt (single-issue: first only)
+              if (i > 0) return issue;
+              const paths = new Set<string>([issue.comment.path, extraPath]);
+              return { ...issue, allowedPaths: Array.from(paths) };
+            });
+            debug('Expanded fix scope for NEEDS_DISCUSSION', { path: extraPath, issuePath: unresolvedIssues[0]!.comment.path });
+          }
+        }
         Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
         return {
           shouldBreak: false,
           shouldContinue: false,
           verifiedCount: 0,
-          updatedUnresolvedIssues: unresolvedIssues,
+          updatedUnresolvedIssues: updated,
           progressMade: 0,
         };
+      }
       default:
         // FIXED, ATTEMPTED: shouldn't reach here (they make changes). Fall back to legacy parsing.
         noChangesExplanation = parseNoChangesExplanation(fixerOutput);

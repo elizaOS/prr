@@ -21,7 +21,7 @@ import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, startTimer, endTimer, formatDuration } from '../logger.js';
 import { formatNumber } from '../ui/reporter.js';
-import { commitIteration, pushWithRetry } from '../git/git-commit-index.js';
+import { commitIteration, commitIterationPerFile, pushWithRetry } from '../git/git-commit-index.js';
 
 /**
  * Handle post-verification iteration cleanup
@@ -126,42 +126,48 @@ export async function handleIterationCleanup(
     
     if (newlyVerified.length > 0) {
       // Get issue details for meaningful commit messages
-      // WHY: "fix(prr): address 6 review comment(s)" is garbage - describe WHAT changed
       const fixedIssueDetails = changedIssues
         .filter(issue => newlyVerified.includes(issue.comment.id))
         .map(issue => ({ filePath: issue.comment.path, comment: issue.comment.body }));
-      
-      const commitResult = await commitIteration(git, newlyVerified, fixIteration, fixedIssueDetails);
-      if (commitResult) {
-        // Mark these as committed so we don't try again
-        for (const id of newlyVerified) {
-          alreadyCommitted.add(id);
+      const issuesWithIds = changedIssues
+        .filter(issue => newlyVerified.includes(issue.comment.id))
+        .map(issue => ({ commentId: issue.comment.id, filePath: issue.comment.path, comment: issue.comment.body }));
+
+      let commitCount = 0;
+      if (options.commitPerFile && newlyVerified.length > 1) {
+        // One commit per file — cleaner history when multiple files touched
+        const { committedIds, filesCommitted } = await commitIterationPerFile(git, issuesWithIds, fixIteration);
+        for (const id of committedIds) alreadyCommitted.add(id);
+        commitCount = committedIds.length;
+        if (filesCommitted > 0) {
+          console.log(chalk.green(`  Committed ${committedIds.length} fix(es) in ${filesCommitted} file(s)`));
         }
-        console.log(chalk.green(`  Committed ${newlyVerified.length} fix(es) [${commitResult.hash.slice(0, 7)}]`));
-        
-        // Push immediately if auto-push enabled (Phase 3)
-        if (options.autoPush && !options.noPush) {
-          try {
-            startTimer('Push iteration fixes');
-            await pushWithRetry(git, prBranch, { githubToken: githubToken || undefined });
-            const pushTime = endTimer('Push iteration fixes');
-            console.log(chalk.green(`  Pushed to origin/${prBranch} (${formatDuration(pushTime)})`));
-            
-            // Update expected bot response time for the new commit
-            // WHY: After pushing, bots will review - schedule when to check for new issues
-            const pushTime_now = new Date();
-            newExpectedBotResponseTime = calculateExpectedBotResponseTime(pushTime_now);
-            if (newExpectedBotResponseTime) {
-              const msUntil = newExpectedBotResponseTime.getTime() - Date.now();
-              debug('Updated expected bot response time after push', { 
-                expectedIn: formatDuration(msUntil) 
-              });
-            }
-          } catch (err) {
-            const pushError = err instanceof Error ? err.message : String(err);
-            console.log(chalk.yellow(`  Push failed (will retry): ${pushError}`));
-            debug('Push error', { error: pushError });
+      } else {
+        const commitResult = await commitIteration(git, newlyVerified, fixIteration, fixedIssueDetails);
+        if (commitResult) {
+          for (const id of newlyVerified) alreadyCommitted.add(id);
+          commitCount = newlyVerified.length;
+          console.log(chalk.green(`  Committed ${newlyVerified.length} fix(es) [${commitResult.hash.slice(0, 7)}]`));
+        }
+      }
+
+      if (commitCount > 0 && options.autoPush && !options.noPush) {
+        try {
+          startTimer('Push iteration fixes');
+          await pushWithRetry(git, prBranch, { githubToken: githubToken || undefined });
+          const pushTime = endTimer('Push iteration fixes');
+          console.log(chalk.green(`  Pushed to origin/${prBranch} (${formatDuration(pushTime)})`));
+
+          const pushTime_now = new Date();
+          newExpectedBotResponseTime = calculateExpectedBotResponseTime(pushTime_now);
+          if (newExpectedBotResponseTime) {
+            const msUntil = newExpectedBotResponseTime.getTime() - Date.now();
+            debug('Updated expected bot response time after push', { expectedIn: formatDuration(msUntil) });
           }
+        } catch (err) {
+          const pushError = err instanceof Error ? err.message : String(err);
+          console.log(chalk.yellow(`  Push failed (will retry): ${pushError}`));
+          debug('Push error', { error: pushError });
         }
       }
     }

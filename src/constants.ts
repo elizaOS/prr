@@ -261,6 +261,12 @@ export const RAPID_FAILURE_WINDOW_MS = 10_000; // 10 seconds
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
+ * Per-request timeout for LLM API calls (milliseconds).
+ * Prevents a single attempt from hanging for minutes before 504; fail fast and retry.
+ */
+export const LLM_REQUEST_TIMEOUT_MS = 90_000; // 90 seconds
+
+/**
  * Timeout for git push operations (milliseconds).
  */
 export const GIT_PUSH_TIMEOUT_MS = 30_000; // 30 seconds

@@ -309,7 +309,8 @@ export function buildFixPrompt(
       ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
       : '';
     parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}`);
-    parts.push(`**Apply fixes for this issue only in \`${issue.comment.path}\`** — do not change other files for this issue.`);
+    const allowedPaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+    parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
     if (issueRequiresRefactor(issue)) {
       parts.push(`**This issue likely requires refactoring** (e.g. removing duplication, sharing logic). You may make broader changes in this file to consolidate code — the usual "minimal only" constraint is relaxed for this issue.\n`);
     } else {

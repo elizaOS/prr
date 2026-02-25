@@ -181,7 +181,7 @@ export async function handleCommitAndPush(
   spinner.succeed(`Committed: ${commit.hash.substring(0, 7)} (${commit.filesChanged} files)`);
   debug('Commit created', { hash: commit.hash, message: actualMessage, filesChanged: commit.filesChanged, stagedFiles: commit.stagedFiles });
 
-  // Push if auto-push mode AND not in no-push mode
+  // Push if auto-push mode AND not in no-push mode.
   if (options.autoPush && !options.noPush) {
     debugStep('PUSH PHASE');
     // Log command BEFORE spinner so user can copy it if needed
@@ -258,9 +258,14 @@ export async function handleCommitAndPush(
     // zero benefit. Now the caller passes skipBotWait=true on bail-out to avoid
     // this. The wait still runs for normal mid-loop pushes where re-entering
     // the fix loop with fresh bot feedback is valuable.
-    const shouldWaitForBots = !skipBotWait && !pushNothingToPush && (maxPushIterations === 0 || pushIteration < maxPushIterations);
+    // Skip bot wait when: bail-out, nothing was pushed, or more fixes remain (!allFixed).
+    // When !allFixed, we pushed to avoid losing commits but don't need to wait for bots
+    // since we'll re-enter the fix loop immediately with the remaining issues.
+    const shouldWaitForBots = !skipBotWait && !pushNothingToPush && allFixed && (maxPushIterations === 0 || pushIteration < maxPushIterations);
     if (shouldWaitForBots) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);
+    } else if (!allFixed) {
+      debug('Skipping bot review wait (more issues to fix — will re-enter fix loop)');
     } else if (skipBotWait) {
       debug('Skipping bot review wait (bail-out — no more fix iterations will run)');
     } else if (pushNothingToPush) {

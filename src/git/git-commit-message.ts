@@ -70,7 +70,16 @@ function extractDescription(
   if (fixedIssues.length === 0) {
     return fileBasedDesc;
   }
-  
+
+  // Single issue: use first line of comment as description when it's a short, readable sentence
+  if (fixedIssues.length === 1) {
+    const firstLine = fixedIssues[0]!.comment.split(/\n/)[0]?.trim() ?? '';
+    const stripped = stripMarkdownForCommit(firstLine);
+    if (stripped.length >= 10 && stripped.length <= 72 && !/^https?:\/\//.test(stripped)) {
+      return stripped;
+    }
+  }
+
   // Combine all comments and look for key patterns
   const allText = fixedIssues.map(i => i.comment.toLowerCase()).join(' ');
   

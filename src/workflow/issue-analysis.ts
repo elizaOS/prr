@@ -424,11 +424,11 @@ async function llmDedup(
     byFile.set(item.comment.path, existing);
   }
 
-  // Only process files with 3+ remaining issues — high chance of semantic overlap
-  const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 3);
+  // Process files with 2+ remaining issues — two bots flagging the same line is common
+  const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 2);
   if (filesToCheck.length === 0) return dedupResult;
 
-  debug(`LLM dedup: checking ${filesToCheck.length} file(s) with 3+ issues`);
+  debug(`LLM dedup: checking ${filesToCheck.length} file(s) with 2+ issues`);
 
   const newDuplicateMap = new Map(dedupResult.duplicateMap);
   const newDuplicateItems = new Map(dedupResult.duplicateItems);
@@ -442,25 +442,41 @@ async function llmDedup(
   async function runOneDedupFile(entry: DedupEntry): Promise<DedupTaskResult> {
     const [filePath, items] = entry;
     const summaries = items.map((item, idx) => {
-      const line = item.comment.line !== null ? `:${item.comment.line}` : '';
-      const preview = sanitizeCommentForPrompt(item.comment.body).substring(0, 500).replace(/\n/g, ' ');
-      return `[${idx + 1}] ${item.comment.author}${line}: ${preview}`;
-    }).join('\n');
+      const line = item.comment.line !== null ? ` (line ${item.comment.line})` : '';
+      const preview = sanitizeCommentForPrompt(item.comment.body).substring(0, 400).replace(/\n/g, ' ');
+      // Include a short code snippet so the model can see whether comments reference the same code.
+      const hasSnippet = item.codeSnippet
+        && item.codeSnippet.length > 0
+        && !item.codeSnippet.startsWith('(file not found')
+        && !item.codeSnippet.startsWith('(unreadable');
+      const snippet = hasSnippet
+        ? `\n   Code: ${item.codeSnippet.split('\n').slice(0, 4).join(' | ').substring(0, 200)}`
+        : '';
+      return `[${idx + 1}] ${item.comment.author}${line}: ${preview}${snippet}`;
+    }).join('\n\n');
     const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
-Some may describe the SAME underlying problem from different angles.
+You must decide which comments describe the EXACT SAME underlying problem.
 
 ${summaries}
 
-Which comments describe the SAME underlying issue? Group them.
-For each group, pick the most detailed comment as canonical.
+GROUPING RULES (be conservative — wrong merges cause missed fixes):
+- Only group comments if they point to the SAME code location AND fix the SAME specific problem.
+- Comments on DIFFERENT lines, DIFFERENT functions, or that require DIFFERENT fixes must NOT be grouped.
+- "Related" or "thematically similar" is NOT enough — they must be describing the same bug/issue.
+- When in doubt, do NOT group.
 
-Reply ONLY with lines like:
+For each group of true duplicates, pick the most detailed comment as canonical.
+
+Reply ONLY with lines like (one per group, no other text):
 GROUP: 2,5,7 → canonical 5
 GROUP: 1,3 → canonical 3
 
 If no comments are duplicates, reply: NONE`;
     try {
-      const response = await llm.completeWithCheapModel(prompt);
+      // Use full model when many issues per file — cheap model can merge distinct issues.
+      const response = items.length >= 5
+        ? await llm.complete(prompt)
+        : await llm.completeWithCheapModel(prompt);
       const content = response.content.trim();
       if (content.toUpperCase().includes('NONE')) {
         return { filePath, groups: [], error: undefined };
@@ -732,6 +748,35 @@ export async function getCodeSnippet(
     return lines
       .slice(start, end)
       .map((l, i) => `${start + i + 1}: ${l}`)
+      .join('\n');
+  } catch {
+    return '(file not found or unreadable)';
+  }
+}
+
+/** Max size for full-file content in final audit (avoid huge prompts / context overflow). */
+const MAX_FULL_FILE_AUDIT_CHARS = 50_000;
+
+/**
+ * Get full file content for final audit so the LLM sees complete context
+ * instead of truncated snippets that can cause false "UNFIXED" verdicts.
+ */
+export async function getFullFileForAudit(workdir: string, path: string): Promise<string> {
+  try {
+    const filePath = join(workdir, path);
+    const content = await readFile(filePath, 'utf-8');
+    if (content.length > MAX_FULL_FILE_AUDIT_CHARS) {
+      const lines = content.split('\n');
+      const keep = Math.floor(MAX_FULL_FILE_AUDIT_CHARS / 80);
+      return lines
+        .slice(0, keep)
+        .map((l, i) => `${i + 1}: ${l}`)
+        .join('\n')
+        + `\n... (${lines.length - keep} more lines omitted for size)`;
+    }
+    return content
+      .split('\n')
+      .map((l, i) => `${i + 1}: ${l}`)
       .join('\n');
   } catch {
     return '(file not found or unreadable)';
