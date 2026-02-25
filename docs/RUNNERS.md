@@ -130,7 +130,7 @@ Binary: `cursor-agent`
 
 ### CLI Options (what we use)
 
-```
+```text
 cursor-agent [options]
 
 Options we use:
@@ -244,7 +244,7 @@ Binaries: `claude` or `claude-code` (we try both)
 
 ### CLI Options (what we use)
 
-```
+```text
 claude [options]
 
 Options we use:
@@ -345,7 +345,7 @@ Binary: `aider`
 
 ### CLI Options (what we use)
 
-```
+```text
 aider [options]
 
 Options we use:
@@ -410,7 +410,7 @@ Binaries: `codex` or `openai-codex` (we try both)
 
 ### CLI Options (what we use)
 
-```
+```text
 codex exec [options] <prompt | ->
 
 Options we use:
@@ -499,7 +499,7 @@ Binary: `opencode`
 
 ### CLI Options (what we use)
 
-```
+```text
 opencode [options]
 
 Options we use:
@@ -539,7 +539,7 @@ Binary: `gemini`
 
 ### CLI Options (what we use)
 
-```
+```text
 gemini [options]
 
 Options we use:
@@ -784,9 +784,12 @@ async function isAvailable(): Promise<boolean> {
 const BINARIES = ['claude', 'claude-code'];
 
 async function isAvailable(): Promise<boolean> {
+  const { execFile } = await import('child_process');
+  const { promisify } = await import('util');
+  const execFileAsync = promisify(execFile);
   for (const binary of BINARIES) {
     try {
-      await exec(`which ${binary}`);
+      await execFileAsync('which', [binary]);
       this.binaryPath = binary;
       return true;
     } catch {
@@ -803,6 +806,7 @@ async function isAvailable(): Promise<boolean> {
 
 | Tool | Prompt Delivery | Args |
 |------|-----------------|------|
+| **ElizaCloud** | API (no local binary) | Uses `ELIZACLOUD_API_KEY`; model passed per request |
 | **Cursor Agent** | stdin | `--print --output-format stream-json --workspace <dir>` |
 | **Claude Code** | stdin | `--print --dangerously-skip-permissions` |
 | **Aider** | `--message <prompt>` | `--yes-always --model <model>` |
@@ -816,6 +820,7 @@ async function isAvailable(): Promise<boolean> {
 
 | Variable | Used By |
 |----------|---------|
+| `ELIZACLOUD_API_KEY` | ElizaCloud |
 | `ANTHROPIC_API_KEY` | Claude Code, Aider, LLM API |
 | `OPENAI_API_KEY` | Codex, Aider, LLM API |
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini CLI |

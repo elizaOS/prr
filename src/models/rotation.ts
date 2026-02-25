@@ -268,7 +268,7 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
   Rotation.setCurrentRunnerIndex(stateContext, ctx.currentRunnerIndex);
   ctx.modelsTriedThisToolRound = 0;
 
-  const newModel = getCurrentModel(ctx, options ?? {} as CLIOptions);
+  const newModel = getCurrentModel(ctx, options ?? ({} as CLIOptions));
   const modelInfo = newModel ? ` (${newModel})` : '';
   console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`));
   return true;
@@ -374,7 +374,7 @@ export function tryRotation(
     let foundTool = false;
     
     do {
-      switchToNextRunner(ctx, stateContext);
+      switchToNextRunner(ctx, stateContext, options);
       
       // Check if this tool has more models to try
       if (!checkToolExhausted(ctx.runner.name)) {
@@ -422,7 +422,7 @@ export function tryRotation(
     const startingRunner = ctx.currentRunnerIndex;
     
     do {
-      switchToNextRunner(ctx, stateContext);
+      switchToNextRunner(ctx, stateContext, options);
       
       if (!checkToolExhausted(ctx.runner.name)) {
         // Start with current model on the new tool (don't skip index 0)
@@ -769,7 +769,7 @@ export async function setupRunner(
   const detected = await detectAvailableRunners(options.verbose);
 
   if (detected.length === 0) {
-    throw new Error('No fix tools available! Install one of: cursor, claude-code, aider, opencode, codex, llm-api');
+    throw new Error('No fix tools available! Install one of: cursor, claude-code, aider, opencode, codex, llm-api, gemini');
   }
 
   // Print summary

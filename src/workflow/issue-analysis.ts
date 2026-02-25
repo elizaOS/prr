@@ -434,8 +434,9 @@ async function llmDedup(
   const newDuplicateItems = new Map(dedupResult.duplicateItems);
   const newDuplicateIds = new Set<string>();
 
-  // Run dedup LLM calls with limited concurrency to avoid provider 429s.
-  // WHY cap: ElizaCloud rate-limits; LLM_DEDUP_MAX_CONCURRENT (1) avoids 429 bursts.
+  // Run dedup LLM calls in parallel (up to LLM_DEDUP_MAX_CONCURRENT) for speed.
+  // WHY: One call per file; parallelizing cuts total time. ElizaCloud client still
+  // serializes in-flight requests; direct providers get real parallelism.
   type DedupEntry = [string, Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[] }>];
   type DedupTaskResult = { filePath: string; groups: Array<{ canonical: DedupEntry[1][0]; dupes: DedupEntry[1] }>; error?: string };
 

@@ -40,7 +40,7 @@ After all fix iterations complete, PRR may add inline code comments for dismisse
 
 **Skip when fixer just fixed:** Issues that were **verified this session** (the fixer successfully resolved them) are not given dismissal comments. The orchestrator passes `verifiedThisSession` into `addDismissalComments()` so we don't add a "dismissed" comment on code the fixer just fixed — avoiding a re-insertion loop.
 
-**Comment quality:** The LLM prompt asks for developer-style "why" comments (design intent, present tense), not review-tool narration. The model can respond `EXISTING` (comment already there), `SKIP` (code is self-explanatory), or `COMMENT: Review: <text>`. When the response doesn't match the format, we skip insertion instead of adding a generic fallback.
+**Comment quality:** The LLM prompt asks for developer-style "why" comments (design intent, present tense), not review-tool narration. The model can respond `EXISTING` (comment already there), `SKIP` (code is self-explanatory), or `COMMENT: Review: <text>`. When the response doesn't match the format, we skip insertion instead of adding a generic fallback. (This is separate from the checkIssueExists/batchCheckIssuesExist response format described in §4.)
 
 ### 3. State Management (`state/manager.ts`)
 
@@ -77,7 +77,7 @@ Updated the fixer to capture reasons when skipping issues **with mandatory valid
 Added two reporting points:
 
 **During Analysis** (after checking issues):
-```
+```text
 Issues dismissed (no fix needed): 3 total
   • already-fixed: 2
   • file-unchanged: 1
@@ -88,7 +88,7 @@ Dismissal reasons:
 ```
 
 **Final Summary** (after all issues resolved):
-```
+```text
 📋 Dismissed Issues Summary (3 total)
 These issues were determined not to need fixing:
 
@@ -112,12 +112,12 @@ These issues were determined not to need fixing:
 ## Feedback Loop: How It Works
 
 ### 1. Generator Creates Issues
-```
+```text
 Issue: "src/utils.ts:45 - Add null check for value parameter"
 ```
 
 ### 2. Judge (Fixer) Analyzes
-```
+```text
 LLM: "This is already fixed. Line 45 has: if (value === null) return;"
 Result: exists = false
 ```
@@ -143,7 +143,7 @@ The generator can now:
 
 ### 5. Dialog Example
 
-```
+```text
 Generator: "I flagged 10 issues"
 Judge: "8 were valid, 2 were false positives:
   - Issue #3: Already had null check (you missed the guard clause)
@@ -220,7 +220,7 @@ If validation fails:
 
 Both `checkIssueExists()` and `batchCheckIssuesExist()` prompts now include:
 
-```
+```text
 CRITICAL - Your explanation will be recorded for feedback between the issue generator and judge:
 - If you say NO (not present), you MUST provide a DETAILED explanation citing the SPECIFIC code
 - Your explanation helps the generator learn to avoid false positives

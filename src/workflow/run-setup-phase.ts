@@ -75,7 +75,7 @@ export async function executeSetupPhase(
 }> {
   // Check CodeRabbit status
   debugStep('CHECKING CODERABBIT STATUS');
-  const crStatus = await ResolverProc.checkCodeRabbitStatus(github, owner, repo, number, prInfo.branch, prInfo.headSha, spinner);
+  const crStatus = await ResolverProc.checkCodeRabbitStatus(github, owner, repo, number, prInfo.branch, prInfo.headSha, spinner, options.noWaitBot);
   const codeRabbitTriggered = crStatus.triggered;
   
   // Setup workdir and managers

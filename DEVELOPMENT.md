@@ -1385,7 +1385,7 @@ if (resolution.success) {
 - Better to abort and preserve the conflict markers for human review
 - User can see exactly what couldn't be resolved
 
-### 15b. Delete Conflict Resolution
+### Delete Conflict Resolution
 
 **The Problem**: Git conflicts where one side deleted a file (`CLAUDE.md` "deleted by them") lack traditional `<<<<<<<` markers. The existing resolution logic skipped these files silently.
 
@@ -1402,31 +1402,31 @@ for (const dc of deleteConflicts) {
 
 **WHY accept deletion?** The remote branch reflects the team's intent. If they deleted a file, our local modifications to it are likely stale.
 
-### 15c. Model Validation at Startup
+### Model Validation at Startup
 
 **The Problem**: Models like `gpt-5.3-codex` would fail repeatedly with "model does not exist" errors, wasting retries and API calls.
 
 **Solution**: Query OpenAI (`GET /v1/models`) and Anthropic APIs at startup to discover accessible models. Filter internal rotation lists so only available models are attempted.
 
-### 15d. Issue Solvability Detection
+### Issue Solvability Detection
 
 **The Problem**: Review comments referencing deleted files or fundamentally stale code would waste LLM tokens on unsolvable issues.
 
 **Solution**: Pre-screen review comments to identify issues that cannot be fixed (deleted files, stale references). These are dismissed before the fix loop begins.
 
-### 15e. Batch Analysis Size Cap
+### Batch Analysis Size Cap
 
 **The Problem**: 189 issues in a single batch caused haiku to produce a 4K summary instead of 189 structured response lines (`parsed: 0/189`).
 
 **Solution**: Cap batch issue analysis at 50 issues per batch. Batching was only gated on prompt size (chars), not response size (issue count). Now 189 issues → 4 batches of ~47 each.
 
-### 15f. CodeRabbit Final-Push-Only Trigger
+### CodeRabbit Final-Push-Only Trigger
 
 **The Problem**: Triggering CodeRabbit re-review after every push created a "moving target" with new comments appearing mid-fix.
 
 **Solution**: Only trigger CodeRabbit for a final review when all issues are resolved. Intermediate pushes skip CodeRabbit.
 
-### 15g. Lesson Cleanup (`--tidy-lessons`)
+### Lesson Cleanup (`--tidy-lessons`)
 
 **The Problem**: Lesson stores accumulated garbage entries like "No verification result returned, treating as failed" that polluted fix prompts.
 
@@ -1435,7 +1435,7 @@ for (const dc of deleteConflicts) {
 2. **Normalization filters**: `lessons-normalize.ts` rejects known garbage patterns
 3. **CLI cleanup**: `--tidy-lessons` scans all JSON files in `~/.prr/lessons/` and `.prr/lessons.md`, re-normalizes, deduplicates, and prunes
 
-### 15h. Review comments (durable inline)
+### Review comments (durable inline)
 
 **The Problem**: PR review tools (including prr) can leave inline comments like `// REVIEW: line 248 uses || but should use ?? (b340047)`. Those references go stale as the code changes and look like tool cruft in the long term.
 
@@ -1446,7 +1446,7 @@ for (const dc of deleteConflicts) {
 
 **Where it’s enforced**: Fixer prompts (`prompt-builder.ts`, `workflow/utils.ts`) and the dismissal-comment LLM prompt (`llm/client.ts` → `generateDismissalComment`) instruct the model to produce durable explanations only. The prefix remains `Review:` for consistency; the content is constrained to be documentation-style.
 
-### 15i. Empty or placeholder test files not committed
+### Empty or placeholder test files not committed
 
 **The Problem**: Empty or placeholder test files (e.g. `test_fail.ts` with a single blank line) get committed when a fixer or user adds them by mistake. Review bots then flag "empty test file accidentally committed".
 
@@ -1457,7 +1457,7 @@ for (const dc of deleteConflicts) {
 
 Both commit paths use this: `squashCommit` (main fix loop) and `commitIteration` (iteration cleanup) call `runPreCommitChecks` after staging.
 
-### 15j. Fixer/verifier alignment (verifier citation feedback)
+### Fixer/verifier alignment (verifier citation feedback)
 
 **The Problem**: When the fixer claims ALREADY_FIXED but the verifier says the issue still exists, the next fix attempt often repeated the same claim because the fixer never saw **what the verifier cited** (e.g. "getHistoricalPrices method not found", "start() does not validate JUPITER_API_KEY"). This caused stalemates (e.g. Jupiter audit: many cycles with zero progress).
 

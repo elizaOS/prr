@@ -391,11 +391,12 @@ export async function executePushIteration(
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
-    // After bail-out, skip the 300s bot review wait — we've exhausted all
-    // strategies and waiting for new comments just delays exit with no benefit.
+    // After bail-out (or --no-wait-bot), skip the bot review wait so we continue
+    // and pick up new bot comments when they land on the next run or iteration.
     const isBailOut = exitReason === 'bail_out';
+    const skipBotWait = isBailOut || (options.noWaitBot ?? false);
     const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, services.llm, pushIteration, maxPushIterations,
-      resolveConflictsWithLLM, waitForBotReviews, allFixed, /* skipBotWait */ isBailOut);
+      resolveConflictsWithLLM, waitForBotReviews, allFixed, skipBotWait);
     if (commitResult.shouldBreak) {
       // Ensure AAR has remaining issues when we exit (e.g. bail-out with no committable changes)
       if (unresolvedIssues.length > 0) {
@@ -424,12 +425,10 @@ export async function executePushIteration(
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
 
-    // If intermediate pushes happened during this iteration's fix loop, wait for
-    // bot reviews before deciding to exit. Bots reviewing the pushed fixes may
-    // find NEW issues that warrant another push iteration.
-    // WHY: Without this, the run exits immediately after bail-out even though
-    // fixes were pushed mid-loop and bots haven't had time to review them.
-    if (alreadyCommitted.size > 0 && options.autoPush && (maxPushIterations === 0 || pushIteration < maxPushIterations)) {
+    // If intermediate pushes happened during this iteration's fix loop, optionally
+    // wait for bot reviews. With --no-wait-bot we skip the wait and continue;
+    // new bot comments (e.g. CodeRabbit) are picked up when they land on next run.
+    if (alreadyCommitted.size > 0 && options.autoPush && (maxPushIterations === 0 || pushIteration < maxPushIterations) && !(options.noWaitBot ?? false)) {
       const headSha = await git.revparse(['HEAD']);
       await waitForBotReviews(owner, repo, number, headSha);
       // Don't break — let the outer loop re-fetch comments and process any new

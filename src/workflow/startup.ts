@@ -153,7 +153,9 @@ export async function checkCodeRabbitStatus(
   prNumber: number,
   branch: string,
   headSha: string,
-  spinner: Ora
+  spinner: Ora,
+  /** When true, do not wait for CodeRabbit after triggering; fetch comments once and proceed (matches --no-wait-bot). */
+  skipCodeRabbitWait?: boolean
 ): Promise<{ triggered: boolean; reviewedCurrentCommit: boolean; prefetchedComments?: ReviewComment[] }> {
   try {
     spinner.start('Checking CodeRabbit status...');
@@ -169,11 +171,19 @@ export async function checkCodeRabbitStatus(
       spinner.succeed(`CodeRabbit: already reviewed ${headSha.substring(0, 7)} ✓`);
     } else if (crResult.triggered) {
       spinner.succeed(`CodeRabbit: triggered review (${crResult.mode} mode)`);
-      info('CodeRabbit review requested - waiting for review to complete');
-      
-      // Wait for CodeRabbit to finish reviewing before proceeding.
-      // The polling loop fetches comments anyway; capture them for reuse.
-      prefetchedComments = await waitForCodeRabbitReview(github, owner, repo, prNumber, headSha, spinner);
+      if (skipCodeRabbitWait) {
+        info('CodeRabbit review requested - not waiting (--no-wait-bot); will pick up comments when they land.');
+        try {
+          prefetchedComments = await github.getReviewComments(owner, repo, prNumber);
+        } catch {
+          // Non-fatal; caller will fetch comments later
+        }
+      } else {
+        info('CodeRabbit review requested - waiting for review to complete');
+        // Wait for CodeRabbit to finish reviewing before proceeding.
+        // The polling loop fetches comments anyway; capture them for reuse.
+        prefetchedComments = await waitForCodeRabbitReview(github, owner, repo, prNumber, headSha, spinner);
+      }
     } else if (crResult.mode === 'auto') {
       spinner.info(`CodeRabbit: auto mode - will review automatically`);
     } else {

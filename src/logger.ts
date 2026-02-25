@@ -14,6 +14,7 @@ import { writeFileSync, mkdirSync, createWriteStream } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { format } from 'node:util';
+import { finished } from 'stream/promises';
 import type { WriteStream } from 'fs';
 
 let verboseEnabled = false;
@@ -67,7 +68,13 @@ export function initOutputLog(): void {
     if (!outputLogStream) return;
     const text = format(...args);
     const clean = stripAnsi(text);
-    if (clean) outputLogStream.write(clean + '\n');
+    if (clean) {
+      try {
+        outputLogStream.write(clean + '\n');
+      } catch (err) {
+        origError('Log stream write failed:', err);
+      }
+    }
   }
 
   console.log = (...args: unknown[]) => { logToStream(...args); origLog(...args); };
@@ -79,15 +86,27 @@ export function initOutputLog(): void {
  * Close the output log and prompts log streams (call during shutdown).
  * WHY: Without closing, the last lines may stay buffered and the file may be
  * unreadable or truncated when the user opens it after the process exits.
+ * Waits for streams to flush so callers (e.g. before process.exit()) can rely on logs being written.
  */
-export function closeOutputLog(): void {
+export async function closeOutputLog(): Promise<void> {
+  const streams: WriteStream[] = [];
   if (outputLogStream) {
+    streams.push(outputLogStream);
     outputLogStream.end();
     outputLogStream = null;
   }
   if (promptLogStream) {
+    streams.push(promptLogStream);
     promptLogStream.end();
     promptLogStream = null;
+  }
+  for (const stream of streams) {
+    try {
+      await finished(stream);
+    } catch (err) {
+      // Log but don't throw; caller expects shutdown to complete
+      console.error('Log stream close/flush failed:', err);
+    }
   }
 }
 
@@ -231,14 +250,18 @@ function writeToPromptLog(
   body: string, metadata?: Record<string, unknown>,
 ): void {
   if (!promptLogStream) return;
-  const sep = '═'.repeat(70);
-  let header = `${sep}\n ${slug}  ${kind}: ${label} (${body.length} chars)\n`;
-  header += ` ${new Date().toISOString()}\n`;
-  if (metadata) header += ` ${safeStringify(metadata, true)}\n`;
-  header += `${sep}\n`;
-  promptLogStream.write(header);
-  promptLogStream.write(body);
-  promptLogStream.write(`\n${sep}\n\n`);
+  try {
+    const sep = '═'.repeat(70);
+    let header = `${sep}\n ${slug}  ${kind}: ${label} (${body.length} chars)\n`;
+    header += ` ${new Date().toISOString()}\n`;
+    if (metadata) header += ` ${safeStringify(metadata, true)}\n`;
+    header += `${sep}\n`;
+    promptLogStream.write(header);
+    promptLogStream.write(body);
+    promptLogStream.write(`\n${sep}\n\n`);
+  } catch (err) {
+    console.error('Prompt log stream write failed:', err);
+  }
 }
 
 /**

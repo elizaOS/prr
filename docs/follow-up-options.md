@@ -57,7 +57,7 @@ So the “300s default” in conversation was the **cap** (max 5 min), not the d
 - `src/workflow/fix-loop-utils.ts` — `processNewBotReviews(..., pathsToIgnoreForNewComments?: string[])`.
 - `src/workflow/fix-iteration-pre-checks.ts` — pass `lastRestoredFiles` into `processNewBotReviews`, then clear it (or have push-iteration-loop clear at start of iteration).
 
-**Note:** Restore currently uses **HEAD**, not base branch. If we want “restore from base” literally, we’d need to use `git.show([`origin/${baseBranch}:${filePath}`])` and write to the file, and have `baseBranch` available in verifyFixes (e.g. pass `prInfo.baseBranch`).
+**Note:** Restore currently uses **HEAD**, not base branch. If we want “restore from base” literally, we’d need to use ``git.show([`origin/${baseBranch}:${filePath}`])`` and write to the file, and have `baseBranch` available in verifyFixes (e.g. pass `prInfo.baseBranch`).
 
 ---
 

@@ -1,7 +1,7 @@
 import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
-import { buildCommitMessage, generateCommitFirstLine } from './git-commit-message.js';
+import { buildCommitMessage } from './git-commit-message.js';
 
 export interface CommitResult {
   hash: string;
@@ -370,52 +370,9 @@ export async function getLastCommitHash(git: SimpleGit): Promise<string> {
  * case where changes were already committed or the fixer made no changes.
  * 
  * Returns null if no changes to commit.
+ * @deprecated Use commitIteration from git-commit-iteration.js (includes pre-commit checks).
  */
-export async function commitIteration(
-  git: SimpleGit,
-  verifiedCommentIds: string[],
-  iterationNumber: number,
-  fixedIssues?: Array<{ filePath: string; comment: string }>
-): Promise<CommitResult | null> {
-  // Check if there are changes to commit (Trap 2)
-  const status = await git.status();
-  const hasChanges = !status.isClean();
-
-  if (!hasChanges || verifiedCommentIds.length === 0) {
-    return null; // Nothing to commit
-  }
-
-  await stageAll(git);
-
-  const staged = await git.diff(['--cached', '--name-only']);
-  const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
-
-  // Build commit message with prr-fix markers (normalized to lowercase - Trap 6)
-  const markers = verifiedCommentIds
-    .map(id => `prr-fix:${id.toLowerCase()}`)
-    .join('\n');
-  
-  // Generate a meaningful commit message from the fixed issues
-  const firstLine = generateCommitFirstLine(fixedIssues || [], status.files.map(f => f.path));
-  
-  const message = [
-    firstLine,
-    '',
-    `Iteration ${iterationNumber}`,
-    '',
-    markers,
-  ].join('\n');
-
-  // Skip pre-commit hooks for automated commits
-  const result = await git.commit(message, { '--no-verify': null });
-
-  return {
-    hash: result.commit,
-    message,
-    filesChanged: result.summary.changes,
-    stagedFiles,
-  };
-}
+export { commitIteration } from './git-commit-iteration.js';
 
 /**
  * Scan git log for prr-fix markers to recover verification state.
@@ -471,23 +428,4 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
   }
 }
 
-/**
- * Strip markdown/HTML formatting from text for use in commit messages
- */
-export function stripMarkdownForCommit(text: string): string {
-  return text
-    // Remove HTML tags
-    .replace(/<[^>]+>/g, '')
-    // Remove markdown emphasis (_text_, *text*, **text**, ~~text~~)
-    .replace(/[_*~]{1,2}([^_*~]+)[_*~]{1,2}/g, '$1')
-    // Remove markdown links [text](url) -> text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    // Remove common review comment prefixes/emoji patterns
-    // NOTE: Using alternation instead of character class because emojis like ⚠️ have combining characters
-    .replace(/^(?:⚠️|🔴|🟡|🟢|✅|❌|💡|📝|🐛)+\s*/gu, '')
-    // Collapse whitespace
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-export { buildCommitMessage } from './git-commit-message.js';
+export { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';

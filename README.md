@@ -673,7 +673,7 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 
 ```text
 Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3-mini (OpenAI)
-Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → grok-3-mini (Other)
+Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → o3-mini (OpenAI)
 ... then next tool ...
 ```
 
@@ -722,8 +722,9 @@ cat prompts.log
 # Verbose mode shows debug-level detail
 prr <url> --verbose
 
-# Standalone debug files (requires PRR_DEBUG_PROMPTS=1)
-ls ~/.prr/debug/*.txt
+# Standalone debug files (requires PRR_DEBUG_PROMPTS=1; files live under timestamp subdirs)
+ls ~/.prr/debug/*/*.txt
+# or: find ~/.prr/debug -name '*.txt'
 ```
 
 The log paths are printed at the end of each run:

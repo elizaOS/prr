@@ -3,6 +3,25 @@ import { graphql } from '@octokit/graphql';
 import type { PRInfo, ReviewThread, ReviewComment, PRStatus, BotResponseTiming } from './types.js';
 import { debug } from '../logger.js';
 
+// Static configuration for PR status / bot detection (allocated once, not per call)
+const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
+const RATE_LIMIT_PATTERNS = [
+  /rate.?limit/i,
+  /review.?(cancel|fail|skip|paus|throttl)/i,
+  /too many (requests|reviews|commits)/i,
+  /exceeded.*review/i,
+  /review.*exceeded/i,
+  /reviews? (are |is )?paused/i,
+  /temporarily unavailable/i,
+  /will (retry|review) (later|shortly|soon)/i,
+  /queued for review/i,
+];
+const BOT_PATTERNS = [
+  { name: 'coderabbit', pattern: /coderabbitai\[bot\]/i },
+  { name: 'copilot', pattern: /copilot/i },
+  { name: 'cursor', pattern: /cursor\[bot\]/i },
+];
+
 export class GitHubAPI {
   private octokit: Octokit;
   private graphqlWithAuth: typeof graphql;
@@ -68,10 +87,6 @@ export class GitHubAPI {
     }
 
     // Exclude review-bot check runs from inProgressChecks so we don't treat them as CI.
-    // WHY: e.g. "Cursor Bugbot" stays in_progress indefinitely; counting it made ciState
-    // "pending" and triggered the full bot wait even when real CI was already done.
-    const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
-
     const inProgressChecks: string[] = [];
     const pendingChecks: string[] = [];
     let completedChecks = 0;
@@ -970,39 +985,22 @@ export class GitHubAPI {
   ): Promise<Array<{ bot: string; rateLimited: boolean; message?: string }>> {
     const results: Array<{ bot: string; rateLimited: boolean; message?: string }> = [];
 
-    const RATE_LIMIT_PATTERNS = [
-      /rate.?limit/i,
-      /review.?(cancel|fail|skip|paus|throttl)/i,
-      /too many (requests|reviews|commits)/i,
-      /exceeded.*review/i,
-      /review.*exceeded/i,
-      /reviews? (are |is )?paused/i,
-      /temporarily unavailable/i,
-      /will (retry|review) (later|shortly|soon)/i,
-      /queued for review/i,
-    ];
-
-    const BOT_PATTERNS = [
-      { name: 'coderabbit', pattern: /coderabbitai\[bot\]/i },
-      { name: 'copilot', pattern: /copilot/i },
-      { name: 'cursor', pattern: /cursor\[bot\]/i },
-    ];
-
     try {
-      // Single-issue list endpoint does not support sort/direction (only page, per_page, since).
-      // We fetch one page and sort by created_at desc in memory so newest comments are first.
-      const { data: comments } = await this.octokit.issues.listComments({
+      // Single-issue list endpoint supports since, per_page (max 100), and pagination.
+      // Fetch all comments in the rate-limit window so we don't miss recent ones on large threads.
+      const windowMs = 30 * 60 * 1000;
+      const since = new Date(Date.now() - windowMs).toISOString();
+      const cutoff = new Date(Date.now() - windowMs);
+      const comments = await this.octokit.paginate(this.octokit.issues.listComments, {
         owner,
         repo,
         issue_number: prNumber,
-        per_page: 30,
+        per_page: 100,
+        since,
       });
       const commentsNewestFirst = [...comments].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
-
-      // Only check recent comments (last 30 minutes)
-      const cutoff = new Date(Date.now() - 30 * 60 * 1000);
 
       for (const bot of BOT_PATTERNS) {
         const botComments = commentsNewestFirst.filter(
@@ -1164,13 +1162,13 @@ function extractIssueSubsections(body: string): string {
   const ISSUE_LABELS = ['issue', 'concern', 'problem', 'bug', 'critical', 'warning', 'fix'];
   const SKIP_LABELS = ['strength', 'good', 'strong', 'highlight'];
 
-  // Check if this section uses **Label:** sub-headers
-  const hasSubHeaders = /^\*\*[A-Z][\w\s]+:\*\*\s*$/m.test(body);
+  // Check if this section uses **Label:** sub-headers (any case, e.g. **issues:** or **Issues:**)
+  const hasSubHeaders = /^\*\*[A-Za-z][\w\s]*:\*\*\s*$/m.test(body);
   if (!hasSubHeaders) return body;
 
   const lines = body.split('\n');
   const result: string[] = [];
-  let inIssueBlock = false;
+  let inIssueBlock = true;  // Include content before first **Label:** (e.g. intro paragraph)
   let inSkipBlock = false;
 
   for (const line of lines) {

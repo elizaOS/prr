@@ -26,7 +26,7 @@ prr owner/repo#123 --auto-push
 
 ## 📊 System Overview (One Page)
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        PRR WORKFLOW                                 │
 └─────────────────────────────────────────────────────────────────────┘
@@ -117,7 +117,7 @@ prr owner/repo#123 --auto-push
 
 ## 🎨 Visual Architecture
 
-```
+```text
 ┌───────────────────────────────────────────────────────────────────┐
 │                         USER INPUT                                │
 │                    prr owner/repo#123                             │
@@ -165,7 +165,7 @@ prr owner/repo#123 --auto-push
 
 ## 🔄 The Fix Loop (Detailed)
 
-```
+```text
 START FIX ITERATION
         │
         ├──[1] Build prompt
@@ -219,7 +219,7 @@ START FIX ITERATION
 ## 🧠 Smart Features
 
 ### 1. Comment Status Caching
-```
+```text
 Comment on file.ts
 ├─ First analysis: LLM says "issue exists"
 ├─ Cache: status=open, hash=abc123
@@ -234,7 +234,7 @@ Fix iteration runs again
 ```
 
 ### 2. Adaptive Batch Sizing
-```
+```text
 Iteration 1: Try 50 issues → 0 fixed
 Iteration 2: Try 25 issues → 0 fixed (halved)
 Iteration 3: Try 12 issues → 0 fixed (halved)
@@ -244,7 +244,7 @@ Iteration 6: Try 1-3 random → Single-issue mode
 ```
 
 ### 3. Model Family Interleaving
-```
+```text
 Same-family models fail similarly:
 ✗ Claude Sonnet fails
 ✗ Claude Opus also fails (same limitations)
@@ -256,7 +256,7 @@ Round 2: Claude Opus → GPT-5 → o3-mini
 ```
 
 ### 4. Lessons Learned System
-```
+```text
 Fix attempt 1: Tries approach X → Rejected
   └─ Lesson: "Approach X doesn't work because Y"
 
@@ -409,7 +409,7 @@ Use `--dry-run` to see exact issues
 3. **Large context**: Reduce with `--max-context 200000`
 
 **Check timing**:
-```
+```text
 Timing Summary at end shows:
   - Fetch comments: ~3s
   - Analyze issues: ~10s (depends on count)
@@ -446,7 +446,7 @@ git commit -m "Ignore PRR state file"
 
 PRR tracks and reports:
 
-```
+```text
 ═══════════════════════════════════════════
   FINAL SUMMARY
 ═══════════════════════════════════════════

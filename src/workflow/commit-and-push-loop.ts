@@ -267,7 +267,7 @@ export async function handleCommitAndPush(
     } else if (!allFixed) {
       debug('Skipping bot review wait (more issues to fix — will re-enter fix loop)');
     } else if (skipBotWait) {
-      debug('Skipping bot review wait (bail-out — no more fix iterations will run)');
+      debug('Skipping bot review wait (bail-out or --no-wait-bot; new bot comments picked up when they land)');
     } else if (pushNothingToPush) {
       debug('Skipping bot review wait (nothing was pushed — already up-to-date)');
     }

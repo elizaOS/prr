@@ -63,7 +63,7 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ## 🗺️ Documentation Map
 
-```
+```text
 docs/
 ├── README.md (this file)           ← Start here
 │
@@ -129,7 +129,7 @@ docs/
 
 ### The Three Loops
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │ OUTER LOOP (Run Orchestrator)                          │
 │  • Purpose: Handle multiple push iterations            │
@@ -158,7 +158,7 @@ docs/
 
 When fixes fail, PRR doesn't give up—it escalates:
 
-```
+```text
 1. Batch Mode (optimistic)
    └─ Try fixing 50 issues at once
 
@@ -199,7 +199,9 @@ PRR maintains state across interruptions:
     }
   },
   "verifiedFixed": ["comment_456"],
-  "dismissedIssues": ["comment_789"],
+  "dismissedIssues": [
+    { "commentId": "comment_789", "reason": "Line 45 now has null check", "category": "already-fixed", "dismissedAt": "2025-01-15T12:00:00Z", "dismissedAtIteration": 1, "filePath": "src/utils.ts", "line": 45, "commentBody": "Add null check" }
+  ],
   "lessonsLearned": [...],
   "currentRunnerIndex": 2,
   "modelIndices": { "cursor": 3, "aider": 1 },

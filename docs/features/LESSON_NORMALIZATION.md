@@ -18,7 +18,7 @@ Rejecting valid-but-messy input loses signal. Normalizing keeps lessons usable a
 ### Preserve inline backticks
 
 - **What**: Inline `` `code` `` (e.g. `` `execSync` ``, `` `tsc` ``) is left as-is. Only fenced code blocks (triple backticks) are removed.
-- **WHY**: LLM explanations routinely use backticks for code references. Stripping them made lessons like "Use execSync with shell false" less readable and lost structure. Preserving them keeps lessons durable in markdown.
+- **WHY**: LLM explanations routinely use backticks for code references. Stripping them made lessons like "Use execSync with shell false" less readable and lost structure. Preserving them keeps lessons durable in Markdown.
 
 ### Keep normalized "made no changes"
 

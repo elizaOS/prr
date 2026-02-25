@@ -119,6 +119,12 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     let stdout = '';
     let stderr = '';
     let killed = false;
+    let settled = false;
+    const settle = (result: { success: boolean; nothingToPush?: boolean; rejected?: boolean; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
     
     // Log output as it comes in (git push progress goes to stderr)
     gitProcess.stdout?.on('data', (data) => { 
@@ -139,7 +145,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       killed = true;
       gitProcess.kill('SIGKILL');
       restoreRemote();
-      // Include the command in error for debugging
       const errMsg = [
         `Push timed out after 30 seconds.`,
         `Command: ${fullCommand}`,
@@ -150,16 +155,17 @@ export async function push(git: SimpleGit, branch: string, force = false, github
         `  - Git waiting for interactive input`,
         stderr ? `stderr: ${redactAuth(stderr)}` : '',
       ].filter(Boolean).join('\n');
-      resolve({ success: false, error: errMsg });
+      settle({ success: false, error: errMsg });
     }, PUSH_TIMEOUT_MS);
     
-    // Handle Ctrl+C - kill the git process too
+    // Handle Ctrl+C - kill the git process and settle so callers don't hang
     const sigintHandler = () => {
       killed = true;
       gitProcess.kill('SIGKILL');
       restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
+      settle({ success: false, error: 'Push cancelled by user (SIGINT)' });
     };
     process.on('SIGINT', sigintHandler);
     
@@ -168,26 +174,28 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       process.removeListener('SIGINT', sigintHandler);
       restoreRemote();
       
-      if (killed) return; // Already handled by timeout/sigint
+      if (killed) {
+        // Timeout or SIGINT already settled the promise
+        return;
+      }
       
       if (code === 0) {
         const nothingToPush = /everything up-to-date/i.test(stderr) || /everything up-to-date/i.test(stdout);
         debug('Git push completed', { branch, nothingToPush });
-        resolve({ success: true, nothingToPush: nothingToPush || undefined });
+        settle({ success: true, nothingToPush: nothingToPush || undefined });
       } else {
-        // Check if push was rejected due to being behind remote
         const isRejected = stderr.includes('rejected') && 
           (stderr.includes('fetch first') || stderr.includes('non-fast-forward'));
         
         if (isRejected) {
           debug('Push rejected - remote has newer commits', { stderr: redactAuth(stderr) });
-          resolve({ 
+          settle({ 
             success: false, 
             rejected: true,
             error: 'Push rejected: remote has newer commits. Need to pull first.',
           });
         } else {
-          resolve({ 
+          settle({ 
             success: false,
             error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactAuth(stderr)}`,
           });
@@ -199,7 +207,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
       restoreRemote();
-      resolve({ 
+      settle({ 
         success: false,
         error: `Git push failed: ${err.message}\nCommand: ${fullCommand}\nWorkdir: ${workdir}`,
       });

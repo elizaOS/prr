@@ -22,18 +22,18 @@ export function generateCommitFirstLine(
 function determineScope(filePaths: string[]): string {
   if (filePaths.length === 0) return 'misc';
   
-  // Count occurrences of each directory segment
+  // Count occurrences of each directory segment (exclude final path segment/leaf — filenames like package.json are not scope candidates)
   const scopeCounts = new Map<string, number>();
   
   for (const path of filePaths) {
     const segments = path.split('/').filter(s => s && s !== '.' && s !== '..');
+    const dirSegments = segments.length > 1 ? segments.slice(0, -1) : [];
     
     // Skip top-level segments like 'src', 'lib', etc.
-    const meaningfulSegments = segments.filter(s => 
+    const meaningfulSegments = dirSegments.filter(s => 
       !['src', 'lib', 'dist', 'build', 'test', 'tests'].includes(s.toLowerCase())
     );
     
-    // Use the first meaningful segment as the scope
     if (meaningfulSegments.length > 0) {
       const scope = meaningfulSegments[0];
       scopeCounts.set(scope, (scopeCounts.get(scope) || 0) + 1);
@@ -88,30 +88,31 @@ function extractDescription(
   // Combine all comments and look for specific patterns first (more specific before generic)
   const allText = fixedIssues.map(i => i.comment.toLowerCase()).join(' ');
 
+  // allText is lowercased, so /i flag is redundant
   const patterns: Array<{ regex: RegExp; desc: string }> = [
-    { regex: /time-window|notbefore|expirationtime|chronological/i, desc: 'fix SIWE time-window checks' },
-    { regex: /stale\s+credit|credit\s+balance|pre-credit/i, desc: 'fix stale credit balance in signup response' },
-    { regex: /cleanup.*catch|userCreated.*try.*catch|block\s+scope/i, desc: 'fix cleanup variable scope in signup' },
-    { regex: /race\s+condition\s+recovery|account\s+active\s+checks/i, desc: 'add account active checks in race recovery' },
-    { regex: /organizationId\s+fallback|organization_id\s+\?\?/i, desc: 'consistent organizationId fallback in handlers' },
-    { regex: /SyncOptions\s+export|export.*SyncOptions/i, desc: 'restore SyncOptions export' },
-    { regex: /retry\s+cleanup|orphan.*organization/i, desc: 'add retry cleanup for orphaned orgs' },
-    { regex: /add(ing)?\s+(uuid\s+)?validation/i, desc: 'add validation' },
-    { regex: /add(ing)?\s+error\s+handling/i, desc: 'add error handling' },
-    { regex: /add(ing)?\s+type\s+(safety|check)/i, desc: 'add type safety' },
-    { regex: /add(ing)?\s+null\s+check/i, desc: 'add null checks' },
-    { regex: /add(ing)?\s+auth(entication|orization)/i, desc: 'add auth checks' },
-    { regex: /missing\s+(type|return|validation)/i, desc: 'add missing types' },
-    { regex: /remove\s+(unused|dead)/i, desc: 'remove unused code' },
-    { regex: /duplicate/i, desc: 'remove duplicate code' },
-    { regex: /extract\s+(to|into)/i, desc: 'extract shared code' },
-    { regex: /simplif(y|ied)/i, desc: 'simplify implementation' },
-    { regex: /refactor/i, desc: 'refactor for clarity' },
-    { regex: /performance|optimi[zs]/i, desc: 'improve performance' },
-    { regex: /security|vulnerab/i, desc: 'fix security issue' },
-    { regex: /race\s+condition/i, desc: 'fix race condition' },
-    { regex: /memory\s+leak/i, desc: 'fix memory leak' },
-    { regex: /exception|error\s+handling/i, desc: 'improve error handling' },
+    { regex: /time-window|notbefore|expirationtime|chronological/, desc: 'fix SIWE time-window checks' },
+    { regex: /stale\s+credit|credit\s+balance|pre-credit/, desc: 'fix stale credit balance in signup response' },
+    { regex: /cleanup.*catch|usercreated.*try.*catch|block\s+scope/, desc: 'fix cleanup variable scope in signup' },
+    { regex: /race\s+condition\s+recovery|account\s+active\s+checks/, desc: 'add account active checks in race recovery' },
+    { regex: /organizationid\s+fallback|organization_id\s+\?\?/, desc: 'consistent organizationId fallback in handlers' },
+    { regex: /syncoptions\s+export|export.*syncoptions/, desc: 'restore SyncOptions export' },
+    { regex: /retry\s+cleanup|orphan.*organization/, desc: 'add retry cleanup for orphaned orgs' },
+    { regex: /add(ing)?\s+(uuid\s+)?validation/, desc: 'add validation' },
+    { regex: /add(ing)?\s+error\s+handling/, desc: 'add error handling' },
+    { regex: /add(ing)?\s+type\s+(safety|check)/, desc: 'add type safety' },
+    { regex: /add(ing)?\s+null\s+check/, desc: 'add null checks' },
+    { regex: /add(ing)?\s+auth(entication|orization)/, desc: 'add auth checks' },
+    { regex: /missing\s+(type|return|validation)/, desc: 'add missing types' },
+    { regex: /remove\s+(unused|dead)/, desc: 'remove unused code' },
+    { regex: /duplicate/, desc: 'remove duplicate code' },
+    { regex: /extract\s+(to|into)/, desc: 'extract shared code' },
+    { regex: /simplif(y|ied)/, desc: 'simplify implementation' },
+    { regex: /refactor/, desc: 'refactor for clarity' },
+    { regex: /performance|optimi[zs]/, desc: 'improve performance' },
+    { regex: /security|vulnerab/, desc: 'fix security issue' },
+    { regex: /race\s+condition/, desc: 'fix race condition' },
+    { regex: /memory\s+leak/, desc: 'fix memory leak' },
+    { regex: /exception|error\s+handling/, desc: 'improve error handling' },
   ];
 
   for (const { regex, desc } of patterns) {

@@ -141,9 +141,9 @@ export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
 /**
  * Default LLM model for ElizaCloud provider.
  * ElizaCloud is an OpenAI-compatible gateway that routes to multiple providers.
+ * Eliza Cloud uses owner/model IDs (e.g. anthropic/claude-sonnet-4-5-20250929).
  */
-/** Eliza Cloud uses owner/model IDs (e.g. anthropic/claude-sonnet-4.5). */
-export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4.5';
+export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
 
 /**
  * ElizaCloud API base URL (OpenAI-compatible).
@@ -164,9 +164,11 @@ export const ELIZACLOUD_MIN_DELAY_MS = 6000;
 
 /**
  * Max concurrent LLM dedup calls (per-file).
- * WHY: Dedup fires one LLM call per file; 1 avoids bursts that trigger 429 on ElizaCloud.
+ * WHY: Running file-level dedup in parallel cuts phase time (e.g. 38 files in ~1 batch
+ * instead of 38 sequential). ElizaCloud still serializes via acquireElizacloud(); direct
+ * Anthropic/OpenAI get real parallelism. Cap at 5 to avoid 429 on strict gateways.
  */
-export const LLM_DEDUP_MAX_CONCURRENT = 1;
+export const LLM_DEDUP_MAX_CONCURRENT = 5;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // MODEL ROTATION & TOOL SWITCHING
@@ -255,10 +257,6 @@ export const MAX_RAPID_FAILURES = 3;
  */
 export const RAPID_FAILURE_WINDOW_MS = 10_000; // 10 seconds
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// GIT OPERATIONS
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 /**
  * Per-request timeout for LLM API calls (milliseconds).
  * Prevents a single attempt from hanging for minutes before 504; fail fast and retry.
@@ -271,6 +269,10 @@ export const LLM_REQUEST_TIMEOUT_MS = 90_000; // 90 seconds
  * so the request can complete before the gateway returns 504.
  */
 export const LLM_REQUEST_TIMEOUT_FULL_FILE_MS = 180_000; // 3 minutes
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GIT OPERATIONS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
  * Timeout for git push operations (milliseconds).
@@ -305,14 +307,14 @@ export const CODE_SNIPPET_CONTEXT_AFTER = 30;
  */
 export const DEFAULT_LINE_RANGE_SIZE = 20;
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// LESSONS & STATE MANAGEMENT
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 /**
  * Maximum recent lessons to show per file (most recent N).
  */
 export const MAX_RECENT_LESSONS_PER_FILE = 5;
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// LESSONS & STATE MANAGEMENT
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // Lesson sync limits are defined in src/state/lessons-paths.ts (canonical source of truth).
 

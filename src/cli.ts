@@ -7,7 +7,7 @@
  * WHY defaults are "full automation": prr is designed to run unattended.
  * --auto-push=true, commit by default, push by default.
  */
-import { Command } from 'commander';
+import { Command, InvalidOptionArgumentError } from 'commander';
 import chalk from 'chalk';
 import { validateTool, isValidModelName, type FixerTool } from './config.js';
 import type { PriorityOrder } from './analyzer/severity.js';
@@ -15,7 +15,12 @@ import type { PriorityOrder } from './analyzer/severity.js';
 const PRIORITY_ORDER_VALUES: PriorityOrder[] = ['important', 'important-asc', 'easy', 'easy-asc', 'newest', 'oldest', 'none'];
 
 function validatePriorityOrder(value: string): PriorityOrder {
-  return (PRIORITY_ORDER_VALUES.includes(value as PriorityOrder) ? value : 'important') as PriorityOrder;
+  if (!PRIORITY_ORDER_VALUES.includes(value as PriorityOrder)) {
+    throw new InvalidOptionArgumentError(
+      `Invalid --priority-order: "${value}". Must be one of: ${PRIORITY_ORDER_VALUES.join(', ')}`
+    );
+  }
+  return value as PriorityOrder;
 }
 
 export interface CLIOptions {
@@ -70,6 +75,8 @@ export interface CLIOptions {
   tidyLessons: boolean;
   /** Before push, run LLM to predict likely new bot feedback (display only) */
   predictBots: boolean;
+  /** Don't wait for bot re-review after push; continue and pick up new comments when they land. */
+  noWaitBot: boolean;
 }
 
 export interface ParsedArgs {
@@ -124,6 +131,7 @@ export function createCLI(): Command {
     .option('--max-push-iterations <n>', 'Maximum push/re-review cycles (0 = unlimited)', '0')
     .option('--max-stale-cycles <n>', 'Bail out after N complete tool/model cycles with zero progress (default: 1)', '1')
     .option('--poll-interval <seconds>', 'Seconds to wait for bot re-review (auto-push mode)', '120')
+    .option('--wait-bot', 'Wait for bot re-review after push (default: continue without waiting; new comments picked up when they land)')
     .option('--dry-run', 'Show unresolved issues without fixing', false)
     .option('--no-commit', 'Make changes but do not commit (for testing)')
     .option('--no-push', 'Commit but do not push')
@@ -143,7 +151,7 @@ export function createCLI(): Command {
     .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false)
     .option('--no-claude-md', 'Don\'t sync lessons to CLAUDE.md (only use .prr/lessons.md)')
     .option('--no-agents-md', 'Don\'t sync lessons to AGENTS.md')
-    .option('--priority-order <order>', 'Issue processing order: important (default), important-asc, easy, easy-asc, newest, oldest, none', 'important')
+    .option('--priority-order <order>', 'Issue processing order: important (default), important-asc, easy, easy-asc, newest, oldest, none', validatePriorityOrder, 'important')
     // Cleanup-only modes (run and exit)
     .option('--clean-claude-md', 'Remove prr section from CLAUDE.md (or delete if only prr content) and exit')
     .option('--clean-agents-md', 'Remove prr section from AGENTS.md (or delete if only prr content) and exit')
@@ -251,6 +259,8 @@ export function parseArgs(program: Command): ParsedArgs {
       updateTools: opts.updateTools ?? false,
       tidyLessons: opts.tidyLessons ?? false,
       predictBots: opts.predictBots ?? true,
+      // Default: don't wait for bot; pass --wait-bot to wait for CodeRabbit etc. after push
+      noWaitBot: !(opts.waitBot === true),
     },
   };
 }

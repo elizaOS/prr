@@ -901,7 +901,9 @@ ${codeSnippet}
     // ~15K+ output chars. Haiku (and even larger models) often truncate or
     // summarize instead of listing all items. Cap at 50 issues per batch to
     // ensure the model can actually respond to each one.
-    const MAX_ISSUES_PER_BATCH = 50;
+    // WHY smaller for ElizaCloud: Gateways often time out (504) on large requests.
+    // 25 issues per batch keeps each request under typical gateway limits.
+    const MAX_ISSUES_PER_BATCH = this.provider === 'elizacloud' ? 25 : 50;
     const batches: Array<{ issues: typeof issues; issueTexts: string[] }> = [];
     let currentBatch: typeof issues = [];
     let currentTexts: string[] = [];
@@ -2000,10 +2002,12 @@ COMMENT: Review: The import path was updated to use relative imports`;
     const commentMatch = content.match(/^COMMENT:\s*(.+)$/im);
     if (commentMatch) {
       let commentText = commentMatch[1].trim();
-      
+      // Contract: comments must start with "Review:" for consistency
+      if (!/^Review:\s*/i.test(commentText)) {
+        commentText = commentText ? `Review: ${commentText}` : 'Review: (see context)';
+      }
       // Take only first line if LLM returned multiple
       commentText = commentText.split('\n')[0];
-      
       // Enforce max length
       if (commentText.length > 100) {
         commentText = commentText.substring(0, 97) + '...';

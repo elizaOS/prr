@@ -145,16 +145,17 @@ export async function resolveConflictsWithLLM(
   }
   
   // Handle code files with LLM tools
-  if (codeFiles.length > 0 && !skipRunnerAttempt) {
+  if (codeFiles.length > 0 && runner) {
+    const activeRunner = runner;
     // Build prompt for conflict resolution (only non-lock files)
     const conflictPrompt = buildConflictResolutionPrompt(codeFiles, mergingBranch);
     
     // Run the cursor/opencode tool to resolve conflicts
-    console.log(chalk.cyan(`\n  Attempt 1: Using ${runner!.name} to resolve conflicts...`));
-    const runResult = await runner!.run(workdir, conflictPrompt, { model: getCurrentModel() });
+    console.log(chalk.cyan(`\n  Attempt 1: Using ${activeRunner.name} to resolve conflicts...`));
+    const runResult = await activeRunner.run(workdir, conflictPrompt, { model: getCurrentModel() });
     
     if (!runResult.success) {
-      console.log(chalk.yellow(`  ${runner!.name} failed, will try direct API...`));
+      console.log(chalk.yellow(`  ${activeRunner.name} failed, will try direct API...`));
     } else {
       // Stage all code files that cursor may have resolved
       console.log(chalk.cyan('  Staging resolved files...'));
@@ -178,7 +179,8 @@ export async function resolveConflictsWithLLM(
   let remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
   
   if (remainingConflicts.length === 0 && codeFiles.length > 0 && runner) {
-    console.log(chalk.green(`  ✓ ${runner.name} resolved all conflicts`));
+    const activeRunner = runner;
+    console.log(chalk.green(`  ✓ ${activeRunner.name} resolved all conflicts`));
   } else if (markerConflicts.length > 0) {
     console.log(chalk.yellow(`  Files still have conflict markers: ${markerConflicts.join(', ')}`));
   }
@@ -390,6 +392,11 @@ async function detectDeleteConflicts(
  * - "both deleted" → Accept the deletion (both sides agree).
  * 
  * For all cases: `git rm <file>` to accept deletion and mark resolved.
+ * 
+ * Trade-off (deleted-by-them): We always accept their deletion. This can discard
+ * local changes and may lose important work. This is a deliberate automated-policy
+ * choice. Alternatives: make it configurable, create a backup before removal, or
+ * surface a warning. We log a warning at runtime so users are informed.
  */
 async function resolveDeleteConflict(
   git: SimpleGit,
@@ -401,7 +408,7 @@ async function resolveDeleteConflict(
   try {
     switch (type) {
       case 'deleted-by-them':
-        console.log(chalk.cyan(`    - ${file}: deleted by target branch, accepting deletion`));
+        console.log(chalk.yellow(`    ⚠ ${file}: deleted by target branch — accepting deletion (local changes may be lost)`));
         break;
       case 'deleted-by-us':
         console.log(chalk.cyan(`    - ${file}: deleted by our branch, accepting deletion`));
@@ -444,3 +451,11 @@ async function resolveDeleteConflict(
  * @param workdir - Working directory path
  * @param lessonsContext - Lessons manager to check if files existed before
  */
+export async function cleanupSyncTargetFiles(
+  git: SimpleGit,
+  workdir: string,
+  lessonsContext: LessonsContext
+): Promise<void> {
+  const { cleanupCreatedSyncTargets } = await import('./git-conflict-cleanup.js');
+  await cleanupCreatedSyncTargets(git, workdir, lessonsContext);
+}

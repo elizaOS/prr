@@ -415,12 +415,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Batch verification mode now calls `llm.analyzeFailedFix()` for failed verifications, matching sequential mode behavior
 - WHY: Batch mode was recording raw verification explanations like "diff doesn't show changes to X" as lessons. These describe what went wrong but not what to do differently. `analyzeFailedFix` produces actionable guidance like "don't just add Y, also need to update Z".
 
-### Removed (2026-02-12)
-
-**Duplicate `handleNoChanges` Function**
-- Removed `handleNoChanges()` from `fixer-errors.ts` and its re-export from `resolver-proc.ts`
-- The canonical handler is `handleNoChangesWithVerification()` in `no-changes-verification.ts`
-- WHY: Two implementations with divergent "already fixed" detection logic caused confusion. The removed version (stricter) was never actually called; the used version (broader) had the bugs. Consolidating to a single implementation prevents future drift.
+### Added (2026-02-12)
 
 **`--tidy-lessons` CLI Option**
 - Scans all lesson JSON files in `~/.prr/lessons/` and re-normalizes, deduplicates, prunes garbage entries
@@ -443,6 +438,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Install Hints for Runners**
 - When a tool is not installed, `--check-tools` now shows the install command (e.g. `→ npm install -g @anthropic-ai/claude-code`)
+
+### Removed (2026-02-12)
+
+**Duplicate `handleNoChanges` Function**
+- Removed `handleNoChanges()` from `fixer-errors.ts` and its re-export from `resolver-proc.ts`
+- The canonical handler is `handleNoChangesWithVerification()` in `no-changes-verification.ts`
+- WHY: Two implementations with divergent "already fixed" detection logic caused confusion. The removed version (stricter) was never actually called; the used version (broader) had the bugs. Consolidating to a single implementation prevents future drift.
 
 ### Fixed (2026-02-09 → 2026-02-12)
 
