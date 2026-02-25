@@ -199,7 +199,18 @@ PRR maintains state across interruptions:
     }
   },
   "verifiedFixed": ["comment_456"],
-  "dismissedIssues": ["comment_789"],
+  "dismissedIssues": [
+    {
+      "commentId": "comment_789",
+      "reason": "Already implemented via guard clause",
+      "dismissedAt": "2026-02-25T00:00:00Z",
+      "dismissedAtIteration": 3,
+      "category": "already-fixed",
+      "filePath": "src/example.ts",
+      "line": 42,
+      "commentBody": "Add null check"
+    }
+  ],
   "lessonsLearned": [...],
   "currentRunnerIndex": 2,
   "modelIndices": { "cursor": 3, "aider": 1 },
