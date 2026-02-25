@@ -78,6 +78,48 @@ export function setSkipAgentsMd(ctx: LessonsContext, skip: boolean): void {
 
 export function setWorkdir(ctx: LessonsContext, workdir: string): void {
   ctx.workdir = workdir;
+  // Auto-detect sync targets based on files present in workdir
+  autoDetectSyncTargets(ctx);
+}
+
+/**
+ * Auto-detect which sync targets exist in the workdir.
+ * Called automatically by setWorkdir to restore the old LessonsManager behavior.
+ */
+function autoDetectSyncTargets(ctx: LessonsContext): void {
+  if (!ctx.workdir) return;
+  
+  const { existsSync } = require('fs');
+  const { join } = require('path');
+  
+  const targets: LessonsSyncTarget[] = [];
+  
+  // Check for CLAUDE.md
+  if (!ctx.skipClaudeMd && existsSync(join(ctx.workdir, 'CLAUDE.md'))) {
+    targets.push('claude-md');
+  }
+  
+  // Check for AGENTS.md
+  if (!ctx.skipAgentsMd && existsSync(join(ctx.workdir, 'AGENTS.md'))) {
+    targets.push('agents-md');
+  }
+  
+  // Check for CONVENTIONS.md
+  if (existsSync(join(ctx.workdir, 'CONVENTIONS.md'))) {
+    targets.push('conventions-md');
+  }
+  
+  // Check for .cursor/rules (cursor rules)
+  if (existsSync(join(ctx.workdir, '.cursor', 'rules'))) {
+    targets.push('cursor-rules');
+  }
+  
+  // Default to claude-md if nothing detected but not skipped
+  if (targets.length === 0 && !ctx.skipClaudeMd) {
+    targets.push('claude-md');
+  }
+  
+  ctx.syncTargets = targets;
 }
 
 export function setSyncTargets(ctx: LessonsContext, targets: LessonsSyncTarget[]): void {
