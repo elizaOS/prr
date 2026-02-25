@@ -176,6 +176,12 @@ export function pruneDeletedFiles(ctx: LessonsContext, workdir: string): number 
   
   for (const filePath in ctx.store.files) {
     const cleanedPath = Normalize.sanitizeFilePathHeader(filePath);
+    if (!cleanedPath) {
+      // Can't validate path — remove the entry to be safe
+      removed += ctx.store.files[filePath].length;
+      delete ctx.store.files[filePath];
+      continue;
+    }
     const pathWithoutLine = cleanedPath.replace(/:\d+$/, '');
     const fullPath = join(workdir, pathWithoutLine);
     
