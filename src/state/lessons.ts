@@ -95,6 +95,8 @@ function getLocalLessonsPath(owner: string, repo: string, branch: string): strin
  * WHY: Different AI tools read different files.
  * We preserve existing content and only update our delimited section.
  */
+// Note: LessonsSyncTarget is also defined in lessons-context.ts for modular imports.
+// This duplicate is kept for backward compatibility with direct imports from lessons.ts.
 export type LessonsSyncTarget = 'claude-md' | 'agents-md' | 'conventions-md' | 'cursor-rules';
 
 interface SyncTargetConfig {
