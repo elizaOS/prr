@@ -200,7 +200,16 @@ PRR maintains state across interruptions:
   },
   "verifiedFixed": ["comment_456"],
   "dismissedIssues": [
-    { "commentId": "comment_789", "reason": "Line 45 now has null check", "category": "already-fixed", "dismissedAt": "2025-01-15T12:00:00Z", "dismissedAtIteration": 1, "filePath": "src/utils.ts", "line": 45, "commentBody": "Add null check" }
+    {
+      "commentId": "comment_789",
+      "reason": "Already implemented via guard clause",
+      "dismissedAt": "2026-02-25T00:00:00Z",
+      "dismissedAtIteration": 3,
+      "category": "already-fixed",
+      "filePath": "src/example.ts",
+      "line": 42,
+      "commentBody": "Add null check"
+    }
   ],
   "lessonsLearned": [...],
   "currentRunnerIndex": 2,
@@ -354,7 +363,7 @@ If you find errors or want to improve documentation:
 
 ## 📦 What's Where
 
-```
+```text
 📁 prr/
 │
 ├── 📄 README.md                  ← Project overview, features, installation

@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import * as Normalize from './lessons-normalize.js';
+import type { LessonsSyncTarget } from './lessons-context.js';
 
 /**
  * Format a lesson for display by stripping the redundant prefix.
@@ -95,7 +96,7 @@ function getLocalLessonsPath(owner: string, repo: string, branch: string): strin
  * WHY: Different AI tools read different files.
  * We preserve existing content and only update our delimited section.
  */
-export type LessonsSyncTarget = 'claude-md' | 'agents-md' | 'conventions-md' | 'cursor-rules';
+export type { LessonsSyncTarget };
 
 interface SyncTargetConfig {
   path: (workdir: string) => string;

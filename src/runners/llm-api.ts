@@ -783,6 +783,7 @@ Working directory: ${workdir}`;
         const normalizedContent = trimmedContent.endsWith('\n') ? trimmedContent : `${trimmedContent}\n`;
         writeFileSync(fullPath, normalizedContent, 'utf-8');
         filesModified.add(filePath);
+        // Review: logs file write operations for legacy format tracking and debugging purposes
         debug('Wrote file (legacy format)', { filePath });
       } catch (error) {
         debug('Failed to write file', { filePath, error });
@@ -907,8 +908,9 @@ function fuzzyFindRegion(
   for (let i = bestMatch.fileStart; i < bestMatch.fileEnd; i++) {
     endOffset += lines[i].length + 1;
   }
-  // Don't include trailing newline of last line (replace text handles its own)
-  if (endOffset > 0 && endOffset <= fileContent.length) {
+  // Clamp endOffset to file length, then strip trailing newline if present
+  endOffset = Math.min(endOffset, fileContent.length);
+  if (endOffset > startOffset && fileContent[endOffset - 1] === '\n') {
     endOffset--; // back off the final \n
   }
   

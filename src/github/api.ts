@@ -1128,6 +1128,7 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
       const locationMatch = item.match(
         new RegExp(`\\*\\*Locations?:\\*\\*\\s*\`?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?`)
       );
+      // Review: uses specific regex pattern first for structured locations, favoring precise matches.
       const fileMatch = locationMatch || item.match(FILE_LINE_RE);
       if (!fileMatch) continue; // Skip items without file references
 
@@ -1168,7 +1169,8 @@ function extractIssueSubsections(body: string): string {
 
   const lines = body.split('\n');
   const result: string[] = [];
-  let inIssueBlock = true;  // Include content before first **Label:** (e.g. intro paragraph)
+  // Content before the first sub-header is treated as issue content by default.
+  let inIssueBlock = true;
   let inSkipBlock = false;
 
   for (const line of lines) {

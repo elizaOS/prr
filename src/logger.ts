@@ -49,14 +49,18 @@ function stripAnsi(str: string): string {
  * Call this once at startup, before any meaningful output.
  */
 export function initOutputLog(): void {
-  outputLogPath = join(process.cwd(), 'output.log');
+  // Write to ~/.prr/ directory as documented in README
+  const prrDir = join(homedir(), '.prr');
+  mkdirSync(prrDir, { recursive: true });
+
+  outputLogPath = join(prrDir, 'output.log');
 
   writeFileSync(outputLogPath, '', 'utf-8');
   outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
 
   // Companion log for full prompts & responses — search by slug (e.g. "#0009")
   // to jump from output.log to the exact prompt/response in prompts.log.
-  const promptLogPath = join(process.cwd(), 'prompts.log');
+  const promptLogPath = join(prrDir, 'prompts.log');
   writeFileSync(promptLogPath, '', 'utf-8');
   promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
 
@@ -66,14 +70,12 @@ export function initOutputLog(): void {
 
   function logToStream(...args: unknown[]): void {
     if (!outputLogStream) return;
-    const text = format(...args);
-    const clean = stripAnsi(text);
-    if (clean) {
-      try {
-        outputLogStream.write(clean + '\n');
-      } catch (err) {
-        origError('Log stream write failed:', err);
-      }
+    try {
+      const text = format(...args);
+      const clean = stripAnsi(text);
+      if (clean) outputLogStream.write(clean + '\n');
+    } catch (err) {
+      origError('Log stream write failed:', err);
     }
   }
 

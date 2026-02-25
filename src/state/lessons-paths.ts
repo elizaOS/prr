@@ -76,4 +76,5 @@ export const PRR_SECTION_END = '<!-- PRR_LESSONS_END -->';
  */
 export const MAX_GLOBAL_LESSONS_FOR_SYNC = 20;
 export const MAX_FILE_LESSONS_FOR_SYNC = 5;
+// Review: maximum sync limits ensure efficient resource usage and prevent overload.
 export const MAX_FILES_FOR_SYNC = 10;

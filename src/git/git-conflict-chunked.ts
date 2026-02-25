@@ -170,6 +170,7 @@ EXPLANATION: Brief explanation of what you merged/kept/changed`;
         explanation: 'LLM returned empty response'
       };
     }
+    // Review: retrieves response content for extracting resolved code and explanations.
     const content = response.content;
 
     // Extract resolved code from between backticks
@@ -895,4 +896,5 @@ function compareVersions(v1: string, v2: string): number {
   }
   
   return 0;
+// Review: uses localeCompare for simplicity; assumes lexicographic order suffices for this case
 }

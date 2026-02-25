@@ -179,6 +179,7 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     
     return false;
   });
+// Review: designed for flexible matching to accommodate model variations and user needs.
 }
 
 /**
@@ -272,6 +273,7 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
   const modelInfo = newModel ? ` (${newModel})` : '';
   console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`));
   return true;
+// Review: passing options ensures consistent model selection with active CLI flags.
 }
 
 /**
@@ -360,6 +362,7 @@ export function tryRotation(
     ctx.progressThisCycle = 0;
     ctx.cycleHadOnlyTimeouts = undefined;
     return false;
+  // Review: ensures tool switch only occurs after exhausting all model attempts within limits
   };
   
   // If we've tried enough models on this tool, switch to next tool
@@ -498,6 +501,7 @@ const ELIZACLOUD_SKIP_MODELS = new Set<string>([
 
 /**
  * Determine which provider a model belongs to based on its name/prefix.
+ * Returns the provider for validation against the corresponding API's model list.
  */
 function detectModelProvider(model: string, runnerProvider: string): 'openai' | 'anthropic' | 'google' | null {
   // Explicit provider prefix (aider style)

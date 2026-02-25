@@ -164,16 +164,13 @@ export function buildFixPrompt(
   // The effective limit may be reduced by adaptive batching when consecutive iterations fail.
   // Treat maxIssues === 0 as unlimited (return full array). Coerce and clamp other values
   // so negative/NaN don't produce bad slices (e.g. issues.slice(0, -1)).
-  let effectiveMax: number;
-  if (options?.maxIssues === 0) {
-    effectiveMax = Infinity;
-  } else {
-    const raw = options?.maxIssues ?? MAX_ISSUES_PER_PROMPT;
-    const value = Number(raw);
-    effectiveMax = Number.isFinite(value) && value > 0
-      ? Math.min(value, MAX_ISSUES_PER_PROMPT)
-      : MAX_ISSUES_PER_PROMPT;
-  }
+  const requestedMax = options?.maxIssues;
+  const effectiveMax =
+    requestedMax === 0
+      ? Infinity
+      : (Number.isFinite(Number(requestedMax))
+          ? Math.min(MAX_ISSUES_PER_PROMPT, Math.max(1, Math.floor(Number(requestedMax))))
+          : MAX_ISSUES_PER_PROMPT);
   const originalCount = issues.length;
   const limitedIssues = effectiveMax === Infinity ? issues : issues.slice(0, effectiveMax);
   const wasLimited = originalCount > effectiveMax;

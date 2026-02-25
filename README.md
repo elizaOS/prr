@@ -1,3 +1,4 @@
+// Review: PR title reflects broader feature integration rather than individual changes.
 # prr (PR Resolver)
 
 ```text
@@ -18,8 +19,6 @@ CLI tool to automatically resolve PR review comments using LLM-powered fixing an
 
 There are plenty of AI tools that autonomously create PRs, write code, and push changes without human involvement. **prr takes a different approach.**
 
-**Why we document WHYs:** In this README, CHANGELOG, and code we explain not only *what* changed but *why*. That makes it easier to revisit decisions, avoid regressions, and onboard contributors — the rationale outlives the author.
-
 **Human-driven, AI-assisted**: You stay in control. You decide which PR to work on, when to run prr, and when it's done. The AI handles the tedious back-and-forth with reviewers (human or bot), but you're the driver.
 
 **The right tool for the job**: Sometimes you want to manually address feedback. Sometimes you want AI to grind through 50 nitpicks from CodeRabbit. prr gives you the option without taking over your workflow.
@@ -36,75 +35,34 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ### Core Loop
 - Fetches review comments from PRs (humans, bots, or any reviewer)
-- **PR context injection**: Fix prompts include the PR title, description, and base branch so the fixer understands intent, not just individual comments
-- **Diff-first instruction**: Prompts tell agentic fixers to run `git diff <base>...HEAD --stat` before making changes
 - Uses LLM to detect which issues still exist in the code
-- Generates fix prompts and runs Cursor CLI, Claude Code, Gemini CLI, or other tools to fix issues
+- Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
 
 ### Smart Retry Strategies
-- **Issue priority triage**: LLM assesses importance (1-5) and difficulty (1-5) during analysis, then sorts issues by `--priority-order` (important, easy, newest, oldest). Critical security issues are tackled before style nits.
-- **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions. Lesson text is normalized (inline backticks preserved, "made no changes" canonicalized, noise lines dropped) so inputs from verify/fixer/recovery are stored in a consistent, dedupe-friendly form. *Why*: Flexible normalization accepts messy input and produces one canonical shape instead of rejecting valid lessons.
+- **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
-- **Adaptive batch sizing**: Halves issues per prompt on consecutive failures (50 → 25 → 12 → 6 → 5) before falling back to single-issue mode
-- **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage. For llm-api, the runner’s current provider (openai/anthropic/elizacloud) is used when matching LLM-recommended models so recommendations are honored instead of rejected as “no compatible model”.
+- **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
-- **Prompt regurgitation detection**: Rejects model output that echoes the instruction template instead of reasoning
-- **Spot-check verification**: Samples 5 issues before committing to expensive full batch verification on "already fixed" claims
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
-- **Model validation at startup**: Queries OpenAI/Anthropic APIs to filter out inaccessible models before attempting fixes
-- **Issue solvability detection**: Pre-screens review comments to skip unsolvable issues (deleted files, stale references)
 - **Stalemate detection & bail-out**: Detects when agents disagree, bails out after N cycles with zero progress
 
 ### Git Integration
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
 - **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
-- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically (including delete conflicts)
+- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
-- **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed (final push only)
+- **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
-
-### Cost Optimization
-- **Anthropic prompt caching**: System prompts are sent with `cache_control` so repeated calls (batch analysis, per-comment checks) reuse cached prefixes at 90% discount. Cache hit/miss stats logged for observability.
-- **Focused-section mode**: Direct LLM fixes on large files (>15K chars) send only ±150 lines around the issue instead of the full file — saves ~90% of input tokens and produces shorter, more accurate output.
-- **Cheap model routing**: Commit messages and dismissal comments use Haiku/GPT-4o-mini instead of Sonnet/GPT-4o — ~66% cheaper for simple text generation with no quality loss.
-- **Infrastructure failure detection**: Skips expensive `analyzeFailedFix` LLM calls when the failure is obviously infrastructure (quota, timeout, crash) — records a plain-text lesson instead.
-- **Redundant verification skip**: Issues already verified by recovery phases (`trySingleIssueFix`, `tryDirectLLMFix`) are not re-verified in the main pass.
-
-### Review Bot Dialog
-- **Inline dismissal comments**: When PRR dismisses an issue (already-fixed, stale, exhausted), it may add an inline code comment explaining the reasoning — enabling bots and humans to see the decision trail in the diff. Comments are never added to `.json` files (JSON has no comment syntax). Issues the fixer verified this run are skipped so we don't re-insert comments on code just fixed.
-- **After Action Report (AAR)**: Detailed session summary with three sections: "Fixed This Session", "Dismissed" (by category), and "Remaining" (with suggested resolutions)
-- *Why dismissal comments*: Review bots re-analyze the PR on every push. Without visible reasoning, they re-flag the same issues PRR already decided weren't worth fixing. Inline comments create a proper dialog between PRR and the bots.
-
-### Performance
-- **Parallel LLM dedup**: File-level dedup calls run concurrently (23 calls in ~5s instead of ~50s)
-- **Parallel file I/O**: Code snippet fetching, diff preparation, and cross-file dismissal comments all run via `Promise.all()` — 9 sequential loops converted across 7 files
-- **Duplicate prompt detection**: MD5-based tracking skips identical prompt+model retries, going straight to rotation
-- *Why parallelize*: Independent file reads and cross-file LLM calls have no shared state. Sequential execution added 1-50s of unnecessary latency per cycle depending on issue count.
-
-### Fixer context and outcomes
-- **Snippet accuracy**: Line references in the review body (e.g. "around lines 52 - 93", "at line 128") are parsed and merged with the comment's line so the code snippet includes every referenced range. Context is 20 lines before and 30 after (configurable); total snippet is capped at 500 lines. Shell-style blocks (`sed -n`, `cat -n`) in comments are skipped to avoid false ranges from CodeRabbit analysis chains.
-- *Why*: Fixers were often shown only 15 lines around the GitHub API line while the review referred to lines far away. Parsing refs and widening context ensures the model sees the code in question; capping and exclusions keep prompts bounded.
-- **Structured RESULT protocol**: Fix prompts ask for a `RESULT: CODE — detail` line (e.g. `ALREADY_FIXED`, `UNCLEAR`, `WRONG_LOCATION`, `NEEDS_DISCUSSION`). PRR parses this and records targeted lessons, skips verification for discussion-only changes, and no longer forces "you must make a change" so the fixer can report already-fixed or unclear instead of making cosmetic edits.
-- *Why*: A shared vocabulary lets PRR take the right follow-up (e.g. WRONG_LOCATION → "provide wider code context"; NEEDS_DISCUSSION → count as progress without running verification).
 
 ### Robustness
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position
-- **Comment status tracking**: Each PR comment gets an explicit open/resolved lifecycle status with file content hashing. Skips LLM re-analysis for comments on unmodified files, saving tokens and time.
-- **Comment sanitization**: Base64 JWT tokens, HTML metadata, and bot-specific noise stripped from comments before they enter LLM prompts
-- **Addressed-in-commits hint**: Comments that contain "✅ Addressed in commits ..." get an analysis hint so the LLM explicitly verifies whether the current code still resolves the issue.
 - **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
-- **Issue deduplication**: Two-phase dedup (heuristic + LLM semantic) groups related comments, with in-memory caching to avoid redundant LLM dedup calls across iterations
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
-- **Outer loop bail-out**: Detects consecutive stalemate bail-outs with no progress and hard-exits instead of re-entering the push loop indefinitely
-- **Verification cache invalidation on audit failure**: When the final audit finds issues still unfixed, PRR unmarks those comments as verified before re-entering the fix loop. *Why*: Otherwise the next iteration skips re-verification (“already verified”), produces no changed files, and can loop indefinitely.
-- **Commit message accuracy**: Commit messages list only issues whose files were actually changed in that commit (built from staged files after commit, then amended). *Why*: Previously messages listed all verified issues on the PR, including untouched files, which was misleading in history.
-- **Review-bot checks excluded from CI**: Check runs like “Cursor Bugbot” (review bots that stay `in_progress`) are excluded when deciding if CI is pending. *Why*: Treating them as CI caused unnecessary long waits; real CI completion is what we care about for proceeding.
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
-- **Dual log system**: `output.log` mirrors console output (ANSI-stripped); `prompts.log` captures full LLM prompts/responses with searchable slugs linking the two files
 
 ## Installation
 
@@ -128,28 +86,24 @@ Create a `.env` file (see `.env.example`):
 # Required
 GITHUB_TOKEN=ghp_xxxx
 
-# ElizaCloud - Unified model gateway (RECOMMENDED)
-# One API key for all models: Claude, GPT, Gemini
-ELIZACLOUD_API_KEY=your-key-here
+# LLM for verification (anthropic or openai)
+PRR_LLM_PROVIDER=anthropic
+PRR_LLM_MODEL=claude-sonnet-4-5-20250929
+ANTHROPIC_API_KEY=sk-ant-xxxx
 
-# PRR auto-detects ElizaCloud when the key is set
-# Default model: gpt-4o (no configuration needed)
-
-# Alternative: Direct provider keys
-# ANTHROPIC_API_KEY=sk-ant-xxxx
+# Or use OpenAI
+# PRR_LLM_PROVIDER=openai
+# PRR_LLM_MODEL=gpt-5.2
 # OPENAI_API_KEY=sk-xxxx
-# PRR_LLM_PROVIDER=anthropic  # or 'openai'
-# PRR_LLM_MODEL=claude-sonnet-4-5-20250929
 
 # Default fixer tool (rotates automatically when stuck)
 # If not set, prr will auto-detect which tool is installed
-# PRR_TOOL=elizacloud  # or cursor, claude-code, aider, etc.
+# PRR_TOOL=cursor
 ```
 
 ### Why These Defaults?
 
-- **ElizaCloud** as primary option: Simplest setup - one API key for all models (Claude, GPT, Gemini). No provider configuration needed.
-- **GPT-4o** for verification: Fast, accurate, cost-effective. ElizaCloud gives you access to any model via a single key.
+- **Claude Sonnet 4.5** for verification: Best balance of accuracy and speed. Opus is overkill for yes/no verification. Haiku misses edge cases.
 - **Cursor** as default fixer: Most capable agentic coding tool. Falls back to others automatically.
 
 ## Usage
@@ -197,7 +151,7 @@ prr https://github.com/owner/repo/pull/123 \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--tool <name>` | `cursor` | Fixer tool: elizacloud, cursor, claude-code, aider, opencode, codex, gemini, llm-api |
+| `--tool <name>` | `cursor` | Fixer tool: cursor, claude-code, aider, opencode, codex, llm-api |
 | `--model <model>` | (auto) | Override model for fixer tool |
 | `--auto-push` | **on** | Push after fixes verified, wait for re-review, loop |
 | `--no-auto-push` | off | Disable auto-push (just push once) |
@@ -206,7 +160,6 @@ prr https://github.com/owner/repo/pull/123 \
 | `--max-stale-cycles <n>` | 1 | Bail out after N complete tool/model cycles with zero progress |
 | `--poll-interval <sec>` | 120 | Seconds to wait for re-review |
 | `--max-context <chars>` | 400000 | Max chars per LLM batch (~100k tokens) |
-| `--priority-order <order>` | `important` | Issue sort order: `important`, `important-asc`, `easy`, `easy-asc`, `newest`, `oldest`, `none` |
 | `--reverify` | off | Re-check all cached "fixed" issues |
 | `--dry-run` | off | Show issues without fixing |
 | `--no-commit` | off | Don't commit (for testing) |
@@ -215,11 +168,6 @@ prr https://github.com/owner/repo/pull/123 \
 | `--keep-workdir` | on | Keep work directory after completion |
 | `--no-batch` | off | Disable batched LLM calls |
 | `--verbose` | on | Debug output |
-| `--check-tools` | off | Show installed tools and versions, then exit |
-| `--update-tools` | off | Update all installed AI tools to latest, then exit |
-| `--tidy-lessons` | off | Clean up lessons: re-normalize, deduplicate, remove garbage, then exit |
-| `--commit-per-file` | **on** | One commit per file when multiple issues fixed in one iteration |
-| `--no-commit-per-file` | off | Single commit per iteration even when multiple files changed |
 
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
@@ -247,11 +195,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  PRIORITY TRIAGE      → LLM assesses importance & difficulty│
-│      ↓                                                       │
-│  BATCH MODE           → Try top N issues (sorted by prio)   │
-│      ↓ fail                                                 │
-│  ADAPTIVE BATCHING    → Halve batch size (50→25→12→6→5)     │
+│  BATCH MODE           → Try all issues at once              │
 │      ↓ fail                                                 │
 │  SINGLE-ISSUE MODE    → Focus on 1-3 random issues          │
 │      ↓ fail                                                 │
@@ -259,52 +203,36 @@ When fixes fail, prr escalates through multiple strategies:
 │      ↓ fail                                                 │
 │  ROTATE TOOL          → Switch to next fixer tool           │
 │      ↓ fail                                                 │
-│  DIRECT LLM API       → Last resort, focused-section fix     │
+│  DIRECT LLM API       → Last resort, direct API call        │
 │      ↓ fail                                                 │
 │  BAIL OUT             → Commit partial progress, exit       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-*Why priority triage?* When batching limits prompts to 50 of 93 issues, the selection was arbitrary — trivial style nits could crowd out critical security fixes. The LLM already reads every comment during analysis, so we piggyback importance/difficulty assessment onto the same call at zero extra cost. Sorting ensures the fixer tackles high-impact issues first.
-
-*Why adaptive batching?* 50 issues across 23 files in a 213K-char prompt overwhelms models — they fix 5 and miss 45. Halving the batch on each zero-fix iteration gives the model a progressively smaller workload before falling back to single-issue mode.
-
 *Why single-issue mode?* Batch prompts with 10+ issues can overwhelm LLMs. Single-issue = smaller context = better focus. Issues are **randomized** so hard issues don't block easy ones.
 
 ### Why Each Step Matters
 
-1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Claude, Greptile, Copilot), or any reviewer.
-   - *Inline review threads*: Captured via GraphQL `reviewThreads` (CodeRabbit, Copilot, humans)
-   - *Issue comments*: Parsed from conversation tab for bots like Claude and Greptile that post structured reviews there
-   - *Why two paths*: Some bots post inline, some post as issue comments. Capturing both ensures nothing is missed. CodeRabbit is intentionally NOT in the issue-comment path — doing so would duplicate its inline threads.
+1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Copilot), or any reviewer.
 
 2. **Analyze Issues**: For each comment, asks the LLM: "Is this issue still present in the code?" 
    - *Why*: Review comments may already be addressed, or partially addressed. We don't want to re-fix solved problems.
    - Uses strict prompts that require citing specific code evidence.
-   - **Comment status caching**: Comments classified as "open" on unmodified files skip LLM re-analysis. The LLM already said "issue exists" and the file hasn't changed — asking again wastes tokens on the same answer. Only comments on files modified by the fixer (where the fix may have resolved the issue) get fresh analysis.
-   - **Deduplication**: Two-phase dedup (heuristic grouping by file/line, then LLM semantic analysis) identifies duplicate comments from different reviewers. Only the canonical comment goes through analysis; duplicates are auto-verified when their canonical is fixed.
-   - *Why two-phase dedup*: Heuristics catch obvious duplicates (same file + same line) at zero cost, but miss semantic duplicates (different line numbers, same underlying issue). LLM catches those, but costs tokens. Running heuristics first minimizes what the LLM has to evaluate.
 
 3. **Generate Prompt**: Builds a fix prompt including:
-   - **PR context**: Title, description (truncated to 500 chars), and base branch
-   - **Diff-first instruction**: `git diff <base>...HEAD --stat` so the fixer sees the full scope
    - All unresolved issues with code context
    - "Lessons learned" from previous failed attempts (analyzed by LLM)
-   - *Why PR context*: Without it, the fixer sees comments in isolation. "Incorrect error handling" means nothing without knowing the PR adds OAuth2 for mobile. Fixes were technically valid but semantically misaligned.
-   - *Why truncate to 500 chars*: PR descriptions can be huge (templates, checklists, embedded images). Unbounded inclusion blows the token budget. 500 chars captures intent without noise.
-   - *Why diff-first*: Agentic fixers (Cursor, Claude Code) can run shell commands. Seeing a `--stat` summary of all changed files before diving into individual issues prevents narrow fixes that ignore the broader PR changes.
    - *Why lessons*: Prevents flip-flopping. If attempt #1 tried X and it was rejected, attempt #2 knows not to try X again.
    - *Why LLM-analyzed*: Generic "tool failed" messages aren't helpful. LLM analyzes the diff and rejection to generate actionable guidance.
 
 4. **Run Fixer**: Executes the AI coding tool in the cloned repo.
    - **Model rotation**: Interleaves model families - tries Claude, then GPT, then Gemini before exhausting any single family
-   - **Tool rotation**: Cursor → Claude Code → Aider → Gemini CLI → Direct LLM API when models exhausted
+   - **Tool rotation**: Cursor → Claude Code → Aider → Direct LLM API when models exhausted
    - *Why interleave families*: Same-family models often fail the same way. Switching families gives fresh perspective.
    - *Why rotation*: Different models have different strengths. If one gets stuck, another might succeed.
 
 5. **Verify Fixes**: For each changed file, asks the LLM: "Does this diff address the concern?"
    - *Why verify*: Fixer tools can make changes that don't actually fix the issue. Catches false positives early.
-   - *Why skip already-verified*: Issues confirmed fixed by recovery phases (single-issue mode, direct LLM) are not re-verified in the main pass — avoids burning tokens on known-good results.
 
 6. **Check for New Comments**: Before declaring "done", checks if any NEW review comments were added during the fix cycle.
    - *Why*: Bot reviewers or humans might add new issues while you're fixing others. Ensures nothing slips through.
@@ -316,7 +244,6 @@ When fixes fail, prr escalates through multiple strategies:
 
 8. **Commit**: Generates a clean commit message via LLM describing the actual changes.
    - *Why LLM-generated*: Commit messages are permanent history. They should describe WHAT changed, not the review process.
-   - *Why cheap model*: Uses Haiku/GPT-4o-mini instead of Sonnet. A one-line commit message is simple text generation — expensive models add zero quality but cost 3x more.
    - *Why forbidden phrases*: LLMs default to "address review comments" - we explicitly forbid this and fall back to file-specific messages.
 
 9. **Push** (if `--auto-push`): Pushes changes with automatic retry on rejection.
@@ -348,7 +275,6 @@ When fixes fail, prr escalates through multiple strategies:
 - **Pull conflicts**: Branch diverged while prr was working
 - **Stash conflicts**: Interrupted run had uncommitted changes
 - **Base branch merge**: PR conflicts with target branch (main/master)
-- **Delete conflicts**: One side deleted a file, the other modified it (`UD`/`DU`/`DD` status)
 
 **Why two attempts for code files?**
 - Fixer tools are good at agentic changes but sometimes miss conflict markers
@@ -444,19 +370,6 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
       "verifiedAtIteration": 5
     }
   ],
-  "commentStatuses": {
-    "comment_id_2": {
-      "status": "open",
-      "classification": "exists",
-      "explanation": "The nonce consumption is still non-atomic...",
-      "importance": 4,
-      "ease": 3,
-      "filePath": "app/api/auth/siwe/verify/route.ts",
-      "fileContentHash": "a1b2c3d4e5",
-      "updatedAt": "2026-02-17T10:30:00Z",
-      "updatedAtIteration": 2
-    }
-  },
   "currentRunnerIndex": 0,
   "modelIndices": { "cursor": 2, "llm-api": 0 },
   "noProgressCycles": 0,
@@ -465,14 +378,11 @@ State is persisted in `<workdir>/.pr-resolver-state.json`:
 ```
 
 **Why these fields:**
-- `verifiedComments`: Tracks WHEN each verification happened (not just what). Enables verification expiry — after 5 iterations, a "verified" comment is re-checked to catch regressions.
-- `commentStatuses`: Per-comment open/resolved lifecycle with LLM classification. Prevents redundant LLM analysis calls for comments on unmodified files. The file content hash invalidates the cache when the fixer modifies a file.
+- `verifiedComments`: Tracks WHEN each verification happened (not just what). Enables verification expiry.
 - `currentRunnerIndex`: Resume from the same tool after interruption. Prevents restarting rotation from scratch.
 - `modelIndices`: Per-tool model position. If Cursor was on model #2, resume there.
 - `noProgressCycles`: How many complete tool/model cycles completed with zero progress. Persists across restarts.
 - `bailOutRecord`: Documents WHY automation stopped, what remains, for human follow-up.
-
-**Why three systems for comment state?** `verifiedFixed[]` and `dismissedIssues[]` are the authoritative source for "is this comment done?" — 15+ call sites check `isVerified()` and 9+ check `isDismissed()`. `commentStatuses{}` is purely an LLM analysis optimization layer: it caches the LLM's classification so we don't re-ask "does this issue still exist?" on every iteration. Sync hooks in `markVerified()` and `dismissIssue()` keep the three systems consistent.
 
 **Why not just store tool/model names?** Indices are resilient to model list changes. If we add new models, existing indices still work.
 
@@ -594,7 +504,6 @@ Team gets everything in one atomic update
 - `--tool aider`: `aider` (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
 - `--tool claude-code`: `claude` or `claude-code` (`ANTHROPIC_API_KEY`)
 - `--tool codex`: `codex` or `openai-codex` (OpenAI Codex access / `OPENAI_API_KEY`)
-- `--tool gemini`: `gemini` (`GEMINI_API_KEY` or `GOOGLE_API_KEY`)
 - `--tool llm-api`: no CLI (direct API; `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`)
 
 
@@ -605,7 +514,6 @@ Team gets everything in one atomic update
 | `aider` | `aider` | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 | `opencode` | `opencode` | (check opencode docs) |
 | `codex` | `codex` or `openai-codex` | `OPENAI_API_KEY` |
-| `gemini` | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | `llm-api` | (none - direct API) | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
 
 
@@ -654,7 +562,7 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. Examples (availability depends on your account/plan):
+Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **example** models; actual availability depends on your Cursor account/plan:
 
 | Model | Notes |
 |-------|-------|
@@ -662,18 +570,14 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 | `claude-4-opus-thinking` | Claude Opus (thinking) |
 | `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
 | `o3` | OpenAI reasoning |
-| `o3-mini` | OpenAI reasoning (mini) |
-| `gpt-5.2` | GPT-5.2 |
-| `grok-2` | Grok 2 |
-
-> **⚠️ The table above shows example models only and is likely outdated.** Model availability changes frequently and varies by account, plan, and provider. To see your actual available models, run `agent models` or `cursor-agent --list-models`. Refer to each provider's documentation for current model names and identifiers.
+| `gpt-5` | GPT-5 |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 
 ```text
-Round 1: claude-4-sonnet-thinking (Claude) → gpt-5.2 (GPT) → o3-mini (OpenAI)
-Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → o3-mini (OpenAI)
+Round 1: claude-4-sonnet-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
+Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → gemini-2.5-pro (Other)
 ... then next tool ...
 ```
 
@@ -690,47 +594,39 @@ prr https://github.com/owner/repo/pull/123
 
 ## Debugging
 
-PRR provides a three-tier logging system for progressively deeper diagnosis:
+### Debug Output Files
 
-### Tier 1: `output.log` — Operational Flow
-Every run mirrors all console output (ANSI-stripped) to `output.log` in the current directory. Truncated on each run start — always contains only the latest session.
-
-*Why a separate file?* Terminal scrollback is hard to search, and copy-paste loses formatting. A clean text file can be directly fed into Cursor, Claude, or any LLM for analysis.
-
-### Tier 2: `prompts.log` — Full LLM Context
-Every LLM prompt and response is written in full to `prompts.log` alongside `output.log`. Each entry has a searchable slug (e.g., `#0007/llm-anthropic`) that also appears as a one-liner in `output.log`.
-
-*Why a companion file?* Prompts can be 5-50K chars each. Inlining them in `output.log` would make it unsearchable. When you see something suspicious in `output.log`, Cmd+F the slug in `prompts.log` to jump directly to the full prompt that produced it.
-
-### Tier 3: Standalone Debug Files
-With `PRR_DEBUG_PROMPTS=1`, individual prompt/response files are also saved to `~/.prr/debug/<timestamp>/` — useful for sharing or diffing specific prompts.
+When `PRR_DEBUG_PROMPTS=1` is set, prr saves prompts and responses to debug files:
 
 ```bash
+# Enable debug output
+export PRR_DEBUG_PROMPTS=1
+prr https://github.com/owner/repo/pull/123
+
 # Operational log — what happened, when, and why
 cat output.log
 
 # Full prompt/response log — what the LLM actually saw
 cat prompts.log
 
-# Cross-reference: find slug in output.log, search it in prompts.log
-# output.log:  [DEBUG] PROMPT #0007/llm-anthropic → { chars: 3519 }
-# prompts.log: ═══...  #0007/llm-anthropic  PROMPT: llm-anthropic (3519 chars)
-
-# Reference in Cursor
-# @output.log @prompts.log
-
-# Verbose mode shows debug-level detail
-prr <url> --verbose
-
 # Standalone debug files (requires PRR_DEBUG_PROMPTS=1; files live under timestamp subdirs)
 ls ~/.prr/debug/*/*.txt
 # or: find ~/.prr/debug -name '*.txt'
 ```
 
-The log paths are printed at the end of each run:
-```text
-📄 Full output log: /path/to/output.log
-📄 Prompt log: /path/to/prompts.log
+Files are saved under `~/.prr/debug/<timestamp>/` with descriptive names.
+
+To view debug files:
+
+```bash
+# List all debug files (recursive, since files are in timestamp subdirs)
+find ~/.prr/debug -name '*.txt' -type f
+
+# Or use a recursive glob
+ls ~/.prr/debug/*/*.txt
+
+# View most recent
+ls -lt ~/.prr/debug/*/*.txt | head -5
 ```
 
 ## License

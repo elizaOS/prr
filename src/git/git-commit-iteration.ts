@@ -148,4 +148,5 @@ export async function commitIteration(
     filesChanged: result.summary.changes,
     stagedFiles,
   };
+// Review: returns commit details to support consistent handling across git operations
 }

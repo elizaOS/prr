@@ -129,7 +129,7 @@ export async function checkAndMergeBaseBranch(
           
           console.log(chalk.green(`✓ Conflicts resolved and merged ${prInfo.baseBranch}`));
           
-          // Push the resolved merge commit
+          // Push the resolved merge commit (skip outer push block via early continue)
           if (!options.noPush && !options.noCommit) {
             try {
               spinner.start('Pushing merge commit...');
@@ -140,6 +140,9 @@ export async function checkAndMergeBaseBranch(
               console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
             }
           }
+          // Conflict resolution already pushed; skip to end
+          endTimer('Merge base branch');
+          return { success: true };
         }
       }
     }

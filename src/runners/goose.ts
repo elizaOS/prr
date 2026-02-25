@@ -161,12 +161,22 @@ export class GooseRunner implements Runner {
           return;
         }
 
-        if (/model.*not found|does not exist|unauthorized|authentication|invalid.*key|api.?key/i.test(combinedOutput)) {
+        if (/unauthorized|authentication|invalid.*key|api.?key/i.test(combinedOutput)) {
           resolve({
             success: false,
             output: stdout,
-            error: stderr || 'Model or authentication error',
+            error: stderr || 'Authentication error',
             errorType: 'auth' as RunnerErrorType,
+          });
+          return;
+        }
+
+        if (/model.*not found|does not exist/i.test(combinedOutput)) {
+          resolve({
+            success: false,
+            output: stdout,
+            error: stderr || 'Model not found',
+            errorType: 'model' as RunnerErrorType,
           });
           return;
         }

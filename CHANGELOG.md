@@ -376,6 +376,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All console output is mirrored to `output.log` in the current working directory as clean ANSI-stripped text
 - File is truncated on each run start, so it always contains only the latest run
 - Path printed at end of run for easy access
+// Review: logs terminal output to a file for easier accessibility during debugging
 - WHY: Feeding terminal output back into an LLM for debugging required manual copy-paste from scrollback. A plain-text log file can be directly referenced or piped into Cursor/Claude.
 
 **Adaptive Batch Sizing**
@@ -416,6 +417,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WHY: Batch mode was recording raw verification explanations like "diff doesn't show changes to X" as lessons. These describe what went wrong but not what to do differently. `analyzeFailedFix` produces actionable guidance like "don't just add Y, also need to update Z".
 
 ### Added (2026-02-12)
+
+### Added (2026-02-12) — CLI & Startup Tooling
 
 **`--tidy-lessons` CLI Option**
 - Scans all lesson JSON files in `~/.prr/lessons/` and re-normalizes, deduplicates, prunes garbage entries
