@@ -81,8 +81,6 @@ export async function detectFileCorruption(
       return { corrupted: false };
     }
 
-    const baseLines = baseContent.split('\n').length;
-    const currentLines = currentContent.split('\n').length;
     const currentLower = currentContent.toLowerCase();
 
     // Heuristic 1: Duplicate method/function definitions
