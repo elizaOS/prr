@@ -48,14 +48,18 @@ function stripAnsi(str: string): string {
  * Call this once at startup, before any meaningful output.
  */
 export function initOutputLog(): void {
-  outputLogPath = join(process.cwd(), 'output.log');
+  // Write to ~/.prr/ directory as documented in README
+  const prrDir = join(homedir(), '.prr');
+  mkdirSync(prrDir, { recursive: true });
+  
+  outputLogPath = join(prrDir, 'output.log');
 
   writeFileSync(outputLogPath, '', 'utf-8');
   outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
 
   // Companion log for full prompts & responses — search by slug (e.g. "#0009")
   // to jump from output.log to the exact prompt/response in prompts.log.
-  const promptLogPath = join(process.cwd(), 'prompts.log');
+  const promptLogPath = join(prrDir, 'prompts.log');
   writeFileSync(promptLogPath, '', 'utf-8');
   promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
 
@@ -65,9 +69,13 @@ export function initOutputLog(): void {
 
   function logToStream(...args: unknown[]): void {
     if (!outputLogStream) return;
-    const text = format(...args);
-    const clean = stripAnsi(text);
-    if (clean) outputLogStream.write(clean + '\n');
+    try {
+      const text = format(...args);
+      const clean = stripAnsi(text);
+      if (clean) outputLogStream.write(clean + '\n');
+    } catch {
+      // Best-effort logging — don't crash on log write failure
+    }
   }
 
   console.log = (...args: unknown[]) => { logToStream(...args); origLog(...args); };
@@ -80,15 +88,19 @@ export function initOutputLog(): void {
  * WHY: Without closing, the last lines may stay buffered and the file may be
  * unreadable or truncated when the user opens it after the process exits.
  */
-export function closeOutputLog(): void {
-  if (outputLogStream) {
-    outputLogStream.end();
-    outputLogStream = null;
-  }
-  if (promptLogStream) {
-    promptLogStream.end();
-    promptLogStream = null;
-  }
+export async function closeOutputLog(): Promise<void> {
+  const out = outputLogStream;
+  const prompt = promptLogStream;
+  outputLogStream = null;
+  promptLogStream = null;
+
+  const waitEnd = (s: WriteStream | null): Promise<void> =>
+    new Promise((resolve) => {
+      if (!s) return resolve();
+      s.end(() => resolve());
+    });
+
+  await Promise.all([waitEnd(out), waitEnd(prompt)]);
 }
 
 /**
