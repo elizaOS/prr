@@ -907,8 +907,9 @@ function fuzzyFindRegion(
   for (let i = bestMatch.fileStart; i < bestMatch.fileEnd; i++) {
     endOffset += lines[i].length + 1;
   }
-  // Don't include trailing newline of last line (replace text handles its own)
-  if (endOffset > 0 && endOffset <= fileContent.length) {
+  // Clamp endOffset to file length, then strip trailing newline if present
+  endOffset = Math.min(endOffset, fileContent.length);
+  if (endOffset > startOffset && fileContent[endOffset - 1] === '\n') {
     endOffset--; // back off the final \n
   }
   
