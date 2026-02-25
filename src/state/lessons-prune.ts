@@ -3,7 +3,7 @@
  */
 import { existsSync } from 'fs';
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join, dirname, relative } from 'path';
 import { homedir } from 'os';
 import { readdirSync, statSync } from 'fs';
 import chalk from 'chalk';
@@ -396,7 +396,7 @@ export async function tidyAllLessons(): Promise<void> {
   let filesModified = 0;
 
   for (const filePath of jsonFiles) {
-    const relativePath = filePath.replace(lessonsDir + '/', '');
+    const relativePath = relative(lessonsDir, filePath);
     
     try {
       const content = await readFile(filePath, 'utf-8');
@@ -603,7 +603,7 @@ async function tidyMarkdownLessonsFile(filePath: string): Promise<void> {
       lines.push('');
     }
 
-    await writeFile(filePath, lines.join('\n'), 'utf-8');
+    await writeFile(filePath, lines.join('\n') + '\n', 'utf-8');
     console.log(chalk.green(`\n  .prr/lessons.md: ${originalTotal} → ${finalTotal} lessons (removed ${removed})`));
   } catch (e) {
     console.log(chalk.red(`\n  Failed to tidy .prr/lessons.md: ${e}`));
