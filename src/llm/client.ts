@@ -1338,17 +1338,20 @@ ${codeSnippet}
       unfixed
     });
 
-    // Fail-safe: mark any unparsed issue as still existing
-    if (parsed < issues.length) {
-      debug('WARNING: Some audit responses could not be parsed - marking unparsed as needing review');
-      for (const issue of issues) {
-        if (!allResults.has(issue.id)) {
-          allResults.set(issue.id, {
-            stillExists: true,
-            explanation: 'Audit response could not be parsed - needs manual review',
-          });
-        }
+    // Fail-safe: mark any unparsed issue as still existing (regardless of parse rate)
+    // WHY: Individual unparsed issues should be treated as needing review, not silently passed
+    for (const issue of issues) {
+      if (!allResults.has(issue.id)) {
+        allResults.set(issue.id, {
+          stillExists: true,
+          explanation: 'Audit response could not be parsed - needs manual review',
+        });
       }
+    }
+    if (parsed < issues.length) {
+      debug('WARNING: Some audit responses could not be parsed - marked as needing review', {
+        unparsed: issues.length - parsed,
+      });
     }
 
     return allResults;
