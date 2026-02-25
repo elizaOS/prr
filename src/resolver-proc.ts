@@ -451,12 +451,15 @@ export async function executeBailOut(
   ).length;
   
   // Build remaining issues summary
-  const remainingIssues = unresolvedIssues.map(issue => ({
-    commentId: issue.comment.id,
-    filePath: issue.comment.path,
-    line: issue.comment.line,
-    summary: issue.comment.body.split('\n')[0].substring(0, 100),
-  }));
+  const remainingIssues = unresolvedIssues.map(issue => {
+    const firstLine = issue.comment.body.split('\n')[0];
+    return {
+      commentId: issue.comment.id,
+      filePath: issue.comment.path,
+      line: issue.comment.line,
+      summary: firstLine.length > 100 ? firstLine.substring(0, 100) + '...' : firstLine,
+    };
+  });
   
   // Record bail-out in state
   Bailout.recordBailOut(
