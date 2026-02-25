@@ -3,10 +3,11 @@ import { dirname, resolve, relative, sep, isAbsolute } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { DEFAULT_MODEL_ROTATIONS } from './types.js';
+import chalk from 'chalk';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS } from '../constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS } from '../constants.js';
 import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } from '../llm/client.js';
 
 /**
@@ -21,10 +22,31 @@ import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } fr
  */
 const REWRITE_ESCALATION_THRESHOLD = 2;
 
+/**
+ * Strip tool markup that the model may have pasted inside a replacement block.
+ * Prevents self-corruption (search/replace XML ending up in source files).
+ */
+function sanitizeToolMarkupInReplacement(text: string): string {
+  let out = text;
+  const patterns = [
+    /<change\s+path="[^"]+">[\s\S]*?<\/change>/g,
+    /<search>[\s\S]*?<\/search>/g,
+    /<replace>[\s\S]*?<\/replace>/g,
+  ];
+  for (const re of patterns) {
+    out = out.replace(re, '');
+  }
+  return out.trim();
+}
+
 /** Max retries for 504/gateway timeout only. Do not retry other 5xx or 429. */
 const MAX_504_RETRIES = 1;
 /** Backoff in ms before retry. One retry keeps 504 burn to ~5 min instead of ~10 min when gateway is down. */
 const BACKOFF_MS = [10_000];
+/** After this many consecutive 504/timeouts, pause before next attempt so gateway can recover. */
+const CONSECUTIVE_504_COOLDOWN_THRESHOLD = 3;
+/** Cooldown duration in ms when threshold hit. */
+const COOLDOWN_MS = 180_000;
 // Backend context: ElizaCloud/gateway backend has historically used a ~1 min timeout;
 // a PR to increase it to 2 min may or may not be deployed. 504s after ~1 min (or ~3 min
 // if the gateway layer times out later) trigger retry then rotation (errorType: 'timeout').
@@ -88,11 +110,11 @@ function withRequestTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
   });
 }
 
-async function with504Retry<T>(fn: () => Promise<T>, logContext?: string): Promise<T> {
+async function with504Retry<T>(fn: () => Promise<T>, logContext?: string, timeoutMs: number = LLM_REQUEST_TIMEOUT_MS): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_504_RETRIES; attempt++) {
     try {
-      return await withRequestTimeout(LLM_REQUEST_TIMEOUT_MS, fn);
+      return await withRequestTimeout(timeoutMs, fn);
     } catch (e) {
       lastError = e;
       const isTimeout = e instanceof Error && /timeout/i.test(e.message);
@@ -132,6 +154,8 @@ export class LLMAPIRunner implements Runner {
   private openai?: OpenAI;
   /** Track search/replace failures per file across iterations within a session. */
   private searchReplaceFailures = new Map<string, number>();
+  /** Consecutive 504/timeout count across attempts; reset on success. Used for cooldown. */
+  private consecutive504Count = 0;
 
   async isAvailable(): Promise<boolean> {
     if (process.env.ELIZACLOUD_API_KEY) {
@@ -270,6 +294,18 @@ Working directory: ${workdir}`;
 
     debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
 
+    // Full-file rewrite prompts are larger; use a longer timeout so the request can complete.
+    const requestTimeoutMs = rewriteFiles.length > 0 ? LLM_REQUEST_TIMEOUT_FULL_FILE_MS : LLM_REQUEST_TIMEOUT_MS;
+
+    // Cooldown: after 3+ consecutive 504/timeouts, pause so gateway can recover.
+    if (this.consecutive504Count >= CONSECUTIVE_504_COOLDOWN_THRESHOLD) {
+      const sec = Math.round(COOLDOWN_MS / 1000);
+      debug(`Gateway cooldown: ${this.consecutive504Count} consecutive 504/timeouts — pausing ${sec}s before next attempt`);
+      console.log(chalk.yellow(`\n⚠ Gateway cooldown: ${this.consecutive504Count} consecutive timeouts — pausing ${sec}s before retry...`));
+      await new Promise(r => setTimeout(r, COOLDOWN_MS));
+      this.consecutive504Count = 0;
+    }
+
     try {
       let response: string;
 
@@ -287,7 +323,8 @@ Working directory: ${workdir}`;
             system: systemPrompt,
             messages: [{ role: 'user', content: enrichedPrompt }],
           }),
-          'anthropic'
+          'anthropic',
+          requestTimeoutMs
         );
 
         response = result.content
@@ -320,7 +357,8 @@ Working directory: ${workdir}`;
                 { role: 'user', content: enrichedPrompt },
               ],
             }),
-            this.provider === 'elizacloud' ? 'elizacloud' : 'openai'
+            this.provider === 'elizacloud' ? 'elizacloud' : 'openai',
+            requestTimeoutMs
           );
 
           response = result.choices[0]?.message?.content || '';
@@ -359,6 +397,7 @@ Working directory: ${workdir}`;
           };
         }
         console.log('  No file changes extracted from LLM response');
+        this.consecutive504Count = 0;
         return {
           success: true,
           output: response,
@@ -367,6 +406,7 @@ Working directory: ${workdir}`;
 
       console.log(`  ✓ Modified ${filesWritten.length} file(s): ${filesWritten.join(', ')}`);
 
+      this.consecutive504Count = 0;
       return {
         success: true,
         output: response,
@@ -374,6 +414,16 @@ Working directory: ${workdir}`;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       debug('LLM API error', { error: errorMessage });
+
+      const is504OrTimeout = is504OrGatewayTimeout(error) || /request timeout|timeout after/i.test(errorMessage);
+      if (is504OrTimeout) {
+        this.consecutive504Count++;
+        // De-escalate full-file rewrite so next attempt uses smaller prompt and may complete.
+        if (rewriteFiles.length > 0) {
+          this.clearEscalationForFiles(rewriteFiles);
+          debug('De-escalated files after timeout (retry with search/replace)', { files: rewriteFiles });
+        }
+      }
 
       // WHY: 504s are hard to debug without request/response context; log URL, full body, and response headers.
       if (is504OrGatewayTimeout(error)) {
@@ -549,6 +599,13 @@ Working directory: ${workdir}`;
     this.searchReplaceFailures.clear();
   }
 
+  /** Clear escalation for given files so next attempt uses search/replace instead of full-file rewrite. Used after timeout. */
+  clearEscalationForFiles(filePaths: string[]): void {
+    for (const p of filePaths) {
+      this.searchReplaceFailures.set(p, 0);
+    }
+  }
+
   /** Get current failure counts for debugging/logging. */
   getFailureCounts(): Map<string, number> {
     return new Map(this.searchReplaceFailures);
@@ -569,7 +626,14 @@ Working directory: ${workdir}`;
     while ((match = changePattern.exec(response)) !== null) {
       const [, filePath, searchText, replaceText] = match;
       attemptedChanges++;
-      
+      const replaceContent = sanitizeToolMarkupInReplacement(replaceText);
+      if (!replaceContent && replaceText.trim()) {
+        debug('Skipping change — replacement was only tool markup after sanitization', { filePath });
+        failedSearchReplace++;
+        failedFiles.add(filePath);
+        continue;
+      }
+
       const { safe, fullPath } = this.isPathSafe(workdir, filePath);
       if (!safe) {
         debug('Skipping file outside workdir', { filePath });
@@ -601,7 +665,7 @@ Working directory: ${workdir}`;
               .filter(Boolean);
             const whitespacePattern = patternParts.join(`\\s{1,${MAX_WHITESPACE}}`);
             const whitespaceRegex = new RegExp(whitespacePattern, 'm');
-            const newContent = originalContent.replace(whitespaceRegex, () => replaceText.trim());
+            const newContent = originalContent.replace(whitespaceRegex, () => replaceContent);
             if (newContent !== originalContent) {
               writeFileSync(fullPath, newContent, 'utf-8');
               filesModified.add(filePath);
@@ -612,7 +676,7 @@ Working directory: ${workdir}`;
           
           // Progressive line trimming: LLMs often include 1-2 extra context lines
           // at the top/bottom that have drifted since the review. Try stripping them.
-          const trimResult = progressiveTrimMatch(originalContent, searchNormalized, replaceText.trim());
+          const trimResult = progressiveTrimMatch(originalContent, searchNormalized, replaceContent);
           if (trimResult) {
             writeFileSync(fullPath, trimResult, 'utf-8');
             filesModified.add(filePath);
@@ -627,7 +691,7 @@ Working directory: ${workdir}`;
           const fuzzyResult = fuzzyFindRegion(originalContent, searchNormalized);
           if (fuzzyResult) {
             // Re-align replacement indentation to match the file's actual indentation
-            const alignedReplace = realignIndent(originalContent, fuzzyResult, replaceText.trim());
+            const alignedReplace = realignIndent(originalContent, fuzzyResult, replaceContent);
             const newContent = originalContent.slice(0, fuzzyResult.start) + alignedReplace + originalContent.slice(fuzzyResult.end);
             if (newContent !== originalContent) {
               writeFileSync(fullPath, newContent, 'utf-8');
@@ -648,8 +712,8 @@ Working directory: ${workdir}`;
           continue;
         }
 
-        // Use callback to prevent $ token substitution in replaceText
-        const newContent = originalContent.replace(searchNormalized, () => replaceText.trim());
+        // Use callback to prevent $ token substitution in replaceContent
+        const newContent = originalContent.replace(searchNormalized, () => replaceContent);
         
         if (newContent !== originalContent) {
           writeFileSync(fullPath, newContent, 'utf-8');

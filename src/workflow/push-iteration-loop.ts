@@ -30,6 +30,7 @@ import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../git/git-clone-index.js';
 import { formatNumber, debugStep, startTimer, debug } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
+import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { recheckSolvability } from './helpers/solvability.js';
 
@@ -73,6 +74,11 @@ export interface PushIterationContexts {
    * was already retrieved. Consumed once on first push iteration, then cleared.
    */
   prefetchedComments?: ReviewComment[];
+  /**
+   * Cache of last analysis result (comment count + headSha → unresolved, duplicateMap).
+   * When comment count and head SHA unchanged, reuse to skip expensive findUnresolvedIssues.
+   */
+  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
 }
 
 /** Callback functions used during push iteration */
@@ -91,7 +97,7 @@ export interface PushIterationCallbacks {
   getRunner: () => Runner;
   parseNoChangesExplanation: (output: string) => string | null;
   trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
-  tryRotation: () => boolean;
+  tryRotation: (failureErrorType?: string) => boolean;
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
   /** Called when a runner fails with tool_config (e.g. unknown option) so it's skipped for rest of run */
@@ -172,7 +178,8 @@ export async function executePushIteration(
   
   const loopResult = await ResolverProc.processCommentsAndPrepareFixLoop(
     git, github, owner, repo, number, prInfo, stateContext, lessonsContext, llm, options, config, workdir, spinner,
-    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched
+    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched,
+    contexts.lastAnalysisCacheRef
   );
   
   const { comments, unresolvedIssues, duplicateMap } = loopResult;
@@ -203,6 +210,13 @@ export async function executePushIteration(
   const maxFixIterations = options.maxFixIterations || Infinity;
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
+
+  // Reset stalemate counter at the start of each push iteration's fix loop.
+  // WHY: noProgressCycles persists in state across push iterations. Without this,
+  // a bail-out in push iteration N leaves the counter at threshold, so push
+  // iteration N+1 bails immediately on its first cycle (even if that cycle was
+  // timeout-only and should not count as stalemate).
+  Bailout.resetNoProgressCycles(stateContext);
   
   // Expose verifiedThisSession on stateContext so reporters can use the actual
   // session verification count instead of unreliable delta counting.
@@ -403,6 +417,8 @@ export async function executePushIteration(
     }
     // Committed and pushed this iteration
     committedThisIteration = true;
+    // Invalidate analysis cache so next iteration re-analyzes with new head
+    if (contexts.lastAnalysisCacheRef) contexts.lastAnalysisCacheRef.current = null;
   } else {
     console.log(chalk.yellow('\nNo changes to commit'));
     // Preserve issue objects (including verifierContradiction) so AAR shows "Verifier said" for each

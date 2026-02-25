@@ -333,7 +333,7 @@ ${issue.codeSnippet}
   if (issue.verifierContradiction) {
     prompt += `**⚠ VERIFIER DISAGREES — issue NOT fixed:** ${issue.verifierContradiction}
 The verifier checked the actual code and found the issue still exists. Treat the verifier's explanation above as the source of truth. Your fix must directly address that feedback so the next verification passes.
-Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected that. You must make a code change that addresses the verifier's citation above.
+Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected a prior "already fixed" claim. You must make a concrete code change that addresses the verifier's citation above.
 If the verifier suggested a more robust or structural approach (e.g. "restructure", "use X instead", "a more robust fix would be"), prefer that over a minimal workaround — the verifier will reject fragile heuristics.
 Re-check the current file content at the lines the verifier cited — the snippet above may be stale or partial; the verifier saw the actual file.
 

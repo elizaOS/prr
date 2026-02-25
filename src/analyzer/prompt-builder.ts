@@ -373,7 +373,7 @@ export function buildFixPrompt(
     if (issue.verifierContradiction) {
       parts.push(`**⚠ VERIFIER DISAGREES — issue NOT fixed:** ${issue.verifierContradiction}`);
       parts.push('The verifier checked the actual code and found the issue still exists. Treat the verifier\'s explanation above as the source of truth for what is still missing or wrong. Your fix for this issue must directly address that feedback (e.g. add the missing code or change the cited location) so the next verification passes.');
-      parts.push('Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected that. You must make a code change that addresses the verifier\'s citation above.');
+      parts.push('Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected a prior "already fixed" claim. You must make a concrete code change that addresses the verifier\'s citation above.');
       parts.push('If the verifier suggested a more robust or structural approach (e.g. "restructure", "use X instead", "a more robust fix would be"), prefer that over a minimal workaround — the verifier will reject fragile heuristics.');
       parts.push('Re-check the current file content at the lines the verifier cited — the code snippet in this prompt may be stale or partial; the verifier saw the actual file.\n');
     }
