@@ -1165,12 +1165,13 @@ function extractIssueSubsections(body: string): string {
   const SKIP_LABELS = ['strength', 'good', 'strong', 'highlight'];
 
   // Check if this section uses **Label:** sub-headers
-  const hasSubHeaders = /^\*\*[A-Z][\w\s]+:\*\*\s*$/m.test(body);
+  const hasSubHeaders = /^\*\*[A-Za-z][\w\s]+:\*\*\s*$/m.test(body);
   if (!hasSubHeaders) return body;
-
+ 
   const lines = body.split('\n');
   const result: string[] = [];
-  let inIssueBlock = false;
+  // Content before the first sub-header is treated as issue content by default.
+  let inIssueBlock = true;
   let inSkipBlock = false;
 
   for (const line of lines) {
