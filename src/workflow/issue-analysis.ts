@@ -73,6 +73,41 @@ async function hashFileContent(workdir: string, filePath: string): Promise<strin
   }
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Post-STALE symbol verification (override false STALE when symbol still in file)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/** Extract candidate symbols from a STALE explanation (e.g. "formatDuration no longer exists" → formatDuration). */
+function extractSymbolsFromStaleExplanation(explanation: string): string[] {
+  const symbols: string[] = [];
+  // "X no longer exists" / "X does not exist" / "X do not exist"
+  const noLonger = explanation.matchAll(/(\w+)\s+(?:no longer exists|does not exist|do not exist|does not appear)/gi);
+  for (const m of noLonger) symbols.push(m[1]);
+  // "The X function ... no longer exists" / "The X function ... does not exist"
+  const theFunc = explanation.matchAll(/The\s+(\w+)\s+(?:function|method)\s+[^.]*(?:no longer exists|does not exist)/gi);
+  for (const m of theFunc) symbols.push(m[1]);
+  // "constants X, Y, Z are not visible" — split on comma, trim
+  const constants = explanation.match(/(?:constants?\s+)([A-Z][A-Z0-9_,\s]+?)(?:\s+are not visible|\s+do not appear|\.)/i);
+  if (constants) {
+    for (const part of constants[1].split(/[\s,]+/)) {
+      const s = part.trim();
+      if (s.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) symbols.push(s);
+    }
+  }
+  return [...new Set(symbols)];
+}
+
+/** Return true if file content contains the symbol as a word (identifier). */
+async function fileContainsSymbol(workdir: string, filePath: string, symbol: string): Promise<boolean> {
+  try {
+    const content = await readFile(join(workdir, filePath), 'utf-8');
+    const wordBoundary = new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    return wordBoundary.test(content);
+  } catch {
+    return false;
+  }
+}
+
 /** Module-level dedup cache (in-memory, session-scoped — not persisted). */
 const _dedupCache: {
   commentIds?: string;
@@ -1332,23 +1367,41 @@ export async function findUnresolvedIssues(
         continue;
       }
 
-      // Persist comment status
-      const fHash = fileHashes.get(comment.path) || '__missing__';
+      // Post-STALE grep: if LLM said STALE and named a symbol, check if that symbol is still in the file
+      let effectiveResult = result;
       if (result.stale) {
-        CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', result.explanation, comment.path, fHash);
-      } else if (result.exists) {
-        CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', result.explanation, result.importance ?? 3, result.ease ?? 3, comment.path, fHash);
-      } else {
-        CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', result.explanation, comment.path, fHash);
+        const symbols = extractSymbolsFromStaleExplanation(result.explanation);
+        for (const sym of symbols) {
+          if (await fileContainsSymbol(workdir, comment.path, sym)) {
+            debug(`Post-STALE grep: "${sym}" found in ${comment.path}, overriding STALE→YES`);
+            effectiveResult = {
+              ...result,
+              stale: false,
+              exists: true,
+              explanation: `${result.explanation} [Override: symbol "${sym}" still present in file]`,
+            };
+            break;
+          }
+        }
       }
 
-      if (result.stale) {
+      // Persist comment status
+      const fHash = fileHashes.get(comment.path) || '__missing__';
+      if (effectiveResult.stale) {
+        CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', effectiveResult.explanation, comment.path, fHash);
+      } else if (effectiveResult.exists) {
+        CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', effectiveResult.explanation, effectiveResult.importance ?? 3, effectiveResult.ease ?? 3, comment.path, fHash);
+      } else {
+        CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', effectiveResult.explanation, comment.path, fHash);
+      }
+
+      if (effectiveResult.stale) {
         // Issue is stale (code fundamentally restructured) - dismiss without marking verified
-        if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
+        if (validateDismissalExplanation(effectiveResult.explanation, comment.path, comment.line)) {
           Dismissed.dismissIssue(
             stateContext,
             comment.id,
-            result.explanation,
+            effectiveResult.explanation,
             'stale',
             comment.path,
             comment.line,
@@ -1375,11 +1428,11 @@ export async function findUnresolvedIssues(
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
-            triage: { importance: result.importance, ease: result.ease },
+            triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
           });
         }
-      } else if (result.exists) {
+      } else if (effectiveResult.exists) {
         // Check if this is a canonical issue with duplicates
         const duplicates = dedupResult.duplicateMap.get(comment.id);
         const mergedDuplicates = duplicates?.map(dupId => {
@@ -1397,19 +1450,19 @@ export async function findUnresolvedIssues(
           comment,
           codeSnippet,
           stillExists: true,
-          explanation: result.explanation,
-          triage: { importance: result.importance, ease: result.ease },
+          explanation: effectiveResult.explanation,
+          triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
         });
       } else {
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
-        if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
+        if (validateDismissalExplanation(effectiveResult.explanation, comment.path, comment.line)) {
           // Valid explanation - document why it doesn't need fixing
           Verification.markVerified(stateContext, comment.id);
           Dismissed.dismissIssue(
             stateContext,
             comment.id,
-            result.explanation,
+            effectiveResult.explanation,
             'already-fixed',
             comment.path,
             comment.line,
@@ -1437,7 +1490,7 @@ export async function findUnresolvedIssues(
             codeSnippet,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
-            triage: { importance: result.importance, ease: result.ease },
+            triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
           });
         }

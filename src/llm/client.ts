@@ -831,6 +831,15 @@ ${codeSnippet}
       'pattern referenced is gone. Do NOT use STALE just because the fix approach would be',
       'different — if the underlying issue still exists, say YES.',
       '',
+      'CRITICAL - Do NOT use STALE when the referenced code is simply missing from the excerpt:',
+      '- If the Current code block ends with "... (truncated)", the snippet is partial. Do NOT conclude',
+      '  a function/symbol was removed just because it does not appear in the snippet. Say YES (still exists).',
+      '- If you would say "not visible in the provided excerpt" or "not in excerpt", say YES, not STALE.',
+      '- Only use STALE when you can see enough of the file (e.g. the relevant area) and the symbol is genuinely gone.',
+      '',
+      'CRITICAL - Verdict must match explanation: if your explanation says the issue "still exists"',
+      'or "confirming the issue still exists", your verdict must be YES, not NO.',
+      '',
       'CRITICAL FORMAT RULE: Do NOT use markdown formatting in your response lines.',
       'No bold (**), no headings (#), no backticks around issue IDs.',
       'Just plain text: issue_1: YES: I1: D2: explanation',
@@ -1032,10 +1041,39 @@ ${codeSnippet}
           }
           
           const responseUpper = response.toUpperCase();
+          const explanation = rest.trim();
+          let exists = responseUpper === 'YES';
+          let stale = responseUpper === 'STALE';
+
+          // Override: explanation contradicts verdict — e.g. "confirming the issue still exists" with NO
+          const explanationLower = explanation.toLowerCase();
+          if (responseUpper === 'NO' && (
+            /confirming the issue still exists/i.test(explanation) ||
+            /issue still exists/i.test(explanation) ||
+            /still exists.*confirm/i.test(explanation)
+          )) {
+            debug('Batch override: NO→YES (explanation says issue still exists)', { resultId, explanationPreview: explanation.slice(0, 80) });
+            exists = true;
+            stale = false;
+          }
+
+          // Override: STALE only because symbol "not visible in excerpt" — treat as YES to avoid false dismissal
+          if (stale && (
+            /not visible in the provided excerpt/i.test(explanation) ||
+            /not (?:visible|found) in the provided .* excerpt/i.test(explanation) ||
+            /not visible in provided .* excerpt/i.test(explanation) ||
+            /are not visible in the provided/i.test(explanation) ||
+            /excerpt does not (?:include|show|contain)/i.test(explanation)
+          )) {
+            debug('Batch override: STALE→YES (reason was missing from excerpt, not removed)', { resultId, explanationPreview: explanation.slice(0, 80) });
+            exists = true;
+            stale = false;
+          }
+
           allResults.set(resultId, {
-            exists: responseUpper === 'YES',
-            stale: responseUpper === 'STALE',
-            explanation: rest.trim(),
+            exists,
+            stale,
+            explanation,
             importance,
             ease,
           });

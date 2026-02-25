@@ -284,69 +284,79 @@ export async function verifyFixes(
           const issue = changedIssues[i];
           spinner.text = `Verifying [${i + 1}/${changedIssues.length}] ${issue.comment.path}:${issue.comment.line || '?'}`;
           
-          const diff = await getIssueDiff(issue);
-          const verification = await llm.verifyFix(
-            issue.comment.body,
-            issue.comment.path,
-            diff
-          );
-
-          Iterations.addVerificationResult(stateContext, issue.comment.id, {
-            passed: verification.fixed,
-            reason: verification.explanation,
-          });
-
-          debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, verification);
-          
-          if (verification.fixed) {
-            verifiedCount++;
-            Verification.markVerified(stateContext, issue.comment.id);
-            Iterations.addCommentToIteration(stateContext, issue.comment.id);
-            verifiedThisSession.add(issue.comment.id);  // Track for session filtering
-            
-            // Clean up fix-attempt lessons now that the issue is resolved.
-            // Keeps architectural constraints, removes "Fix for X - the diff..." debris.
-            const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
-              lessonsContext, issue.comment.path, issue.comment.line
+          try {
+            const diff = await getIssueDiff(issue);
+            const verification = await llm.verifyFix(
+              issue.comment.body,
+              issue.comment.path,
+              diff
             );
-            if (cleaned > 0) {
-              debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${issue.comment.path}:${issue.comment.line}`);
-            }
+
+            Iterations.addVerificationResult(stateContext, issue.comment.id, {
+              passed: verification.fixed,
+              reason: verification.explanation,
+            });
+
+            debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, verification);
             
-            // Auto-verify duplicates of this canonical issue
-            if (duplicateMap) {
-              const duplicates = duplicateMap.get(issue.comment.id) || [];
-              for (const dupId of duplicates) {
-                if (!Verification.isVerified(stateContext, dupId)) {
-                  Verification.markVerified(stateContext, dupId, issue.comment.id);
-                  verifiedThisSession.add(dupId);
-                  autoVerifiedCount++;
-                  debug(`Auto-verified duplicate comment ${dupId} (canonical ${issue.comment.id} was fixed)`);
+            if (verification.fixed) {
+              verifiedCount++;
+              Verification.markVerified(stateContext, issue.comment.id);
+              Iterations.addCommentToIteration(stateContext, issue.comment.id);
+              verifiedThisSession.add(issue.comment.id);  // Track for session filtering
+              
+              // Clean up fix-attempt lessons now that the issue is resolved.
+              // Keeps architectural constraints, removes "Fix for X - the diff..." debris.
+              const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
+                lessonsContext, issue.comment.path, issue.comment.line
+              );
+              if (cleaned > 0) {
+                debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${issue.comment.path}:${issue.comment.line}`);
+              }
+              
+              // Auto-verify duplicates of this canonical issue
+              if (duplicateMap) {
+                const duplicates = duplicateMap.get(issue.comment.id) || [];
+                for (const dupId of duplicates) {
+                  if (!Verification.isVerified(stateContext, dupId)) {
+                    Verification.markVerified(stateContext, dupId, issue.comment.id);
+                    verifiedThisSession.add(dupId);
+                    autoVerifiedCount++;
+                    debug(`Auto-verified duplicate comment ${dupId} (canonical ${issue.comment.id} was fixed)`);
+                  }
                 }
               }
-            }
-          } else {
-            failedCount++;
-            // Feed verifier's explanation back so next fix prompt shows VERIFIER DISAGREES.
-            if (!isInfrastructureFailure(verification.explanation)) {
-              issue.verifierContradiction = verification.explanation;
-            }
-            // Skip failure analysis for infrastructure errors (quota, timeout) to save tokens
-            if (isInfrastructureFailure(verification.explanation)) {
-              const shortReason = verification.explanation.substring(0, 120);
-              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - infra failure: ${shortReason}`);
             } else {
-              const lesson = await llm.analyzeFailedFix(
-                {
-                  comment: issue.comment.body,
-                  filePath: issue.comment.path,
-                  line: issue.comment.line,
-                },
-                diff,
-                verification.explanation
-              );
-              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+              failedCount++;
+              // Feed verifier's explanation back so next fix prompt shows VERIFIER DISAGREES.
+              if (!isInfrastructureFailure(verification.explanation)) {
+                issue.verifierContradiction = verification.explanation;
+              }
+              // Skip failure analysis for infrastructure errors (quota, timeout) to save tokens
+              if (isInfrastructureFailure(verification.explanation)) {
+                const shortReason = verification.explanation.substring(0, 120);
+                LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - infra failure: ${shortReason}`);
+              } else {
+                const lesson = await llm.analyzeFailedFix(
+                  {
+                    comment: issue.comment.body,
+                    filePath: issue.comment.path,
+                    line: issue.comment.line,
+                  },
+                  diff,
+                  verification.explanation
+                );
+                LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+              }
             }
+          } catch (err) {
+            failedCount++;
+            const msg = err instanceof Error ? err.message : String(err);
+            debug('Verification failed for issue', { path: issue.comment.path, line: issue.comment.line, error: msg });
+            Iterations.addVerificationResult(stateContext, issue.comment.id, {
+              passed: false,
+              reason: `Verification threw: ${msg}`,
+            });
           }
         }
       } else {

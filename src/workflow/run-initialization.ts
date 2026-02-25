@@ -97,7 +97,13 @@ export async function initializeRun(
   debugStep('FETCHING PR INFO');
   startTimer('Fetch PR info');
   spinner.start('Fetching PR information...');
-  const prInfo = await github.getPRInfo(owner, repo, number);
+  let prInfo;
+  try {
+    prInfo = await github.getPRInfo(owner, repo, number);
+  } catch (err) {
+    spinner.fail('Failed to fetch PR info');
+    throw err;
+  }
   spinner.succeed(`PR branch: ${prInfo.branch}`);
   debug('PR info', prInfo);
   endTimer('Fetch PR info');
@@ -105,7 +111,13 @@ export async function initializeRun(
   // Check PR status (are bots still running?)
   debugStep('CHECKING PR STATUS');
   spinner.start('Checking CI/bot status...');
-  const prStatus = await github.getPRStatus(owner, repo, number, prInfo.headSha);
+  let prStatus;
+  try {
+    prStatus = await github.getPRStatus(owner, repo, number, prInfo.headSha);
+  } catch (err) {
+    spinner.warn('Failed to fetch PR status');
+    throw err;
+  }
   spinner.stop();
   
   // Display PR status
