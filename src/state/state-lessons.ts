@@ -3,6 +3,7 @@
  */
 import type { StateContext } from './state-context.js';
 import { getState } from './state-context.js';
+import { normalizeLessonText, lessonKey, lessonNearKey } from './lessons-normalize.js';
 
 export function addLesson(ctx: StateContext, lesson: string): void {
   const state = getState(ctx);
@@ -28,15 +29,12 @@ export function getLessons(ctx: StateContext): string[] {
 }
 
 export function getLessonCount(ctx: StateContext): number {
-  return ctx.state?.lessonsLearned.length || 0;
+  return ctx.state?.lessonsLearned?.length || 0;
 }
 
 export function compactLessons(ctx: StateContext): number {
   const state = ctx.state;
   if (!state) return 0;
-  
-  // Import normalization utilities
-  const { normalizeLessonText, lessonKey, lessonNearKey } = require('./lessons-normalize.js');
   
   const seenKeys = new Set<string>();
   const seenNear = new Set<string>();
