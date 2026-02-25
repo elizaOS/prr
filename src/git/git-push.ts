@@ -160,6 +160,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
+      resolve({ success: false, error: 'Push interrupted by SIGINT' });
     };
     process.on('SIGINT', sigintHandler);
     
