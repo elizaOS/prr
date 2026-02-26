@@ -337,8 +337,15 @@ export async function executePushIteration(
     progressThisCycle += cleanupResult.progressMade;
     if (cleanupResult.expectedBotResponseTime !== undefined) expectedBotResponseTimeRef.current = cleanupResult.expectedBotResponseTime;
 
-    // Check if all fixed
-    allFixed = failedCount === 0;
+    // Remove verified issues from the queue so "all fixed" and next iteration see the true remaining set.
+    // WHY: allFixed was previously (failedCount === 0), which is true when no verification failures
+    // occurred — so we broke out after fixing 2 of 17, thinking we were done. Now we only consider
+    // the queue empty when there are no unresolved issues left.
+    const stillUnresolved = unresolvedIssues.filter((i) => !Verification.isVerified(stateContext, i.comment.id));
+    unresolvedIssues.splice(0, unresolvedIssues.length, ...stillUnresolved);
+
+    // All fixed only when the queue is empty, not when this batch had no verification failures.
+    allFixed = unresolvedIssues.length === 0;
     if (allFixed && !exitReason.startsWith('all')) {
       exitReason = 'all_fixed';
       exitDetails = 'All issues fixed and verified in fix loop';
