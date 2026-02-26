@@ -454,7 +454,7 @@ export async function executePushIteration(
     // If intermediate pushes happened during this iteration's fix loop, optionally
     // wait for bot reviews. With --no-wait-bot we skip the wait and continue;
     // new bot comments (e.g. CodeRabbit) are picked up when they land on next run.
-    if (alreadyCommitted.size > 0 && options.autoPush && (maxPushIterations === 0 || pushIteration < maxPushIterations) && !(options.noWaitBot ?? false)) {
+    if (alreadyCommitted.size > 0 && options.autoPush && pushIteration < maxPushIterations && !(options.noWaitBot ?? false)) {
       const headSha = await git.revparse(['HEAD']);
       await waitForBotReviews(owner, repo, number, headSha);
       // Don't break — let the outer loop re-fetch comments and process any new
