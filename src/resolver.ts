@@ -31,6 +31,7 @@ import * as Reporter from './ui/reporter.js';
 import * as Rotation from './models/rotation.js';
 import * as GitOps from './git/git-operations-index.js';
 import * as ResolverProc from './resolver-proc.js';
+import * as Performance from './state/state-performance.js';
 
 export class PRResolver {
   private config: Config;
@@ -197,7 +198,7 @@ export class PRResolver {
   private sanitizeOutputForLog(output: string | undefined, maxLength: number = 500): string { return ResolverProc.sanitizeOutputForLog(output, maxLength); }
   private validateDismissalExplanation(explanation: string, commentPath: string, commentLine: number | null): boolean { return ResolverProc.validateDismissalExplanation(explanation, commentPath, commentLine); }
 
-  private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<{ unresolved: UnresolvedIssue[]; recommendedModels?: string[]; recommendedModelIndex: number; modelRecommendationReasoning?: string; duplicateMap: Map<string, string[]> }> { const result = await ResolverProc.findUnresolvedIssues(comments, totalCount, this.stateContext, this.lessonsContext, this.llm, this.runner, this.options, this.workdir, (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody), (runner) => this.getModelsForRunner(runner)); if (result.recommendedModels?.length) { this.recommendedModels = result.recommendedModels; this.recommendedModelIndex = result.recommendedModelIndex; this.modelRecommendationReasoning = result.modelRecommendationReasoning; } return result; }
+  private async findUnresolvedIssues(comments: ReviewComment[], totalCount: number): Promise<{ unresolved: UnresolvedIssue[]; recommendedModels?: string[]; recommendedModelIndex: number; modelRecommendationReasoning?: string; duplicateMap: Map<string, string[]> }> { const result = await ResolverProc.findUnresolvedIssues(comments, totalCount, this.stateContext, this.lessonsContext, this.llm, this.runner, this.options, this.workdir, (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody), (runner) => this.getModelsForRunner(runner)); if (result.recommendedModels?.length) { this.recommendedModels = Performance.sortRecommendedModelsByPerformance(result.recommendedModels, this.runner.name, this.stateContext); this.recommendedModelIndex = result.recommendedModelIndex; this.modelRecommendationReasoning = result.modelRecommendationReasoning; } return result; }
 
   private async ensureStateFileIgnored(workdir: string): Promise<void> { return ResolverProc.ensureStateFileIgnored(workdir); }
   private async cleanupCreatedSyncTargets(git: SimpleGit): Promise<void> { return GitOps.cleanupCreatedSyncTargets(git, this.workdir, this.lessonsContext); }

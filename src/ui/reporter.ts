@@ -255,7 +255,7 @@ export function printHandoffPrompt(
   console.log(chalk.gray('\nCopy this prompt to continue with a different tool:\n'));
   
   console.log(chalk.white('─'.repeat(60)));
-  console.log(chalk.white(`Fix the following ${unresolvedIssues.length} code review issue(s):\n`));
+  console.log(chalk.white(`Fix the following ${formatNumber(unresolvedIssues.length)} code review issue(s):\n`));
   
   for (let i = 0; i < unresolvedIssues.length; i++) {
     const issue = unresolvedIssues[i];
@@ -369,7 +369,7 @@ export async function printAfterActionReport(
 
   // --- Fixed this session ---
   if (fixedThisSessionComments.length > 0) {
-    console.log(chalk.green(`\n━━━ Fixed This Session (${fixedThisSessionComments.length}) ━━━`));
+    console.log(chalk.green(`\n━━━ Fixed This Session (${formatNumber(fixedThisSessionComments.length)}) ━━━`));
     for (const comment of fixedThisSessionComments) {
       const preview = sanitizeCommentForDisplay(comment.body).split('\n')[0];
       const truncated = preview.length > 100 ? preview.substring(0, 100) + '...' : preview;
@@ -381,7 +381,7 @@ export async function printAfterActionReport(
   // --- Remaining issues (detailed) ---
   const withVerifierReason = unresolvedIssues.filter(i => i.verifierContradiction);
   if (unresolvedIssues.length > 0) {
-    console.log(chalk.yellow(`\n━━━ Remaining (${unresolvedIssues.length}) — Need Attention ━━━`));
+    console.log(chalk.yellow(`\n━━━ Remaining (${formatNumber(unresolvedIssues.length)}) — Need Attention ━━━`));
     if (withVerifierReason.length > 0) {
       console.log(chalk.gray(`  Why unresolved: Fixer and verifier disagreed — verifier checked the code and said the following for each issue below.`));
     }
@@ -390,7 +390,7 @@ export async function printAfterActionReport(
     const issue = unresolvedIssues[i];
     const issueNum = i + 1;
     
-    console.log(chalk.yellow(`\n  Issue ${issueNum}/${unresolvedIssues.length}: ${issue.comment.path}:${issue.comment.line || '?'}`));
+    console.log(chalk.yellow(`\n  Issue ${formatNumber(issueNum)}/${formatNumber(unresolvedIssues.length)}: ${issue.comment.path}:${issue.comment.line || '?'}`));
     
     // Verifier's reason (why it's still not fixed) — most direct answer to "why couldn't it resolve"
     if (issue.verifierContradiction) {
@@ -458,8 +458,8 @@ export async function printAfterActionReport(
       const reason = d.category || 'unknown';
       byReason.set(reason, (byReason.get(reason) || 0) + 1);
     }
-    const reasonSummary = [...byReason.entries()].map(([r, n]) => `${n} ${r}`).join(', ');
-    console.log(chalk.gray(`\n━━━ Dismissed (${dismissedIssues.length}: ${reasonSummary}) ━━━`));
+    const reasonSummary = [...byReason.entries()].map(([r, n]) => `${formatNumber(n)} ${r}`).join(', ');
+    console.log(chalk.gray(`\n━━━ Dismissed (${formatNumber(dismissedIssues.length)}: ${reasonSummary}) ━━━`));
     for (const d of dismissedIssues.slice(0, 10)) {
       const comment = comments.find(c => c.id === d.commentId);
       if (comment) {
@@ -470,7 +470,7 @@ export async function printAfterActionReport(
       }
     }
     if (dismissedIssues.length > 10) {
-      console.log(chalk.gray(`  ... and ${dismissedIssues.length - 10} more`));
+      console.log(chalk.gray(`  ... and ${formatNumber(dismissedIssues.length - 10)} more`));
     }
   }
 
@@ -488,13 +488,13 @@ export async function printAfterActionReport(
   const remainingCount = unresolvedIssues.length;
   const fixedThisSessionCount = verifiedThisSession.size;
 
-  console.log(chalk.gray(`  From ${comments.length} comments: Fixed ${fixedCount}, Dismissed ${dismissedCount}, Remaining ${remainingCount}`));
+  console.log(chalk.gray(`  From ${formatNumber(comments.length)} comments: Fixed ${formatNumber(fixedCount)}, Dismissed ${formatNumber(dismissedCount)}, Remaining ${formatNumber(remainingCount)}`));
   if (totalAccounted !== comments.length) {
-    console.log(chalk.gray(`  (Unique comment IDs in these buckets: ${totalAccounted})`));
+    console.log(chalk.gray(`  (Unique comment IDs in these buckets: ${formatNumber(totalAccounted)})`));
   }
-  console.log(chalk.green(`  Fixed: ${fixedCount}${fixedThisSessionCount > 0 ? ` (${fixedThisSessionCount} this session)` : ''}`));
-  console.log(chalk.gray(`  Dismissed: ${dismissedCount}`));
-  console.log(chalk.yellow(`  Remaining: ${remainingCount}`));
+  console.log(chalk.green(`  Fixed: ${formatNumber(fixedCount)}${fixedThisSessionCount > 0 ? ` (${formatNumber(fixedThisSessionCount)} this session)` : ''}`));
+  console.log(chalk.gray(`  Dismissed: ${formatNumber(dismissedCount)}`));
+  console.log(chalk.yellow(`  Remaining: ${formatNumber(remainingCount)}`));
   
   console.log(chalk.gray('\n(Disable with --no-after-action)'));
 }

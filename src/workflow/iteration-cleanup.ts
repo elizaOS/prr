@@ -20,7 +20,7 @@ import type { Runner } from '../runners/types.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, startTimer, endTimer, formatDuration } from '../logger.js';
-import { formatNumber } from '../ui/reporter.js';
+import { formatNumber } from '../logger.js';
 import { commitIteration, commitIterationPerFile, pushWithRetry } from '../git/git-commit-index.js';
 
 /**
@@ -140,14 +140,14 @@ export async function handleIterationCleanup(
         for (const id of committedIds) alreadyCommitted.add(id);
         commitCount = committedIds.length;
         if (filesCommitted > 0) {
-          console.log(chalk.green(`  Committed ${committedIds.length} fix(es) in ${filesCommitted} file(s)`));
+          console.log(chalk.green(`  Committed ${formatNumber(committedIds.length)} fix(es) in ${formatNumber(filesCommitted)} file(s)`));
         }
       } else {
         const commitResult = await commitIteration(git, newlyVerified, fixIteration, fixedIssueDetails);
         if (commitResult) {
           for (const id of newlyVerified) alreadyCommitted.add(id);
           commitCount = newlyVerified.length;
-          console.log(chalk.green(`  Committed ${newlyVerified.length} fix(es) [${commitResult.hash.slice(0, 7)}]`));
+          console.log(chalk.green(`  Committed ${formatNumber(newlyVerified.length)} fix(es) [${commitResult.hash.slice(0, 7)}]`));
         }
       }
 

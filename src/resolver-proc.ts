@@ -17,6 +17,7 @@ import * as LessonsAPI from './state/lessons-index.js';
 import * as State from './state/state-core.js';
 import * as Performance from './state/state-performance.js';
 import * as Reporter from './ui/reporter.js';
+import { formatNumber } from './logger.js';
 
 // ============================================================================
 // RE-EXPORTS FROM WORKFLOW MODULES
@@ -441,7 +442,7 @@ export async function executeBailOut(
   
   const exitReason = 'bail_out';
   const cyclesCompleted = Bailout.getNoProgressCycles(stateContext);
-  const exitDetails = `Stalemate after ${cyclesCompleted} cycles with no progress - ${unresolvedIssues.length} issue(s) remain`;
+  const exitDetails = `Stalemate after ${formatNumber(cyclesCompleted)} cycles with no progress - ${formatNumber(unresolvedIssues.length)} issue(s) remain`;
   
   const toolsExhausted = runners.map(r => r.name);
   
@@ -478,19 +479,19 @@ export async function executeBailOut(
   console.log(chalk.red.bold('  BAIL-OUT: Stalemate Detected'));
   console.log(chalk.red('═'.repeat(60)));
   
-  console.log(chalk.yellow(`\n  Reason: ${cyclesCompleted} complete cycle(s) with zero verified fixes`));
-  console.log(chalk.gray(`  Max allowed: ${options.maxStaleCycles} (--max-stale-cycles)`));
+  console.log(chalk.yellow(`\n  Reason: ${formatNumber(cyclesCompleted)} complete cycle(s) with zero verified fixes`));
+  console.log(chalk.gray(`  Max allowed: ${formatNumber(options.maxStaleCycles)} (--max-stale-cycles)`));
   
   console.log(chalk.cyan('\n  Progress Summary:'));
   const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
-  const sessionNote = fixedThisSession > 0 ? ` (${fixedThisSession} this session)` : '';
-  console.log(chalk.green(`    ✓ Fixed: ${issuesFixed} issues${sessionNote}`));
-  console.log(chalk.red(`    ✗ Remaining: ${unresolvedIssues.length} issues`));
+  const sessionNote = fixedThisSession > 0 ? ` (${formatNumber(fixedThisSession)} this session)` : '';
+  console.log(chalk.green(`    ✓ Fixed: ${formatNumber(issuesFixed)} issues${sessionNote}`));
+  console.log(chalk.red(`    ✗ Remaining: ${formatNumber(unresolvedIssues.length)} issues`));
   const totalLessons = LessonsAPI.Retrieve.getTotalCount(lessonsContext);
   const newLessons = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
   const lessonInfo = newLessons > 0 
-    ? `${totalLessons} total (${newLessons} new this run)` 
-    : `${totalLessons} (from previous runs)`;
+    ? `${formatNumber(totalLessons)} total (${formatNumber(newLessons)} new this run)` 
+    : `${formatNumber(totalLessons)} (from previous runs)`;
   console.log(chalk.gray(`    📚 Lessons: ${lessonInfo}`));
   
   // Show which tools/models were ACTUALLY attempted (from performance stats),
@@ -506,7 +507,7 @@ export async function executeBailOut(
   for (const tool of toolsExhausted) {
     const actualModels = toolModelCounts.get(tool) || 0;
     if (actualModels > 0) {
-      console.log(chalk.gray(`    • ${tool}: ${actualModels} model${actualModels > 1 ? 's' : ''} tried`));
+      console.log(chalk.gray(`    • ${tool}: ${formatNumber(actualModels)} model${actualModels > 1 ? 's' : ''} tried`));
     } else {
       console.log(chalk.gray(`    • ${tool}: listed but not used`));
     }
@@ -521,7 +522,7 @@ export async function executeBailOut(
       console.log(chalk.gray(`      "${truncated}"`));
     }
     if (unresolvedIssues.length > 5) {
-      console.log(chalk.gray(`    ... and ${unresolvedIssues.length - 5} more`));
+      console.log(chalk.gray(`    ... and ${formatNumber(unresolvedIssues.length - 5)} more`));
     }
   }
   
@@ -619,7 +620,7 @@ export async function checkForNewBotReviews(
       
       return {
         newComments,
-        message: `Found ${newComments.length} new review comment(s) from bots`,
+        message: `Found ${formatNumber(newComments.length)} new review comment(s) from bots`,
         lastCommentFetchTime: now,
         updatedExpectedBotResponseTime: nextExpectedTime,
       };

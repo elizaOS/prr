@@ -10,7 +10,7 @@ import * as Rotation from '../state/state-rotation.js';
 import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
-import { warn, debug } from '../logger.js';
+import { warn, debug, formatNumber } from '../logger.js';
 import { MAX_MODELS_PER_TOOL_ROUND } from '../constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels } from '../llm/client.js';
 
@@ -200,7 +200,7 @@ export function advanceModel(ctx: RotationContext, stateContext: StateContext, o
     }
     
     // Exhausted recommendations, clear and fall back to rotation
-    console.log(chalk.gray(`  Exhausted ${ctx.recommendedModels.length} recommended models, falling back to rotation`));
+    console.log(chalk.gray(`  Exhausted ${formatNumber(ctx.recommendedModels.length)} recommended models, falling back to rotation`));
     ctx.recommendedModels = undefined;
     ctx.recommendedModelIndex = 0;
   }
@@ -754,7 +754,7 @@ export async function validateAndFilterModels(
   
   // Report what we removed
   if (removed.length > 0) {
-    console.log(chalk.yellow(`  Removed ${removed.length} unavailable model(s):`));
+    console.log(chalk.yellow(`  Removed ${removed.length.toLocaleString()} unavailable model(s):`));
     for (const { runner, model } of removed) {
       console.log(chalk.yellow(`    ✗ ${runner}: ${model}`));
     }

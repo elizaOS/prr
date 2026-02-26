@@ -16,7 +16,7 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
-import { debug } from '../logger.js';
+import { debug, formatNumber } from '../logger.js';
 import { parseResultCode } from './utils.js';
 
 /**
@@ -215,9 +215,10 @@ export async function handleNoChangesWithVerification(
       if (needsSpotCheck) {
         debug('Spot-checking NO_CHANGES claim', { total: unresolvedIssues.length, sampleSize: SPOT_CHECK_SAMPLE_SIZE });
         const sample = unresolvedIssues.slice(0, SPOT_CHECK_SAMPLE_SIZE);
+        // Use issue_N IDs so LLM response "issue_1: YES:" matches (normalizeIssueId expects issue_N).
         const spotResults = await llm.batchCheckIssuesExist(
           sample.map((issue, idx) => ({
-            id: `spot_${idx + 1}`,
+            id: `issue_${idx + 1}`,
             comment: issue.comment.body,
             filePath: issue.comment.path,
             line: issue.comment.line,
@@ -227,7 +228,7 @@ export async function handleNoChangesWithVerification(
         
         let spotFixed = 0;
         for (let i = 0; i < sample.length; i++) {
-          const result = spotResults.issues.get(`spot_${i + 1}`);
+          const result = spotResults.issues.get(`issue_${i + 1}`);
           if (result && !result.exists) spotFixed++;
         }
         
@@ -378,7 +379,7 @@ async function verifyAllIssues(
   }
   
   if (verifiedAsFixed > 0) {
-    console.log(chalk.green(`  → Verified ${verifiedAsFixed}/${unresolvedIssues.length} issues as already fixed`));
+    console.log(chalk.green(`  → Verified ${formatNumber(verifiedAsFixed)}/${formatNumber(unresolvedIssues.length)} issues as already fixed`));
     Performance.recordModelFix(stateContext, runnerName, currentModel, verifiedAsFixed);
     
     // Update unresolved list

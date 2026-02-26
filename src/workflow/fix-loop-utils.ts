@@ -19,7 +19,7 @@ import type { SimpleGit } from 'simple-git';
 import type { PRInfo } from '../github/types.js';
 import { checkRemoteAhead } from '../git/git-conflicts.js';
 import { pullLatest } from '../git/git-pull.js';
-import { debug } from '../logger.js';
+import { debug, formatNumber } from '../logger.js';
 
 // Note: All imports must be at module top level - do not use dynamic imports inside functions
 
@@ -82,7 +82,7 @@ export async function processNewBotReviews(
       });
     }
     
-    console.log(chalk.cyan(`   Added ${newReviewResult.newComments.length} new issue(s) to workflow\n`));
+    console.log(chalk.cyan(`   Added ${formatNumber(newReviewResult.newComments.length)} new issue(s) to workflow\n`));
   }
 }
 
@@ -211,7 +211,7 @@ export async function checkEmptyIssues(
         };
       }
       // Continue with the re-populated list
-      console.log(chalk.yellow(`→ Continuing with ${unresolvedIssues.length} issues`));
+      console.log(chalk.yellow(`→ Continuing with ${formatNumber(unresolvedIssues.length)} issues`));
     } else {
       debug('No issues to fix at start of iteration - breaking');
       console.log(chalk.green('\n✓ All issues resolved'));
@@ -305,7 +305,7 @@ export async function checkAndPullRemoteCommits(
       // Re-fetch code snippets for unresolved issues concurrently
       // WHY parallel: Each snippet is an independent file read; code at those
       // lines may have changed after the pull.
-      console.log(chalk.gray(`  Refreshing code snippets for ${unresolvedIssues.length} issues...`));
+      console.log(chalk.gray(`  Refreshing code snippets for ${formatNumber(unresolvedIssues.length)} issues...`));
       const refreshedSnippets = await Promise.all(
         unresolvedIssues.map(issue =>
           getCodeSnippet(issue.comment.path, issue.comment.line, issue.comment.body)

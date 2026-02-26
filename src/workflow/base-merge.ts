@@ -8,7 +8,7 @@ import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
-import { debugStep, startTimer, endTimer } from '../logger.js';
+import { debugStep, startTimer, endTimer, formatNumber } from '../logger.js';
 import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../git/git-clone-index.js';
 
 /**
@@ -104,7 +104,7 @@ export async function checkAndMergeBaseBranch(
           return {
             success: false,
             exitReason: 'merge_conflicts',
-            exitDetails: `Could not auto-resolve ${resolution.remainingConflicts.length} conflict(s) with ${prInfo.baseBranch}`
+            exitDetails: `Could not auto-resolve ${resolution.remainingConflicts.length.toLocaleString()} conflict(s) with ${prInfo.baseBranch}`
           };
         } else {
           // All conflicts resolved - stage files and complete the merge
@@ -115,7 +115,7 @@ export async function checkAndMergeBaseBranch(
           if (lockFiles.length > 0) {
             await git.checkout(['--theirs', '--', ...lockFiles]);
             await git.add(lockFiles);
-            console.log(chalk.gray(`  ℹ ${lockFiles.length} lock file(s) accepted from ${prInfo.baseBranch} — consider regenerating`));
+            console.log(chalk.gray(`  ℹ ${formatNumber(lockFiles.length)} lock file(s) accepted from ${prInfo.baseBranch} — consider regenerating`));
           }
 
           await markConflictsResolved(git, codeFiles);

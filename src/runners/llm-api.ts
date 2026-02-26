@@ -415,7 +415,7 @@ Working directory: ${workdir}`;
         };
       }
 
-      console.log(`  ✓ Modified ${filesWritten.length} file(s): ${filesWritten.join(', ')}`);
+      console.log(`  ✓ Modified ${filesWritten.length.toLocaleString()} file(s): ${filesWritten.join(', ')}`);
 
       this.consecutive504Count = 0;
       return {

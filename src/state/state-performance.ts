@@ -122,6 +122,33 @@ export function getModelStats(ctx: StateContext, tool: string, model?: string): 
 }
 
 /**
+ * Reorder recommended models so best performers (by success rate) are tried first.
+ * Models with no history are placed first; then by success rate descending (worst last).
+ * WHY: Deprioritizes models that consistently fail (e.g. 100% S/R mismatch) without hardcoding names.
+ */
+export function sortRecommendedModelsByPerformance(
+  models: string[],
+  runnerName: string,
+  ctx: StateContext
+): string[] {
+  if (models.length <= 1) return models;
+  const withRate = models.map((model) => {
+    const stats = getModelStats(ctx, runnerName, model);
+    const total = stats ? stats.fixes + stats.failures : 0;
+    const successRate = total > 0 ? (stats!.fixes / total) : -1; // -1 = no data
+    return { model, successRate };
+  });
+  return withRate
+    .sort((a, b) => {
+      if (a.successRate < 0 && b.successRate < 0) return 0;
+      if (a.successRate < 0) return -1;
+      if (b.successRate < 0) return 1;
+      return b.successRate - a.successRate; // best first
+    })
+    .map((x) => x.model);
+}
+
+/**
  * Get all models sorted by success rate
  * 
  * Returns models sorted by success rate (fixes / (fixes + failures)), with

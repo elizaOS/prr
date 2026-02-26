@@ -260,7 +260,7 @@ export async function processCommentsAndPrepareFixLoop(
       shouldBreak: true,
       shouldRunFixLoop: false,
       exitReason: 'dry_run',
-      exitDetails: `Dry run mode - showed ${unresolvedIssues.length} issue(s) without fixing`,
+      exitDetails: `Dry run mode - showed ${formatNumber(unresolvedIssues.length)} issue(s) without fixing`,
       duplicateMap,
     };
   }

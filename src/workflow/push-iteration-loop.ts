@@ -381,7 +381,7 @@ export async function executePushIteration(
       
       if (postVerif.shouldBreak) {
         exitReason = 'bail_out';
-        exitDetails = `Stalemate detected: fix loop exhausted all strategies with ${unresolvedIssues.length} issue(s) remaining`;
+        exitDetails = `Stalemate detected: fix loop exhausted all strategies with ${formatNumber(unresolvedIssues.length)} issue(s) remaining`;
         break;
       }
     }
@@ -390,7 +390,7 @@ export async function executePushIteration(
   if (!allFixed && maxFixIterations !== Infinity) {
     console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
     exitReason = 'max_iterations';
-    exitDetails = `Hit max fix iterations (${maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
+    exitDetails = `Hit max fix iterations (${formatNumber(maxFixIterations)}) with ${formatNumber(unresolvedIssues.length)} issue(s) remaining`;
     finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
     finalCommentsRef.current = [...comments];
   }
@@ -466,7 +466,7 @@ export async function executePushIteration(
     const stillNeedAttention = actuallyUnresolved.length;
     const noChangesDetails =
       stillNeedAttention > 0
-        ? `No changes to commit (fixer made no modifications); ${stillNeedAttention} issue${stillNeedAttention === 1 ? '' : 's'} still ${stillNeedAttention === 1 ? 'needs' : 'need'} attention`
+        ? `No changes to commit (fixer made no modifications); ${formatNumber(stillNeedAttention)} issue${stillNeedAttention === 1 ? '' : 's'} still ${stillNeedAttention === 1 ? 'needs' : 'need'} attention`
         : 'No changes to commit (fixer made no modifications)';
     return {
       shouldBreak: true,

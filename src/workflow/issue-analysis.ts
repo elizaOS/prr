@@ -54,7 +54,7 @@ import {
 } from '../constants.js';
 import { validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
-import { debug, warn } from '../logger.js';
+import { debug, warn, formatNumber } from '../logger.js';
 import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 
@@ -251,7 +251,7 @@ function logDuplicateCandidates(
   }
 
   const totalComments = candidateGroups.reduce((sum, g) => sum + g.items.length, 0);
-  console.log(chalk.gray(`\nDuplicate candidates: ${candidateGroups.length} group(s), ${totalComments} comments total`));
+  console.log(chalk.gray(`\nDuplicate candidates: ${formatNumber(candidateGroups.length)} group(s), ${formatNumber(totalComments)} comments total`));
   
   // Use the shared idToDisplayNum map so "#7" means the same comment here
   // and in the dedup verdict log. Numbers come from toCheck array position
@@ -261,7 +261,7 @@ function logDuplicateCandidates(
       ? `same author: ${[...group.authors][0]}`
       : 'different authors';
     
-    console.log(chalk.gray(`  ${group.file}:${group.lineRange} (${group.items.length} comments, ${authorInfo})`));
+    console.log(chalk.gray(`  ${group.file}:${group.lineRange} (${formatNumber(group.items.length)} comments, ${authorInfo})`));
     
     for (let i = 0; i < group.items.length; i++) {
       const item = group.items[i];
@@ -405,8 +405,8 @@ function heuristicDedup(
   if (duplicateMap.size > 0) {
     const totalDupes = [...duplicateMap.values()].reduce((sum, dupes) => sum + dupes.length, 0);
     console.log(chalk.gray(
-      `  Dedup: ${duplicateMap.size} group(s) merged ` +
-      `(${totalDupes + duplicateMap.size} comments -> ${duplicateMap.size} canonical)`
+      `  Dedup: ${formatNumber(duplicateMap.size)} group(s) merged ` +
+      `(${formatNumber(totalDupes + duplicateMap.size)} comments -> ${formatNumber(duplicateMap.size)} canonical)`
     ));
     
     // HISTORY: Previously built a local idToIndex from toCheck array order, but
@@ -990,7 +990,7 @@ export async function findUnresolvedIssues(
       duplicateMap: cachedDedup.duplicateMap,
       duplicateItems: reconstructedDuplicateItems,
     };
-    console.log(chalk.gray(`  Dedup results reused (comment set unchanged, ${dedupResult.duplicateMap.size} canonical groups)`));
+    console.log(chalk.gray(`  Dedup results reused (comment set unchanged, ${formatNumber(dedupResult.duplicateMap.size)} canonical groups)`));
   } else {
     // Phase 1: Heuristic deduplication (zero LLM cost)
     try {
@@ -1126,16 +1126,16 @@ export async function findUnresolvedIssues(
 
   // Report comment status stats
   if (statusHits > 0) {
-    console.log(chalk.gray(`  ${statusHits} comment(s) skipped (status unchanged — open issues on unmodified files)`));
+    console.log(chalk.gray(`  ${formatNumber(statusHits)} comment(s) skipped (status unchanged — open issues on unmodified files)`));
   }
   if (freshToAnalyze.length > 0 && statusHits > 0) {
-    console.log(chalk.gray(`  ${freshToAnalyze.length} comment(s) need fresh LLM analysis (new or file changed)`));
+    console.log(chalk.gray(`  ${formatNumber(freshToAnalyze.length)} comment(s) need fresh LLM analysis (new or file changed)`));
   }
 
   if (freshToAnalyze.length === 0) {
     // All items served from persisted status — no LLM call needed
     if (statusHits > 0 && toAnalyze.length > 0) {
-      console.log(chalk.green(`  ✓ All ${statusHits} issue(s) served from persisted status — skipping LLM analysis`));
+      console.log(chalk.green(`  ✓ All ${formatNumber(statusHits)} issue(s) served from persisted status — skipping LLM analysis`));
     }
     return {
       unresolved,
@@ -1150,11 +1150,11 @@ export async function findUnresolvedIssues(
 
   if (options.noBatch) {
     // Sequential mode - one LLM call per comment
-    console.log(chalk.gray(`  Analyzing ${freshToAnalyze.length} comments sequentially...`));
+    console.log(chalk.gray(`  Analyzing ${formatNumber(freshToAnalyze.length)} comments sequentially...`));
     
     for (let i = 0; i < freshToAnalyze.length; i++) {
       const { comment, codeSnippet, contextHints } = freshToAnalyze[i];
-      console.log(chalk.gray(`    [${i + 1}/${freshToAnalyze.length}] ${comment.path}:${comment.line || '?'}`));
+      console.log(chalk.gray(`    [${formatNumber(i + 1)}/${formatNumber(freshToAnalyze.length)}] ${comment.path}:${comment.line || '?'}`));
       
       const result = await llm.checkIssueExists(
         comment.body,
@@ -1277,7 +1277,7 @@ export async function findUnresolvedIssues(
     }
   } else {
     // Batch mode - one LLM call for all comments
-    console.log(chalk.gray(`  Batch analyzing ${freshToAnalyze.length} comments with LLM...`));
+    console.log(chalk.gray(`  Batch analyzing ${formatNumber(freshToAnalyze.length)} comments with LLM...`));
     
     const batchInput = freshToAnalyze.map((item, index) => {
       const issueId = `issue_${index + 1}`;
@@ -1367,25 +1367,25 @@ export async function findUnresolvedIssues(
             ...item,
             id: `issue_${mid + index + 1}`,
           }));
-          warn(`Batch analysis failed with reduced size — splitting into ${firstBatchInput.length} + ${secondBatchInput.length} issues and retrying`);
+          warn(`Batch analysis failed with reduced size — splitting into ${formatNumber(firstBatchInput.length)} + ${formatNumber(secondBatchInput.length)} issues and retrying`);
           let firstResult: BatchCheckResultType;
           try {
             firstResult = await runBatchWithRetry(firstBatchInput, reducedOverrides);
           } catch (firstErr) {
             warn(`Batch analysis failed: ${msg}`);
-            throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
+            throw new Error(`Batch analysis failed (${formatNumber(freshToAnalyze.length)} issues): ${msg}`);
           }
           try {
             const secondResult = await runBatchWithRetry(secondBatchInput, reducedOverrides);
             batchResult = mergeBatchResults(firstResult, secondResult);
           } catch (secondErr) {
-            warn(`Second half failed after split — saving partial results (${firstResult.issues.size}/${freshToAnalyze.length} issues)`);
+            warn(`Second half failed after split — saving partial results (${formatNumber(firstResult.issues.size)}/${formatNumber(freshToAnalyze.length)} issues)`);
             batchResult = { ...firstResult, partial: true };
           }
         }
       } else {
         warn(`Batch analysis failed: ${msg}`);
-        throw new Error(`Batch analysis failed (${freshToAnalyze.length} issues): ${msg}`);
+        throw new Error(`Batch analysis failed (${formatNumber(freshToAnalyze.length)} issues): ${msg}`);
       }
     }
 
@@ -1573,7 +1573,7 @@ export async function findUnresolvedIssues(
       await State.saveState(stateContext);
       await LessonsAPI.Save.save(lessonsContext);
       throw new Error(
-        `Batch analysis incomplete: ${results.size}/${freshToAnalyze.length} issues analyzed (partial results saved - re-run to continue)`
+        `Batch analysis incomplete: ${formatNumber(results.size)}/${formatNumber(freshToAnalyze.length)} issues analyzed (partial results saved - re-run to continue)`
       );
     }
   }

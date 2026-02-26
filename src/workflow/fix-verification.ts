@@ -26,7 +26,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { isInfrastructureFailure } from './helpers/recovery.js';
 import * as LessonsAPI from '../state/lessons-index.js';
-import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration } from '../logger.js';
+import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration, formatNumber } from '../logger.js';
 import { getChangedFiles, getDiffForFile, detectFileCorruption } from '../git/git-clone-index.js';
 import { basename, dirname, extname, join } from 'path';
 
@@ -278,11 +278,11 @@ export async function verifyFixes(
 
       if (noBatch) {
         // Sequential mode - one LLM call per fix
-        spinner.text = `Verifying ${changedIssues.length} fixes sequentially...`;
+        spinner.text = `Verifying ${formatNumber(changedIssues.length)} fixes sequentially...`;
         
         for (let i = 0; i < changedIssues.length; i++) {
           const issue = changedIssues[i];
-          spinner.text = `Verifying [${i + 1}/${changedIssues.length}] ${issue.comment.path}:${issue.comment.line || '?'}`;
+          spinner.text = `Verifying [${formatNumber(i + 1)}/${formatNumber(changedIssues.length)}] ${issue.comment.path}:${issue.comment.line || '?'}`;
           
           try {
             const diff = await getIssueDiff(issue);
@@ -383,7 +383,7 @@ export async function verifyFixes(
           })
         );
 
-        spinner.text = `Verifying ${fixesToVerify.length} fixes in batch...`;
+        spinner.text = `Verifying ${formatNumber(fixesToVerify.length)} fixes in batch...`;
         const result = await llm.batchVerifyFixes(fixesToVerify);
         
         for (const issue of changedIssues) {
@@ -462,13 +462,13 @@ export async function verifyFixes(
   console.log(chalk.gray(`\n  Verified in ${formatDuration(verifyTime)}`));
   
   if (unchangedIssues.length > 0) {
-    console.log(chalk.yellow(`  ${unchangedIssues.length} file(s) not modified - issues marked as failed`));
+    console.log(chalk.yellow(`  ${formatNumber(unchangedIssues.length)} file(s) not modified - issues marked as failed`));
   }
   
   if (verifiedCount > 0 || autoVerifiedCount > 0 || failedCount > 0) {
     const totalResolved = verifiedCount + autoVerifiedCount;
     if (totalResolved > 0) {
-      console.log(chalk.greenBright(`  ┌─ RESOLVED: ${totalResolved} issue(s) leaving queue ─┐`));
+      console.log(chalk.greenBright(`  ┌─ RESOLVED: ${formatNumber(totalResolved)} issue(s) leaving queue ─┐`));
       // Show each verified issue with its file
       for (const issue of changedIssues) {
         if (verifiedThisSession.has(issue.comment.id)) {
@@ -483,7 +483,7 @@ export async function verifyFixes(
     }
     
     if (failedCount > 0) {
-      console.log(chalk.yellow(`  ○ ${failedCount} issue(s) still in queue (not fixed)`));
+      console.log(chalk.yellow(`  ○ ${formatNumber(failedCount)} issue(s) still in queue (not fixed)`));
     }
   }
 
