@@ -184,6 +184,7 @@ export const MAX_MODELS_PER_TOOL_ROUND = 2;
  * Default max stale cycles (--max-stale-cycles).
  * Bail out after N complete tool/model cycles with zero progress.
  */
+// Review: limits progress cycles to prevent indefinite execution on stuck processes.
 export const DEFAULT_MAX_STALE_CYCLES = 1;
 
 /**

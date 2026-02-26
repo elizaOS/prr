@@ -67,6 +67,7 @@ describe('normalizeLessonText', () => {
       // normalizeLessonText drops lines starting with * (comment continuation)
       expect(normalize(input)).toBeNull();
     });
+  // Review: accepted design prioritizes normalization over comment removal functionality
   });
 
   describe('access modifier removal', () => {
@@ -88,6 +89,7 @@ describe('normalizeLessonText', () => {
       const result = normalize(input);
       expect(result).toBeNull();
     });
+  // Review: designed to filter out lines with access modifiers to maintain normalized output integrity.
   });
 
   describe('declaration removal', () => {
@@ -207,6 +209,7 @@ describe('normalizeLessonText', () => {
       const input = 'Use src/file.ts:123-ts only for test fixtures';
       const result = normalize(input);
       expect(result).toBe('Use src/file.ts:123-ts only for test fixtures');
+    // Review: retains original input for comparison; checks for proper normalization behavior
     });
 
     it('handles (inferred) ts suffix', () => {

@@ -30,6 +30,7 @@ export function getLessons(ctx: StateContext): string[] {
 
 export function getLessonCount(ctx: StateContext): number {
   return ctx.state?.lessonsLearned?.length || 0;
+// Review: expected lessonsLearned to always be defined as part of valid application state
 }
 
 export function compactLessons(ctx: StateContext): number {

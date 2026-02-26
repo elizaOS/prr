@@ -238,6 +238,7 @@ interface Runner {
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunResult>;
 }
 ```
+// Review: clean output prevents false matches in downstream processing, ensuring accuracy.
 
 **Runner output hygiene:** Runners return clean text in `RunResult.output`, not raw protocol frames. WHY: The Cursor runner streams JSON frames like `{"type":"text","content":"..."}`. Downstream consumers like `parseNoChangesExplanation()` search the output for patterns like `NO_CHANGES:` — raw JSON metadata caused false matches against embedded instruction text, triggering expensive re-verification of all issues.
 
@@ -272,6 +273,7 @@ Lessons are:
 
 ### 7. Workflow Orchestration (`src/workflow/`)
 
+// Review: phases improve clarity, ensuring focused processing steps during workflow execution.
 Breaks down the main resolver loop into focused phases:
 
 **Startup Phase** (`startup.ts`):

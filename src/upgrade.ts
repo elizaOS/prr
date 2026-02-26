@@ -286,5 +286,6 @@ export async function checkPrrUpdate(): Promise<void> {
     console.log('');
   } catch (err) {
     console.log(chalk.yellow('  Could not check prr version'));
+  // Review: logs potential steps to resolve version check failures for user visibility
   }
 }

@@ -950,6 +950,7 @@ function fuzzyFindRegion(
     matchedLines: bestMatch.matched,
     totalSearchLines: searchLines.length,
   };
+// Review: ensures endOffset aligns with string length to prevent unexpected slicing behavior
 }
 
 /**

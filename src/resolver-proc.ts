@@ -409,6 +409,7 @@ export async function waitForBotReviews(
       } catch {
         // Ignore status check errors during wait
       }
+    // Review: status check triggers every 30s to monitor progress during extended waits.
     }
   }
 }
@@ -522,6 +523,7 @@ export async function executeBailOut(
     }
     if (unresolvedIssues.length > 5) {
       console.log(chalk.gray(`    ... and ${unresolvedIssues.length - 5} more`));
+    // Review: shows only a truncated preview to keep console output concise and readable
     }
   }
   

@@ -579,6 +579,7 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 Round 1: claude-4-sonnet-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
 Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → gemini-2.5-pro (Other)
 ... then next tool ...
+// Review: interleaving models enhances diversity in responses, reducing similar failure patterns.
 ```
 
 
@@ -611,6 +612,7 @@ cat prompts.log
 
 # Standalone debug files (requires PRR_DEBUG_PROMPTS=1; files live under timestamp subdirs)
 ls ~/.prr/debug/*/*.txt
+// Review: relative paths simplify commands for users working in repo root directory.
 # or: find ~/.prr/debug -name '*.txt'
 ```
 

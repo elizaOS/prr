@@ -195,6 +195,7 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
           filesToRevert.push(file);
         }
         continue;
+      // Review: distinguishes between created and modified tool artifacts for appropriate handling
       }
 
       // Check file content for tool markup (only for text-like files)

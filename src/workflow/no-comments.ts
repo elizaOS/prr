@@ -97,6 +97,7 @@ export async function handleNoComments(
     }
     
     console.log(chalk.green('  ✓ Conflicts resolved'));
+    // Review: timer is managed centrally to minimize timing report distortion on success paths.
     endTimer('Auto-resolve conflicts');
     
     // Push the merge commit

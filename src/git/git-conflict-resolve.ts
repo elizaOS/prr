@@ -358,12 +358,14 @@ async function detectDeleteConflicts(
       const raw = await git.raw(['status', '--porcelain=v1', '-z']);
       const entries = raw.split('\0').filter(Boolean);
       
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         // Entry format: XY file
-        const statusCode = entry.substring(0, 2);
-        const filePath = entry.substring(3).trim();
-        // Handle renamed files (format: "R  old -> new")
-        const actualPath = filePath.includes(' -> ') ? filePath.split(' -> ')[1] : filePath;
+        const statusCode = entry.slice(0, 2);
+        let actualPath = entry.slice(3);
+        if ((statusCode[0] === 'R' || statusCode[0] === 'C') && i + 1 < entries.length) {
+          actualPath = entries[++i];
+        }
       
       if (!conflictedFiles.includes(actualPath)) continue;
       

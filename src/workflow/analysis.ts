@@ -108,15 +108,16 @@ export function analyzeAndReportIssues(
     for (const [filePath, issues] of byFile) {
       console.log(chalk.yellowBright(`│  ${filePath}`));
       for (const issue of issues) {
-        const line = issue.comment.line ? `:${issue.comment.line}` : '';
-        const author = issue.comment.author ? ` (${issue.comment.author})` : '';
-        const preview = issue.comment.body.split('\n')[0].substring(0, 60);
-        const triageLabel = issue.triage
-          ? ` [I${issue.triage.importance}/D${issue.triage.ease}]`
-          : '';
-        console.log(chalk.yellowBright(`│    + ${filePath}${line}${triageLabel}${author}`));
-        console.log(chalk.gray(`│      "${preview}..."`));
-      }
+          const line = issue.comment.line ? `:${issue.comment.line}` : '';
+          const author = issue.comment.author ? ` (${issue.comment.author})` : '';
+          const preview = issue.comment.body.split('\n')[0];
+          const truncated = preview.length > 60 ? preview.substring(0, 60) + '...' : preview;
+          const triageLabel = issue.triage
+            ? ` [I${issue.triage.importance}/D${issue.triage.ease}]`
+            : '';
+          console.log(chalk.yellowBright(`│    + ${filePath}${line}${triageLabel}${author}`));
+          console.log(chalk.gray(`│      "${truncated}"`));
+        }
     }
     console.log(chalk.yellowBright(`└${'─'.repeat(42)}┘`));
   } else {

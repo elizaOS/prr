@@ -21,6 +21,7 @@ import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from './logger.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
+// Review: initialized to capture log output early for troubleshooting and monitoring purposes
 initOutputLog();
 
 let resolver: PRResolver | null = null;

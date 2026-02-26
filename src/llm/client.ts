@@ -291,6 +291,7 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
     });
     return new Set(); // Empty = skip filtering, keep all models
   }
+// Review: returning empty set allows skipping filtering when model fetch fails
 }
 
 /**
@@ -1806,6 +1807,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         sampleUnmatchedLines: unmatchedLines,
         responsePreview: response.content.substring(0, 500),
       });
+    // Review: design choice to log unparsed issues aids debugging without altering results integrity
     }
 
     return results;
