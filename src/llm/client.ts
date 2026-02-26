@@ -488,9 +488,11 @@ export class LLMClient {
       return status === 500 || /500|504|502|gateway.*timeout|deployment.*timeout|error occurred with your deployment/i.test(msg);
     };
 
+    let elizaAcquired = false;
     try {
       if (this.provider === 'elizacloud') {
         await acquireElizacloud(); // uses exported fn so same global limit as llm-api runner
+        elizaAcquired = true;
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
       const max504Retries = this.provider === 'elizacloud' ? 1 : 0;
@@ -575,7 +577,7 @@ export class LLMClient {
       }
       throw lastErr;
     } finally {
-      if (this.provider === 'elizacloud') {
+      if (this.provider === 'elizacloud' && elizaAcquired) {
         releaseElizacloud();
       }
     }
