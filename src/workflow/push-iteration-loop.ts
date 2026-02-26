@@ -214,7 +214,7 @@ export async function executePushIteration(
   // CLI convention: 0 = unlimited, undefined = use Infinity default
   // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
   // CRITICAL: ?? only triggers on null/undefined, NOT 0. Default is 0 = unlimited.
-  const maxFixIterations = options.maxFixIterations || Infinity;
+  const maxFixIterations = options.maxFixIterations != null ? options.maxFixIterations : Infinity;
   debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
