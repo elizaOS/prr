@@ -216,6 +216,8 @@ export async function executePushIteration(
   // CRITICAL: ?? only triggers on null/undefined, NOT 0. Default is 0 = unlimited.
   const maxFixIterations = options.maxFixIterations != null ? options.maxFixIterations : Infinity;
   debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
+  // Start verification timer here to keep paired with endTimer
+  Timer.startTimer('Verify fixes');
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
 

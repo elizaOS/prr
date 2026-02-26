@@ -9,7 +9,7 @@ import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import { debugStep, startTimer, endTimer, formatNumber } from '../logger.js';
-import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../git/git-clone-index.js';
+import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../git/git-merge.js';
 
 /**
  * Check and merge base branch into PR branch

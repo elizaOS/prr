@@ -146,7 +146,8 @@ export function loadConfig(): Config {
   } else if (llmProvider === 'anthropic') {
     defaultModel = DEFAULT_ANTHROPIC_MODEL;
   } else {
-    defaultModel = DEFAULT_OPENAI_MODEL;
+    // Use a known API-available model instead of invalid defaults (e.g., gpt-5.3)
+    defaultModel = 'gpt-4o';
   }
 
   const config: Config = {

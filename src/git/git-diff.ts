@@ -51,7 +51,7 @@ export async function hasChanges(git: SimpleGit): Promise<boolean> {
  * - Duplicate method/function definitions (≥3 occurrences)
  * - Brace imbalance growth compared to the base version
  * - Tool-artifact remnants (search/replace XML markup)
- *   (duplicate method definitions, orphaned code, etc.)
+ * - Diff from base has grown significantly (>2x)
  *
  * @param baseBranch - The base branch to compare against (e.g. "origin/dev")
  * @returns { corrupted: false } if file is healthy, or { corrupted: true, reason?: string, baseContent?: string } if corrupted
@@ -82,6 +82,8 @@ export async function detectFileCorruption(
       return { corrupted: false };
     }
 
+    const baseLines = baseContent.split('\n').length;
+    const currentLines = currentContent.split('\n').length;
     const currentLower = currentContent.toLowerCase();
 
     // Heuristic 1: Duplicate method/function definitions
@@ -126,6 +128,15 @@ export async function detectFileCorruption(
       return {
         corrupted: true,
         reason: 'Tool markup (search/replace XML) found inside source file',
+        baseContent,
+      };
+    }
+
+    // Heuristic 4: File has grown significantly
+    if (currentLines > baseLines * 2) {
+      return {
+        corrupted: true,
+        reason: `File length has more than doubled (${baseLines} → ${currentLines} lines)`,
         baseContent,
       };
     }
