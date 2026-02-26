@@ -443,8 +443,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Install Hints for Runners**
 - When a tool is not installed, `--check-tools` now shows the install command (e.g. `→ npm install -g @anthropic-ai/claude-code`)
 
-### Removed (2026-02-12)
-
+### Added (2026-02-12)
+- **Gemini CLI Runner**
 **Duplicate `handleNoChanges` Function**
 - Removed `handleNoChanges()` from `fixer-errors.ts` and its re-export from `resolver-proc.ts`
 - The canonical handler is `handleNoChangesWithVerification()` in `no-changes-verification.ts`
