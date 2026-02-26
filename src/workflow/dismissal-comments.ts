@@ -265,7 +265,7 @@ export async function addDismissalComments(
     debug('Deduplicated dismissal comments by (file, line)', { before: commentable.length, after: toProcess.length });
   }
   
-  // Group by file for per-file processing (insert bottom-to-top within file)
+  // Group by file for "check once" pass (read each file once)
   const byFile = new Map<string, DismissedIssue[]>();
   for (const issue of toProcess) {
     if (!byFile.has(issue.filePath)) {
@@ -273,98 +273,96 @@ export async function addDismissalComments(
     }
     byFile.get(issue.filePath)!.push(issue);
   }
-  
-  // Process files concurrently. Within each file, issues are processed
-  // sequentially bottom-to-top (line DESC) to avoid line-number shifting
-  // from earlier insertions. Across files, no shared state — safe to parallelize.
-  const fileResults = await Promise.all(
-    [...byFile.entries()].map(async ([filePath, issues]) => {
-      let fileAdded = 0;
-      let fileSkipped = 0;
-      const fullPath = join(workdir, filePath);
 
-      if (!existsSync(fullPath)) {
-        debug('File no longer exists, skipping all issues', { filePath, count: issues.length });
-        return { added: 0, skipped: issues.length };
+  // Pass 1: Check once per (file, line) — skip LLM if "Review:" comment already exists
+  type ToGenerate = { issue: DismissedIssue; filePath: string; effectiveLine: number; surroundingCode: string };
+  const toGenerate: ToGenerate[] = [];
+  for (const [filePath, issues] of byFile.entries()) {
+    const fullPath = join(workdir, filePath);
+    if (!existsSync(fullPath)) {
+      debug('File no longer exists, skipping all issues', { filePath, count: issues.length });
+      skipped += issues.length;
+      continue;
+    }
+    let content: string;
+    try {
+      content = readFileSync(fullPath, 'utf-8');
+    } catch (err) {
+      debug('Error reading file for dismissal check', { filePath, error: String(err) });
+      skipped += issues.length;
+      continue;
+    }
+    const lines = content.split('\n');
+    if (lines.length === 0) {
+      skipped += issues.length;
+      continue;
+    }
+    const commentSyntax = getCommentSyntax(filePath);
+    for (const issue of issues) {
+      if (issue.line === null) {
+        skipped++;
+        continue;
       }
-
-      // Sort by line DESC (insert bottom-to-top to avoid line shifting)
-      const sorted = issues.sort((a, b) => (b.line || 0) - (a.line || 0));
-
-      // Sequential within this file (order matters)
-      for (const issue of sorted) {
-        if (issue.line === null) {
-          fileSkipped++;
-          continue;
-        }
-
-        try {
-          const content = readFileSync(fullPath, 'utf-8');
-          const lines = content.split('\n');
-
-          if (lines.length === 0) {
-            fileSkipped++;
-            continue;
-          }
-
-          // Clamp line to file so the model sees the line we ask about (avoids "I don't have access to the code")
-          const effectiveLine = Math.min(Math.max(1, issue.line), lines.length);
-
-          const contextBefore = 7;
-          const contextAfter = 7;
-          const start = Math.max(0, effectiveLine - contextBefore - 1);
-          const end = Math.min(lines.length, effectiveLine + contextAfter);
-
-          const surroundingCode = lines
-            .slice(start, end)
-            .map((l, i) => `${start + i + 1}: ${l}`)
-            .join('\n');
-
-          const result = await llm.generateDismissalComment({
-            filePath: issue.filePath,
-            line: effectiveLine,
-            surroundingCode,
-            reviewComment: issue.commentBody,
-            dismissalReason: issue.reason,
-            category: issue.category,
-          });
-
-          if (!result.needed || !result.commentText) {
-            fileSkipped++;
-            continue;
-          }
-
-          const inserted = await insertCommentAtLine(
-            workdir,
-            issue.filePath,
-            effectiveLine,
-            result.commentText
-          );
-
-          if (inserted) {
-            fileAdded++;
-          } else {
-            fileSkipped++;
-          }
-        } catch (error) {
-          debug('Error processing dismissal comment', {
-            filePath: issue.filePath,
-            line: issue.line,
-            error: String(error),
-          });
-          fileSkipped++;
-        }
+      const effectiveLine = Math.min(Math.max(1, issue.line), lines.length);
+      if (hasExistingReviewComment(lines, effectiveLine, commentSyntax.start)) {
+        debug('Review comment already exists near target line (skipping LLM)', { filePath, line: effectiveLine });
+        skipped++;
+        continue;
       }
+      const contextBefore = 7;
+      const contextAfter = 7;
+      const start = Math.max(0, effectiveLine - contextBefore - 1);
+      const end = Math.min(lines.length, effectiveLine + contextAfter);
+      const surroundingCode = lines
+        .slice(start, end)
+        .map((l, i) => `${start + i + 1}: ${l}`)
+        .join('\n');
+      toGenerate.push({ issue, filePath, effectiveLine, surroundingCode });
+    }
+  }
 
-      return { added: fileAdded, skipped: fileSkipped };
-    })
+  if (toGenerate.length === 0) {
+    debug('Dismissal comments complete (all skipped by pre-check)', { added, skipped });
+    return { added, skipped };
+  }
+
+  // Pass 2: Call LLM in parallel for all issues that need a comment
+  const results = await Promise.all(
+    toGenerate.map((t) =>
+      llm.generateDismissalComment({
+        filePath: t.filePath,
+        line: t.effectiveLine,
+        surroundingCode: t.surroundingCode,
+        reviewComment: t.issue.commentBody,
+        dismissalReason: t.issue.reason!,
+        category: t.issue.category,
+      })
+    )
   );
 
-  // Aggregate per-file results
-  for (const r of fileResults) {
-    added += r.added;
-    skipped += r.skipped;
+  // Pass 3: Insert comments per file, bottom-to-top (line DESC) so line numbers don't shift
+  const withComment = toGenerate
+    .map((t, i) => ({ ...t, result: results[i] }))
+    .filter((x) => x.result.needed && x.result.commentText) as (ToGenerate & { result: { commentText: string } })[];
+  const byFileForInsert = new Map<string, { effectiveLine: number; commentText: string }[]>();
+  for (const x of withComment) {
+    if (!byFileForInsert.has(x.filePath)) byFileForInsert.set(x.filePath, []);
+    byFileForInsert.get(x.filePath)!.push({ effectiveLine: x.effectiveLine, commentText: x.result.commentText });
   }
+  for (const [filePath, items] of byFileForInsert.entries()) {
+    items.sort((a, b) => b.effectiveLine - a.effectiveLine);
+    for (const { effectiveLine, commentText } of items) {
+      try {
+        const inserted = await insertCommentAtLine(workdir, filePath, effectiveLine, commentText);
+        if (inserted) added++;
+        else skipped++;
+      } catch (err) {
+        debug('Error inserting dismissal comment', { filePath, effectiveLine, error: String(err) });
+        skipped++;
+      }
+    }
+  }
+  skipped += toGenerate.length - withComment.length;
 
   debug('Dismissal comments complete', { added, skipped });
   return { added, skipped };
