@@ -10,7 +10,7 @@
 import dotenv from 'dotenv';
 import { homedir } from 'os';
 import { join } from 'path';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL } from './constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL } from './constants.js';
 
 dotenv.config();
 
@@ -121,6 +121,7 @@ export function loadConfig(): Config {
   }
 
   if (llmProvider !== 'elizacloud' && llmProvider !== 'anthropic' && llmProvider !== 'openai') {
+    // Review: validates explicitly to ensure only known providers are accepted for integrity.
     throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'elizacloud', 'anthropic', or 'openai'`);
   }
 
@@ -145,9 +146,7 @@ export function loadConfig(): Config {
   } else if (llmProvider === 'anthropic') {
     defaultModel = DEFAULT_ANTHROPIC_MODEL;
   } else {
-    // Use gpt-4o: a stable, widely-available OpenAI API model
-    // Note: gpt-5.3 does not exist as a general API model (only gpt-5.3-codex for paid ChatGPT)
-    defaultModel = 'gpt-4o';
+    defaultModel = DEFAULT_OPENAI_MODEL;
   }
 
   const config: Config = {

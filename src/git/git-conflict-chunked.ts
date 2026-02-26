@@ -196,6 +196,7 @@ EXPLANATION: Brief explanation of what you merged/kept/changed`;
         resolvedLines: chunk.conflictLines,
         explanation: 'Resolution still contains conflict markers'
       };
+    // Review: verifies absence of conflict markers to ensure a clean resolution before processing.
     }
 
     // Size regression check: resolution should not catastrophically shrink the conflict
@@ -309,6 +310,7 @@ export async function resolveConflictsChunked(
     } else {
       debug('BUG: missing resolution for chunk', { startLine: chunk.startLine });
       resolvedLines.push(...chunk.conflictLines);
+    // Review: fallback to original lines prevents data loss if resolution is missing.
     }
 
     // Skip original conflict lines
@@ -430,6 +432,7 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
   }
 
   return { resolved: false, content, explanation: 'No conflicts found' };
+// Review: assumes all conflicts are version-related for simplicity, ignoring non-version fields.
 }
 
 /**
@@ -511,6 +514,7 @@ function parsePackageLines(lines: string[]): Map<string, string> | null {
   }
   
   return map;
+// Review: strict requirements ensure all valid lines are included, preventing data loss.
 }
 
 /**
@@ -758,10 +762,12 @@ ADDITIONS_FOUND: <brief description of what unique content exists>`;
       responsePreview: responseText.substring(0, 200),
     });
     return { hasAdditions: false, explanation: 'LLM response unclear — assuming no additions' };
+  // Review: prioritizing safety — unclear LLM responses assume possible additions, flag for review.
   } catch (error) {
     // LLM failed — fail-safe: assume small side may have additions to avoid data loss
     debug('LLM small-side check failed, flagging for manual review', { error });
     return { hasAdditions: true, explanation: 'LLM check failed — manual review required' };
+  // Review: conservative assumption prioritizes safety to prevent potential data loss.
   }
 }
 

@@ -141,6 +141,7 @@ export async function resolveConflictsWithLLM(
       // Remove from codeFiles so we don't try to resolve again
       const idx = codeFiles.indexOf(dc.file);
       if (idx !== -1) codeFiles.splice(idx, 1);
+    // Review: files removed unconditionally to simplify the conflict resolution flow.
     }
   }
   
@@ -354,16 +355,18 @@ async function detectDeleteConflicts(
   const results: DeleteConflict[] = [];
   
   try {
-    // git status --porcelain shows XY format where X=index, Y=worktree
-    // For conflicts: UU=both modified, UD=deleted by them, DU=deleted by us, DD=both deleted
-    const raw = await git.raw(['status', '--porcelain']);
-    const lines = raw.split('\n').filter(Boolean);
-    
-    for (const line of lines) {
-      const statusCode = line.substring(0, 2);
-      const filePath = line.substring(3).trim();
-      // Handle renamed files (format: "R  old -> new")
-      const actualPath = filePath.includes(' -> ') ? filePath.split(' -> ')[1] : filePath;
+      // Use NUL-delimited porcelain to safely handle spaces/quotes
+      const raw = await git.raw(['status', '--porcelain=v1', '-z']);
+      const entries = raw.split('\0').filter(Boolean);
+      
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        // Entry format: XY file
+        const statusCode = entry.slice(0, 2);
+        let actualPath = entry.slice(3);
+        if ((statusCode[0] === 'R' || statusCode[0] === 'C') && i + 1 < entries.length) {
+          actualPath = entries[++i];
+        }
       
       if (!conflictedFiles.includes(actualPath)) continue;
       

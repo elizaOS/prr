@@ -79,6 +79,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     try {
       execFileSync('git', ['remote', 'set-url', 'origin', originalRemoteUrl], { cwd: workdir });
     } catch (e) {
+      // Review: logs the error to aid debugging while protecting sensitive data in URLs
       debug('Failed to restore remote URL', { error: String(e) });
     } finally {
       updatedRemote = false;

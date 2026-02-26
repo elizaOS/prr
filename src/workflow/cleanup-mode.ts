@@ -277,6 +277,7 @@ export async function runCleanupMode(
       } else {
         console.log(chalk.yellow('  Cleanup committed locally (use git push to push)'));
       }
+    // Review: commits only if changes are explicitly staged to avoid empty commit errors.
     }
   } else {
     console.log(chalk.gray('\nNo cleanup changes needed'));

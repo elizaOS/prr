@@ -87,6 +87,7 @@ export function sanitizeModelNames(ctx: LessonsContext): number {
   }
   
   return sanitized;
+// Review: focused regex for model names ensures compatibility with known formats in lessons.
 }
 
 export function pruneRelativeLessons(ctx: LessonsContext): number {
@@ -190,6 +191,7 @@ export function pruneDeletedFiles(ctx: LessonsContext, workdir: string): number 
       delete ctx.store.files[filePath];
       removed += count;
     }
+  // Review: entry is removed if path sanitization fails to ensure data integrity.
   }
   
   if (removed > 0) {
@@ -397,6 +399,7 @@ export async function tidyAllLessons(): Promise<void> {
 
   for (const filePath of jsonFiles) {
     const relativePath = relative(lessonsDir, filePath);
+    // Review: relative() ensures cross-platform compatibility for path handling.
     
     try {
       const content = await readFile(filePath, 'utf-8');
@@ -604,6 +607,7 @@ async function tidyMarkdownLessonsFile(filePath: string): Promise<void> {
     }
 
     await writeFile(filePath, lines.join('\n') + '\n', 'utf-8');
+    // Review: keeps output format consistent with tools expecting trailing newlines.
     console.log(chalk.green(`\n  .prr/lessons.md: ${originalTotal} → ${finalTotal} lessons (removed ${removed})`));
   } catch (e) {
     console.log(chalk.red(`\n  Failed to tidy .prr/lessons.md: ${e}`));

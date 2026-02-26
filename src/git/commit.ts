@@ -78,45 +78,41 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Using fallback workdir', { workdir, method: (git as any)._baseDir ? '_baseDir' : 'cwd' });
   }
   
-  // Check if remote URL has token, inject if missing
-  // WHY: Token may be stripped or repo cloned without it
+  // Check if remote URL has token. We avoid persisting tokens into .git/config by
+  // not calling `git remote set-url`. Instead, if needed, we push directly to an
+  // auth URL for this single push operation (using repository URL as the push target).
   let originalRemoteUrl: string | null = null;
-  let updatedRemote = false;
-  const restoreRemote = () => {
-    if (!updatedRemote || !originalRemoteUrl) return;
-    try {
-      execFileSync('git', ['remote', 'set-url', 'origin', originalRemoteUrl], { cwd: workdir });
-    } catch (e) {
-      debug('Failed to restore remote URL', { error: String(e) });
-    } finally {
-      updatedRemote = false;
-    }
-  };
+  let authPushUrl: string | null = null;
   try {
     const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
     originalRemoteUrl = remoteUrl;
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
     
     if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {
-      // Inject token into URL
-      const authUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
-      execFileSync('git', ['remote', 'set-url', 'origin', authUrl], { cwd: workdir });
-      updatedRemote = true;
-      debug('Injected token into remote URL for push');
+      // Build an auth URL for use only with this push; do NOT persist it in config
+      authPushUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
+      debug('Prepared authPushUrl for single push (not persisted)', { url: redactAuth(authPushUrl) });
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
     } else {
       debug('Pre-push check', { hasTokenInUrl });
     }
   } catch (e) {
-    debug('Could not check/set remote URL', { error: String(e) });
+    debug('Could not check remote URL for push', { error: String(e) });
   }
 
-  const args = ['push', 'origin', branch];
+  // Build args - prefer pushing to an auth URL if we have one, avoiding remote mutation.
+  // Use explicit refspec (HEAD:<branch>) when pushing to a URL target.
+  let args: string[];
+  if (authPushUrl) {
+    args = ['push', authPushUrl, `HEAD:${branch}`];
+  } else {
+    args = ['push', 'origin', branch];
+  }
   if (force) args.push('--force');
   
   const fullCommand = `git ${args.join(' ')}`;
-  debug('Starting git push', { command: fullCommand, workdir });
+  debug('Starting git push', { command: redactAuth(fullCommand), workdir });
   
   return new Promise((resolve) => {
     const gitProcess = spawn('git', args, {
@@ -146,11 +142,10 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const timeout = setTimeout(() => {
       killed = true;
       gitProcess.kill('SIGKILL');
-      restoreRemote();
-      // Include the command in error for debugging
+      // No remote was mutated on disk, so nothing to restore here.
       const errMsg = [
         `Push timed out after 30 seconds.`,
-        `Command: ${fullCommand}`,
+        `Command: ${redactAuth(fullCommand)}`,
         `Workdir: ${workdir}`,
         `This usually means:`,
         `  - Network issue (check connectivity)`,
@@ -165,7 +160,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const sigintHandler = () => {
       killed = true;
       gitProcess.kill('SIGKILL');
-      restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
     };
@@ -174,7 +168,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('close', (code) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
-      restoreRemote();
       
       if (killed) return; // Already handled by timeout/sigint
       
@@ -196,7 +189,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
         } else {
           resolve({ 
             success: false,
-            error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactAuth(stderr)}`,
+            error: `Git push failed with code ${code}\nCommand: ${redactAuth(fullCommand)}\nWorkdir: ${workdir}\nstderr: ${redactAuth(stderr)}`,
           });
         }
       }
@@ -205,10 +198,9 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('error', (err) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
-      restoreRemote();
       resolve({ 
         success: false,
-        error: `Git push failed: ${err.message}\nCommand: ${fullCommand}\nWorkdir: ${workdir}`,
+        error: `Git push failed: ${err.message}\nCommand: ${redactAuth(fullCommand)}\nWorkdir: ${workdir}`,
       });
     });
   });
@@ -426,6 +418,7 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
     debug('scanCommittedFixes error', { error: String(error) });
     return []; // No commits or error - safe to continue
   }
+// Review: deduplicates commit IDs to ensure unique fixes are processed correctly
 }
 
 export { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';

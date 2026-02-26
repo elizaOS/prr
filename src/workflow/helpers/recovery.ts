@@ -302,6 +302,7 @@ export async function trySingleIssueFix(
       debug('Error in single-issue fix loop', { issue: issue.comment.path, error: err });
       // Continue with next issue instead of aborting entire loop
     }
+  // Review: Each issue is processed sequentially to maintain state across iterations.
   }
   
   endTimer('Single-issue focus');
@@ -489,6 +490,7 @@ FULL FILE:
 ${escapedContent}
 \`\`\`
 
+// Review: retains full content for accurate context in LLM prompts, mindful of potential truncation.
 Provide the COMPLETE fixed file content. Output ONLY the code, no explanations.
 Start your response with \`\`\` and end with \`\`\`.`;
       }
@@ -699,6 +701,7 @@ Provide the COMPLETE fixed content for ${otherFile} only. Output ONLY the code i
               try {
                 fs.unlinkSync(filePath);
               } catch {}
+            // Review: delete untracked files directly to simplify recovery without restoring tracked content
             }
           }
         } else {

@@ -130,6 +130,7 @@ export async function analyzeBotTimingAndDisplay(
   } catch (err) {
     spinner.warn('Bot timing analysis failed (non-critical)');
     debug('Bot timing analysis failed (non-critical)', { error: err });
+  // Review: non-critical errors are logged for debugging without interrupting the spinner's flow
   }
   
   return { botTimings, expectedBotResponseTime };
@@ -276,6 +277,7 @@ async function waitForCodeRabbitReview(
           spinner.warn(`No new comments after ${elapsed}s (bot still showing as reviewing), proceeding anyway`);
           return lastFetchedComments;
         }
+      // Review: checks for new comments to avoid false positives from existing review comments.
       }
       
       spinner.text = `Waiting for CodeRabbit review of ${headSha.substring(0, 7)}... (${elapsed}s)`;

@@ -21,6 +21,7 @@ import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from './logger.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
+// Review: initialized to capture log output early for troubleshooting and monitoring purposes
 initOutputLog();
 
 let resolver: PRResolver | null = null;
@@ -98,6 +99,7 @@ async function main(): Promise<void> {
     if (options.tidyLessons) {
       await tidyAllLessons();
       await closeOutputLog();
+      // Review: early exits are designed to bypass further processing when specific flags are used
       return;
     }
 
@@ -110,8 +112,8 @@ async function main(): Promise<void> {
     if (config.anthropicApiKey) process.env.ANTHROPIC_API_KEY = config.anthropicApiKey;
     if (config.elizacloudApiKey) process.env.ELIZACLOUD_API_KEY = config.elizacloudApiKey;
 
-    // Fail fast if OpenAI key is invalid (e.g. for Codex or llm-api)
-    if (config.openaiApiKey) {
+    // Fail fast if OpenAI key is invalid (only when OpenAI is the active LLM provider)
+    if (config.llmProvider === 'openai' && config.openaiApiKey) {
       await validateOpenAIKey(config.openaiApiKey);
     }
 

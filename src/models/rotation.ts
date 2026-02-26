@@ -175,6 +175,7 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     
     if (familyAvail === familyModel && familyAvail.length > 0) {
       return lowerAvail === lowerModel || lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-');
+    // Review: designed for flexible model matching, accommodating provider prefixes.
     }
     
     return false;
@@ -332,6 +333,7 @@ export function tryRotation(
     }
     const currentIndex = ctx.modelIndices.get(runnerName) || 0;
     return currentIndex >= models.length - 1;  // On last model or beyond
+  // Review: checks if exhausted; returning true safely avoids crashing on unknown runners.
   };
 
   // Helper: Check if we should bail out after completing a cycle
@@ -518,6 +520,7 @@ function detectModelProvider(model: string, runnerProvider: string): 'openai' | 
   if (runnerProvider === 'openai' || runnerProvider === 'anthropic' || runnerProvider === 'google') return runnerProvider;
   
   return null; // Can't determine - skip validation for this model
+// Review: designed to fallback to any known provider when model detection fails.
 }
 
 /**

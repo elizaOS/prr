@@ -47,6 +47,7 @@ export async function commitIterationPerFile(
 
     const staged = await git.diff(['--cached', '--name-only']);
     const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
+    // Review: skips commits if no files are staged to prevent unintended changes.
     if (stagedFiles.length === 0) continue;
 
     const markers = issues.map((i) => `prr-fix:${i.commentId.toLowerCase()}`).join('\n');

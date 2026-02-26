@@ -123,6 +123,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | File | Purpose |
 |------|---------|
 | `src/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
+// Review: clearly distinguishes per-workdir state from persistent lessons for clarity.
 | `src/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
 | `src/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 

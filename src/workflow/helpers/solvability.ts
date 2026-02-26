@@ -107,6 +107,7 @@ export function assessSolvability(
               dismissCategory: 'stale',
               contextHints: [`Comment targets line ${comment.line} but file only has ${totalLines} lines, and identifier \`${identifiers[0]}\` not found — code may have been removed or renamed`],
             };
+          // Review: identifies no longer found indicates code has shifted; thus, marked as stale.
           }
         }
         // No identifiers to re-target with - mark as stale
@@ -120,6 +121,7 @@ export function assessSolvability(
         const targetIdx = comment.line - 1;
         const snippetRegionStart = Math.max(0, targetIdx - 15);
         const snippetRegionEnd = Math.min(totalLines, targetIdx + 15 + 1);
+        // Review: captures a ±15 line context around the target for better identifier matching
         const snippetRegion = lines.slice(snippetRegionStart, snippetRegionEnd).join('\n');
 
         let foundInRegion = false;

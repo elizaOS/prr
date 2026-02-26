@@ -35,6 +35,7 @@ export async function getDiffForFile(git: SimpleGit, file: string): Promise<stri
       return '';
     }
   }
+// Review: catches errors to handle file not existing or permission issues gracefully
 }
 
 export async function hasChanges(git: SimpleGit): Promise<boolean> {

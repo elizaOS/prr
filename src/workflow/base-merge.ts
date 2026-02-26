@@ -139,6 +139,7 @@ export async function checkAndMergeBaseBranch(
               spinner.fail('Failed to push merge commit');
               console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
             }
+          // Review: spinner states reflect push status, ensuring clear user feedback on operation success.
           }
           // Conflict resolution already pushed; skip to end
           endTimer('Merge base branch');
@@ -163,6 +164,7 @@ export async function checkAndMergeBaseBranch(
       } else {
         console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit is set).'));
       }
+    // Review: ensures push only happens if no conflicts were detected and resolved.
     }
     endTimer('Merge base branch');
   } else {

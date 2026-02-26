@@ -23,6 +23,7 @@ let debugLogCounter = 0;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // OUTPUT LOG TEE — mirrors all console output to ./output.log in the CWD
+// Review: mirrors console output to a designated user directory for organization and privacy
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 let outputLogStream: WriteStream | null = null;
@@ -54,6 +55,7 @@ export function initOutputLog(): void {
   outputLogPath = join(logDir, 'output.log');
 
   writeFileSync(outputLogPath, '', 'utf-8');
+  // Review: ensures logging to a single stream, preventing double initialization issues.
   outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
 
   // Companion log for full prompts & responses — search by slug (e.g. "#0009")
@@ -373,7 +375,7 @@ export function formatDuration(ms: number): string {
   } else {
     const mins = Math.floor(ms / 60000);
     const secs = Math.floor((ms % 60000) / 1000);
-    return `${mins}m ${secs.toString().padStart(2, '0')}s`;
+      const secsStr = secs.toString().padStart(2, '0');
   }
 }
 

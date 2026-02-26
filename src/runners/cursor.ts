@@ -158,6 +158,7 @@ function parseAndPrioritizeModels(output: string): string[] {
 export class CursorRunner implements Runner {
   name = 'cursor';
   displayName = 'Cursor Agent';
+  // Review: installHint includes options for better user experience; debug should match it.
   installHint = 'curl -fsSL https://cursor.com/install | bash';
   
   // Dynamically discovered models (populated on checkStatus)

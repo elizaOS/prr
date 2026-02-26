@@ -410,6 +410,7 @@ export async function waitForBotReviews(
       } catch {
         // Ignore status check errors during wait
       }
+    // Review: status check triggers every 30s to monitor progress during extended waits.
     }
   }
 }

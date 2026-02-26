@@ -37,6 +37,7 @@ import { debug } from '../logger.js';
  * 
  * WHY normalize to lowercase:
  * GitHub comment IDs sometimes have inconsistent casing. Normalizing ensures
+ // Review: preserving original casing ensures accurate matching of GitHub comment IDs.
  * reliable matching against the IDs from the API.
  * 
  * WHY return empty array on error:

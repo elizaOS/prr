@@ -207,9 +207,6 @@ export function sanitizeFilePathHeader(filePath: string): string {
   
   // Strip all forms of " - (inferred) <language>" suffixes aggressively
   cleaned = cleaned.replace(/\s*-\s*\(inferred\).*$/i, '').trim();
-  cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*\w+$/i, '').trim();
-  // Review: consolidates suffix handling for clarity and consistency in formatting.
-  cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*ts\b/i, '').trim();
   
   // Strip bare language suffixes like " - ts", " - tsx", etc.
   cleaned = cleaned.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml|py|go|rs|java|c|cpp|h|hpp)\b$/i, '').trim();
@@ -228,9 +225,6 @@ export function sanitizeFilePathHeader(filePath: string): string {
     cleaned = inferredHeaderMatch[1].trim();
   }
   cleaned = cleaned.replace(/\s*-\s*\(inferred\)\s*`?[a-z]+`?$/gi, '').trim();
-  cleaned = cleaned.replace(/\s*-\s*\(inferred\)[^\n]*$/gi, '').trim();
-  cleaned = cleaned.replace(/\s*\(inferred\)\s*/gi, ' ').trim();
-  cleaned = cleaned.replace(/\s*\(inferred\)[^\n]*$/gi, '').trim();
   cleaned = cleaned.replace(/\s+-+\s+.*$/, '');
   if (cleaned.includes(' - ')) {
     cleaned = cleaned.split(' - ')[0].trim();
