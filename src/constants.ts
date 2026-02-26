@@ -37,6 +37,14 @@ export const BATCH_CHECK_MAX_CONTEXT_CHARS = 150000;
 export const MAX_ISSUES_PER_PROMPT = 50;
 
 /**
+ * Maximum character length for the fix prompt (before file injection).
+ * WHY: File injection can add ~200k+ chars (10 files). Keeping base prompt ≤ this
+ * keeps total request under gateway limits (e.g. 500 on 690k). Audit: 449k base
+ * + injection → 638k → some models 500.
+ */
+export const MAX_FIX_PROMPT_CHARS = 200_000;
+
+/**
  * Minimum issues per prompt when adaptive batching reduces the batch size.
  * Below this, single-issue focus mode is more appropriate.
  *
