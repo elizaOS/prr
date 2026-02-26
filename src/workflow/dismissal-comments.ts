@@ -274,7 +274,9 @@ export async function addDismissalComments(
     byFile.get(issue.filePath)!.push(issue);
   }
 
-  // Pass 1: Check once per (file, line) — skip LLM if "Review:" comment already exists
+  // Pass 1: Check once per (file, line) — skip LLM if "Review:" comment already exists.
+  // Dedupe by (filePath, effectiveLine) so multiple issues that clamp to the same line
+  // get one LLM call and one insert (avoids wasted parallel calls and duplicate-insert skips).
   type ToGenerate = { issue: DismissedIssue; filePath: string; effectiveLine: number; surroundingCode: string };
   const toGenerate: ToGenerate[] = [];
   for (const [filePath, issues] of byFile.entries()) {
@@ -298,17 +300,24 @@ export async function addDismissalComments(
       continue;
     }
     const commentSyntax = getCommentSyntax(filePath);
+    const seenLineInFile = new Set<number>();
     for (const issue of issues) {
       if (issue.line === null) {
         skipped++;
         continue;
       }
       const effectiveLine = Math.min(Math.max(1, issue.line), lines.length);
+      if (seenLineInFile.has(effectiveLine)) {
+        debug('Deduplicated by (file, effectiveLine) — one comment per location', { filePath, effectiveLine });
+        skipped++;
+        continue;
+      }
       if (hasExistingReviewComment(lines, effectiveLine, commentSyntax.start)) {
         debug('Review comment already exists near target line (skipping LLM)', { filePath, line: effectiveLine });
         skipped++;
         continue;
       }
+      seenLineInFile.add(effectiveLine);
       const contextBefore = 7;
       const contextAfter = 7;
       const start = Math.max(0, effectiveLine - contextBefore - 1);
