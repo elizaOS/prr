@@ -576,8 +576,8 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 
 
 ```text
-Round 1: claude-4-sonnet-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
-Round 2: claude-4-opus-thinking (Claude) → gpt-5.2 (GPT) → gemini-2.5-pro (Other)
+Round 1: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
+Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
 ... then next tool ...
 // Review: interleaving models enhances diversity in responses, reducing similar failure patterns.
 ```
