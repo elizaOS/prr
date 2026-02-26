@@ -136,7 +136,7 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
  * gpt-4.1 is legacy. gpt-5.3 does not exist (only gpt-5.3-codex).
  * See: https://developers.openai.com/api/docs/models
  */
-export const DEFAULT_OPENAI_MODEL = 'gpt-5.2';
+export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 
 /**
  * Default LLM model for ElizaCloud provider.
