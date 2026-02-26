@@ -1060,6 +1060,7 @@ interface ParsedIssue {
  */
 const FILE_EXTENSIONS = '(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)';
 const FILE_LINE_RE = new RegExp(`(?:[\`(])?(?:\\./)?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`);
+// Review: requires a `/` to ensure valid paths, avoiding false positives in filenames.
 
 /**
  * Section headers to SKIP entirely — these never contain issues.

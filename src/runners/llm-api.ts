@@ -985,6 +985,7 @@ function progressiveTrimMatch(
         // - Only replace the inner portion we actually matched
         // Use callback to prevent $-token interpretation in replaceText
         const newContent = fileContent.replace(trimmedSearch, () => replaceText);
+        // Review: callback used to ensure unmodified LLM output with no $-token interpretation.
         if (newContent !== fileContent) return newContent;
       }
     }

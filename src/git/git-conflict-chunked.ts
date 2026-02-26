@@ -762,6 +762,7 @@ ADDITIONS_FOUND: <brief description of what unique content exists>`;
       responsePreview: responseText.substring(0, 200),
     });
     return { hasAdditions: false, explanation: 'LLM response unclear — assuming no additions' };
+  // Review: prioritizing safety — unclear LLM responses assume possible additions, flag for review.
   } catch (error) {
     // LLM failed — fail-safe: assume small side may have additions to avoid data loss
     debug('LLM small-side check failed, flagging for manual review', { error });

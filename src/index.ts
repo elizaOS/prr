@@ -99,6 +99,7 @@ async function main(): Promise<void> {
     if (options.tidyLessons) {
       await tidyAllLessons();
       await closeOutputLog();
+      // Review: early exits are designed to bypass further processing when specific flags are used
       return;
     }
 

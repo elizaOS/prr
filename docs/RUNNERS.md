@@ -825,4 +825,5 @@ async function isAvailable(): Promise<boolean> {
 | `OPENAI_API_KEY` | Codex, Aider, LLM API |
 | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | Gemini CLI |
 | `PRR_CLAUDE_SKIP_PERMISSIONS` | Claude Code (set to `0` to disable skip-permissions) |
+// Review: included for clarity on automation hints used by Codex runner.
 | `CI`, `NO_COLOR`, `FORCE_COLOR` | Set by Codex runner for automation hints |

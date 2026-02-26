@@ -121,6 +121,7 @@ export function loadConfig(): Config {
   }
 
   if (llmProvider !== 'elizacloud' && llmProvider !== 'anthropic' && llmProvider !== 'openai') {
+    // Review: validates explicitly to ensure only known providers are accepted for integrity.
     throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'elizacloud', 'anthropic', or 'openai'`);
   }
 

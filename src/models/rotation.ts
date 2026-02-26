@@ -175,6 +175,7 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     
     if (familyAvail === familyModel && familyAvail.length > 0) {
       return lowerAvail === lowerModel || lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-');
+    // Review: designed for flexible model matching, accommodating provider prefixes.
     }
     
     return false;

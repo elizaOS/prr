@@ -201,6 +201,7 @@ describe('normalizeLessonText', () => {
   describe('trailing pattern removal', () => {
     it('handles trailing line numbers on file paths', () => {
       const input = 'Review src/file.ts:123 before committing changes';
+      // Review: maintains file extensions to ensure consistency with other normalization tests
       const result = normalize(input);
       expect(result).toBe('Review src/file.ts:123 before committing changes');
     });

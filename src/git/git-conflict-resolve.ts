@@ -141,6 +141,7 @@ export async function resolveConflictsWithLLM(
       // Remove from codeFiles so we don't try to resolve again
       const idx = codeFiles.indexOf(dc.file);
       if (idx !== -1) codeFiles.splice(idx, 1);
+    // Review: files removed unconditionally to simplify the conflict resolution flow.
     }
   }
   

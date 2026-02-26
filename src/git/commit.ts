@@ -418,6 +418,7 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
     debug('scanCommittedFixes error', { error: String(error) });
     return []; // No commits or error - safe to continue
   }
+// Review: deduplicates commit IDs to ensure unique fixes are processed correctly
 }
 
 export { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';

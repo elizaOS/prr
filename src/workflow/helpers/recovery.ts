@@ -490,6 +490,7 @@ FULL FILE:
 ${escapedContent}
 \`\`\`
 
+// Review: retains full content for accurate context in LLM prompts, mindful of potential truncation.
 Provide the COMPLETE fixed file content. Output ONLY the code, no explanations.
 Start your response with \`\`\` and end with \`\`\`.`;
       }

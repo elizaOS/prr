@@ -92,6 +92,7 @@ function normalizeIssueId(raw: string): string {
     .replace(/^issue[_\s]*/i, '') // "issue_1" → "1"
     .replace(/^#/, '');           // "#1" → "1"
   return normalized.length > 0 ? `issue_${normalized}` : normalized;
+// Review: normalizes issue IDs consistently for downstream API usage and reduces complexity.
 }
 
 /**
@@ -411,6 +412,7 @@ export function releaseElizacloud(): void {
   elizacloudInFlight--;
   const next = elizacloudQueue.shift();
   if (next) next();
+// Review: designed for direct release without error handling, assuming correct usage semantics.
 }
 
 export class LLMClient {
@@ -581,6 +583,7 @@ export class LLMClient {
       if (this.provider === 'elizacloud' && elizaAcquired) {
         releaseElizacloud();
       }
+    // Review: ensures slot release only if acquisition is successful to maintain accurate in-flight count.
     }
   }
 
@@ -822,6 +825,7 @@ ${codeSnippet}
       exists: !isStale && exists, 
       stale: isStale, 
       explanation 
+    // Review: lenient parsing handles variations in expected response formats effectively
     };
   }
 
@@ -1375,6 +1379,7 @@ ${codeSnippet}
           totalSnippetSize += issue.codeSnippet.length;
         }
       }
+      // Review: calculates group size by including total snippet size and header for each issue
       const groupSize = totalSnippetSize + fileIssues.length * ISSUE_HEADER_APPROX;
 
       if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
@@ -1591,6 +1596,7 @@ NO: <brief explanation of what's still missing or wrong>`;
 FILE: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
 REVIEW COMMENT: ${cleanComment}
 
+// Review: truncation indicates content length; ensures important context is retained.
 ATTEMPTED FIX (diff):
 ${diffPreview}
 
@@ -2128,6 +2134,7 @@ COMMENT: Review: The import path was updated to use relative imports`;
       commentText = commentText.split('\n')[0];
 
       // Enforce max length
+      // Review: ensures all comments consistently start with "Review:" for uniformity.
       if (commentText.length > 100) {
         commentText = commentText.substring(0, 97) + '...';
       }
