@@ -212,7 +212,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'openai/gpt-4o-mini',                 // GPT-4o mini - fast, cost-effective
     'anthropic/claude-3.7-sonnet',        // Claude 3.7 Sonnet - balanced coding
     'anthropic/claude-3.5-sonnet',        // Claude 3.5 Sonnet - strong coding
-    'anthropic/claude-3-opus',            // Claude 3 Opus - advanced reasoning
+    // anthropic/claude-3-opus skipped on ElizaCloud (ELIZACLOUD_SKIP_MODELS) — 500s at 45k–407k prompt
     'google/gemini-2.0-pro-exp',          // Gemini 2.0 Pro Experimental
   ],
 };

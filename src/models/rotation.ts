@@ -496,9 +496,10 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
   // 'gemini' intentionally omitted - uses Google's own model validation
 };
 
-/** ElizaCloud: model IDs to remove from rotation (e.g. known to timeout for a while). */
+/** Models to skip on ElizaCloud (500/timeout in practice). Audit: claude-3-opus 500'd on 4/5 calls including at 45k prompt. */
 const ELIZACLOUD_SKIP_MODELS = new Set<string>([
   'openai/gpt-5.2-codex',
+  'anthropic/claude-3-opus',
 ]);
 
 /**

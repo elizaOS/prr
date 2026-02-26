@@ -93,6 +93,14 @@ function issueRequestsTests(issue: UnresolvedIssue): boolean {
          /\badding\s+tests?\s+here\s+would\s+help\b/i.test(text);
 }
 
+/** If the issue is on a test file and mentions lesson-normalize impl, return the impl path so the fixer may edit it. Audit: test-file issues (e.g. normalize-lesson-text.test.ts) need impl changes in src/state/lessons-normalize.ts. Exported for single-issue prompt. */
+export function getImplPathForTestFileIssue(issue: UnresolvedIssue, fileLessons: string[] | undefined): string | null {
+  if (!/\.test\.(ts|js)$/.test(issue.comment.path)) return null;
+  const text = `${issue.comment.body ?? ''} ${(fileLessons ?? []).join(' ')}`;
+  if (/\b(?:normalizeLessonText|sanitizeLessonText|lessons-normalize)\b/i.test(text)) return 'src/state/lessons-normalize.ts';
+  return null;
+}
+
 /**
  * Compute effective batch size using adaptive batching.
  *
@@ -326,7 +334,10 @@ export function buildFixPrompt(
       ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
       : '';
     parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}`);
-    const allowedPaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+    const basePaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+    const fileLessons = options?.perFileLessons?.get(issue.comment.path);
+    const implPath = getImplPathForTestFileIssue(issue, fileLessons);
+    const allowedPaths = implPath && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
     parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
     if (issueRequestsTests(issue)) {
       parts.push(`If the review asks for new or updated tests, you may create or modify files in \`__tests__/\` as needed.`);
@@ -404,7 +415,7 @@ export function buildFixPrompt(
     // verify/route.ts because it was out of the attention window by the time
     // it processed that issue. Putting lessons right here, next to the code
     // snippet, ensures the fixer sees them in immediate context.
-    const fileLessons = options?.perFileLessons?.get(issue.comment.path);
+    // (fileLessons already fetched at the top of this loop iteration for implPath detection)
     if (fileLessons && fileLessons.length > 0) {
       const maxInline = 3; // Keep inline section brief — top-level has the full list
       const shown = fileLessons.slice(-maxInline);
