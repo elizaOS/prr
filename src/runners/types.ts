@@ -191,7 +191,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   'junie': [
     'gemini-3-flash',                      // Fast, high Terminal-Bench score with Junie
     // Review: using latest model identifiers for optimal compatibility with available Gemini features
-    'gemini-3-pro',                        // Gemini 3 Pro
+    'gemini-3-pro-preview',                // Gemini 3 Pro Preview - official model ID
   ],
   // Goose: Block's open-source agent (supports multiple providers)
   'goose': [
