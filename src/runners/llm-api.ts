@@ -497,7 +497,7 @@ Working directory: ${workdir}`;
     const fullPath = resolve(workdir, filePath);
     const relativePath = relative(workdirResolved, fullPath);
     // Detect any parent-traversal segments in the relative path
-    const hasParentTraversal = relativePath !== '' && relativePath.split(sep).some(segment => segment === '..');
+    const hasParentTraversal = relativePath.split(sep).some(segment => segment === '..');
 
     // If the path contains parent traversal, or it does not reside under the workdir, mark as outside
     const isOutside = hasParentTraversal || (fullPath !== workdirResolved && !fullPath.startsWith(workdirResolved + sep));
