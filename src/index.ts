@@ -110,8 +110,8 @@ async function main(): Promise<void> {
     if (config.anthropicApiKey) process.env.ANTHROPIC_API_KEY = config.anthropicApiKey;
     if (config.elizacloudApiKey) process.env.ELIZACLOUD_API_KEY = config.elizacloudApiKey;
 
-    // Fail fast if OpenAI key is invalid (e.g. for Codex or llm-api)
-    if (config.openaiApiKey) {
+    // Fail fast if OpenAI key is invalid (only when OpenAI is the active LLM provider)
+    if (config.llmProvider === 'openai' && config.openaiApiKey) {
       await validateOpenAIKey(config.openaiApiKey);
     }
 
