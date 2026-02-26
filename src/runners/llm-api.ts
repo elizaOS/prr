@@ -214,13 +214,29 @@ export class LLMAPIRunner implements Runner {
     };
   }
 
+  /** Ensure provider is explicitly selected based on available API keys */
+  private ensureProvider(): void {
+    if (process.env.ELIZACLOUD_API_KEY) {
+      this._provider = 'elizacloud';
+      this.provider = 'elizacloud';
+    } else if (process.env.ANTHROPIC_API_KEY) {
+      this._provider = 'anthropic';
+      this.provider = 'anthropic'; 
+    } else if (process.env.OPENAI_API_KEY) {
+      this._provider = 'openai';
+      this.provider = 'openai';
+    }
+  }
+
   private getClient(): { anthropic?: Anthropic; openai?: OpenAI } {
+    this.ensureProvider(); // Explicitly select provider before creating client
+    
     if (this.provider === 'anthropic' && !this.anthropic) {
       this.anthropic = new Anthropic();
     }
     if (this.provider === 'elizacloud' && !this.openai) {
       this.openai = createElizaCloudOpenAIClient(process.env.ELIZACLOUD_API_KEY!);
-    }
+    } 
     if (this.provider === 'openai' && !this.openai) {
       this.openai = new OpenAI();
     }
