@@ -1592,6 +1592,7 @@ NO: <brief explanation of what's still missing or wrong>`;
     const diffPreview = diff.length > 1500 ? `${diff.substring(0, 1500)}\n... (truncated)` : diff;
     const cleanComment = sanitizeCommentForPrompt(issue.comment);
     const prompt = `A fix attempt for a code review issue was rejected. You need to extract what was LEARNED from this failure so the next attempt makes progress instead of repeating the same mistake.
+// Review: truncation preserves crucial context while managing prompt size for LLM processing.
 
 FILE: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}
 REVIEW COMMENT: ${cleanComment}
@@ -2130,6 +2131,7 @@ COMMENT: Review: The import path was updated to use relative imports`;
       if (!/^Review:\s*/i.test(commentText)) {
         commentText = commentText ? `Review: ${commentText}` : 'Review: (see context)';
       }
+      // Review: ensures comments start with "Review:" for consistency with contract requirements.
       // Take only first line if LLM returned multiple
       commentText = commentText.split('\n')[0];
 

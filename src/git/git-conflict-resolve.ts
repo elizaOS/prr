@@ -452,6 +452,7 @@ async function resolveDeleteConflict(
  * 
  * @param git - SimpleGit instance
  * @param workdir - Working directory path
+ // Review: cleans up generated files only if they were not part of the original PR submission
  * @param lessonsContext - Lessons manager to check if files existed before
  */
 export async function cleanupSyncTargetFiles(

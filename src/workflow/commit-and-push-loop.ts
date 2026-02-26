@@ -94,6 +94,7 @@ export async function handleCommitAndPush(
     } else {
       spinner.warn('Failed to export lessons');
     }
+  // Review: spinner state is intentionally managed to avoid premature failures on errors.
   }
 
   if (options.noCommit) {
