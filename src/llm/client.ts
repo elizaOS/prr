@@ -257,6 +257,7 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
         },
+      // Review: designed for clarity in API requests, prioritizing clean response handling.
       });
       
       if (!response.ok) {

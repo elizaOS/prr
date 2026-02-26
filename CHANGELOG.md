@@ -377,6 +377,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File is truncated on each run start, so it always contains only the latest run
 - Path printed at end of run for easy access
 
+// Review: logging to CWD simplifies access and avoids user configuration issues.
 - WHY: Feeding terminal output back into an LLM for debugging required manual copy-paste from scrollback. A plain-text log file can be directly referenced or piped into Cursor/Claude.
 
 **Adaptive Batch Sizing**
