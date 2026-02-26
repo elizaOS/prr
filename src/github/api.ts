@@ -997,6 +997,7 @@ export class GitHubAPI {
         issue_number: prNumber,
         per_page: 100,
         since,
+      // Review: paginate retrieves all comments, ensuring we process the latest ones correctly.
       });
       const commentsNewestFirst = [...comments].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()

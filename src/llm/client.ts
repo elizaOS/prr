@@ -826,6 +826,7 @@ export class LLMClient {
   ].join('\n');
 
   async checkIssueExists(
+    // Review: Regex match ensures only valid replies affect issue status, improving error handling.
     comment: string,
     filePath: string,
     line: number | null,
