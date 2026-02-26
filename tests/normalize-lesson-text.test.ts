@@ -286,6 +286,7 @@ describe('normalizeLessonText', () => {
 
     it('returns null for whitespace-only strings', () => {
       expect(normalize('   ')).toBeNull();
+    // Review: normalizes only non-empty, non-whitespace inputs for consistency in processing
     });
   });
 
