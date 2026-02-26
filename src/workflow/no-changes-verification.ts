@@ -223,7 +223,10 @@ export async function handleNoChangesWithVerification(
             filePath: issue.comment.path,
             line: issue.comment.line,
             codeSnippet: issue.codeSnippet,
-          }))
+          })),
+          undefined,
+          80_000,
+          8
         );
         
         let spotFixed = 0;
@@ -352,7 +355,10 @@ async function verifyAllIssues(
       filePath: issue.comment.path,
       line: issue.comment.line,
       codeSnippet: issue.codeSnippet,
-    }))
+    })),
+    undefined,
+    80_000,
+    8
   );
   
   let verifiedAsFixed = 0;

@@ -1640,6 +1640,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     }
   }
 
+  /** Max fixes per request to avoid 500 on large verification prompts (e.g. 26 fixes → 124k chars). */
+  private static readonly MAX_VERIFY_FIXES_PER_BATCH = 6;
+  /** Per-fix truncation so batches stay under gateway limits. */
+  private static readonly MAX_VERIFY_CURRENT_CODE_CHARS = 2000;
+  private static readonly MAX_VERIFY_DIFF_CHARS = 2500;
+  private static readonly MAX_VERIFY_COMMENT_CHARS = 800;
+
   async batchVerifyFixes(
     fixes: Array<{
       id: string;
@@ -1654,17 +1661,63 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       return new Map();
     }
 
+    const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
+    const batchSize = LLMClient.MAX_VERIFY_FIXES_PER_BATCH;
+    const batches = Array.from(
+      { length: Math.ceil(fixes.length / batchSize) },
+      (_, i) => fixes.slice(i * batchSize, (i + 1) * batchSize)
+    );
+
+    const MAX_VERIFY_RETRIES = 1;
+    for (let b = 0; b < batches.length; b++) {
+      const batchFixes = batches[b];
+      const batchPrompt = this.buildBatchVerifyPrompt(batchFixes);
+      debug('Batch verifying fixes', { batch: b + 1, totalBatches: batches.length, count: batchFixes.length });
+      let batchResults: Map<string, { fixed: boolean; explanation: string; lesson?: string }> | null = null;
+      for (let attempt = 0; attempt <= MAX_VERIFY_RETRIES; attempt++) {
+        try {
+          const response = await this.complete(batchPrompt);
+          batchResults = this.parseBatchVerifyResponse(batchFixes, response.content);
+          break;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
+          if (isTransient && attempt < MAX_VERIFY_RETRIES) {
+            debug('Batch verify failed (transient), retrying', { batch: b + 1, attempt: attempt + 1, error: msg.slice(0, 80) });
+            continue;
+          }
+          // Record failed so caller gets partial results; fix-verification treats missing as failed anyway
+          batchResults = new Map();
+          for (const f of batchFixes) {
+            batchResults.set(f.id, {
+              fixed: false,
+              explanation: `Verification request failed: ${msg.slice(0, 120)}`,
+            });
+          }
+          debug('Batch verify failed after retries, marking batch as failed', { batch: b + 1, count: batchFixes.length });
+          break;
+        }
+      }
+      if (batchResults) {
+        for (const [id, value] of batchResults) {
+          results.set(id, value);
+        }
+      }
+    }
+    return results;
+  }
+
+  private buildBatchVerifyPrompt(
+    fixes: Array<{
+      id: string;
+      comment: string;
+      filePath: string;
+      line?: number | null;
+      diff: string;
+      currentCode?: string;
+    }>
+  ): string {
     // Build batch prompt — verification + failure analysis in a single LLM call.
-    //
-    // WHY combined: Previously, batch verify returned YES/NO and then fix-verification.ts
-    // called analyzeFailedFix() individually for each NO — turning 1 batch call into 1+N
-    // calls (e.g., 12 fixes with 6 failures = 7 LLM calls). Now the LLM does both jobs
-    // in one pass: verify AND produce an actionable lesson for each failure.
-    //
-    // The lesson prompt here matches the quality of the standalone analyzeFailedFix:
-    // - Explains what the diff attempted vs what the comment actually asked for
-    // - Provides 4 good + 3 bad examples to calibrate quality
-    // - Explicitly tells the LLM the lesson feeds back into the next fix attempt
     const parts: string[] = [
       'You are a STRICT code reviewer. For each fix below, verify whether the code change adequately addresses the review comment.',
       'IMPORTANT: When a "Current Code" section is provided, CHECK IT CAREFULLY. If the problematic pattern described in the review comment is still present in the current code, the fix is NOT adequate — answer NO regardless of what the diff shows.',
@@ -1673,55 +1726,49 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'FIX_ID: YES|NO: brief explanation of what was/wasn\'t fixed',
       'LESSON: <actionable guidance> (REQUIRED for every NO — this feeds into the next fix attempt)',
       '',
-      'When you answer NO, your explanation is used as the source of truth for the next fix attempt. Be specific: cite the exact code, method name, or line that is still wrong or missing (e.g. "getHistoricalPrices method not found in Current Code", "start() does not validate JUPITER_API_KEY before marking running"). Vague NOs (e.g. "fix incomplete") do not help the fixer.',
+      'When you answer NO, your explanation is used as the source of truth for the next fix attempt. Be specific: cite the exact code, method name, or line that is still wrong or missing.',
       '',
-      'The LESSON line is critical for NO responses. It captures what was LEARNED from this failure so the next attempt makes progress instead of repeating the same mistake. Focus on WHY this approach failed and what must be different next time.',
+      'The LESSON line is critical for NO responses. Focus on WHY this approach failed and what must be different next time.',
       '',
-      'GOOD lessons (specific, learned from the failure):',
-      '- "cache.set() returns void not boolean — checking return value always falsy"',
-      '- "Test files must go in __tests__/ subdirectory — placing next to route.ts was rejected"',
-      '- "Review requires BOTH endpoints fixed — fixing only verify was insufficient"',
-      '- "Services layer has no tx param — need compensating cleanup, not DB transactions"',
+      'GOOD lessons: specific, learned from the failure. BAD lessons: vague, just restating the rejection.',
       '',
-      'BAD lessons (vague, just restating the rejection):',
-      '- "The diff only adds X but doesn\'t do Y" (restates rejection, no insight)',
-      '- "Fix was incomplete" (obvious, not useful)',
-      '- "The code change does not address the issue" (zero information)',
-      '',
-      'Example responses:',
-      '',
-      '1: YES: The null check on line 45 matches what the comment requested',
-      '',
-      '2: NO: Added try/catch but the comment asks for input validation before the call, not error handling after',
-      'LESSON: Review asks for pre-call validation (line 32), not post-call error handling — need input check before the API call',
+      'Example: 1: YES: The null check on line 45 matches what the comment requested',
+      '2: NO: Added try/catch but the comment asks for input validation before the call',
+      'LESSON: Review asks for pre-call validation (line 32), not post-call error handling',
       '',
       '---',
       '',
     ];
 
-    // Use simple 1-indexed numeric IDs in the prompt instead of actual comment IDs.
-    // WHY: Comment IDs are complex GraphQL node IDs (e.g. "PRR_kwDONqB7Uc5y6UGs")
-    // that the LLM often garbles when echoing back, causing parse failures (e.g. 34/38 parsed).
-    // Simple "1", "2", "3" are trivial to echo correctly.
-    const indexToId = new Map<number, string>();
+    const maxCode = LLMClient.MAX_VERIFY_CURRENT_CODE_CHARS;
+    const maxDiff = LLMClient.MAX_VERIFY_DIFF_CHARS;
+    const maxComment = LLMClient.MAX_VERIFY_COMMENT_CHARS;
     for (let i = 0; i < fixes.length; i++) {
       const fix = fixes[i];
       const idx = i + 1;
-      indexToId.set(idx, fix.id);
+      const currentCode = fix.currentCode
+        ? fix.currentCode.length > maxCode
+          ? fix.currentCode.substring(0, maxCode) + '\n... (truncated)'
+          : fix.currentCode
+        : undefined;
+      const diff =
+        fix.diff.length > maxDiff ? fix.diff.substring(0, maxDiff) + '\n... (truncated)' : fix.diff;
+      const rawComment = sanitizeCommentForPrompt(fix.comment);
+      const comment = rawComment.length > maxComment ? rawComment.substring(0, maxComment) + '...' : rawComment;
       parts.push(`## Fix ${idx}`);
       parts.push(`File: ${fix.filePath}${fix.line ? `:${fix.line}` : ''}`);
-      parts.push(`Review Comment: ${sanitizeCommentForPrompt(fix.comment)}`);
+      parts.push(`Review Comment: ${comment}`);
       parts.push('');
-      if (fix.currentCode) {
+      if (currentCode) {
         parts.push('Current Code (AFTER the fix attempt — check if the issue pattern still exists here):');
         parts.push('```');
-        parts.push(fix.currentCode);
+        parts.push(currentCode);
         parts.push('```');
         parts.push('');
       }
       parts.push('Code Change (diff):');
       parts.push('```diff');
-      parts.push(fix.diff);
+      parts.push(diff);
       parts.push('```');
       parts.push('');
     }
@@ -1729,14 +1776,22 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     parts.push('---');
     parts.push('');
     parts.push('Now verify each fix. Use the fix number (e.g. "1: YES: ..." or "2: NO: ..."). For every NO, include a LESSON line immediately after:');
+    return parts.join('\n');
+  }
 
-    debug('Batch verifying fixes', { count: fixes.length });
-    const response = await this.complete(parts.join('\n'));
+  private parseBatchVerifyResponse(
+    batchFixes: Array<{ id: string }>,
+    content: string
+  ): Map<string, { fixed: boolean; explanation: string; lesson?: string }> {
+    const indexToId = new Map<number, string>();
+    for (let i = 0; i < batchFixes.length; i++) {
+      indexToId.set(i + 1, batchFixes[i].id);
+    }
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
     // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", or "FIX_ID: 1" then "NO: ..." on next line
-    const lines = response.content.split('\n');
+    const lines = content.split('\n');
     let currentOriginalId: string | null = null;
 
     for (const line of lines) {
@@ -1788,11 +1843,11 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       }
     }
 
-    debug('Batch verify results', { parsed: results.size, expected: fixes.length });
+    debug('Batch verify results', { parsed: results.size, expected: batchFixes.length });
 
     // When parsing falls short, log enough to diagnose and ensure every fix has an entry
-    if (results.size < fixes.length) {
-      const unparsed = fixes.filter(f => !results.has(f.id));
+    if (results.size < batchFixes.length) {
+      const unparsed = batchFixes.filter(f => !results.has(f.id));
       const unparsedIds = unparsed.map(f => f.id.substring(0, 20));
       for (const f of unparsed) {
         results.set(f.id, { fixed: false, explanation: '' });
@@ -1812,7 +1867,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         missing: unparsed.length,
         unparsedIds,
         sampleUnmatchedLines: unmatchedLines,
-        responsePreview: response.content.substring(0, 500),
+        responsePreview: content.substring(0, 500),
       });
     // Review: design choice to log unparsed issues aids debugging without altering results integrity
     }
