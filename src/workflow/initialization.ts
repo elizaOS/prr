@@ -165,9 +165,18 @@ export async function restoreRunnerState(
   const newModelIndices = new Map(modelIndices);
   
   if (savedRunnerIndex > 0 && savedRunnerIndex < runners.length) {
-    newRunnerIndex = savedRunnerIndex;
-    runner = runners[savedRunnerIndex];
-    console.log(chalk.gray(`  Resuming at tool: ${runner.displayName} (from previous session)`));
+    // If last run was interrupted while in the fix loop, skip the tool that was active
+    // so we don't immediately retry the same runner (e.g. opencode that was hung).
+    const wasInterruptedInFixing = State.wasInterrupted(stateContext) && State.getInterruptPhase(stateContext) === 'fixing';
+    if (wasInterruptedInFixing) {
+      newRunnerIndex = (savedRunnerIndex + 1) % runners.length;
+      runner = runners[newRunnerIndex];
+      console.log(chalk.gray(`  Skipping tool that was running when interrupted; resuming at: ${runner.displayName}`));
+    } else {
+      newRunnerIndex = savedRunnerIndex;
+      runner = runners[savedRunnerIndex];
+      console.log(chalk.gray(`  Resuming at tool: ${runner.displayName} (from previous session)`));
+    }
   }
   
   if (Object.keys(savedModelIndices).length > 0) {

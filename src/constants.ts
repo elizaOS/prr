@@ -48,6 +48,13 @@ export const MAX_ISSUES_PER_PROMPT = 50;
 export const MIN_ISSUES_PER_PROMPT = 5;
 
 /**
+ * Max issues per prompt when using OpenCode.
+ * OpenCode often hangs or times out on large prompts (e.g. 80k chars / 12 issues).
+ * Keeping batches small reduces timeouts; tool_timeout still disables it for the run if it hangs.
+ */
+export const OPENCODE_MAX_ISSUES_PER_PROMPT = 6;
+
+/**
  * Maximum characters per review comment in fix prompts.
  * Truncate longer comments to prevent prompt overflow.
  */

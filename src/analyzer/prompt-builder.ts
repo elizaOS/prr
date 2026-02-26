@@ -84,6 +84,15 @@ export function issueRequiresRefactor(issue: UnresolvedIssue): boolean {
   return false;
 }
 
+/** True if the review comment or explanation asks for adding/updating tests (so we allow __tests__/). */
+function issueRequestsTests(issue: UnresolvedIssue): boolean {
+  const text = `${issue.comment?.body ?? ''} ${issue.explanation ?? ''}`;
+  return /\b(?:add(?:ing)?|writing|no\s+tests?\s+cover|tests?\s+cover|test\s+coverage)\s+(?:tests?|here|for)\b/i.test(text) ||
+         /\b__tests__\b/i.test(text) ||
+         /\b(?:vitest|jest|mocha)\b/i.test(text) ||
+         /\badding\s+tests?\s+here\s+would\s+help\b/i.test(text);
+}
+
 /**
  * Compute effective batch size using adaptive batching.
  *
@@ -319,6 +328,9 @@ export function buildFixPrompt(
     parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}`);
     const allowedPaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
     parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
+    if (issueRequestsTests(issue)) {
+      parts.push(`If the review asks for new or updated tests, you may create or modify files in \`__tests__/\` as needed.`);
+    }
     if (issueRequiresRefactor(issue)) {
       parts.push(`**This issue likely requires refactoring** (e.g. removing duplication, sharing logic). You may make broader changes in this file to consolidate code — the usual "minimal only" constraint is relaxed for this issue.\n`);
     } else {
@@ -409,6 +421,7 @@ export function buildFixPrompt(
 
   parts.push('## Instructions\n');
   parts.push('1. Address each issue listed above. Each issue specifies its file — apply that issue\'s fix only in that file; do not fix an issue by editing a different file.');
+  parts.push('   Exception: If an issue asks for adding or updating tests, you may create or modify files in __tests__/ as needed.');
   parts.push('2. Make targeted changes that fully address the fix — only modify lines directly related to the issue');
   parts.push('   Exception: For issues that request removing duplication or sharing logic (e.g. "duplicates X", "refactor to share"), you may refactor and consolidate code in that file as needed.');
   parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes (except when an issue explicitly requires refactoring as above)');

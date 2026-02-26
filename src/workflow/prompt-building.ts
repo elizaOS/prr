@@ -21,6 +21,7 @@ import type { PRInfo } from '../github/types.js';
 import type { ReviewComment } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
+import { OPENCODE_MAX_ISSUES_PER_PROMPT } from '../constants.js';
 import { summarizeBotRiskByFile } from './bot-risk.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug } from '../logger.js';
@@ -47,7 +48,9 @@ export function buildAndDisplayFixPrompt(
   prInfo?: PRInfo,
   diffStat?: string,
   /** When provided, used to compute bot risk by file (hot files get a note in the prompt). */
-  comments?: ReviewComment[]
+  comments?: ReviewComment[],
+  /** When 'opencode', batch size is capped to reduce timeouts on large prompts. */
+  runnerName?: string
 ): {
   prompt: string;
   detailedSummary: string;
@@ -78,7 +81,11 @@ export function buildAndDisplayFixPrompt(
   const lessons = [...fileOnlyList, ...globalOnly.slice(-3)].slice(-maxTotalLessons);
 
   // Adaptive batch sizing: reduce batch when consecutive iterations fail
-  const effectiveMax = computeEffectiveBatchSize(consecutiveZeroFixIterations);
+  let effectiveMax = computeEffectiveBatchSize(consecutiveZeroFixIterations);
+  if (runnerName === 'opencode') {
+    effectiveMax = Math.min(effectiveMax, OPENCODE_MAX_ISSUES_PER_PROMPT);
+    debug('OpenCode batch cap', { effectiveMax, runner: runnerName });
+  }
   if (effectiveMax < 50 && consecutiveZeroFixIterations > 0) {
     debug('Adaptive batch sizing', { consecutiveZeroFixIterations, effectiveMax });
   }

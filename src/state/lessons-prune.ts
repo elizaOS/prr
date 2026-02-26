@@ -170,6 +170,60 @@ export function pruneContradictoryLessons(ctx: LessonsContext): number {
   return removed;
 }
 
+/**
+ * Prune redundant (near-duplicate) lessons that describe the same failure in different words.
+ * Contradictory pruning handles opposite guidance; this handles paraphrases (e.g. three
+ * lessons all saying "the diff didn't replace the falsy check" in slightly different ways).
+ * Keeps the most recent per redundancy group.
+ */
+export function pruneRedundantLessons(ctx: LessonsContext): number {
+  // Normalize to a signature: drop line refs and common phrasing so paraphrases collide
+  const signature = (lesson: string): string => {
+    return lesson
+      .toLowerCase()
+      .replace(/\b(?:line|lines)\s+\d+(?:\s*[-–]\s*\d+)?\b/g, ' ')
+      .replace(/\bthe\s+(?:diff|attempted\s+fix)\b/g, ' ')
+      .replace(/\b(?:removed?|removing|removes?)\s+(?:duplicate|the\s+duplicate)\b/g, ' ')
+      .replace(/\b(?:didn't|did\s+not)\s+show\s+replacing\b/g, ' ')
+      .replace(/\b(?:shows?|showing)\s+only\s+deletions?\b/g, ' ')
+      .replace(/\b(?:replacing|replace)\s+the\s+original\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 100);
+  };
+
+  const pruneList = (lessons: string[]): number => {
+    if (lessons.length <= 1) return 0;
+    const bySig = new Map<string, number[]>();
+    lessons.forEach((lesson, index) => {
+      const sig = signature(lesson);
+      if (!bySig.has(sig)) bySig.set(sig, []);
+      bySig.get(sig)!.push(index);
+    });
+    const drop = new Set<number>();
+    for (const indices of bySig.values()) {
+      if (indices.length <= 1) continue;
+      // Keep only the last (most recent); drop the rest
+      indices.sort((a, b) => a - b);
+      for (let i = 0; i < indices.length - 1; i++) drop.add(indices[i]);
+    }
+    if (drop.size === 0) return 0;
+    const filtered = lessons.filter((_, i) => !drop.has(i));
+    lessons.length = 0;
+    lessons.push(...filtered);
+    ctx.dirty = true;
+    ctx.repoLessonsDirty = true;
+    return drop.size;
+  };
+
+  let removed = 0;
+  removed += pruneList(ctx.store.global);
+  for (const filePath of Object.keys(ctx.store.files)) {
+    removed += pruneList(ctx.store.files[filePath]);
+  }
+  return removed;
+}
+
 export function pruneDeletedFiles(ctx: LessonsContext, workdir: string): number {
   if (!workdir) return 0;
   
