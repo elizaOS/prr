@@ -11,5 +11,5 @@
    updatedProgressThisCycle: boolean;
  }
  
- // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
- const maxPushIterations = options.autoPush ? (options.maxPushIterations || Infinity) : 1;
+ // CLI convention: 0 = unlimited. Use ?? so explicit 0 is honored.
+const maxPushIterations = options.autoPush ? (options.maxPushIterations ?? Infinity) : 1;
