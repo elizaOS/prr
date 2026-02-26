@@ -286,7 +286,8 @@ export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 }
 
 /** Similarity threshold above which two lessons are considered duplicates. */
-export const LESSON_SIMILARITY_THRESHOLD = 0.6;
+/** Lower = more aggressive dedup. 0.5 catches "diff shows X" vs "diff shows Y" style repeats (audit: 3 variants of same lesson). */
+export const LESSON_SIMILARITY_THRESHOLD = 0.5;
 
 export function sanitizeLessonsList(lessons: string[]): string[] {
   const seenKeys = new Set<string>();

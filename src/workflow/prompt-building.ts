@@ -21,7 +21,7 @@ import type { PRInfo } from '../github/types.js';
 import type { ReviewComment } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
-import { OPENCODE_MAX_ISSUES_PER_PROMPT } from '../constants.js';
+import { OPENCODE_MAX_ISSUES_PER_PROMPT, MAX_FIX_PROMPT_CHARS, MIN_ISSUES_PER_PROMPT } from '../constants.js';
 import { summarizeBotRiskByFile } from './bot-risk.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug } from '../logger.js';
@@ -102,11 +102,29 @@ export function buildAndDisplayFixPrompt(
     ? summarizeBotRiskByFile(comments, affectedFiles)
     : undefined;
 
-  const { prompt, detailedSummary, lessonsIncluded } = buildPrompt(
-    sortedIssues,
-    lessons,
-    { maxIssues: effectiveMax, perFileLessons, prInfo, diffStat, botRiskByFile }
-  );
+  // Cap prompt size: reduce batch until under limit so file injection doesn't push total over gateway limit.
+  let prompt: string;
+  let detailedSummary: string;
+  let lessonsIncluded: number;
+  let currentMax = effectiveMax;
+  while (true) {
+    const result = buildPrompt(
+      sortedIssues,
+      lessons,
+      { maxIssues: currentMax, perFileLessons, prInfo, diffStat, botRiskByFile }
+    );
+    if (result.prompt.length <= MAX_FIX_PROMPT_CHARS || currentMax <= MIN_ISSUES_PER_PROMPT) {
+      prompt = result.prompt;
+      detailedSummary = result.detailedSummary;
+      lessonsIncluded = result.lessonsIncluded;
+      if (currentMax < effectiveMax) {
+        debug('Fix prompt capped by size', { effectiveMax, usedMax: currentMax, promptLength: result.prompt.length, cap: MAX_FIX_PROMPT_CHARS });
+      }
+      break;
+    }
+    currentMax = Math.max(MIN_ISSUES_PER_PROMPT, Math.floor(currentMax / 2));
+    debug('Fix prompt over cap, reducing batch', { nextMax: currentMax, promptLength: result.prompt.length, cap: MAX_FIX_PROMPT_CHARS });
+  }
 
   console.log(chalk.cyan(`\n${detailedSummary}\n`));
   
@@ -114,7 +132,7 @@ export function buildAndDisplayFixPrompt(
   // WHY: Operators need to see if we're tackling critical issues or style nits.
   // Only show when priorityOrder is not 'none' and some issues have triage.
   if (priorityOrder !== 'none') {
-    const triaged = sortedIssues.slice(0, effectiveMax).filter(i => i.triage);
+    const triaged = sortedIssues.slice(0, currentMax).filter(i => i.triage);
     if (triaged.length > 0) {
       // Count by importance: 1-2=critical/major, 3=moderate, 4-5=minor/trivial
       const critical = triaged.filter(i => i.triage!.importance <= 2).length;

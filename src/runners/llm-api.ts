@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS } from '../constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS } from '../constants.js';
 import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } from '../llm/client.js';
 
 /**
@@ -304,6 +304,12 @@ Working directory: ${workdir}`;
     }
 
     debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
+
+    // Fail fast if total prompt would exceed gateway limits (avoids 500 and wasted rotation).
+    const MAX_ENRICHED_PROMPT_CHARS = MAX_FIX_PROMPT_CHARS * 2.5; // base cap 200k + injection → 500k hard cap
+    if (enrichedPrompt.length > MAX_ENRICHED_PROMPT_CHARS) {
+      throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${MAX_ENRICHED_PROMPT_CHARS.toLocaleString()}). Reduce batch size or file count.`);
+    }
 
     // Full-file rewrite prompts are larger; use a longer timeout so the request can complete.
     const requestTimeoutMs = rewriteFiles.length > 0 ? LLM_REQUEST_TIMEOUT_FULL_FILE_MS : LLM_REQUEST_TIMEOUT_MS;
