@@ -1059,7 +1059,10 @@ interface ParsedIssue {
  * Requires at least one `/` to avoid matching bare words like `client.ts`.
  */
 const FILE_EXTENSIONS = '(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)';
-const FILE_LINE_RE = new RegExp(`(?:[\`(])?(?:\\./)?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`);
+const FILE_PATH_RE = `[\\w.-]+(?:/[\\w./-]+)*\\.${FILE_EXTENSIONS}`;
+const FILE_LINE_RE = new RegExp(
+  `(?:[\`(])?(?:\\./)?(${FILE_PATH_RE})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`
+);
 // Review: requires a `/` to ensure valid paths, avoiding false positives in filenames.
 
 /**
