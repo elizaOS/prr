@@ -260,7 +260,7 @@ export async function handleCommitAndPush(
     // Skip bot wait when: bail-out, nothing was pushed, or more fixes remain (!allFixed).
     // When !allFixed, we pushed to avoid losing commits but don't need to wait for bots
     // since we'll re-enter the fix loop immediately with the remaining issues.
-    const shouldWaitForBots = !skipBotWait && !pushNothingToPush && allFixed && pushIteration < maxPushIterations;
+    const shouldWaitForBots = !skipBotWait && !pushNothingToPush && allFixed && (maxPushIterations === 0 || pushIteration < maxPushIterations);
     if (shouldWaitForBots) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);
     } else if (!allFixed) {
