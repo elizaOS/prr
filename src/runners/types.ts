@@ -152,11 +152,11 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // These get discovered dynamically at runtime via `cursor-agent models`.
   // This is just the fallback list if discovery fails.
   'cursor': [
-    'claude-sonnet-4-5',                   // Claude Sonnet 4.5 - balanced
-    'gpt-4.1',                             // GPT-4.1 - general purpose
-    'claude-opus-4-5',                     // Claude Opus 4.5 - most intelligent
-    'gpt-5.2',                             // GPT-5.2 - frontier coding
-  ],
+        'claude-3.5-sonnet',                  // Claude 3.5 Sonnet - balanced
+        'gpt-4o',                             // GPT-4o - current flagship
+        'claude-3-opus',                      // Claude 3 Opus - advanced reasoning
+        'grok-2',                             // Grok 2 - experimental
+    ],
   // Claude Code: Claude models (uses full API names)
   'claude-code': [
     'claude-sonnet-4-5-20250929',          // Claude Sonnet 4.5 - best speed/intelligence
