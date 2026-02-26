@@ -42,6 +42,7 @@ import { cleanupWorkdir } from '../git/workdir.js';
 import * as ResolverProc from '../resolver-proc.js';
 import { addDismissalComments } from './dismissal-comments.js';
 import * as Dismissed from '../state/state-dismissed.js';
+import { debug } from '../logger.js';
 
 export interface RunState {
   prInfo: PRInfo;
@@ -112,6 +113,7 @@ export async function executeRun(
   state: RunState
 ): Promise<RunState> {
   try {
+    debug('Run start', { autoPush: options.autoPush, maxPushIterations: options.maxPushIterations, maxFixIterations: options.maxFixIterations, maxStaleCycles: options.maxStaleCycles, noWaitBot: options.noWaitBot });
     const initResult = await ResolverProc.initializeRun(prUrl, github, options, spinner, callbacks.runCleanupMode, callbacks.calculateExpectedBotResponseTime);
     if (!initResult) {
       state.exitReason = 'init_failed';
@@ -149,15 +151,18 @@ export async function executeRun(
     }
     
     if (setupResult.shouldExit) {
+      debug('Setup requested early exit', { exitReason: setupResult.exitReason, exitDetails: setupResult.exitDetails });
       if (setupResult.exitReason) state.exitReason = setupResult.exitReason;
       if (setupResult.exitDetails) state.exitDetails = setupResult.exitDetails;
       return state;
     }
+    debug('Setup complete, entering push iteration loop', { workdir: setupResult.workdir, hasPrefetchedComments: !!setupResult.prefetchedComments?.length });
     const git = setupResult.git;
     let pushIteration = 0;
-    // Use ?? so explicit 0 is honored (not treated as falsy)
-    // CLI convention: 0 = unlimited. With ??, null/undefined fall back to Infinity while 0 is preserved.
-    const maxPushIterations = options.autoPush ? (options.maxPushIterations ?? Infinity) : 1;
+    // CLI convention: 0 = unlimited. Use explicit check so 0 becomes Infinity (?? preserves 0 and would skip the loop).
+    const rawMaxPush = options.autoPush ? (options.maxPushIterations ?? Infinity) : 1;
+    const maxPushIterations = rawMaxPush === 0 ? Infinity : rawMaxPush;
+    debug('Push iteration loop config', { autoPush: options.autoPush, rawMaxPushIterations: options.maxPushIterations, maxPushIterations, maxBailoutsBeforeExit: options.maxStaleCycles ?? 2 });
 
     // Track consecutive bail-outs at the outer loop level.
     //
@@ -174,6 +179,7 @@ export async function executeRun(
     const maxBailoutsBeforeExit = options.maxStaleCycles ?? 2;
     // WHY 2: Exit sooner when fixer isn't producing committable changes (was 3; medium fix).
     const MAX_CONSECUTIVE_NO_COMMIT = 2;
+    debug('Orchestrator loop limits', { maxBailoutsBeforeExit, MAX_CONSECUTIVE_NO_COMMIT });
     let consecutiveBailouts = 0;
     let consecutiveNoCommits = 0;
     let lastBailoutRemainingCount = Infinity;
@@ -187,6 +193,7 @@ export async function executeRun(
     const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments, lastAnalysisCacheRef };
     while (pushIteration < maxPushIterations) {
       pushIteration++;
+      debug('Push iteration start', { pushIteration, maxPushIterations, consecutiveBailouts, consecutiveNoCommits });
       const iterResult = await ResolverProc.executePushIteration(
         { git, github, owner, repo, number, workdir: state.workdir },
         { pushIteration, maxPushIterations, rapidFailureCount: state.rapidFailureCount, lastFailureTime: state.lastFailureTime, consecutiveFailures: state.consecutiveFailures, modelFailuresInCycle: state.modelFailuresInCycle, progressThisCycle: state.progressThisCycle, expectedBotResponseTime: state.expectedBotResponseTime },
@@ -208,6 +215,7 @@ export async function executeRun(
       // iteration's exitReason would be lost, causing "Exit: unknown"
       if (iterResult.exitReason) state.exitReason = iterResult.exitReason;
       if (iterResult.exitDetails) state.exitDetails = iterResult.exitDetails;
+      debug('Push iteration done', { pushIteration, shouldBreak: iterResult.shouldBreak, exitReason: iterResult.exitReason, committedThisIteration: iterResult.committedThisIteration });
       if (iterResult.shouldBreak) {
         break;
       }
@@ -240,6 +248,7 @@ export async function executeRun(
         lastBailoutRemainingCount = currentRemaining;
 
         if (consecutiveBailouts >= maxBailoutsBeforeExit) {
+          debug('Orchestrator exiting: max consecutive bail-outs', { consecutiveBailouts, maxBailoutsBeforeExit, currentRemaining });
           console.log(chalk.red(`\n  🛑 ${consecutiveBailouts} consecutive bail-out(s) with no progress — exiting outer loop`));
           console.log(chalk.gray(`     Re-entering would hit the same stalemate on ${currentRemaining} remaining issues`));
           state.exitReason = 'bail_out';
@@ -250,6 +259,11 @@ export async function executeRun(
         consecutiveBailouts = 0;
         lastBailoutRemainingCount = Infinity;
       }
+    }
+    if (pushIteration === 0) {
+      state.exitReason = 'no_push_iterations';
+      state.exitDetails = 'Push iteration loop did not run (maxPushIterations was 0 or misconfigured)';
+      debug('Push iteration loop never ran', { maxPushIterations, rawMaxPush: options.maxPushIterations });
     }
     // Sync resolver instance with final state so callbacks (e.g. printFinalSummary)
     // see the updated exitReason. Without this, this.exitReason stays 'unknown'

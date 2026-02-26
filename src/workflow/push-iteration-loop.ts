@@ -182,7 +182,15 @@ export async function executePushIteration(
   );
   
   const { comments, unresolvedIssues, duplicateMap } = loopResult;
-  
+  debug('Push iteration: comments processed', {
+    pushIteration,
+    commentCount: comments.length,
+    unresolvedCount: unresolvedIssues.length,
+    shouldBreak: loopResult.shouldBreak,
+    exitReason: loopResult.exitReason,
+    usedPrefetched: !!prefetched?.length,
+  });
+
   if (loopResult.shouldBreak) {
     // Store final state for after action report (for dry-run); issue refs preserved for AAR
     if (options.dryRun) {
@@ -207,6 +215,7 @@ export async function executePushIteration(
   // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
   // CRITICAL: ?? only triggers on null/undefined, NOT 0. Default is 0 = unlimited.
   const maxFixIterations = options.maxFixIterations || Infinity;
+  debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
 
@@ -349,6 +358,7 @@ export async function executePushIteration(
     if (allFixed && !exitReason.startsWith('all')) {
       exitReason = 'all_fixed';
       exitDetails = 'All issues fixed and verified in fix loop';
+      debug('Fix loop exit: all_fixed', { fixIteration });
     }
 
     if (!allFixed) {
@@ -382,12 +392,14 @@ export async function executePushIteration(
       if (postVerif.shouldBreak) {
         exitReason = 'bail_out';
         exitDetails = `Stalemate detected: fix loop exhausted all strategies with ${formatNumber(unresolvedIssues.length)} issue(s) remaining`;
+        debug('Fix loop exit: bail_out (stalemate)', { fixIteration, remaining: unresolvedIssues.length });
         break;
       }
     }
   }
 
   if (!allFixed && maxFixIterations !== Infinity) {
+    debug('Fix loop exit: max_iterations', { fixIteration, maxFixIterations, remaining: unresolvedIssues.length });
     console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
     exitReason = 'max_iterations';
     exitDetails = `Hit max fix iterations (${formatNumber(maxFixIterations)}) with ${formatNumber(unresolvedIssues.length)} issue(s) remaining`;

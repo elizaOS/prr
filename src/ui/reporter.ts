@@ -152,10 +152,13 @@ export function getExitReasonDisplay(exitReason: string | null): {
     case 'no_changes':
       return { label: 'No changes to commit', icon: '○', color: chalk.yellow };
     
+    case 'no_push_iterations':
+      return { label: 'No push iterations run (config)', icon: '?', color: chalk.yellow };
+
     case 'unknown':
       // Run was interrupted (e.g. Ctrl+C) or exited before the loop could set a reason.
       return { label: 'Interrupted or exited early', icon: '?', color: chalk.gray };
-    
+
     default:
       return { label: exitReason || 'Unknown', icon: '?', color: chalk.gray };
   }
