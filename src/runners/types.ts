@@ -105,6 +105,7 @@ export interface Runner {
  * Real model lists are fetched via API when possible. These are fallbacks only.
  * Actual model availability changes frequently. Use runner.supportedModels
  * or dynamic discovery (e.g., `cursor --list-models`) for up-to-date lists.
+ * ⚠️ Do NOT rely on this table for current availability — providers change frequently and these entries are examples only.
  * 
  * NOTE: Model names may need updating as providers release new versions.
  * Run `agent models` or check provider docs for current availability.  
@@ -206,12 +207,12 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   // LLM API (ElizaCloud): use API model IDs (owner/name). Same as elizacloud.
   // When provider is native OpenAI or Anthropic, llm-api runner uses the lists below instead.
   'llm-api': [
-    'openai/gpt-5.1-codex-max',           // GPT-5.1 Codex Max - purpose-built for agentic coding
-    'openai/gpt-5.2-codex',               // GPT-5.2-Codex - agentic coding
-    'anthropic/claude-opus-4.5',          // Claude Opus 4.5 - most capable
-    'anthropic/claude-sonnet-4.5',        // Claude Sonnet 4.5 - strong coding
-    'openai/gpt-4.1',                     // GPT-4.1 - flagship
-    'openai/gpt-5-mini',                  // GPT-5 mini - fast, cost-effective
+    'openai/gpt-4o',                      // GPT-4o - current flagship
+    'openai/gpt-4o-mini',                 // GPT-4o mini - fast, cost-effective
+    'anthropic/claude-3.7-sonnet',        // Claude 3.7 Sonnet - balanced coding
+    'anthropic/claude-3.5-sonnet',        // Claude 3.5 Sonnet - strong coding
+    'anthropic/claude-3-opus',            // Claude 3 Opus - advanced reasoning
+    'google/gemini-2.0-pro-exp',          // Gemini 2.0 Pro Experimental
   ],
 };
 
