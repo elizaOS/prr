@@ -78,12 +78,15 @@ export async function handleRotationStrategy(
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
   const isOddFailure = consecutiveFailures % 2 === 1;
-  // Skip single-issue for quota (same model will hit limit), 504 (same model would timeout again), and tool_config (same tool will fail again).
+  // Skip single-issue for errors where retrying the same model/tool won't help:
+  // quota (same model will hit limit), 504 (same model would timeout again),
+  // tool_config (same tool will fail again), tool_timeout, model (e.g. slow-pool unavailable).
   const skipSingleIssueForQuota = failureErrorType === 'quota';
   const skipSingleIssueFor504 = failureErrorType === 'timeout';
   const skipSingleIssueForToolConfig = failureErrorType === 'tool_config';
   const skipSingleIssueForToolTimeout = failureErrorType === 'tool_timeout';
-  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout;
+  const skipSingleIssueForModel = failureErrorType === 'model';
+  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout || skipSingleIssueForModel;
   let shouldBreak = false;
   let shouldContinue = false;
   let newConsecutiveFailures = consecutiveFailures;

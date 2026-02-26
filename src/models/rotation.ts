@@ -12,7 +12,7 @@ import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
 import { warn, debug, formatNumber } from '../logger.js';
 import { MAX_MODELS_PER_TOOL_ROUND } from '../constants.js';
-import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels } from '../llm/client.js';
+import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
 
 /**
  * Context for model rotation state
@@ -755,6 +755,35 @@ export async function validateAndFilterModels(
     }
   }
   
+  // ElizaCloud "slow pool" probe: some models are listed but return "not available in the slow pool"
+  // at request time. Probe the first model(s) and drop any that fail so we effectively default to a working one.
+  if (elizacloudApiKey && elizacloudModels.size > 0) {
+    for (const runner of runnersToValidate) {
+      if ((runner.name !== 'llm-api' && runner.name !== 'elizacloud') || runner.provider !== 'elizacloud') continue;
+      const source = runner.supportedModels ?? DEFAULT_MODEL_ROTATIONS[runner.name];
+      if (!source || source.length === 0 || !source.some(m => m.includes('/'))) continue;
+      const list = [...source];
+      const maxProbes = 3;
+      let probed = 0;
+      while (list.length > 0 && probed < maxProbes) {
+        const model = list[0];
+        const result = await probeElizaCloudModel(elizacloudApiKey, model);
+        if (result === 'ok') break;
+        if (result === 'slow_pool') {
+          removed.push({ runner: runner.name, model });
+          list.shift();
+          console.log(chalk.yellow(`  Model ${model} not in slow pool — removed from rotation; using next.`));
+        } else {
+          break; // network/auth etc — keep list as-is
+        }
+        probed++;
+      }
+      if (list.length !== source.length) {
+        runner.supportedModels = list;
+      }
+    }
+  }
+
   // Report what we removed
   if (removed.length > 0) {
     console.log(chalk.yellow(`  Removed ${removed.length.toLocaleString()} unavailable model(s):`));

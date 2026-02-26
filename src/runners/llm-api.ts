@@ -478,10 +478,10 @@ Working directory: ${workdir}`;
       const isQuotaError = /quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(errorMessage);
       const is504Error = isServerError(error);
       const isRequestTimeout = /request timeout|timeout after/i.test(errorMessage);
-      const isModelError = /does not exist|model.*not found|you do not have access|not_found_error/i.test(errorMessage);
+      const isModelError = /does not exist|model.*not found|you do not have access|not_found_error|not available in the slow pool|switch to auto/i.test(errorMessage);
       const isAuthError = /api.?key|unauthorized|authentication|invalid.*key/i.test(errorMessage);
       // WHY timeout: 504/gateway timeout or per-request timeout — rotate immediately; single-issue would burn more time.
-      const errorType = isQuotaError ? 'quota' : (is504Error || isRequestTimeout) ? 'timeout' : (isModelError || isAuthError ? 'auth' : undefined);
+      const errorType = isQuotaError ? 'quota' : (is504Error || isRequestTimeout) ? 'timeout' : isModelError ? 'model' : isAuthError ? 'auth' : undefined;
 
       return {
         success: false,

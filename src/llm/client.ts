@@ -350,6 +350,33 @@ export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Se
 }
 
 /**
+ * Probe one ElizaCloud model with a minimal chat request.
+ * Returns 'ok' if the model is usable, 'slow_pool' if the backend says it's not in the slow pool
+ * (e.g. "switch to auto"), 'error' for other failures (network, auth, etc.).
+ * Used at startup to drop models that would fail on first real request.
+ */
+export async function probeElizaCloudModel(apiKey: string, model: string): Promise<'ok' | 'slow_pool' | 'error'> {
+  try {
+    const client = createElizaCloudOpenAIClient(apiKey?.trim() ?? '');
+    await client.chat.completions.create({
+      model,
+      messages: [{ role: 'user', content: 'Hi' }],
+      max_tokens: 5,
+    });
+    return 'ok';
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const ctx = getElizaCloudErrorContext(err);
+    const bodyStr = ctx.body != null ? JSON.stringify(ctx.body) : '';
+    const combined = `${msg} ${bodyStr}`;
+    if (/not available in the slow pool|switch to auto/i.test(combined)) {
+      return 'slow_pool';
+    }
+    return 'error';
+  }
+}
+
+/**
  * Cheap models for low-stakes tasks (commit messages, dismissal comments).
  *
  * WHY: Sonnet ($3/$15 per MTok) is overkill for generating a one-line commit

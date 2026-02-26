@@ -421,12 +421,16 @@ export class CursorRunner implements Runner {
         } else {
           const errorMsg = stderr || `Process exited with code ${code}`;
           // Detect non-transient errors for correct handling
-          let errorType: 'environment' | 'tool_config' | undefined;
+          const combined = (stderr + '\n' + textContent).trim();
+          let errorType: RunnerErrorType | undefined;
           if (/Workspace Trust Required/i.test(errorMsg)) {
             errorType = 'environment';
           } else if (/unknown option|unrecognized.*option|invalid.*flag/i.test(errorMsg)) {
             // CLI/version mismatch (e.g. --trust not supported) — skip this tool for rest of run
             errorType = 'tool_config';
+          } else if (/not available in the slow pool|switch to auto/i.test(combined)) {
+            // Cursor backend reports model not in slow pool — rotate to next model, don't retry same one
+            errorType = 'model';
           }
           resolve({
             success: false,

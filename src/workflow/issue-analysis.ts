@@ -509,10 +509,8 @@ GROUP: 1,3 → canonical 3
 
 If no comments are duplicates, reply: NONE`;
     try {
-      // Use full model when many issues per file — cheap model can merge distinct issues.
-      const response = items.length >= 5
-        ? await llm.complete(prompt)
-        : await llm.completeWithCheapModel(prompt);
+      // Always use cheap model for dedup — fast and sufficient; avoids slow default (e.g. qwen-3-14b on ElizaCloud).
+      const response = await llm.completeWithCheapModel(prompt);
       const content = response.content.trim();
       if (content.toUpperCase().includes('NONE')) {
         return { filePath, groups: [], error: undefined };
