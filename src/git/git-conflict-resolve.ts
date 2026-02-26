@@ -354,16 +354,16 @@ async function detectDeleteConflicts(
   const results: DeleteConflict[] = [];
   
   try {
-    // git status --porcelain shows XY format where X=index, Y=worktree
-    // For conflicts: UU=both modified, UD=deleted by them, DU=deleted by us, DD=both deleted
-    const raw = await git.raw(['status', '--porcelain']);
-    const lines = raw.split('\n').filter(Boolean);
-    
-    for (const line of lines) {
-      const statusCode = line.substring(0, 2);
-      const filePath = line.substring(3).trim();
-      // Handle renamed files (format: "R  old -> new")
-      const actualPath = filePath.includes(' -> ') ? filePath.split(' -> ')[1] : filePath;
+      // Use NUL-delimited porcelain to safely handle spaces/quotes
+      const raw = await git.raw(['status', '--porcelain=v1', '-z']);
+      const entries = raw.split('\0').filter(Boolean);
+      
+      for (const entry of entries) {
+        // Entry format: XY file
+        const statusCode = entry.substring(0, 2);
+        const filePath = entry.substring(3).trim();
+        // Handle renamed files (format: "R  old -> new")
+        const actualPath = filePath.includes(' -> ') ? filePath.split(' -> ')[1] : filePath;
       
       if (!conflictedFiles.includes(actualPath)) continue;
       
