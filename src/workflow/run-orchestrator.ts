@@ -156,10 +156,8 @@ export async function executeRun(
     const git = setupResult.git;
     let pushIteration = 0;
     // Use ?? so explicit 0 is honored (not treated as falsy)
-    // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
-    // CRITICAL: ?? only triggers on null/undefined, NOT 0. With default --max-push-iterations=0,
-    // using ?? gives maxPushIterations=0 and the while(0<0) loop never executes.
-    const maxPushIterations = options.autoPush ? (options.maxPushIterations || Infinity) : 1;
+    // CLI convention: 0 = unlimited. With ??, null/undefined fall back to Infinity while 0 is preserved.
+    const maxPushIterations = options.autoPush ? (options.maxPushIterations ?? Infinity) : 1;
 
     // Track consecutive bail-outs at the outer loop level.
     //
