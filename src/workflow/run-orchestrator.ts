@@ -113,9 +113,11 @@ export async function executeRun(
 ): Promise<RunState> {
   try {
     const initResult = await ResolverProc.initializeRun(prUrl, github, options, spinner, callbacks.runCleanupMode, callbacks.calculateExpectedBotResponseTime);
-    if (!initResult) {
-      state.exitReason = 'init_failed';
-      state.exitDetails = 'PR initialization returned no result';
+        if (!initResult) {
+          state.exitReason = 'init_failed';
+          state.exitDetails = `PR initialization returned no result for ${prUrl}`;
+          return state;
+        }
       return state;
     }
     const { owner, repo, number, prInfo, botTimings, expectedBotResponseTime } = initResult;
