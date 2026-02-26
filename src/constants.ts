@@ -209,6 +209,15 @@ export const DEFAULT_MAX_STALE_CYCLES = 1;
  */
 export const MAX_DISTINCT_FAILED_ATTEMPTS = 4;
 
+/**
+ * Total failed fix attempts (across all sessions) before dismissing as chronic failure.
+ * WHY: Same issue failing 5+ times burns tokens with no progress; auto-dismiss and let human review.
+ * Override with PRR_CHRONIC_FAILURE_THRESHOLD env (integer).
+ */
+export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && process.env.PRR_CHRONIC_FAILURE_THRESHOLD
+  ? Math.max(1, parseInt(process.env.PRR_CHRONIC_FAILURE_THRESHOLD, 10) || 5)
+  : 5;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VERIFICATION & CACHING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

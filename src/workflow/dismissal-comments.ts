@@ -202,7 +202,7 @@ export async function addDismissalComments(
   let skipped = 0;
   
   // Filter to commentable categories
-  const commentableCategories = new Set(['already-fixed', 'stale', 'not-an-issue', 'false-positive', 'exhausted']);
+  const commentableCategories = new Set(['already-fixed', 'stale', 'not-an-issue', 'false-positive', 'exhausted', 'chronic-failure']);
   const commentable = dismissedIssues.filter(issue => {
     // Must have a category we want to comment on
     if (!commentableCategories.has(issue.category)) {

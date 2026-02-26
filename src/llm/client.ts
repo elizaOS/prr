@@ -2043,14 +2043,15 @@ RESOLVED:
       '',
       '🚫 FORBIDDEN PHRASES (never use these):',
       '- "address review comments"',
-      '- "address feedback"', 
+      '- "address feedback"',
       '- "fix issues"',
       '- "update code"',
       '- "apply changes"',
       '- "based on review"',
+      '- "remove duplicate code" / "remove duplicate" (too generic — name the actual change)',
       '- Any mention of "review", "comments", "feedback", "requested"',
       '',
-      'Read the feedback below, understand WHAT was changed, and describe THAT.',
+      'Read the feedback below, understand WHAT was changed (e.g. which validation, which import, which type), and describe THAT specifically.',
       '',
       `Files changed: ${fileList}`,
       '',
@@ -2091,6 +2092,7 @@ RESOLVED:
       /review(er)?\s+(comments?|feedback)/i,
       /requested\s+changes?/i,
       /apply\s+(the\s+)?changes/i,
+      /remove\s+duplicate\s+code/i,
     ];
     
     const hasForbidden = forbiddenPatterns.some(p => p.test(message));

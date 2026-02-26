@@ -234,11 +234,15 @@ export function printFinalSummary(
     console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
   }
 
-  // Remaining (from final cleanup when we have unresolved issues) so RESULTS SUMMARY is complete
-  if (remainingCount !== undefined && remainingCount > 0) {
-    console.log(chalk.yellow(`  ○ Remaining: ${formatNumber(remainingCount)}`));
+  // Remaining (issues that need human attention) — always show when we have the count
+  if (remainingCount !== undefined) {
+    if (remainingCount === 0) {
+      console.log(chalk.green(`\n  ✓ No issues remaining`));
+    } else {
+      console.log(chalk.yellow(`\n  ○ Remaining: ${formatNumber(remainingCount)} (need human attention)`));
+    }
   }
-  
+
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
 }
 

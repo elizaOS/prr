@@ -844,6 +844,8 @@ export async function findUnresolvedIssues(
   let staleRecheck = 0;
   let dismissedStaleFiles = 0;
   let dismissedExhausted = 0;
+  let dismissedChronicFailure = 0;
+  let dismissedNotAnIssue = 0;
   let dismissedPlaceholder = 0;
 
   // Verification expiry: re-check issues verified more than 5 iterations ago
@@ -903,6 +905,10 @@ export async function findUnresolvedIssues(
         dismissedStaleFiles++;
       } else if (solvability.dismissCategory === 'exhausted') {
         dismissedExhausted++;
+      } else if (solvability.dismissCategory === 'chronic-failure') {
+        dismissedChronicFailure++;
+      } else if (solvability.dismissCategory === 'not-an-issue') {
+        dismissedNotAnIssue++;
       }
       continue;
     }
@@ -1103,11 +1109,13 @@ export async function findUnresolvedIssues(
   }
 
   // Report solvability dismissals — issues leaving the queue before fix attempt
-  const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedPlaceholder;
+  const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedChronicFailure + dismissedNotAnIssue + dismissedPlaceholder;
   if (totalDismissed > 0) {
     const parts: string[] = [];
     if (dismissedStaleFiles > 0) parts.push(`${dismissedStaleFiles} stale file(s)`);
     if (dismissedExhausted > 0) parts.push(`${dismissedExhausted} exhausted attempt(s)`);
+    if (dismissedChronicFailure > 0) parts.push(`${dismissedChronicFailure} chronic failure(s)`);
+    if (dismissedNotAnIssue > 0) parts.push(`${dismissedNotAnIssue} lockfile/not-an-issue`);
     if (dismissedPlaceholder > 0) parts.push(`${dismissedPlaceholder} unreadable file(s)`);
     console.log(chalk.gray(`  DISMISSED: ${totalDismissed} issue(s) removed from queue (${parts.join(', ')})`));
   }
