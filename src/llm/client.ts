@@ -33,7 +33,11 @@ function getElizaCloudErrorContext(error: unknown): { status?: number; statusTex
     const h = headers as Record<string, unknown> & { forEach?: (cb: (v: string, k: string) => void) => void };
     if (typeof h.forEach === 'function') {
       out.headers = {};
-      h.forEach((v: string, k: string) => { out.headers![k] = v; });
+      h.forEach((v: string, k: string) => { out.headers![k] = v; signal: controller.signal,
+      });
+      } finally {
+        clearTimeout(timeout);
+      }
     } else {
       out.headers = {};
       for (const [k, v] of Object.entries(h)) {
@@ -252,7 +256,11 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
         url.searchParams.set('after_id', afterId);
       }
       
-      const response = await fetch(url.toString(), {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      let response: Response;
+      try {
+        response = await fetch(url.toString(), {
         headers: {
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
