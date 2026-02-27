@@ -119,7 +119,24 @@ export async function executeFixIteration(
   } catch {
     // Base ref may not exist (e.g. first push); prompt still works without diff.
   }
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures, options.priorityOrder, prInfo, diffStat, comments, runner.name);
+  const currentModelForCap = getCurrentModel();
+  const modelContext =
+    runner.provider && currentModelForCap
+      ? { provider: runner.provider, model: currentModelForCap }
+      : undefined;
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(
+    unresolvedIssues,
+    lessonsContext,
+    options.verbose,
+    consecutiveFailures,
+    options.priorityOrder,
+    prInfo,
+    diffStat,
+    comments,
+    runner.name,
+    undefined,
+    modelContext
+  );
   
   if (promptDetails.shouldSkip) {
     return {

@@ -98,7 +98,7 @@ export async function executeFinalCleanup(
   printTokenSummary();
   printModelPerformance();
   
-  // Developer handoff prompt and after action report (if there are TRULY remaining issues).
+  // Developer handoff prompt and after action report when there's session activity.
   // Filter out dismissed issues: they were intentionally skipped (stale, already-fixed,
   // file-unchanged, exhausted) and don't need human attention or a handoff prompt.
   // WHY: Without this filter, dismissed issues that get re-added by safety checks
@@ -106,8 +106,13 @@ export async function executeFinalCleanup(
   const trulyUnresolved = finalUnresolvedIssues.filter(
     issue => !Dismissed.isCommentDismissed(stateContext, issue.comment.id)
   );
-  if (trulyUnresolved.length > 0) {
+  const fixedThisSessionCount = stateContext.verifiedThisSession?.size ?? 0;
+  const hasRemaining = trulyUnresolved.length > 0;
+  if (hasRemaining) {
     printHandoffPrompt(trulyUnresolved);
+  }
+  // AAR when there are remaining issues OR fixes this session — gives a record of what was done (audit).
+  if (hasRemaining || fixedThisSessionCount > 0) {
     await printAfterActionReport(trulyUnresolved, finalComments);
   }
   
@@ -151,12 +156,16 @@ export async function executeErrorCleanup(
   printTokenSummary();
   printModelPerformance();
   
-  // Developer handoff prompt and after action report on error too — same dismissed filter
+  // Developer handoff prompt and after action report on error — same dismissed filter and session-activity gate
   const trulyUnresolved = stateContext
     ? finalUnresolvedIssues.filter(issue => !Dismissed.isCommentDismissed(stateContext, issue.comment.id))
     : finalUnresolvedIssues;
-  if (trulyUnresolved.length > 0) {
+  const fixedThisSessionCount = stateContext?.verifiedThisSession?.size ?? 0;
+  const hasRemaining = trulyUnresolved.length > 0;
+  if (hasRemaining) {
     printHandoffPrompt(trulyUnresolved);
+  }
+  if (hasRemaining || fixedThisSessionCount > 0) {
     await printAfterActionReport(trulyUnresolved, finalComments);
   }
   

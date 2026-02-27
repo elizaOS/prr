@@ -22,6 +22,7 @@ import type { ReviewComment } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
 import { OPENCODE_MAX_ISSUES_PER_PROMPT, MAX_FIX_PROMPT_CHARS, MIN_ISSUES_PER_PROMPT } from '../constants.js';
+import { getMaxFixPromptCharsForModel } from '../llm/model-context-limits.js';
 import { summarizeBotRiskByFile } from './bot-risk.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug } from '../logger.js';
@@ -50,7 +51,11 @@ export function buildAndDisplayFixPrompt(
   /** When provided, used to compute bot risk by file (hot files get a note in the prompt). */
   comments?: ReviewComment[],
   /** When 'opencode', batch size is capped to reduce timeouts on large prompts. */
-  runnerName?: string
+  runnerName?: string,
+  /** When set, use this cap instead of MAX_FIX_PROMPT_CHARS (e.g. per-model for ElizaCloud). */
+  maxPromptChars?: number,
+  /** Provider + model for per-model cap when maxPromptChars not set (e.g. runner.provider + getCurrentModel()). */
+  modelContext?: { provider: 'elizacloud' | 'anthropic' | 'openai'; model: string }
 ): {
   prompt: string;
   detailedSummary: string;
@@ -102,6 +107,11 @@ export function buildAndDisplayFixPrompt(
     ? summarizeBotRiskByFile(comments, affectedFiles)
     : undefined;
 
+  const effectiveCap =
+    maxPromptChars ??
+    (modelContext ? getMaxFixPromptCharsForModel(modelContext.provider, modelContext.model) : undefined) ??
+    MAX_FIX_PROMPT_CHARS;
+
   // Cap prompt size: reduce batch until under limit so file injection doesn't push total over gateway limit.
   let prompt: string;
   let detailedSummary: string;
@@ -113,17 +123,17 @@ export function buildAndDisplayFixPrompt(
       lessons,
       { maxIssues: currentMax, perFileLessons, prInfo, diffStat, botRiskByFile }
     );
-    if (result.prompt.length <= MAX_FIX_PROMPT_CHARS || currentMax <= MIN_ISSUES_PER_PROMPT) {
+    if (result.prompt.length <= effectiveCap || currentMax <= MIN_ISSUES_PER_PROMPT) {
       prompt = result.prompt;
       detailedSummary = result.detailedSummary;
       lessonsIncluded = result.lessonsIncluded;
       if (currentMax < effectiveMax) {
-        debug('Fix prompt capped by size', { effectiveMax, usedMax: currentMax, promptLength: result.prompt.length, cap: MAX_FIX_PROMPT_CHARS });
+        debug('Fix prompt capped by size', { effectiveMax, usedMax: currentMax, promptLength: result.prompt.length, cap: effectiveCap });
       }
       break;
     }
     currentMax = Math.max(MIN_ISSUES_PER_PROMPT, Math.floor(currentMax / 2));
-    debug('Fix prompt over cap, reducing batch', { nextMax: currentMax, promptLength: result.prompt.length, cap: MAX_FIX_PROMPT_CHARS });
+    debug('Fix prompt over cap, reducing batch', { nextMax: currentMax, promptLength: result.prompt.length, cap: effectiveCap });
   }
 
   console.log(chalk.cyan(`\n${detailedSummary}\n`));
