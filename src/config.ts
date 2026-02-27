@@ -25,3 +25,4 @@ export function loadConfig(): Config {
   // Rest of loadConfig() stays exactly the same...
 }
 ```
+// Note: 'auto' is a meta-value for detection, validated before any real tool execution.

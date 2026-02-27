@@ -646,3 +646,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filters out non-actionable noise like "No verification result returned, treating as failed"
 
 // Rest of changelog stays unchanged...
+// Note: outputs log to CWD for easier access and consistency with user expectations

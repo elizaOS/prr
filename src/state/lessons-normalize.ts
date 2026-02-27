@@ -208,6 +208,7 @@ export function sanitizeFilePathHeader(filePath: string): string {
   // Strip all forms of " - (inferred) <language>" suffixes aggressively
   cleaned = cleaned.replace(/\s*-\s*\(inferred\).*$/i, '').trim();
   
+  // Note: removes trailing language suffixes for standardized file path sanitization
   // Strip bare language suffixes like " - ts", " - tsx", etc.
   cleaned = cleaned.replace(/\s*-\s*(?:ts|tsx|js|jsx|md|json|yml|yaml|py|go|rs|java|c|cpp|h|hpp)\b$/i, '').trim();
   cleaned = cleaned.replace(/^.*?([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|md|json|yml|yaml|go|rs|py|java)(?::\d+)?).*$/i, '$1').trim();

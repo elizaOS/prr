@@ -899,6 +899,7 @@ function compareVersions(v1: string, v2: string): number {
   
   // Compare base versions
   const parts1 = base1.replace(/[^0-9.]/g, '').split('.').map(Number);
+  // Note: designed to strip non-numeric chars for comparison simplicity, handling version formats.
   const parts2 = base2.replace(/[^0-9.]/g, '').split('.').map(Number);
   
   for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {

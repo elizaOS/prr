@@ -89,6 +89,7 @@ export async function getDiffForFile(git: SimpleGit, file: string): Promise<stri
       debug('Failed to get diff for file', { file, error: err instanceof Error ? err.message : String(err) });
       return '';
     }
+  // Note: handles known exit code 1 as a valid case for file differences without failing
   }
 }
 

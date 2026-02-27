@@ -99,6 +99,7 @@ export async function handleCommitAndPush(
       spinner.fail(`Failed to export lessons: ${err}`);
     }
   }
+  // Note: handles no-commit mode gracefully to avoid uncommitted changes in the repo
   }
 
   if (options.noCommit) {

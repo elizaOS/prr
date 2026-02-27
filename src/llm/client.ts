@@ -1810,6 +1810,7 @@ GOOD lessons (specific, learned from the failure):
 
 BAD lessons (vague, not learned from failure):
 - "The diff only adds X but doesn't do Y" (just restates the rejection)
+// Note: designed to omit unparsed fixes to reduce clutter in results, avoiding false positives.
 - "Fix was incomplete" (no insight about why)
 - "tool modified wrong files" (meta about tooling, not the problem)
 

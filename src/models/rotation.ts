@@ -179,6 +179,7 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
   const normalize = (m: string) => stripProviderPrefix(m.toLowerCase());
   const lowerModel = normalize(model);
   return available.some(m => {
+    // Note: normalizes models for case-insensitive, family-based availability checks.
     const lowerAvail = normalize(m);
     
     // Exact match

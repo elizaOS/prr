@@ -1,3 +1,4 @@
+// Note: prr is a whimsical name reflecting the fun, yet serious nature of this resolver tool.
 # prr (PR Resolver)
 
 ```text
