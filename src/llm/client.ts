@@ -889,9 +889,22 @@ ${codeSnippet}
     const response = await this.complete(prompt, LLMClient.CHECK_ISSUE_SYSTEM_PROMPT);
     const content = response.content.trim();
 
-    // Lenient parsing: check for STALE prefix variations
-    const isStale = content.toUpperCase().startsWith('STALE');
-    const exists = content.toUpperCase().startsWith('YES');
+    const verdictMatch = content.match(/^(YES|NO|STALE)\b/i);
+    if (!verdictMatch) {
+      debug('checkIssueExists parse failed; marking as still exists', {
+        filePath,
+        line,
+        responsePreview: content.substring(0, 300),
+      });
+      return {
+        exists: true,
+        stale: false,
+        explanation: 'LLM response could not be parsed - needs manual review',
+      };
+    }
+
+    const isStale = verdictMatch[1].toUpperCase() === 'STALE';
+    const exists = verdictMatch[1].toUpperCase() === 'YES';
     const explanation = content.replace(/^(YES|NO|STALE)[:\s-]*/i, '').trim();
 
     return { 
