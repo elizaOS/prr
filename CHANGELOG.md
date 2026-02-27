@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02) — Analysis cache, line remap, prompt caps, model recommendation, graduation
+
+**Dedup cache across push iterations**
+- Cache key is now the full comment ID set (all comments from the API), not just the current `toCheck`. On cache hit, persisted `duplicateMap` is filtered to the current `toCheck`: for each group we pick a representative (canonical if still in toCheck, else first duplicate in toCheck) and build canonical → [dupes] for that subset.
+- **WHY**: Keying by `toCheck` caused cache misses on push iteration 2+ when some issues were already resolved (toCheck shrank but comment set unchanged). Re-running LLM dedup burned ~200k chars. Keying by full set and filtering on hit reuses grouping across iterations.
+
+**Line re-mapping after push**
+- `computeLineMapFromDiff(git, baseRef, headRef)` parses `git diff base..HEAD` and returns path → (oldLine → newLine) for context lines. Review comment line numbers are remapped before fetching code snippets so the fixer sees the correct post-push lines.
+- Base ref uses `origin/<baseBranch>` so the diff works in worktree/CI clones where the local base branch may not exist.
+- Diff path is taken from the `b/` side of the header so renamed files (e.g. `a/old b/new`) map under the name comments use.
+- **WHY**: After push, comment line refs can point at pre-push locations; code may have shifted. Remapping reduces WRONG_LOCATION and improves snippet accuracy.
+
+**Mega-fix prompt size cap**
+- `MAX_ENRICHED_FIX_PROMPT_CHARS = 500_000` caps the total enriched prompt (base + injected file content). `REWRITE_ESCALATION_RESERVE_CHARS = 2_000` is reserved so the rewrite-escalation block appended after injection doesn't push the total over the cap.
+- **WHY**: Audit showed single 500k+ prompts caused gateway 500s and waste. Capping prevents mega-prompts; reserving 2k for escalation avoids throwing on borderline sizes when escalation is appended.
+
+**Separate model recommendation call**
+- Model recommendation is no longer baked into the first verification batch. After all verification batches complete, a single `getModelRecommendationOnly(summary, modelContext)` call runs (with one retry on transient errors) and the result is merged into the batch result.
+- **WHY**: Including the recommendation block in the first batch added ~60k chars per run; verification doesn't need it. A separate short call after verification saves tokens and still provides model ordering for the fix loop.
+
+**Issue graduation**
+- Unresolved issues are sorted by attempt count (descending) before the fix loop so high-attempt issues are processed first. Cache is not mutated (sort runs on a copy).
+- **WHY**: Issues that have failed many times deserve earlier attention (e.g. batched first or future single-issue path). Sorting is a low-cost way to prioritize without changing behavior.
+
+**Analysis cache wired through**
+- `lastAnalysisCacheRef` is now passed from the push iteration loop to `processCommentsAndPrepareFixLoop`. When comment count and `headSha` are unchanged, analysis is reused (unresolved issues and duplicate map from cache) instead of re-running `findUnresolvedIssues`.
+- **WHY**: The ref was created and invalidated but never passed to the only consumer. Wiring it enables the documented "reuse cached analysis" behavior and saves ~1–4 min of LLM analysis per iteration when the cache hits.
+
+**Type unification**
+- Single `FindUnresolvedIssuesOptions` type from `issue-analysis.ts` is used everywhere; removed duplicate `FindUnresolvedIssuesCallbackOptions`. Callback type accepts optional third argument `options?: FindUnresolvedIssuesOptions` in `main-loop-setup` and `run-orchestrator`.
+- **WHY**: Two identical shapes caused drift risk and type mismatches at the call site when passing `lineMap`.
+
+---
+
 ### Added (2026-02) — Output.log audit: model rotation, injection, rewrite escalation, batch sizing, 504 retries, AAR
 
 **Model rotation reorder (llm-api / elizacloud)**
