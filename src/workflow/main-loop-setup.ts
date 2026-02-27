@@ -30,6 +30,8 @@ import type { CLIOptions } from '../cli.js';
 import type { Config } from '../config.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber, formatDuration, setTokenPhase } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
+import { computeLineMapFromDiff } from '../git/git-diff.js';
+import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 
 /**
  * Process comments and determine if fix loop should run
@@ -59,7 +61,7 @@ export async function processCommentsAndPrepareFixLoop(
   config: Config,
   workdir: string,
   spinner: Ora,
-  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<{
+  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number, options?: FindUnresolvedIssuesOptions) => Promise<{
     unresolved: UnresolvedIssue[];
     recommendedModels?: string[];
     recommendedModelIndex: number;
@@ -153,8 +155,11 @@ export async function processCommentsAndPrepareFixLoop(
     setPhase(stateContext, 'analyzing');
     setTokenPhase('Analyze issues');
     startTimer('Analyze issues');
+    const baseRef = prInfo.baseBranch ? `origin/${prInfo.baseBranch}` : 'HEAD~1';
+    const lineMap = await computeLineMapFromDiff(git, baseRef, 'HEAD');
+    if (lineMap.size > 0) debug('Line map from diff', { files: lineMap.size });
     console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
-    const analysisResult = await findUnresolvedIssues(comments, comments.length);
+    const analysisResult = await findUnresolvedIssues(comments, comments.length, { lineMap: lineMap.size > 0 ? lineMap : undefined });
     unresolvedIssues = analysisResult.unresolved;
     duplicateMap = analysisResult.duplicateMap;
     analyzeTime = endTimer('Analyze issues');
@@ -162,6 +167,13 @@ export async function processCommentsAndPrepareFixLoop(
       analysisCacheRef.current = { commentCount: comments.length, headSha, unresolvedIssues: [...unresolvedIssues], comments: [...comments], duplicateMap: new Map(duplicateMap) };
     }
   }
+
+  // Issue graduation: process high-attempt issues first (so they get batched first; future: single-issue or human review for ≥N attempts).
+  unresolvedIssues = [...unresolvedIssues].sort((a, b) => {
+    const na = Performance.getIssueAttempts(stateContext, a.comment.id).length;
+    const nb = Performance.getIssueAttempts(stateContext, b.comment.id).length;
+    return nb - na;
+  });
 
   // Analyze and report issues
   ResolverProc.analyzeAndReportIssues(comments, unresolvedIssues, stateContext, analyzeTime);

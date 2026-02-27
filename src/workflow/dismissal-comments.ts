@@ -121,6 +121,17 @@ function isReasonCodeChange(reason: string): boolean {
   return REASON_CODE_CHANGE.test(reason);
 }
 
+/**
+ * True when the dismissal reason indicates the concern is not solvable via a code comment
+ * (e.g. PR title, metadata, labels). WHY: Audit showed dismissal LLM asked for "vague PR title"
+ * on README line 1 — no code comment helps; skipping saves tokens.
+ */
+const REASON_METADATA_OR_UNSOLVABLE = /\b(PR\s*(title|metadata|description|labels?)|title\s+too\s+vague|not\s+solvable\s+via\s+(file\s+edits?|code)|metadata\s+change|comment\s+requests\s+PR\s)/i;
+
+function isReasonMetadataOrUnsolvable(reason: string): boolean {
+  return REASON_METADATA_OR_UNSOLVABLE.test(reason);
+}
+
 /** Matches common comment starts (//, #, /*, *, <!--) so we catch Note:/Review: in any style. */
 const REVIEW_COMMENT_START = /^\s*(\/\/|#|\/\*|\*|<!--)/;
 
@@ -292,6 +303,15 @@ export async function addDismissalComments(
       debug('Skipping dismissal comment (already-fixed, code is self-documenting)', {
         filePath: issue.filePath,
         line: issue.line,
+        reasonPreview: issue.reason.substring(0, 60),
+      });
+      return false;
+    }
+
+    // Skip when the reason says the concern is PR metadata/title/labels — no code comment helps.
+    if (isReasonMetadataOrUnsolvable(issue.reason)) {
+      debug('Skipping dismissal comment (metadata/PR-level, not solvable via code comment)', {
+        filePath: issue.filePath,
         reasonPreview: issue.reason.substring(0, 60),
       });
       return false;

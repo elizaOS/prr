@@ -33,6 +33,7 @@ import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { recheckSolvability } from './helpers/solvability.js';
+import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 
 /** Git and GitHub context for a push iteration */
 export interface PushIterationGitContext {
@@ -83,7 +84,7 @@ export interface PushIterationContexts {
 
 /** Callback functions used during push iteration */
 export interface PushIterationCallbacks {
-  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<{
+  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number, options?: FindUnresolvedIssuesOptions) => Promise<{
     unresolved: UnresolvedIssue[];
     recommendedModels?: string[];
     recommendedModelIndex: number;
@@ -182,7 +183,8 @@ export async function executePushIteration(
   
   const loopResult = await ResolverProc.processCommentsAndPrepareFixLoop(
     git, github, owner, repo, number, prInfo, stateContext, lessonsContext, llm, options, config, workdir, spinner,
-    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched
+    findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues, prefetched,
+    contexts.lastAnalysisCacheRef
   );
   
   const { comments, unresolvedIssues, duplicateMap } = loopResult;

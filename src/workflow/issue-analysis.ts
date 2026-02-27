@@ -807,6 +807,12 @@ export async function getFullFileForAudit(workdir: string, path: string): Promis
 /**
  * Find which review comments still represent unresolved issues
  */
+/** Optional options for findUnresolvedIssues (e.g. line map from git diff for post-push). */
+export type FindUnresolvedIssuesOptions = {
+  /** Map path -> (oldLine -> newLine) from git diff base..HEAD. Use when code moved so comment line refs stay valid. */
+  lineMap?: Map<string, Map<number, number>>;
+};
+
 export async function findUnresolvedIssues(
   comments: ReviewComment[],
   totalCount: number,
@@ -817,7 +823,8 @@ export async function findUnresolvedIssues(
   options: CLIOptions,
   workdir: string,
   getCodeSnippetFn: (path: string, line: number | null, commentBody?: string) => Promise<string>,
-  getModelsForRunner: (runner: Runner) => string[]
+  getModelsForRunner: (runner: Runner) => string[],
+  findUnresolvedIssuesOptions?: FindUnresolvedIssuesOptions
 ): Promise<{
   unresolved: UnresolvedIssue[];
   recommendedModels?: string[];
@@ -825,6 +832,14 @@ export async function findUnresolvedIssues(
   modelRecommendationReasoning?: string;
   duplicateMap: Map<string, string[]>;
 }> {
+  const lineMap = findUnresolvedIssuesOptions?.lineMap;
+  const getSnippet = lineMap
+    ? (path: string, line: number | null, body?: string) => {
+        const L = (line != null && path) ? (lineMap.get(path)?.get(line) ?? line) : line;
+        return getCodeSnippetFn(path, L, body);
+      }
+    : getCodeSnippetFn;
+
   const unresolved: UnresolvedIssue[] = [];
   let alreadyResolved = 0;
   let skippedCache = 0;
@@ -920,7 +935,7 @@ export async function findUnresolvedIssues(
   // surviving the solvability filter, sequential reads add ~1-2s of I/O latency.
   const snippetResults = await Promise.all(
     needSnippets.map(async ({ comment, snippetLine, contextHints }) => {
-      const codeSnippet = await getCodeSnippetFn(comment.path, snippetLine, comment.body);
+      const codeSnippet = await getSnippet(comment.path, snippetLine, comment.body);
       return { comment, codeSnippet, contextHints };
     })
   );
@@ -955,35 +970,48 @@ export async function findUnresolvedIssues(
   // Phase 0: Log duplicate candidates (observation only, no filtering)
   logDuplicateCandidates(toCheck, idToDisplayNum);
 
-  // ── Dedup cache: skip LLM dedup when comment set is unchanged ─────────
-  // HISTORY: Heuristic dedup is CPU-only (cheap), but LLM dedup costs tokens.
-  // Dedup results are deterministic given the same set of comment IDs — if no
-  // new comments appeared and no comments were removed, the dedup outcome is
-  // identical. We persist the cache in state so it survives across runs.
-  const sortedCommentIds = toCheck.map(item => item.comment.id).sort().join(',');
+  // ── Dedup cache: skip LLM dedup when full comment set is unchanged ─────────
+  // Key by ALL comment IDs (from API), not toCheck. WHY: Push iteration 2+ often has same
+  // comments but toCheck shrinks (some resolved), so keying by toCheck caused cache miss and
+  // re-ran LLM dedup (~200k chars wasted). Reuse grouping for full set and filter to current toCheck.
+  const allCommentIds = comments.map(c => c.id).sort().join(',');
   const persisted = stateContext.state?.dedupCache;
-  // WHY Array.isArray: Ensures persisted shape is valid (dedupedIds is an array); avoids using stale/malformed cache.
-  const dedupCacheHit = persisted?.commentIds === sortedCommentIds && Array.isArray(persisted.dedupedIds);
+  const dedupCacheHit = persisted?.commentIds === allCommentIds && Array.isArray(persisted.dedupedIds) && persisted.duplicateMap && typeof persisted.duplicateMap === 'object';
 
   let dedupResult: DedupResult;
 
   if (dedupCacheHit && persisted) {
-    // Reuse persisted dedup — rebuild dedupedToCheck and duplicateItems from state
-    const dedupedIdSet = new Set(persisted.dedupedIds);
-    const dedupedItems = toCheck.filter(item => dedupedIdSet.has(item.comment.id));
-    const duplicateMap = new Map<string, string[]>(Object.entries(persisted.duplicateMap));
     const toCheckById = new Map(toCheck.map(item => [item.comment.id, item]));
-    const reconstructedDuplicateItems = new Map<string, typeof toCheck[0]>();
-    for (const dupeIds of duplicateMap.values()) {
-      for (const dupeId of dupeIds) {
-        const item = toCheckById.get(dupeId);
-        if (item) reconstructedDuplicateItems.set(dupeId, item);
+    const persistedMap = new Map<string, string[]>(Object.entries(persisted.duplicateMap));
+    const newDuplicateMap = new Map<string, string[]>();
+    const newDuplicateItems = new Map<string, typeof toCheck[0]>();
+    const repIds = new Set<string>();
+    const inSomeGroup = new Set<string>();
+
+    for (const [canonicalId, dupeIds] of persistedMap) {
+      const allInGroup = [canonicalId, ...dupeIds];
+      const inToCheck = allInGroup.filter(id => toCheckById.has(id));
+      if (inToCheck.length === 0) continue;
+      const repId = inToCheck[0];
+      repIds.add(repId);
+      for (const id of inToCheck) inSomeGroup.add(id);
+      const otherIds = inToCheck.filter(id => id !== repId);
+      if (otherIds.length > 0) {
+        newDuplicateMap.set(repId, otherIds);
+        for (const otherId of otherIds) {
+          const otherItem = toCheckById.get(otherId);
+          if (otherItem) newDuplicateItems.set(otherId, otherItem);
+        }
       }
     }
+    const dedupedToCheck = [
+      ...repIds,
+      ...toCheck.filter(i => !inSomeGroup.has(i.comment.id)).map(i => i.comment.id),
+    ].map(id => toCheckById.get(id)).filter((x): x is NonNullable<typeof x> => !!x);
     dedupResult = {
-      dedupedToCheck: dedupedItems,
-      duplicateMap,
-      duplicateItems: reconstructedDuplicateItems,
+      dedupedToCheck,
+      duplicateMap: newDuplicateMap,
+      duplicateItems: newDuplicateItems,
     };
     console.log(chalk.gray(`  Dedup results reused (comment set unchanged, ${formatNumber(dedupResult.duplicateMap.size)} canonical groups)`));
   } else {
@@ -1008,11 +1036,10 @@ export async function findUnresolvedIssues(
       warn(`LLM dedup failed, proceeding with heuristic-only results: ${err}`);
     }
 
-    // Persist dedup results so next run (or next iteration) can skip LLM when comment set unchanged.
-    // WHY: Dedup is deterministic for the same comment IDs; state is saved by the orchestrator so cache survives across runs.
+    // Persist dedup results keyed by full comment set so next run (or push iteration) can skip LLM when comments unchanged.
     if (stateContext.state) {
       stateContext.state.dedupCache = {
-        commentIds: sortedCommentIds,
+        commentIds: allCommentIds,
         duplicateMap: Object.fromEntries(dedupResult.duplicateMap),
         dedupedIds: dedupResult.dedupedToCheck.map(item => item.comment.id),
       };
@@ -1310,6 +1337,8 @@ export async function findUnresolvedIssues(
         availableModels,
         modelHistory: Performance.getModelHistorySummary(stateContext) || undefined,
         attemptHistory: Performance.getAttemptHistoryForIssues(stateContext, commentIds),
+        // WHY false: Verification only judges issues; model recommendation block wasted ~60k chars/run (audit). Recommendation is not used for verify path.
+        includeModelRecommendation: false,
       };
     }
 
@@ -1395,6 +1424,27 @@ export async function findUnresolvedIssues(
       } else {
         warn(`Batch analysis failed: ${msg}`);
         throw new Error(`Batch analysis failed (${formatNumber(freshToAnalyze.length)} issues): ${msg}`);
+      }
+    }
+
+    // Separate model recommendation call after all verification batches (saves tokens vs baking into first batch).
+    if (modelContext?.availableModels?.length) {
+      const summaryLines = [...batchResult.issues.entries()].map(([id, r]) => {
+        const triage = r.exists ? ` I${r.importance} D${r.ease}` : '';
+        const snippet = r.explanation.slice(0, 120).replace(/\n/g, ' ');
+        return `${id}: ${r.exists ? 'YES' : r.stale ? 'STALE' : 'NO'}${triage} | ${snippet}`;
+      });
+      try {
+        const rec = await llm.getModelRecommendationOnly(summaryLines.join('\n'), modelContext);
+        if (rec.recommendedModels?.length) {
+          batchResult = {
+            ...batchResult,
+            recommendedModels: rec.recommendedModels,
+            modelRecommendationReasoning: rec.reasoning,
+          };
+        }
+      } catch (recErr) {
+        debug('Model recommendation call failed', recErr);
       }
     }
 

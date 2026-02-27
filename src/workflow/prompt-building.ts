@@ -21,7 +21,7 @@ import type { PRInfo } from '../github/types.js';
 import type { ReviewComment } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
-import { OPENCODE_MAX_ISSUES_PER_PROMPT, MAX_FIX_PROMPT_CHARS, MIN_ISSUES_PER_PROMPT } from '../constants.js';
+import { OPENCODE_MAX_ISSUES_PER_PROMPT, MAX_FIX_PROMPT_CHARS, MIN_ISSUES_PER_PROMPT, MAX_ISSUES_PER_FIX_PROMPT } from '../constants.js';
 import { getMaxFixPromptCharsForModel } from '../llm/model-context-limits.js';
 import { summarizeBotRiskByFile } from './bot-risk.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -91,6 +91,7 @@ export function buildAndDisplayFixPrompt(
     effectiveMax = Math.min(effectiveMax, OPENCODE_MAX_ISSUES_PER_PROMPT);
     debug('OpenCode batch cap', { effectiveMax, runner: runnerName });
   }
+  effectiveMax = Math.min(effectiveMax, MAX_ISSUES_PER_FIX_PROMPT);
   if (effectiveMax < 50 && consecutiveZeroFixIterations > 0) {
     debug('Adaptive batch sizing', { consecutiveZeroFixIterations, effectiveMax });
   }

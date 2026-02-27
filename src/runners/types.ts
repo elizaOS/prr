@@ -207,11 +207,11 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
   ],
   // LLM API (ElizaCloud): order by observed fix success (audit: Claude best, GPT-4o lower). WHY: Leading with
   // best performers improves throughput; skip list in rotation.ts removes 500/timeout/0% models.
+  // gpt-4o-mini omitted: verification-tier only; audit showed fix prompts with it produced no response (timeout/fail).
   'llm-api': [
     'anthropic/claude-opus-4.5',          // Best fix rate in audits
     'anthropic/claude-3.5-sonnet',        // Strong, reliable
     'openai/gpt-4o',                      // Fallback
-    'openai/gpt-4o-mini',                // Fast/cheap fallback
     'anthropic/claude-3.7-sonnet',       // Balanced
     // anthropic/claude-3-opus, gpt-4.1, claude-sonnet-4.5, gpt-5.1-codex-max skipped via ELIZACLOUD_SKIP_MODELS
   ],

@@ -4,6 +4,60 @@
 import type { SimpleGit } from 'simple-git';
 import { debug } from '../logger.js';
 
+/**
+ * Map (path -> (oldLine -> newLine)) from git diff base..head.
+ * WHY: After push, review comment line numbers refer to pre-push code; re-mapping
+ * reduces WRONG_LOCATION when the fixer looks up code at the comment's line.
+ * Only context lines (unchanged) are mapped; deleted/added lines are skipped.
+ */
+export async function computeLineMapFromDiff(
+  git: SimpleGit,
+  baseRef: string,
+  headRef: string
+): Promise<Map<string, Map<number, number>>> {
+  const out = new Map<string, Map<number, number>>();
+  let raw: string;
+  try {
+    raw = await git.raw(['diff', `${baseRef}..${headRef}`]);
+  } catch (err) {
+    debug('Line map diff failed', { baseRef, headRef, error: err instanceof Error ? err.message : String(err) });
+    return out;
+  }
+  const lines = raw.split('\n');
+  let path: string | null = null;
+  let oldLine = 0;
+  let newLine = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const diffFile = line.match(/^diff --git a\/.+? b\/(.+)/);
+    if (diffFile) {
+      path = diffFile[1];
+      continue;
+    }
+    const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    if (hunk && path) {
+      oldLine = parseInt(hunk[1], 10);
+      newLine = parseInt(hunk[3], 10);
+      continue;
+    }
+    if (path && (line.startsWith(' ') || line.startsWith('-') || line.startsWith('+'))) {
+      if (line.startsWith(' ') || line.startsWith('-')) {
+        if (line.startsWith(' ')) {
+          let fileMap = out.get(path);
+          if (!fileMap) {
+            fileMap = new Map();
+            out.set(path, fileMap);
+          }
+          fileMap.set(oldLine, newLine);
+        }
+        oldLine++;
+      }
+      if (line.startsWith(' ') || line.startsWith('+')) newLine++;
+    }
+  }
+  return out;
+}
+
 
 export async function getChangedFiles(git: SimpleGit): Promise<string[]> {
   const status = await git.status();

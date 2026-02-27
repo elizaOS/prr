@@ -38,6 +38,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import type { LLMClient } from '../llm/client.js';
 import type { RotationContext } from '../models/rotation.js';
+import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 import { cleanupWorkdir } from '../git/workdir.js';
 import * as ResolverProc from '../resolver-proc.js';
 import { addDismissalComments } from './dismissal-comments.js';
@@ -75,7 +76,7 @@ export interface RunCallbacks {
   getRotationContext: () => RotationContext;
   getCurrentModel: () => string | undefined;
   getRunner: () => Runner;
-  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number) => Promise<{
+  findUnresolvedIssues: (comments: ReviewComment[], totalCount: number, options?: FindUnresolvedIssuesOptions) => Promise<{
     unresolved: UnresolvedIssue[];
     recommendedModels?: string[];
     recommendedModelIndex: number;

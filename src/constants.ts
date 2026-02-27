@@ -37,6 +37,25 @@ export const BATCH_CHECK_MAX_CONTEXT_CHARS = 150000;
 export const MAX_ISSUES_PER_PROMPT = 50;
 
 /**
+ * Hard cap on issues per fix prompt regardless of context window.
+ * WHY: Audit (prompts.log) showed 50-issue batches at 515k chars produced >99% waste
+ * (model addressed ~5 issues, rest WRONG_LOCATION). Capping at 20 keeps batches effective.
+ */
+export const MAX_ISSUES_PER_FIX_PROMPT = 20;
+
+/**
+ * Hard cap on enriched fix prompt size (base + file injection).
+ * WHY: Audit showed single 515k-char prompt produced >99% waste; cap prevents mega-prompts.
+ */
+export const MAX_ENRICHED_FIX_PROMPT_CHARS = 500_000;
+
+/**
+ * Chars reserved for rewrite-escalation block appended after file injection.
+ * WHY: Injection is capped to (maxEnrichedChars - this); final prompt can still reach maxEnrichedChars without throwing.
+ */
+export const REWRITE_ESCALATION_RESERVE_CHARS = 2_000;
+
+/**
  * Maximum character length for the fix prompt (before file injection).
  * WHY: File injection can add ~200k+ chars (10 files). Keeping base prompt ≤ this
  * keeps total request under gateway limits (e.g. 500 on 690k). Audit: 449k base

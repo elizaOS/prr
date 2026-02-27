@@ -154,6 +154,8 @@ export interface ModelRecommendationContext {
   modelHistory?: string;
   /** Previous attempts on these issues (e.g., "sonnet failed: lesson was X") */
   attemptHistory?: string;
+  /** When false, omit model recommendation block and Previous Attempts from prompt. WHY: Verification doesn't fix issues; audit showed ~60k chars wasted per run sending full history to every batch. */
+  includeModelRecommendation?: boolean;
 }
 
 /**
@@ -439,6 +441,23 @@ export function releaseElizacloud(): void {
   const next = elizacloudQueue.shift();
   if (next) next();
 // Review: designed for direct release without error handling, assuming correct usage semantics.
+}
+
+/**
+ * Filter attempt history to only lines for issues in the current batch.
+ * WHY: Audit showed full history (all issues) sent to every verify batch; only the current batch is relevant.
+ * NOTE: batchIds should be raw comment IDs (PRRC_...) matching the format from getAttemptHistoryForIssues.
+ * The batch input uses synthetic issue_N IDs, so callers must map back to comment IDs before calling this.
+ */
+function filterAttemptHistoryToBatch(attemptHistory: string, batchIds: string[]): string {
+  const set = new Set(batchIds);
+  return attemptHistory
+    .split('\n')
+    .filter((line) => {
+      const m = line.match(/^Issue\s+(\S+):/);
+      return m && set.has(m[1]);
+    })
+    .join('\n');
 }
 
 export class LLMClient {
@@ -967,7 +986,8 @@ ${codeSnippet}
     
     const headerSize = systemPrompt.length;
     const footerSize = 200; // Reserve space for closing instructions
-    const modelRecSize = modelContext?.availableModels?.length ? 1500 : 0; // Reserve for model recommendation
+    const includeModelRec = modelContext?.includeModelRecommendation !== false;
+    const modelRecSize = (includeModelRec && modelContext?.availableModels?.length) ? 1500 : 0;
     const availableForIssues = effectiveMaxContextChars - headerSize - footerSize - modelRecSize;
 
     // WHY wider snippets when headroom: Truncated snippets led to conservative "say YES" and false positives (audit).
@@ -1096,8 +1116,8 @@ ${codeSnippet}
         'Now analyze each issue STRICTLY and respond with one line per issue:',
       ];
 
-      // Only ask for model recommendation in first batch
-      if (isFirstBatch && modelContext?.availableModels?.length) {
+      // Only ask for model recommendation in first batch when requested (omitted for verification to save tokens).
+      if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         parts.push('');
         parts.push('---');
         parts.push('');
@@ -1123,8 +1143,10 @@ ${codeSnippet}
         }
         if (modelContext.attemptHistory) {
           parts.push('## Previous Attempts on These Issues');
-          const a = modelContext.attemptHistory;
-          parts.push(a.length <= ATTEMPT_HISTORY_MAX ? a : a.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)');
+          // WHY filter to batch: Audit showed full attempt history (all issues) sent to every batch; only current batch is relevant.
+          const filtered = filterAttemptHistoryToBatch(modelContext.attemptHistory, batchIssues.map(i => i.id));
+          const a = filtered.length <= ATTEMPT_HISTORY_MAX ? filtered : filtered.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)';
+          parts.push(a);
           parts.push('');
         }
         
@@ -1258,8 +1280,8 @@ ${codeSnippet}
         }
       }
 
-      // Parse model recommendation only from first batch
-      if (isFirstBatch && modelContext?.availableModels?.length) {
+      // Parse model recommendation only from first batch when we asked for it
+      if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
         if (modelMatch) {
           const modelList = modelMatch[1];
@@ -1345,6 +1367,103 @@ ${codeSnippet}
       issues: allResults,
       recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
       modelRecommendationReasoning,
+    };
+  }
+
+  /**
+   * Run model recommendation as a single call after all verification batches.
+   * Use when verification used includeModelRecommendation: false to save tokens.
+   * @param summary - Short summary of verification results (e.g. "issue_1: YES I3 D2, issue_2: NO, ...")
+   * @param modelContext - Available models, model history, attempt history
+   */
+  async getModelRecommendationOnly(
+    summary: string,
+    modelContext: ModelRecommendationContext
+  ): Promise<{ recommendedModels?: string[]; reasoning?: string }> {
+    if (!modelContext.availableModels?.length) {
+      return {};
+    }
+    const MODEL_HISTORY_MAX = 1500;
+    const ATTEMPT_HISTORY_MAX = 2500;
+    const parts = [
+      '## Verification results',
+      '',
+      summary,
+      '',
+      '---',
+      '',
+      'Recommend which AI models should attempt to fix the issues above.',
+      `Available models (in order): ${modelContext.availableModels.join(', ')}`,
+      '',
+      'Consider: issue complexity, count/diversity, and previous attempts.',
+      '',
+    ];
+    if (modelContext.modelHistory) {
+      const m = modelContext.modelHistory;
+      parts.push('## Model performance on this codebase');
+      parts.push(m.length <= MODEL_HISTORY_MAX ? m : m.slice(0, MODEL_HISTORY_MAX) + '\n...(truncated)');
+      parts.push('');
+    }
+    if (modelContext.attemptHistory) {
+      const a = modelContext.attemptHistory;
+      parts.push('## Previous attempts on these issues');
+      parts.push(a.length <= ATTEMPT_HISTORY_MAX ? a : a.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)');
+      parts.push('');
+    }
+    parts.push('End your response with: MODEL_RECOMMENDATION: model1, model2, model3 | brief reasoning');
+
+    const systemPrompt = 'You recommend which AI models should fix the issues below. Consider complexity, count, and previous attempts. Respond with exactly: MODEL_RECOMMENDATION: model1, model2 | brief reasoning';
+    const promptText = parts.join('\n');
+    const RECOMMENDATION_RETRY_DELAY_MS = 8_000;
+    let response: { content: string };
+    try {
+      response = await this.complete(promptText, systemPrompt);
+    } catch (firstErr) {
+      const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
+      if (isTransient) {
+        debug('Model recommendation call failed (transient), retrying once', { message: msg.slice(0, 80) });
+        await new Promise(r => setTimeout(r, RECOMMENDATION_RETRY_DELAY_MS));
+        response = await this.complete(promptText, systemPrompt);
+      } else {
+        throw firstErr;
+      }
+    }
+
+    const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
+    if (!modelMatch) return {};
+
+    const modelList = modelMatch[1];
+    const reasoning = modelMatch[2]?.trim();
+    const availableSet = new Set(modelContext.availableModels.map(m => m.toLowerCase()));
+    const recommendedModels = modelList
+      .split(',')
+      .map(m => m.trim())
+      .filter(m => {
+        const lower = m.toLowerCase();
+        if (availableSet.has(lower)) return true;
+        for (const avail of modelContext.availableModels!) {
+          const availLower = avail.toLowerCase();
+          if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) return true;
+        }
+        return false;
+      })
+      .map(m => {
+        const lower = m.toLowerCase();
+        for (const avail of modelContext.availableModels!) {
+          const availLower = avail.toLowerCase();
+          if (availLower === lower) return avail;
+          if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) return avail;
+        }
+        return m;
+      });
+
+    if (recommendedModels.length > 0) {
+      debug('LLM model recommendation (separate call)', { recommendedModels, reasoning });
+    }
+    return {
+      recommendedModels: recommendedModels.length > 0 ? recommendedModels : undefined,
+      reasoning: reasoning || undefined,
     };
   }
 

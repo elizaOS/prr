@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS } from '../constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
 import { getMaxFixPromptCharsForModel, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } from '../llm/client.js';
 
@@ -311,8 +311,9 @@ Working directory: ${workdir}`;
       this.provider === 'elizacloud'
         ? getMaxFixPromptCharsForModel('elizacloud', model)
         : MAX_FIX_PROMPT_CHARS;
-    const maxEnrichedChars = baseCap * 2.5;
-    const { enrichedPrompt: injectedPrompt, injectedPaths } = this.injectFileContents(workdir, prompt, maxEnrichedChars);
+    const maxEnrichedChars = Math.min(baseCap * 2.5, MAX_ENRICHED_FIX_PROMPT_CHARS);
+    const capForInjection = Math.max(0, maxEnrichedChars - REWRITE_ESCALATION_RESERVE_CHARS);
+    const { enrichedPrompt: injectedPrompt, injectedPaths } = this.injectFileContents(workdir, prompt, capForInjection);
     let enrichedPrompt = injectedPrompt;
 
     // Escalate to full-file-rewrite for files with repeated S/R failures or that weren't injected
