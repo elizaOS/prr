@@ -92,7 +92,6 @@ function normalizeIssueId(raw: string): string {
     .replace(/^issue[_\s]*/i, '') // "issue_1" → "1"
     .replace(/^#/, '');           // "#1" → "1"
   return normalized.length > 0 ? `issue_${normalized}` : normalized;
-// Review: normalizes issue IDs consistently for downstream API usage and reduces complexity.
 }
 
 /**

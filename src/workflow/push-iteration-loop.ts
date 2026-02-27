@@ -214,9 +214,8 @@ export async function executePushIteration(
 
   // Initialize fix loop
   // CLI convention: 0 = unlimited, undefined = use Infinity default
-  // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
-  // CRITICAL: ?? only triggers on null/undefined, NOT 0. Default is 0 = unlimited.
-  const maxFixIterations = options.maxFixIterations != null ? options.maxFixIterations : Infinity;
+  // CLI convention: 0 = unlimited → Infinity. Use || so 0 maps to Infinity (not ??).
+  const maxFixIterations = options.maxFixIterations || Infinity;
   debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
   // WHY: Paired with endTimer('Verify fixes') in fix-verification.ts so timing breakdown includes verification phase.
   startTimer('Verify fixes');
