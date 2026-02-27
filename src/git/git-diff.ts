@@ -61,12 +61,13 @@ export async function computeLineMapFromDiff(
 
 export async function getChangedFiles(git: SimpleGit): Promise<string[]> {
   const status = await git.status();
-  return [
-    ...status.modified,
-    ...status.created,
-    ...status.deleted,
-    ...status.renamed.map((r) => r.to),
-  ];
+  return [...new Set([
+          ...status.modified,
+          ...status.created,
+          ...status.not_added,
+          ...status.deleted,
+          ...status.renamed.map((r) => r.to),
+      ])];
 }
 
 export async function getDiff(git: SimpleGit, file?: string): Promise<string> {

@@ -652,8 +652,11 @@ async function tidyMarkdownLessonsFile(filePath: string): Promise<void> {
     }
 
     const sortedFiles = Object.entries(cleanFiles).sort(([a], [b]) => a.localeCompare(b));
+    if (sortedFiles.length > 0) {
+      lines.push('## File-Specific Lessons', '');
+    }
     for (const [path, lessons] of sortedFiles) {
-      lines.push(`## ${path}`, '');
+      lines.push(`### ${path}`, '');
       for (const lesson of lessons) {
         lines.push(`- ${lesson}`);
       }

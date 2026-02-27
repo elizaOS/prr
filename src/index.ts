@@ -21,8 +21,12 @@ import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from './logger.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
-// Review: initialized to capture log output early for troubleshooting and monitoring purposes
-initOutputLog();
+try {
+  initOutputLog();
+} catch (err) {
+  // Non-fatal: log tee unavailable (e.g., read-only CWD), continue without it
+  console.warn('Warning: Could not initialize output log:', err);
+}
 
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;

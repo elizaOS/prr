@@ -421,10 +421,10 @@ export async function executePushIteration(
   }
 
   if (!allFixed && effectiveMaxFixIterations !== Infinity) {
-    debug('Fix loop exit: max_iterations', { fixIteration, effectiveMaxFixIterations, remaining: unresolvedIssues.length });
-    console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(effectiveMaxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
-    exitReason = 'max_iterations';
-    exitDetails = `Hit max fix iterations (${formatNumber(effectiveMaxFixIterations)}) with ${formatNumber(unresolvedIssues.length)} issue(s) remaining`;
+    if (!allFixed && maxFixIterations !== Infinity) {
+        console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
+        exitReason = 'max_iterations';
+        exitDetails = `Hit max fix iterations (${maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
     finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
     finalCommentsRef.current = [...comments];
   }
