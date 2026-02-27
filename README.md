@@ -637,14 +637,13 @@ export PRR_DEBUG_PROMPTS=1
 prr https://github.com/owner/repo/pull/123
 
 # Operational log — what happened, when, and why
-cat ~/.prr/output.log
+cat ~/.prr/debug/output.log
 
 # Full prompt/response log — what the LLM actually saw
-cat ~/.prr/prompts.log
+cat ~/.prr/debug/prompts.log
 
-# Standalone debug files (requires PRR_DEBUG_PROMPTS=1; files live under timestamp subdirs)
+# Standalone debug files (requires PRR_DEBUG_PROMPTS=1)
 ls ~/.prr/debug/*/*.txt
-// Review: relative paths simplify commands for users working in repo root directory.
 # or: find ~/.prr/debug -name '*.txt'
 ```
 
