@@ -36,6 +36,24 @@ export type PriorityOrder =
 export const DEFAULT_TRIAGE: IssueTriage = { importance: 3, ease: 3 };
 
 /**
+ * True when the issue has a usable code snippet for the fix prompt.
+ *
+ * WHY used as a tie-break: When the batch is capped by prompt size, the builder
+ * takes the first N issues from the sorted array. Issues with a valid snippet
+ * produce a "Current Code:" block in the prompt which is the fixer's primary
+ * reference for applying search/replace. Placing snippet-bearing issues first
+ * means that when we can only fit N issues, we prefer the ones where the fixer
+ * has actual code context rather than having to guess from the comment alone.
+ */
+function hasValidSnippet(issue: UnresolvedIssue): boolean {
+  return !!(
+    issue.codeSnippet &&
+    issue.codeSnippet.length > 0 &&
+    !issue.codeSnippet.startsWith('(file not found')
+  );
+}
+
+/**
  * Sort issues by the specified priority order.
  * 
  * CRITICAL: Returns a NEW array, NEVER mutates the input.
@@ -57,34 +75,32 @@ export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder):
   const sorted = [...issues]; // Clone to avoid mutating input
   
   sorted.sort((a, b) => {
+    let primary: number;
     switch (order) {
       case 'important':
-        // Lower importance score = higher priority (1=critical comes first)
-        return (a.triage?.importance ?? 3) - (b.triage?.importance ?? 3);
-      
+        primary = (a.triage?.importance ?? 3) - (b.triage?.importance ?? 3);
+        break;
       case 'important-asc':
-        // Higher importance score = higher priority (5=trivial comes first)
-        return (b.triage?.importance ?? 3) - (a.triage?.importance ?? 3);
-      
+        primary = (b.triage?.importance ?? 3) - (a.triage?.importance ?? 3);
+        break;
       case 'easy':
-        // Lower ease score = higher priority (1=easy fix comes first)
-        return (a.triage?.ease ?? 3) - (b.triage?.ease ?? 3);
-      
+        primary = (a.triage?.ease ?? 3) - (b.triage?.ease ?? 3);
+        break;
       case 'easy-asc':
-        // Higher ease score = higher priority (5=hard fix comes first)
-        return (b.triage?.ease ?? 3) - (a.triage?.ease ?? 3);
-      
+        primary = (b.triage?.ease ?? 3) - (a.triage?.ease ?? 3);
+        break;
       case 'newest':
-        // Newer comments first
-        return new Date(b.comment.createdAt).getTime() - new Date(a.comment.createdAt).getTime();
-      
+        primary = new Date(b.comment.createdAt).getTime() - new Date(a.comment.createdAt).getTime();
+        break;
       case 'oldest':
-        // Older comments first (GitHub's default behavior)
-        return new Date(a.comment.createdAt).getTime() - new Date(b.comment.createdAt).getTime();
-      
+        primary = new Date(a.comment.createdAt).getTime() - new Date(b.comment.createdAt).getTime();
+        break;
       default:
-        return 0;
+        primary = 0;
     }
+    if (primary !== 0) return primary;
+    // Tie-break: prefer issues with valid code snippet so capped batches keep Current Code blocks (audit).
+    return (hasValidSnippet(b) ? 1 : 0) - (hasValidSnippet(a) ? 1 : 0);
   });
   
   return sorted;

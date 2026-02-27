@@ -460,6 +460,25 @@ export async function cleanupSyncTargetFiles(
   workdir: string,
   lessonsContext: LessonsContext
 ): Promise<void> {
-  const { cleanupCreatedSyncTargets } = await import('./git-conflict-cleanup.js');
-  await cleanupCreatedSyncTargets(git, workdir, lessonsContext);
+  const targets = ['CLAUDE.md', 'CONVENTIONS.md'];
+  for (const file of targets) {
+    try {
+      const existedBefore = typeof (lessonsContext as any).fileExisted === 'function'
+        ? (lessonsContext as any).fileExisted(file)
+        : false;
+      if (existedBefore) continue;
+      const fullPath = join(workdir, file);
+      if (!existsSync(fullPath)) continue;
+      const fs = await import('fs');
+      fs.unlinkSync(fullPath);
+      try {
+        await git.rm(file);
+      } catch {
+        await git.add(file).catch(() => {});
+      }
+      console.log(chalk.gray(`  Removed sync target created by prr: ${file}`));
+    } catch (e) {
+      debug('Failed to clean up sync target', { file, error: e });
+    }
+  }
 }

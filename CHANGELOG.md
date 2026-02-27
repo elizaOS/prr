@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02-27) — Per-model context caps, AAR on all exits, prompt quality
+
+**Per-model context limits (`src/llm/model-context-limits.ts`)**
+- New module tracks per-model maximum input token budgets for ElizaCloud (Qwen 3 14B: 24k, GPT-4o: 128k, Claude: 200k) and exposes `getMaxFixPromptCharsForModel()` / `lowerModelMaxPromptChars()`.
+- After a 504 / timeout, `lowerModelMaxPromptChars()` reduces the cap to 75% of the sent size (floor 20k chars) so the next attempt automatically uses a smaller batch without manual tuning.
+- **WHY**: ElizaCloud routes requests to backends with wildly different context windows. Qwen 3 14B has a 40k total context (≈24k usable input). Sending a 200k-char prompt to it caused immediate 400 "maximum context length is 40960 tokens" or 504 gateway timeout on every attempt, burning rotation slots and wasting time. Tracking limits per model prevents this class of failure.
+
+**Model-specific cap wired into prompt-building and the runner**
+- `buildAndDisplayFixPrompt()` reads the per-model cap via `modelContext` and uses it as the hard size limit when reducing batch size in the while-loop.
+- `llm-api` runner computes `MAX_ENRICHED_PROMPT_CHARS = baseCap × 2.5` using the same model-specific base instead of the global `MAX_FIX_PROMPT_CHARS`, so the fail-fast guard scales with the model.
+- **WHY**: Without this, the prompt-building loop and the runner hard-cap used the global `MAX_FIX_PROMPT_CHARS` (≈200k chars, sized for Claude). For Qwen the effective cap is ~100k — the prompt would look small to the builder but still blow up the gateway.
+
+**After Action Report on all session exits**
+- `executeFinalCleanup` and `executeErrorCleanup` now call `printAfterActionReport()` whenever there are remaining issues **or** fixes this session (`verifiedThisSession.size > 0`), not only when `trulyUnresolved.length > 0`.
+- `printHandoffPrompt()` still only fires when there are remaining issues (no change).
+- **WHY**: On a clean "all fixed" run the AAR was silently skipped, leaving no log record of what was done. On auth/early-exit runs the AAR was also missing because the remaining list was empty at that point. Now every run with session activity produces an audit trail.
+
+**Remaining count shown on early/auth exit**
+- `finalUnresolvedIssuesRef` and `finalCommentsRef` are hoisted above the `try/catch` in `executeRun` so the `catch` block can snapshot the latest remaining issues even when an exception fires mid-iteration.
+- On `shouldExit` (auth, quota) the refs are updated immediately before returning, so `executeFinalCleanup` / `executeErrorCleanup` receive the correct list.
+- A pre-iteration snapshot is also written before every `executeFixIteration` call so a mid-iteration throw still produces a valid remaining list.
+- **WHY**: On auth bail-out the remaining count was 0 in RESULTS SUMMARY and the AAR was empty. The refs were initialised to `[]` and only updated at normal exit paths; the early-exit path never wrote them. Hoisting + pre-iteration snapshot closes all gaps.
+
+**Dry-run guard removed from `loopResult.shouldBreak` path**
+- The early return after `processCommentsAndPrepareFixLoop` now always writes the refs, not only in `--dry-run` mode.
+- **WHY**: The conditional was misleading — all other exit paths write unconditionally. On a non-dry-run with 0 comments the refs stayed at `[]`, making the AAR and remaining count wrong if cleanup ran later.
+
+**Placeholder snippets filtered from fix prompts**
+- `buildFixPrompt()` imports `SNIPPET_PLACEHOLDER` and guards the **Current Code** block: `issue.codeSnippet && issue.codeSnippet !== SNIPPET_PLACEHOLDER`.
+- **WHY**: If a file was read-error / not-found, `codeSnippet` was set to `'(file not found or unreadable)'`. The old truthy check emitted that string verbatim as a code block in the prompt, sending the fixer irrelevant noise and preventing it from seeing that no code context was available.
+
+**Snippet-presence tie-break in priority sort**
+- `sortByPriority()` now uses snippet presence as a secondary sort key when the primary score (importance / ease / date) is equal.
+- Issues with a valid `codeSnippet` sort before issues without one within the same priority tier.
+- **WHY**: When the batch is capped by prompt-size, the builder takes the first N issues from the sorted array. Without the tie-break, snippet-less issues could displace snippet-bearing ones, reducing the number of **Current Code** blocks in the prompt and lowering fix success rates.
+
+**Dismissal path resolution via `git ls-files`**
+- `addDismissalComments()` now calls `resolveFilePath()` (git ls-files) when a file path from state doesn't exist at the exact path. Exact match → use; single suffix match → use; multiple → shortest.
+- **WHY**: Bot review comments sometimes reference truncated paths (e.g. `verify/route.ts` instead of `app/api/auth/siwe/verify/route.ts`). The old code logged "File no longer exists, skipping" and silently dropped the comment. Resolution recovers the correct path and inserts the dismissal comment.
+
+---
+
 ### Changed — Lesson normalization: flexible input, best-effort canonical form (2026-02)
 
 **Preserve inline backticks**
@@ -376,7 +418,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All console output is mirrored to `output.log` in the current working directory as clean ANSI-stripped text
 - File is truncated on each run start, so it always contains only the latest run
 - Path printed at end of run for easy access
-// Review: logs terminal output to a file for easier accessibility during debugging
+
+// Review: logging to CWD simplifies access and avoids user configuration issues.
 - WHY: Feeding terminal output back into an LLM for debugging required manual copy-paste from scrollback. A plain-text log file can be directly referenced or piped into Cursor/Claude.
 
 **Adaptive Batch Sizing**
@@ -443,8 +486,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Install Hints for Runners**
 - When a tool is not installed, `--check-tools` now shows the install command (e.g. `→ npm install -g @anthropic-ai/claude-code`)
 
-### Removed (2026-02-12)
-
+### Added (2026-02-12)
+- **Gemini CLI Runner**
 **Duplicate `handleNoChanges` Function**
 - Removed `handleNoChanges()` from `fixer-errors.ts` and its re-export from `resolver-proc.ts`
 - The canonical handler is `handleNoChangesWithVerification()` in `no-changes-verification.ts`

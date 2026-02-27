@@ -2,6 +2,7 @@ import type { UnresolvedIssue, FixPrompt } from './types.js';
 import type { BotRiskEntry } from '../workflow/bot-risk.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../constants.js';
+import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
 
 /**
  * Strip HTML noise, base64 JWT links, and metadata from PR comment bodies
@@ -91,6 +92,14 @@ function issueRequestsTests(issue: UnresolvedIssue): boolean {
          /\b__tests__\b/i.test(text) ||
          /\b(?:vitest|jest|mocha)\b/i.test(text) ||
          /\badding\s+tests?\s+here\s+would\s+help\b/i.test(text);
+}
+
+/** If the issue is on a test file and mentions lesson-normalize impl, return the impl path so the fixer may edit it. Audit: test-file issues (e.g. normalize-lesson-text.test.ts) need impl changes in src/state/lessons-normalize.ts. Exported for single-issue prompt. */
+export function getImplPathForTestFileIssue(issue: UnresolvedIssue, fileLessons: string[] | undefined): string | null {
+  if (!/\.test\.(ts|js)$/.test(issue.comment.path)) return null;
+  const text = `${issue.comment.body ?? ''} ${(fileLessons ?? []).join(' ')}`;
+  if (/\b(?:normalizeLessonText|sanitizeLessonText|lessons-normalize)\b/i.test(text)) return 'src/state/lessons-normalize.ts';
+  return null;
 }
 
 /**
@@ -328,7 +337,10 @@ export function buildFixPrompt(
       ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
       : '';
     parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}`);
-    const allowedPaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+    const basePaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+    const fileLessons = options?.perFileLessons?.get(issue.comment.path);
+    const implPath = getImplPathForTestFileIssue(issue, fileLessons);
+    const allowedPaths = implPath && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
     parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
     if (issueRequestsTests(issue)) {
       parts.push(`If the review asks for new or updated tests, you may create or modify files in \`__tests__/\` as needed.`);
@@ -369,7 +381,8 @@ export function buildFixPrompt(
       parts.push('');
     }
     
-    if (issue.codeSnippet) {
+    // Current Code is critical for fix quality — fixer needs actual context to apply search/replace (audit: include whenever available).
+    if (issue.codeSnippet && issue.codeSnippet !== SNIPPET_PLACEHOLDER) {
       parts.push('**Current Code:**');
       parts.push('```');
       
@@ -406,7 +419,7 @@ export function buildFixPrompt(
     // verify/route.ts because it was out of the attention window by the time
     // it processed that issue. Putting lessons right here, next to the code
     // snippet, ensures the fixer sees them in immediate context.
-    const fileLessons = options?.perFileLessons?.get(issue.comment.path);
+    // (fileLessons already fetched at the top of this loop iteration for implPath detection)
     if (fileLessons && fileLessons.length > 0) {
       const maxInline = issues.length > 10 ? 1 : 3; // Large batch: one lesson per file to keep prompt smaller
       const shown = fileLessons.slice(-maxInline);

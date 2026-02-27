@@ -5,7 +5,7 @@
 import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { issueRequiresRefactor, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getImplPathForTestFileIssue, issueRequiresRefactor, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { LLMClient } from '../llm/client.js';
@@ -311,7 +311,9 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
 `;
   }
 
-  const allowedPaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+  const basePaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+  const implPath = getImplPathForTestFileIssue(issue, lessons);
+  const allowedPaths = implPath && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
   prompt += `## Issue
 **TARGET FILE(S) (you MAY edit only these files):** ${allowedPaths.join(', ')}${issue.comment.line ? ` (primary: ${issue.comment.path}:${issue.comment.line})` : ''}
 Any change to a different file will be reverted and will not fix this issue.

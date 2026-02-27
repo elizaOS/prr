@@ -112,6 +112,18 @@ export async function executeRun(
   callbacks: RunCallbacks,
   state: RunState
 ): Promise<RunState> {
+  // Refs hoisted ABOVE try/catch so the catch block can read the latest remaining-issues snapshot.
+  //
+  // WHY hoisted: These refs are also created inside the push-loop setup (line ~190) and
+  // updated on every exit path inside the loop. But if executeFixIteration throws (e.g.
+  // unhandled network error mid-iteration), execution jumps straight to catch — skipping
+  // the ref assignments. Without hoisting the catch always saw the initial [] and produced
+  // "Remaining: 0" and an empty AAR even when 20 issues were still open.
+  //
+  // The try block re-assigns .current on line ~190 to align them with the loop refs, so
+  // there's a single logical ref object shared between the loop and the catch.
+  const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
+  const finalCommentsRef = { current: state.finalComments };
   try {
     debug('Run start', { autoPush: options.autoPush, maxPushIterations: options.maxPushIterations, maxFixIterations: options.maxFixIterations, maxStaleCycles: options.maxStaleCycles, noWaitBot: options.noWaitBot });
     const initResult = await ResolverProc.initializeRun(prUrl, github, options, spinner, callbacks.runCleanupMode, callbacks.calculateExpectedBotResponseTime);
@@ -186,8 +198,8 @@ export async function executeRun(
     let progressBeforePushIteration = 0; // snapshot to compute per-iteration delta
     let lastBailoutRemainingCount = Infinity;
     const prInfoRef = { current: state.prInfo };
-    const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
-    const finalCommentsRef = { current: state.finalComments };
+    finalUnresolvedIssuesRef.current = state.finalUnresolvedIssues;
+    finalCommentsRef.current = state.finalComments;
     const expectedBotResponseTimeRef = { current: state.expectedBotResponseTime };
     // Pass prefetched comments from setup phase to avoid redundant fetch on first iteration.
     // The push iteration loop clears this after consuming it once.
@@ -340,7 +352,10 @@ export async function executeRun(
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
   } catch (error) {
     // Use empty string as workdir if not yet initialized (error during setup phase)
-    await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, state.finalUnresolvedIssues, state.finalComments, state.stateContext, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
+    // Prefer ref snapshot so AAR/remaining count are correct when error happens mid-iteration (audit: remaining on early exit, AAR on auth exit).
+    const issuesForCleanup = finalUnresolvedIssuesRef.current.length > 0 ? finalUnresolvedIssuesRef.current : state.finalUnresolvedIssues;
+    const commentsForCleanup = finalCommentsRef.current.length > 0 ? finalCommentsRef.current : state.finalComments;
+    await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, issuesForCleanup, commentsForCleanup, state.stateContext, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
     throw error;
   }
   return state;
