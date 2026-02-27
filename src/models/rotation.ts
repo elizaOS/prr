@@ -478,6 +478,18 @@ export function tryRotation(
 }
 
 /**
+ * Reset the current runner's model index to 0 (first model in rotation).
+ * Call at the start of each push iteration (when pushIteration > 1) so the first
+ * fix attempt uses the best model instead of wherever the previous iteration left off.
+ * WHY: Audit showed PI2 started with claude-3-opus (where PI1 ended) and 500'd immediately.
+ */
+export function resetCurrentModelToFirst(ctx: RotationContext, stateContext: StateContext): void {
+  ctx.modelIndices.set(ctx.runner.name, 0);
+  Rotation.setModelIndex(stateContext, ctx.runner.name, 0);
+  debug('Reset model rotation to first for new push iteration', { runner: ctx.runner.name });
+}
+
+/**
  * Setup and detect available runners
  * Returns the primary runner to use
  */

@@ -47,6 +47,8 @@ export interface RunnerResult {
   caveat?: string;
   /** Token usage for this run (e.g. Codex --json). Callers can aggregate across runs. */
   usage?: TokenUsage;
+  /** True when this run used full-file rewrite and wrote files (caller may see no git diff if content was identical). Skip single-issue and rotate. */
+  usedFullFileRewrite?: boolean;
 }
 
 export interface RunnerOptions {
@@ -213,7 +215,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'anthropic/claude-3.7-sonnet',        // Claude 3.7 Sonnet - balanced coding
     'anthropic/claude-3.5-sonnet',        // Claude 3.5 Sonnet - strong coding
     // anthropic/claude-3-opus skipped on ElizaCloud (ELIZACLOUD_SKIP_MODELS) — 500s at 45k–407k prompt
-    'google/gemini-2.0-pro-exp',          // Gemini 2.0 Pro Experimental
+    // google/gemini-2.0-pro-exp removed: not in ElizaCloud model list (audit: wasted rotation slot)
   ],
 };
 

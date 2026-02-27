@@ -135,15 +135,32 @@ const PROMPT_REGURGITATION_MARKERS = [
 ];
 
 /**
+ * Strip content inside XML blocks so we only parse the LLM's prose.
+ * WHY: Output can contain <change>, <newfile>, <file> blocks with file/code content.
+ * Matching inference patterns against that content produces false positives (e.g.
+ * test fixtures containing "fixer made no changes" get reported as the explanation).
+ */
+function stripXmlBlockContentForExplanation(output: string): string {
+  return output
+    .replace(/<change[\s\S]*?<\/change>/gi, ' ')
+    .replace(/<newfile[\s\S]*?<\/newfile>/gi, ' ')
+    .replace(/<file\s+path="[^"]*"[\s\S]*?<\/file>/gi, ' ');
+}
+
+/**
  * Parse fixer tool output to extract NO_CHANGES explanation.
+ * Only considers text outside <change>, <newfile>, <file> blocks to avoid
+ * matching test fixtures or code content as the explanation.
  */
 export function parseNoChangesExplanation(output: string): string | null {
   if (!output) {
     return null;
   }
 
+  const proseOnly = stripXmlBlockContentForExplanation(output);
+
   // Stage 1: Look for formal "NO_CHANGES:" line
-  const lines = output.split('\n');
+  const lines = proseOnly.split('\n');
   for (const line of lines) {
     const match = line.match(/NO_CHANGES:\s*(.+)/i);
     if (match && match[1]) {
@@ -171,9 +188,9 @@ export function parseNoChangesExplanation(output: string): string | null {
   ];
 
   for (const pattern of inferPatterns) {
-    const match = output.match(pattern);
+    const match = proseOnly.match(pattern);
     if (match) {
-      const sentenceMatch = output.match(new RegExp(`[^.!?]*${pattern.source}[^.!?]*[.!?]?`, 'i'));
+      const sentenceMatch = proseOnly.match(new RegExp(`[^.!?]*${pattern.source}[^.!?]*[.!?]?`, 'i'));
       if (sentenceMatch && sentenceMatch[0].length >= 20) {
         const inferred = sentenceMatch[0].trim();
         // Reject prompt regurgitation in inferred explanations too

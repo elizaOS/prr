@@ -443,6 +443,7 @@ Working directory: ${workdir}`;
       return {
         success: true,
         output: response,
+        usedFullFileRewrite: rewriteFiles.length > 0,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -557,8 +558,11 @@ Working directory: ${workdir}`;
     const MAX_FILE_SIZE = 200_000;
     const MAX_LINES = 5_000;
     const MAX_FILES = 10;
-    /** Cap total injection so enriched prompt stays under ~400k (base ≤200k + this). Audit: 122k base + 284k injection → 407k → claude-3-opus 500. */
-    const MAX_TOTAL_INJECTION_CHARS = 200_000;
+    /** Cap total prompt (base + injection) at 200k to avoid gateway 500s. Audit: 122k base + 284k injection → 407k → claude-3-opus 500. */
+    const TARGET_MAX_PROMPT_CHARS = 200_000;
+    /** Floor so we still inject 1–2 key files when base prompt is large; avoids zero injection. */
+    const MIN_INJECTION_CHARS = 50_000;
+    const maxTotalInjectionChars = Math.max(MIN_INJECTION_CHARS, TARGET_MAX_PROMPT_CHARS - prompt.length);
     
     // Extract file paths from prompt patterns like:
     //   "File: path/to/file.ts:123"
@@ -576,7 +580,7 @@ Working directory: ${workdir}`;
       if (seenPaths.has(filePath)) continue;
       seenPaths.add(filePath);
       if (seenPaths.size > MAX_FILES) break;
-      if (totalInjectedChars >= MAX_TOTAL_INJECTION_CHARS) break;
+      if (totalInjectedChars >= maxTotalInjectionChars) break;
       
       const { safe, fullPath } = this.isPathSafe(workdir, filePath);
       if (!safe || !existsSync(fullPath)) continue;
@@ -598,11 +602,12 @@ Working directory: ${workdir}`;
           .map((line, i) => `${String(i + 1).padStart(4)} | ${line}`)
           .join('\n');
         const section = `### ${filePath} (${lineCount} lines)\n\`\`\`\n${numbered}\n\`\`\``;
-        if (totalInjectedChars + section.length > MAX_TOTAL_INJECTION_CHARS) {
+        if (totalInjectedChars + section.length > maxTotalInjectionChars) {
           debug('Stopping file injection - total would exceed cap', {
             currentTotal: totalInjectedChars,
             nextSectionSize: section.length,
-            cap: MAX_TOTAL_INJECTION_CHARS,
+            cap: maxTotalInjectionChars,
+            basePromptLength: prompt.length,
             skippedPath: filePath,
           });
           break;
@@ -616,7 +621,15 @@ Working directory: ${workdir}`;
     }
     
     if (fileSections.length === 0) return prompt;
-    
+
+    if (prompt.length > 100_000) {
+      debug('Large base prompt — injection capped to keep total under 200k; consider smaller batch next run', {
+        baseLength: prompt.length,
+        maxInjection: maxTotalInjectionChars,
+        injectedCount: fileSections.length,
+      });
+    }
+
     debug('Injected file contents into prompt', {
       fileCount: fileSections.length,
       files: injectedPaths,
@@ -696,7 +709,9 @@ Working directory: ${workdir}`;
     
     let match;
     while ((match = changePattern.exec(response)) !== null) {
-      const [, filePath, searchText, replaceText] = match;
+      let [, filePath, searchText, replaceText] = match;
+      searchText = stripLineNumberPrefixes(searchText);
+      replaceText = stripLineNumberPrefixes(replaceText);
       attemptedChanges++;
       const replaceContent = sanitizeToolMarkupInReplacement(replaceText);
       if (!replaceContent && replaceText.trim()) {
@@ -879,6 +894,15 @@ Working directory: ${workdir}`;
 
     return Array.from(filesModified);
   }
+}
+
+/**
+ * Strip leading line-number prefixes only when they match the injection format
+ * (e.g. "   1 | " or " 154 | ") so we don't strip numbers from real code (e.g. "  42" or "1: 'foo'").
+ * WHY: Injected file content uses "N | "; some LLMs echo that in <search>/<replace>.
+ */
+function stripLineNumberPrefixes(text: string): string {
+  return text.split('\n').map((line) => line.replace(/^\s*\d{1,6}\s+\|\s+/, '')).join('\n');
 }
 
 /**

@@ -27,6 +27,8 @@ export interface StateContext {
   currentCommentIds?: Set<string>;
   /** Token usage aggregated from runner runs (e.g. Codex --json turn.completed). */
   tokenUsage?: AggregatedTokenUsage;
+  /** When set, next fix prompt should use a smaller batch (e.g. after large-prompt failure before rotate). Cleared when consumed. */
+  forceNextBatchSizeReduce?: boolean;
 }
 
 export function createStateContext(workdir: string): StateContext {

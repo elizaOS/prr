@@ -119,7 +119,14 @@ export async function executeFixIteration(
   } catch {
     // Base ref may not exist (e.g. first push); prompt still works without diff.
   }
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, consecutiveFailures, options.priorityOrder, prInfo, diffStat, comments, runner.name);
+  const effectiveConsecutive = stateContext.forceNextBatchSizeReduce
+    ? Math.max(consecutiveFailures, 2)
+    : consecutiveFailures;
+  if (stateContext.forceNextBatchSizeReduce) {
+    stateContext.forceNextBatchSizeReduce = false;
+    debug('Using reduced batch size after large-prompt failure', { effectiveConsecutive, consecutiveFailures });
+  }
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, effectiveConsecutive, options.priorityOrder, prInfo, diffStat, comments, runner.name);
   
   if (promptDetails.shouldSkip) {
     return {
@@ -279,6 +286,10 @@ export async function executeFixIteration(
     // be retried indefinitely. Now we treat it like a "no changes" failure.
     const updatedConsecutiveFailures = consecutiveFailures + 1;
     const updatedModelFailuresInCycle = modelFailuresInCycle + 1;
+    if (prompt.length > 200_000) {
+      stateContext.forceNextBatchSizeReduce = true;
+      debug('Large prompt failed (error path) — will reduce batch size next iteration', { promptLength: prompt.length, threshold: 200_000 });
+    }
 
     const rotationResult = await ResolverProc.handleRotationStrategy(
       unresolvedIssues, comments, git,
@@ -353,10 +364,14 @@ export async function executeFixIteration(
     // Count this as a failure for rotation purposes
     updatedConsecutiveFailures++;
     updatedModelFailuresInCycle++;
-    
+    const failureErrorType = result.usedFullFileRewrite ? 'full_rewrite_no_diff' : undefined;
+    if (prompt.length > 200_000) {
+      stateContext.forceNextBatchSizeReduce = true;
+      debug('Large prompt failed — will reduce batch size next iteration', { promptLength: prompt.length, threshold: 200_000 });
+    }
     // Execute rotation strategy
     const rotationResult = await ResolverProc.handleRotationStrategy(updatedUnresolvedIssues, comments, git, updatedConsecutiveFailures, updatedModelFailuresInCycle, updatedProgressThisCycle,
-      stateContext, lessonsContext, options, verifiedThisSession, runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+      stateContext, lessonsContext, options, verifiedThisSession, runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut, failureErrorType);
     
     return {
       shouldContinue: !rotationResult.shouldBreak,
