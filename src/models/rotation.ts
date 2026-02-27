@@ -190,14 +190,16 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     const familyModel = familyOf(lowerModel);
     
     if (familyAvail === familyModel && familyAvail.length > 0) {
+      // Must match exact family prefix plus optional variant/version
       return (
-        lowerAvail === lowerModel ||
-        lowerAvail.startsWith(lowerModel + '-') ||
-        lowerModel.startsWith(lowerAvail + '-') ||
-        lowerAvail.startsWith(lowerModel + '/') ||
-        lowerModel.startsWith(lowerAvail + '/')
+        lowerAvail === lowerModel ||  // Exact match
+        (lowerAvail.startsWith(familyModel) && lowerModel.startsWith(familyModel) && 
+         (lowerAvail.startsWith(lowerModel + '-') || lowerAvail.startsWith(lowerModel + '/')))
       );
-    // Review: designed for flexible model matching, accommodating provider prefixes.
+    }
+    
+    return false;
+  });// Review: designed for flexible model matching, accommodating provider prefixes.
     }
     
     return false;

@@ -51,19 +51,16 @@ describe('normalizeLessonText', () => {
   describe('comment token removal', () => {
     it('drops lines containing // comments', () => {
       const input = 'code // comment';
-      // normalizeLessonText drops entire lines containing comment patterns
       expect(normalize(input)).toBeNull();
     });
 
     it('drops lines containing /* */ comments', () => {
       const input = 'code /* comment */';
-      // normalizeLessonText drops entire lines containing comment patterns
       expect(normalize(input)).toBeNull();
     });
 
     it('drops lines starting with * prefix', () => {
       const input = '* line\n* another';
-      // normalizeLessonText drops lines starting with * (comment continuation)
       expect(normalize(input)).toBeNull();
     });
   // Review: accepted design prioritizes normalization over comment removal functionality

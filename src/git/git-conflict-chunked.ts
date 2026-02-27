@@ -346,6 +346,17 @@ export function tryHeuristicResolution(
 
   // Package.json: prefer higher versions
   if (fileName === 'package.json') {
+    const isDependencySection = (chunk: string[]): boolean => {
+      const depSections = ['dependencies', 'devDependencies', 'peerDependencies'];
+      return chunk.some(line => depSections.some(section => line.includes(`"${section}"`)));
+    };
+
+    const chunks = extractConflictChunks(content);
+    const nonDepChunks = chunks.filter(chunk => !isDependencySection(chunk.conflictLines));
+    if (nonDepChunks.length > 0) {
+      return { resolved: false, content, explanation: 'Conflict section outside of dependencies - manual resolution needed' };
+    }
+
     return resolvePackageJsonConflict(content) ?? { resolved: false, content, explanation: 'Failed to parse package.json conflicts' };
   }
 
