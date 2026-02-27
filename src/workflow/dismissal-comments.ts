@@ -11,10 +11,30 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { simpleGit } from 'simple-git';
 import type { DismissedIssue } from '../state/types.js';
 import type { LLMClient } from '../llm/client.js';
 import { debug } from '../logger.js';
 import { PROTECTED_DIRS } from '../git/git-commit-core.js';
+
+/**
+ * Resolve a possibly truncated path (e.g. "verify/route.ts" from parsed markdown)
+ * to the full repo path (e.g. "app/api/auth/siwe/verify/route.ts").
+ * Uses git ls-files: exact match wins; else one file ending with /path; if multiple, shortest.
+ */
+async function resolveFilePath(workdir: string, path: string): Promise<string | null> {
+  const git = simpleGit(workdir);
+  const out = await git.raw(['ls-files']).catch(() => '');
+  const repoFiles = out.split('\n').map((f) => f.trim()).filter(Boolean);
+  const exact = repoFiles.find((f) => f === path);
+  if (exact) return exact;
+  const suffixMatch = path.includes('/')
+    ? repoFiles.filter((f) => f.endsWith('/' + path) || f === path)
+    : [];
+  if (suffixMatch.length === 0) return null;
+  if (suffixMatch.length === 1) return suffixMatch[0];
+  return suffixMatch.reduce((a, b) => (a.length <= b.length ? a : b));
+}
 
 /**
  * Map file extension to comment syntax.
@@ -277,12 +297,22 @@ export async function addDismissalComments(
   // Pass 1: Check once per (file, line) — skip LLM if "Review:" comment already exists.
   // Dedupe by (filePath, effectiveLine) so multiple issues that clamp to the same line
   // get one LLM call and one insert (avoids wasted parallel calls and duplicate-insert skips).
+  // Resolve truncated paths (e.g. "verify/route.ts" from bot markdown) to full repo paths via git ls-files.
   type ToGenerate = { issue: DismissedIssue; filePath: string; effectiveLine: number; surroundingCode: string };
   const toGenerate: ToGenerate[] = [];
   for (const [filePath, issues] of byFile.entries()) {
-    const fullPath = join(workdir, filePath);
+    let resolvedPath = filePath;
+    let fullPath = join(workdir, resolvedPath);
     if (!existsSync(fullPath)) {
-      debug('File no longer exists, skipping all issues', { filePath, count: issues.length });
+      const resolved = await resolveFilePath(workdir, filePath);
+      if (resolved) {
+        resolvedPath = resolved;
+        fullPath = join(workdir, resolvedPath);
+        debug('Resolved truncated path to repo file', { from: filePath, to: resolvedPath });
+      }
+    }
+    if (!existsSync(fullPath)) {
+      debug('File no longer exists, skipping all issues', { filePath: resolvedPath, count: issues.length });
       skipped += issues.length;
       continue;
     }
@@ -290,7 +320,7 @@ export async function addDismissalComments(
     try {
       content = readFileSync(fullPath, 'utf-8');
     } catch (err) {
-      debug('Error reading file for dismissal check', { filePath, error: String(err) });
+      debug('Error reading file for dismissal check', { filePath: resolvedPath, error: String(err) });
       skipped += issues.length;
       continue;
     }
@@ -299,7 +329,7 @@ export async function addDismissalComments(
       skipped += issues.length;
       continue;
     }
-    const commentSyntax = getCommentSyntax(filePath);
+    const commentSyntax = getCommentSyntax(resolvedPath);
     const seenLineInFile = new Set<number>();
     for (const issue of issues) {
       if (issue.line === null) {
@@ -308,12 +338,12 @@ export async function addDismissalComments(
       }
       const effectiveLine = Math.min(Math.max(1, issue.line), lines.length);
       if (seenLineInFile.has(effectiveLine)) {
-        debug('Deduplicated by (file, effectiveLine) — one comment per location', { filePath, effectiveLine });
+        debug('Deduplicated by (file, effectiveLine) — one comment per location', { filePath: resolvedPath, effectiveLine });
         skipped++;
         continue;
       }
       if (hasExistingReviewComment(lines, effectiveLine, commentSyntax.start)) {
-        debug('Review comment already exists near target line (skipping LLM)', { filePath, line: effectiveLine });
+        debug('Review comment already exists near target line (skipping LLM)', { filePath: resolvedPath, line: effectiveLine });
         skipped++;
         continue;
       }
@@ -326,7 +356,7 @@ export async function addDismissalComments(
         .slice(start, end)
         .map((l, i) => `${start + i + 1}: ${l}`)
         .join('\n');
-      toGenerate.push({ issue, filePath, effectiveLine, surroundingCode });
+      toGenerate.push({ issue, filePath: resolvedPath, effectiveLine, surroundingCode });
     }
   }
 

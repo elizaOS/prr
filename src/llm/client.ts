@@ -33,11 +33,7 @@ function getElizaCloudErrorContext(error: unknown): { status?: number; statusTex
     const h = headers as Record<string, unknown> & { forEach?: (cb: (v: string, k: string) => void) => void };
     if (typeof h.forEach === 'function') {
       out.headers = {};
-      h.forEach((v: string, k: string) => { out.headers![k] = v; signal: controller.signal,
-      });
-      } finally {
-        clearTimeout(timeout);
-      }
+      h.forEach((v: string, k: string) => { out.headers![k] = v; });
     } else {
       out.headers = {};
       for (const [k, v] of Object.entries(h)) {
@@ -256,16 +252,11 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
         url.searchParams.set('after_id', afterId);
       }
       
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15_000);
-      let response: Response;
-      try {
-        response = await fetch(url.toString(), {
+      const response = await fetch(url.toString(), {
         headers: {
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
         },
-      // Review: designed for clarity in API requests, prioritizing clean response handling.
       });
       
       if (!response.ok) {
@@ -826,7 +817,6 @@ export class LLMClient {
   ].join('\n');
 
   async checkIssueExists(
-    // Review: Regex match ensures only valid replies affect issue status, improving error handling.
     comment: string,
     filePath: string,
     line: number | null,
@@ -853,23 +843,9 @@ ${codeSnippet}
     const response = await this.complete(prompt, LLMClient.CHECK_ISSUE_SYSTEM_PROMPT);
     const content = response.content.trim();
 
-    const verdictMatch = content.match(/^(YES|NO|STALE)\b/i);
-    if (!verdictMatch) {
-      debug('checkIssueExists parse failed; marking as still exists', {
-        filePath,
-        line,
-        responsePreview: content.substring(0, 300),
-      });
-      return {
-        exists: true,
-        stale: false,
-        explanation: 'LLM response could not be parsed - needs manual review',
-      };
-    }
-
     // Lenient parsing: check for STALE prefix variations
-    const isStale = verdictMatch[1].toUpperCase() === 'STALE';
-    const exists = verdictMatch[1].toUpperCase() === 'YES';
+    const isStale = content.toUpperCase().startsWith('STALE');
+    const exists = content.toUpperCase().startsWith('YES');
     const explanation = content.replace(/^(YES|NO|STALE)[:\s-]*/i, '').trim();
 
     return { 

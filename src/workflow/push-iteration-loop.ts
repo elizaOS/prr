@@ -28,7 +28,7 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../git/git-clone-index.js';
-import { formatNumber, debugStep, startTimer, debug } from '../logger.ts';
+import { formatNumber, debugStep, startTimer, debug } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -195,11 +195,9 @@ export async function executePushIteration(
   });
 
   if (loopResult.shouldBreak) {
-    // Store final state for after action report (for dry-run); issue refs preserved for AAR
-    if (options.dryRun) {
-      finalUnresolvedIssuesRef.current = [...unresolvedIssues];
-      finalCommentsRef.current = [...comments];
-    }
+    // Snapshot for AAR/remaining count (same as other exit paths); usually empty when breaking here (e.g. no comments).
+    finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+    finalCommentsRef.current = [...comments];
     return {
       shouldBreak: true,
       exitReason: loopResult.exitReason,
@@ -263,6 +261,11 @@ export async function executePushIteration(
       debug('Refreshed snippets for verifier-contradiction retry', { count: verifierRefreshCount });
     }
 
+    // Snapshot current unresolved/comments so early exit or throw still has correct list for AAR and remaining count.
+    finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+    finalCommentsRef.current = [...comments];
+
+
     // Execute fix iteration
     // WHY getRunner(): After tryRotation() updates this.runner via syncRotationContext,
     // a destructured `runner` variable would still hold the OLD runner reference.
@@ -283,7 +286,12 @@ export async function executePushIteration(
     unresolvedIssues.splice(0, unresolvedIssues.length, ...iterResult.updatedUnresolvedIssues);
     const lessonsBeforeFix = iterResult.lessonsBeforeFix;
     
-    if (iterResult.shouldExit) return { shouldBreak: true, exitReason: iterResult.exitReason || 'bail_out', exitDetails: iterResult.exitDetails || 'Fix iteration requested early exit', updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle, committedThisIteration: false };
+    if (iterResult.shouldExit) {
+      // Ensure AAR and RESULTS SUMMARY get current remaining list on auth/early exit (audit: remaining count on early exit).
+      finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+      finalCommentsRef.current = [...comments];
+      return { shouldBreak: true, exitReason: iterResult.exitReason || 'bail_out', exitDetails: iterResult.exitDetails || 'Fix iteration requested early exit', updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle, committedThisIteration: false };
+    }
     if (iterResult.shouldBreak) {
       exitReason = iterResult.exitReason || '';
       exitDetails = iterResult.exitDetails || '';
@@ -412,6 +420,10 @@ export async function executePushIteration(
     finalCommentsRef.current = [...comments];
   }
 
+  // Reflect mid-loop commits so orchestrator and exit summary are accurate when COMMIT PHASE has nothing left to commit.
+  committedThisIteration = alreadyCommitted.size > 0;
+
+
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
@@ -444,7 +456,9 @@ export async function executePushIteration(
     // Invalidate analysis cache so next iteration re-analyzes with new head
     if (contexts.lastAnalysisCacheRef) contexts.lastAnalysisCacheRef.current = null;
   } else {
-    console.log(chalk.yellow('\nNo changes to commit'));
+    if (alreadyCommitted.size === 0) {
+      console.log(chalk.yellow('\nNo changes to commit'));
+    }
     // Only treat as "still need attention" issues that are not yet verified.
     // WHY: After a push, the next iteration may re-analyze before state is fully
     // synced or duplicate comment IDs can leave the queue with issues that were
@@ -467,19 +481,19 @@ export async function executePushIteration(
       // (alreadyCommitted will be empty since no fixes were made).
       return {
         shouldBreak: false,
-        exitReason: exitReason || 'no_changes',
+        exitReason: exitReason || 'all_fixed',
         exitDetails: exitDetails || 'No new changes (waiting for bot review cycle)',
         updatedRapidFailureCount: rapidFailureCount,
         updatedLastFailureTime: lastFailureTime,
         updatedConsecutiveFailures: consecutiveFailures,
         updatedModelFailuresInCycle: modelFailuresInCycle,
         updatedProgressThisCycle: progressThisCycle,
-        committedThisIteration: false,
+        committedThisIteration,
       };
     }
 
     // No intermediate pushes (or not in auto-push mode) — truly done.
-    const preserveExitReason = exitReason === 'bail_out';
+    const preserveExitReason = exitReason === 'bail_out' || alreadyCommitted.size > 0;
     const stillNeedAttention = actuallyUnresolved.length;
     const noChangesDetails =
       stillNeedAttention > 0
@@ -494,7 +508,7 @@ export async function executePushIteration(
       updatedConsecutiveFailures: consecutiveFailures,
       updatedModelFailuresInCycle: modelFailuresInCycle,
       updatedProgressThisCycle: progressThisCycle,
-      committedThisIteration: false,
+      committedThisIteration,
     };
   }
 
@@ -522,4 +536,3 @@ export async function executePushIteration(
     committedThisIteration,
   };
 }
-

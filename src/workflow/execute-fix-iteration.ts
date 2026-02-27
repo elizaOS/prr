@@ -126,7 +126,24 @@ export async function executeFixIteration(
     stateContext.forceNextBatchSizeReduce = false;
     debug('Using reduced batch size after large-prompt failure', { effectiveConsecutive, consecutiveFailures });
   }
-  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(unresolvedIssues, lessonsContext, options.verbose, effectiveConsecutive, options.priorityOrder, prInfo, diffStat, comments, runner.name);
+  const currentModelForCap = getCurrentModel();
+  const modelContext =
+    runner.provider && currentModelForCap
+      ? { provider: runner.provider, model: currentModelForCap }
+      : undefined;
+  const promptDetails = ResolverProc.buildAndDisplayFixPrompt(
+    unresolvedIssues,
+    lessonsContext,
+    options.verbose,
+    effectiveConsecutive,
+    options.priorityOrder,
+    prInfo,
+    diffStat,
+    comments,
+    runner.name,
+    undefined,
+    modelContext
+  );
   
   if (promptDetails.shouldSkip) {
     return {

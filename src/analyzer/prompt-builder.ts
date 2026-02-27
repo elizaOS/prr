@@ -2,6 +2,7 @@ import type { UnresolvedIssue, FixPrompt } from './types.js';
 import type { BotRiskEntry } from '../workflow/bot-risk.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../constants.js';
+import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
 
 /**
  * Strip HTML noise, base64 JWT links, and metadata from PR comment bodies
@@ -378,7 +379,8 @@ export function buildFixPrompt(
       parts.push('');
     }
     
-    if (issue.codeSnippet) {
+    // Current Code is critical for fix quality — fixer needs actual context to apply search/replace (audit: include whenever available).
+    if (issue.codeSnippet && issue.codeSnippet !== SNIPPET_PLACEHOLDER) {
       parts.push('**Current Code:**');
       parts.push('```');
       

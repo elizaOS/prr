@@ -8,6 +8,7 @@ import { debug, debugPrompt, debugResponse } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS } from '../constants.js';
+import { getMaxFixPromptCharsForModel, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient, acquireElizacloud, releaseElizacloud } from '../llm/client.js';
 
 /**
@@ -321,10 +322,14 @@ Working directory: ${workdir}`;
 
     debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
 
-    // Fail fast if total prompt would exceed gateway limits (avoids 500 and wasted rotation).
-    const MAX_ENRICHED_PROMPT_CHARS = MAX_FIX_PROMPT_CHARS * 2.5; // base cap 200k + injection → 500k hard cap
+    const model = options?.model || (this.provider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : DEFAULT_OPENAI_MODEL);
+    const baseCap =
+      this.provider === 'elizacloud'
+        ? getMaxFixPromptCharsForModel('elizacloud', model)
+        : MAX_FIX_PROMPT_CHARS;
+    const MAX_ENRICHED_PROMPT_CHARS = baseCap * 2.5;
     if (enrichedPrompt.length > MAX_ENRICHED_PROMPT_CHARS) {
-      throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${MAX_ENRICHED_PROMPT_CHARS.toLocaleString()}). Reduce batch size or file count.`);
+      throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${MAX_ENRICHED_PROMPT_CHARS.toLocaleString()} for ${model}). Reduce batch size or file count.`);
     }
 
     // Full-file rewrite prompts are larger; use a longer timeout so the request can complete.
@@ -370,7 +375,6 @@ Working directory: ${workdir}`;
           outputTokens: result.usage.output_tokens,
         });
       } else if ((this.provider === 'elizacloud' || this.provider === 'openai') && openai) {
-        const model = options?.model || (this.provider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : DEFAULT_OPENAI_MODEL);
         debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model });
 
         console.log(`\n🧠 Calling ${model}...\n`);
@@ -452,6 +456,10 @@ Working directory: ${workdir}`;
       const is504OrTimeout = isServerError(error) || /request timeout|timeout after/i.test(errorMessage);
       if (is504OrTimeout) {
         this.consecutive504Count++;
+        if (this.provider === 'elizacloud' && model) {
+          lowerModelMaxPromptChars(model, enrichedPrompt.length);
+          debug('Lowered prompt cap for model after timeout', { model, sentChars: enrichedPrompt.length });
+        }
         // De-escalate full-file rewrite so next attempt uses smaller prompt and may complete.
         if (rewriteFiles.length > 0) {
           this.clearEscalationForFiles(rewriteFiles);

@@ -319,17 +319,11 @@ export function sanitizeLessonsList(lessons: string[]): string[] {
     keptTokens.push(tokens);
     result.push(normalized);
   }
-  if (noChanges || charsCheck) {
-      return result;
-    }
-
-    // Remove trailing colons, dashes, and any whitespace before them
-    cleanText = cleanText.replace(/\s*[:\-]+\s*$/, '').trim();
   
-    // Return null if the string is empty after all processing
-    if (!cleanText) return null;
+  return result;
+}
 
-    return cleanText;
+export function extractLessonFilePath(lesson: string): string | null {
   const match = lesson.match(/^Fix for\s+([^:]+(?::\d+)?)/i);
   if (match) {
     const pathWithLine = match[1].trim();
