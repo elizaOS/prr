@@ -96,7 +96,6 @@ export async function runCleanupMode(
   if (cleanClaudeMd) {
     const claudeMdPath = join(workdir, 'CLAUDE.md');
     
-    
     if (existsSync(claudeMdPath)) {
       try {
         const content = await readFile(claudeMdPath, 'utf-8');
@@ -285,3 +284,4 @@ export async function runCleanupMode(
   
   console.log(chalk.green('\n✓ Cleanup complete'));
 }
+

@@ -120,6 +120,7 @@ function autoDetectSyncTargets(ctx: LessonsContext): void {
   }
   
   ctx.syncTargets = targets;
+// Review: defaults to 'claude-md' when no targets found, ensuring sync continuity
 }
 
 export function setSyncTargets(ctx: LessonsContext, targets: LessonsSyncTarget[]): void {

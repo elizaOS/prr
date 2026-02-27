@@ -269,6 +269,7 @@ export async function trySingleIssueFix(
           // Don't dismiss either — the batch verification will check the claim properly.
           if (!isAlreadyFixed) {
             LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${noChangesExplanation}`);
+          // Review: checks for "already fixed" to avoid adding misleading lessons on unresolved issues.
           }
         } else {
           // No explanation provided - this is a problem but not fatal

@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeLessonText } from '../src/state/lessons-normalize';
-import { sanitizeLessonText } from '../src/state/lessons';
 
 describe('normalizeLessonText', () => {
   function normalize(lesson: string): string | null {
@@ -287,6 +286,7 @@ describe('normalizeLessonText', () => {
 
     it('returns null for whitespace-only strings', () => {
       expect(normalize('   ')).toBeNull();
+    // Review: normalizes only non-empty, non-whitespace inputs for consistency in processing
     });
   });
 

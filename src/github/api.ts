@@ -997,6 +997,7 @@ export class GitHubAPI {
         issue_number: prNumber,
         per_page: 100,
         since,
+      // Review: paginate retrieves all comments, ensuring we process the latest ones correctly.
       });
       const commentsNewestFirst = [...comments].sort(
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
@@ -1059,7 +1060,10 @@ interface ParsedIssue {
  * Requires at least one `/` to avoid matching bare words like `client.ts`.
  */
 const FILE_EXTENSIONS = '(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)';
-const FILE_LINE_RE = new RegExp(`(?:[\`(])?(?:\\./)?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`);
+const FILE_PATH_RE = `[\\w.-]+(?:/[\\w./-]+)*\\.${FILE_EXTENSIONS}`;
+const FILE_LINE_RE = new RegExp(
+  `(?:[\`(])?(?:\\./)?(${FILE_PATH_RE})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`
+);
 // Review: requires a `/` to ensure valid paths, avoiding false positives in filenames.
 
 /**

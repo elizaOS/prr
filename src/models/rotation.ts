@@ -161,9 +161,10 @@ function isModelProviderCompatible(runner: Runner, model: string): boolean {
  */
 export function isModelAvailableForRunner(ctx: RotationContext, model: string): boolean {
   const available = getModelsForRunner(ctx.runner);
-  const lowerModel = model.toLowerCase();
+  const normalize = (m: string) => stripProviderPrefix(m.toLowerCase());
+  const lowerModel = normalize(model);
   return available.some(m => {
-    const lowerAvail = m.toLowerCase();
+    const lowerAvail = normalize(m);
     
     // Exact match
     if (lowerAvail === lowerModel) return true;
@@ -174,7 +175,13 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     const familyModel = familyOf(lowerModel);
     
     if (familyAvail === familyModel && familyAvail.length > 0) {
-      return lowerAvail === lowerModel || lowerAvail.startsWith(lowerModel + '-') || lowerModel.startsWith(lowerAvail + '-');
+      return (
+        lowerAvail === lowerModel ||
+        lowerAvail.startsWith(lowerModel + '-') ||
+        lowerModel.startsWith(lowerAvail + '-') ||
+        lowerAvail.startsWith(lowerModel + '/') ||
+        lowerModel.startsWith(lowerAvail + '/')
+      );
     // Review: designed for flexible model matching, accommodating provider prefixes.
     }
     
@@ -496,9 +503,10 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
   // 'gemini' intentionally omitted - uses Google's own model validation
 };
 
-/** ElizaCloud: model IDs to remove from rotation (e.g. known to timeout for a while). */
+/** Models to skip on ElizaCloud (500/timeout in practice). Audit: claude-3-opus 500'd on 4/5 calls including at 45k prompt. */
 const ELIZACLOUD_SKIP_MODELS = new Set<string>([
   'openai/gpt-5.2-codex',
+  'anthropic/claude-3-opus',
 ]);
 
 /**

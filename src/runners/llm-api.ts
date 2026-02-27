@@ -215,13 +215,29 @@ export class LLMAPIRunner implements Runner {
     };
   }
 
+  /** Ensure provider is explicitly selected based on available API keys */
+  private ensureProvider(): void {
+    if (process.env.ELIZACLOUD_API_KEY) {
+      this._provider = 'elizacloud';
+      this.provider = 'elizacloud';
+    } else if (process.env.ANTHROPIC_API_KEY) {
+      this._provider = 'anthropic';
+      this.provider = 'anthropic'; 
+    } else if (process.env.OPENAI_API_KEY) {
+      this._provider = 'openai';
+      this.provider = 'openai';
+    }
+  }
+
   private getClient(): { anthropic?: Anthropic; openai?: OpenAI } {
+    this.ensureProvider(); // Explicitly select provider before creating client
+    
     if (this.provider === 'anthropic' && !this.anthropic) {
       this.anthropic = new Anthropic();
     }
     if (this.provider === 'elizacloud' && !this.openai) {
       this.openai = createElizaCloudOpenAIClient(process.env.ELIZACLOUD_API_KEY!);
-    }
+    } 
     if (this.provider === 'openai' && !this.openai) {
       this.openai = new OpenAI();
     }
@@ -542,12 +558,15 @@ Working directory: ${workdir}`;
    * current on-disk content of each unique file. This lets the LLM copy exact
    * search text from real file content instead of guessing from stale snippets.
    * 
-   * Limits: files > 200KB or > 5000 lines are skipped, max 10 files injected.
+   * Limits: files > 200KB or > 5000 lines are skipped, max 10 files injected,
+   * and total injected content capped so base + injection stays under gateway limits.
    */
   private injectFileContents(workdir: string, prompt: string): string {
     const MAX_FILE_SIZE = 200_000;
     const MAX_LINES = 5_000;
     const MAX_FILES = 10;
+    /** Cap total injection so enriched prompt stays under ~400k (base ≤200k + this). Audit: 122k base + 284k injection → 407k → claude-3-opus 500. */
+    const MAX_TOTAL_INJECTION_CHARS = 200_000;
     
     // Extract file paths from prompt patterns like:
     //   "File: path/to/file.ts:123"
@@ -556,6 +575,8 @@ Working directory: ${workdir}`;
     const filePathPattern = /(?:File|FILE|Issue \d+):\s*([^\s:]+\.[a-zA-Z]+)/g;
     const seenPaths = new Set<string>();
     const fileSections: string[] = [];
+    const injectedPaths: string[] = [];
+    let totalInjectedChars = 0;
     
     let match;
     while ((match = filePathPattern.exec(prompt)) !== null) {
@@ -563,6 +584,7 @@ Working directory: ${workdir}`;
       if (seenPaths.has(filePath)) continue;
       seenPaths.add(filePath);
       if (seenPaths.size > MAX_FILES) break;
+      if (totalInjectedChars >= MAX_TOTAL_INJECTION_CHARS) break;
       
       const { safe, fullPath } = this.isPathSafe(workdir, filePath);
       if (!safe || !existsSync(fullPath)) continue;
@@ -583,8 +605,19 @@ Working directory: ${workdir}`;
         const numbered = content.split('\n')
           .map((line, i) => `${String(i + 1).padStart(4)} | ${line}`)
           .join('\n');
-        
-        fileSections.push(`### ${filePath} (${lineCount} lines)\n\`\`\`\n${numbered}\n\`\`\``);
+        const section = `### ${filePath} (${lineCount} lines)\n\`\`\`\n${numbered}\n\`\`\``;
+        if (totalInjectedChars + section.length > MAX_TOTAL_INJECTION_CHARS) {
+          debug('Stopping file injection - total would exceed cap', {
+            currentTotal: totalInjectedChars,
+            nextSectionSize: section.length,
+            cap: MAX_TOTAL_INJECTION_CHARS,
+            skippedPath: filePath,
+          });
+          break;
+        }
+        fileSections.push(section);
+        injectedPaths.push(filePath);
+        totalInjectedChars += section.length;
       } catch {
         debug('Failed to read file for injection', { filePath });
       }
@@ -592,7 +625,11 @@ Working directory: ${workdir}`;
     
     if (fileSections.length === 0) return prompt;
     
-    debug('Injected file contents into prompt', { fileCount: fileSections.length, files: Array.from(seenPaths) });
+    debug('Injected file contents into prompt', {
+      fileCount: fileSections.length,
+      files: injectedPaths,
+      totalInjectedChars,
+    });
     
     return prompt + `\n\n---\n\n## ACTUAL FILE CONTENTS (current on-disk state)\n\nIMPORTANT: When writing <search> blocks, copy text EXACTLY from these files — they reflect the current state of the code, which may differ from the review comment's snippet.\n\n${fileSections.join('\n\n')}`;
   }

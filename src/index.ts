@@ -136,6 +136,7 @@ async function main(): Promise<void> {
           console.warn(chalk.yellow(`  Auto-selected ElizaCloud model: ${chosen}. Set PRR_LLM_MODEL to avoid surprises.`));
         }
       }
+    // Review: fallback behavior uses available models to ensure compatibility with user configuration
     }
 
     // Note: If neither options.tool nor config.defaultTool is set,
