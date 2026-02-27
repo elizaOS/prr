@@ -346,7 +346,7 @@ export function tryHeuristicResolution(
 
   // Package.json: prefer higher versions
   if (fileName === 'package.json') {
-    return resolvePackageJsonConflict(content);
+    return resolvePackageJsonConflict(content) ?? { resolved: false, content, explanation: 'Failed to parse package.json conflicts' };
   }
 
   // Package-lock.json / yarn.lock: regenerate recommended
@@ -398,10 +398,13 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
 
       // Try to merge ours and theirs
       const merged = mergePackageJsonChunks(ours, theirs, needsTrailingComma);
-      if (merged) {
-        resolved.push(...merged);
-        conflictsResolved++;
-      } else {
+if (merged) {
+  resolved.push(...merged);
+  conflictsResolved++;
+} else {
+  // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
+  return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
+}
         // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
         return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
       }
