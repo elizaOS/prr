@@ -22,8 +22,8 @@ let debugLogDir: string | null = null;
 let debugLogCounter = 0;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// OUTPUT LOG TEE — mirrors all console output to ./output.log in the CWD
-// Review: mirrors console output to a designated user directory for organization and privacy
+// OUTPUT LOG TEE — mirrors all console output to ~/.prr/output.log
+// Provides persistent logging in a consistent user-specific location
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 let outputLogStream: WriteStream | null = null;
@@ -41,7 +41,7 @@ function stripAnsi(str: string): string {
 /**
  * Initialize the output log tee.
  *
- * Creates/truncates ./output.log in the CWD and patches console.log/warn/error
+ * Creates/truncates ~/.prr/output.log and patches console.log/warn/error
  * to mirror all formatted output (ANSI-stripped) to the file.
  *
  * Spinner output (ora etc.) goes through process.stdout.write — NOT console.log —
