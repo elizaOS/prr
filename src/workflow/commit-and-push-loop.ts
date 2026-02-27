@@ -260,6 +260,9 @@ export async function handleCommitAndPush(
     // Skip bot wait when: bail-out, nothing was pushed, or more fixes remain (!allFixed).
     // When !allFixed, we pushed to avoid losing commits but don't need to wait for bots
     // since we'll re-enter the fix loop immediately with the remaining issues.
+    // WHY no maxPushIterations === 0 check: By the time we're here, maxPushIterations is already normalized in
+    // run-orchestrator (0 → Infinity). So "unlimited" is expressed as pushIteration < Infinity, which is always true
+    // for finite iteration counts. The previous (maxPushIterations === 0 || ...) was dead code; removed for clarity.
     const shouldWaitForBots = !skipBotWait && !pushNothingToPush && allFixed && pushIteration < maxPushIterations;
     if (shouldWaitForBots) {
       await waitForBotReviews(owner, repo, number, latestHeadSha);

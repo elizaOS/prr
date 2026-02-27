@@ -105,6 +105,64 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
+## 9. maxFixIterations 0 = unlimited
+
+**What:** The fix loop now treats `--max-fix-iterations` value `0` (and `null`/`undefined`) as *unlimited*: we compute `effectiveMaxFixIterations = (value == null || value === 0) ? Infinity : value` and use that in the loop condition and in the "max iterations reached" message.
+
+**Where:** `src/workflow/push-iteration-loop.ts` — initialization of `effectiveMaxFixIterations`, loop condition, and post-loop exit block.
+
+**Why:**
+- The CLI documents the default as `0` meaning "unlimited," but the previous code used the raw option. With default `0`, the condition `fixIteration < maxFixIterations` was `0 < 0` → false, so the loop never ran a single iteration.
+- Audit of a run showed "Fix loop exit: max_iterations" with zero fix attempts. Mapping 0 to Infinity makes the default behave as documented.
+
+---
+
+## 10. Empty / missing code snippets in verification prompts
+
+**What:**
+- **Judge (batch "do issues still exist")**: When `issue.codeSnippet` is empty or whitespace, we no longer emit an empty code block. We emit an explicit placeholder: "(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)."
+- **Fix-verification (post-fix batch)**: When `fix.currentCode` is empty or whitespace-only we treat it as missing and add the line "Current Code: (unavailable — verify from diff only)" instead of an empty ``` block.
+
+**Where:** `src/llm/client.ts` — `buildIssueText` inside `batchCheckIssuesExist`, and `buildBatchVerifyPrompt`.
+
+**Why:**
+- Audit of `prompts.log` found issues (e.g. issue_8, issue_12) where the "Current code:" block was literally empty. The verifier had no context and guessed (e.g. STALE or YES/NO without evidence). Explicit placeholder text (1) instructs the model not to use STALE when code isn’t visible, (2) steers toward YES-with-explanation when verification isn’t possible, and (3) makes "unavailable" visible so the model doesn’t invent conclusions from an empty block.
+
+---
+
+## 11. Comment grouping rule: same method, different fix
+
+**What:** The LLM dedup grouping prompt now includes an explicit rule and example: "Same method/symbol but DIFFERENT fix = do NOT group. Example: 'Method X doesn't exist' (fix: add the method) and 'Method X called with wrong cast' (fix: change the call site) are two different fixes — do not group."
+
+**Where:** `src/workflow/issue-analysis.ts` — prompt string for `requestDedupGroups`, plus a short code comment explaining the audit finding.
+
+**Why:**
+- Audit found a bad merge: two comments about the same method (e.g. `isAvailable`) were grouped, but one required adding the method and the other required changing the call site. Merging them into one canonical issue caused the fixer to address only one of the two or to lose nuance. The new rule reduces false groupings in this class.
+
+---
+
+## 12. Dead code removal in commit-and-push-loop (bot wait)
+
+**What:** The condition for "should we wait for bot reviews after push" was simplified from `(maxPushIterations === 0 || pushIteration < maxPushIterations)` to `pushIteration < maxPushIterations`.
+
+**Where:** `src/workflow/commit-and-push-loop.ts` — `shouldWaitForBots`.
+
+**Why:**
+- By the time this code runs, `maxPushIterations` has already been normalized in the orchestrator: 0 is converted to Infinity. So `maxPushIterations === 0` is never true here; the branch was dead code. Removing it avoids confusion. Behavior is unchanged (when unlimited, `pushIteration < Infinity` is true for any finite iteration count).
+
+---
+
+## 13. Verification model note (in-code)
+
+**What:** A short comment was added above the batch verify loop: verification accuracy affects fix-loop decisions; if many false YES/NO occur, use a stronger model (e.g. via tool config).
+
+**Where:** `src/llm/client.ts` — just before `MAX_VERIFY_RETRIES` in `batchVerifyFixes`.
+
+**Why:**
+- Audit showed roughly 30% wrong verifier verdicts with a small model (e.g. Qwen-3-14B). Documenting the lever (stronger model via tool/runner config) helps operators tune without code changes.
+
+---
+
 ## Summary table
 
 | Change | File(s) | Goal |
@@ -117,6 +175,11 @@ This document describes the changes made after auditing `prompts.log` and the fi
 | Lesson caps (large batch) | `analyzer/prompt-builder.ts` | Keep prompts under ~100k chars |
 | Dedup 3+ issues | `workflow/issue-analysis.ts` | Save dedup tokens for 2-comment files |
 | Commit "duplicate" wording | `git/git-commit-message.ts` | Avoid forbidden phrase |
+| maxFixIterations 0 = unlimited | `workflow/push-iteration-loop.ts` | Fix loop runs with default 0 |
+| Empty snippet handling | `llm/client.ts` | No empty code blocks; explicit placeholder for judge + verifier |
+| Grouping: same method, different fix | `workflow/issue-analysis.ts` | Reduce false merges in dedup |
+| Bot wait dead code removal | `workflow/commit-and-push-loop.ts` | Clarity; behavior unchanged |
+| Verification model note | `llm/client.ts` | Document tuning lever for verifier accuracy |
 
 ---
 

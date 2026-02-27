@@ -213,7 +213,7 @@ export async function executePushIteration(
   }
 
   // Initialize fix loop
-  // CLI: --max-fix-iterations defaults to 0 meaning "unlimited". Treat 0 and null/undefined as Infinity.
+  // WHY effectiveMaxFixIterations: CLI documents default 0 as "unlimited". Raw 0 made fixIteration < 0 always false so the loop ran zero times; we map 0/null to Infinity.
   const effectiveMaxFixIterations =
     (options.maxFixIterations == null || options.maxFixIterations === 0) ? Infinity : options.maxFixIterations;
   debug('Fix loop config', { pushIteration, maxFixIterations: options.maxFixIterations, effectiveMaxFixIterations, unresolvedCount: unresolvedIssues.length });

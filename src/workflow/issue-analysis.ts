@@ -476,6 +476,8 @@ async function llmDedup(
         : '';
       return `[${idx + 1}] ${item.comment.author}${line}: ${preview}${snippet}`;
     }).join('\n\n');
+    // WHY "same method, different fix" rule: Audit found a bad merge — two comments about the same method required
+    // different fixes (add method vs change call site). Grouping them lost nuance; the rule reduces false groupings.
     const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
 You must decide which comments describe the EXACT SAME underlying problem.
 
