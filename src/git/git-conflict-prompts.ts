@@ -4,6 +4,10 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { extractConflictChunks } from './git-conflict-chunked.js';
+
+/** Above this size we embed only conflict sections, not the full file. WHY: Large files (e.g. CHANGELOG 600+ lines) double prompt size and cause 504s; conflict sections are enough for <search>/<replace>. */
+const CONFLICT_EMBED_FULL_MAX_CHARS = 30_000;
 
 /**
  * Build prompt for agentic runners (Cursor, Claude Code, Aider) that can open files.
@@ -72,16 +76,47 @@ export function buildConflictResolutionPromptWithContent(
       continue;
     }
 
-    if (charsUsed + content.length > maxTotalChars) {
-      skipped.push(file);
-      continue;
-    }
+    const hasConflictMarkers = content.includes('<<<<<<<');
+    const useChunkedEmbed = hasConflictMarkers && content.length > CONFLICT_EMBED_FULL_MAX_CHARS;
 
-    parts.push(`--- FILE: ${file} ---`);
-    parts.push(content);
-    parts.push(`--- END: ${file} ---`);
-    parts.push('');
-    charsUsed += content.length;
+    if (useChunkedEmbed) {
+      const chunks = extractConflictChunks(content, 7);
+      // Malformed conflict (no closing >>>>>>>) — embed full file so LLM can still attempt resolution.
+      if (chunks.length === 0) {
+        parts.push(`--- FILE: ${file} ---`);
+        parts.push(content);
+        parts.push(`--- END: ${file} ---`);
+        parts.push('');
+        charsUsed += content.length;
+      } else {
+        let sectionChars = 0;
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          const segment = chunk.fullContent;
+          if (charsUsed + sectionChars + segment.length > maxTotalChars) break;
+          // WHY line range from context arrays: header should match what we actually embed (contextBefore + conflict + contextAfter), not just conflict marker lines.
+          const embedStart = chunk.startLine - chunk.contextBefore.length + 1;
+          const embedEnd = chunk.endLine + chunk.contextAfter.length + 1;
+          parts.push(`--- FILE: ${file} (section ${i + 1}/${chunks.length}, lines ${embedStart}-${embedEnd}) ---`);
+          parts.push(segment);
+          parts.push(`--- END: ${file} section ${i + 1} ---`);
+          parts.push('');
+          sectionChars += segment.length;
+        }
+        charsUsed += sectionChars;
+        if (sectionChars === 0) skipped.push(file);
+      }
+    } else {
+      if (charsUsed + content.length > maxTotalChars) {
+        skipped.push(file);
+        continue;
+      }
+      parts.push(`--- FILE: ${file} ---`);
+      parts.push(content);
+      parts.push(`--- END: ${file} ---`);
+      parts.push('');
+      charsUsed += content.length;
+    }
   }
 
   if (skipped.length > 0) {
@@ -89,13 +124,14 @@ export function buildConflictResolutionPromptWithContent(
     parts.push('');
   }
 
+  // Plain file path in <change path="...">: section headers include "(section 1/N, lines X-Y)" but path must be the real filename so the applier can find the file. WHY: LLMs sometimes echo the header; clarifying avoids wrong paths.
   parts.push(
     'INSTRUCTIONS:',
-    '1. For each file above, find the conflict markers: <<<<<<<, =======, >>>>>>>',
+    '1. For each file (or file section) above, find the conflict markers: <<<<<<<, =======, >>>>>>>',
     '2. Understand what both sides are trying to do',
     '3. Choose the correct resolution that preserves the intent of both changes',
     '4. Remove ALL conflict markers',
-    '5. Output a <change> block for each file with <search> containing the conflicted section and <replace> containing the resolved code',
+    '5. Output a <change path="filename"> block for each file/section with <search> containing the conflicted section and <replace> containing the resolved code. Use the plain file path (e.g. "CHANGELOG.md"), not the section annotation.',
     '',
     'IMPORTANT:',
     '- Do NOT just pick one side blindly',

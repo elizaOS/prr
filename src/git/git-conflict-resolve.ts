@@ -21,6 +21,7 @@ import {
   MAX_CONFLICT_RESOLUTION_FILE_SIZE,
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
+  DEFAULT_ELIZACLOUD_MODEL,
 } from '../constants.js';
 import { buildConflictResolutionPrompt, buildConflictResolutionPromptWithContent } from './git-conflict-prompts.js';
 import { handleLockFileConflicts } from './git-conflict-lockfiles.js';
@@ -274,10 +275,24 @@ export async function resolveConflictsWithLLM(
     console.log(chalk.yellow(`  Files still have conflict markers: ${markerConflicts.join(', ')}`));
   }
   
-  // If conflicts remain, try direct LLM API as fallback
+  // If conflicts remain, try direct LLM API as fallback.
+  // WHY conflictModel: Use same model as attempt 1 (e.g. claude-sonnet-4-5) instead of the
+  // LLM client default (e.g. qwen-3-14b) which may be overloaded and 504'ing.
   if (remainingConflicts.length > 0) {
     setTokenPhase('Resolve conflicts');
-    console.log(chalk.cyan(`\n  Attempt 2: Using direct ${config.llmProvider} API to resolve ${remainingConflicts.length} remaining conflicts...`));
+    // WHY fallback chain: getCurrentModel() can return undefined during setup phase
+    // (rotation state not fully initialized). Without a fallback the LLM client uses
+    // its default (qwen-3-14b on ElizaCloud) which is weaker and more prone to 504s.
+    // DEFAULT_ELIZACLOUD_MODEL (claude-sonnet-4-5) matches what the runner used in Attempt 1.
+    const rotationModel = getCurrentModel() ?? undefined;
+    const conflictModel = rotationModel
+      ?? (llmProvider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : undefined);
+    const effectiveModel = conflictModel ?? llmModel;
+    const effectiveMaxChars = (llmProvider && effectiveModel)
+      ? getMaxFixPromptCharsForModel(llmProvider, effectiveModel)
+      : modelMaxChars;
+    debug('Attempt 2 model selection', { rotationModel, conflictModel, effectiveModel, llmClientDefault: llmModel });
+    console.log(chalk.cyan(`\n  Attempt 2: Using direct ${config.llmProvider} API${conflictModel ? ` (${conflictModel})` : ''} to resolve ${remainingConflicts.length} remaining conflicts...`));
     
     const fs = await import('fs');
     const MAX_FILE_SIZE = MAX_CONFLICT_RESOLUTION_FILE_SIZE;
@@ -331,15 +346,15 @@ export async function resolveConflictsWithLLM(
         } else if (shouldUseDeterministicMerge(conflictFile)) {
           console.log(chalk.blue(`    → Using deterministic merge (keep ours) for ${conflictFile}`));
           result = resolveKeepOurs(conflictedContent);
-        } else if (conflictedContent.length > modelMaxChars) {
+        } else if (conflictedContent.length > effectiveMaxChars) {
           // File exceeds model's context window — skip LLM entirely.
           // Sending a prompt larger than the model can handle causes 504
           // timeouts or 400 "context length exceeded" errors.
-          console.log(chalk.yellow(`    → Skipping LLM resolution: file (${fileSize}KB) exceeds model context (${Math.round(modelMaxChars / 1024)}KB chars for ${llmModel || 'unknown'})`));
+          console.log(chalk.yellow(`    → Skipping LLM resolution: file (${fileSize}KB) exceeds model context (${Math.round(effectiveMaxChars / 1024)}KB chars for ${effectiveModel || 'unknown'})`));
           result = {
             resolved: false,
             content: conflictedContent,
-            explanation: `File too large for model context (${fileSize}KB > ${Math.round(modelMaxChars / 1024)}KB)`,
+            explanation: `File too large for model context (${fileSize}KB > ${Math.round(effectiveMaxChars / 1024)}KB)`,
           };
         } else if (
           isGeneratedSchemaFile(conflictFile) &&
@@ -350,7 +365,8 @@ export async function resolveConflictsWithLLM(
             llm,
             conflictFile,
             conflictedContent,
-            mergingBranch
+            mergingBranch,
+            conflictModel
           );
         } else {
           // Use appropriate strategy based on file size
@@ -360,14 +376,16 @@ export async function resolveConflictsWithLLM(
               llm,
               conflictFile,
               conflictedContent,
-              mergingBranch
+              mergingBranch,
+              conflictModel
             );
           } else {
             // Standard resolution for small files
             result = await llm.resolveConflict(
               conflictFile,
               conflictedContent,
-              mergingBranch
+              mergingBranch,
+              conflictModel ? { model: conflictModel } : undefined
             );
           }
         }

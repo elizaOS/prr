@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-02) — Rebase detection, push retry cleanup, dead code removal
+
+**completeMerge rebase vs merge detection**
+- `completeMerge` in `src/git/git-merge.ts` now uses `git.revparse(['--show-toplevel'])` to resolve the repo root, then checks `join(root, '.git', 'rebase-merge')` (and `rebase-apply`) to decide whether we're in a rebase or a merge. On rebase it runs `git.rebase(['--continue'])`; on merge it runs `git.commit(message)`.
+- **WHY**: `revparse --git-dir` can return a relative path (e.g. `.git`). `existsSync(join('.git', 'rebase-merge'))` is evaluated relative to `process.cwd()`, not the workdir PRR uses (e.g. `~/.prr/work/<hash>`). So the check often failed to find `rebase-merge`, we fell through to the merge branch, and ran `git.commit()` during a rebase — leaving `.git/rebase-merge` behind and causing "rebase-merge directory already exists" on the next push retry.
+
+**Same fix in pull conflict loop**
+- The inline rebase check in `src/workflow/repository.ts` (pull conflict round loop, when `conflictedFiles.length === 0`) now uses `--show-toplevel` for the same reason.
+- **WHY**: Consistency with `completeMerge`; without it the "no conflicts, is rebase still in progress?" decision could be wrong when cwd ≠ workdir.
+
+**Push retry: clean up after failed rebase**
+- In `pushWithRetry` (`src/git/git-push.ts`), when the post-rejection fetch+rebase fails (conflict or any other error, including "rebase-merge directory already exists"), we first try `git.rebase(['--abort'])`. Only if that fails (e.g. stale or corrupted rebase state) do we call `cleanupGitState(git)`.
+- **WHY**: `rebase --abort` restores the repo to pre-rebase state with all commits intact. `cleanupGitState` does `reset --hard` and `clean -fd`, which is correct for stuck state but unnecessarily destructive when a simple abort would suffice. Trying abort first keeps user commits; falling back to full cleanup ensures the next run isn't blocked by a leftover `.git/rebase-merge` dir.
+
+**Dead code removal**
+- Removed `src/git/clone.ts` (599 lines). It was never imported; `git-clone-index` re-exports from `git-clone-core`, `git-merge`, and `git-lock-files` only. The file contained a duplicate `completeMerge` that only did `git.commit()` (no rebase detection).
+- **WHY**: Single source of truth for clone/merge logic; no confusion from a second, weaker `completeMerge` implementation.
+
+**rebase --continue without a TTY**
+- All `rebase --continue` calls go through `continueRebase(git)` in `git-merge.ts`: it sets `GIT_EDITOR=true` then runs `git.rebase(['--continue'])`, so git does not invoke an interactive editor for the replayed commit message.
+- **WHY**: In non-interactive environments (prr workdir, CI) there is no TTY. Git runs the configured editor (e.g. nano); it then fails with "Standard input is not a terminal" or "There was a problem with the editor 'editor'. Please supply the message using -m or -F". `GIT_EDITOR=true` makes git accept the default message without spawning an editor. Using a single helper keeps behavior consistent and avoids maintaining four call sites.
+
+**Conflict resolution fallback: same model as attempt 1, more 504 retries**
+- When the direct LLM API fallback (attempt 2) resolves remaining conflicts, it now uses the same model as attempt 1 (`getCurrentModel()`), passed through `resolveConflict`, `resolveConflictsChunked`, and `resolveAsymmetricConflict`. Previously the fallback used the LLM client default (e.g. qwen-3-14b), which could 504 while the runner had just succeeded with claude-sonnet-4-5.
+- ElizaCloud 504/timeout retries increased from 1 to 2 (3 attempts total), with staggered backoff 10s then 20s so the gateway has more time to recover before the next attempt.
+- **WHY**: Output.log audit showed attempt 1 resolved CHANGELOG with claude-sonnet-4-5; attempt 2 sent types.ts to qwen-3-14b and got two 504s. Using the same model avoids weak/default models that may be overloaded; extra retries with longer backoff improve success when the gateway is transiently failing.
+
+**Conflict resolution: model fallback and context cap**
+- When `getCurrentModel()` is undefined (e.g. during setup before rotation is initialized), Attempt 2 now falls back to `DEFAULT_ELIZACLOUD_MODEL` (e.g. claude-sonnet-4-5) for ElizaCloud so the fallback doesn’t use the client default (qwen-3-14b) that may 504.
+- The "file too large for model context" check now uses the effective model’s context limit (`effectiveMaxChars` from `getMaxFixPromptCharsForModel(provider, effectiveModel)`) instead of the LLM client’s default model limit.
+- **WHY**: Audit showed attempt 2 using qwen-3-14b when rotation state was unset; falling back to a stronger default improves success. Using the effective model’s limit prevents incorrectly skipping files that fit the actual model’s context window.
+
+**commit.ts pushWithRetry: same abort-then-cleanup as git-push**
+- In `src/git/commit.ts`, when the post-rejection rebase fails (conflicts or other error), we try `git.rebase(['--abort'])` first; only if that fails do we call `cleanupGitState(git)`.
+- **WHY**: Same rationale as git-push: abort preserves commits; full cleanup is for stuck/corrupt state. Consistency between the two push-retry paths avoids divergent behavior.
+
+### Fixed (2026-02) — Prompts.log audit: conflict prompt injection and large-file embedding
+
+**Skip file injection for conflict resolution prompts**
+- In `injectFileContents` (`src/runners/llm-api.ts`), if the prompt starts with `MERGE CONFLICT RESOLUTION`, we return the prompt unchanged with no file injection.
+- **WHY**: The conflict resolution prompt builder (`buildConflictResolutionPromptWithContent`) already embeds each file as `--- FILE: path ---` plus content. Re-injecting would duplicate file content (e.g. CHANGELOG twice under "ACTUAL FILE CONTENTS"), blow prompt size (e.g. 140k+ chars), and cause 504s or context-overflow errors.
+
+**Large conflicted files: chunked embed**
+- For files over 30k characters with conflict markers, `buildConflictResolutionPromptWithContent` (`src/git/git-conflict-prompts.ts`) now embeds only the conflict sections (each with 7 lines of context before/after) instead of the full file. Section headers show the actual embedded line range (from context start to context end). Instructions tell the LLM to use the plain file path in `<change path="...">` (e.g. `CHANGELOG.md`), not the section annotation.
+- **WHY**: Embedding the full file (e.g. CHANGELOG 600+ lines) doubles prompt size and causes 504s; the LLM only needs the conflicted regions to produce correct `<search>`/`<replace>` blocks. Accurate line numbers and path instruction ensure the LLM’s output matches the file and applies cleanly.
+
+---
+
 ### Added (2026-02) — Analysis cache, line remap, prompt caps, model recommendation, graduation
 
 **Dedup cache across push iterations**

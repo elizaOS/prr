@@ -119,7 +119,8 @@ export async function resolveConflictChunk(
   llm: LLMClient,
   filePath: string,
   chunk: ConflictChunk,
-  baseBranch: string
+  baseBranch: string,
+  model?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
   const prompt = `You are resolving a single Git merge conflict in ${filePath}.
 
@@ -155,7 +156,7 @@ resolved code here
 EXPLANATION: Brief explanation of what you merged/kept/changed`;
 
   try {
-    const response = await llm.complete(prompt);
+    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
     if (!response || typeof response.content !== 'string') {
       return {
         resolved: false,
@@ -248,7 +249,8 @@ export async function resolveConflictsChunked(
   llm: LLMClient,
   filePath: string,
   content: string,
-  baseBranch: string
+  baseBranch: string,
+  model?: string
 ): Promise<{ resolved: boolean; content: string; explanation: string }> {
   const chunks = extractConflictChunks(content);
 
@@ -271,9 +273,9 @@ export async function resolveConflictsChunked(
   const explanations: string[] = [];
   let allResolved = true;
 
-  // Resolve each chunk
+  // Resolve each chunk (pass model so we use same as attempt 1, not weak default)
   for (const chunk of chunks) {
-    const result = await resolveConflictChunk(llm, filePath, chunk, baseBranch);
+    const result = await resolveConflictChunk(llm, filePath, chunk, baseBranch, model);
     
     if (result.resolved) {
       resolutions.set(chunk.startLine, result.resolvedLines);
@@ -584,7 +586,8 @@ export async function resolveAsymmetricConflict(
   llm: LLMClient,
   filePath: string,
   content: string,
-  baseBranch: string
+  baseBranch: string,
+  model?: string
 ): Promise<{ resolved: boolean; content: string; explanation: string }> {
   const chunks = extractConflictChunks(content);
   if (chunks.length === 0) {
@@ -619,7 +622,7 @@ export async function resolveAsymmetricConflict(
 
     // Use large side as base, check small side for any unique content worth merging
     const mergeResult = await checkSmallSideForAdditions(
-      llm, filePath, largeSide, smallSide, baseBranch
+      llm, filePath, largeSide, smallSide, baseBranch, model
     );
 
     if (mergeResult.hasAdditions && mergeResult.merged) {
@@ -686,7 +689,8 @@ async function checkSmallSideForAdditions(
   filePath: string,
   largeSide: string[],
   smallSide: string[],
-  baseBranch: string
+  baseBranch: string,
+  model?: string
 ): Promise<{ hasAdditions: boolean; merged?: string[]; explanation: string }> {
   // For JSON files: try programmatic deep-merge first (no LLM needed)
   if (filePath.endsWith('.json')) {
@@ -742,7 +746,7 @@ NO_ADDITIONS - if the smaller side has nothing meaningful beyond what the larger
 ADDITIONS_FOUND: <brief description of what unique content exists>`;
 
   try {
-    const response = await llm.complete(prompt);
+    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
     const responseText = response.content.trim();
 
     if (responseText.startsWith('NO_ADDITIONS')) {

@@ -576,6 +576,13 @@ Working directory: ${workdir}`;
    * and total injected content capped so base + injection stays under gateway limits.
    */
   private injectFileContents(workdir: string, prompt: string, maxTotalEnrichedChars?: number): { enrichedPrompt: string; injectedPaths: string[] } {
+    // WHY skip injection for conflict prompts: buildConflictResolutionPromptWithContent already
+    // embeds each file as "--- FILE: path ---" + full content. Re-injecting would duplicate
+    // file content (e.g. CHANGELOG twice) and blow prompt size / cause 504s.
+    if (prompt.startsWith('MERGE CONFLICT RESOLUTION')) {
+      return { enrichedPrompt: prompt, injectedPaths: [] };
+    }
+
     const MAX_FILE_SIZE = 200_000;
     const MAX_LINES = 5_000;
     const MAX_FILES = 10;

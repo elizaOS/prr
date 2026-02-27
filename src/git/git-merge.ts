@@ -4,6 +4,20 @@
 import type { SimpleGit } from 'simple-git';
 import { debug } from '../logger.js';
 
+/**
+ * Continue an in-progress rebase without opening an editor.
+ * Sets GIT_EDITOR=true then runs git.rebase(['--continue']).
+ * WHY: git rebase --continue invokes the configured editor (e.g. nano) to edit the
+ * commit message. In non-interactive environments (prr workdir, CI) there is no TTY,
+ * so the editor fails with "Standard input is not a terminal" or "problem with the
+ * editor 'editor'. Please supply the message using -m or -F". GIT_EDITOR=true is a
+ * no-op that exits 0, so git keeps the default (replayed) message. One helper for
+ * all rebase --continue call sites keeps behavior consistent.
+ */
+export async function continueRebase(git: SimpleGit): Promise<void> {
+  process.env.GIT_EDITOR = 'true';
+  await git.rebase(['--continue']);
+}
 
 export async function getConflictedFiles(git: SimpleGit): Promise<string[]> {
   const status = await git.status();
@@ -195,11 +209,18 @@ export async function markConflictsResolved(git: SimpleGit, files: string[]): Pr
   }
 }
 
+/**
+ * Complete an in-progress merge or rebase after conflicts were resolved.
+ * WHY this exists: After resolveConflicts() we've staged the resolution; we must either
+ * `rebase --continue` (rebase) or `commit` (merge). Using the wrong one leaves .git/rebase-merge
+ * behind and breaks the next push retry.
+ */
 export async function completeMerge(git: SimpleGit, message: string): Promise<{ success: boolean; error?: string }> {
   debug('Completing merge commit');
   try {
-    // Check if we're in a rebase or merge. Use repo root so path is absolute (revparse --git-dir
-    // can return ".git", and existsSync(join(".git", "rebase-merge")) would use process.cwd(), not the repo).
+    // WHY absolute path: revparse --git-dir returns ".git" (relative). existsSync(join(".git", "rebase-merge"))
+    // is resolved against process.cwd(), not the workdir (e.g. ~/.prr/work/<hash>). We'd never see
+    // rebase-merge, run commit() during a rebase, and leave rebase-merge behind.
     const { existsSync } = await import('fs');
     const { join } = await import('path');
     const root = await git.revparse(['--show-toplevel']).catch(() => null);
@@ -208,7 +229,7 @@ export async function completeMerge(git: SimpleGit, message: string): Promise<{ 
 
     if (inRebase) {
       debug('In rebase - continuing rebase');
-      await git.rebase(['--continue']);
+      await continueRebase(git);
     } else {
       debug('In merge - committing');
       await git.commit(message);

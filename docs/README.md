@@ -43,6 +43,12 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 ### 📉 Audit Improvements
 Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANGELOG](../CHANGELOG.md) under "Audit improvements" and "Output.log audit" headings.
 
+**Output.log audit follow-up (2026-02)** — rebase detection, push retry, non-interactive rebase:
+- **Rebase detection**: `completeMerge` and the pull conflict loop use `--show-toplevel` to get the repo root so `.git/rebase-merge` is checked with an absolute path. **WHY**: Relative `.git` was resolved against process cwd, not the PRR workdir, so we often ran `commit` during a rebase and left `.git/rebase-merge` behind.
+- **Push retry cleanup**: On failed fetch+rebase after push rejection, we try `rebase --abort` first, then `cleanupGitState` only if abort fails. **WHY**: Abort keeps commits; full cleanup is for stale state so the next run doesn’t hit "rebase-merge directory already exists".
+- **Non-interactive rebase continue**: All `rebase --continue` calls go through `continueRebase(git)` in `git-merge.ts`, which sets `GIT_EDITOR=true` before running rebase. **WHY**: In headless/workdir there’s no TTY; the configured editor fails ("Standard input is not a terminal" / "problem with the editor 'editor'"). One helper keeps behavior consistent.
+- **Dead code**: Removed unused `src/git/clone.ts`; clone/merge logic lives in `git-clone-core`, `git-merge`, and `git-lock-files` (see CHANGELOG "Fixed — Rebase detection, push retry cleanup").
+
 **Output.log audit (2026-02)** — model and prompt behavior:
 - **Model rotation & skip list**: Default llm-api/elizacloud lists ordered by fix success; models that 500/timeout or have 0% fix rate are in `ELIZACLOUD_SKIP_MODELS` and never selected. **WHY**: Reduces wasted rotation slots and improves throughput.
 - **File injection**: Inject files by issue count (most first) and tie injection budget to model context cap. **WHY**: Better S/R success when cap is tight; avoids overshooting small-context or underusing large-context models.
@@ -52,9 +58,14 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 - **504 retries**: Two retries with 10s/20s backoff. **WHY**: Transient gateways get a chance to recover.
 - **AAR exhausted list**: List `path:line` for all exhausted issues in the After-Action Report. **WHY**: Makes human follow-up actionable.
 
+**Prompts.log audit (2026-02)** — conflict prompt size and large-file embedding:
+- **Skip file injection for conflict prompts**: In `injectFileContents` (llm-api), prompts starting with `MERGE CONFLICT RESOLUTION` are returned unchanged (no file injection). **WHY**: The conflict prompt builder already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), causing 140k+ char prompts and 504s.
+- **Chunked embed for large conflicted files**: For files over 30k chars with conflict markers, only conflict sections (with 7 lines context) are embedded; section headers show the actual line range; instructions tell the LLM to use the plain file path in `<change path="...">`. **WHY**: Full-file embed doubled prompt size and caused 504s; sections are enough for correct search/replace blocks.
+- **Conflict model fallback and context cap**: When `getCurrentModel()` is undefined (e.g. setup phase), Attempt 2 falls back to `DEFAULT_ELIZACLOUD_MODEL` for ElizaCloud; "file too large" uses the effective model’s context limit. **WHY**: Avoids weak default (qwen-3-14b) that may 504; correct limit prevents wrongly skipping files that fit the actual model’s window.
+
 **Earlier audit items**: Dismissal-comment pre-check radius, no-op search/replace skip, lesson caps, dedup threshold, commit wording, think-tag stripping, verifier rejection cap, no-verified-progress exit — see CHANGELOG for full list and WHYs.
 
-**Read this if**: You want to know why we reorder models, skip certain models, inject files by issue count, escalate to full-file rewrite, or list exhausted issues in the AAR.
+**Read this if**: You want to know why we reorder models, skip certain models, inject files by issue count, escalate to full-file rewrite, skip injection for conflict prompts, or embed only conflict sections for large files.
 
 ---
 

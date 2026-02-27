@@ -543,9 +543,9 @@ export class LLMClient {
         elizaAcquired = true;
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
-      const max504Retries = this.provider === 'elizacloud' ? 1 : 0;
+      const max504Retries = this.provider === 'elizacloud' ? 2 : 0;
       const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
-      const backoff504Ms = 10_000;
+      const backoff504Ms = this.provider === 'elizacloud' ? [10_000, 20_000] : [10_000];
       // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
       let lastErr: unknown;
       for (let attempt = 0; attempt <= max429Retries; attempt++) {
@@ -563,12 +563,13 @@ export class LLMClient {
               }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
               if (attempt504 < max504Retries && (isServerError(e504) || timeoutMsg)) {
+                const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
                 debug('Server error or request timeout, retrying', {
                   attempt: attempt504 + 1,
                   maxRetries: max504Retries,
-                  delayMs: backoff504Ms,
+                  delayMs,
                 });
-                await new Promise(r => setTimeout(r, backoff504Ms));
+                await new Promise(r => setTimeout(r, delayMs));
               } else {
                 throw e504;
               }
@@ -2058,7 +2059,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
   async resolveConflict(
     filePath: string,
     conflictedContent: string,
-    baseBranch: string
+    baseBranch: string,
+    options?: { model?: string }
   ): Promise<{ resolved: boolean; content: string; explanation: string }> {
     // Check if file is too large for reliable conflict resolution
     // WHY: Files >50KB cause token limit issues and response truncation
@@ -2104,9 +2106,9 @@ RESOLVED:
 <the complete resolved file content with no conflict markers>
 \`\`\``;
 
-    debug('Resolving conflict via LLM API', { filePath, contentLength: conflictedContent.length });
-    
-    const response = await this.complete(prompt);
+    debug('Resolving conflict via LLM API', { filePath, contentLength: conflictedContent.length, model: options?.model });
+    // Use caller-provided model when given (e.g. same as attempt 1) so fallback doesn't use weak default (qwen-3-14b) that may 504.
+    const response = await this.complete(prompt, undefined, options?.model ? { model: options.model } : undefined);
     const content = response.content;
     
     // Parse the response with better error reporting

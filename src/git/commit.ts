@@ -2,6 +2,7 @@ import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
 import { buildCommitMessage } from './git-commit-message.js';
+import { continueRebase, cleanupGitState } from './git-merge.js';
 
 export interface CommitResult {
   hash: string;
@@ -294,9 +295,8 @@ export async function pushWithRetry(
               // Conflicts resolved - stage files and continue rebase
               debug('Conflicts resolved by handler, continuing rebase');
               await git.add('.');
-              
               try {
-                await git.rebase(['--continue']);
+                await continueRebase(git);
                 debug('Rebase continued successfully');
                 // Loop continues to retry push
                 continue;
@@ -317,21 +317,23 @@ export async function pushWithRetry(
           }
         }
         
-        // Handler didn't resolve or no handler - abort rebase
+        // WHY try abort first: rebase --abort restores pre-rebase state with all commits intact.
+        // cleanupGitState does reset --hard + clean -fd (correct for stuck state but destructive).
+        // If abort fails (e.g. stale/corrupt rebase-merge dir), full cleanup unblocks the next run.
         try {
           await git.rebase(['--abort']);
         } catch {
-          // Ignore abort errors
+          await cleanupGitState(git);
         }
         
         throw new Error(`Push rejected and rebase has conflicts in: ${conflictedFiles.join(', ')}. Manual resolution needed.\nOriginal: ${result.error}`);
       }
       
-      // Non-conflict rebase failure - abort and throw
+      // Same as above: abort first so commits are preserved; full cleanup only when abort fails.
       try {
         await git.rebase(['--abort']);
       } catch {
-        // Ignore abort errors
+        await cleanupGitState(git);
       }
       
       throw new Error(`Push rejected and sync failed: ${syncMsg}\nOriginal: ${result.error}`);

@@ -19,7 +19,7 @@ import type { Runner } from '../runners/types.js';
 import chalk from 'chalk';
 import { debug, debugStep, startTimer, endTimer } from '../logger.js';
 import { formatNumber } from '../ui/reporter.js';
-import { cloneOrUpdate, checkForConflicts, pullLatest, abortMerge, completeMerge, cleanupGitState } from '../git/git-clone-index.js';
+import { cloneOrUpdate, checkForConflicts, pullLatest, abortMerge, completeMerge, cleanupGitState, continueRebase } from '../git/git-clone-index.js';
 import { scanCommittedFixes } from '../git/git-commit-index.js';
 
 /**
@@ -185,8 +185,9 @@ export async function checkAndSyncWithRemote(
           const conflictedFiles = status.conflicted || [];
           
           if (conflictedFiles.length === 0) {
-            // No more conflicts — check if rebase is still in progress
-            // (it might have auto-continued to completion)
+            // No more conflicts — check if rebase is still in progress (might have auto-continued).
+            // WHY --show-toplevel: same as completeMerge — relative .git would be resolved against
+            // process.cwd(), not workdir, so we'd mis-detect and break the rebase loop.
             const { existsSync: fsExists } = await import('fs');
             const { join: pathJoin } = await import('path');
             const root = await git.revparse(['--show-toplevel']).catch(() => null);
@@ -195,7 +196,7 @@ export async function checkAndSyncWithRemote(
             if (!inRebase) break;
             // Rebase in progress but no conflicts — continue it
             try {
-              await git.rebase(['--continue']);
+              await continueRebase(git);
             } catch {
               break;
             }

@@ -56,7 +56,12 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 ### Git Integration
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
 - **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
+- **Rebase vs merge detection**: When finishing after conflict resolution, we detect rebase (`.git/rebase-merge`) using the repo’s absolute path so the right command runs (`rebase --continue` vs `commit`). *Why*: PRR runs in a workdir that’s often not the process cwd; a relative `.git` path would miss `rebase-merge` and wrongly run `commit` during a rebase, leaving a stuck state.
+- **Push retry cleanup**: If the post-rejection rebase fails (e.g. conflicts or "rebase-merge directory already exists"), we try `rebase --abort` first, then fall back to full git cleanup only if abort fails. *Why*: Abort restores commits; full cleanup is for stuck/corrupt state so the next run isn’t blocked.
+- **Non-interactive rebase continue**: All `rebase --continue` paths use `continueRebase(git)`, which sets `GIT_EDITOR=true` so git never opens an editor. *Why*: In headless/workdir runs there’s no TTY; the configured editor would fail with "Standard input is not a terminal" or "problem with the editor 'editor'". One helper keeps behavior consistent.
 - **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
+- **Conflict prompt injection skip**: File-content injection is skipped for conflict-resolution prompts. *Why*: The conflict prompt already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), blow prompt size, and cause 504s.
+- **Large conflicted files (chunked embed)**: For files over ~30k chars with conflicts, only the conflict sections (with context) are embedded in the prompt, not the full file. *Why*: Full-file embed doubles prompt size and causes 504s; sections are enough for correct `<search>`/`<replace>` output.
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")

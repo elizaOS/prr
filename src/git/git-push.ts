@@ -30,7 +30,7 @@
 import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
-import { cleanupGitState } from './git-merge.js';
+import { cleanupGitState, continueRebase } from './git-merge.js';
 
 export interface PushResult {
   success: boolean;
@@ -240,6 +240,10 @@ export interface PushWithRetryResult {
  * NEW: onConflict callback allows caller to resolve conflicts (e.g., with LLM).
  * If provided and conflicts occur, calls callback. If callback returns true (resolved),
  * continues the rebase and retries push.
+ *
+ * On rebase failure we try rebase --abort first, then cleanupGitState only if abort fails.
+ * WHY: Abort preserves commits; full cleanup is for stale/corrupt state so the next run
+ * doesn't hit "rebase-merge directory already exists".
  */
 export async function pushWithRetry(
   git: SimpleGit, 
@@ -307,9 +311,8 @@ export async function pushWithRetry(
               // Conflicts resolved - stage files and continue rebase
               debug('Conflicts resolved by handler, continuing rebase');
               await git.add('.');
-              
               try {
-                await git.rebase(['--continue']);
+                await continueRebase(git);
                 debug('Rebase continued successfully');
                 // Loop continues to retry push
                 continue;
@@ -330,8 +333,9 @@ export async function pushWithRetry(
           }
         }
         
-        // Handler didn't resolve or no handler — abort rebase to restore pre-rebase state (commits intact).
-        // If abort fails (stale rebase-merge dir), do full cleanup so next run isn't blocked.
+        // WHY try abort first: rebase --abort restores pre-rebase state with all commits intact.
+        // cleanupGitState does reset --hard + clean -fd (correct for stuck state but destructive).
+        // If abort fails (e.g. stale/corrupt rebase-merge dir), full cleanup unblocks the next run.
         try {
           await git.rebase(['--abort']);
         } catch {
@@ -340,7 +344,7 @@ export async function pushWithRetry(
         throw new Error(`Push rejected and rebase has conflicts in: ${conflictedFiles.join(', ')}. Manual resolution needed.\nOriginal: ${result.error}`);
       }
 
-      // Non-conflict rebase failure (e.g. "rebase-merge directory already exists") — abort, or full cleanup if stale.
+      // Same as above: abort first so commits are preserved; full cleanup only when abort fails.
       try {
         await git.rebase(['--abort']);
       } catch {
