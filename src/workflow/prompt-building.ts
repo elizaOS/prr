@@ -113,6 +113,8 @@ export function buildAndDisplayFixPrompt(
     MAX_FIX_PROMPT_CHARS;
 
   // Cap prompt size: reduce batch until under limit so file injection doesn't push total over gateway limit.
+  // WHY proportional: Halving (50→25→12→6) wasted iterations when prompt was only slightly over cap.
+  // nextMax = floor(currentMax * cap / promptLength) converges in 1–2 steps; we also enforce at least -1 issue.
   let prompt: string;
   let detailedSummary: string;
   let lessonsIncluded: number;
@@ -132,7 +134,11 @@ export function buildAndDisplayFixPrompt(
       }
       break;
     }
-    currentMax = Math.max(MIN_ISSUES_PER_PROMPT, Math.floor(currentMax / 2));
+    const nextMax = Math.max(
+      MIN_ISSUES_PER_PROMPT,
+      Math.floor(currentMax * effectiveCap / result.prompt.length)
+    );
+    currentMax = Math.max(1, Math.min(nextMax, currentMax - 1)); // ensure we actually reduce but never go below 1
     debug('Fix prompt over cap, reducing batch', { nextMax: currentMax, promptLength: result.prompt.length, cap: effectiveCap });
   }
 

@@ -40,10 +40,10 @@ function sanitizeToolMarkupInReplacement(text: string): string {
   return out.trim();
 }
 
-/** Max retries for 504/gateway timeout only. Do not retry other 5xx or 429. */
-const MAX_504_RETRIES = 1;
-/** Backoff in ms before retry. One retry keeps 504 burn to ~5 min instead of ~10 min when gateway is down. */
-const BACKOFF_MS = [10_000];
+/** Max retries for 504/gateway timeout only. Do not retry other 5xx or 429. WHY: Single retry was often insufficient for transient gateways; two retries with staggered backoff give the gateway time to recover without excessive delay. */
+const MAX_504_RETRIES = 2;
+/** Backoff in ms before each retry (attempt 0 → 10s, attempt 1 → 20s). */
+const BACKOFF_MS = [10_000, 20_000];
 /** After this many consecutive 504/timeouts, pause before next attempt so gateway can recover. */
 const CONSECUTIVE_504_COOLDOWN_THRESHOLD = 3;
 /** Cooldown duration in ms when threshold hit. */
@@ -306,15 +306,29 @@ Working directory: ${workdir}`;
     // Parse file paths mentioned in the prompt (e.g. "File: path/to/file.ts:123")
     // and append the current file contents. This is the #1 fix for search/replace
     // failures: the LLM can see exactly what's in the file instead of guessing.
-    let enrichedPrompt = this.injectFileContents(workdir, prompt);
+    const model = options?.model || (this.provider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : DEFAULT_OPENAI_MODEL);
+    const baseCap =
+      this.provider === 'elizacloud'
+        ? getMaxFixPromptCharsForModel('elizacloud', model)
+        : MAX_FIX_PROMPT_CHARS;
+    const maxEnrichedChars = baseCap * 2.5;
+    const { enrichedPrompt: injectedPrompt, injectedPaths } = this.injectFileContents(workdir, prompt, maxEnrichedChars);
+    let enrichedPrompt = injectedPrompt;
 
-    // Escalate to full-file-rewrite for files with repeated search/replace failures.
-    // WHY: After 2+ failures, the search/replace approach isn't working for this file.
-    // Asking the LLM to output the complete file avoids the matching problem entirely.
-    const rewriteFiles = this.getEscalatedFiles(workdir, prompt);
+    // Escalate to full-file-rewrite for files with repeated S/R failures or that weren't injected
+    // (so the LLM has no file content to match). Asking for the complete file avoids matching failures.
+    // WHY original prompt: getEscalatedFiles uses a regex for "File:/FILE:/Issue N: path". Enriched prompt
+    // contains injected sections like "### path (N lines)"; scanning that could add false path matches.
+    const rewriteFiles = this.getEscalatedFiles(workdir, prompt, injectedPaths);
     if (rewriteFiles.length > 0) {
       const rewriteInstructions = rewriteFiles
-        .map(f => `- ${f}: Use <file path="${f}"> to output the COMPLETE fixed file (search/replace has failed ${this.searchReplaceFailures.get(f)} times)`)
+        .map(f => {
+          const failures = this.searchReplaceFailures.get(f) ?? 0;
+          const reason = injectedPaths.includes(f)
+            ? `search/replace has failed ${failures} times`
+            : 'file content was not in prompt — use full file output';
+          return `- ${f}: Use <file path="${f}"> to output the COMPLETE fixed file (${reason})`;
+        })
         .join('\n');
       enrichedPrompt += `\n\n⚠ IMPORTANT — FULL FILE REWRITE REQUIRED for these files:\n${rewriteInstructions}\n\nFor these files ONLY, instead of <change><search>...</search><replace>...</replace></change>, output the complete file using:\n<file path="the/file.ts">\ncomplete file contents here\n</file>\n\nFor all other files, continue using <change> search/replace blocks as normal.`;
       debug('Escalated to full-file rewrite', { files: rewriteFiles });
@@ -322,14 +336,8 @@ Working directory: ${workdir}`;
 
     debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
 
-    const model = options?.model || (this.provider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : DEFAULT_OPENAI_MODEL);
-    const baseCap =
-      this.provider === 'elizacloud'
-        ? getMaxFixPromptCharsForModel('elizacloud', model)
-        : MAX_FIX_PROMPT_CHARS;
-    const MAX_ENRICHED_PROMPT_CHARS = baseCap * 2.5;
-    if (enrichedPrompt.length > MAX_ENRICHED_PROMPT_CHARS) {
-      throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${MAX_ENRICHED_PROMPT_CHARS.toLocaleString()} for ${model}). Reduce batch size or file count.`);
+    if (enrichedPrompt.length > maxEnrichedChars) {
+      throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${maxEnrichedChars.toLocaleString()} for ${model}). Reduce batch size or file count.`);
     }
 
     // Full-file rewrite prompts are larger; use a longer timeout so the request can complete.
@@ -554,45 +562,57 @@ Working directory: ${workdir}`;
 
   /**
    * Inject actual file contents from disk into the prompt.
-   * 
+   *
    * Parses file paths mentioned in the prompt and appends a section with the
-   * current on-disk content of each unique file. This lets the LLM copy exact
-   * search text from real file content instead of guessing from stale snippets.
-   * 
+   * current on-disk content of each unique file. Files are injected in order
+   * of how many issues target them (most issues first) so the injection cap
+   * is filled with the files most likely to need search/replace patches.
+   * WHY priority by issue count: When the cap is tight, injecting the most-referenced
+   * files first improves S/R success. WHY dynamic budget: maxTotalEnrichedChars ties
+   * injection to the model's context cap so we don't overshoot small-context or
+   * underuse large-context models (was fixed 200k).
    * Limits: files > 200KB or > 5000 lines are skipped, max 10 files injected,
    * and total injected content capped so base + injection stays under gateway limits.
    */
-  private injectFileContents(workdir: string, prompt: string): string {
+  private injectFileContents(workdir: string, prompt: string, maxTotalEnrichedChars?: number): { enrichedPrompt: string; injectedPaths: string[] } {
     const MAX_FILE_SIZE = 200_000;
     const MAX_LINES = 5_000;
     const MAX_FILES = 10;
-    /** Cap total prompt (base + injection) at 200k to avoid gateway 500s. Audit: 122k base + 284k injection → 407k → claude-3-opus 500. */
-    const TARGET_MAX_PROMPT_CHARS = 200_000;
-    /** WHY floor: When base prompt > 200k, (200k - base) would be 0 and no files would be injected; the model would have no file content to match. Floor keeps 1–2 key files. */
+    /** Default cap when no model context (e.g. non-llm-api runner). Audit: 122k base + 284k injection → 407k → 500. */
+    const DEFAULT_MAX_ENRICHED_CHARS = 200_000;
+    /** WHY floor: When base prompt is large, (cap - base) would be 0 and no files would be injected; the model would have no file content to match. Floor keeps 1–2 key files. */
     const MIN_INJECTION_CHARS = 50_000;
-    const maxTotalInjectionChars = Math.max(MIN_INJECTION_CHARS, TARGET_MAX_PROMPT_CHARS - prompt.length);
-    
+    const cap = maxTotalEnrichedChars ?? DEFAULT_MAX_ENRICHED_CHARS;
+    const maxTotalInjectionChars = Math.max(MIN_INJECTION_CHARS, cap - prompt.length);
+
     // Extract file paths from prompt patterns like:
     //   "File: path/to/file.ts:123"
-    //   "### Issue 1: path/to/file.ts:42"  
+    //   "### Issue 1: path/to/file.ts:42"
     //   "FILE: path/to/file.ts"
     const filePathPattern = /(?:File|FILE|Issue \d+):\s*([^\s:]+\.[a-zA-Z]+)/g;
-    const seenPaths = new Set<string>();
-    const fileSections: string[] = [];
-    const injectedPaths: string[] = [];
-    let totalInjectedChars = 0;
-    
+    const pathCounts = new Map<string, number>();
     let match;
     while ((match = filePathPattern.exec(prompt)) !== null) {
       const filePath = match[1];
-      if (seenPaths.has(filePath)) continue;
-      seenPaths.add(filePath);
-      if (seenPaths.size > MAX_FILES) break;
+      pathCounts.set(filePath, (pathCounts.get(filePath) ?? 0) + 1);
+    }
+
+    // Inject files with the most issues first so the cap is used for files most likely to need search/replace.
+    const sortedPaths = [...pathCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([path]) => path);
+
+    const fileSections: string[] = [];
+    const injectedPaths: string[] = [];
+    let totalInjectedChars = 0;
+
+    for (const filePath of sortedPaths) {
+      if (injectedPaths.length >= MAX_FILES) break;
       if (totalInjectedChars >= maxTotalInjectionChars) break;
-      
+
       const { safe, fullPath } = this.isPathSafe(workdir, filePath);
       if (!safe || !existsSync(fullPath)) continue;
-      
+
       try {
         const content = readFileSync(fullPath, 'utf-8');
         if (content.length > MAX_FILE_SIZE) {
@@ -604,7 +624,7 @@ Working directory: ${workdir}`;
           debug('Skipping file injection - too many lines', { filePath, lineCount });
           continue;
         }
-        
+
         // Number each line so the LLM can orient itself
         const numbered = content.split('\n')
           .map((line, i) => `${String(i + 1).padStart(4)} | ${line}`)
@@ -627,8 +647,8 @@ Working directory: ${workdir}`;
         debug('Failed to read file for injection', { filePath });
       }
     }
-    
-    if (fileSections.length === 0) return prompt;
+
+    if (fileSections.length === 0) return { enrichedPrompt: prompt, injectedPaths: [] };
 
     if (prompt.length > 100_000) {
       debug('Large base prompt — injection capped to keep total under 200k; consider smaller batch next run', {
@@ -642,26 +662,41 @@ Working directory: ${workdir}`;
       fileCount: fileSections.length,
       files: injectedPaths,
       totalInjectedChars,
+      order: 'by issue count (most first)',
     });
-    
-    return prompt + `\n\n---\n\n## ACTUAL FILE CONTENTS (current on-disk state)\n\nIMPORTANT: When writing <search> blocks, copy text EXACTLY from these files — they reflect the current state of the code, which may differ from the review comment's snippet.\n\n${fileSections.join('\n\n')}`;
+
+    const enrichedPrompt = prompt + `\n\n---\n\n## ACTUAL FILE CONTENTS (current on-disk state)\n\nIMPORTANT: When writing <search> blocks, copy text EXACTLY from these files — they reflect the current state of the code, which may differ from the review comment's snippet.\n\n${fileSections.join('\n\n')}`;
+    return { enrichedPrompt, injectedPaths };
   }
 
   /**
-   * Return file paths mentioned in the prompt that have hit the failure threshold.
-   * These files should use full-file rewrite mode instead of search/replace.
+   * Return file paths that should use full-file rewrite instead of search/replace:
+   * 1. Paths that have hit the failure threshold (repeated S/R failures).
+   * 2. Paths mentioned in the prompt but not injected (LLM never saw file content — S/R would likely fail).
+   * WHY both: When injection cap is exhausted, some files are never in the prompt; asking for full-file
+   * output for those avoids S/R matching failures. Caller must pass the original prompt (not enriched)
+   * so we only see issue references, not injected file content.
    */
-  private getEscalatedFiles(workdir: string, prompt: string): string[] {
-    if (this.searchReplaceFailures.size === 0) return [];
-
+  private getEscalatedFiles(workdir: string, prompt: string, injectedPaths: string[] = []): string[] {
     const filePathPattern = /(?:File|FILE|Issue \d+):\s*([^\s:]+\.[a-zA-Z]+)/g;
-    const escalated: string[] = [];
+    const pathsInPrompt = new Set<string>();
     let match;
     while ((match = filePathPattern.exec(prompt)) !== null) {
-      const filePath = match[1];
+      pathsInPrompt.add(match[1]);
+    }
+
+    const escalated: string[] = [];
+    const injectedSet = new Set(injectedPaths);
+
+    for (const filePath of pathsInPrompt) {
+      const notInjected = !injectedSet.has(filePath);
       const failures = this.searchReplaceFailures.get(filePath) || 0;
-      if (failures >= REWRITE_ESCALATION_THRESHOLD && !escalated.includes(filePath)) {
+      const overThreshold = failures >= REWRITE_ESCALATION_THRESHOLD;
+      if (notInjected || overThreshold) {
         escalated.push(filePath);
+        if (notInjected) {
+          debug('Escalating to full-file rewrite (file not injected — LLM has no content to match)', { filePath });
+        }
       }
     }
     return escalated;

@@ -41,12 +41,32 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 ---
 
 ### 📉 Audit Improvements
-Token-saving and exit-logic changes are documented in the [CHANGELOG](../CHANGELOG.md) under "Audit improvements" headings.
-- Dismissal-comment pre-check radius
-- No-op search/replace skip, lesson caps, dedup threshold, commit wording
-- Summary table of all audit-related changes
+Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANGELOG](../CHANGELOG.md) under "Audit improvements" and "Output.log audit" headings.
 
-**Read this if**: You want to know why we strip `<think>` tags, cap verifier retries, or exit after two "zero verified" push iterations.
+**Output.log audit (2026-02)** — model and prompt behavior:
+- **Model rotation & skip list**: Default llm-api/elizacloud lists ordered by fix success; models that 500/timeout or have 0% fix rate are in `ELIZACLOUD_SKIP_MODELS` and never selected. **WHY**: Reduces wasted rotation slots and improves throughput.
+- **File injection**: Inject files by issue count (most first) and tie injection budget to model context cap. **WHY**: Better S/R success when cap is tight; avoids overshooting small-context or underusing large-context models.
+- **Rewrite escalation**: Escalate to full-file rewrite for files not injected (LLM never saw content) or with repeated S/R failures. **WHY**: Avoids S/R matching failures when the model has no file content to copy from.
+- **Duplicate prompt hash**: Use issue IDs + lesson count instead of full prompt so same-issues-same-context skips to rotation. **WHY**: Full-prompt hash rarely matched; avoids redundant LLM calls.
+- **Proportional batch reduce**: Reduce batch by `cap/promptLength` instead of halving. **WHY**: Converges in 1–2 iterations instead of many.
+- **504 retries**: Two retries with 10s/20s backoff. **WHY**: Transient gateways get a chance to recover.
+- **AAR exhausted list**: List `path:line` for all exhausted issues in the After-Action Report. **WHY**: Makes human follow-up actionable.
+
+**Earlier audit items**: Dismissal-comment pre-check radius, no-op search/replace skip, lesson caps, dedup threshold, commit wording, think-tag stripping, verifier rejection cap, no-verified-progress exit — see CHANGELOG for full list and WHYs.
+
+**Read this if**: You want to know why we reorder models, skip certain models, inject files by issue count, escalate to full-file rewrite, or list exhausted issues in the AAR.
+
+---
+
+### 🤖 [Models Reference](MODELS.md)
+**Best for**: Choosing or configuring LLM models, updating context limits
+
+**Contains**:
+- Claude (Anthropic) current and legacy models, API IDs, context windows, pricing
+- OpenAI frontier and specialized models, Codex-optimized IDs
+- How PRR uses this (e.g. `model-context-limits.ts`)
+
+**Read this if**: You're adding a new model, tuning context limits, or checking provider IDs. Sourced from [Claude](https://platform.claude.com/docs/en/about-claude/models/overview) and [OpenAI](https://developers.openai.com/api/docs/models) docs.
 
 ---
 
@@ -94,6 +114,11 @@ docs/
 │   ├─ State management
 │   ├─ LLM usage points
 │   └─ Error recovery
+│
+├── MODELS.md                       ← Claude & OpenAI models reference
+│   ├─ Latest & legacy Claude
+│   ├─ OpenAI frontier & specialized
+│   └─ PRR context limits usage
 │
 └── ARCHITECTURE.md                 ← Technical deep-dive
     ├─ System architecture
@@ -302,6 +327,7 @@ PRR maintains state across interruptions:
 | Understand caching | [Architecture](ARCHITECTURE.md) | Performance Optimizations |
 | Configure PRR | [Quick Reference](QUICK_REFERENCE.md) | Configuration Tips |
 | Read success metrics | [Quick Reference](QUICK_REFERENCE.md) | Success Metrics |
+| Choose or add LLM models / context limits | [Models Reference](MODELS.md) | Claude & OpenAI IDs, context, PRR usage |
 
 ---
 
@@ -394,6 +420,7 @@ If you find errors or want to improve documentation:
 │   ├── 📄 README.md              ← This index file
 │   ├── 📄 QUICK_REFERENCE.md     ← Quick start & patterns
 │   ├── 📄 flowchart.md           ← Detailed flowcharts
+│   ├── 📄 MODELS.md              ← Claude & OpenAI models reference
 │   └── 📄 ARCHITECTURE.md        ← Technical deep-dive
 │
 ├── 📁 src/                       ← Source code

@@ -168,11 +168,12 @@ export async function executeFixIteration(
   const currentModel = getCurrentModel();
 
   // Detect identical prompt+model retries — skip straight to rotation.
-  // WHY: If the prompt is identical (same issues, same lessons, same model),
-  // running the fixer again will produce the same "no changes" result.
-  // A lightweight hash avoids storing the full prompt in memory.
+  // WHY issue IDs + lesson count: Full-prompt hash rarely matched (wording/formatting drift).
+  // Hashing sorted issue IDs and lessonsBeforeFix detects "same issues, same context" and
+  // avoids redundant LLM calls; we rotate to the next model instead of re-running the same call.
+  const sortedIds = unresolvedIssues.map(i => i.comment.id).sort().join(',');
   const promptKey = createHash('md5')
-    .update(`${runner.name}:${currentModel || ''}:${prompt}`)
+    .update(`${runner.name}:${currentModel || ''}:${sortedIds}:${lessonsBeforeFix}`)
     .digest('hex');
 
   if (promptKey === lastPromptKey) {

@@ -475,6 +475,16 @@ export async function printAfterActionReport(
     if (chronicInAar > 0) {
       console.log(chalk.cyan(`  ↳ ${formatNumber(chronicInAar)} chronic-failure (auto-dismissed to save tokens)`));
     }
+    // WHY list exhausted: Exhausted issues (verifier rejected fix/ALREADY_FIXED twice) were only summarized by count;
+    // listing path:line makes human follow-up actionable without digging through state.
+    const exhaustedList = dismissedIssues.filter(d => d.category === 'exhausted');
+    if (exhaustedList.length > 0) {
+      const exhaustedPreviews = exhaustedList.map(d => {
+        const comment = comments.find(c => c.id === d.commentId);
+        return comment ? `${comment.path}:${comment.line ?? '?'}` : d.commentId;
+      });
+      console.log(chalk.cyan(`  ↳ Exhausted (${formatNumber(exhaustedList.length)}) — need human follow-up: ${exhaustedPreviews.join(', ')}`));
+    }
     for (const d of dismissedIssues.slice(0, 10)) {
       const comment = comments.find(c => c.id === d.commentId);
       if (comment) {

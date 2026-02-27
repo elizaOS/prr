@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02) — Output.log audit: model rotation, injection, rewrite escalation, batch sizing, 504 retries, AAR
+
+**Model rotation reorder (llm-api / elizacloud)**
+- Default model lists in `src/runners/types.ts` are ordered by observed fix success (Claude first, then GPT). Models that 500/timeout or have 0% fix rate are in `ELIZACLOUD_SKIP_MODELS` in `src/models/rotation.ts` and are never selected (e.g. `gpt-4.1`, `claude-sonnet-4.5`, `gpt-5.1-codex-max`, `claude-3-opus`). `gpt-5.2-codex` was removed from the elizacloud rotation list so it is not selected then immediately skipped.
+- **WHY**: Audit showed some models at 0% success or repeated 500/timeouts still consumed rotation slots. Leading with best performers and skipping known-bad models reduces wasted calls and improves fix throughput.
+
+**File injection: priority by issue count and dynamic budget**
+- `injectFileContents` in `src/runners/llm-api.ts` now injects files in order of how many issues reference them (most first), so the injection cap is used for files most likely to need search/replace. Total injection budget is derived from the model’s context cap (`baseCap * 2.5`) instead of a fixed 200k; caller passes `maxTotalEnrichedChars` so large-context models get more injection headroom.
+- **WHY**: Injecting files with the most issues first improves search/replace success when the cap is tight. A fixed 200k budget ignored model limits; tying budget to the model’s cap avoids overshooting on small-context models and underusing on large ones.
+
+**Rewrite escalation for non-injected files**
+- `getEscalatedFiles` now escalates (1) files with repeated S/R failures (existing), and (2) files mentioned in the prompt but not injected (LLM never saw file content — S/R would likely fail). Escalation reason text distinguishes “search/replace has failed N times” vs “file content was not in prompt — use full file output”. Escalation scans the **original** prompt only, not the enriched prompt, to avoid false positives from injected content.
+- **WHY**: When the injection cap is exhausted, some files are never injected; asking for full-file output for those avoids search/replace matching failures. Scanning the original prompt keeps escalation tied to issue references, not injected file text.
+
+**Duplicate prompt detection (issue IDs + lesson count)**
+- The “same prompt+model” hash in `src/workflow/execute-fix-iteration.ts` now uses `runner:model:sortedIssueIds:lessonsBeforeFix` instead of the full prompt string. When the hash matches the previous iteration, we skip the fixer and go straight to rotation.
+- **WHY**: Full-prompt hashes rarely matched (wording/formatting drift). Hashing issue IDs and lesson count detects “same issues, same context” even when prompt text differs slightly, so we avoid redundant LLM calls and rotate sooner.
+
+**Proportional batch size reduction**
+- In `src/workflow/prompt-building.ts`, when the prompt exceeds the cap, batch size is reduced with `floor(currentMax * effectiveCap / promptLength)` (with a minimum of 1 and at least one issue fewer) instead of halving. Converges in one or two iterations instead of many (e.g. 50→25→12→6).
+- **WHY**: Halving wasted iterations when the prompt was only slightly over cap. Proportional reduction gets under the cap faster and keeps batch size as large as the context allows.
+
+**504/gateway timeout: two retries with backoff**
+- `MAX_504_RETRIES` increased from 1 to 2; `BACKOFF_MS` is `[10_000, 20_000]` so the first retry waits 10s and the second 20s.
+- **WHY**: Single retry was often insufficient for transient gateway issues; two retries with staggered backoff give the gateway time to recover without excessive delay.
+
+**Exhausted issues listed in After-Action Report**
+- The “Dismissed” section in `src/ui/reporter.ts` now explicitly lists all issues with category `exhausted`, showing `path:line` for each, so operators know exactly which issues need human follow-up.
+- **WHY**: Exhausted issues (verifier rejected fix/ALREADY_FIXED twice) were only summarized by count; listing them makes follow-up actionable without digging through state.
+
+**Documentation**
+- `docs/MODELS.md` documents rotation order and skip list (where to add models that 500/timeout or have 0% fix rate) and notes that per-run performance is not yet persisted across PRs.
+
+---
+
 ### Added (2026-02) — Prompts.log audit: persisted dedup cache, Note prefix, wider snippets, rotation by success
 
 **Persisted LLM dedup cache**

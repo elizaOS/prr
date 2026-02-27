@@ -44,6 +44,9 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
+- **Rotation order & skip list (llm-api/elizacloud)**: Default lists ordered by observed fix success (Claude first); models that 500/timeout or have 0% fix rate are in a skip list and never selected. *Why*: Audit showed 0%-success and error-prone models wasting rotation slots; leading with best performers improves throughput.
+- **Duplicate prompt skip**: When the same set of issue IDs and lesson count is sent to the same model again, we skip the fixer and rotate to the next model. *Why*: Full-prompt hashes rarely matched; hashing issue IDs + lesson count detects same-issues-same-context and avoids redundant LLM calls.
+- **Proportional batch reduce**: When the fix prompt exceeds the context cap, batch size is reduced proportionally (cap/promptLength) instead of halving. *Why*: Halving wasted iterations when only slightly over cap; proportional reduction converges in 1–2 steps.
 - **Rotation reset per push iteration**: At the start of each push cycle (after the first), the model index resets to the first model so each cycle gets a "best model first" attempt instead of continuing from where the previous cycle left off. *Why*: Later push iterations were reusing the last model from the previous cycle (often one that had just 500'd or timed out), wasting time.
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
@@ -72,6 +75,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Lesson caps for large batches**: When fixing 10+ issues at once, we cap global and per-file lessons so the prompt stays under ~100k chars. *Why*: Prevents gateway timeouts and prompt poisoning from oversized prompts.
 - **LLM dedup only for 3+ issues**: The LLM dedup step runs only for files with at least 3 remaining issues after heuristic dedup. *Why*: For 2-comment files, heuristic grouping is enough; skipping the LLM saves tokens with no meaningful loss.
 - **maxFixIterations 0 = unlimited**: `--max-fix-iterations 0` is treated as unlimited (not zero). *Why*: Without this, 0 meant zero iterations and the run did analysis-only with no fix attempts.
+- **File injection by issue count & dynamic budget**: Injected file contents are chosen by how many issues reference each file (most first); total injection budget is tied to the model’s context cap. *Why*: Puts the injection cap toward files most likely to need search/replace; avoids overshooting small-context or underusing large-context models.
+- **Rewrite escalation for non-injected files**: Files mentioned in the prompt but not injected (or with repeated S/R failures) are escalated to full-file rewrite. *Why*: When the model never saw file content, search/replace usually fails; asking for the full file avoids matching failures.
 
 ### Robustness
 - Hash-based work directories for efficient re-runs
@@ -84,6 +89,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **No-changes parsing**: When the fixer reports "no changes", the explanation is parsed from prose only; content inside `<change>`, `<newfile>`, and `<file>` blocks is ignored. *Why*: Prevents false positives from code or test fixtures that happen to contain phrases like "already fixed" or "no changes".
 - **Empty snippet handling**: When the judge or fix-verifier has no code snippet for an issue, we show an explicit placeholder instead of an empty block (e.g. "snippet unavailable — do NOT respond STALE"). *Why*: Empty blocks forced the model to guess; the placeholder steers toward YES-with-explanation when code isn't visible and avoids false STALE.
 - **Grouping rule (same method, different fix)**: Comment dedup does not group comments that target the same method but require different fixes (e.g. "add method" vs "change call site"). *Why*: Wrong merges cause one fix to address both or drop nuance; the rule reduces false groupings observed in audits.
+- **504/gateway timeout: two retries with backoff**: On 504 or request timeout, we retry up to twice with 10s then 20s delay. *Why*: Single retry was often insufficient for transient gateways; two retries give the gateway time to recover.
+- **AAR exhausted list**: The After-Action Report lists every exhausted issue (path:line) so operators know which need human follow-up. *Why*: Exhausted issues were only summarized by count; listing them makes follow-up actionable.
 
 ## Installation
 

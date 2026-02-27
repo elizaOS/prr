@@ -530,10 +530,18 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
   // 'gemini' intentionally omitted - uses Google's own model validation
 };
 
-/** Models to skip on ElizaCloud (500/timeout in practice). Audit: claude-3-opus 500'd on 4/5 calls including at 45k prompt. */
+/**
+ * Models to skip on ElizaCloud (500/timeout or 0% fix rate in practice).
+ * WHY: Audit showed these models either 500'd repeatedly, timed out, or had 0% fix rate;
+ * including them in the rotation list wastes slots. Add new IDs here when audits show
+ * repeated errors or zero success. See docs/MODELS.md for rotation/skip list docs.
+ */
 const ELIZACLOUD_SKIP_MODELS = new Set<string>([
   'openai/gpt-5.2-codex',
   'anthropic/claude-3-opus',
+  'openai/gpt-4.1',
+  'anthropic/claude-sonnet-4.5',
+  'openai/gpt-5.1-codex-max',
 ]);
 
 /**

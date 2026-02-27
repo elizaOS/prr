@@ -140,14 +140,12 @@ export interface Runner {
  *   claude-3-5-sonnet-20241022, claude-3-opus-20240229, claude-3-5-haiku-20241022
  */
 export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
-  // ElizaCloud: use API model IDs (owner/name). One key for Claude, GPT, Gemini, Qwen, etc.
+  // ElizaCloud: lead with best performers. WHY: Audit showed 0%-success and error-prone models
+  // wasting rotation slots; order by observed fix success and skip bad models (see rotation.ts ELIZACLOUD_SKIP_MODELS).
   'elizacloud': [
-    'openai/gpt-5.1-codex-max',           // GPT-5.1 Codex Max - purpose-built for agentic coding
-    'openai/gpt-5.2-codex',               // GPT-5.2-Codex - agentic coding
-    'anthropic/claude-opus-4.5',          // Claude Opus 4.5 - most capable
-    'anthropic/claude-sonnet-4.5',        // Claude Sonnet 4.5 - strong coding
-    'openai/gpt-4.1',                     // GPT-4.1 - flagship
-    'openai/gpt-5-mini',                  // GPT-5 mini - fast, cost-effective
+    'anthropic/claude-opus-4.5',
+    'anthropic/claude-3.5-sonnet',
+    'openai/gpt-5-mini',
   ],
   // Cursor: Uses short model names (from `cursor-agent models`)
   // WHY these names: Cursor has its own model aliases, not full API names.
@@ -207,15 +205,15 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'anthropic/claude-opus-4-5-20251101',
     'openai/gpt-4.1',
   ],
-  // LLM API (ElizaCloud): use API model IDs (owner/name). Same as elizacloud.
-  // When provider is native OpenAI or Anthropic, llm-api runner uses the lists below instead.
+  // LLM API (ElizaCloud): order by observed fix success (audit: Claude best, GPT-4o lower). WHY: Leading with
+  // best performers improves throughput; skip list in rotation.ts removes 500/timeout/0% models.
   'llm-api': [
-    'openai/gpt-4o',                      // GPT-4o - current flagship
-    'openai/gpt-4o-mini',                 // GPT-4o mini - fast, cost-effective
-    'anthropic/claude-3.7-sonnet',        // Claude 3.7 Sonnet - balanced coding
-    'anthropic/claude-3.5-sonnet',        // Claude 3.5 Sonnet - strong coding
-    // anthropic/claude-3-opus skipped on ElizaCloud (ELIZACLOUD_SKIP_MODELS) — 500s at 45k–407k prompt
-    // google/gemini-2.0-pro-exp removed: not in ElizaCloud model list (audit: wasted rotation slot)
+    'anthropic/claude-opus-4.5',          // Best fix rate in audits
+    'anthropic/claude-3.5-sonnet',        // Strong, reliable
+    'openai/gpt-4o',                      // Fallback
+    'openai/gpt-4o-mini',                // Fast/cheap fallback
+    'anthropic/claude-3.7-sonnet',       // Balanced
+    // anthropic/claude-3-opus, gpt-4.1, claude-sonnet-4.5, gpt-5.1-codex-max skipped via ELIZACLOUD_SKIP_MODELS
   ],
 };
 
