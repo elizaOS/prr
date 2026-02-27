@@ -826,6 +826,7 @@ export class LLMClient {
     'NO: TypeScript type \'NonNullable<T>\' at line 23 prevents null from being passed',
     'NO: Function already implements this at lines 67-70: try { ... } catch (error) { logger.error(error); }',
     'STALE: The processUser function mentioned in the comment no longer exists in this file; the entire module was refactored to use a different architecture',
+    // Review: ensures we return true for unresolved issues when parsing fails for robust handling.
     '',
     'Examples of BAD explanations (NEVER do this):',
     'NO: Fixed',
