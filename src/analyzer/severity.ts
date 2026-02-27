@@ -35,7 +35,16 @@ export type PriorityOrder =
  */
 export const DEFAULT_TRIAGE: IssueTriage = { importance: 3, ease: 3 };
 
-/** True when the issue has a usable code snippet for the fix prompt (audit: prefer these when capping batch size). */
+/**
+ * True when the issue has a usable code snippet for the fix prompt.
+ *
+ * WHY used as a tie-break: When the batch is capped by prompt size, the builder
+ * takes the first N issues from the sorted array. Issues with a valid snippet
+ * produce a "Current Code:" block in the prompt which is the fixer's primary
+ * reference for applying search/replace. Placing snippet-bearing issues first
+ * means that when we can only fit N issues, we prefer the ones where the fixer
+ * has actual code context rather than having to guess from the comment alone.
+ */
 function hasValidSnippet(issue: UnresolvedIssue): boolean {
   return !!(
     issue.codeSnippet &&

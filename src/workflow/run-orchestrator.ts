@@ -112,7 +112,16 @@ export async function executeRun(
   callbacks: RunCallbacks,
   state: RunState
 ): Promise<RunState> {
-  // Refs for final unresolved/comments; hoisted so catch can use them for AAR/remaining count on error.
+  // Refs hoisted ABOVE try/catch so the catch block can read the latest remaining-issues snapshot.
+  //
+  // WHY hoisted: These refs are also created inside the push-loop setup (line ~190) and
+  // updated on every exit path inside the loop. But if executeFixIteration throws (e.g.
+  // unhandled network error mid-iteration), execution jumps straight to catch — skipping
+  // the ref assignments. Without hoisting the catch always saw the initial [] and produced
+  // "Remaining: 0" and an empty AAR even when 20 issues were still open.
+  //
+  // The try block re-assigns .current on line ~190 to align them with the loop refs, so
+  // there's a single logical ref object shared between the loop and the catch.
   const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
   const finalCommentsRef = { current: state.finalComments };
   try {
