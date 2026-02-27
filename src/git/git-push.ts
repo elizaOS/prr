@@ -32,6 +32,12 @@ import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
 import { cleanupGitState, continueRebase } from './git-merge.js';
 
+/**
+ * Result of a git push operation.
+ * 
+ * NOTE: This is the canonical definition of PushResult used throughout the codebase.
+ * The duplicate definition in commit.ts is legacy/unused and should be removed.
+ */
 export interface PushResult {
   success: boolean;
   rejected?: boolean;
@@ -43,6 +49,9 @@ export interface PushResult {
 
 /**
  * Push changes to remote with timeout and signal handling.
+ * 
+ * NOTE: This is the canonical implementation of push() used throughout the codebase.
+ * The duplicate implementation in commit.ts is legacy/unused and should be removed.
  * 
  * WHY spawn instead of simple-git: simple-git's promises can't be cancelled,
  * and the underlying git process keeps running even after timeout. Using

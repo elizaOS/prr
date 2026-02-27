@@ -200,12 +200,7 @@ export function isModelAvailableForRunner(ctx: RotationContext, model: string): 
     }
     
     return false;
-  });// Review: designed for flexible model matching, accommodating provider prefixes.
-    }
-    
-    return false;
   });
-// Review: designed for flexible matching to accommodate model variations and user needs.
 }
 
 /**

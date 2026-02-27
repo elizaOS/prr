@@ -64,15 +64,16 @@ export function buildConflictResolutionPromptWithContent(
     '',
   ];
 
-  let charsUsed = 0;
-  const skipped: string[] = [];
+  let charsUsed = parts.join('\n').length + 1;
+  const oversized: string[] = [];
+  const unreadable: string[] = [];
 
   for (const file of conflictedFiles) {
     let content: string;
     try {
       content = readFileSync(join(workdir, file), 'utf-8');
     } catch {
-      skipped.push(file);
+      unreadable.push(file);
       continue;
     }
 
@@ -83,44 +84,58 @@ export function buildConflictResolutionPromptWithContent(
       const chunks = extractConflictChunks(content, 7);
       // Malformed conflict (no closing >>>>>>>) — embed full file so LLM can still attempt resolution.
       if (chunks.length === 0) {
-        parts.push(`--- FILE: ${file} ---`);
-        parts.push(content);
-        parts.push(`--- END: ${file} ---`);
-        parts.push('');
-        charsUsed += content.length;
+        const wrappedLength =
+          `--- FILE: ${file} ---\n${content}\n--- END: ${file} ---\n\n`.length;
+        if (charsUsed + wrappedLength > maxTotalChars) {
+          oversized.push(file);
+        } else {
+          parts.push(`--- FILE: ${file} ---`);
+          parts.push(content);
+          parts.push(`--- END: ${file} ---`);
+          parts.push('');
+          charsUsed += wrappedLength;
+        }
       } else {
         let sectionChars = 0;
         for (let i = 0; i < chunks.length; i++) {
           const chunk = chunks[i];
           const segment = chunk.fullContent;
-          if (charsUsed + sectionChars + segment.length > maxTotalChars) break;
           // WHY line range from context arrays: header should match what we actually embed (contextBefore + conflict + contextAfter), not just conflict marker lines.
           const embedStart = chunk.startLine - chunk.contextBefore.length + 1;
           const embedEnd = chunk.endLine + chunk.contextAfter.length + 1;
+          const sectionWrappedLength =
+            `--- FILE: ${file} (section ${i + 1}/${chunks.length}, lines ${embedStart}-${embedEnd}) ---\n${segment}\n--- END: ${file} section ${i + 1} ---\n\n`.length;
+          if (charsUsed + sectionChars + sectionWrappedLength > maxTotalChars) break;
           parts.push(`--- FILE: ${file} (section ${i + 1}/${chunks.length}, lines ${embedStart}-${embedEnd}) ---`);
           parts.push(segment);
           parts.push(`--- END: ${file} section ${i + 1} ---`);
           parts.push('');
-          sectionChars += segment.length;
+          sectionChars += sectionWrappedLength;
         }
         charsUsed += sectionChars;
-        if (sectionChars === 0) skipped.push(file);
+        if (sectionChars === 0) oversized.push(file);
       }
     } else {
-      if (charsUsed + content.length > maxTotalChars) {
-        skipped.push(file);
+      const wrappedLength =
+        `--- FILE: ${file} ---\n${content}\n--- END: ${file} ---\n\n`.length;
+      if (charsUsed + wrappedLength > maxTotalChars) {
+        oversized.push(file);
         continue;
       }
       parts.push(`--- FILE: ${file} ---`);
       parts.push(content);
       parts.push(`--- END: ${file} ---`);
       parts.push('');
-      charsUsed += content.length;
+      charsUsed += wrappedLength;
     }
   }
 
-  if (skipped.length > 0) {
-    parts.push(`Files too large for this model (resolve manually): ${skipped.join(', ')}`);
+  if (oversized.length > 0) {
+    parts.push(`Files too large for this model (resolve manually): ${oversized.join(', ')}`);
+    parts.push('');
+  }
+  if (unreadable.length > 0) {
+    parts.push(`Files unreadable from disk (resolve manually): ${unreadable.join(', ')}`);
     parts.push('');
   }
 

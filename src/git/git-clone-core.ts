@@ -39,15 +39,15 @@ export async function cloneOrUpdate(
   if (isExistingRepo) {
     git = simpleGit(workdir);
     
-    // Ensure token is in remote URL for authentication
-    // WHY: Old versions stripped the token, or workdir may have been created
-    // before we embedded tokens. Re-inject to ensure push works.
+    // Note: We no longer persist tokens in the remote URL to avoid credential leakage.
+    // Network operations (push/fetch) should use ephemeral auth (extraheader/credential helper).
     if (githubToken) {
-      await git.raw(['remote', 'set-url', 'origin', authUrl]);
-      debug('Ensured token is in remote URL', { 
+      // Ensure remote URL is clean (no embedded token) - strip any existing token
+      const cleanUrl = cloneUrl.replace(/https:\/\/[^@]+@/, 'https://');
+      await git.raw(['remote', 'set-url', 'origin', cleanUrl]);
+      debug('Ensured remote URL is clean (no persisted token)', { 
         hasToken: true, 
         tokenLength: githubToken.length,
-        urlContainsAt: authUrl.includes('@'),
       });
     } else {
       debug('No GitHub token provided - push may require manual auth');

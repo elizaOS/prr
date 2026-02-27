@@ -216,7 +216,6 @@ export async function executeFixIteration(
   setPhase(stateContext, 'fixing');
   startTimer('Run fixer');
   spinner.start(`Running ${runner.name} to fix issues...`);
-   spinner.stop();
    
    debug('Executing runner', { tool: runner.name, workdir, model: currentModel });
    const codexAddDirs = [...(options.codexAddDir ?? [])];

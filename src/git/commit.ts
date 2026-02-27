@@ -43,7 +43,7 @@ export async function squashCommit(
 /**
  * Result of a push attempt, indicating whether it was rejected due to being behind.
  */
-export interface PushResult {
+// Removed duplicate PushResult interface as it's defined in git-push.ts
   success: boolean;
   rejected?: boolean;  // True if push was rejected because remote has newer commits
   error?: string;
@@ -62,7 +62,7 @@ export interface PushResult {
  * Returns PushResult instead of throwing for rejected pushes, allowing caller
  * to handle pull-and-retry logic.
  */
-export async function push(git: SimpleGit, branch: string, force = false, githubToken?: string): Promise<PushResult> {
+// Removed duplicate push function as it's defined in git-push.tsgit: SimpleGit, branch: string, force = false, githubToken?: string): Promise<PushResult> {
   const PUSH_TIMEOUT_MS = 30_000; // 30 seconds (reduced from 60)
   const redactAuth = (text: string) => text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
   
