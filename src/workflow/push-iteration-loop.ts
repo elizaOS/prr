@@ -213,11 +213,11 @@ export async function executePushIteration(
   }
 
   // Initialize fix loop
-  // CLI: --max-fix-iterations 0 means "unlimited" (help text). WHY: Without coercing 0→Infinity,
-  // the loop would run zero iterations and the run would do analysis-only with no fix attempts.
-  const rawMax = options.maxFixIterations != null ? options.maxFixIterations : Infinity;
-  const maxFixIterations = rawMax === 0 ? Infinity : rawMax;
-  debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
+  // WHY effectiveMaxFixIterations: CLI documents default 0 as "unlimited". Raw 0 made fixIteration < 0
+  // always false so the loop ran zero iterations (analysis-only with no fix attempts); we map 0/null to Infinity.
+  const effectiveMaxFixIterations =
+    (options.maxFixIterations == null || options.maxFixIterations === 0) ? Infinity : options.maxFixIterations;
+  debug('Fix loop config', { pushIteration, maxFixIterations: options.maxFixIterations, effectiveMaxFixIterations, unresolvedCount: unresolvedIssues.length });
   // WHY: Paired with endTimer('Verify fixes') in fix-verification.ts so timing breakdown includes verification phase.
   startTimer('Verify fixes');
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
@@ -238,7 +238,7 @@ export async function executePushIteration(
   let exitDetails = '';
   let committedThisIteration = false;
 
-  while (fixIteration < maxFixIterations && !allFixed) {
+  while (fixIteration < effectiveMaxFixIterations && !allFixed) {
     fixIteration++;
     
     // Pre-iteration checks
@@ -418,11 +418,11 @@ export async function executePushIteration(
     }
   }
 
-  if (!allFixed && maxFixIterations !== Infinity) {
-    debug('Fix loop exit: max_iterations', { fixIteration, maxFixIterations, remaining: unresolvedIssues.length });
-    console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
+  if (!allFixed && effectiveMaxFixIterations !== Infinity) {
+    debug('Fix loop exit: max_iterations', { fixIteration, effectiveMaxFixIterations, remaining: unresolvedIssues.length });
+    console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(effectiveMaxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
     exitReason = 'max_iterations';
-    exitDetails = `Hit max fix iterations (${formatNumber(maxFixIterations)}) with ${formatNumber(unresolvedIssues.length)} issue(s) remaining`;
+    exitDetails = `Hit max fix iterations (${formatNumber(effectiveMaxFixIterations)}) with ${formatNumber(unresolvedIssues.length)} issue(s) remaining`;
     finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
     finalCommentsRef.current = [...comments];
   }
