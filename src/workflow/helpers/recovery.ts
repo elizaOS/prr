@@ -204,7 +204,14 @@ export async function trySingleIssueFix(
             } catch {
               try {
                 // File might be untracked (new) — remove from index and working tree
-                await git.raw(['rm', '-f', f]);
+                await git.raw(['rm', '-f', f]).catch(async (err) => {
+  try {
+    await git.reset(['HEAD', f]);
+    await git.checkout([f]);
+  } catch {
+    console.log(chalk.yellow(`    Warning: Could not reset ${f}: ${err.message}`));
+  }
+});
               } catch {
                 try {
                   await git.reset(['HEAD', f]);
@@ -414,7 +421,12 @@ export async function tryDirectLLMFix(
         continue;
       }
 
-      const fileContent = fs.readFileSync(filePath, 'utf-8');
+      const stat = fs.statSync(filePath);
+if (stat.size > MAX_PROMPT_FILE_BYTES) {
+  console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
+  continue;
+}
+const fileContent = fs.readFileSync(filePath, 'utf-8');
 
       // Skip files too large for direct LLM rewrite
       const MAX_FILE_CHARS = 100_000; // ~25K tokens
