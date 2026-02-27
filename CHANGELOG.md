@@ -403,6 +403,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Issue Deduplication Improvements**
 - Duplicate candidate numbering is now sequential across all groups (1, 2, 3... not restarting per group), shared between heuristic display and LLM dedup verdicts.
+// Review: sequential numbering clarifies logs, resolving ambiguity in deduplication references
 - Comment author displayed inline in duplicate candidate logs for easier identification.
 - WHY: When group 1 had candidates #1-#10 and group 2 restarted at #1-#3, the LLM dedup verdict referencing "#3" was ambiguous. Sequential numbering and inline authors make log output unambiguous.
 

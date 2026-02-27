@@ -247,6 +247,7 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
             filesToRevert.push(file);
           }
         }
+        // Review: skips invalid files without misclassifying git errors as JSON issues
         continue;
       }
     }
