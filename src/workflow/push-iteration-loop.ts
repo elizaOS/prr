@@ -218,7 +218,7 @@ export async function executePushIteration(
   const maxFixIterations = options.maxFixIterations != null ? options.maxFixIterations : Infinity;
   debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
   // Start verification timer here to keep paired with endTimer
-  Timer.startTimer('Verify fixes');
+  startTimer('Verify fixes');
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
 
@@ -264,7 +264,6 @@ export async function executePushIteration(
     // Snapshot current unresolved/comments so early exit or throw still has correct list for AAR and remaining count.
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
-
 
     // Execute fix iteration
     // WHY getRunner(): After tryRotation() updates this.runner via syncRotationContext,
@@ -422,7 +421,6 @@ export async function executePushIteration(
 
   // Reflect mid-loop commits so orchestrator and exit summary are accurate when COMMIT PHASE has nothing left to commit.
   committedThisIteration = alreadyCommitted.size > 0;
-
 
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
