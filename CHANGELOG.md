@@ -45,6 +45,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The commit message pattern for "duplicate" was changed from "remove duplicate code" to "consolidate duplicate logic" to avoid forbidden phrases that trigger fallback.
 - **WHY**: Some review bots flag the phrase "remove duplicate code"; the new wording satisfies the intent without triggering filters.
 
+### Added (2026-02) — Rotation reset, full-rewrite handling, batch reduce, injection cap, no-changes parsing
+
+**Rotation reset at push iteration start**
+- When `pushIteration > 1`, the workflow resets the current runner's model index to the first model before starting the fix loop (`resetCurrentModelToFirst` in rotation.ts; wired via `resetRotationToFirstModel` from resolver → run-orchestrator → push-iteration-loop).
+- **WHY**: Without this, push iteration 2 started with whatever model PI1 ended on. If that model had just 500'd or timed out, PI2 would retry it first and waste time. Resetting gives each push cycle a "best model first" attempt.
+
+**Full-file rewrite "no diff" handling**
+- Runner result includes `usedFullFileRewrite` when the fixer wrote files directly. When that path produces no git diff, the fix loop treats it as `full_rewrite_no_diff` and skips single-issue focus, going straight to rotation.
+- **WHY**: Full-file rewrite can exit with no diff (same content). Retrying with single-issue or same model is unlikely to help; rotating is more useful.
+
+**Large-prompt batch reduce (forceNextBatchSizeReduce)**
+- When fix prompt length exceeds 200k chars (error or no-changes path), state sets `forceNextBatchSizeReduce = true`. Next fix iteration uses effective consecutive ≥ 2 so the prompt builder immediately uses a smaller batch.
+- **WHY**: Very large prompts cause gateway 500s/timeouts. Reducing batch size on the next attempt keeps prompt size under control without burning rotation slots.
+
+**Injection cap with floor**
+- Total injected file content is capped so base + injection ≤ 200k chars, with a floor of 50k injection so we still inject key files when the base prompt is large.
+- **WHY**: Fixed 200k injection allowed base + injection to exceed limits. Capping by `200k - base` keeps total under 200k; the floor avoids zero injection when base is already >200k.
+
+**Line-number prefix stripping (search/replace only)**
+- When parsing `<change>` blocks, search/replace text are normalized with `stripLineNumberPrefixes()` which removes only the injected format `N | ` (e.g. `   1 | code` → `code`), not arbitrary leading digits.
+- **WHY**: Injected content is line-numbered; some LLMs echo that in `<search>`/`<replace>`. Stripping only `N | ` allows matches without corrupting real code (e.g. `  42` or `1: 'foo'`).
+
+**No-changes explanation parsing (ignore XML blocks)**
+- `parseNoChangesExplanation()` strips `<change>`, `<newfile>`, and `<file path="...">` block content before looking for NO_CHANGES or inferring patterns. Both stages run on prose-only text.
+- **WHY**: Code/fixtures inside those blocks produced false positives (e.g. "fixer made no changes" inside a `<change>` block reported as explanation). Restricting to prose avoids that.
+
+**Merge resolution and wiring**
+- Conflict resolution combined rotation reset + batch reduce with per-model caps and AAR snapshots. `RunCallbacks` and run-orchestrator include `resetRotationToFirstModel`; verification timer uses `startTimer('Verify fixes')` (direct function).
+- **WHY**: Resolved code must keep our rotation/batch behavior and their modelContext/AAR/committedThisIteration. Missing `resetRotationToFirstModel` on RunCallbacks caused a type error; `Timer.startTimer` would have been a runtime error.
+
 ---
 
 ### Added (2026-02-27) — Per-model context caps, AAR on all exits, prompt quality

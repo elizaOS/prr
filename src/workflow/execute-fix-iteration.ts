@@ -119,6 +119,16 @@ export async function executeFixIteration(
   } catch {
     // Base ref may not exist (e.g. first push); prompt still works without diff.
   }
+  // WHY forceNextBatchSizeReduce: When the previous attempt had a huge prompt (>200k) and failed, we want the next
+  // attempt to use a smaller batch immediately (effectiveConsecutive ≥ 2) without waiting for two real failures.
+  const effectiveConsecutive = stateContext.forceNextBatchSizeReduce
+    ? Math.max(consecutiveFailures, 2)
+    : consecutiveFailures;
+  if (stateContext.forceNextBatchSizeReduce) {
+    stateContext.forceNextBatchSizeReduce = false;
+    debug('Using reduced batch size after large-prompt failure', { effectiveConsecutive, consecutiveFailures });
+  }
+  // Per-model prompt cap: builder uses modelContext to limit prompt size for models with smaller context windows.
   const currentModelForCap = getCurrentModel();
   const modelContext =
     runner.provider && currentModelForCap
@@ -128,7 +138,7 @@ export async function executeFixIteration(
     unresolvedIssues,
     lessonsContext,
     options.verbose,
-    consecutiveFailures,
+    effectiveConsecutive,
     options.priorityOrder,
     prInfo,
     diffStat,
@@ -296,6 +306,11 @@ export async function executeFixIteration(
     // be retried indefinitely. Now we treat it like a "no changes" failure.
     const updatedConsecutiveFailures = consecutiveFailures + 1;
     const updatedModelFailuresInCycle = modelFailuresInCycle + 1;
+    // WHY: Oversized prompts cause 500s/timeouts; next iteration should use smaller batch without waiting for two real failures.
+    if (prompt.length > 200_000) {
+      stateContext.forceNextBatchSizeReduce = true;
+      debug('Large prompt failed (error path) — will reduce batch size next iteration', { promptLength: prompt.length, threshold: 200_000 });
+    }
 
     const rotationResult = await ResolverProc.handleRotationStrategy(
       unresolvedIssues, comments, git,
@@ -370,10 +385,15 @@ export async function executeFixIteration(
     // Count this as a failure for rotation purposes
     updatedConsecutiveFailures++;
     updatedModelFailuresInCycle++;
-    
+    const failureErrorType = result.usedFullFileRewrite ? 'full_rewrite_no_diff' : undefined;
+    // WHY: Same as error path — large prompt that produced no changes should trigger batch reduce on next attempt.
+    if (prompt.length > 200_000) {
+      stateContext.forceNextBatchSizeReduce = true;
+      debug('Large prompt failed — will reduce batch size next iteration', { promptLength: prompt.length, threshold: 200_000 });
+    }
     // Execute rotation strategy
     const rotationResult = await ResolverProc.handleRotationStrategy(updatedUnresolvedIssues, comments, git, updatedConsecutiveFailures, updatedModelFailuresInCycle, updatedProgressThisCycle,
-      stateContext, lessonsContext, options, verifiedThisSession, runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut);
+      stateContext, lessonsContext, options, verifiedThisSession, runner.name, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut, failureErrorType);
     
     return {
       shouldContinue: !rotationResult.shouldBreak,

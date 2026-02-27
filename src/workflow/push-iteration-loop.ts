@@ -102,6 +102,8 @@ export interface PushIterationCallbacks {
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
   /** Called when a runner fails with tool_config (e.g. unknown option) so it's skipped for rest of run */
   onDisableRunner?: (runnerName: string) => void;
+  /** Reset model rotation to first model for this push iteration. Call when pushIteration > 1. */
+  resetRotationToFirstModel?: () => void;
   checkForNewBotReviews: (owner: string, repo: string, number: number, existingIds: Set<string>) => Promise<{ newComments: ReviewComment[]; message: string } | null>;
   calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null;
   waitForBotReviews: (owner: string, repo: string, number: number, sha: string) => Promise<void>;
@@ -168,6 +170,8 @@ export async function executePushIteration(
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
     console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
+    // WHY: Each push cycle should start with the first model in rotation, not wherever the previous cycle left off (often a model that had just 500'd or timed out).
+    callbacks.resetRotationToFirstModel?.();
   }
 
   // Process comments and prepare fix loop.
@@ -212,8 +216,10 @@ export async function executePushIteration(
   // CLI convention: 0 = unlimited, undefined = use Infinity default
   // CLI convention: 0 = unlimited. Use || (not ??) since 0 should map to Infinity.
   // CRITICAL: ?? only triggers on null/undefined, NOT 0. Default is 0 = unlimited.
-  const maxFixIterations = options.maxFixIterations || Infinity;
+  const maxFixIterations = options.maxFixIterations != null ? options.maxFixIterations : Infinity;
   debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
+  // WHY: Paired with endTimer('Verify fixes') in fix-verification.ts so timing breakdown includes verification phase.
+  startTimer('Verify fixes');
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
 

@@ -111,6 +111,8 @@ export class PRResolver {
   private switchToNextRunner(): boolean { const ctx = this.getRotationContext(); const result = Rotation.switchToNextRunner(ctx, this.stateContext, this.options); this.syncRotationContext(ctx); return result; }
   private allModelsExhausted(): boolean { const ctx = this.getRotationContext(); return Rotation.allModelsExhausted(ctx); }
   private tryRotation(failureErrorType?: string): boolean { const ctx = this.getRotationContext(); ctx.cycleHadOnlyTimeouts = failureErrorType === 'timeout' ? (ctx.cycleHadOnlyTimeouts !== false) : false; const result = Rotation.tryRotation(ctx, this.stateContext, this.options); this.syncRotationContext(ctx); return result; }
+  /** Reset model rotation to first model (call at start of each push iteration when pushIteration > 1). WHY: Each push cycle gets best model first instead of retrying the model that may have just 500'd or timed out. */
+  private resetRotationToFirstModel(): void { const ctx = this.getRotationContext(); Rotation.resetCurrentModelToFirst(ctx, this.stateContext); this.syncRotationContext(ctx); }
   private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateContext, this.lessonsContext, this.runners, this.options, (runner) => this.getModelsForRunner(runner), this.workdir, this.llm); this.bailedOut = result.bailedOut; this.exitReason = result.exitReason; this.exitDetails = result.exitDetails; this.finalUnresolvedIssues = result.finalUnresolvedIssues; this.finalComments = result.finalComments; }
   private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue) => this.buildSingleIssuePrompt(issue), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength), this.config.openaiApiKey); }
   private buildSingleIssuePrompt(issue: UnresolvedIssue): string { return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo); }
@@ -148,6 +150,7 @@ export class PRResolver {
       parseNoChangesExplanation: (output) => this.parseNoChangesExplanation(output),
       trySingleIssueFix: (issues, git, verified) => this.trySingleIssueFix(issues, git, verified),
       tryRotation: (failureErrorType?: string) => this.tryRotation(failureErrorType),
+      resetRotationToFirstModel: () => this.resetRotationToFirstModel(),
       tryDirectLLMFix: (issues, git, verified) => this.tryDirectLLMFix(issues, git, verified),
       executeBailOut: (issues, comments) => this.executeBailOut(issues, comments),
       onDisableRunner: (name) => this.disabledRunners.add(name),

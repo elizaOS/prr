@@ -143,6 +143,16 @@ docs/
 
 ## 📖 Key Concepts Explained
 
+### Recent improvements (rotation, batch reduce, injection, no-changes)
+
+- **Rotation reset**: At the start of each push iteration (after the first), the model index resets to the first in rotation. *Why*: The previous cycle often ended on a model that had just 500'd or timed out; retrying it first wastes time.
+- **Large-prompt batch reduce**: When a fix prompt exceeds ~200k chars and fails (error or no-changes), the next fix iteration uses a smaller batch immediately. *Why*: Oversized prompts cause gateway 500s/timeouts; reducing batch size keeps prompts within limits.
+- **Injection cap with floor**: Base + injected file content is capped (e.g. 200k total) with a minimum injection allowance so key files are still injected when the base is large. *Why*: Prevents 500s from oversized requests and avoids zero injection when base is already big.
+- **No-changes parsing**: The NO_CHANGES explanation is parsed from prose only; content inside `<change>`, `<newfile>`, and `<file>` blocks is stripped first. *Why*: Code or fixtures inside those blocks can contain phrases like "already fixed", causing false positives.
+- **Line-number stripping**: When matching search/replace from LLM output, only the injected line format `N | ` is stripped from each line, not arbitrary leading digits. *Why*: Injected file content is numbered; some LLMs echo that in `<search>`/`<replace>`. Stripping only `N | ` allows matches without corrupting real code.
+
+See [CHANGELOG](../CHANGELOG.md) (Unreleased → Added 2026-02) for full WHYs and file references.
+
 ### The Three Loops
 
 ```text

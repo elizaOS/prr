@@ -86,7 +86,9 @@ export async function handleRotationStrategy(
   const skipSingleIssueForToolConfig = failureErrorType === 'tool_config';
   const skipSingleIssueForToolTimeout = failureErrorType === 'tool_timeout';
   const skipSingleIssueForModel = failureErrorType === 'model';
-  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout || skipSingleIssueForModel;
+  // WHY: Full-file rewrite that produced no diff means the model rewrote to same content; single-issue retry won't help, rotate instead.
+  const skipSingleIssueForFullRewriteNoDiff = failureErrorType === 'full_rewrite_no_diff';
+  const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout || skipSingleIssueForModel || skipSingleIssueForFullRewriteNoDiff;
   let shouldBreak = false;
   let shouldContinue = false;
   let newConsecutiveFailures = consecutiveFailures;
@@ -113,6 +115,9 @@ export async function handleRotationStrategy(
     }
     if (skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout) {
       console.log(chalk.yellow('\n  ⏭ Tool error — skipping single-issue, rotating to next tool...'));
+    }
+    if (skipSingleIssueForFullRewriteNoDiff) {
+      console.log(chalk.yellow('\n  ⏭ Full-file rewrite produced no diff — skipping single-issue, rotating to next model...'));
     }
     const rotated = tryRotation(failureErrorType);
     // WHY reset: The prompt tracker detects identical prompt+model combos to
