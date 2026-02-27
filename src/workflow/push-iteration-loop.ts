@@ -213,7 +213,6 @@ export async function executePushIteration(
   }
 
   // Initialize fix loop
-  // CLI convention: 0 = unlimited, undefined = use Infinity default
   // CLI convention: 0 = unlimited → Infinity. Use || so 0 maps to Infinity (not ??).
   const maxFixIterations = options.maxFixIterations || Infinity;
   debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
