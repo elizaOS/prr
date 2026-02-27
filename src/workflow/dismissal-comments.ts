@@ -120,7 +120,9 @@ function hasExistingReviewComment(
   targetLine: number,
   _commentPrefix: string
 ): boolean {
-  const checkRadius = 7; // Match the LLM context window (contextBefore/After = 7)
+  // WHY 7: Matches the LLM context window (contextBefore/contextAfter). With 3 we missed existing
+  // "Review:" comments that the LLM could see, causing redundant calls that always returned EXISTING.
+  const checkRadius = 7;
   const start = Math.max(0, targetLine - 1 - checkRadius);
   const end = Math.min(lines.length, targetLine + checkRadius);
 

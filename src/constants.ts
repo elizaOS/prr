@@ -221,6 +221,7 @@ export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && proce
 /**
  * Times the verifier can reject an issue (fixer claimed fixed / ALREADY_FIXED but verifier said no)
  * before we dismiss it to avoid token waste on repeated retries.
+ * WHY 2: Fixer/verifier stalemates otherwise loop indefinitely; two rejections is enough signal to defer to human.
  */
 export const VERIFIER_REJECTION_DISMISS_THRESHOLD = 2;
 

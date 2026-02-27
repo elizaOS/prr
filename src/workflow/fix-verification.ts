@@ -430,7 +430,8 @@ export async function verifyFixes(
                 ? `${verification.explanation} Next time: ${verification.lesson}`
                 : verification.explanation;
               issue.verifierContradiction = contradiction;
-              // Track rejections so we can dismiss after N and avoid token waste (see solvability Check 0e).
+              // WHY track: After N rejections solvability Check 0e dismisses as "exhausted" to stop
+              // fixer/verifier stalemates and avoid token waste (see VERIFIER_REJECTION_DISMISS_THRESHOLD).
               const state = getState(stateContext);
               if (!state.verifierRejectionCount) state.verifierRejectionCount = {};
               state.verifierRejectionCount[issue.comment.id] = (state.verifierRejectionCount[issue.comment.id] ?? 0) + 1;

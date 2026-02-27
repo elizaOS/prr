@@ -742,7 +742,8 @@ export class LLMClient {
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [];
     
-    // Suppress <think> reasoning blocks from models like Qwen — saves ~30% output tokens.
+    // WHY suppress for Qwen: Asking the model not to emit <think> reduces output tokens and latency;
+    // we still strip in response as a fallback for other models or when the instruction is ignored.
     const noThinkSuffix = /\bqwen\b/i.test(chosenModel)
       ? '\nDo NOT include <think> tags or internal reasoning. Respond directly.'
       : '';
@@ -767,11 +768,12 @@ export class LLMClient {
     let content = response.choices[0]?.message?.content || '';
 
     // Strip <think>…</think> reasoning blocks emitted by models like Qwen.
-    // These waste output tokens and can confuse response parsing (e.g. startsWith('YES')).
+    // WHY: They waste ~30% output tokens and break parsers that expect content to start
+    // with the answer (e.g. startsWith('YES')). Second replace handles unclosed think (truncated output).
     if (/<think>/i.test(content)) {
       content = content
         .replace(/<think>[\s\S]*?<\/think>\s*/gi, '')
-        .replace(/<think>[\s\S]*/i, '') // unclosed think (e.g. truncated output)
+        .replace(/<think>[\s\S]*/i, '')
         .trim();
     }
 

@@ -184,7 +184,7 @@ export interface ResolverState {
   modelPerformance?: ModelPerformance;   // "tool/model" -> stats
   // Per-issue attempt tracking - what's been tried on each issue
   issueAttempts?: IssueAttempts;         // commentId -> attempts
-  /** Per-issue count of verifier rejections; dismiss after VERIFIER_REJECTION_DISMISS_THRESHOLD */
+  /** Per-issue count of verifier rejections; dismiss after VERIFIER_REJECTION_DISMISS_THRESHOLD. WHY: avoid fixer/verifier stalemate token waste. */
   verifierRejectionCount?: Record<string, number>;
   // Bail-out tracking - document when/why automation stopped
   bailOutRecord?: BailOutRecord;         // Last bail-out event

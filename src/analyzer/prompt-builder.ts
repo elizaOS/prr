@@ -174,9 +174,10 @@ export function buildFixPrompt(
     };
   }
 
-  // Cap lessons to prevent prompt bloat (73+ lessons = prompt poisoning)
+  // Cap lessons to prevent prompt bloat (73+ lessons = prompt poisoning).
   const MAX_LESSONS = 15;
-  // Large batches: fewer lessons so prompt stays under ~100k chars (audit: 278k prompts wasted tokens)
+  // WHY large-batch cap: With 10+ issues, 15 lessons + full content produced 278k+ char prompts and
+  // gateway timeouts; 5 global + 1 per-file keeps prompts under ~100k chars while still surfacing recent failures.
   const lessonCap = issues.length > 10 ? 5 : MAX_LESSONS;
 
   // Limit issues per prompt to prevent token overflow
@@ -421,7 +422,7 @@ export function buildFixPrompt(
     // snippet, ensures the fixer sees them in immediate context.
     // (fileLessons already fetched at the top of this loop iteration for implPath detection)
     if (fileLessons && fileLessons.length > 0) {
-      const maxInline = issues.length > 10 ? 1 : 3; // Large batch: one lesson per file to keep prompt smaller
+      const maxInline = issues.length > 10 ? 1 : 3; // WHY: Same as lessonCap — large batch needs smaller prompt.
       const shown = fileLessons.slice(-maxInline);
       parts.push(`**⚠ File-specific lessons (from previous failed attempts on this file):**`);
       for (const lesson of shown) {

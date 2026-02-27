@@ -88,7 +88,9 @@ export function assessSolvability(
     };
   }
 
-  // Check 0e: Verifier rejected this issue N+ times — stop retrying to save tokens
+  // Check 0e: Verifier rejected this issue N+ times — stop retrying to save tokens.
+  // WHY: Fixer/verifier stalemates (fixer says ALREADY_FIXED, verifier says still exists) burn tokens
+  // on repeated attempts; dismissing as "exhausted" defers to human follow-up (see AUDIT_IMPROVEMENTS.md).
   const rejectionCount = stateContext.state?.verifierRejectionCount?.[comment.id] ?? 0;
   if (rejectionCount >= VERIFIER_REJECTION_DISMISS_THRESHOLD) {
     return {

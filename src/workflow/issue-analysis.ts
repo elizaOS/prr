@@ -444,7 +444,8 @@ async function llmDedup(
     byFile.set(item.comment.path, existing);
   }
 
-  // Process files with 3+ remaining issues — skip LLM for 2 comments (heuristic is enough; saves tokens)
+  // Process files with 3+ remaining issues. WHY skip LLM for 2: For exactly two comments on a file,
+  // heuristic grouping (same file, line proximity, author) is usually sufficient; the LLM call adds cost with little gain.
   const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 3);
   if (filesToCheck.length === 0) return dedupResult;
 

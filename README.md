@@ -56,6 +56,14 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
 
+### Token & cost optimizations
+- **Think-tag stripping**: Models like Qwen emit `<think>` reasoning blocks; we strip them from responses and ask Qwen not to emit them. *Why*: Saves ~30% output tokens and avoids breaking parsers that expect responses to start with "YES"/"NO".
+- **Verifier rejection cap**: After the verifier rejects an issue twice (fix or ALREADY_FIXED claim), we dismiss it as "exhausted" and stop retrying. *Why*: Fixer/verifier stalemates otherwise loop indefinitely.
+- **No-verified-progress exit**: After two consecutive push iterations with zero new verified fixes, we exit cleanly. *Why*: Same issues keep failing; re-run after manual edits or new bot comments.
+- **Dismissal-comment pre-check**: Before calling the LLM to generate a "Review:" comment, we check a ±7 line window for an existing one. *Why*: Avoids redundant LLM calls when a comment was already added.
+- **No-op change skip**: Identical search/replace blocks from the fixer are skipped. *Why*: Prevents wasted verification and keeps file-change counts accurate.
+- **Lesson caps for large batches**: When fixing 10+ issues at once, we cap global and per-file lessons so the prompt stays under ~100k chars. *Why*: Prevents gateway timeouts and prompt poisoning from oversized prompts.
+
 ### Robustness
 - Hash-based work directories for efficient re-runs
 - **State persistence**: Resumes from where it left off, including tool/model rotation position

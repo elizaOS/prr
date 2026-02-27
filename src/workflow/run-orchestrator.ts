@@ -195,7 +195,9 @@ export async function executeRun(
     let consecutiveBailouts = 0;
     let consecutiveNoCommits = 0;
     let consecutiveZeroVerified = 0;
-    let progressBeforePushIteration = 0; // snapshot to compute per-iteration delta
+    // WHY snapshot: progressThisCycle is cumulative across all push iterations and never resets.
+    // We need the delta (this iteration's new verified count) to detect "zero progress this cycle."
+    let progressBeforePushIteration = 0;
     let lastBailoutRemainingCount = Infinity;
     const prInfoRef = { current: state.prInfo };
     finalUnresolvedIssuesRef.current = state.finalUnresolvedIssues;
@@ -235,7 +237,7 @@ export async function executeRun(
       }
 
       // Exit after 2 push iterations with zero verified fixes (token-saving; same issues keep failing).
-      // Compare delta (not cumulative) since progressThisCycle accumulates across all push iterations.
+      // WHY delta: progressThisCycle is cumulative; only (current - before) tells us if this cycle added any fixes.
       const progressDelta = iterResult.updatedProgressThisCycle - progressBeforePushIteration;
       progressBeforePushIteration = iterResult.updatedProgressThisCycle;
       if (progressDelta > 0) {

@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02) — Audit improvements: token savings, verifier rejection, exit logic, polish
+
+**Think-tag stripping and suppression (OpenAI/ElizaCloud path)**
+- Models like Qwen emit `<think>…</think>` reasoning blocks that waste ~30% of output tokens and can break response parsing (e.g. `content.startsWith('YES')` fails when content starts with `<think>`).
+- **Strip on response**: In `completeOpenAI()`, response content is post-processed to remove `<think>…</think>` blocks (case-insensitive; unclosed `<think>` to end of string is also stripped). Ensures downstream parsers see only the actual answer.
+- **Suppress at source**: When the chosen model name contains "qwen", a system-prompt suffix is added: "Do NOT include <think> tags or internal reasoning. Respond directly." Reduces output tokens and latency.
+- **WHY**: Audit of prompts.log showed 27+ responses with 1000–2000 extra output tokens of unused reasoning; stripping and instructing avoids waste and parsing bugs.
+
+**Verifier rejection tracking and auto-dismiss**
+- New `verifierRejectionCount` on `ResolverState` (persisted in `.pr-resolver-state.json`) counts how many times the verifier rejected a fix or ALREADY_FIXED claim per comment.
+- When `verifierRejectionCount[commentId] >= VERIFIER_REJECTION_DISMISS_THRESHOLD` (2), solvability Check 0e marks the issue unsolvable with `dismissCategory: 'exhausted'` so PRR stops retrying.
+- **Increment sites**: (1) `fix-verification.ts` when batch verification fails for an issue; (2) `no-changes-verification.ts` when the no-changes path verifies and the verifier says the issue still exists.
+- **WHY**: Fixer/verifier stalemates (fixer says ALREADY_FIXED, verifier disagrees) were retried indefinitely, burning tokens. Capping at 2 rejections per issue stops the loop and defers to human follow-up.
+
+**Exit after two push iterations with zero verified fixes**
+- Orchestrator now tracks `consecutiveZeroVerified` and compares **per-iteration progress delta** (not cumulative progress). After two consecutive push iterations with no new verified fixes, it exits with `exitReason: 'no_verified_progress'`.
+- **WHY**: Previously the check used cumulative `progressThisCycle`, which never resets, so the condition never triggered. Using the delta between iterations correctly detects "this push cycle added zero verified fixes."
+
+**Dismissal-comment pre-check radius**
+- `hasExistingReviewComment()` in `dismissal-comments.ts` now uses a ±7 line radius (was 3) to match the LLM context window (`contextBefore`/`contextAfter` = 7). If a "Review:" comment already exists in that range, the LLM is not called.
+- **WHY**: Audit showed 12 consecutive dismissal-comment LLM calls that all returned "EXISTING"; the smaller radius missed comments the LLM could see, wasting input tokens.
+
+**No-op search/replace skip (llm-api runner)**
+- In `applyFileChanges()`, when a `<change>` block has identical trimmed `<search>` and `<replace>` content, the change is skipped (no file I/O, no fuzzy match). Logged as "Skipping no-op change".
+- **WHY**: LLMs sometimes output no-op edits (e.g. "ALREADY_FIXED" but still emit a change block with same text). Skipping avoids pointless verification and keeps `filesModified` accurate.
+
+**Fix prompt lesson caps for large batches**
+- When `issues.length > 10`, global lessons in the fix prompt are capped at 5 (not 15) and per-file inline lessons at 1 per file (not 3). Console "Lessons Learned" summary uses the same cap so the log matches what the fixer sees.
+- **WHY**: Large batches (e.g. 50+ issues) with 15 lessons each produced 278k+ char prompts and gateway timeouts; smaller caps keep prompts under ~100k chars while still surfacing recent failures.
+
+**LLM dedup only for files with 3+ issues**
+- Heuristic dedup still runs for all files; the **LLM** dedup step now runs only for files that have at least 3 remaining issues after heuristic dedup (was 2).
+- **WHY**: For exactly two comments on a file, heuristic grouping is sufficient; skipping the LLM call saves tokens with no meaningful loss in dedup quality.
+
+**Commit message duplicate pattern**
+- The commit message pattern for "duplicate" was changed from "remove duplicate code" to "consolidate duplicate logic" to avoid forbidden phrases that trigger fallback.
+- **WHY**: Some review bots flag the phrase "remove duplicate code"; the new wording satisfies the intent without triggering filters.
+
+---
+
 ### Added (2026-02-27) — Per-model context caps, AAR on all exits, prompt quality
 
 **Per-model context limits (`src/llm/model-context-limits.ts`)**

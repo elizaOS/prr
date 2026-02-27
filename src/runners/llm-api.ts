@@ -714,7 +714,8 @@ Working directory: ${workdir}`;
         continue;
       }
 
-      // Skip no-op changes where search and replace are identical (LLM hallucinated a change)
+      // WHY skip: LLMs sometimes output change blocks with identical search/replace (e.g. after claiming
+      // ALREADY_FIXED). Applying them would trigger verification on unchanged code; skipping keeps filesModified accurate.
       if (searchText.trim() === replaceContent.trim()) {
         debug('Skipping no-op change — search and replace are identical', { filePath });
         continue;

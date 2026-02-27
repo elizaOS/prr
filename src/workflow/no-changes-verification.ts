@@ -377,7 +377,8 @@ async function verifyAllIssues(
     } else {
       if (result) {
         issue.verifierContradiction = result.explanation;
-        // Track rejection so solvability Check 0e can dismiss after threshold
+        // WHY track rejection: Same as fix-verification path — after N rejections we dismiss as "exhausted"
+        // so we stop retrying this issue and avoid infinite fixer/verifier stalemates (see solvability Check 0e).
         const state = getState(stateContext);
         if (!state.verifierRejectionCount) state.verifierRejectionCount = {};
         state.verifierRejectionCount[issue.comment.id] = (state.verifierRejectionCount[issue.comment.id] ?? 0) + 1;
