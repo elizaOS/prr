@@ -132,9 +132,14 @@ export async function checkAndMergeBaseBranch(
           // Push the resolved merge commit (skip outer push block via early continue)
           if (!options.noPush && !options.noCommit) {
             try {
-              spinner.start('Pushing merge commit...');
-              await git.push('origin', prInfo.branch);
-              spinner.succeed('Pushed merge commit');
+              try {
+         spinner.start('Pushing merge commit...');
+         await git.push('origin', prInfo.branch);
+         spinner.succeed('Pushed merge commit');
+       } catch (pushErr) {
+         spinner.fail('Failed to push merge commit');
+         console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
+       }
             } catch (pushErr) {
               spinner.fail('Failed to push merge commit');
               console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
