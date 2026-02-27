@@ -15,7 +15,7 @@ import { readFile } from 'fs/promises';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
-import { setPhase } from '../state/state-context.js';
+import { setPhase, getState } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -430,6 +430,10 @@ export async function verifyFixes(
                 ? `${verification.explanation} Next time: ${verification.lesson}`
                 : verification.explanation;
               issue.verifierContradiction = contradiction;
+              // Track rejections so we can dismiss after N and avoid token waste (see solvability Check 0e).
+              const state = getState(stateContext);
+              if (!state.verifierRejectionCount) state.verifierRejectionCount = {};
+              state.verifierRejectionCount[issue.comment.id] = (state.verifierRejectionCount[issue.comment.id] ?? 0) + 1;
               // Use lesson from batch response (already parsed by batchVerifyFixes).
               const lesson = verification.lesson
                 || `Fix rejected: ${verification.explanation}`;

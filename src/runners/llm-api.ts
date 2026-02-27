@@ -669,6 +669,12 @@ Working directory: ${workdir}`;
         continue;
       }
 
+      // Skip no-op changes where search and replace are identical (LLM hallucinated a change)
+      if (searchText.trim() === replaceContent.trim()) {
+        debug('Skipping no-op change — search and replace are identical', { filePath });
+        continue;
+      }
+
       const { safe, fullPath } = this.isPathSafe(workdir, filePath);
       if (!safe) {
         debug('Skipping file outside workdir', { filePath });

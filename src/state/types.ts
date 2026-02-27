@@ -65,6 +65,8 @@ export interface CommentStatus {
   updatedAt: string;
   /** Iteration when status was last set */
   updatedAtIteration: number;
+  /** When resolved via dismiss: actual dismiss category (stale, exhausted, etc.) */
+  dismissCategory?: DismissedIssue['category'];
 }
 
 /**
@@ -86,6 +88,8 @@ export interface DismissedIssue {
   filePath: string;               // File the comment was about
   line: number | null;            // Line number if specified
   commentBody: string;            // Original review comment text
+  /** Optional next-step for humans (e.g. lockfile: "Run: bun install") */
+  remediationHint?: string;
 }
 
 /**
@@ -123,6 +127,8 @@ export interface IssueAttempt {
   result: 'fixed' | 'failed' | 'no-changes' | 'error';
   lessonLearned?: string;       // If a lesson was extracted from this attempt
   rejectionCount?: number;      // How many times the fix was rejected
+  /** File content hash when attempt was made; used to ignore attempts after file changed */
+  fileContentHash?: string;
 }
 
 export type IssueAttempts = Record<string, IssueAttempt[]>;  // commentId -> attempts
@@ -178,6 +184,8 @@ export interface ResolverState {
   modelPerformance?: ModelPerformance;   // "tool/model" -> stats
   // Per-issue attempt tracking - what's been tried on each issue
   issueAttempts?: IssueAttempts;         // commentId -> attempts
+  /** Per-issue count of verifier rejections; dismiss after VERIFIER_REJECTION_DISMISS_THRESHOLD */
+  verifierRejectionCount?: Record<string, number>;
   // Bail-out tracking - document when/why automation stopped
   bailOutRecord?: BailOutRecord;         // Last bail-out event
   noProgressCycles?: number;             // Cycles completed with zero progress (persisted for resume)

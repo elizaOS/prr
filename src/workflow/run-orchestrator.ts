@@ -182,6 +182,8 @@ export async function executeRun(
     debug('Orchestrator loop limits', { maxBailoutsBeforeExit, MAX_CONSECUTIVE_NO_COMMIT });
     let consecutiveBailouts = 0;
     let consecutiveNoCommits = 0;
+    let consecutiveZeroVerified = 0;
+    let progressBeforePushIteration = 0; // snapshot to compute per-iteration delta
     let lastBailoutRemainingCount = Infinity;
     const prInfoRef = { current: state.prInfo };
     const finalUnresolvedIssuesRef = { current: state.finalUnresolvedIssues };
@@ -218,6 +220,23 @@ export async function executeRun(
       debug('Push iteration done', { pushIteration, shouldBreak: iterResult.shouldBreak, exitReason: iterResult.exitReason, committedThisIteration: iterResult.committedThisIteration });
       if (iterResult.shouldBreak) {
         break;
+      }
+
+      // Exit after 2 push iterations with zero verified fixes (token-saving; same issues keep failing).
+      // Compare delta (not cumulative) since progressThisCycle accumulates across all push iterations.
+      const progressDelta = iterResult.updatedProgressThisCycle - progressBeforePushIteration;
+      progressBeforePushIteration = iterResult.updatedProgressThisCycle;
+      if (progressDelta > 0) {
+        consecutiveZeroVerified = 0;
+      } else {
+        consecutiveZeroVerified++;
+        if (consecutiveZeroVerified >= 2) {
+          console.log(chalk.yellow(`\n  ⏹ ${consecutiveZeroVerified} consecutive push iterations with no verified fixes — exiting`));
+          console.log(chalk.gray(`     Re-run after manual edits or to pick up new bot comments`));
+          state.exitReason = 'no_verified_progress';
+          state.exitDetails = `${consecutiveZeroVerified} consecutive push iterations with zero verified fixes`;
+          break;
+        }
       }
 
       // Track consecutive iterations with no commit (fixer made no file changes).

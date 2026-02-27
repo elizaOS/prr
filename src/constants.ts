@@ -218,6 +218,12 @@ export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && proce
   ? Math.max(1, parseInt(process.env.PRR_CHRONIC_FAILURE_THRESHOLD, 10) || 5)
   : 5;
 
+/**
+ * Times the verifier can reject an issue (fixer claimed fixed / ALREADY_FIXED but verifier said no)
+ * before we dismiss it to avoid token waste on repeated retries.
+ */
+export const VERIFIER_REJECTION_DISMISS_THRESHOLD = 2;
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VERIFICATION & CACHING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -11,6 +11,7 @@
 import chalk from 'chalk';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { StateContext } from '../state/state-context.js';
+import { getState } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
 import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
@@ -375,9 +376,11 @@ async function verifyAllIssues(
       console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}:${issue.comment.line} — ${result.explanation}`));
     } else {
       if (result) {
-        // Feed the verifier's contradiction back so the next fixer sees exactly
-        // WHERE the issue still exists, preventing the fixer/verifier stalemate.
         issue.verifierContradiction = result.explanation;
+        // Track rejection so solvability Check 0e can dismiss after threshold
+        const state = getState(stateContext);
+        if (!state.verifierRejectionCount) state.verifierRejectionCount = {};
+        state.verifierRejectionCount[issue.comment.id] = (state.verifierRejectionCount[issue.comment.id] ?? 0) + 1;
         console.log(chalk.yellow(`    ○ Still exists: ${issue.comment.path}:${issue.comment.line} - ${result.explanation}`));
       }
       stillUnresolved.push(issue);

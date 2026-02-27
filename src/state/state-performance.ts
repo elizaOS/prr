@@ -223,6 +223,7 @@ export function getModelHistorySummary(ctx: StateContext): string | undefined {
  * @param result - Outcome of the attempt
  * @param lessonLearned - Optional lesson generated from failure analysis
  * @param rejectionCount - Number of times this attempt was rejected by verification
+ * @param fileContentHash - Hash of file when attempt was made; chronic check only counts same-version attempts
  */
 export function recordIssueAttempt(
   ctx: StateContext,
@@ -231,7 +232,8 @@ export function recordIssueAttempt(
   model: string | undefined,
   result: 'fixed' | 'failed' | 'no-changes' | 'error',
   lessonLearned?: string,
-  rejectionCount?: number
+  rejectionCount?: number,
+  fileContentHash?: string
 ): void {
   const state = getState(ctx);
   if (!state.issueAttempts) {
@@ -241,7 +243,7 @@ export function recordIssueAttempt(
     state.issueAttempts[commentId] = [];
   }
   
-  state.issueAttempts[commentId].push({
+  const attempt: IssueAttempt = {
     commentId,
     tool,
     model,
@@ -249,7 +251,9 @@ export function recordIssueAttempt(
     result,
     lessonLearned,
     rejectionCount,
-  });
+  };
+  if (fileContentHash !== undefined) attempt.fileContentHash = fileContentHash;
+  state.issueAttempts[commentId].push(attempt);
 }
 
 /** Max chars for attempt history in LLM prompts; prevents 100k+ blocks that cause gateway 500. */

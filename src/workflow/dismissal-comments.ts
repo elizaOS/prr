@@ -77,27 +77,31 @@ function hasNullBytes(content: string): boolean {
   return content.includes('\0');
 }
 
+/** Matches common comment starts (//, #, /*, *, <!--) so we catch Review: in any style. */
+const REVIEW_COMMENT_START = /^\s*(\/\/|#|\/\*|\*|<!--)/;
+
 /**
- * Check if a "Review:" comment already exists near the target line.
- * Fast check to avoid unnecessary LLM calls (belt-and-suspenders on top of LLM's check).
+ * Check if a "Review:" (or similar) comment already exists near the target line.
+ * Fast check to avoid unnecessary LLM calls. Accepts any comment style containing "Review:".
  */
 function hasExistingReviewComment(
   lines: string[],
   targetLine: number,
-  commentPrefix: string
+  _commentPrefix: string
 ): boolean {
-  const checkRadius = 3;
+  const checkRadius = 7; // Match the LLM context window (contextBefore/After = 7)
   const start = Math.max(0, targetLine - 1 - checkRadius);
   const end = Math.min(lines.length, targetLine + checkRadius);
-  
+
   for (let i = start; i < end; i++) {
     const line = lines[i].trim();
-    // Check for "Review:" with the expected comment syntax
-    if (line.startsWith(commentPrefix) && line.includes('Review:')) {
+    if (!line) continue;
+    // Require comment syntax and "Review:" so we don't match code that contains the word
+    if (REVIEW_COMMENT_START.test(lines[i]) && /Review:/i.test(line)) {
       return true;
     }
   }
-  
+
   return false;
 }
 
