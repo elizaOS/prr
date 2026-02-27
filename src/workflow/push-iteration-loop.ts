@@ -28,7 +28,7 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../git/git-clone-index.js';
-import { formatNumber, debugStep, startTimer, endTimer, debug } from '../logger.js';
+import { formatNumber, debugStep, startTimer, endTimer, debug } from '../logger.ts';
 import * as Performance from '../state/state-performance.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
