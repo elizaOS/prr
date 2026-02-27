@@ -151,6 +151,7 @@ function stripXmlBlockContentForExplanation(output: string): string {
  * Parse fixer tool output to extract NO_CHANGES explanation.
  * Only considers text outside <change>, <newfile>, <file> blocks to avoid
  * matching test fixtures or code content as the explanation.
+ * WHY: Code/fixtures inside those blocks can contain phrases like "already fixed" or "no changes", producing false positives if we matched against raw output.
  */
 export function parseNoChangesExplanation(output: string): string | null {
   if (!output) {

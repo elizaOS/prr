@@ -44,9 +44,11 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
+- **Rotation reset per push iteration**: At the start of each push cycle (after the first), the model index resets to the first model so each cycle gets a "best model first" attempt instead of continuing from where the previous cycle left off. *Why*: Later push iterations were reusing the last model from the previous cycle (often one that had just 500'd or timed out), wasting time.
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
 - **Stalemate detection & bail-out**: Detects when agents disagree, bails out after N cycles with zero progress
+- **Large-prompt batch reduce**: When a fix prompt exceeds ~200k chars and fails (error or no-changes), the next fix iteration immediately uses a smaller batch size. *Why*: Oversized prompts cause gateway 500s and timeouts; reducing batch size on the next attempt keeps prompts within limits without burning rotation slots.
 
 ### Git Integration
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
@@ -63,6 +65,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
+- **Prompt size and injection caps**: Base prompt + injected file content are capped (e.g. 200k total) with a minimum injection allowance so the model still sees key files when the base prompt is large. *Why*: Prevents gateway 500s from oversized requests while avoiding "zero injection" when the base is already big.
+- **No-changes parsing**: When the fixer reports "no changes", the explanation is parsed from prose only; content inside `<change>`, `<newfile>`, and `<file>` blocks is ignored. *Why*: Prevents false positives from code or test fixtures that happen to contain phrases like "already fixed" or "no changes".
 
 ## Installation
 

@@ -86,6 +86,7 @@ export async function handleRotationStrategy(
   const skipSingleIssueForToolConfig = failureErrorType === 'tool_config';
   const skipSingleIssueForToolTimeout = failureErrorType === 'tool_timeout';
   const skipSingleIssueForModel = failureErrorType === 'model';
+  // WHY: Full-file rewrite that produced no diff means the model rewrote to same content; single-issue retry won't help, rotate instead.
   const skipSingleIssueForFullRewriteNoDiff = failureErrorType === 'full_rewrite_no_diff';
   const skipSingleIssue = skipSingleIssueForQuota || skipSingleIssueFor504 || skipSingleIssueForToolConfig || skipSingleIssueForToolTimeout || skipSingleIssueForModel || skipSingleIssueForFullRewriteNoDiff;
   let shouldBreak = false;

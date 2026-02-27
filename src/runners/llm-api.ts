@@ -568,7 +568,7 @@ Working directory: ${workdir}`;
     const MAX_FILES = 10;
     /** Cap total prompt (base + injection) at 200k to avoid gateway 500s. Audit: 122k base + 284k injection → 407k → claude-3-opus 500. */
     const TARGET_MAX_PROMPT_CHARS = 200_000;
-    /** Floor so we still inject 1–2 key files when base prompt is large; avoids zero injection. */
+    /** WHY floor: When base prompt > 200k, (200k - base) would be 0 and no files would be injected; the model would have no file content to match. Floor keeps 1–2 key files. */
     const MIN_INJECTION_CHARS = 50_000;
     const maxTotalInjectionChars = Math.max(MIN_INJECTION_CHARS, TARGET_MAX_PROMPT_CHARS - prompt.length);
     

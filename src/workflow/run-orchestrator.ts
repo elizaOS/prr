@@ -90,7 +90,7 @@ export interface RunCallbacks {
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
   onDisableRunner?: (runnerName: string) => void;
-  /** Reset model rotation to first model for this push iteration. Call when pushIteration > 1. */
+  /** Reset model rotation to first model for this push iteration (pushIteration > 1). WHY: Each push cycle gets best model first instead of retrying the model that may have just 500'd or timed out. */
   resetRotationToFirstModel?: () => void;
   checkForNewBotReviews: (owner: string, repo: string, prNumber: number, existingIds: Set<string>) => Promise<{ newComments: ReviewComment[]; message: string } | null>;
   calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null;

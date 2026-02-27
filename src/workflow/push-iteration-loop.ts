@@ -170,6 +170,7 @@ export async function executePushIteration(
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
     console.log(chalk.blue(`\n--- Push iteration ${iterLabel} ---\n`));
+    // WHY: Each push cycle should start with the first model in rotation, not wherever the previous cycle left off (often a model that had just 500'd or timed out).
     callbacks.resetRotationToFirstModel?.();
   }
 
@@ -217,7 +218,7 @@ export async function executePushIteration(
   // CRITICAL: ?? only triggers on null/undefined, NOT 0. Default is 0 = unlimited.
   const maxFixIterations = options.maxFixIterations != null ? options.maxFixIterations : Infinity;
   debug('Fix loop config', { pushIteration, maxFixIterations, unresolvedCount: unresolvedIssues.length });
-  // Start verification timer here to keep paired with endTimer
+  // WHY: Paired with endTimer('Verify fixes') in fix-verification.ts so timing breakdown includes verification phase.
   startTimer('Verify fixes');
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
