@@ -135,7 +135,7 @@ PRR can now handle files of any size using three strategies:
 2. **Chunked** - Split large files into conflict regions, resolve separately
 3. **Standard** - Send entire file (<50KB) to LLM
 
-See [Large File Conflict Resolution](./features/LARGE_FILE_CONFLICT_RESOLUTION.md) for details.
+See `DEVELOPMENT.md` §15 (Merge Conflict Resolution) for details.
 
 ### 3. LLM Client (`src/llm/`)
 
@@ -589,7 +589,5 @@ This shows:
 
 - **Flowcharts**: `docs/flowchart.md`
 - [Runners Documentation](./RUNNERS.md) - Deep dive into fixer tools
-- [PR Context in Prompts](./features/PR_CONTEXT_IN_PROMPTS.md) - Why fix prompts include PR metadata
-- [Large File Conflicts](./features/LARGE_FILE_CONFLICT_RESOLUTION.md) - Chunked resolution details
-- [Development Guide](./DEVELOPMENT.md) - Contributing to PRR
+- [Development Guide](../DEVELOPMENT.md) - Design decisions, WHYs, troubleshooting
 - **Changelog**: `CHANGELOG.md`

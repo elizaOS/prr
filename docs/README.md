@@ -40,13 +40,8 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ---
 
-### 📉 [Audit Improvements](AUDIT_IMPROVEMENTS.md)
-**Best for**: Understanding token-saving and exit-logic changes
-
-**Contains**:
-- Think-tag stripping and suppression (why, where)
-- Verifier rejection tracking and auto-dismiss
-- No-verified-progress exit (delta-based)
+### 📉 Audit Improvements
+Token-saving and exit-logic changes are documented in the [CHANGELOG](../CHANGELOG.md) under "Audit improvements" headings.
 - Dismissal-comment pre-check radius
 - No-op search/replace skip, lesson caps, dedup threshold, commit wording
 - Summary table of all audit-related changes
@@ -90,7 +85,6 @@ docs/
 │   ├─ Common use cases
 │   └─ Troubleshooting
 │
-├── AUDIT_IMPROVEMENTS.md            ← Token savings & exit logic (WHYs)
 ├── flowchart.md                    ← Detailed flowcharts
 │   ├─ Main system flow
 │   ├─ Orchestrator loop
