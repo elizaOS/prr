@@ -445,10 +445,11 @@ export async function acquireElizacloud(): Promise<void> {
 
 /** Release ElizaCloud rate-limit slot (exported for llm-api runner). */
 export function releaseElizacloud(): void {
-  elizacloudInFlight--;
-  const next = elizacloudQueue.shift();
-  if (next) next();
-// Review: designed for direct release without error handling, assuming correct usage semantics.
+  if (elizacloudInFlight > 0) {
+    elizacloudInFlight--;
+    const next = elizacloudQueue.shift();
+    if (next) next();
+  }
 }
 
 /**
