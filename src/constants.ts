@@ -166,8 +166,8 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
 /**
  * Default LLM model for OpenAI provider.
  * 
- * WHY gpt-5.2: Latest available GPT model (as of Feb 2026).
- * gpt-4.1 is legacy. gpt-5.3 does not exist (only gpt-5.3-codex).
+ * WHY gpt-4o: Optimized GPT-4 model with improved context handling.
+ * Current standard for general-purpose OpenAI API usage.
  * See: https://developers.openai.com/api/docs/models
  */
 export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
