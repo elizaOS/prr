@@ -81,7 +81,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       execFileSync('git', ['remote', 'set-url', 'origin', originalRemoteUrl], { cwd: workdir });
     } catch (e) {
       // Review: logs the error to aid debugging while protecting sensitive data in URLs
-      debug('Failed to restore remote URL', { error: String(e) });
+      debug('Failed to restore remote URL', { error: redactAuth(String(e)) });
     } finally {
       updatedRemote = false;
     }
@@ -103,7 +103,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       debug('Pre-push check', { hasTokenInUrl });
     }
   } catch (e) {
-    debug('Could not check/set remote URL', { error: String(e) });
+    debug('Could not check/set remote URL', { error: redactAuth(String(e)) });
   }
   
   const args = ['push', 'origin', branch];
