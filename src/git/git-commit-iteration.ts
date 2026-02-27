@@ -47,8 +47,13 @@ export async function commitIterationPerFile(
 
     const staged = await git.diff(['--cached', '--name-only']);
     const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
-    // Review: skips commits if no files are staged to prevent unintended changes.
-    if (stagedFiles.length === 0) continue;
+    if (!stagedFiles.includes(filePath)) continue;
+    const unexpected = stagedFiles.filter((f) => f !== filePath);
+    if (unexpected.length > 0) {
+      throw new Error(
+        `Refusing per-file commit for "${filePath}" with extra staged files: ${unexpected.join(', ')}`
+      );
+    }
 
     const markers = issues.map((i) => `prr-fix:${i.commentId.toLowerCase()}`).join('\n');
     const commitMsg = buildCommitMessage(
