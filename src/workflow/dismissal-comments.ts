@@ -18,9 +18,20 @@ import { debug } from '../logger.js';
 import { PROTECTED_DIRS } from '../git/git-commit-core.js';
 
 /**
- * Resolve a possibly truncated path (e.g. "verify/route.ts" from parsed markdown)
- * to the full repo path (e.g. "app/api/auth/siwe/verify/route.ts").
- * Uses git ls-files: exact match wins; else one file ending with /path; if multiple, shortest.
+ * Resolve a possibly truncated path to the full repo-relative path via git ls-files.
+ *
+ * WHY needed: Review bot comments (CodeRabbit, Cursor Bugbot) sometimes embed
+ * paths relative to a sub-directory (e.g. "verify/route.ts") instead of the
+ * repo root ("app/api/auth/siwe/verify/route.ts"). When we store dismissed issues
+ * from those comments the path is whatever the bot reported — which may not match
+ * `join(workdir, path)` on disk. The old code logged "File no longer exists,
+ * skipping" and silently dropped the dismissal comment.
+ *
+ * Resolution strategy (in order):
+ *   1. Exact match against git ls-files output → use as-is.
+ *   2. Suffix match: any tracked file whose path ends with "/<given path>" → use it.
+ *   3. If multiple suffix matches → pick the shortest (most likely the canonical one).
+ *   4. No match → return null (caller skips the file).
  */
 async function resolveFilePath(workdir: string, path: string): Promise<string | null> {
   const git = simpleGit(workdir);

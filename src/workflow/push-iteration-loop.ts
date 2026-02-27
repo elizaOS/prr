@@ -261,7 +261,14 @@ export async function executePushIteration(
       debug('Refreshed snippets for verifier-contradiction retry', { count: verifierRefreshCount });
     }
 
-    // Snapshot current unresolved/comments so early exit or throw still has correct list for AAR and remaining count.
+    // Pre-iteration snapshot: capture the issue list BEFORE executeFixIteration runs.
+    // WHY: If executeFixIteration throws (unhandled error, network failure), execution
+    // jumps to the catch in run-orchestrator which reads these refs for the AAR and
+    // remaining count. Without this snapshot the refs would still hold the previous
+    // iteration's list (or the initial [] on the first iteration), making "Remaining: 0"
+    // appear even when issues are still open. The post-shouldExit snapshot (below) then
+    // overwrites this with the post-error-handler list which may be smaller (e.g. auth
+    // errors dismiss the batch) — so both snapshots are needed.
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
 

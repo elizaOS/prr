@@ -1,10 +1,22 @@
 /**
  * Per-model context limits for fix prompts (ElizaCloud and others).
  *
- * WHY: Gateways route to backends with different context caps (e.g. 40k for Qwen,
- * 200k for Claude). Sending a 200k-char prompt to a 40k-token model causes 400/504.
- * We cap prompt size per model and lower the cap on timeout so the next attempt
- * uses a smaller batch.
+ * WHY this module exists: ElizaCloud is a gateway that routes to different LLM
+ * backends. Those backends have wildly different context windows — Qwen 3 14B has
+ * 40k tokens total while Claude has 200k. The global `MAX_FIX_PROMPT_CHARS`
+ * constant is sized for Claude; using it for Qwen causes immediate 400 "maximum
+ * context length is 40960 tokens" or 504 gateway timeouts on every attempt.
+ *
+ * HOW it works:
+ *   1. `getMaxFixPromptCharsForModel()` is called by prompt-building to cap batch
+ *      size and by the runner to guard the enriched prompt.
+ *   2. On 504/timeout, `lowerModelMaxPromptChars()` ratchets the cap down to 75%
+ *      of the last sent size (floor 20k) so the next attempt automatically uses
+ *      a smaller prompt without manual intervention.
+ *   3. Overrides are session-scoped (in-memory Map); they reset on restart.
+ *
+ * ADDING A NEW MODEL: Add an entry to ELIZACLOUD_MODEL_MAX_INPUT_TOKENS with the
+ * provider's documented input token limit. Leave ~20% headroom for completion.
  */
 
 import { MAX_FIX_PROMPT_CHARS } from '../constants.js';
