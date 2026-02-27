@@ -46,15 +46,15 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
-## 4. Dismissal-comment pre-check radius
+## 4. Dismissal-comment pre-check radius (and Note:/Review: prefix)
 
-**What:** Before calling the LLM to generate a dismissal comment, we check whether a "Review:" comment already exists near the target line. The check radius was increased from 3 to 7 lines.
+**What:** Before calling the LLM to generate a dismissal comment, we check whether a **"Note:"** or **"Review:"** (legacy) comment already exists near the target line. The check radius is ±7 lines to match the LLM context window. Dismissal and NEEDS_DISCUSSION inline comments now use the **"Note:"** prefix instead of "Review:" so review bots (e.g. CodeRabbit) don’t flag them as review artifacts.
 
-**Where:** `src/workflow/dismissal-comments.ts` — `hasExistingReviewComment()`.
+**Where:** `src/workflow/dismissal-comments.ts` — `hasExistingReviewComment()`; `src/llm/client.ts` — `generateDismissalComment()`; `src/analyzer/prompt-builder.ts`, `src/workflow/utils.ts` — fixer NEEDS_DISCUSSION instructions.
 
 **Why:**
-- The LLM is given ±7 lines of context (`contextBefore`/`contextAfter` = 7). With a ±3 line pre-check, we sometimes didn’t see an existing "Review:" that the LLM could see, so we still called the LLM and got "EXISTING" every time.
-- Audit showed 12 consecutive such calls. Matching the pre-check radius to the LLM context (7) avoids those redundant calls and saves input tokens.
+- The LLM is given ±7 lines of context. With a smaller pre-check we missed existing comments the LLM could see, so we still called the LLM and got "EXISTING" every time; audit showed 12 consecutive such calls. Matching the radius to 7 avoids redundant calls.
+- "Review:" triggers CodeRabbit and similar bots to treat the line as a review artifact and can create feedback loops. "Note:" reads as a neutral developer comment; we still recognize legacy "Review:" so existing comments are not duplicated.
 
 ---
 
@@ -105,6 +105,39 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
+## 9. Persisted LLM dedup cache
+
+**What:** Dedup results (comment ID set → `duplicateMap`, `dedupedIds`) are stored in `state.dedupCache` and survive across runs. When the same sorted set of comment IDs is seen again, the LLM dedup step is skipped and the cached grouping is reused.
+
+**Where:** `src/state/types.ts` — `ResolverState.dedupCache`; `src/workflow/issue-analysis.ts` — read/write around heuristic + LLM dedup.
+
+**Why:**
+- The previous cache was in-memory only and reset each run. Audit showed all dedup LLM calls returning NONE on repeat runs because the cache was never hit. Persisting keyed by sorted comment IDs makes the outcome deterministic for the same set, so we avoid re-running the dedup LLM and save tokens and latency.
+
+---
+
+## 10. Wider snippets for batch issue analysis
+
+**What:** When `effectiveMaxContextChars >= 100_000`, batch verification uses 2500 chars for comment and 3000 for code per issue (up from 2000/2000). Smaller context providers keep 2000/2000.
+
+**Where:** `src/llm/client.ts` — `batchCheckIssuesExist()`, `buildIssueText` sizing.
+
+**Why:**
+- Truncated snippets led to conservative "say YES" and false positives. Giving the model more context when headroom exists improves accuracy without exceeding context limits.
+
+---
+
+## 11. Model rotation sorted by success rate
+
+**What:** When using legacy rotation (or after exhausting LLM recommendations), the model list is sorted by per-model success rate so better-performing models are tried first. The resolver passes `stateContext` into the rotation context so sorting can use persisted `modelPerformance`.
+
+**Where:** `src/models/rotation.ts` — `getModelsForRunnerSorted()`, `getCurrentModel()`, `rotateModel()`; `src/resolver.ts` — `getRotationContext()` sets `stateContext`.
+
+**Why:**
+- Audit showed some models at ~1% success still cycled early. Using persisted performance to order the list tries proven models first and deprioritizes chronic low performers.
+
+---
+
 ## Summary table
 
 | Change | File(s) | Goal |
@@ -112,11 +145,14 @@ This document describes the changes made after auditing `prompts.log` and the fi
 | Think-tag strip + suppress | `llm/client.ts` | Save output tokens, fix parsing |
 | Verifier rejection count | `constants.ts`, `state/types.ts`, `solvability.ts`, `fix-verification.ts`, `no-changes-verification.ts` | Stop stalemate retries |
 | No-verified-progress exit | `run-orchestrator.ts` | Exit when no progress for 2 push cycles |
-| Dismissal pre-check radius 7 | `dismissal-comments.ts` | Skip redundant dismissal LLM calls |
+| Dismissal pre-check + Note: prefix | `dismissal-comments.ts`, `llm/client.ts`, `prompt-builder.ts`, `utils.ts` | Skip redundant dismissal LLM calls; avoid review-bot feedback loops |
 | No-op change skip | `runners/llm-api.ts` | Skip no-op edits, accurate file counts |
 | Lesson caps (large batch) | `analyzer/prompt-builder.ts` | Keep prompts under ~100k chars |
 | Dedup 3+ issues | `workflow/issue-analysis.ts` | Save dedup tokens for 2-comment files |
 | Commit "duplicate" wording | `git/git-commit-message.ts` | Avoid forbidden phrase |
+| Persisted dedup cache | `state/types.ts`, `workflow/issue-analysis.ts` | Skip dedup LLM on repeat runs with same comment set |
+| Wider batch snippets | `llm/client.ts` | Reduce false positives from truncation |
+| Rotation by success rate | `models/rotation.ts`, `resolver.ts` | Try best-performing models first |
 
 ---
 

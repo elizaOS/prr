@@ -969,13 +969,16 @@ ${codeSnippet}
     const modelRecSize = modelContext?.availableModels?.length ? 1500 : 0; // Reserve for model recommendation
     const availableForIssues = effectiveMaxContextChars - headerSize - footerSize - modelRecSize;
 
-    // Build issue text for sizing
+    // WHY wider snippets when headroom: Truncated snippets led to conservative "say YES" and false positives (audit).
+    // When effectiveMaxContextChars >= 100k we use 2500/3000 for comment/code per issue; smaller providers keep 2000/2000.
+    const wideSnippets = effectiveMaxContextChars >= 100_000;
+    const maxCommentLen = wideSnippets ? 2500 : 2000;
+    const maxCodeLen = wideSnippets ? 3000 : 2000;
+
     const buildIssueText = (issue: typeof issues[0]): string => {
       // Sanitize HTML noise (base64 JWT links, metadata comments, <picture> tags)
       // THEN truncate. Without sanitizing first, a 600-char JWT blob can consume
       // 30% of the truncation budget, leaving too little actual description.
-      const maxCommentLen = 2000;
-      const maxCodeLen = 2000;
       const cleanComment = sanitizeCommentForPrompt(issue.comment);
       const truncatedComment = cleanComment.length > maxCommentLen
         ? cleanComment.substring(0, maxCommentLen) + '...'
@@ -2192,24 +2195,24 @@ RULES:
 - Do NOT narrate history ("was relocated", "was changed to", "was updated"). Describe the current state.
 - Do NOT include comment syntax (// or # or /* */). Just the words.
 - Do NOT use: TODO, FIXME, HACK, XXX, BUG, WARN
-- Start with "Review:" prefix
+- Start with "Note:" prefix (avoids review-bot feedback loops; do not use "Review:")
 - Max 100 characters. Be terse.
 - No line numbers, commit hashes, PR references, or tool names.
 
 Response format (exactly one line, nothing else):
 - EXISTING
 - SKIP
-- COMMENT: Review: <your comment>
+- COMMENT: Note: <your comment>
 
 GOOD examples (explain WHY, present tense):
-COMMENT: Review: uses local prompts module — the re-export was redundant
-COMMENT: Review: Math.floor already handles this; trunc would be a no-op
-COMMENT: Review: intentional — error boundary catches this downstream
+COMMENT: Note: uses local prompts module — the re-export was redundant
+COMMENT: Note: Math.floor already handles this; trunc would be a no-op
+COMMENT: Note: intentional — error boundary catches this downstream
 
 BAD examples (narrate history, describe diffs):
-COMMENT: Review: Templates were relocated and dependency is now obsolete
-COMMENT: Review: This was changed from X to Y in a recent refactor
-COMMENT: Review: The import path was updated to use relative imports`;
+COMMENT: Note: Templates were relocated and dependency is now obsolete
+COMMENT: Note: This was changed from X to Y in a recent refactor
+COMMENT: Note: The import path was updated to use relative imports`;
 
     // Use a cheap model — dismissal comments are simple text, not code-fixing
     const cheapModel = CHEAP_MODELS[this.provider];
@@ -2230,16 +2233,15 @@ COMMENT: Review: The import path was updated to use relative imports`;
     const commentMatch = content.match(/^COMMENT:\s*(.+)$/im);
     if (commentMatch) {
       let commentText = commentMatch[1].trim();
-      // Contract: comments must start with "Review:" for consistency
-      if (!/^Review:\s*/i.test(commentText)) {
-        commentText = commentText ? `Review: ${commentText}` : 'Review: (see context)';
+      // WHY Note: prefix: CodeRabbit and similar bots flag "Review:" as review artifacts and create feedback loops.
+      // "Note:" reads as a neutral developer comment; we normalize so all dismissal comments use it.
+      if (!/^Note:\s*/i.test(commentText)) {
+        commentText = commentText ? `Note: ${commentText}` : 'Note: (see context)';
       }
-      // Review: ensures comments start with "Review:" for consistency with contract requirements.
       // Take only first line if LLM returned multiple
       commentText = commentText.split('\n')[0];
 
       // Enforce max length
-      // Review: ensures all comments consistently start with "Review:" for uniformity.
       if (commentText.length > 100) {
         commentText = commentText.substring(0, 97) + '...';
       }

@@ -40,7 +40,7 @@ After all fix iterations complete, PRR may add inline code comments for dismisse
 
 **Skip when fixer just fixed:** Issues that were **verified this session** (the fixer successfully resolved them) are not given dismissal comments. The orchestrator passes `verifiedThisSession` into `addDismissalComments()` so we don't add a "dismissed" comment on code the fixer just fixed — avoiding a re-insertion loop.
 
-**Comment quality:** The LLM prompt asks for developer-style "why" comments (design intent, present tense), not review-tool narration. The model can respond `EXISTING` (comment already there), `SKIP` (code is self-explanatory), or `COMMENT: Review: <text>`. When the response doesn't match the format, we skip insertion instead of adding a generic fallback. (Note: This inline-comment response format is separate from the `checkIssueExists()`/`batchCheckIssuesExist()` response format described in §4, which uses `NO: <explanation>`.)
+**Comment quality:** The LLM prompt asks for developer-style "why" comments (design intent, present tense), not review-tool narration. The model can respond `EXISTING` (comment already there), `SKIP` (code is self-explanatory), or `COMMENT: Note: <text>`. We use the **"Note:"** prefix (not "Review:") so review bots (e.g. CodeRabbit) don't flag the comment as a review artifact and create feedback loops. When the response doesn't match the format, we skip insertion instead of adding a generic fallback. (This inline-comment response format is separate from the `checkIssueExists()`/`batchCheckIssuesExist()` response format described in §4, which uses `NO: <explanation>`.)
 
 ### 3. State Management (`state/manager.ts`)
 

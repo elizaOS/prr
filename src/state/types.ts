@@ -191,6 +191,16 @@ export interface ResolverState {
   noProgressCycles?: number;             // Cycles completed with zero progress (persisted for resume)
   /** When a review bot was last detected as rate-limited (bot name -> ISO timestamp). Used to short-wait on next run. */
   botRateLimitDetectedAt?: Record<string, string>;
+  /**
+   * LLM dedup cache: keyed by sorted comment ID set; stores duplicateMap and dedupedIds.
+   * WHY: Repeat runs with the same comments (e.g. re-run or next push iteration) can skip the dedup LLM step
+   * and reuse this grouping, saving tokens and latency. Previously in-memory cache reset each run.
+   */
+  dedupCache?: {
+    commentIds: string;
+    duplicateMap: Record<string, string[]>;
+    dedupedIds: string[];
+  };
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms
   totalTokenUsage?: TokenUsageRecord[];   // token usage per phase

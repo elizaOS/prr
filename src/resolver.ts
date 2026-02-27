@@ -79,7 +79,7 @@ export class PRResolver {
     return { runner: this.runner, runners: this.runners, currentRunnerIndex: this.currentRunnerIndex, modelIndices: this.modelIndices,
       modelFailuresInCycle: this.modelFailuresInCycle, modelsTriedThisToolRound: this.modelsTriedThisToolRound, progressThisCycle: this.progressThisCycle,
       recommendedModels: this.recommendedModels, recommendedModelIndex: this.recommendedModelIndex, modelRecommendationReasoning: this.modelRecommendationReasoning,
-      runnersAttemptedInCycle: this.runnersAttemptedInCycle, disabledRunners: this.disabledRunners, cycleHadOnlyTimeouts: this.cycleHadOnlyTimeouts };
+      runnersAttemptedInCycle: this.runnersAttemptedInCycle, disabledRunners: this.disabledRunners, cycleHadOnlyTimeouts: this.cycleHadOnlyTimeouts, stateContext: this.stateContext };
   }
   private syncRotationContext(ctx: Rotation.RotationContext): void {
     this.runner = ctx.runner;

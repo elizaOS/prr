@@ -451,7 +451,7 @@ export function buildFixPrompt(
   parts.push('After addressing the issues, include a RESULT line for each issue (or one overall):');
   parts.push('RESULT: FIXED — <brief description of what was changed>');
   parts.push('RESULT: ALREADY_FIXED — <cite the specific code that already handles this>');
-  parts.push('RESULT: NEEDS_DISCUSSION — <reasoning> (add a // Review: comment near the relevant code)');
+  parts.push('RESULT: NEEDS_DISCUSSION — <reasoning> (add a // Note: comment near the relevant code)');
   parts.push('RESULT: UNCLEAR — <what is ambiguous in the review instructions>');
   parts.push('RESULT: WRONG_LOCATION — <the review mentions lines X-Y but the code there is different>');
   parts.push('RESULT: CANNOT_FIX — <why this requires non-code changes>');
@@ -460,8 +460,8 @@ export function buildFixPrompt(
   parts.push('- If you make code changes, RESULT: FIXED is assumed (the line is optional).');
   parts.push('- If an issue is ALREADY FIXED, do NOT make cosmetic changes. Cite the evidence.');
   parts.push('- If instructions are UNCLEAR, explain the ambiguity instead of guessing.');
-  parts.push('- For NEEDS_DISCUSSION, add ONE short code comment: // Review: <durable explanation>.');
-  parts.push('  Comment must be long-term documentation: no line numbers, no commit hashes, no tool names. Example: "Review: Backoff is enforced in acquire(); explicit sleep here is redundant."');
+  parts.push('- For NEEDS_DISCUSSION, add ONE short code comment: // Note: <durable explanation>.');
+  parts.push('  Comment must be long-term documentation: no line numbers, no commit hashes, no tool names. Example: "Note: Backoff is enforced in acquire(); explicit sleep here is redundant."');
   parts.push('- NEVER add comments (// or #) to .json files — JSON has no comment syntax and it will break parsing. For JSON issues, use RESULT: NEEDS_DISCUSSION without adding an inline comment.');
   parts.push('- Do NOT make zero changes without at least one RESULT line (or NO_CHANGES:) explaining why.');
   const fullPrompt = parts.join('\n');

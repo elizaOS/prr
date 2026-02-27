@@ -62,14 +62,17 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Think-tag stripping**: Models like Qwen emit `<think>` reasoning blocks; we strip them from responses and ask Qwen not to emit them. *Why*: Saves ~30% output tokens and avoids breaking parsers that expect responses to start with "YES"/"NO".
 - **Verifier rejection cap**: After the verifier rejects an issue twice (fix or ALREADY_FIXED claim), we dismiss it as "exhausted" and stop retrying. *Why*: Fixer/verifier stalemates otherwise loop indefinitely.
 - **No-verified-progress exit**: After two consecutive push iterations with zero new verified fixes, we exit cleanly. *Why*: Same issues keep failing; re-run after manual edits or new bot comments.
-- **Dismissal-comment pre-check**: Before calling the LLM to generate a "Review:" comment, we check a ±7 line window for an existing one. *Why*: Avoids redundant LLM calls when a comment was already added.
+- **Dismissal-comment pre-check**: Before calling the LLM to generate a "Note:" comment, we check a ±7 line window for an existing Note:/Review: comment. *Why*: Avoids redundant LLM calls when a comment was already added.
+- **Persisted dedup cache**: LLM dedup results are stored in state keyed by comment ID set; repeat runs with the same comments skip the dedup LLM step. *Why*: In-memory cache reset each run; persisting saves tokens and latency.
+- **Wider batch snippets**: When context headroom ≥100k chars, batch verification uses 2500/3000 char limits per comment/code snippet (vs 2000/2000). *Why*: Reduces false positives from truncation.
+- **Rotation by success rate**: Legacy model rotation orders models by persisted success rate (best first). *Why*: Low-success models no longer get tried before proven performers.
 - **No-op change skip**: Identical search/replace blocks from the fixer are skipped. *Why*: Prevents wasted verification and keeps file-change counts accurate.
 - **Lesson caps for large batches**: When fixing 10+ issues at once, we cap global and per-file lessons so the prompt stays under ~100k chars. *Why*: Prevents gateway timeouts and prompt poisoning from oversized prompts.
 
 ### Robustness
 - Hash-based work directories for efficient re-runs
-- **State persistence**: Resumes from where it left off, including tool/model rotation position
-- **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
+- **State persistence**: Resumes from where it left off, including tool/model rotation position and dedup cache (comment set → duplicate grouping). *Why*: Dedup is deterministic for the same comment set; persisting avoids re-running the dedup LLM on every run.
+- **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run; used to sort rotation order (best first). *Why*: Tries proven models before chronic low performers.
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"

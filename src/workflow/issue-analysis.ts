@@ -93,14 +93,12 @@ async function fileContainsSymbol(workdir: string, filePath: string, symbol: str
   }
 }
 
-/** Module-level dedup cache (in-memory, session-scoped — not persisted). */
-const _dedupCache: {
-  commentIds?: string;
-  result?: {
-    duplicateMap: Map<string, string[]>;
-    dedupedIds: Set<string>;
-  };
-} = {};
+/**
+ * Dedup cache is persisted in state (stateContext.state.dedupCache).
+ * WHY: In-memory cache reset each run; audit showed all dedup LLM calls returning NONE on repeat runs.
+ * Persisting keyed by sorted comment IDs makes the outcome deterministic for the same set, so we skip
+ * the dedup LLM and save tokens/latency when the comment set is unchanged (e.g. re-run or next push iteration).
+ */
 
 /**
  * Result of the deduplication process
@@ -958,19 +956,22 @@ export async function findUnresolvedIssues(
   // HISTORY: Heuristic dedup is CPU-only (cheap), but LLM dedup costs tokens.
   // Dedup results are deterministic given the same set of comment IDs — if no
   // new comments appeared and no comments were removed, the dedup outcome is
-  // identical. We cache the result in-memory and reuse when the set matches.
+  // identical. We persist the cache in state so it survives across runs.
   const sortedCommentIds = toCheck.map(item => item.comment.id).sort().join(',');
-  const dedupCacheHit = _dedupCache.commentIds === sortedCommentIds && _dedupCache.result;
+  const persisted = stateContext.state?.dedupCache;
+  // WHY Array.isArray: Ensures persisted shape is valid (dedupedIds is an array); avoids using stale/malformed cache.
+  const dedupCacheHit = persisted?.commentIds === sortedCommentIds && Array.isArray(persisted.dedupedIds);
 
   let dedupResult: DedupResult;
 
-  if (dedupCacheHit) {
-    // Reuse cached dedup — rebuild dedupedToCheck from cached IDs + current toCheck items
-    const cachedDedup = _dedupCache.result!;
-    const dedupedItems = toCheck.filter(item => cachedDedup.dedupedIds.has(item.comment.id));
+  if (dedupCacheHit && persisted) {
+    // Reuse persisted dedup — rebuild dedupedToCheck and duplicateItems from state
+    const dedupedIdSet = new Set(persisted.dedupedIds);
+    const dedupedItems = toCheck.filter(item => dedupedIdSet.has(item.comment.id));
+    const duplicateMap = new Map<string, string[]>(Object.entries(persisted.duplicateMap));
     const toCheckById = new Map(toCheck.map(item => [item.comment.id, item]));
     const reconstructedDuplicateItems = new Map<string, typeof toCheck[0]>();
-    for (const dupeIds of cachedDedup.duplicateMap.values()) {
+    for (const dupeIds of duplicateMap.values()) {
       for (const dupeId of dupeIds) {
         const item = toCheckById.get(dupeId);
         if (item) reconstructedDuplicateItems.set(dupeId, item);
@@ -978,7 +979,7 @@ export async function findUnresolvedIssues(
     }
     dedupResult = {
       dedupedToCheck: dedupedItems,
-      duplicateMap: cachedDedup.duplicateMap,
+      duplicateMap,
       duplicateItems: reconstructedDuplicateItems,
     };
     console.log(chalk.gray(`  Dedup results reused (comment set unchanged, ${formatNumber(dedupResult.duplicateMap.size)} canonical groups)`));
@@ -1004,12 +1005,15 @@ export async function findUnresolvedIssues(
       warn(`LLM dedup failed, proceeding with heuristic-only results: ${err}`);
     }
 
-    // Cache dedup results for next iteration (in-memory only)
-    _dedupCache.commentIds = sortedCommentIds;
-    _dedupCache.result = {
-      duplicateMap: dedupResult.duplicateMap,
-      dedupedIds: new Set(dedupResult.dedupedToCheck.map(item => item.comment.id)),
-    };
+    // Persist dedup results so next run (or next iteration) can skip LLM when comment set unchanged.
+    // WHY: Dedup is deterministic for the same comment IDs; state is saved by the orchestrator so cache survives across runs.
+    if (stateContext.state) {
+      stateContext.state.dedupCache = {
+        commentIds: sortedCommentIds,
+        duplicateMap: Object.fromEntries(dedupResult.duplicateMap),
+        dedupedIds: dedupResult.dedupedToCheck.map(item => item.comment.id),
+      };
+    }
   }
 
   // Use deduplicated list for analysis

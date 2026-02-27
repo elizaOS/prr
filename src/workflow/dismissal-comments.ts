@@ -108,12 +108,14 @@ function hasNullBytes(content: string): boolean {
   return content.includes('\0');
 }
 
-/** Matches common comment starts (//, #, /*, *, <!--) so we catch Review: in any style. */
+/** Matches common comment starts (//, #, /*, *, <!--) so we catch Note:/Review: in any style. */
 const REVIEW_COMMENT_START = /^\s*(\/\/|#|\/\*|\*|<!--)/;
 
 /**
- * Check if a "Review:" (or similar) comment already exists near the target line.
- * Fast check to avoid unnecessary LLM calls. Accepts any comment style containing "Review:".
+ * Check if a "Note:" or "Review:" (legacy) comment already exists near the target line.
+ * WHY: Skips the dismissal LLM call when we or a previous run already added an explanatory comment.
+ * We recognize both Note: (current) and Review: (legacy) so existing comments are not duplicated.
+ * Radius ±7 matches the LLM context window so we don't call the LLM only to get EXISTING back.
  */
 function hasExistingReviewComment(
   lines: string[],
@@ -121,7 +123,7 @@ function hasExistingReviewComment(
   _commentPrefix: string
 ): boolean {
   // WHY 7: Matches the LLM context window (contextBefore/contextAfter). With 3 we missed existing
-  // "Review:" comments that the LLM could see, causing redundant calls that always returned EXISTING.
+  // Note:/Review: comments that the LLM could see, causing redundant calls that always returned EXISTING.
   const checkRadius = 7;
   const start = Math.max(0, targetLine - 1 - checkRadius);
   const end = Math.min(lines.length, targetLine + checkRadius);
@@ -129,8 +131,8 @@ function hasExistingReviewComment(
   for (let i = start; i < end; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    // Require comment syntax and "Review:" so we don't match code that contains the word
-    if (REVIEW_COMMENT_START.test(lines[i]) && /Review:/i.test(line)) {
+    // Require comment syntax and Note:/Review: so we don't match code that contains the word
+    if (REVIEW_COMMENT_START.test(lines[i]) && /(?:Note|Review):/i.test(line)) {
       return true;
     }
   }
@@ -182,7 +184,7 @@ async function insertCommentAtLine(
     // Get comment syntax for this file type
     const commentSyntax = getCommentSyntax(filePath);
     
-    // Fast check: does a "Review:" comment already exist nearby?
+    // Fast check: does a Note:/Review: comment already exist nearby?
     if (hasExistingReviewComment(lines, line, commentSyntax.start)) {
       debug('Review comment already exists near target line', { filePath, line });
       return false;
@@ -311,7 +313,7 @@ export async function addDismissalComments(
     byFile.get(issue.filePath)!.push(issue);
   }
 
-  // Pass 1: Check once per (file, line) — skip LLM if "Review:" comment already exists.
+  // Pass 1: Check once per (file, line) — skip LLM if Note:/Review: comment already exists.
   // Dedupe by (filePath, effectiveLine) so multiple issues that clamp to the same line
   // get one LLM call and one insert (avoids wasted parallel calls and duplicate-insert skips).
   // Resolve truncated paths (e.g. "verify/route.ts" from bot markdown) to full repo paths via git ls-files.

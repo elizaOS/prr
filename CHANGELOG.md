@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-02) — Prompts.log audit: persisted dedup cache, Note prefix, wider snippets, rotation by success
+
+**Persisted LLM dedup cache**
+- Dedup results (comment ID set → duplicateMap, dedupedIds) are now stored in `state.dedupCache` and survive across runs. When the same set of comment IDs is seen again (e.g. re-run or next push iteration), the LLM dedup step is skipped and the cached grouping is reused.
+- **WHY**: Audit showed all dedup LLM calls returned NONE because the cache was in-memory only and reset each run. Persisting keyed by sorted comment IDs saves tokens and latency on repeat runs with unchanged comment set.
+
+**"Note:" prefix for dismissal and NEEDS_DISCUSSION comments**
+- Inline comments for dismissed issues and for fixer NEEDS_DISCUSSION outcomes now use the **"Note:"** prefix instead of "Review:". Prompt, response parsing, and fixer instructions were updated in `src/llm/client.ts`, `src/workflow/dismissal-comments.ts`, `src/analyzer/prompt-builder.ts`, and `src/workflow/utils.ts`. The pre-check recognizes both "Note:" and "Review:" (legacy) so existing comments are not duplicated.
+- **WHY**: CodeRabbit and similar bots flag "Review:" as review artifacts and create feedback loops. "Note:" reads as a neutral developer comment and avoids that.
+
+**Pre-check for existing Note:/Review: before dismissal LLM**
+- Before calling the LLM to generate a dismissal comment, we check a ±7 line window for an existing comment containing "Note:" or "Review:". If found, the LLM is not called.
+- **WHY**: Audit showed many dismissal calls returning EXISTING/SKIP; the pre-check reduces redundant LLM calls when a comment was already added.
+
+**Wider snippets for batch issue analysis**
+- When `effectiveMaxContextChars >= 100_000`, batch verification uses 2500 chars for comment and 3000 for code per issue (up from 2000/2000). Smaller context providers keep 2000/2000.
+- **WHY**: Truncated snippets led to conservative "say YES" and false positives. More context when headroom exists improves accuracy without blowing context limits.
+
+**Model rotation sorted by success rate**
+- When using legacy rotation (or after exhausting LLM recommendations), the model list is sorted by per-model success rate so better-performing models are tried first. Requires `stateContext` on the rotation context (set by the resolver).
+- **WHY**: Audit showed some models at ~1% success still cycled early. Using persisted `modelPerformance` to order the list tries proven models first and deprioritizes chronic low performers.
+
+---
+
 ### Added (2026-02) — Audit improvements: token savings, verifier rejection, exit logic, polish
 
 **Think-tag stripping and suppression (OpenAI/ElizaCloud path)**

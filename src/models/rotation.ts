@@ -13,6 +13,7 @@ import type { Config } from '../config.js';
 import { warn, debug, formatNumber } from '../logger.js';
 import { MAX_MODELS_PER_TOOL_ROUND } from '../constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
+import * as Performance from '../state/state-performance.js';
 
 /**
  * Context for model rotation state
@@ -36,6 +37,8 @@ export interface RotationContext {
   disabledRunners?: Set<string>;
   /** True when the only failures this cycle were 504/timeout (model never responded). Don't count as stalemate. */
   cycleHadOnlyTimeouts?: boolean;
+  /** When set, rotation list is sorted by success rate (best first). WHY: Tries proven models before chronic low performers. */
+  stateContext?: StateContext;
 }
 
 /**
@@ -63,6 +66,18 @@ export function getModelsForRunner(runner: Runner | undefined): string[] {
   if (!runner) return [];
   // Use runner's own list if provided, otherwise use defaults
   return runner.supportedModels || DEFAULT_MODEL_ROTATIONS[runner.name] || [];
+}
+
+/**
+ * Get models for runner, optionally sorted by success rate when stateContext is present.
+ * WHY: Audit showed some models at ~1% success still cycled early in rotation. Using persisted
+ * modelPerformance to order the list tries proven models first and deprioritizes chronic low performers.
+ * Single-model runners or missing stateContext return the raw list unchanged.
+ */
+function getModelsForRunnerSorted(ctx: RotationContext): string[] {
+  const raw = getModelsForRunner(ctx.runner);
+  if (raw.length <= 1 || !ctx.stateContext) return raw;
+  return Performance.sortRecommendedModelsByPerformance(raw, ctx.runner.name, ctx.stateContext);
 }
 
 /**
@@ -101,8 +116,8 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
     });
   }
   
-  // Fall back to legacy rotation
-  const models = getModelsForRunner(ctx.runner);
+  // Fall back to legacy rotation (sorted by success rate when stateContext set)
+  const models = getModelsForRunnerSorted(ctx);
   if (models.length === 0) {
     return undefined;  // Let the tool use its default
   }
@@ -222,7 +237,7 @@ export function advanceModel(ctx: RotationContext, stateContext: StateContext, o
  * Returns true if rotated to a new model, false if we've cycled through all
  */
 export function rotateModel(ctx: RotationContext, stateContext: StateContext): boolean {
-  const models = getModelsForRunner(ctx.runner);
+  const models = getModelsForRunnerSorted(ctx);
   if (models.length <= 1) {
     return false;  // No rotation possible
   }
