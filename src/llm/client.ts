@@ -253,12 +253,20 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
         url.searchParams.set('after_id', afterId);
       }
       
-      const response = await fetch(url.toString(), {
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-      });
+      const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 15_000);
+let response: Response;
+try {
+  response = await fetch(url.toString(), {
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    signal: controller.signal,
+  });
+} finally {
+  clearTimeout(timeout);
+}
       
       if (!response.ok) {
         debug('Anthropic models API returned non-OK', {
@@ -539,7 +547,7 @@ export class LLMClient {
     let elizaAcquired = false;
     try {
       if (this.provider === 'elizacloud') {
-        await acquireElizacloud(); // uses exported fn so same global limit as llm-api runner
+        await acquireElizacloud().then(() => elizaAcquired = true); // uses exported fn so same global limit as llm-api runner
         elizaAcquired = true;
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
