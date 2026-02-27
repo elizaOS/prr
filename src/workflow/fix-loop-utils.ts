@@ -300,7 +300,7 @@ export async function checkAndPullRemoteCommits(
       if (previouslyVerified > 0) {
         console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
         Verification.clearAllVerifications(stateContext);
-      // Review: cache invalidation ensures outdated verifications are refreshed after code changes
+      
       }
       
       // Re-fetch code snippets for unresolved issues concurrently
