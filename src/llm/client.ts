@@ -981,9 +981,12 @@ ${codeSnippet}
       const truncatedComment = cleanComment.length > maxCommentLen
         ? cleanComment.substring(0, maxCommentLen) + '...'
         : cleanComment;
-      const truncatedCode = issue.codeSnippet.length > maxCodeLen
-        ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
-        : issue.codeSnippet;
+      const hasCode = (issue.codeSnippet ?? '').trim().length > 0;
+      const truncatedCode = hasCode
+        ? (issue.codeSnippet.length > maxCodeLen
+            ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+            : issue.codeSnippet)
+        : '';
 
       const parts = [];
       
@@ -1002,7 +1005,7 @@ ${codeSnippet}
         '',
         'Current code:',
         '```',
-        truncatedCode,
+        hasCode ? truncatedCode : '(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)',
         '```',
         '',
       );
@@ -1713,6 +1716,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       (_, i) => fixes.slice(i * batchSize, (i + 1) * batchSize)
     );
 
+    // Verification accuracy affects fix-loop decisions. If many false YES/NO occur, use a stronger model (e.g. via tool config).
     const MAX_VERIFY_RETRIES = 1;
     for (let b = 0; b < batches.length; b++) {
       const batchFixes = batches[b];
@@ -1791,10 +1795,10 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     for (let i = 0; i < fixes.length; i++) {
       const fix = fixes[i];
       const idx = i + 1;
-      const currentCode = fix.currentCode
-        ? fix.currentCode.length > maxCode
-          ? fix.currentCode.substring(0, maxCode) + '\n... (truncated)'
-          : fix.currentCode
+      // Treat empty or whitespace-only as missing — avoid empty Current Code blocks that force the model to guess
+      const rawCurrent = fix.currentCode?.trim();
+      const currentCode = rawCurrent && rawCurrent.length > 0
+        ? (rawCurrent.length > maxCode ? rawCurrent.substring(0, maxCode) + '\n... (truncated)' : rawCurrent)
         : undefined;
       const diff =
         fix.diff.length > maxDiff ? fix.diff.substring(0, maxDiff) + '\n... (truncated)' : fix.diff;
@@ -1809,6 +1813,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         parts.push('```');
         parts.push(currentCode);
         parts.push('```');
+        parts.push('');
+      } else {
+        parts.push('Current Code: (unavailable — verify from diff only)');
         parts.push('');
       }
       parts.push('Code Change (diff):');
