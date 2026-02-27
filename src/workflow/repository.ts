@@ -19,7 +19,7 @@ import type { Runner } from '../runners/types.js';
 import chalk from 'chalk';
 import { debug, debugStep, startTimer, endTimer } from '../logger.js';
 import { formatNumber } from '../ui/reporter.js';
-import { cloneOrUpdate, checkForConflicts, pullLatest, abortMerge, completeMerge } from '../git/git-clone-index.js';
+import { cloneOrUpdate, checkForConflicts, pullLatest, abortMerge, completeMerge, cleanupGitState } from '../git/git-clone-index.js';
 import { scanCommittedFixes } from '../git/git-commit-index.js';
 
 /**
@@ -142,7 +142,7 @@ export async function checkAndSyncWithRemote(
         console.log(chalk.red(`    - ${file}`));
       }
       console.log(chalk.yellow('\n  Please resolve conflicts manually before running prr.'));
-      await abortMerge(git);
+      await cleanupGitState(git);
       endTimer('Resolve remote conflicts');
       return { success: false, error: 'Unresolved merge conflicts' };
     }
@@ -152,7 +152,7 @@ export async function checkAndSyncWithRemote(
     
     if (!commitResult.success) {
       console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
-      await abortMerge(git);
+      await cleanupGitState(git);
       endTimer('Resolve remote conflicts');
       return { success: false, error: commitResult.error };
     }
@@ -171,21 +171,45 @@ export async function checkAndSyncWithRemote(
       console.log(chalk.red(`  Error: ${pullResult.error}`));
       
       if (pullResult.error?.includes('conflict')) {
-        // Get conflicted files from git status
-        const status = await git.status();
-        const conflictedFiles = status.conflicted || [];
+        console.log(chalk.cyan(`  Attempting to resolve pull/rebase conflicts automatically...`));
+        startTimer('Resolve pull conflicts');
         
-        console.log(chalk.cyan(`  Attempting to resolve pull conflicts automatically...`));
-        debug('Pull conflicts detected', { conflictedFiles: conflictedFiles.length });
+        // Rebase can conflict on multiple commits. Loop: resolve current
+        // conflict, continue rebase, handle next conflict if any.
+        // Cap iterations to avoid infinite loops on pathological cases.
+        const MAX_REBASE_CONFLICT_ROUNDS = 50;
+        let resolvedRounds = 0;
         
-        if (conflictedFiles.length > 0) {
-          startTimer('Resolve pull conflicts');
+        for (let round = 0; round < MAX_REBASE_CONFLICT_ROUNDS; round++) {
+          const status = await git.status();
+          const conflictedFiles = status.conflicted || [];
+          
+          if (conflictedFiles.length === 0) {
+            // No more conflicts — check if rebase is still in progress
+            // (it might have auto-continued to completion)
+            const { existsSync: fsExists } = await import('fs');
+            const { join: pathJoin } = await import('path');
+            const gitDir = await git.revparse(['--git-dir']).catch(() => '.git');
+            const inRebase = fsExists(pathJoin(gitDir.trim(), 'rebase-merge')) || fsExists(pathJoin(gitDir.trim(), 'rebase-apply'));
+            if (!inRebase) break;
+            // Rebase in progress but no conflicts — continue it
+            try {
+              await git.rebase(['--continue']);
+            } catch {
+              break;
+            }
+            continue;
+          }
+          
+          debug('Rebase conflict round', { round: round + 1, conflictedFiles: conflictedFiles.length });
+          console.log(chalk.cyan(`  Rebase conflict round ${round + 1}: ${conflictedFiles.length} file(s)`));
+          
           const resolution = await resolveConflicts(
             git,
             conflictedFiles,
             `origin/${branch}`
           );
-          debug('Pull conflict resolution result', { success: resolution.success, remaining: resolution.remainingConflicts.length });
+          debug('Pull conflict resolution result', { round: round + 1, success: resolution.success, remaining: resolution.remainingConflicts.length });
           
           if (!resolution.success) {
             console.log(chalk.red('\n✗ Could not resolve pull conflicts automatically'));
@@ -194,28 +218,41 @@ export async function checkAndSyncWithRemote(
               console.log(chalk.red(`    - ${file}`));
             }
             console.log(chalk.yellow('\n  Please resolve conflicts manually before running prr.'));
-            await abortMerge(git);
+            await cleanupGitState(git);
             endTimer('Resolve pull conflicts');
             return { success: false, error: 'Unresolved pull conflicts' };
           }
           
-          // All conflicts resolved - complete the merge/rebase
+          resolvedRounds++;
+          
+          // Continue the rebase to apply the next commit
           const commitResult = await completeMerge(git, `Merge remote-tracking branch 'origin/${branch}'`);
           
           if (!commitResult.success) {
-            console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
-            await abortMerge(git);
+            // completeMerge failure during rebase often means the next commit
+            // also conflicts — the error message will contain "CONFLICT".
+            // Loop back to handle it.
+            const errMsg = commitResult.error || '';
+            if (errMsg.includes('CONFLICT') || errMsg.includes('conflict')) {
+              debug('Rebase --continue hit another conflict, looping', { error: errMsg.slice(0, 120) });
+              continue;
+            }
+            console.log(chalk.red(`✗ Failed to complete rebase: ${commitResult.error}`));
+            await cleanupGitState(git);
             endTimer('Resolve pull conflicts');
             return { success: false, error: commitResult.error };
           }
-          
-          console.log(chalk.green('✓ Pull conflicts resolved and merge completed'));
-          endTimer('Resolve pull conflicts');
+        }
+        
+        if (resolvedRounds > 0) {
+          console.log(chalk.green(`✓ Pull conflicts resolved (${resolvedRounds} rebase conflict round${resolvedRounds > 1 ? 's' : ''})`));
         } else {
-          console.log(chalk.yellow('  Please resolve conflicts manually before running prr.'));
-          await abortMerge(git);
+          console.log(chalk.yellow('  No conflicts found to resolve.'));
+          await cleanupGitState(git);
+          endTimer('Resolve pull conflicts');
           return { success: false, error: 'Manual conflict resolution required' };
         }
+        endTimer('Resolve pull conflicts');
       } else {
         return { success: false, error: pullResult.error };
       }

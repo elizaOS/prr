@@ -22,7 +22,7 @@ import {
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
 } from '../constants.js';
-import { buildConflictResolutionPrompt } from './git-conflict-prompts.js';
+import { buildConflictResolutionPrompt, buildConflictResolutionPromptWithContent } from './git-conflict-prompts.js';
 import { handleLockFileConflicts } from './git-conflict-lockfiles.js';
 import {
   resolveConflictsChunked,
@@ -33,6 +33,80 @@ import {
   hasAsymmetricConflict,
   resolveAsymmetricConflict,
 } from './git-conflict-chunked.js';
+import { getMaxFixPromptCharsForModel } from '../llm/model-context-limits.js';
+
+/**
+ * Documentation and generated documentation files that should use deterministic
+ * conflict resolution (keep ours) instead of LLM resolution.
+ * 
+ * WHY: These files are frequently modified by both sides (PRR adds changelog
+ * entries, remote adds entries). LLM resolution of large markdown files:
+ *   1. Often exceeds model context (68KB CHANGELOG → 504 timeout on small models)
+ *   2. Hallucinates content when it can't see the full file
+ *   3. Is expensive and slow for files that can be resolved deterministically
+ * 
+ * Strategy: keep "ours" side (HEAD in rebase = the local accumulated work).
+ * If the remote added important entries, they'll appear in the base after
+ * rebase completes — they're not lost, just not duplicated into ours.
+ */
+const DETERMINISTIC_MERGE_FILES = new Set([
+  'CHANGELOG.md',
+  'CHANGES.md',
+  'HISTORY.md',
+  'RELEASES.md',
+]);
+
+const DETERMINISTIC_MERGE_PATTERNS = [
+  /^docs\//i,
+  /^\.github\//i,
+  /^CONTRIBUTING/i,
+  /^CODE_OF_CONDUCT/i,
+  /^SECURITY/i,
+  /^AUTHORS/i,
+  /^CREDITS/i,
+];
+
+function shouldUseDeterministicMerge(filePath: string): boolean {
+  const basename = filePath.split('/').pop() || filePath;
+  if (DETERMINISTIC_MERGE_FILES.has(basename)) return true;
+  return DETERMINISTIC_MERGE_PATTERNS.some(p => p.test(filePath));
+}
+
+/**
+ * Resolve a conflict by keeping ours (HEAD) side for all conflict regions.
+ * Non-conflicted lines are preserved verbatim.
+ */
+function resolveKeepOurs(content: string): { resolved: boolean; content: string; explanation: string } {
+  const lines = content.split('\n');
+  const result: string[] = [];
+  let inConflict = false;
+  let inTheirs = false;
+
+  for (const line of lines) {
+    if (line.startsWith('<<<<<<<')) {
+      inConflict = true;
+      inTheirs = false;
+      continue;
+    }
+    if (line.startsWith('=======') && inConflict) {
+      inTheirs = true;
+      continue;
+    }
+    if (line.startsWith('>>>>>>>') && inConflict) {
+      inConflict = false;
+      inTheirs = false;
+      continue;
+    }
+    if (inConflict && inTheirs) continue;
+    result.push(line);
+  }
+
+  return {
+    resolved: true,
+    content: result.join('\n'),
+    explanation: 'Kept ours (documentation file — deterministic merge)',
+  };
+}
 
 
 /**
@@ -145,13 +219,27 @@ export async function resolveConflictsWithLLM(
     }
   }
   
+  // Compute model context limit for conflict resolution prompts.
+  // The LLM client uses its default model (e.g., qwen-3-14b on ElizaCloud);
+  // we need to respect that model's context window.
+  const llmProvider = (llm as any).provider as 'elizacloud' | 'anthropic' | 'openai' | undefined;
+  const llmModel = (llm as any).model as string | undefined;
+  const modelMaxChars = (llmProvider && llmModel)
+    ? getMaxFixPromptCharsForModel(llmProvider, llmModel)
+    : MAX_CONFLICT_RESOLUTION_FILE_SIZE;
+  
   // Handle code files with LLM tools
   if (codeFiles.length > 0 && runner) {
     const activeRunner = runner;
-    // Build prompt for conflict resolution (only non-lock files)
-    const conflictPrompt = buildConflictResolutionPrompt(codeFiles, mergingBranch);
     
-    // Run the cursor/opencode tool to resolve conflicts
+    // For non-agentic runners (llm-api), embed file content in the prompt
+    // so the LLM can produce search/replace blocks against real content.
+    // Agentic runners (Cursor, Claude Code) can open files themselves.
+    const isNonAgentic = activeRunner.name === 'llm-api';
+    const conflictPrompt = isNonAgentic
+      ? buildConflictResolutionPromptWithContent(codeFiles, mergingBranch, workdir, modelMaxChars)
+      : buildConflictResolutionPrompt(codeFiles, mergingBranch);
+    
     console.log(chalk.cyan(`\n  Attempt 1: Using ${activeRunner.name} to resolve conflicts...`));
     const runResult = await activeRunner.run(workdir, conflictPrompt, { model: getCurrentModel() });
     
@@ -240,16 +328,23 @@ export async function resolveConflictsWithLLM(
         
         if (result.resolved) {
           console.log(chalk.blue(`    → Using heuristic strategy for ${conflictFile}`));
+        } else if (shouldUseDeterministicMerge(conflictFile)) {
+          console.log(chalk.blue(`    → Using deterministic merge (keep ours) for ${conflictFile}`));
+          result = resolveKeepOurs(conflictedContent);
+        } else if (conflictedContent.length > modelMaxChars) {
+          // File exceeds model's context window — skip LLM entirely.
+          // Sending a prompt larger than the model can handle causes 504
+          // timeouts or 400 "context length exceeded" errors.
+          console.log(chalk.yellow(`    → Skipping LLM resolution: file (${fileSize}KB) exceeds model context (${Math.round(modelMaxChars / 1024)}KB chars for ${llmModel || 'unknown'})`));
+          result = {
+            resolved: false,
+            content: conflictedContent,
+            explanation: `File too large for model context (${fileSize}KB > ${Math.round(modelMaxChars / 1024)}KB)`,
+          };
         } else if (
           isGeneratedSchemaFile(conflictFile) &&
           hasAsymmetricConflict(conflictedContent)
         ) {
-          // Asymmetric conflict in a generated file: one side is dramatically
-          // larger than the other. Use the large side as base, then check the
-          // small side for any unique content worth merging.
-          // WHY: Standard chunked strategy sends 600KB+ to the LLM and risks
-          // catastrophic truncation. This keeps the large side intact and only
-          // sends the small side for analysis.
           console.log(chalk.blue(`    → Using asymmetric merge for generated file (${fileSize}KB)`));
           result = await resolveAsymmetricConflict(
             llm,

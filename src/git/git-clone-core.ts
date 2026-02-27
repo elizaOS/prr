@@ -65,6 +65,23 @@ export async function cloneOrUpdate(
     if (options?.preserveChanges) {
       // Preserve existing changes - just make sure we're on the right branch
       console.log('Existing workdir found, preserving local changes...');
+      
+      // Abort any stuck rebase/merge/cherry-pick from a previous failed run.
+      // Without this, a prior crash mid-rebase leaves the workdir in an
+      // unusable state and every subsequent run fails at the same point.
+      const { existsSync: fsExists } = await import('fs');
+      const rebaseMerge = join(workdir, '.git', 'rebase-merge');
+      const rebaseApply = join(workdir, '.git', 'rebase-apply');
+      const mergeHead = join(workdir, '.git', 'MERGE_HEAD');
+      const cherryPickHead = join(workdir, '.git', 'CHERRY_PICK_HEAD');
+      if (fsExists(rebaseMerge) || fsExists(rebaseApply) || fsExists(mergeHead) || fsExists(cherryPickHead)) {
+        console.log('  ⚠ Detected stuck rebase/merge from previous run, aborting...');
+        try { await git.rebase(['--abort']); } catch { /* no rebase */ }
+        try { await git.merge(['--abort']); } catch { /* no merge */ }
+        try { await git.raw(['cherry-pick', '--abort']); } catch { /* no cherry-pick */ }
+        debug('Aborted stuck git operation in preserveChanges path');
+      }
+      
       const status = await git.status();
       const hasChanges = status.modified.length > 0 || status.created.length > 0 || status.staged.length > 0;
       if (hasChanges) {
