@@ -108,12 +108,43 @@ function hasNullBytes(content: string): boolean {
   return content.includes('\0');
 }
 
+/**
+ * True when the dismissal reason describes a code change (fix is visible in code).
+ * For already-fixed issues, the LLM would respond EXISTING; skipping the call saves tokens.
+ * WHY pattern coverage: Real dismissal reasons use "now uses/includes/reads/declares/invalidates",
+ * "is now declared", "Line(s) X [in file] now ...", "added", "store ... before await", etc.
+ * Matching these avoids ~7 LLM calls per run that would only return EXISTING.
+ */
+const REASON_CODE_CHANGE = /\b(now (?:uses?|includes?|reads?|declares?|invalidates?|checks?|calls?)|is now\b|added\b|Line[s]?\s+\d+[-\d]*\s+(?:\w+\s+)*now\b|Lines?\s+\d+[-\d\s,]+(?:clear|invalidate|throw|check|use|fix)|resolved chain|uses (?:let|const)|Buffer\.byteLength|initPromise|store.*before await)/i;
+
+function isReasonCodeChange(reason: string): boolean {
+  return REASON_CODE_CHANGE.test(reason);
+}
+
 /** Matches common comment starts (//, #, /*, *, <!--) so we catch Review: in any style. */
 const REVIEW_COMMENT_START = /^\s*(\/\/|#|\/\*|\*|<!--)/;
 
 /**
+ * Phrases that indicate a comment already "addresses the concern" (LLM would respond EXISTING).
+ * WHY: Pre-check only matched "Review:". Bots and prior runs use "Addresses", "Fixed", "No change", etc.
+ * Matching these here avoids LLM calls that return EXISTING and saves tokens + latency.
+ */
+const DISMISSAL_COMMENT_PHRASES = [
+  /Review:/i,
+  /Addresses?\s/i,
+  /Dismissed/i,
+  /already\s+fixed/i,
+  /no\s+change\s+(needed|required)?/i,
+  /PRR:/i,
+  /not\s+an\s+issue/i,
+  /false\s+positive/i,
+  /self-?explanatory/i,
+  /intentional\s*[—\-]/i,
+];
+
+/**
  * Check if a "Review:" (or similar) comment already exists near the target line.
- * Fast check to avoid unnecessary LLM calls. Accepts any comment style containing "Review:".
+ * Fast check to avoid unnecessary LLM calls. Matches any comment that the LLM would treat as EXISTING.
  */
 function hasExistingReviewComment(
   lines: string[],
@@ -129,10 +160,9 @@ function hasExistingReviewComment(
   for (let i = start; i < end; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    // Require comment syntax and "Review:" so we don't match code that contains the word
-    if (REVIEW_COMMENT_START.test(lines[i]) && /Review:/i.test(line)) {
-      return true;
-    }
+    // Require comment syntax so we don't match code; then match any phrase that means "already addressed"
+    if (!REVIEW_COMMENT_START.test(lines[i])) continue;
+    if (DISMISSAL_COMMENT_PHRASES.some((p) => p.test(line))) return true;
   }
 
   return false;
@@ -249,6 +279,18 @@ export async function addDismissalComments(
     // Skip issues the fixer resolved this session — adding a "dismissed" comment
     // on code the fixer just fixed creates a confusing re-insertion loop.
     if (verifiedThisSession?.has(issue.commentId)) {
+      return false;
+    }
+
+    // Skip already-fixed when the reason describes a code change; the LLM would return EXISTING.
+    // WHY: Audit showed 7/11 dismissal calls returned EXISTING because the code itself addressed
+    // the concern (e.g. "Line 190 throws if agentId undefined"). Skipping saves tokens and latency.
+    if (issue.category === 'already-fixed' && isReasonCodeChange(issue.reason)) {
+      debug('Skipping dismissal comment (already-fixed, code is self-documenting)', {
+        filePath: issue.filePath,
+        line: issue.line,
+        reasonPreview: issue.reason.substring(0, 60),
+      });
       return false;
     }
     

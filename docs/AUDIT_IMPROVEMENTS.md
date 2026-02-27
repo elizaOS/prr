@@ -105,6 +105,41 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
+## 9. CodeRabbit analysis chain stripping
+
+**What:** In `sanitizeCommentForPrompt()`, we strip CodeRabbit "🧩 Analysis chain" and all "🏁 Script executed:" blocks (```shell...``` plus Repository/Length of output metadata) from comment bodies before building analysis and fix prompts.
+
+**Where:** `src/analyzer/prompt-builder.ts` — `sanitizeCommentForPrompt()`.
+
+**Why:**
+- CodeRabbit embeds 5–15 shell script runs per comment (e.g. `rg`, `cat`, `head`) with Repository and "Length of output" metadata. Each block is ~200–1500 chars; one audited comment had 11 blocks (~3.5k chars).
+- The analyzer only needs the actual finding (e.g. "**Align CACHE_TTL keys**" or "Suggested fix"); script output is noise. Stripping yields ~30%+ size reduction on affected prompts and keeps token usage under control.
+
+---
+
+## 10. Already-fixed dismissal comment skip
+
+**What:** When adding dismissal comments, we skip the LLM call for `already-fixed` issues whose dismissal reason describes a code change. We detect this via a regex (`REASON_CODE_CHANGE`) over the reason text (e.g. "now uses", "Line X now", "added", "is now declared", "Lines X in file now invalidate").
+
+**Where:** `src/workflow/dismissal-comments.ts` — `addDismissalComments()` filter and `isReasonCodeChange()`.
+
+**Why:**
+- For such issues, the LLM would almost always respond EXISTING (the code already addresses the concern). Audit showed ~7 such calls per run returning EXISTING; skipping saves input tokens and ~42s latency.
+- The regex was broadened to match real-world reasons ("now includes", "now reads", "is now declared", "Lines 181-183 in file now invalidate") so we don't miss cases and still avoid false positives on non-code-change reasons.
+
+---
+
+## 11. maxFixIterations 0 = unlimited
+
+**What:** The CLI documents `--max-fix-iterations 0` as "unlimited". The fix loop now coerces `0` to `Infinity` so the loop actually runs.
+
+**Where:** `src/workflow/push-iteration-loop.ts` — `maxFixIterations = rawMax === 0 ? Infinity : rawMax`.
+
+**Why:**
+- Previously, `maxFixIterations === 0` meant zero iterations, so the run did analysis-only and never attempted fixes. Users expecting "0 = unlimited" got no fix attempts. Coercing 0→Infinity aligns behavior with the documented meaning.
+
+---
+
 ## Summary table
 
 | Change | File(s) | Goal |
@@ -117,6 +152,9 @@ This document describes the changes made after auditing `prompts.log` and the fi
 | Lesson caps (large batch) | `analyzer/prompt-builder.ts` | Keep prompts under ~100k chars |
 | Dedup 3+ issues | `workflow/issue-analysis.ts` | Save dedup tokens for 2-comment files |
 | Commit "duplicate" wording | `git/git-commit-message.ts` | Avoid forbidden phrase |
+| CodeRabbit analysis chain strip | `analyzer/prompt-builder.ts` | Reduce prompt size on CodeRabbit comments |
+| Already-fixed dismissal skip | `dismissal-comments.ts` | Skip LLM when reason describes code change |
+| maxFixIterations 0 = unlimited | `workflow/push-iteration-loop.ts` | Align behavior with CLI docs |
 
 ---
 
