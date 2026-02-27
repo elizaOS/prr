@@ -5,11 +5,13 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 export function isLockFile(filepath: string): boolean {
-  return /(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Pipfile\.lock|poetry\.lock|composer\.lock|cargo\.lock)$/i.test(filepath);
+  return /(?:bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Pipfile\.lock|poetry\.lock|composer\.lock|cargo\.lock)$/i.test(filepath);
 }
 
 export function getLockFileInfo(filepath: string): { deletePattern: string; regenerateCmd: string } | null {
   const lower = filepath.toLowerCase();
+  if (lower.endsWith('bun.lock')) return { deletePattern: '**/bun.lock', regenerateCmd: 'bun install' };
+  if (lower.endsWith('bun.lockb')) return { deletePattern: '**/bun.lockb', regenerateCmd: 'bun install' };
   if (lower.endsWith('package-lock.json')) return { deletePattern: '**/package-lock.json', regenerateCmd: 'npm install' };
   if (lower.endsWith('yarn.lock')) return { deletePattern: '**/yarn.lock', regenerateCmd: 'yarn install' };
   if (lower.endsWith('pnpm-lock.yaml')) return { deletePattern: '**/pnpm-lock.yaml', regenerateCmd: 'pnpm install' };

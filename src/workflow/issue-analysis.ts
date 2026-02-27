@@ -30,7 +30,6 @@
  */
 
 import chalk from 'chalk';
-import { createHash } from 'crypto';
 import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
@@ -57,21 +56,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../logger.js';
 import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// File hashing for comment status invalidation
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/** Compute a fast content hash for a file (for status invalidation). */
-async function hashFileContent(workdir: string, filePath: string): Promise<string> {
-  try {
-    const content = await readFile(join(workdir, filePath), 'utf-8');
-    return createHash('sha1').update(content).digest('hex').slice(0, 12);
-  } catch {
-    // File doesn't exist or unreadable — return a sentinel so status always invalidates
-    return '__missing__';
-  }
-}
+import { hashFileContent } from '../utils/file-hash.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Post-STALE symbol verification (override false STALE when symbol still in file)
@@ -459,11 +444,11 @@ async function llmDedup(
     byFile.set(item.comment.path, existing);
   }
 
-  // Process files with 2+ remaining issues — two bots flagging the same line is common
-  const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 2);
+  // Process files with 3+ remaining issues — skip LLM for 2 comments (heuristic is enough; saves tokens)
+  const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 3);
   if (filesToCheck.length === 0) return dedupResult;
 
-  debug(`LLM dedup: checking ${filesToCheck.length} file(s) with 2+ issues`);
+  debug(`LLM dedup: checking ${filesToCheck.length} file(s) with 3+ issues`);
 
   const newDuplicateMap = new Map(dedupResult.duplicateMap);
   const newDuplicateItems = new Map(dedupResult.duplicateItems);
@@ -844,6 +829,8 @@ export async function findUnresolvedIssues(
   let staleRecheck = 0;
   let dismissedStaleFiles = 0;
   let dismissedExhausted = 0;
+  let dismissedChronicFailure = 0;
+  let dismissedNotAnIssue = 0;
   let dismissedPlaceholder = 0;
 
   // Verification expiry: re-check issues verified more than 5 iterations ago
@@ -897,12 +884,17 @@ export async function findUnresolvedIssues(
         solvability.dismissCategory!,
         comment.path,
         comment.line,
-        comment.body
+        comment.body,
+        solvability.remediationHint
       );
       if (solvability.dismissCategory === 'stale') {
         dismissedStaleFiles++;
       } else if (solvability.dismissCategory === 'exhausted') {
         dismissedExhausted++;
+      } else if (solvability.dismissCategory === 'chronic-failure') {
+        dismissedChronicFailure++;
+      } else if (solvability.dismissCategory === 'not-an-issue') {
+        dismissedNotAnIssue++;
       }
       continue;
     }
@@ -1091,10 +1083,16 @@ export async function findUnresolvedIssues(
         mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
       });
     } else if (validStatus && validStatus.status === 'resolved') {
-      // Resolved but not in verifiedFixed (stale dismissal) — re-dismiss
-      Dismissed.dismissIssue(stateContext, item.comment.id, validStatus.explanation,
-        validStatus.classification === 'stale' ? 'stale' : 'already-fixed',
-        item.comment.path, item.comment.line, item.comment.body);
+      // Resolved but not in verifiedFixed (stale dismissal) — re-dismiss preserving existing category
+      const existing = Dismissed.getDismissedIssue(stateContext, item.comment.id);
+      if (existing) {
+        Dismissed.dismissIssue(stateContext, item.comment.id, existing.reason, existing.category,
+          item.comment.path, item.comment.line, item.comment.body, existing.remediationHint);
+      } else {
+        Dismissed.dismissIssue(stateContext, item.comment.id, validStatus.explanation,
+          validStatus.classification === 'stale' ? 'stale' : 'already-fixed',
+          item.comment.path, item.comment.line, item.comment.body);
+      }
       statusHits++;
     } else {
       // No valid status: new comment, or file changed → need fresh LLM analysis
@@ -1103,13 +1101,18 @@ export async function findUnresolvedIssues(
   }
 
   // Report solvability dismissals — issues leaving the queue before fix attempt
-  const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedPlaceholder;
+  const totalDismissed = dismissedStaleFiles + dismissedExhausted + dismissedChronicFailure + dismissedNotAnIssue + dismissedPlaceholder;
   if (totalDismissed > 0) {
     const parts: string[] = [];
     if (dismissedStaleFiles > 0) parts.push(`${dismissedStaleFiles} stale file(s)`);
     if (dismissedExhausted > 0) parts.push(`${dismissedExhausted} exhausted attempt(s)`);
+    if (dismissedChronicFailure > 0) parts.push(`${dismissedChronicFailure} chronic failure(s)`);
+    if (dismissedNotAnIssue > 0) parts.push(`${dismissedNotAnIssue} lockfile/not-an-issue`);
     if (dismissedPlaceholder > 0) parts.push(`${dismissedPlaceholder} unreadable file(s)`);
     console.log(chalk.gray(`  DISMISSED: ${totalDismissed} issue(s) removed from queue (${parts.join(', ')})`));
+    if (dismissedChronicFailure > 0) {
+      console.log(chalk.cyan(`  ↳ ${dismissedChronicFailure} chronic-failure dismissal(s) — token-saving (no LLM retries)`));
+    }
   }
 
   if (options.reverify && skippedCache > 0) {

@@ -42,7 +42,8 @@ export function dismissIssue(
   category: DismissedIssue['category'],
   filePath: string,
   line: number | null,
-  commentBody: string
+  commentBody: string,
+  remediationHint?: string
 ): void {
   const state = getState(ctx);
   
@@ -53,7 +54,7 @@ export function dismissIssue(
   const currentIteration = state.iterations.length;
   const existing = state.dismissedIssues.find(d => d.commentId === commentId);
   if (!existing) {
-    state.dismissedIssues.push({
+    const entry: DismissedIssue = {
       commentId,
       reason,
       dismissedAt: new Date().toISOString(),
@@ -62,15 +63,18 @@ export function dismissIssue(
       filePath,
       line,
       commentBody,
-    });
+    };
+    if (remediationHint !== undefined) entry.remediationHint = remediationHint;
+    state.dismissedIssues.push(entry);
   }
   
-  // Sync commentStatuses: flip to resolved if this comment had an "open" status
+  // Sync commentStatuses: flip to resolved and persist dismiss category
   if (state.commentStatuses?.[commentId]) {
     state.commentStatuses[commentId] = {
       ...state.commentStatuses[commentId],
       status: 'resolved',
       classification: 'stale',
+      dismissCategory: category,
       updatedAt: new Date().toISOString(),
       updatedAtIteration: currentIteration,
     };
@@ -113,4 +117,11 @@ export function isCommentDismissed(ctx: StateContext, commentId: string): boolea
   }
   
   return state.dismissedIssues.some(d => d.commentId === commentId);
+}
+
+/** Get the dismissed issue entry for a comment, if any. Used to preserve category/reason on re-dismiss. */
+export function getDismissedIssue(ctx: StateContext, commentId: string): DismissedIssue | undefined {
+  const state = ctx.state;
+  if (!state?.dismissedIssues) return undefined;
+  return state.dismissedIssues.find(d => d.commentId === commentId);
 }

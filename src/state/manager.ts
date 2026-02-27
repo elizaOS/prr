@@ -637,6 +637,7 @@ export class StateManager {
 
   /**
    * Record a fix attempt on an issue.
+   * Optional fileContentHash enables chronic-escalation to count only same-version attempts.
    */
   recordIssueAttempt(
     commentId: string,
@@ -644,7 +645,8 @@ export class StateManager {
     model: string | undefined,
     result: 'fixed' | 'failed' | 'no-changes' | 'error',
     lessonLearned?: string,
-    rejectionCount?: number
+    rejectionCount?: number,
+    fileContentHash?: string
   ): void {
     if (!this.state) throw new Error('State not loaded');
     if (!this.state.issueAttempts) {
@@ -653,8 +655,7 @@ export class StateManager {
     if (!this.state.issueAttempts[commentId]) {
       this.state.issueAttempts[commentId] = [];
     }
-    
-    this.state.issueAttempts[commentId].push({
+    const attempt: IssueAttempt = {
       commentId,
       tool,
       model,
@@ -662,7 +663,9 @@ export class StateManager {
       result,
       lessonLearned,
       rejectionCount,
-    });
+    };
+    if (fileContentHash !== undefined) attempt.fileContentHash = fileContentHash;
+    this.state.issueAttempts[commentId].push(attempt);
   }
 
   /**

@@ -22,6 +22,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, startTimer, endTimer, formatDuration } from '../logger.js';
 import { formatNumber } from '../logger.js';
 import { commitIteration, commitIterationPerFile, pushWithRetry } from '../git/git-commit-index.js';
+import { hashFileContent } from '../utils/file-hash.js';
 
 /**
  * Handle post-verification iteration cleanup
@@ -42,6 +43,7 @@ export async function handleIterationCleanup(
   lessonsBeforeFix: number,
   fixIteration: number,
   git: SimpleGit,
+  workdir: string,
   prBranch: string,
   githubToken: string | null | undefined,
   options: CLIOptions,
@@ -73,25 +75,37 @@ export async function handleIterationCleanup(
     Performance.recordModelFailure(stateContext, runner.name, currentModel || 'unknown', failedCount);
   }
   
-  // Record per-issue attempts for LLM model recommendation context
-  // WHY: LLM needs to know what's been tried on each issue to recommend different models
+  // Record per-issue attempts (with file hash so chronic check only counts same-version attempts)
+  const allIssuesForAttempts = [...changedIssues, ...unchangedIssues];
+  const hashes = await Promise.all(
+    allIssuesForAttempts.map((i) => hashFileContent(workdir, i.comment.path))
+  );
+  const commentIdToHash = new Map(
+    allIssuesForAttempts.map((i, idx) => [i.comment.id, hashes[idx]])
+  );
   for (const issue of changedIssues) {
     const wasFixed = verifiedThisSession.has(issue.comment.id);
-    Performance.recordIssueAttempt(stateContext, 
+    Performance.recordIssueAttempt(
+      stateContext,
       issue.comment.id,
       runner.name,
       currentModel || 'unknown',
       wasFixed ? 'fixed' : 'failed',
-      undefined,  // lessonLearned - could extract from lessonsContext later
-      undefined   // rejectionCount - could track in future
+      undefined,
+      undefined,
+      commentIdToHash.get(issue.comment.id)
     );
   }
   for (const issue of unchangedIssues) {
-    Performance.recordIssueAttempt(stateContext, 
+    Performance.recordIssueAttempt(
+      stateContext,
       issue.comment.id,
       runner.name,
       currentModel || 'unknown',
-      'no-changes'
+      'no-changes',
+      undefined,
+      undefined,
+      commentIdToHash.get(issue.comment.id)
     );
   }
   

@@ -742,8 +742,15 @@ export class LLMClient {
 
     const messages: OpenAI.ChatCompletionMessageParam[] = [];
     
+    // Suppress <think> reasoning blocks from models like Qwen — saves ~30% output tokens.
+    const noThinkSuffix = /\bqwen\b/i.test(chosenModel)
+      ? '\nDo NOT include <think> tags or internal reasoning. Respond directly.'
+      : '';
+
     if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
+      messages.push({ role: 'system', content: systemPrompt + noThinkSuffix });
+    } else if (noThinkSuffix) {
+      messages.push({ role: 'system', content: noThinkSuffix.trim() });
     }
     
     messages.push({ role: 'user', content: prompt });
@@ -757,7 +764,16 @@ export class LLMClient {
       requestOpts
     );
 
-    const content = response.choices[0]?.message?.content || '';
+    let content = response.choices[0]?.message?.content || '';
+
+    // Strip <think>…</think> reasoning blocks emitted by models like Qwen.
+    // These waste output tokens and can confuse response parsing (e.g. startsWith('YES')).
+    if (/<think>/i.test(content)) {
+      content = content
+        .replace(/<think>[\s\S]*?<\/think>\s*/gi, '')
+        .replace(/<think>[\s\S]*/i, '') // unclosed think (e.g. truncated output)
+        .trim();
+    }
 
     return {
       content,
@@ -2043,14 +2059,15 @@ RESOLVED:
       '',
       '🚫 FORBIDDEN PHRASES (never use these):',
       '- "address review comments"',
-      '- "address feedback"', 
+      '- "address feedback"',
       '- "fix issues"',
       '- "update code"',
       '- "apply changes"',
       '- "based on review"',
+      '- "remove duplicate code" / "remove duplicate" (too generic — name the actual change)',
       '- Any mention of "review", "comments", "feedback", "requested"',
       '',
-      'Read the feedback below, understand WHAT was changed, and describe THAT.',
+      'Read the feedback below, understand WHAT was changed (e.g. which validation, which import, which type), and describe THAT specifically.',
       '',
       `Files changed: ${fileList}`,
       '',
@@ -2091,15 +2108,18 @@ RESOLVED:
       /review(er)?\s+(comments?|feedback)/i,
       /requested\s+changes?/i,
       /apply\s+(the\s+)?changes/i,
+      /remove\s+duplicate\s+code/i,
     ];
     
     const hasForbidden = forbiddenPatterns.some(p => p.test(message));
     
     if (hasForbidden) {
       debug('Commit message contained forbidden phrase, generating fallback', { message });
-      // Generate a simple but specific message from file names
-      const mainFile = files[0]?.replace(/\.[^.]+$/, '') || 'code';
-      return `fix(${mainFile}): improve ${mainFile} implementation`;
+      // Use same pattern-based first line as buildCommitMessage for consistent quality
+      const { buildCommitMessage } = await import('../git/git-commit-message.js');
+      const fallbackFull = buildCommitMessage(fixedIssues, []);
+      const fallbackFirstLine = fallbackFull.split('\n')[0]?.trim() || 'fix: address feedback';
+      return fallbackFirstLine.length <= 72 ? fallbackFirstLine : fallbackFirstLine.substring(0, 69) + '...';
     }
 
     // Normalize the conventional commit prefix (lowercase, proper colon)

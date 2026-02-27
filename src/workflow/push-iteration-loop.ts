@@ -360,7 +360,7 @@ export async function executePushIteration(
     
     // Handle iteration cleanup
     const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, getRunner(), currentModel,
-      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime, progressThisCycle);
+      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, workdir, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime, progressThisCycle);
     
     progressThisCycle += cleanupResult.progressMade;
     if (cleanupResult.expectedBotResponseTime !== undefined) expectedBotResponseTimeRef.current = cleanupResult.expectedBotResponseTime;

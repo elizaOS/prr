@@ -12,14 +12,18 @@ import type { StateContext } from '../../state/state-context.js';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
 import * as Performance from '../../state/state-performance.js';
 import * as Dismissed from '../../state/state-dismissed.js';
-import { MAX_DISTINCT_FAILED_ATTEMPTS } from '../../constants.js';
+import { MAX_DISTINCT_FAILED_ATTEMPTS, CHRONIC_FAILURE_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD } from '../../constants.js';
+import { isLockFile, getLockFileInfo } from '../../git/git-lock-files.js';
+import { hashFileContentSync } from '../../utils/file-hash.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
 export interface SolvabilityResult {
   solvable: boolean;
   reason?: string;                    // For logging
-  dismissCategory?: 'stale' | 'exhausted';
+  dismissCategory?: 'stale' | 'exhausted' | 'not-an-issue' | 'chronic-failure';
+  /** Next-step for humans (e.g. lockfile: "Run: bun install") */
+  remediationHint?: string;
   contextHints?: string[];            // Injected into LLM prompt in Phase 3
   retargetedLine?: number;            // If smart re-targeting found the code at a different line
 }
@@ -69,6 +73,28 @@ export function assessSolvability(
       solvable: false,
       dismissCategory: 'stale',
       reason: `Path is under .prr/ (tool-managed); excluded from fix loop`,
+    };
+  }
+
+  // Check 0d: Lockfiles — LLM search/replace fails on lockfiles; use package manager instead
+  // WHY: bun.lock, package-lock.json, etc. are generated; edits should be "run bun install" / "npm install"
+  if (isLockFile(normalizedPath)) {
+    const lockInfo = getLockFileInfo(normalizedPath);
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: `Lockfile — update with package manager (e.g. bun install, npm install) instead of editing`,
+      remediationHint: lockInfo ? `Run: ${lockInfo.regenerateCmd}` : undefined,
+    };
+  }
+
+  // Check 0e: Verifier rejected this issue N+ times — stop retrying to save tokens
+  const rejectionCount = stateContext.state?.verifierRejectionCount?.[comment.id] ?? 0;
+  if (rejectionCount >= VERIFIER_REJECTION_DISMISS_THRESHOLD) {
+    return {
+      solvable: false,
+      dismissCategory: 'exhausted',
+      reason: `Verifier rejected fix/claim ${rejectionCount} time(s) — dismissing to avoid repeated retries`,
     };
   }
 
@@ -156,14 +182,24 @@ export function assessSolvability(
     }
   }
 
-  // Check 3: Attempt exhaustion
+  // Check 3: Chronic failure — total failed attempts for current file version only
+  // WHY: Same issue failing N+ times burns tokens; only count attempts on same file content so refactors reset the counter
   const attempts = Performance.getIssueAttempts(stateContext, comment.id);
-  const failedCombos = new Set(
-    attempts
-      .filter(a => a.result === 'failed' || a.result === 'no-changes')
-      .map(a => `${a.tool}/${a.model}`)
-  );
+  let failedAttempts = attempts.filter(a => a.result === 'failed' || a.result === 'no-changes');
+  const currentHash = hashFileContentSync(fullPath);
+  failedAttempts = failedAttempts.filter(a => !a.fileContentHash || a.fileContentHash === currentHash);
+  if (failedAttempts.length >= CHRONIC_FAILURE_THRESHOLD) {
+    return {
+      solvable: false,
+      dismissCategory: 'chronic-failure',
+      reason: `Chronic failure: ${failedAttempts.length} fix attempts failed (current file version) — dismissing to avoid infinite retries`,
+    };
+  }
 
+  // Check 4: Attempt exhaustion — distinct tool/model combinations (same file-version filter)
+  const failedCombos = new Set(
+    failedAttempts.map(a => `${a.tool}/${a.model}`)
+  );
   if (failedCombos.size >= MAX_DISTINCT_FAILED_ATTEMPTS) {
     return {
       solvable: false,

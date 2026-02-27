@@ -55,6 +55,22 @@ function determineScope(filePaths: string[]): string {
 }
 
 /**
+ * Build a file/scope-based fallback description (used when no pattern or title matches).
+ */
+function fileBasedFallback(filePaths: string[]): string {
+  if (filePaths.length === 0) return 'improve code quality';
+  const scope = determineScope(filePaths);
+  const baseNames = filePaths
+    .map((p) => p.split('/').pop()?.replace(/\.[^.]+$/, '') || 'file')
+    .filter(Boolean);
+  const uniq = [...new Set(baseNames)];
+  if (scope !== 'misc') return `fix issues in ${scope}`;
+  if (uniq.length === 1) return `fix issues in ${uniq[0]}`;
+  if (uniq.length === 2) return `fix issues in ${uniq[0]}, ${uniq[1]}`;
+  return `fix issues across ${uniq.length} files`;
+}
+
+/**
  * Extract a description from review comments.
  * Prefers specific issue titles (e.g. "### Fix X") then pattern-based fallbacks.
  */
@@ -62,10 +78,7 @@ function extractDescription(
   fixedIssues: Array<{ filePath: string; comment: string }>,
   filePaths: string[]
 ): string {
-  // Fallback description based on files
-  const fileBasedDesc = filePaths.length > 0
-    ? `update ${filePaths[0].split('/').pop()?.replace(/\.[^.]+$/, '') || 'code'}`
-    : 'improve code quality';
+  const fileBasedDesc = fileBasedFallback(filePaths);
 
   if (fixedIssues.length === 0) {
     return fileBasedDesc;
@@ -99,12 +112,11 @@ function extractDescription(
     { regex: /retry\s+cleanup|orphan.*organization/, desc: 'add retry cleanup for orphaned orgs' },
     { regex: /add(ing)?\s+(uuid\s+)?validation/, desc: 'add validation' },
     { regex: /add(ing)?\s+error\s+handling/, desc: 'add error handling' },
-    { regex: /add(ing)?\s+type\s+(safety|check)/, desc: 'add type safety' },
     { regex: /add(ing)?\s+null\s+check/, desc: 'add null checks' },
     { regex: /add(ing)?\s+auth(entication|orization)/, desc: 'add auth checks' },
     { regex: /missing\s+(type|return|validation)/, desc: 'add missing types' },
     { regex: /remove\s+(unused|dead)/, desc: 'remove unused code' },
-    { regex: /duplicate/, desc: 'remove duplicate code' },
+    { regex: /duplicate/, desc: 'consolidate duplicate logic' },
     { regex: /extract\s+(to|into)/, desc: 'extract shared code' },
     { regex: /simplif(y|ied)/, desc: 'simplify implementation' },
     { regex: /refactor/, desc: 'refactor for clarity' },
@@ -113,6 +125,10 @@ function extractDescription(
     { regex: /race\s+condition/, desc: 'fix race condition' },
     { regex: /memory\s+leak/, desc: 'fix memory leak' },
     { regex: /exception|error\s+handling/, desc: 'improve error handling' },
+    { regex: /type\s+safety|typescript|:\s*string\s*\||:\s*number|add(ing)?\s+type\s+(safety|check)/, desc: 'add type safety' },
+    { regex: /test\s+cover|unit\s+test|mock|jest|vitest/, desc: 'add or fix tests' },
+    { regex: /lint|eslint|formatting|prettier/, desc: 'fix lint or formatting' },
+    { regex: /import\s+path|missing\s+import|wrong\s+import/, desc: 'fix imports' },
   ];
 
   for (const { regex, desc } of patterns) {

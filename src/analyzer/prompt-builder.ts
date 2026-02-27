@@ -176,6 +176,8 @@ export function buildFixPrompt(
 
   // Cap lessons to prevent prompt bloat (73+ lessons = prompt poisoning)
   const MAX_LESSONS = 15;
+  // Large batches: fewer lessons so prompt stays under ~100k chars (audit: 278k prompts wasted tokens)
+  const lessonCap = issues.length > 10 ? 5 : MAX_LESSONS;
 
   // Limit issues per prompt to prevent token overflow
   // WHY: 124 issues at once = 202k tokens which exceeds Anthropic's 200k limit
@@ -247,10 +249,10 @@ export function buildFixPrompt(
     previews.push(`  ... and ${limitedIssues.length - 3} more`);
   }
 
-  // Add lessons section to detailed summary (capped to avoid log noise)
+  // Add lessons section to detailed summary (use same cap as prompt so log matches what fixer sees)
   const lessonsSection: string[] = [];
   if (lessonsLearned.length > 0) {
-    const displayCount = Math.min(lessonsLearned.length, MAX_LESSONS);
+    const displayCount = Math.min(lessonsLearned.length, lessonCap);
     const displayLessons = lessonsLearned.slice(-displayCount);
     lessonsSection.push('');
     lessonsSection.push(`  ⚠ Lessons Learned (${displayCount}${lessonsLearned.length > displayCount ? `/${lessonsLearned.length}` : ''}):`);
@@ -268,7 +270,7 @@ export function buildFixPrompt(
   // Add lessons learned — technical constraints discovered from previous fix attempts.
   if (lessonsLearned.length > 0) {
     // Take only the most recent lessons (most relevant to current state)
-    const capped = lessonsLearned.slice(-MAX_LESSONS);
+    const capped = lessonsLearned.slice(-lessonCap);
     const skipped = lessonsLearned.length - capped.length;
 
     parts.push('## Lessons Learned (from previous attempts)\n');
@@ -419,7 +421,7 @@ export function buildFixPrompt(
     // snippet, ensures the fixer sees them in immediate context.
     // (fileLessons already fetched at the top of this loop iteration for implPath detection)
     if (fileLessons && fileLessons.length > 0) {
-      const maxInline = 3; // Keep inline section brief — top-level has the full list
+      const maxInline = issues.length > 10 ? 1 : 3; // Large batch: one lesson per file to keep prompt smaller
       const shown = fileLessons.slice(-maxInline);
       parts.push(`**⚠ File-specific lessons (from previous failed attempts on this file):**`);
       for (const lesson of shown) {

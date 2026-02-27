@@ -232,13 +232,21 @@ export function printFinalSummary(
       .join(', ');
     
     console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
+    const chronicCount = byCategory['chronic-failure'] ?? 0;
+    if (chronicCount > 0) {
+      console.log(chalk.cyan(`  ↳ ${formatNumber(chronicCount)} chronic-failure (auto-dismissed to save tokens)`));
+    }
   }
 
-  // Remaining (from final cleanup when we have unresolved issues) so RESULTS SUMMARY is complete
-  if (remainingCount !== undefined && remainingCount > 0) {
-    console.log(chalk.yellow(`  ○ Remaining: ${formatNumber(remainingCount)}`));
+  // Remaining (issues that need human attention) — always show when we have the count
+  if (remainingCount !== undefined) {
+    if (remainingCount === 0) {
+      console.log(chalk.green(`\n  ✓ No issues remaining`));
+    } else {
+      console.log(chalk.yellow(`\n  ○ Remaining: ${formatNumber(remainingCount)} (need human attention)`));
+    }
   }
-  
+
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
 }
 
@@ -463,12 +471,19 @@ export async function printAfterActionReport(
     }
     const reasonSummary = [...byReason.entries()].map(([r, n]) => `${formatNumber(n)} ${r}`).join(', ');
     console.log(chalk.gray(`\n━━━ Dismissed (${formatNumber(dismissedIssues.length)}: ${reasonSummary}) ━━━`));
+    const chronicInAar = byReason.get('chronic-failure') ?? 0;
+    if (chronicInAar > 0) {
+      console.log(chalk.cyan(`  ↳ ${formatNumber(chronicInAar)} chronic-failure (auto-dismissed to save tokens)`));
+    }
     for (const d of dismissedIssues.slice(0, 10)) {
       const comment = comments.find(c => c.id === d.commentId);
       if (comment) {
         const preview = sanitizeCommentForDisplay(comment.body).split('\n')[0];
         const truncated = preview.length > 80 ? preview.substring(0, 80) + '...' : preview;
         console.log(chalk.gray(`  ○ ${comment.path}:${comment.line || '?'} [${d.category}]`));
+        if (d.remediationHint) {
+          console.log(chalk.cyan(`    → ${d.remediationHint}`));
+        }
         console.log(chalk.gray(`    ${truncated}`));
       }
     }
