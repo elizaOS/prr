@@ -1,3 +1,4 @@
+```
 #!/usr/bin/env node
 /**
  * PRR entry point: CLI wiring, config load, signal handling, resolver run.
@@ -182,3 +183,4 @@ async function main(): Promise<void> {
 }
 
 main();
+```

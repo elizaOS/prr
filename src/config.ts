@@ -1,5 +1,4 @@
-// Content before loadConfig() unchanged...
-
+```
 export function loadConfig(): Config {
   // Smart auto-detect: check which API key is available, prefer ElizaCloud
   const rawProvider = process.env.PRR_LLM_PROVIDER;
@@ -15,7 +14,7 @@ export function loadConfig(): Config {
   } else if (process.env.OPENAI_API_KEY) {
     llmProvider = 'openai';
   } else {
-    llmProvider = 'elizacloud'; // will error below with helpful message
+    llmProvider = 'gpt-4'; // Updated to a valid identifier
   }
 
   // Validate normalized provider value
@@ -25,5 +24,4 @@ export function loadConfig(): Config {
 
   // Rest of loadConfig() stays exactly the same...
 }
-
-// Rest of the file stays unchanged...
+```
