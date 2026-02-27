@@ -95,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The commit message pattern for "duplicate" was changed from "remove duplicate code" to "consolidate duplicate logic" to avoid forbidden phrases that trigger fallback.
 - **WHY**: Some review bots flag the phrase "remove duplicate code"; the new wording satisfies the intent without triggering filters.
 
+**Prompts.log audit improvements**
+- **CodeRabbit analysis chain stripping**: In `sanitizeCommentForPrompt()`, strip `🧩 Analysis chain` and all `🏁 Script executed:` blocks (```shell...``` plus Repository/Length of output metadata) from comment bodies before analysis and fix prompts. **WHY**: CodeRabbit embeds 5–15 shell runs per comment (~200–1500 chars each); one comment had 11 blocks (~3.5k chars). The analyzer only needs the actual finding; script output wasted ~30% of batch analysis prompt tokens.
+- **Already-fixed dismissal skip**: When adding dismissal comments, skip the LLM call for `already-fixed` issues whose reason describes a code change (e.g. "now uses", "Line X now", "added validation"). **WHY**: The LLM returns EXISTING when the code is self-documenting; skipping saves ~7 calls per run and ~42s latency. Pattern was broadened to match real-world reasons ("now includes", "now reads", "is now declared", "Lines X in file now invalidate"). **WHY**: Initial regex missed 4/10 samples; full coverage avoids redundant calls.
+- **maxFixIterations 0 = unlimited**: CLI documents "0 = unlimited"; the fix loop now treats `--max-fix-iterations 0` as `Infinity` so the loop runs. **WHY**: Previously 0 meant zero iterations and the run did analysis only with no fix attempts.
+
 ### Added (2026-02) — Rotation reset, full-rewrite handling, batch reduce, injection cap, no-changes parsing
 
 **Rotation reset at push iteration start**

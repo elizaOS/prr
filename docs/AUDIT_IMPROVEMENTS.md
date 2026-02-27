@@ -138,9 +138,33 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
-## 12. maxFixIterations 0 = unlimited
+## 12. CodeRabbit analysis chain stripping
 
-**What:** The fix loop now treats `--max-fix-iterations` value `0` (and `null`/`undefined`) as *unlimited*: we compute `effectiveMaxFixIterations = (value == null || value === 0) ? Infinity : value` and use that in the loop condition and in the "max iterations reached" message.
+**What:** In `sanitizeCommentForPrompt()`, we strip CodeRabbit "🧩 Analysis chain" and all "🏁 Script executed:" blocks (shell...``` plus Repository/Length of output metadata) from comment bodies before building analysis and fix prompts.
+
+**Where:** `src/analyzer/prompt-builder.ts` — `sanitizeCommentForPrompt()`.
+
+**Why:**
+- CodeRabbit embeds 5–15 shell script runs per comment (e.g. `rg`, `cat`, `head`) with Repository and "Length of output" metadata. Each block is ~200–1500 chars; one audited comment had 11 blocks (~3.5k chars).
+- The analyzer only needs the actual finding (e.g. "**Align CACHE_TTL keys**" or "Suggested fix"); script output is noise. Stripping yields ~30%+ size reduction on affected prompts and keeps token usage under control.
+
+---
+
+## 10. Already-fixed dismissal comment skip
+
+**What:** When adding dismissal comments, we skip the LLM call for `already-fixed` issues whose dismissal reason describes a code change. We detect this via a regex (`REASON_CODE_CHANGE`) over the reason text (e.g. "now uses", "Line X now", "added", "is now declared", "Lines X in file now invalidate").
+
+**Where:** `src/workflow/dismissal-comments.ts` — `addDismissalComments()` filter and `isReasonCodeChange()`.
+
+**Why:**
+- For such issues, the LLM would almost always respond EXISTING (the code already addresses the concern). Audit showed ~7 such calls per run returning EXISTING; skipping saves input tokens and ~42s latency.
+- The regex was broadened to match real-world reasons ("now includes", "now reads", "is now declared", "Lines 181-183 in file now invalidate") so we don't miss cases and still avoid false positives on non-code-change reasons.
+
+---
+
+## 13. maxFixIterations 0 = unlimited
+
+**What:** The fix loop treats `--max-fix-iterations` value `0` (and `null`/`undefined`) as *unlimited*: `effectiveMaxFixIterations = (value == null || value === 0) ? Infinity : value`. Used in the loop condition and the "max iterations reached" message.
 
 **Where:** `src/workflow/push-iteration-loop.ts` — initialization of `effectiveMaxFixIterations`, loop condition, and post-loop exit block.
 
@@ -150,11 +174,11 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
-## 13. Empty / missing code snippets in verification prompts
+## 14. Empty / missing code snippets in verification prompts
 
 **What:**
 - **Judge (batch "do issues still exist")**: When `issue.codeSnippet` is empty or whitespace, we no longer emit an empty code block. We emit an explicit placeholder: "(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)."
-- **Fix-verification (post-fix batch)**: When `fix.currentCode` is empty or whitespace-only we treat it as missing and add the line "Current Code: (unavailable — verify from diff only)" instead of an empty ``` block.
+- **Fix-verification (post-fix batch)**: When `fix.currentCode` is empty or whitespace-only we treat it as missing and add the line "Current Code: (unavailable — verify from diff only)" instead of an empty block.
 
 **Where:** `src/llm/client.ts` — `buildIssueText` inside `batchCheckIssuesExist`, and `buildBatchVerifyPrompt`.
 
@@ -163,7 +187,7 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
-## 14. Comment grouping rule: same method, different fix
+## 15. Comment grouping rule: same method, different fix
 
 **What:** The LLM dedup grouping prompt now includes an explicit rule and example: "Same method/symbol but DIFFERENT fix = do NOT group. Example: 'Method X doesn't exist' (fix: add the method) and 'Method X called with wrong cast' (fix: change the call site) are two different fixes — do not group."
 
@@ -174,7 +198,7 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
-## 15. Dead code removal in commit-and-push-loop (bot wait)
+## 16. Dead code removal in commit-and-push-loop (bot wait)
 
 **What:** The condition for "should we wait for bot reviews after push" was simplified from `(maxPushIterations === 0 || pushIteration < maxPushIterations)` to `pushIteration < maxPushIterations`.
 
@@ -185,7 +209,7 @@ This document describes the changes made after auditing `prompts.log` and the fi
 
 ---
 
-## 16. Verification model note (in-code)
+## 17. Verification model note (in-code)
 
 **What:** A short comment was added above the batch verify loop: verification accuracy affects fix-loop decisions; if many false YES/NO occur, use a stronger model (e.g. via tool config).
 
@@ -211,6 +235,8 @@ This document describes the changes made after auditing `prompts.log` and the fi
 | Persisted dedup cache | `state/types.ts`, `workflow/issue-analysis.ts` | Skip dedup LLM on repeat runs with same comment set |
 | Wider batch snippets | `llm/client.ts` | Reduce false positives from truncation |
 | Rotation by success rate | `models/rotation.ts`, `resolver.ts` | Try best-performing models first |
+| CodeRabbit analysis chain strip | `analyzer/prompt-builder.ts` | Reduce prompt size on CodeRabbit comments |
+| Already-fixed dismissal skip | `dismissal-comments.ts` | Skip LLM when reason describes code change |
 | maxFixIterations 0 = unlimited | `workflow/push-iteration-loop.ts` | Fix loop runs with default 0 |
 | Empty snippet handling | `llm/client.ts` | No empty code blocks; explicit placeholder for judge + verifier |
 | Grouping: same method, different fix | `workflow/issue-analysis.ts` | Reduce false merges in dedup |

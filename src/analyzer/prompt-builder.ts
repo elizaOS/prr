@@ -55,6 +55,13 @@ export function sanitizeCommentForPrompt(body: string): string {
   // 8. Collapse runs of 3+ blank lines to 2
   s = s.replace(/\n{3,}/g, '\n\n');
 
+  // 9. Strip CodeRabbit "Analysis chain" and "Script executed" blocks.
+  // WHY: CodeRabbit embeds 5–15 shell script runs (rg, cat, head, etc.) with Repository/Length metadata.
+  // Each block is 200–1500 chars; one comment had 11 blocks (~3.5k chars). The analyzer only needs
+  // the actual finding (e.g. "**Align CACHE_TTL keys**" or "Suggested fix"); script output is noise.
+  s = s.replace(/\s*🏁\s*Script executed:\s*```[\s\S]*?```\s*Repository:[\s\S]*?Length of output:[^\n]*\n?(\s*---\n?)?/g, '');
+  s = s.replace(/\s*🧩\s*Analysis chain\s*\n*/gi, '\n\n');
+
   return s.trim();
 }
 
