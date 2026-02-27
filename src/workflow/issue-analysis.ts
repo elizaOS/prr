@@ -474,6 +474,8 @@ async function llmDedup(
         : '';
       return `[${idx + 1}] ${item.comment.author}${line}: ${preview}${snippet}`;
     }).join('\n\n');
+    // WHY "same method, different fix" rule: Audit found a bad merge — two comments about the same method required
+    // different fixes (add method vs change call site). Grouping them lost nuance; the rule reduces false groupings.
     const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
 You must decide which comments describe the EXACT SAME underlying problem.
 
@@ -483,6 +485,7 @@ GROUPING RULES (be conservative — wrong merges cause missed fixes):
 - Only group comments if they point to the SAME code location AND fix the SAME specific problem.
 - Comments on DIFFERENT lines, DIFFERENT functions, or that require DIFFERENT fixes must NOT be grouped.
 - "Related" or "thematically similar" is NOT enough — they must be describing the same bug/issue.
+- Same method/symbol but DIFFERENT fix = do NOT group. Example: "Method X doesn't exist" (fix: add the method) and "Method X called with wrong cast" (fix: change the call site) are two different fixes — do not group.
 - When in doubt, do NOT group.
 
 For each group of true duplicates, pick the most detailed comment as canonical.

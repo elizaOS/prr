@@ -31,6 +31,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+### Added (2026-02) — Fix loop default, empty snippets, grouping rule, dead code cleanup
+
+**maxFixIterations 0 = unlimited**
+- CLI documents `--max-fix-iterations` default as `0` meaning "unlimited", but the loop used the raw value so `0` meant zero iterations and the fix loop never ran.
+- We now map `0` and `null`/`undefined` to `Infinity` in the fix loop (`effectiveMaxFixIterations`). Loop condition and "max iterations reached" message use this effective value.
+- **WHY**: Audit of a run showed `maxFixIterations: 0` and "Fix loop exit: max_iterations" with zero fix attempts. Default 0 should mean "run until done," not "run zero times."
+
+**Empty / missing code snippets in verification prompts**
+- **Judge (batch "do issues still exist")**: When `codeSnippet` is empty or whitespace, the prompt no longer shows an empty code block. It shows an explicit placeholder instructing the model not to respond STALE and to prefer YES with explanation when code is not visible.
+- **Fix-verification (post-fix batch)**: When `currentCode` is empty or whitespace-only we treat it as missing and emit "Current Code: (unavailable — verify from diff only)" instead of an empty ``` block.
+- **WHY**: Audit of prompts.log found issues (e.g. issue_8, issue_12) with empty "Current code:" blocks; the verifier had no context and guessed. Explicit placeholder/text avoids false STALE and makes "unavailable" visible so the model doesn't invent conclusions.
+
+**Comment-deduplication grouping rule**
+- Grouping prompt now includes: "Same method/symbol but DIFFERENT fix = do NOT group" with an example (e.g. "Method X doesn't exist" vs "Method X called with wrong cast").
+- **WHY**: Audit found a bad merge: two comments about the same method required different fixes (add method vs change call site). Wrong merges cause one fix attempt to address both or lose nuance; the new rule reduces false groupings.
+
+**Dead code in commit-and-push-loop**
+- Removed the `maxPushIterations === 0` branch from the bot-wait condition. By the time this runs, `maxPushIterations` is already normalized to `Infinity` when 0, so the branch was never true.
+- **WHY**: Cleanup; condition is now `pushIteration < maxPushIterations` only. Behavior unchanged (unlimited case still waits when appropriate).
+
+**Verification model note**
+- In-code comment above batch verify loop: verification accuracy affects fix-loop decisions; if many false YES/NO occur, use a stronger model (e.g. via tool config).
+- **WHY**: Audit showed ~30% verifier errors with a small model; documenting the lever helps operators tune without code changes.
+
+---
+
 ### Added (2026-02) — Audit improvements: token savings, verifier rejection, exit logic, polish
 
 **Think-tag stripping and suppression (OpenAI/ElizaCloud path)**
@@ -401,6 +427,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Issue Deduplication Improvements**
 - Duplicate candidate numbering is now sequential across all groups (1, 2, 3... not restarting per group), shared between heuristic display and LLM dedup verdicts.
+// Review: sequential numbering clarifies logs, resolving ambiguity in deduplication references
 - Comment author displayed inline in duplicate candidate logs for easier identification.
 - WHY: When group 1 had candidates #1-#10 and group 2 restarted at #1-#3, the LLM dedup verdict referencing "#3" was ambiguous. Sequential numbering and inline authors make log output unambiguous.
 
