@@ -89,7 +89,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/git/clone.ts` | Clone, fetch, conflict detection, pullLatest with auto-rebase |
+| `src/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
 | `src/git/commit.ts` | Squash commit, push with retry, token injection |
 | `src/git/workdir.ts` | Hash-based workdir management |
 

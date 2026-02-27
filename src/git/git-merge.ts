@@ -198,12 +198,14 @@ export async function markConflictsResolved(git: SimpleGit, files: string[]): Pr
 export async function completeMerge(git: SimpleGit, message: string): Promise<{ success: boolean; error?: string }> {
   debug('Completing merge commit');
   try {
-    // Check if we're in a rebase or merge
+    // Check if we're in a rebase or merge. Use repo root so path is absolute (revparse --git-dir
+    // can return ".git", and existsSync(join(".git", "rebase-merge")) would use process.cwd(), not the repo).
     const { existsSync } = await import('fs');
     const { join } = await import('path');
-    const gitDir = await git.revparse(['--git-dir']);
+    const root = await git.revparse(['--show-toplevel']).catch(() => null);
+    const gitDir = root ? join(root.trim(), '.git') : (await git.revparse(['--git-dir'])).trim();
     const inRebase = existsSync(join(gitDir, 'rebase-merge')) || existsSync(join(gitDir, 'rebase-apply'));
-    
+
     if (inRebase) {
       debug('In rebase - continuing rebase');
       await git.rebase(['--continue']);

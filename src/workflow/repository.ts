@@ -189,8 +189,9 @@ export async function checkAndSyncWithRemote(
             // (it might have auto-continued to completion)
             const { existsSync: fsExists } = await import('fs');
             const { join: pathJoin } = await import('path');
-            const gitDir = await git.revparse(['--git-dir']).catch(() => '.git');
-            const inRebase = fsExists(pathJoin(gitDir.trim(), 'rebase-merge')) || fsExists(pathJoin(gitDir.trim(), 'rebase-apply'));
+            const root = await git.revparse(['--show-toplevel']).catch(() => null);
+            const gitDir = root ? pathJoin(root.trim(), '.git') : (await git.revparse(['--git-dir']).catch(() => '.git')).trim();
+            const inRebase = fsExists(pathJoin(gitDir, 'rebase-merge')) || fsExists(pathJoin(gitDir, 'rebase-apply'));
             if (!inRebase) break;
             // Rebase in progress but no conflicts — continue it
             try {

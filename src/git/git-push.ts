@@ -30,6 +30,7 @@
 import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
+import { cleanupGitState } from './git-merge.js';
 
 export interface PushResult {
   success: boolean;
@@ -329,23 +330,22 @@ export async function pushWithRetry(
           }
         }
         
-        // Handler didn't resolve or no handler - abort rebase
+        // Handler didn't resolve or no handler — abort rebase to restore pre-rebase state (commits intact).
+        // If abort fails (stale rebase-merge dir), do full cleanup so next run isn't blocked.
         try {
           await git.rebase(['--abort']);
         } catch {
-          // Ignore abort errors
+          await cleanupGitState(git);
         }
-        
         throw new Error(`Push rejected and rebase has conflicts in: ${conflictedFiles.join(', ')}. Manual resolution needed.\nOriginal: ${result.error}`);
       }
-      
-      // Non-conflict rebase failure - abort and throw
+
+      // Non-conflict rebase failure (e.g. "rebase-merge directory already exists") — abort, or full cleanup if stale.
       try {
         await git.rebase(['--abort']);
       } catch {
-        // Ignore abort errors
+        await cleanupGitState(git);
       }
-      
       throw new Error(`Push rejected and sync failed: ${syncMsg}\nOriginal: ${result.error}`);
     }
   }
