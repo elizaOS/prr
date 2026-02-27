@@ -1,4 +1,3 @@
-// Review: PR title reflects broader feature integration rather than individual changes.
 # prr (PR Resolver)
 
 ```text
@@ -638,10 +637,10 @@ export PRR_DEBUG_PROMPTS=1
 prr https://github.com/owner/repo/pull/123
 
 # Operational log — what happened, when, and why
-cat output.log
+cat ~/.prr/output.log
 
 # Full prompt/response log — what the LLM actually saw
-cat prompts.log
+cat ~/.prr/prompts.log
 
 # Standalone debug files (requires PRR_DEBUG_PROMPTS=1; files live under timestamp subdirs)
 ls ~/.prr/debug/*/*.txt
