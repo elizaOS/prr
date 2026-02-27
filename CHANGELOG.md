@@ -640,9 +640,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved `output.log` to CWD (was `~/.prr/output.log`).
 - Patches `console.log/warn/error` directly instead of `process.stdout.write` — excludes spinner noise (ora) from the log while capturing all substantive output.
 
-### Added (2026-02-12)
-
-**Batch Verification with Inline Failure Analysis (Fix N+1 LLM Calls)**
+### Added (2026-02-12) — CLI & Startup Tooling
 - `batchVerifyFixes` prompt overhauled to produce the same quality lessons as the standalone `analyzeFailedFix` — 4 good + 3 bad examples, explicit "what the diff changed vs what the comment asked" framing, LESSON line required for every NO
 - Batch mode now uses these inline lessons instead of making separate `analyzeFailedFix` calls per failure
 - Reduces LLM calls from 1+N (where N = failed fixes) to just 1
