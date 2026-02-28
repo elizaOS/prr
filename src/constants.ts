@@ -182,6 +182,7 @@ export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
 /**
  * ElizaCloud API base URL (OpenAI-compatible).
  */
+// Note: API base URL aligns with Eliza Cloud's design for consistency in requests.
 export const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
 
 /**

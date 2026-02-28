@@ -1474,6 +1474,7 @@ ${codeSnippet}
       .map(m => {
         const lower = m.toLowerCase();
         for (const avail of modelContext.availableModels!) {
+          // Note: checks for model names starting with lower or lower/ to match flexible identifiers
           const availLower = avail.toLowerCase();
           if (availLower === lower) return avail;
           if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) return avail;
@@ -1690,6 +1691,7 @@ ${codeSnippet}
       : cleanComment;
     const truncatedCode = issue.codeSnippet.length > maxCodeLen
       ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+      // Note: truncating ensures we don't exceed limits while maintaining comment clarity
       : issue.codeSnippet;
 
     return [

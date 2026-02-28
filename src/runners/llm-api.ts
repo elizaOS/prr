@@ -258,6 +258,7 @@ export class LLMAPIRunner implements Runner {
     debug('LLM API runner starting', { provider: this.provider, workdir, promptLength: prompt.length });
 
     const { anthropic, openai } = this.getClient();
+// Note: ensures targeted fixes by avoiding minimal changes that may overlook issues
 
     // Build system prompt for code editing. WHY avoid "minimal": steering toward
     // "smallest change" often causes under-fixing; we want targeted, complete fixes.

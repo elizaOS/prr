@@ -376,6 +376,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - WHY: Without a shared vocabulary, fixers either made unnecessary edits (because "must make a change") or gave freeform NO_CHANGES text that was hard to act on. Structured codes let PRR record targeted lessons, skip verification for discussion-only changes, and avoid forcing changes when the issue is already fixed or unclear.
 
 **Addressed-in-commits hint**
+// Note: hints ensure the LLM verifies past fixes before making new changes.
 - Comments whose body matches "✅ Addressed in commits ..." (PRR's own marker after a push) get an extra `contextHints` line: "A previous fix attempt claimed to address this issue. Verify whether the current code actually resolves it before making new changes."
 - The hint is passed into the LLM analysis (issue-existence check), not into the fix prompt.
 - WHY: Those comments indicate a prior fix attempt; the LLM should explicitly check that the current code still resolves the issue instead of assuming it does.

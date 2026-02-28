@@ -99,6 +99,7 @@ export async function handleCommitAndPush(
       spinner.fail(`Failed to export lessons: ${err}`);
     }
   }
+// Note: skips commit to allow manual review of changes in workdir when noCommit is set.
 
   if (options.noCommit) {
     warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');

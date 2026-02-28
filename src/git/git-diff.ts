@@ -35,6 +35,7 @@ export async function computeLineMapFromDiff(
       continue;
     }
     const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    // Note: supports hunk parsing only if a valid path is established from the diff output.
     if (hunk && path) {
       oldLine = parseInt(hunk[1], 10);
       newLine = parseInt(hunk[3], 10);

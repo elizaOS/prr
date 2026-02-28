@@ -237,6 +237,7 @@ interface Runner {
   installHint?: string;  // Install command shown when tool not found
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunResult>;
 }
+// Note: Runners output clean text to avoid false matches in downstream processing.
 ```
 
 **Runner output hygiene:** Runners return clean text in `RunResult.output`, not raw protocol frames. WHY: The Cursor runner streams JSON frames like `{"type":"text","content":"..."}`. Downstream consumers like `parseNoChangesExplanation()` search the output for patterns like `NO_CHANGES:` — raw JSON metadata caused false matches against embedded instruction text, triggering expensive re-verification of all issues.

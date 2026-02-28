@@ -213,6 +213,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'anthropic/claude-3.5-sonnet',        // Strong, reliable
     'openai/gpt-4o',                      // Current flagship, good fallback
     'openai/gpt-4o-mini',                 // Fast, cost-effective for simpler fixes
+    // Note: selected for strong balance between performance and coding capability.
     'anthropic/claude-3.7-sonnet',        // Balanced coding capability
     // anthropic/claude-3-opus, gpt-4.1, claude-sonnet-4.5, gpt-5.1-codex-max skipped via ELIZACLOUD_SKIP_MODELS
     // google/gemini-2.0-pro-exp removed: not in ElizaCloud model list (audit: wasted rotation slot)
