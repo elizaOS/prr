@@ -467,7 +467,7 @@ Working directory: ${workdir}`;
       if (is504OrTimeout) {
         this.consecutive504Count++;
         if (this.provider === 'elizacloud' && model) {
-          lowerModelMaxPromptChars(model, enrichedPrompt.length);
+          lowerModelMaxPromptChars(this.provider ?? 'elizacloud', model, enrichedPrompt.length);
           debug('Lowered prompt cap for model after timeout', { model, sentChars: enrichedPrompt.length });
         }
         // De-escalate full-file rewrite so next attempt uses smaller prompt and may complete.

@@ -1,4 +1,3 @@
-```typescript
 /**
  * Git conflict resolution using LLM.
  *
@@ -13,6 +12,7 @@ import { existsSync } from 'fs';
 import type { SimpleGit } from 'simple-git';
 import { isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from './git-clone-index.js';
 import type { LLMClient } from '../llm/client.js';
+import type { LessonsSyncTarget } from '../state/lessons-context.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import type { Runner } from '../runners/types.js';
@@ -578,7 +578,7 @@ export async function cleanupSyncTargetFiles(
   lessonsContext: LessonsContext
 ): Promise<void> {
   const targets = ['CLAUDE.md', 'CONVENTIONS.md'];
-  const targetMap: Record<string, string> = {
+  const targetMap: Record<string, LessonsSyncTarget> = {
     'CLAUDE.md': 'claude-md',
     'CONVENTIONS.md': 'conventions-md',
   };
@@ -612,5 +612,3 @@ export async function cleanupSyncTargetFiles(
     }
   }
 }
-
-```
