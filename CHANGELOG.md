@@ -236,8 +236,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **WHY**: Fixed 200k injection allowed base + injection to exceed limits. Capping by `200k - base` keeps total under 200k; the floor avoids zero injection when base is already >200k.
 
 **Line-number prefix stripping (search/replace only)**
-- When parsing `<change>` blocks, search/replace text are normalized with `stripLineNumberPrefixes()` which removes only the injected format `N | ` (e.g. `   1 | code` → `code`), not arbitrary leading digits.
-- **WHY**: Injected content is line-numbered; some LLMs echo that in `<search>`/`<replace>`. Stripping only `N | ` allows matches without corrupting real code (e.g. `  42` or `1: 'foo'`).
+- When parsing `<change>` blocks, search/replace text are normalized with `stripLineNumberPrefixes()` which removes only the injected format `N |` (e.g. `   1 | code` → `code`), not arbitrary leading digits.
+- **WHY**: Injected content is line-numbered; some LLMs echo that in `<search>`/`<replace>`. Stripping only `N |` allows matches without corrupting real code (e.g. `  42` or `1: 'foo'`).
 
 **No-changes explanation parsing (ignore XML blocks)**
 - `parseNoChangesExplanation()` strips `<change>`, `<newfile>`, and `<file path="...">` block content before looking for NO_CHANGES or inferring patterns. Both stages run on prose-only text.
