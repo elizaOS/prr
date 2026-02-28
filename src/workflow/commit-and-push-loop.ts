@@ -140,8 +140,8 @@ export async function handleCommitAndPush(
   }
 
   // LLM prediction (opt-in): simulate likely new bot comments; display only, never block.
-  // Skip when --no-wait-bot to save ~26s; prediction is display-only so skipping has no impact on behavior.
-  if (options.predictBots && !options.noWaitBot && llm) {
+  // Skip when --no-wait-bot or skipBotWait to save ~26s; prediction is display-only so skipping has no impact on behavior.
+  if (options.predictBots && !options.noWaitBot && !skipBotWait && llm) {
     try {
       const diff = await git.raw(['diff', `origin/${prInfo.baseBranch}...HEAD`]);
       const predictions = await predictBotFeedback(

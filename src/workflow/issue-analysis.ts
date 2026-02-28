@@ -1430,7 +1430,13 @@ export async function findUnresolvedIssues(
     // Separate model recommendation call after all verification batches (saves tokens vs baking into first batch).
     // Skip when fewer than 3 unresolved issues — use default rotation; saves ~29s and tokens on simple runs.
     // WHY: For 1–2 issues the recommendation adds little value; default rotation is sufficient.
-    const unresolvedCount = [...batchResult.issues.values()].filter((r) => r.exists).length;
+    // Include both batch (exists) and cached-open comments not in this batch so "<3" skip reflects total unresolved.
+    const analyzedIds = new Set(freshToAnalyze.map((item) => item.comment.id));
+    const fromBatch = [...batchResult.issues.values()].filter((r) => r.exists).length;
+    const cachedOpenNotInBatch = comments.filter(
+      (c) => !Verification.isVerified(stateContext, c.id) && !analyzedIds.has(c.id)
+    ).length;
+    const unresolvedCount = fromBatch + cachedOpenNotInBatch;
     if (unresolvedCount >= 3 && modelContext?.availableModels?.length) {
       const summaryLines = [...batchResult.issues.entries()].map(([id, r]) => {
         const triage = r.exists ? ` I${r.importance} D${r.ease}` : '';

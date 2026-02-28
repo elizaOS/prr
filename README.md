@@ -276,7 +276,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 5. **Verify Fixes**: For each changed file, asks the LLM: "Does this diff address the concern?"
    - *Why verify*: Fixer tools can make changes that don't actually fix the issue. Catches false positives early.
-   - *Why "Code before fix" in verifier prompt*: The verifier now sees a "Code before fix" snippet (from the diff) alongside "Current Code (AFTER)" so it can compare before vs after and judge whether the issue was actually fixed instead of pattern-matching on current code alone; reduces false rejections when the fix was correct.
+   - *Why "Code before fix" in verifier prompt*: The verifier now sees a "Code before fix" snippet (from the diff) alongside "Current Code (AFTER)" so it can compare before vs after and determine whether the issue was actually fixed instead of pattern-matching on current code alone; reduces false rejections when the fix was correct.
 
 6. **Check for New Comments**: Before declaring "done", checks if any NEW review comments were added during the fix cycle.
    - *Why*: Bot reviewers or humans might add new issues while you're fixing others. Ensures nothing slips through.

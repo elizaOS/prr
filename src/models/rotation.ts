@@ -141,7 +141,7 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
  * wrong provider (e.g., claude-sonnet for codex). This check prevents
  * sending Anthropic models to OpenAI-only tools and vice versa.
  */
-function isModelProviderCompatible(runner: Runner, model: string): boolean {
+export function isModelProviderCompatible(runner: Runner, model: string): boolean {
   // Prefer runner.provider over RUNNER_PROVIDER_MAP when the runner sets it at runtime.
   // WHY: llm-api can be openai, anthropic, or elizacloud depending on which API key
   // is set. The map hardcodes llm-api as 'anthropic', so gpt-5.2 was rejected as

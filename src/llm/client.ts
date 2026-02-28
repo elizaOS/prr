@@ -1923,7 +1923,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const lines = diff.split('\n');
     const removed: string[] = [];
     for (const line of lines) {
-      if (line.startsWith('-') && !line.startsWith('---')) {
+      // Skip only diff file header markers (--- plus space/tab/EOF), not removed content that starts with '---'
+      if (line.startsWith('-') && !/^---(\s|\t|$)/.test(line)) {
         removed.push(line.slice(1)); // drop leading '-'
       }
     }

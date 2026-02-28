@@ -447,6 +447,7 @@ Working directory: ${workdir}`;
             success: true,
             output: response,
             noMeaningfulChanges: true,
+            usedFullFileRewrite: rewriteFiles.length > 0,
           };
         }
         // Check if LLM tried to make changes but all search/replace failed

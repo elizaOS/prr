@@ -30,6 +30,8 @@ import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration, 
 import { getChangedFiles, getDiffForFile, detectFileCorruption } from '../git/git-clone-index.js';
 import { basename, dirname, extname, join } from 'path';
 import { VERIFIER_ESCALATION_THRESHOLD } from '../constants.js';
+import { isModelProviderCompatible } from '../models/rotation.js';
+import type { Runner } from '../runners/types.js';
 
 /**
  * Find changed files that relate to an issue's target path.
@@ -180,7 +182,8 @@ export async function verifyFixes(
   noBatch: boolean,
   duplicateMap?: Map<string, string[]>,
   workdir?: string,
-  getCurrentModel?: () => string | undefined
+  getCurrentModel?: () => string | undefined,
+  getRunner?: () => Runner
 ): Promise<{
   verifiedCount: number;
   failedCount: number;
@@ -388,17 +391,21 @@ export async function verifyFixes(
         spinner.text = `Verifying ${formatNumber(fixesToVerify.length)} fixes in batch...`;
         const state = getState(stateContext);
         // Split by escalation need so we only use the stronger model for issues that had previous rejections.
-        const needStronger = getCurrentModel
-          ? changedIssues.filter(
-              (_, i) => (state.verifierRejectionCount?.[fixesToVerify[i].id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD
-            )
-          : [];
-        const defaultIssues = needStronger.length === changedIssues.length
-          ? []
-          : changedIssues.filter((issue) => !needStronger.includes(issue));
-        const fixesDefault = defaultIssues.length ? fixesToVerify.filter((f) => defaultIssues.some((i) => i.comment.id === f.id)) : [];
-        const fixesStronger = needStronger.length ? fixesToVerify.filter((f) => needStronger.some((i) => i.comment.id === f.id)) : [];
-        const strongerModel = needStronger.length && getCurrentModel ? getCurrentModel() : undefined;
+        const needStrongerIds = new Set(
+          getCurrentModel
+            ? changedIssues
+                .filter((_, i) => (state.verifierRejectionCount?.[fixesToVerify[i].id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD)
+                .map((i) => i.comment.id)
+            : []
+        );
+        const fixesDefault = fixesToVerify.filter((f) => !needStrongerIds.has(f.id));
+        const fixesStronger = fixesToVerify.filter((f) => needStrongerIds.has(f.id));
+        const rawStrongerModel = needStrongerIds.size > 0 && getCurrentModel ? getCurrentModel() : undefined;
+        const runner = getRunner?.();
+        const strongerModel =
+          rawStrongerModel && runner && isModelProviderCompatible(runner, rawStrongerModel)
+            ? rawStrongerModel
+            : undefined;
 
         const result = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
         if (fixesDefault.length > 0) {
