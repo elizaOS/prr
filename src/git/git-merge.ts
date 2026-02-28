@@ -168,23 +168,22 @@ export async function startMergeForConflictResolution(
       // May already exist, ignore
     }
     
-    // Start the merge (will fail with conflicts, that's expected)
-    let mergeError: unknown = null;
+    // Start the merge (will fail with conflicts, that's expected). Only suppress conflict errors;
+    // other failures (e.g. ref not found, permission) must propagate so callers don't assume conflicts.
     try {
       await git.merge([`origin/${baseBranch}`, '--no-commit']);
-    } catch (error) {
-      mergeError = error;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isConflict = /CONFLICT|conflict|Automatic merge failed|fix conflicts/i.test(msg);
+      if (!isConflict) {
+        debug('Merge failed (non-conflict), rethrowing', { error: msg });
+        throw err;
+      }
     }
     
     // Get conflicted files
     const status = await git.status();
     const conflictedFiles = status.conflicted || [];
-    
-    // If merge failed but no conflicts, it's a real error (auth/ref/history failure)
-    if (mergeError && conflictedFiles.length === 0) {
-      const message = mergeError instanceof Error ? mergeError.message : String(mergeError);
-      return { conflictedFiles: [], error: message };
-    }
     
     if (conflictedFiles.length === 0) {
       // No conflicts - either complete the merge or abort if nothing to merge
@@ -228,11 +227,30 @@ export async function completeMerge(git: SimpleGit, message: string): Promise<{ 
     // WHY absolute path: revparse --git-dir returns ".git" (relative). existsSync(join(".git", "rebase-merge"))
     // is resolved against process.cwd(), not the workdir (e.g. ~/.prr/work/<hash>). We'd never see
     // rebase-merge, run commit() during a rebase, and leave rebase-merge behind.
-    const { existsSync } = await import('fs');
-    const { join } = await import('path');
+    // WHY worktree: In worktrees, .git is a file with "gitdir: <path>"; we must resolve that to the real
+    // git dir so existsSync(rebase-merge) works.
+    const { existsSync, readFileSync, statSync } = await import('fs');
+    const { join, resolve: pathResolve, dirname } = await import('path');
     const root = await git.revparse(['--show-toplevel']).catch(() => null);
-    const gitDir = root ? join(root.trim(), '.git') : (await git.revparse(['--git-dir'])).trim();
-    const inRebase = existsSync(join(gitDir, 'rebase-merge')) || existsSync(join(gitDir, 'rebase-apply'));
+    let gitDirRaw = root ? join(root.trim(), '.git') : (await git.revparse(['--git-dir'])).trim();
+    const rootDir = root ? pathResolve(root.trim()) : null;
+    let resolvedGitDir: string;
+    try {
+      const stat = statSync(gitDirRaw);
+      if (stat.isFile()) {
+        const content = readFileSync(gitDirRaw, 'utf-8');
+        const m = content.match(/^gitdir:\s*(.+)$/m);
+        const target = m ? m[1].trim() : null;
+        // gitdir path is relative to the .git file's directory (worktree root when .git is at root/.git)
+        const base = rootDir ?? pathResolve(dirname(gitDirRaw));
+        resolvedGitDir = target ? pathResolve(base, target) : pathResolve(gitDirRaw);
+      } else {
+        resolvedGitDir = pathResolve(gitDirRaw);
+      }
+    } catch {
+      resolvedGitDir = pathResolve(gitDirRaw);
+    }
+    const inRebase = existsSync(join(resolvedGitDir, 'rebase-merge')) || existsSync(join(resolvedGitDir, 'rebase-apply'));
 
     if (inRebase) {
       debug('In rebase - continuing rebase');
