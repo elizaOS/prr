@@ -4,24 +4,21 @@
  * WHY this is the largest git module (328 lines):
  * Push is the most complex git operation we perform:
  * - Process management (spawn for timeout control)
- * - Authentication (token injection into remote URL)
+ * - Authentication (one-shot auth URL for push)
  * - Error handling (parse stderr for specific error types)
  * - Retry logic (pull and push again on rejection)
- * - Remote URL management (inject token, restore original)
  * 
  * WHY use spawn() instead of simple-git:
  * simple-git's push() returns a Promise that can't be cancelled. If it hangs,
  * the process runs forever. spawn() gives us direct process control so we can
  * SIGKILL on timeout or Ctrl+C interruption.
  * 
- * WHY inject auth token into remote URL:
- * HTTPS auth for push requires credentials. Token injection
- * (https://token@github.com/...) is the most reliable method that works
- * across different git versions and configurations.
- * 
- * WHY restore original remote URL:
- * Tokens are sensitive. Even though workdirs are local-only, we restore the
- * original URL after push to avoid leaving tokens in .git/config.
+ * WHY one-shot auth URL instead of modifying remote:
+ * HTTPS auth for push requires credentials. Instead of using `git remote set-url`
+ * which persists the token to .git/config (security risk if SIGKILL leaves it
+ * exposed), we pass the auth URL directly in the push command:
+ *   git push https://token@github.com/... HEAD:branch
+ * This way the token is never written to disk.
  * 
  * DESIGN: This module is intentionally kept together despite its size because
  * the push logic is tightly coupled - timeout handling, auth, and retry all
@@ -102,6 +99,8 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Could not check remote URL', { error: redactAuth(String(e)) });
   }
   
+  // Build push args: use one-shot auth URL if available, otherwise push to origin
+  // WHY one-shot auth URL: Token is passed directly in command, never written to .git/config
   const args = authPushUrl
     ? ['push', authPushUrl, `HEAD:${branch}`]
     : ['push', 'origin', branch];
