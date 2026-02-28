@@ -169,15 +169,22 @@ export async function startMergeForConflictResolution(
     }
     
     // Start the merge (will fail with conflicts, that's expected)
+    let mergeError: unknown = null;
     try {
       await git.merge([`origin/${baseBranch}`, '--no-commit']);
-    } catch {
-      // Expected to fail with conflicts
+    } catch (error) {
+      mergeError = error;
     }
     
     // Get conflicted files
     const status = await git.status();
     const conflictedFiles = status.conflicted || [];
+    
+    // If merge failed but no conflicts, it's a real error (auth/ref/history failure)
+    if (mergeError && conflictedFiles.length === 0) {
+      const message = mergeError instanceof Error ? mergeError.message : String(mergeError);
+      return { conflictedFiles: [], error: message };
+    }
     
     if (conflictedFiles.length === 0) {
       // No conflicts - either complete the merge or abort if nothing to merge

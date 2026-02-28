@@ -487,7 +487,7 @@ export function buildFixPrompt(
     prompt: fullPrompt,
     summary,
     detailedSummary,
-    lessonsIncluded: lessonsLearned.length,
+    lessonsIncluded: Math.min(lessonsLearned.length, lessonCap),
     issues: limitedIssues,  // Return only the issues included in the prompt
   };
 }

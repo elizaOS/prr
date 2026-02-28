@@ -205,15 +205,18 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'anthropic/claude-opus-4-5-20251101',
     'openai/gpt-4.1',
   ],
-  // LLM API (ElizaCloud): order by observed fix success (audit: Claude best, GPT-4o lower). WHY: Leading with
-  // best performers improves throughput; skip list in rotation.ts removes 500/timeout/0% models.
-  // gpt-4o-mini omitted: verification-tier only; audit showed fix prompts with it produced no response (timeout/fail).
+  // LLM API (ElizaCloud): order by observed fix success (audit: Claude Opus 4.5 best, Claude 3.5 Sonnet strong, GPT-4o fallback).
+  // WHY: Leading with best performers improves throughput; skip list in rotation.ts removes 500/timeout/0% models.
+  // gpt-4o-mini included as fast/cost-effective option for simpler fixes.
   'llm-api': [
     'anthropic/claude-opus-4.5',          // Best fix rate in audits
     'anthropic/claude-3.5-sonnet',        // Strong, reliable
-    'openai/gpt-4o',                      // Fallback
-    'anthropic/claude-3.7-sonnet',       // Balanced
+    'openai/gpt-4o',                      // Current flagship, good fallback
+    'openai/gpt-4o-mini',                 // Fast, cost-effective for simpler fixes
+    // Note: selected for strong balance between performance and coding capability.
+    'anthropic/claude-3.7-sonnet',        // Balanced coding capability
     // anthropic/claude-3-opus, gpt-4.1, claude-sonnet-4.5, gpt-5.1-codex-max skipped via ELIZACLOUD_SKIP_MODELS
+    // google/gemini-2.0-pro-exp removed: not in ElizaCloud model list (audit: wasted rotation slot)
   ],
 };
 

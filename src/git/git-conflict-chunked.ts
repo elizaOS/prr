@@ -346,7 +346,18 @@ export function tryHeuristicResolution(
 
   // Package.json: prefer higher versions
   if (fileName === 'package.json') {
-    return resolvePackageJsonConflict(content);
+    const isDependencySection = (chunk: string[]): boolean => {
+      const depSections = ['dependencies', 'devDependencies', 'peerDependencies'];
+      return chunk.some(line => depSections.some(section => line.includes(`"${section}"`)));
+    };
+
+    const chunks = extractConflictChunks(content);
+    const nonDepChunks = chunks.filter(chunk => !isDependencySection(chunk.conflictLines));
+    if (nonDepChunks.length > 0) {
+      return { resolved: false, content, explanation: 'Conflict section outside of dependencies - manual resolution needed' };
+    }
+
+    return resolvePackageJsonConflict(content) ?? { resolved: false, content, explanation: 'Failed to parse package.json conflicts' };
   }
 
   // Package-lock.json / yarn.lock: regenerate recommended
@@ -398,10 +409,13 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
 
       // Try to merge ours and theirs
       const merged = mergePackageJsonChunks(ours, theirs, needsTrailingComma);
-      if (merged) {
-        resolved.push(...merged);
-        conflictsResolved++;
-      } else {
+if (merged) {
+  resolved.push(...merged);
+  conflictsResolved++;
+} else {
+  // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
+  return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
+}
         // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
         return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
       }
@@ -885,6 +899,7 @@ function compareVersions(v1: string, v2: string): number {
   
   // Compare base versions
   const parts1 = base1.replace(/[^0-9.]/g, '').split('.').map(Number);
+  // Note: designed to strip non-numeric chars for comparison simplicity, handling version formats.
   const parts2 = base2.replace(/[^0-9.]/g, '').split('.').map(Number);
   
   for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {

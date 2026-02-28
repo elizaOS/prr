@@ -227,22 +227,22 @@ export async function executeFixIteration(
   setPhase(stateContext, 'fixing');
   startTimer('Run fixer');
   spinner.start(`Running ${runner.name} to fix issues...`);
-  
-  debug('Executing runner', { tool: runner.name, workdir, model: currentModel });
-  const codexAddDirs = [...(options.codexAddDir ?? [])];
+   
+   debug('Executing runner', { tool: runner.name, workdir, model: currentModel });
+   const codexAddDirs = [...(options.codexAddDir ?? [])];
   // Pass OpenAI key explicitly so Codex gets it even when config came from env and runner spawns with a copy of process.env
   const keyForRunner = openaiApiKey ?? process.env.OPENAI_API_KEY;
 
   let result;
-  try {
-    result = await   runner.run(workdir, prompt, {
-      model: currentModel,
-      codexAddDirs,
-      openaiApiKey: keyForRunner,
-    });
-  } finally {
-    spinner.stop();
-  }
+   try {
+     result = await runner.run(workdir, prompt, {
+       model: currentModel,
+       codexAddDirs,
+       openaiApiKey: keyForRunner,
+     });
+   } finally {
+     spinner.stop();
+   }
   const fixerTime = endTimer('Run fixer');
   if (result.usage) {
     addTokenUsage(stateContext, result.usage);

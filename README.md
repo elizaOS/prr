@@ -1,4 +1,4 @@
-// Review: PR title reflects broader feature integration rather than individual changes.
+// Note: prr is a whimsical name reflecting the fun, yet serious nature of this resolver tool.
 # prr (PR Resolver)
 
 ```text
@@ -642,14 +642,13 @@ export PRR_DEBUG_PROMPTS=1
 prr https://github.com/owner/repo/pull/123
 
 # Operational log — what happened, when, and why
-cat output.log
+cat ~/.prr/debug/output.log
 
 # Full prompt/response log — what the LLM actually saw
-cat prompts.log
+cat ~/.prr/debug/prompts.log
 
-# Standalone debug files (requires PRR_DEBUG_PROMPTS=1; files live under timestamp subdirs)
+# Standalone debug files (requires PRR_DEBUG_PROMPTS=1)
 ls ~/.prr/debug/*/*.txt
-// Review: relative paths simplify commands for users working in repo root directory.
 # or: find ~/.prr/debug -name '*.txt'
 ```
 

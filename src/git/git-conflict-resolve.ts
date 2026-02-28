@@ -1,3 +1,4 @@
+```typescript
 /**
  * Git conflict resolution using LLM.
  *
@@ -212,10 +213,12 @@ export async function resolveConflictsWithLLM(
   const deleteConflicts = await detectDeleteConflicts(git, codeFiles, workdir);
   if (deleteConflicts.length > 0) {
     for (const dc of deleteConflicts) {
-      await resolveDeleteConflict(git, dc, workdir);
-      // Remove from codeFiles so we don't try to resolve again
-      const idx = codeFiles.indexOf(dc.file);
-      if (idx !== -1) codeFiles.splice(idx, 1);
+      const resolved = await resolveDeleteConflict(git, dc, workdir);
+      if (resolved) {
+        // Remove from codeFiles so we don't try to resolve again
+        const idx = codeFiles.indexOf(dc.file);
+        if (idx !== -1) codeFiles.splice(idx, 1);
+      }
     // Review: files removed unconditionally to simplify the conflict resolution flow.
     }
   }
@@ -468,21 +471,21 @@ async function detectDeleteConflicts(
   const results: DeleteConflict[] = [];
   
   try {
-      // Use NUL-delimited porcelain to safely handle spaces/quotes
-      const raw = await git.raw(['status', '--porcelain=v1', '-z']);
-      const entries = raw.split('\0').filter(Boolean);
-      
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        // Entry format: XY file
-        const statusCode = entry.slice(0, 2);
-        let actualPath = entry.slice(3);
-        if ((statusCode[0] === 'R' || statusCode[0] === 'C') && i + 1 < entries.length) {
-          actualPath = entries[++i];
-        }
-      
+    // Use NUL-delimited porcelain to safely handle spaces/quotes
+    const raw = await git.raw(['status', '--porcelain=v1', '-z']);
+    const entries = raw.split('\0').filter(Boolean);
+    
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      // Entry format: XY file
+      const statusCode = entry.slice(0, 2);
+      let actualPath = entry.slice(3);
+      if ((statusCode[0] === 'R' || statusCode[0] === 'C') && i + 1 < entries.length) {
+        actualPath = entries[++i];
+      }
+    
       if (!conflictedFiles.includes(actualPath)) continue;
-      
+    
       if (statusCode === 'UD') {
         results.push({ file: actualPath, type: 'deleted-by-them' });
       } else if (statusCode === 'DU') {
@@ -518,7 +521,7 @@ async function resolveDeleteConflict(
   git: SimpleGit,
   conflict: DeleteConflict,
   workdir: string
-): Promise<void> {
+): Promise<boolean> {
   const { file, type } = conflict;
   
   try {
@@ -552,8 +555,10 @@ async function resolveDeleteConflict(
     });
     
     console.log(chalk.green(`    ✓ ${file}: delete conflict resolved`));
+    return true;
   } catch (e) {
     console.log(chalk.red(`    ✗ ${file}: failed to resolve delete conflict: ${e}`));
+    return false;
   }
 }
 
@@ -565,7 +570,7 @@ async function resolveDeleteConflict(
  * 
  * @param git - SimpleGit instance
  * @param workdir - Working directory path
- // Review: cleans up generated files only if they were not part of the original PR submission
+ * // Review: cleans up generated files only if they were not part of the original PR submission
  * @param lessonsContext - Lessons manager to check if files existed before
  */
 export async function cleanupSyncTargetFiles(
@@ -574,11 +579,14 @@ export async function cleanupSyncTargetFiles(
   lessonsContext: LessonsContext
 ): Promise<void> {
   const targets = ['CLAUDE.md', 'CONVENTIONS.md'];
+  const targetMap: Record<string, string> = {
+    'CLAUDE.md': 'claude-md',
+    'CONVENTIONS.md': 'conventions-md',
+  };
   for (const file of targets) {
     try {
-      const existedBefore = typeof (lessonsContext as any).fileExisted === 'function'
-        ? (lessonsContext as any).fileExisted(file)
-        : false;
+      const target = targetMap[file];
+      const existedBefore = target ? (lessonsContext.originalSyncTargetState.get(target) ?? false) : false;
       if (existedBefore) continue;
       const fullPath = join(workdir, file);
       if (!existsSync(fullPath)) continue;
@@ -595,3 +603,5 @@ export async function cleanupSyncTargetFiles(
     }
   }
 }
+
+```

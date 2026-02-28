@@ -179,9 +179,10 @@ export function buildCommitMessage(
     for (const issue of issuesFixed) {
       const fileName = issue.filePath.split('/').pop() || issue.filePath;
       // Truncate long comments for commit body
-      const truncatedComment = issue.comment.length > 80 
-        ? issue.comment.slice(0, 77) + '...' 
-        : issue.comment;
+      const cleanComment = stripMarkdownForCommit(issue.comment).replace(/\r?\n/g, ' ');
+      const truncatedComment = cleanComment.length > 80 
+        ? cleanComment.slice(0, 77) + '...' 
+        : cleanComment;
       lines.push(`- ${fileName}: ${truncatedComment}`);
     }
     lines.push('');
@@ -190,7 +191,7 @@ export function buildCommitMessage(
   if (lessonsLearned.length > 0) {
     lines.push('Notes:');
     for (const lesson of lessonsLearned) {
-      lines.push(`- ${lesson}`);
+      lines.push(`- ${stripMarkdownForCommit(lesson).replace(/\r?\n/g, ' ')}`);
     }
   }
 

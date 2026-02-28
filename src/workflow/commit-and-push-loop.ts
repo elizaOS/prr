@@ -88,14 +88,18 @@ export async function handleCommitAndPush(
   // WHY: Team gets lessons with the same push as fixes - single atomic update
   if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
     spinner.start('Exporting lessons to repo...');
-    const saved = await LessonsAPI.Save.saveToRepo(lessonsContext);
-    if (saved) {
-      spinner.succeed('Lessons exported');
-    } else {
-      spinner.warn('Failed to export lessons');
+    try {
+      const saved = await LessonsAPI.Save.saveToRepo(lessonsContext); 
+      if (saved) {
+        spinner.succeed('Lessons exported');
+      } else {
+        spinner.warn('Failed to export lessons');
+      }
+    } catch (err) {
+      spinner.fail(`Failed to export lessons: ${err}`);
     }
-  // Review: spinner state is intentionally managed to avoid premature failures on errors.
   }
+// Note: skips commit to allow manual review of changes in workdir when noCommit is set.
 
   if (options.noCommit) {
     warn('NO-COMMIT MODE: Skipping commit. Changes are in workdir.');
@@ -265,7 +269,13 @@ export async function handleCommitAndPush(
     // for finite iteration counts. The previous (maxPushIterations === 0 || ...) was dead code; removed for clarity.
     const shouldWaitForBots = !skipBotWait && !pushNothingToPush && allFixed && pushIteration < maxPushIterations;
     if (shouldWaitForBots) {
-      await waitForBotReviews(owner, repo, number, latestHeadSha);
+      try {
+  const latestPR = await github.getPRInfo(owner, repo, number);
+  latestHeadSha = latestPR.headSha;
+} catch {
+  // Fall through with best-effort SHA
+}
+await waitForBotReviews(owner, repo, number, latestHeadSha);
     } else if (!allFixed) {
       debug('Skipping bot review wait (more issues to fix — will re-enter fix loop)');
     } else if (skipBotWait) {

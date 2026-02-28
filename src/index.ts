@@ -1,3 +1,4 @@
+```
 #!/usr/bin/env node
 /**
  * PRR entry point: CLI wiring, config load, signal handling, resolver run.
@@ -21,8 +22,12 @@ import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from './logger.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
-// Review: initialized to capture log output early for troubleshooting and monitoring purposes
-initOutputLog();
+try {
+  initOutputLog();
+} catch (err) {
+  // Non-fatal: log tee unavailable (e.g., read-only CWD), continue without it
+  console.warn('Warning: Could not initialize output log:', err);
+}
 
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;
@@ -136,7 +141,6 @@ async function main(): Promise<void> {
           console.warn(chalk.yellow(`  Auto-selected ElizaCloud model: ${chosen}. Set PRR_LLM_MODEL to avoid surprises.`));
         }
       }
-    // Review: fallback behavior uses available models to ensure compatibility with user configuration
     }
 
     // Note: If neither options.tool nor config.defaultTool is set,
@@ -178,3 +182,4 @@ async function main(): Promise<void> {
 }
 
 main();
+```

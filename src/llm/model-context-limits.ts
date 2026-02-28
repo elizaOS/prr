@@ -70,10 +70,14 @@ export function getMaxFixPromptCharsForModel(
  * Lower the effective cap for this model after a 504/timeout so the next
  * attempt uses a smaller prompt. Called from the runner on timeout.
  */
-export function lowerModelMaxPromptChars(model: string, sentPromptChars: number): void {
+export function lowerModelMaxPromptChars(
+  provider: 'elizacloud' | 'anthropic' | 'openai',
+  model: string, 
+  sentPromptChars: number
+): void {
   if (!model) return;
-  const current = modelMaxCharsOverride.get(model);
+  const currentCap = getMaxFixPromptCharsForModel(provider, model);
   const suggested = Math.max(20_000, Math.floor(sentPromptChars * 0.75));
-  const next = current !== undefined ? Math.min(current, suggested) : suggested;
+  const next = Math.min(currentCap, suggested);
   modelMaxCharsOverride.set(model, next);
 }

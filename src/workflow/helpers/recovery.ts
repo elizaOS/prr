@@ -204,7 +204,14 @@ export async function trySingleIssueFix(
             } catch {
               try {
                 // File might be untracked (new) — remove from index and working tree
-                await git.raw(['rm', '-f', f]);
+                await git.raw(['rm', '-f', f]).catch(async (err) => {
+  try {
+    await git.reset(['HEAD', f]);
+    await git.checkout([f]);
+  } catch {
+    console.log(chalk.yellow(`    Warning: Could not reset ${f}: ${err.message}`));
+  }
+});
               } catch {
                 try {
                   await git.reset(['HEAD', f]);
@@ -387,7 +394,6 @@ export async function tryDirectLLMFix(
         console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
         continue;
       }
-
       const fileContent = fs.readFileSync(filePath, 'utf-8');
 
       // Skip files too large for direct LLM rewrite
@@ -663,14 +669,15 @@ Provide the COMPLETE fixed content for ${otherFile} only. Output ONLY the code i
             const tracked = await git.raw(['ls-files', issue.comment.path]).catch(() => '');
             if (tracked.trim()) {
               await git.checkout([issue.comment.path]).catch(async (err) => {
-              // If file is staged for deletion, unstage it first
-              try {
-                await git.reset(['HEAD', issue.comment.path]);
-                await git.checkout([issue.comment.path]);
-              } catch {
-                console.log(chalk.yellow(`    Warning: Could not revert ${issue.comment.path}: ${err.message}`));
-              }
-            });
+               // If file is staged for deletion, unstage it first
+               try {
+                 await git.reset(['HEAD', issue.comment.path]);
+                 await git.checkout([issue.comment.path]);
+               } catch (resetErr) {
+                 // Only log warning when both reset and checkout fail
+                 console.log(chalk.yellow(`    Warning: Could not revert ${issue.comment.path}: ${err.message}`));
+               }
+             });
             } else {
               // File is untracked, just delete it
               try {

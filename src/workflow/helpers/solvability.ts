@@ -208,6 +208,7 @@ export function assessSolvability(
       dismissCategory: 'chronic-failure',
       reason: `Chronic failure: ${failedAttempts.length} fix attempts failed (current file version) — dismissing to avoid infinite retries`,
     };
+  // Note: filters out past failures to avoid infinite retries on known chronic issues.
   }
 
   // Check 4: Attempt exhaustion — distinct tool/model combinations (same file-version filter)

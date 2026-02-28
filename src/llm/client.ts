@@ -253,12 +253,20 @@ export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set
         url.searchParams.set('after_id', afterId);
       }
       
-      const response = await fetch(url.toString(), {
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-      });
+      const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 15_000);
+let response: Response;
+try {
+  response = await fetch(url.toString(), {
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    signal: controller.signal,
+  });
+} finally {
+  clearTimeout(timeout);
+}
       
       if (!response.ok) {
         debug('Anthropic models API returned non-OK', {
@@ -437,10 +445,11 @@ export async function acquireElizacloud(): Promise<void> {
 
 /** Release ElizaCloud rate-limit slot (exported for llm-api runner). */
 export function releaseElizacloud(): void {
-  elizacloudInFlight--;
-  const next = elizacloudQueue.shift();
-  if (next) next();
-// Review: designed for direct release without error handling, assuming correct usage semantics.
+  if (elizacloudInFlight > 0) {
+    elizacloudInFlight--;
+    const next = elizacloudQueue.shift();
+    if (next) next();
+  }
 }
 
 /**
@@ -539,7 +548,7 @@ export class LLMClient {
     let elizaAcquired = false;
     try {
       if (this.provider === 'elizacloud') {
-        await acquireElizacloud(); // uses exported fn so same global limit as llm-api runner
+        await acquireElizacloud().then(() => elizaAcquired = true); // uses exported fn so same global limit as llm-api runner
         elizaAcquired = true;
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
@@ -881,9 +890,22 @@ ${codeSnippet}
     const response = await this.complete(prompt, LLMClient.CHECK_ISSUE_SYSTEM_PROMPT);
     const content = response.content.trim();
 
-    // Lenient parsing: check for STALE prefix variations
-    const isStale = content.toUpperCase().startsWith('STALE');
-    const exists = content.toUpperCase().startsWith('YES');
+    const verdictMatch = content.match(/^(YES|NO|STALE)\b/i);
+    if (!verdictMatch) {
+      debug('checkIssueExists parse failed; marking as still exists', {
+        filePath,
+        line,
+        responsePreview: content.substring(0, 300),
+      });
+      return {
+        exists: true,
+        stale: false,
+        explanation: 'LLM response could not be parsed - needs manual review',
+      };
+    }
+
+    const isStale = verdictMatch[1].toUpperCase() === 'STALE';
+    const exists = verdictMatch[1].toUpperCase() === 'YES';
     const explanation = content.replace(/^(YES|NO|STALE)[:\s-]*/i, '').trim();
 
     return { 
@@ -1455,6 +1477,7 @@ ${codeSnippet}
       .map(m => {
         const lower = m.toLowerCase();
         for (const avail of modelContext.availableModels!) {
+          // Note: checks for model names starting with lower or lower/ to match flexible identifiers
           const availLower = avail.toLowerCase();
           if (availLower === lower) return avail;
           if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) return avail;
@@ -1671,6 +1694,7 @@ ${codeSnippet}
       : cleanComment;
     const truncatedCode = issue.codeSnippet.length > maxCodeLen
       ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+      // Note: truncating ensures we don't exceed limits while maintaining comment clarity
       : issue.codeSnippet;
 
     return [
@@ -1791,6 +1815,7 @@ GOOD lessons (specific, learned from the failure):
 
 BAD lessons (vague, not learned from failure):
 - "The diff only adds X but doesn't do Y" (just restates the rejection)
+// Note: designed to omit unparsed fixes to reduce clutter in results, avoiding false positives.
 - "Fix was incomplete" (no insight about why)
 - "tool modified wrong files" (meta about tooling, not the problem)
 

@@ -4,24 +4,21 @@
  * WHY this is the largest git module (328 lines):
  * Push is the most complex git operation we perform:
  * - Process management (spawn for timeout control)
- * - Authentication (token injection into remote URL)
+ * - Authentication (one-shot auth URL for push)
  * - Error handling (parse stderr for specific error types)
  * - Retry logic (pull and push again on rejection)
- * - Remote URL management (inject token, restore original)
  * 
  * WHY use spawn() instead of simple-git:
  * simple-git's push() returns a Promise that can't be cancelled. If it hangs,
  * the process runs forever. spawn() gives us direct process control so we can
  * SIGKILL on timeout or Ctrl+C interruption.
  * 
- * WHY inject auth token into remote URL:
- * HTTPS auth for push requires credentials. Token injection
- * (https://token@github.com/...) is the most reliable method that works
- * across different git versions and configurations.
- * 
- * WHY restore original remote URL:
- * Tokens are sensitive. Even though workdirs are local-only, we restore the
- * original URL after push to avoid leaving tokens in .git/config.
+ * WHY one-shot auth URL instead of modifying remote:
+ * HTTPS auth for push requires credentials. Instead of using `git remote set-url`
+ * which persists the token to .git/config (security risk if SIGKILL leaves it
+ * exposed), we pass the auth URL directly in the push command:
+ *   git push https://token@github.com/... HEAD:branch
+ * This way the token is never written to disk.
  * 
  * DESIGN: This module is intentionally kept together despite its size because
  * the push logic is tightly coupled - timeout handling, auth, and retry all
@@ -32,6 +29,12 @@ import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
 import { cleanupGitState, continueRebase } from './git-merge.js';
 
+/**
+ * Result of a git push operation.
+ * 
+ * NOTE: This is the canonical definition of PushResult used throughout the codebase.
+ * The duplicate definition in commit.ts is legacy/unused and should be removed.
+ */
 export interface PushResult {
   success: boolean;
   rejected?: boolean;
@@ -43,6 +46,9 @@ export interface PushResult {
 
 /**
  * Push changes to remote with timeout and signal handling.
+ * 
+ * NOTE: This is the canonical implementation of push() used throughout the codebase.
+ * The duplicate implementation in commit.ts is legacy/unused and should be removed.
  * 
  * WHY spawn instead of simple-git: simple-git's promises can't be cancelled,
  * and the underlying git process keeps running even after timeout. Using
@@ -71,42 +77,33 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Using fallback workdir', { workdir, method: (git as any)._baseDir ? '_baseDir' : 'cwd' });
   }
   
-  // Check if remote URL has token, inject if missing
+  // Check if remote URL has token, prepare auth URL for one-shot push if needed
   // WHY: Token may be stripped or repo cloned without it
-  let originalRemoteUrl: string | null = null;
-  let updatedRemote = false;
-  const restoreRemote = () => {
-    if (!updatedRemote || !originalRemoteUrl) return;
-    try {
-      execFileSync('git', ['remote', 'set-url', 'origin', originalRemoteUrl], { cwd: workdir });
-    } catch (e) {
-      // Review: logs the error to aid debugging while protecting sensitive data in URLs
-      debug('Failed to restore remote URL', { error: String(e) });
-    } finally {
-      updatedRemote = false;
-    }
-  };
+  // NOTE: We use auth URL directly in push command instead of modifying .git/config
+  // to avoid persisting tokens on disk (security: SIGKILL could leave token exposed)
+  let authPushUrl: string | null = null;
   try {
     const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
-    originalRemoteUrl = remoteUrl;
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
     
     if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {
-      // Inject token into URL
-      const authUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
-      execFileSync('git', ['remote', 'set-url', 'origin', authUrl], { cwd: workdir });
-      updatedRemote = true;
-      debug('Injected token into remote URL for push');
+      // Prepare auth URL for one-shot push (not persisted to .git/config)
+      authPushUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
+      debug('Prepared auth URL for single push');
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
     } else {
       debug('Pre-push check', { hasTokenInUrl });
     }
   } catch (e) {
-    debug('Could not check/set remote URL', { error: String(e) });
+    debug('Could not check remote URL', { error: redactAuth(String(e)) });
   }
   
-  const args = ['push', 'origin', branch];
+  // Build push args: use one-shot auth URL if available, otherwise push to origin
+  // WHY one-shot auth URL: Token is passed directly in command, never written to .git/config
+  const args = authPushUrl
+    ? ['push', authPushUrl, `HEAD:${branch}`]
+    : ['push', 'origin', branch];
   if (force) args.push('--force');
   
   const fullCommand = `git ${args.join(' ')}`;
@@ -146,7 +143,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const timeout = setTimeout(() => {
       killed = true;
       gitProcess.kill('SIGKILL');
-      restoreRemote();
       const errMsg = [
         `Push timed out after 30 seconds.`,
         `Command: ${fullCommand}`,
@@ -164,7 +160,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const sigintHandler = () => {
       killed = true;
       gitProcess.kill('SIGKILL');
-      restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
       settle({ success: false, error: 'Push cancelled by user (SIGINT)' });
@@ -174,7 +169,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('close', (code) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
-      restoreRemote();
       
       if (killed) {
         // Timeout or SIGINT already settled the promise
@@ -208,7 +202,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('error', (err) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
-      restoreRemote();
       settle({ 
         success: false,
         error: `Git push failed: ${err.message}\nCommand: ${fullCommand}\nWorkdir: ${workdir}`,
@@ -256,7 +249,10 @@ export async function pushWithRetry(
     maxRetries?: number;  // Max push retries (default 3)
   }
 ): Promise<PushWithRetryResult> {
-  const maxRetries = options?.maxRetries ?? 3;
+  const requestedRetries = options?.maxRetries ?? 3;
+  const maxRetries = Number.isInteger(requestedRetries) && requestedRetries >= 0
+    ? requestedRetries
+    : 3;
   const maxAttempts = maxRetries + 1;
   let attempts = 0;
 

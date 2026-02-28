@@ -35,6 +35,7 @@ export async function computeLineMapFromDiff(
       continue;
     }
     const hunk = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+    // Note: supports hunk parsing only if a valid path is established from the diff output.
     if (hunk && path) {
       oldLine = parseInt(hunk[1], 10);
       newLine = parseInt(hunk[3], 10);
@@ -61,12 +62,13 @@ export async function computeLineMapFromDiff(
 
 export async function getChangedFiles(git: SimpleGit): Promise<string[]> {
   const status = await git.status();
-  return [
-    ...status.modified,
-    ...status.created,
-    ...status.deleted,
-    ...status.renamed.map((r) => r.to),
-  ];
+  return [...new Set([
+          ...status.modified,
+          ...status.created,
+          ...status.not_added,
+          ...status.deleted,
+          ...status.renamed.map((r) => r.to),
+      ])];
 }
 
 export async function getDiff(git: SimpleGit, file?: string): Promise<string> {
@@ -88,6 +90,7 @@ export async function getDiffForFile(git: SimpleGit, file: string): Promise<stri
       debug('Failed to get diff for file', { file, error: err instanceof Error ? err.message : String(err) });
       return '';
     }
+  // Note: handles known exit code 1 as a valid case for file differences without failing
   }
 }
 
