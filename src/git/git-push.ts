@@ -80,42 +80,31 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Using fallback workdir', { workdir, method: (git as any)._baseDir ? '_baseDir' : 'cwd' });
   }
   
-  // Check if remote URL has token, inject if missing
+  // Check if remote URL has token, prepare auth URL for one-shot push if needed
   // WHY: Token may be stripped or repo cloned without it
-  let originalRemoteUrl: string | null = null;
-  let updatedRemote = false;
-  const restoreRemote = () => {
-    if (!updatedRemote || !originalRemoteUrl) return;
-    try {
-      execFileSync('git', ['remote', 'set-url', 'origin', originalRemoteUrl], { cwd: workdir });
-    } catch (e) {
-      // Review: logs the error to aid debugging while protecting sensitive data in URLs
-      debug('Failed to restore remote URL', { error: redactAuth(String(e)) });
-    } finally {
-      updatedRemote = false;
-    }
-  };
+  // NOTE: We use auth URL directly in push command instead of modifying .git/config
+  // to avoid persisting tokens on disk (security: SIGKILL could leave token exposed)
+  let authPushUrl: string | null = null;
   try {
     const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
-    originalRemoteUrl = remoteUrl;
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
     
     if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {
-      // Inject token into URL
-      const authUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
-      execFileSync('git', ['remote', 'set-url', 'origin', authUrl], { cwd: workdir });
-      updatedRemote = true;
-      debug('Injected token into remote URL for push');
+      // Prepare auth URL for one-shot push (not persisted to .git/config)
+      authPushUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
+      debug('Prepared auth URL for single push');
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
     } else {
       debug('Pre-push check', { hasTokenInUrl });
     }
   } catch (e) {
-    debug('Could not check/set remote URL', { error: redactAuth(String(e)) });
+    debug('Could not check remote URL', { error: redactAuth(String(e)) });
   }
   
-  const args = ['push', 'origin', branch];
+  const args = authPushUrl
+    ? ['push', authPushUrl, `HEAD:${branch}`]
+    : ['push', 'origin', branch];
   if (force) args.push('--force');
   
   const fullCommand = `git ${args.join(' ')}`;
@@ -155,7 +144,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const timeout = setTimeout(() => {
       killed = true;
       gitProcess.kill('SIGKILL');
-      restoreRemote();
       const errMsg = [
         `Push timed out after 30 seconds.`,
         `Command: ${fullCommand}`,
@@ -173,7 +161,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     const sigintHandler = () => {
       killed = true;
       gitProcess.kill('SIGKILL');
-      restoreRemote();
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
       settle({ success: false, error: 'Push cancelled by user (SIGINT)' });
@@ -183,7 +170,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('close', (code) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
-      restoreRemote();
       
       if (killed) {
         // Timeout or SIGINT already settled the promise
@@ -217,7 +203,6 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     gitProcess.on('error', (err) => {
       clearTimeout(timeout);
       process.removeListener('SIGINT', sigintHandler);
-      restoreRemote();
       settle({ 
         success: false,
         error: `Git push failed: ${err.message}\nCommand: ${fullCommand}\nWorkdir: ${workdir}`,
@@ -265,7 +250,10 @@ export async function pushWithRetry(
     maxRetries?: number;  // Max push retries (default 3)
   }
 ): Promise<PushWithRetryResult> {
-  const maxRetries = options?.maxRetries ?? 3;
+  const requestedRetries = options?.maxRetries ?? 3;
+  const maxRetries = Number.isInteger(requestedRetries) && requestedRetries >= 0
+    ? requestedRetries
+    : 3;
   const maxAttempts = maxRetries + 1;
   let attempts = 0;
 
