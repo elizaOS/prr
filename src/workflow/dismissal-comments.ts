@@ -109,19 +109,6 @@ function hasNullBytes(content: string): boolean {
 }
 
 /**
- * True when the dismissal reason describes a code change (fix is visible in code).
- * For already-fixed issues, the LLM would respond EXISTING; skipping the call saves tokens.
- * WHY pattern coverage: Real dismissal reasons use "now uses/includes/reads/declares/invalidates",
- * "is now declared", "Line(s) X [in file] now ...", "added", "store ... before await", etc.
- * Matching these avoids ~7 LLM calls per run that would only return EXISTING.
- */
-const REASON_CODE_CHANGE = /\b(now (?:uses?|includes?|reads?|declares?|invalidates?|checks?|calls?)|is now\b|added\b|Line[s]?\s+\d+[-\d]*\s+(?:\w+\s+)*now\b|Lines?\s+\d+[-\d\s,]+(?:clear|invalidate|throw|check|use|fix)|resolved chain|uses (?:let|const)|Buffer\.byteLength|initPromise|store.*before await)/i;
-
-function isReasonCodeChange(reason: string): boolean {
-  return REASON_CODE_CHANGE.test(reason);
-}
-
-/**
  * True when the dismissal reason indicates the concern is not solvable via a code comment
  * (e.g. PR title, metadata, labels). WHY: Audit showed dismissal LLM asked for "vague PR title"
  * on README line 1 — no code comment helps; skipping saves tokens.

@@ -69,6 +69,12 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 - **Judge rule**: Verification prompt now says "If the Current Code already implements what the review asks for, respond NO and cite the specific code." **WHY**: Reduces unnecessary ALREADY_FIXED fix attempts when the judge would otherwise say YES.
 - **Model recommendation wording**: Prompt asks "explain why these models in this order" instead of "brief reasoning". **WHY**: Models echoed "brief reasoning" literally; the new wording yields actionable explanation.
 
+**Security & cleanup (2026-02)** — credential redaction, worktree, conflict-resolve, commit:
+- **Credential redaction**: All push and rebase error/debug logs in `git-push.ts` use `redactUrlCredentials()` so `https://token@...` is never logged. **WHY**: Git stderr and error messages can contain remote URLs with tokens; redacting prevents credential leakage.
+- **Worktree rebase detection**: `getResolvedGitDir(git)` in git-merge.ts resolves the real git dir when `.git` is a file (worktree); used by `completeMerge` and the pull conflict loop in repository.ts. **WHY**: In worktrees the rebase-merge check would otherwise fail; one shared helper keeps behavior correct and consistent.
+- **Sync target log**: "Removed sync target created by prr" is logged only when `git.rm` or fallback `git.add` succeeds. **WHY**: Avoids reporting success when both failed.
+- **commit.ts**: Duplicate broken push/pushWithRetry code removed; file re-exports from git-push.ts. **WHY**: Single source of truth; fixes parse errors from mangled duplicate.
+
 **Earlier audit items**: Dismissal-comment pre-check radius, no-op search/replace skip, lesson caps, dedup threshold, commit wording, think-tag stripping, verifier rejection cap, no-verified-progress exit — see CHANGELOG for full list and WHYs.
 
 **Read this if**: You want to know why we reorder models, skip certain models, inject files by issue count, escalate to full-file rewrite, skip injection for conflict prompts, or embed only conflict sections for large files.

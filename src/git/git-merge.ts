@@ -216,6 +216,32 @@ export async function markConflictsResolved(git: SimpleGit, files: string[]): Pr
 }
 
 /**
+ * Resolve the real git directory (handles worktrees where .git is a file with "gitdir: <path>").
+ * WHY: In worktrees, join(root, '.git') is a file; we must read it and resolve the path so
+ * existsSync(rebase-merge) works. Shared by completeMerge and repository.ts pull conflict loop.
+ */
+export async function getResolvedGitDir(git: SimpleGit): Promise<string> {
+  const { readFileSync, statSync } = await import('fs');
+  const { join, resolve: pathResolve, dirname } = await import('path');
+  const root = await git.revparse(['--show-toplevel']).catch(() => null);
+  const gitDirRaw = root ? join(root.trim(), '.git') : (await git.revparse(['--git-dir'])).trim();
+  const rootDir = root ? pathResolve(root.trim()) : null;
+  try {
+    const stat = statSync(gitDirRaw);
+    if (stat.isFile()) {
+      const content = readFileSync(gitDirRaw, 'utf-8');
+      const m = content.match(/^gitdir:\s*(.+)$/m);
+      const target = m ? m[1].trim() : null;
+      const base = rootDir ?? pathResolve(dirname(gitDirRaw));
+      return target ? pathResolve(base, target) : pathResolve(gitDirRaw);
+    }
+    return pathResolve(gitDirRaw);
+  } catch {
+    return pathResolve(gitDirRaw);
+  }
+}
+
+/**
  * Complete an in-progress merge or rebase after conflicts were resolved.
  * WHY this exists: After resolveConflicts() we've staged the resolution; we must either
  * `rebase --continue` (rebase) or `commit` (merge). Using the wrong one leaves .git/rebase-merge
@@ -224,32 +250,9 @@ export async function markConflictsResolved(git: SimpleGit, files: string[]): Pr
 export async function completeMerge(git: SimpleGit, message: string): Promise<{ success: boolean; error?: string }> {
   debug('Completing merge commit');
   try {
-    // WHY absolute path: revparse --git-dir returns ".git" (relative). existsSync(join(".git", "rebase-merge"))
-    // is resolved against process.cwd(), not the workdir (e.g. ~/.prr/work/<hash>). We'd never see
-    // rebase-merge, run commit() during a rebase, and leave rebase-merge behind.
-    // WHY worktree: In worktrees, .git is a file with "gitdir: <path>"; we must resolve that to the real
-    // git dir so existsSync(rebase-merge) works.
-    const { existsSync, readFileSync, statSync } = await import('fs');
-    const { join, resolve: pathResolve, dirname } = await import('path');
-    const root = await git.revparse(['--show-toplevel']).catch(() => null);
-    let gitDirRaw = root ? join(root.trim(), '.git') : (await git.revparse(['--git-dir'])).trim();
-    const rootDir = root ? pathResolve(root.trim()) : null;
-    let resolvedGitDir: string;
-    try {
-      const stat = statSync(gitDirRaw);
-      if (stat.isFile()) {
-        const content = readFileSync(gitDirRaw, 'utf-8');
-        const m = content.match(/^gitdir:\s*(.+)$/m);
-        const target = m ? m[1].trim() : null;
-        // gitdir path is relative to the .git file's directory (worktree root when .git is at root/.git)
-        const base = rootDir ?? pathResolve(dirname(gitDirRaw));
-        resolvedGitDir = target ? pathResolve(base, target) : pathResolve(gitDirRaw);
-      } else {
-        resolvedGitDir = pathResolve(gitDirRaw);
-      }
-    } catch {
-      resolvedGitDir = pathResolve(gitDirRaw);
-    }
+    const { existsSync } = await import('fs');
+    const { join } = await import('path');
+    const resolvedGitDir = await getResolvedGitDir(git);
     const inRebase = existsSync(join(resolvedGitDir, 'rebase-merge')) || existsSync(join(resolvedGitDir, 'rebase-apply'));
 
     if (inRebase) {

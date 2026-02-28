@@ -100,6 +100,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **AAR exhausted list**: The After-Action Report lists every exhausted issue (path:line) so operators know which need human follow-up. *Why*: Exhausted issues were only summarized by count; listing them makes follow-up actionable.
 - **Judge rule (NO when code already implements)**: Batch verification prompt instructs the judge to respond NO and cite code when the current code already addresses the review. *Why*: Reduces unnecessary ALREADY_FIXED fix attempts when the judge would otherwise say YES.
 - **Model recommendation wording**: We ask "explain why these models in this order" instead of "brief reasoning". *Why*: Models echoed "brief reasoning" literally; the new wording yields actionable explanation.
+- **Credential redaction in push logs**: All push and rebase error/debug output is sanitized so `https://token@host` is never logged. *Why*: Git errors can contain remote URLs with tokens; redacting prevents credential leakage.
+- **Worktree-safe rebase detection**: Rebase-vs-merge and "rebase still in progress?" use a shared helper that resolves the real git dir when `.git` is a file (worktrees). *Why*: In worktrees the check would otherwise fail; one implementation keeps completeMerge and pull conflict loop correct.
 
 ## Installation
 

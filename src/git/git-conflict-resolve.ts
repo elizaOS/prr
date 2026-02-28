@@ -219,7 +219,6 @@ export async function resolveConflictsWithLLM(
         const idx = codeFiles.indexOf(dc.file);
         if (idx !== -1) codeFiles.splice(idx, 1);
       }
-    // Review: files removed unconditionally to simplify the conflict resolution flow.
     }
   }
   
@@ -592,12 +591,22 @@ export async function cleanupSyncTargetFiles(
       if (!existsSync(fullPath)) continue;
       const fs = await import('fs');
       fs.unlinkSync(fullPath);
+      // Only log removal when rm or add actually succeeded. WHY: avoid claiming success when both failed.
+      let removed = false;
       try {
         await git.rm(file);
+        removed = true;
       } catch {
-        await git.add(file).catch(() => {});
+        try {
+          await git.add(file);
+          removed = true;
+        } catch {
+          // Both failed; suppress success log and let outer catch handle
+        }
       }
-      console.log(chalk.gray(`  Removed sync target created by prr: ${file}`));
+      if (removed) {
+        console.log(chalk.gray(`  Removed sync target created by prr: ${file}`));
+      }
     } catch (e) {
       debug('Failed to clean up sync target', { file, error: e });
     }

@@ -186,13 +186,12 @@ export async function checkAndSyncWithRemote(
           
           if (conflictedFiles.length === 0) {
             // No more conflicts — check if rebase is still in progress (might have auto-continued).
-            // WHY --show-toplevel: same as completeMerge — relative .git would be resolved against
-            // process.cwd(), not workdir, so we'd mis-detect and break the rebase loop.
+            // Use getResolvedGitDir so worktrees (where .git is a file) are handled (same as completeMerge).
+            const { getResolvedGitDir } = await import('../git/git-merge.js');
             const { existsSync: fsExists } = await import('fs');
             const { join: pathJoin } = await import('path');
-            const root = await git.revparse(['--show-toplevel']).catch(() => null);
-            const gitDir = root ? pathJoin(root.trim(), '.git') : (await git.revparse(['--git-dir']).catch(() => '.git')).trim();
-            const inRebase = fsExists(pathJoin(gitDir, 'rebase-merge')) || fsExists(pathJoin(gitDir, 'rebase-apply'));
+            const resolvedGitDir = await getResolvedGitDir(git);
+            const inRebase = fsExists(pathJoin(resolvedGitDir, 'rebase-merge')) || fsExists(pathJoin(resolvedGitDir, 'rebase-apply'));
             if (!inRebase) break;
             // Rebase in progress but no conflicts — continue it
             try {

@@ -81,6 +81,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - User and system prompts for the model recommendation call now ask for "explain why these models in this order" instead of "brief reasoning".
 - **WHY**: Models tended to literally echo "brief reasoning" in the response; asking for an explanation in this order yields actionable text and avoids placeholder output.
 
+### Fixed (2026-02) — Security, worktree, conflict-resolve, commit cleanup
+
+**Credential redaction in push and rebase logs**
+- In `src/git/git-push.ts`, a module-level `redactUrlCredentials(text)` strips `https://...@` to `https://***@` before any debug or error logging. All catch blocks and rebase-failure debug calls (push remote-URL check, stdout/stderr, "Rebase failed", "Rebase continue failed", "onConflict handler failed") now log only the redacted string.
+- **WHY**: Git errors and stderr can contain the remote URL with embedded tokens; logging raw errors would leak credentials. Redacting before log keeps behavior unchanged while avoiding credential exposure.
+
+**Worktree-safe rebase detection (shared helper)**
+- New exported `getResolvedGitDir(git)` in `src/git/git-merge.ts` resolves the real git directory when `.git` is a file (worktree: `gitdir: <path>`). `completeMerge` and the pull conflict loop in `src/workflow/repository.ts` use it for the `rebase-merge` / `rebase-apply` check.
+- **WHY**: In worktrees, `join(root, '.git')` is a file; `existsSync(join(gitDir, 'rebase-merge'))` would fail. Reading the `gitdir:` target and resolving the path makes rebase detection correct in both normal repos and worktrees. One helper avoids duplication and keeps behavior consistent.
+
+**Sync target removal log only on success**
+- In `cleanupSyncTargetFiles` (`src/git/git-conflict-resolve.ts`), the message "Removed sync target created by prr: …" is printed only when either `git.rm(file)` or the fallback `git.add(file)` succeeds. If both fail, the log is suppressed and the outer catch still runs.
+- **WHY**: Previously the log ran unconditionally after a try/catch that swallowed failures, so we could report removal when neither operation succeeded. Logging only on confirmed success avoids misleading output.
+
+**commit.ts duplicate push removal**
+- Removed ~293 lines of broken duplicate code from `src/git/commit.ts`: orphan `PushResult`-style body, mangled `push` signature, and full duplicate implementations of `push` and `pushWithRetry`. The file now re-exports `PushResult`, `push`, `pushWithRetry`, and `PushWithRetryResult` from `./git-push.js` and dropped unused imports (`spawn`, `execFileSync`, `buildCommitMessage`, `continueRebase`, `cleanupGitState`).
+- **WHY**: A prior automated edit had left invalid syntax and two copies of push logic; the canonical implementation lives in git-push.ts and is re-exported via git-commit-index. Removing the duplicate fixes parse errors and keeps a single source of truth.
+
+**Dead code: isReasonCodeChange removed**
+- Removed unused `REASON_CODE_CHANGE` regex and `isReasonCodeChange` from `src/workflow/dismissal-comments.ts` (dismissal skip for already-fixed no longer uses them).
+- **WHY**: After skipping the dismissal LLM for all already-fixed issues, the helper was never called; removing it avoids dead code and confusion.
+
 ---
 
 ### Added (2026-02) — Analysis cache, line remap, prompt caps, model recommendation, graduation

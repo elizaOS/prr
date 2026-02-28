@@ -29,11 +29,14 @@ import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
 import { cleanupGitState, continueRebase } from './git-merge.js';
 
+/** Redact credentials from URLs in error messages before logging. WHY: Git errors can contain remote URLs with tokens. */
+function redactUrlCredentials(text: string): string {
+  return text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
+}
+
 /**
  * Result of a git push operation.
- * 
- * NOTE: This is the canonical definition of PushResult used throughout the codebase.
- * The duplicate definition in commit.ts is legacy/unused and should be removed.
+ * Canonical definition; commit.ts re-exports for backward compatibility.
  */
 export interface PushResult {
   success: boolean;
@@ -46,9 +49,7 @@ export interface PushResult {
 
 /**
  * Push changes to remote with timeout and signal handling.
- * 
- * NOTE: This is the canonical implementation of push() used throughout the codebase.
- * The duplicate implementation in commit.ts is legacy/unused and should be removed.
+ * Canonical implementation; commit.ts re-exports for backward compatibility.
  * 
  * WHY spawn instead of simple-git: simple-git's promises can't be cancelled,
  * and the underlying git process keeps running even after timeout. Using
@@ -62,8 +63,7 @@ export interface PushResult {
  */
 export async function push(git: SimpleGit, branch: string, force = false, githubToken?: string): Promise<PushResult> {
   const PUSH_TIMEOUT_MS = 30_000; // 30 seconds (reduced from 60)
-  const redactAuth = (text: string) => text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
-  
+
   // Get the workdir from the git instance
   // WHY multiple fallbacks: simple-git internal _baseDir may be undefined in some versions
   // Use git rev-parse as the most reliable source
@@ -96,7 +96,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       debug('Pre-push check', { hasTokenInUrl });
     }
   } catch (e) {
-    debug('Could not check remote URL', { error: redactAuth(String(e)) });
+    debug('Could not check remote URL', { error: redactUrlCredentials(String(e)) });
   }
   
   // Build push args: use one-shot auth URL if available, otherwise push to origin
@@ -128,12 +128,12 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     // Log output as it comes in (git push progress goes to stderr)
     gitProcess.stdout?.on('data', (data) => { 
       stdout += data.toString(); 
-      debug('git push stdout', redactAuth(data.toString().trim()));
+      debug('git push stdout', redactUrlCredentials(data.toString().trim()));
     });
     gitProcess.stderr?.on('data', (data) => { 
       stderr += data.toString();
       // Show progress (git push writes progress to stderr)
-      const line = redactAuth(data.toString().trim());
+      const line = redactUrlCredentials(data.toString().trim());
       if (line && !line.includes('Username') && !line.includes('Password')) {
         debug('git push progress', line);
       }
@@ -151,7 +151,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
         `  - Network issue (check connectivity)`,
         `  - Auth issue (token missing/expired)`,
         `  - Git waiting for interactive input`,
-        stderr ? `stderr: ${redactAuth(stderr)}` : '',
+        stderr ? `stderr: ${redactUrlCredentials(stderr)}` : '',
       ].filter(Boolean).join('\n');
       settle({ success: false, error: errMsg });
     }, PUSH_TIMEOUT_MS);
@@ -184,7 +184,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
           (stderr.includes('fetch first') || stderr.includes('non-fast-forward'));
         
         if (isRejected) {
-          debug('Push rejected - remote has newer commits', { stderr: redactAuth(stderr) });
+          debug('Push rejected - remote has newer commits', { stderr: redactUrlCredentials(stderr) });
           settle({ 
             success: false, 
             rejected: true,
@@ -193,7 +193,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
         } else {
           settle({ 
             success: false,
-            error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactAuth(stderr)}`,
+            error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactUrlCredentials(stderr)}`,
           });
         }
       }
@@ -288,7 +288,7 @@ export async function pushWithRetry(
       // Loop continues to retry push
     } catch (syncError) {
       const syncMsg = syncError instanceof Error ? syncError.message : String(syncError);
-      debug('Rebase failed', { error: syncMsg, attempt: attempts });
+      debug('Rebase failed', { error: redactUrlCredentials(syncMsg), attempt: attempts });
       
       // Check if it's a conflict
       if (syncMsg.includes('CONFLICT') || syncMsg.includes('conflict')) {
@@ -321,11 +321,12 @@ export async function pushWithRetry(
                   continue;
                 }
                 // More conflicts - could loop but for now bail
-                debug('Rebase continue failed', { error: continueMsg });
+                debug('Rebase continue failed', { error: redactUrlCredentials(continueMsg) });
               }
             }
           } catch (handlerError) {
-            debug('onConflict handler failed', { error: handlerError });
+            const handlerMsg = handlerError instanceof Error ? handlerError.message : String(handlerError);
+            debug('onConflict handler failed', { error: redactUrlCredentials(handlerMsg) });
           }
         }
         
