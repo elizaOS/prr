@@ -238,6 +238,7 @@ export async function executePushIteration(
   let exitDetails = '';
   let committedThisIteration = false;
 
+  // This is the primary fix iteration loop - runs until we've fixed all issues or hit max iterations
   while (fixIteration < effectiveMaxFixIterations && !allFixed) {
     fixIteration++;
     
@@ -418,15 +419,12 @@ export async function executePushIteration(
     }
   }
 
-  if (!allFixed && effectiveMaxFixIterations !== Infinity) {
-    if (!allFixed && effectiveMaxFixIterations !== Infinity) {
-      console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(effectiveMaxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
-      exitReason = 'max_iterations';
-      exitDetails = `Hit max fix iterations (${effectiveMaxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
-    }
-    finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
-    finalCommentsRef.current = [...comments];
-  }
+  console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(effectiveMaxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
+  exitReason = 'max_iterations';
+  exitDetails = `Hit max fix iterations (${effectiveMaxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
+  finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
+  // Note: preserves issue references and comments for accurate post-iteration analysis.
+  finalCommentsRef.current = [...comments];
 
   // Reflect mid-loop commits so orchestrator and exit summary are accurate when COMMIT PHASE has nothing left to commit.
   committedThisIteration = alreadyCommitted.size > 0;
