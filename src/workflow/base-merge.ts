@@ -129,22 +129,16 @@ export async function checkAndMergeBaseBranch(
           
           console.log(chalk.green(`✓ Conflicts resolved and merged ${prInfo.baseBranch}`));
           
-          // Push the resolved merge commit (skip outer push block via early continue)
+          // Push the resolved merge commit and return early to avoid double push
           if (!options.noPush && !options.noCommit) {
             try {
-              try {
-         spinner.start('Pushing merge commit...');
-         await git.push('origin', prInfo.branch);
-         spinner.succeed('Pushed merge commit');
-       } catch (pushErr) {
-         spinner.fail('Failed to push merge commit');
-         console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
-       }
+              spinner.start('Pushing merge commit...');
+              await git.push('origin', prInfo.branch);
+              spinner.succeed('Pushed merge commit');
             } catch (pushErr) {
               spinner.fail('Failed to push merge commit');
               console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
             }
-          // Review: spinner states reflect push status, ensuring clear user feedback on operation success.
           }
           // Conflict resolution already pushed; skip to end
           endTimer('Merge base branch');

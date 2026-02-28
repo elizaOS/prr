@@ -416,15 +416,11 @@ export async function tryDirectLLMFix(
     try {
       // Guard against large files exceeding model context
       const stat = fs.statSync(filePath);
-       if (stat.size > MAX_PROMPT_FILE_BYTES) {
-         console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
-         continue;
-       }
-if (stat.size > MAX_PROMPT_FILE_BYTES) {
-  console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
-  continue;
-}
-const fileContent = fs.readFileSync(filePath, 'utf-8');
+      if (stat.size > MAX_PROMPT_FILE_BYTES) {
+        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
+        continue;
+      }
+      const fileContent = fs.readFileSync(filePath, 'utf-8');
 
       // Skip files too large for direct LLM rewrite
       const MAX_FILE_CHARS = 100_000; // ~25K tokens
