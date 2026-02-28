@@ -419,12 +419,14 @@ export async function executePushIteration(
     }
   }
 
-  console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(effectiveMaxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
-  exitReason = 'max_iterations';
-  exitDetails = `Hit max fix iterations (${effectiveMaxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
-  finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
-  // Note: preserves issue references and comments for accurate post-iteration analysis.
-  finalCommentsRef.current = [...comments];
+  // Single check for max iterations exit condition - no inner duplicate needed since we already broke out of the loop
+  if (!allFixed && fixIteration >= effectiveMaxFixIterations) {
+    console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(effectiveMaxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
+    exitReason = 'max_iterations';
+    exitDetails = `Hit max fix iterations (${effectiveMaxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
+    finalUnresolvedIssuesRef.current = [...unresolvedIssues];
+    finalCommentsRef.current = [...comments];
+  }
 
   // Reflect mid-loop commits so orchestrator and exit summary are accurate when COMMIT PHASE has nothing left to commit.
   committedThisIteration = alreadyCommitted.size > 0;
