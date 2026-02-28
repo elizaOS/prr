@@ -337,6 +337,10 @@ export async function verifyFixes(
               if (!isInfrastructureFailure(verification.explanation)) {
                 issue.verifierContradiction = verification.explanation;
               }
+              // Track rejection count to enable escalation to stronger model
+              const state = getState(stateContext);
+              if (!state.verifierRejectionCount) state.verifierRejectionCount = {};
+              state.verifierRejectionCount[issue.comment.id] = (state.verifierRejectionCount[issue.comment.id] ?? 0) + 1;
               // Skip failure analysis for infrastructure errors (quota, timeout) to save tokens
               if (isInfrastructureFailure(verification.explanation)) {
                 const shortReason = verification.explanation.substring(0, 120);
@@ -391,15 +395,24 @@ export async function verifyFixes(
         spinner.text = `Verifying ${formatNumber(fixesToVerify.length)} fixes in batch...`;
         const state = getState(stateContext);
         // Split by escalation need so we only use the stronger model for issues that had previous rejections.
-        const needStrongerIds = new Set(
+        // Create an ID set for O(1) lookup instead of O(n²) nested loops
+        const needStrongerIdSet = new Set(
           getCurrentModel
             ? changedIssues
                 .filter((_, i) => (state.verifierRejectionCount?.[fixesToVerify[i].id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD)
                 .map((i) => i.comment.id)
             : []
         );
-        const fixesDefault = fixesToVerify.filter((f) => !needStrongerIds.has(f.id));
-        const fixesStronger = fixesToVerify.filter((f) => needStrongerIds.has(f.id));
+        // Use single pass with set lookup - O(n) instead of O(n²)
+        const fixesDefault: typeof fixesToVerify = [];
+        const fixesStronger: typeof fixesToVerify = [];
+        for (const fix of fixesToVerify) {
+          if (needStrongerIdSet.has(fix.id)) {
+            fixesStronger.push(fix);
+          } else {
+            fixesDefault.push(fix);
+          }
+        }
         const rawStrongerModel = needStrongerIds.size > 0 && getCurrentModel ? getCurrentModel() : undefined;
         const runner = getRunner?.();
         const strongerModel =
@@ -413,7 +426,7 @@ export async function verifyFixes(
           for (const [id, value] of defaultResult) result.set(id, value);
         }
         if (fixesStronger.length > 0) {
-          if (strongerModel) {
+          if (strongerModel && isModelProviderCompatible(strongerModel, llm.provider)) {
             debug('Using stronger model for verification (previous rejections)', { model: strongerModel, count: fixesStronger.length });
             const strongerResult = await llm.batchVerifyFixes(fixesStronger, { model: strongerModel });
             for (const [id, value] of strongerResult) result.set(id, value);
