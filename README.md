@@ -79,11 +79,15 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Rotation by success rate**: Legacy model rotation orders models by persisted success rate (best first). *Why*: Low-success models no longer get tried before proven performers.
 - **CodeRabbit analysis chain stripping**: Comment bodies are sanitized to remove CodeRabbit "Analysis chain" and "Script executed" blocks before analysis/fix prompts. *Why*: CodeRabbit embeds 5–15 shell runs per comment (~200–1500 chars each); the analyzer only needs the actual finding, not script output—saves ~30% on affected prompts.
 - **No-op change skip**: Identical search/replace blocks from the fixer are skipped. *Why*: Prevents wasted verification and keeps file-change counts accurate.
+- **All-no-op skip verification**: When every fixer change block was a no-op (search === replace), we treat the iteration as "no changes" and skip the verification LLM call, going straight to rotation. *Why*: Avoids running the verifier on unchanged code; saves latency and keeps behavior consistent with git state.
+- **Skip model recommendation for 1–2 issues**: The separate model-recommendation LLM call runs only when there are 3+ unresolved issues; otherwise we use default rotation. *Why*: Saves ~29s and tokens on simple runs.
+- **Skip predict-bots when --no-wait-bot**: When `--no-wait-bot` is set, we skip the LLM "likely new bot feedback" prediction after commit. *Why*: Prediction is display-only; skipping saves ~26s when the user isn't waiting for bot reviews.
 - **Lesson caps for large batches**: When fixing 10+ issues at once, we cap global and per-file lessons so the prompt stays under ~100k chars. *Why*: Prevents gateway timeouts and prompt poisoning from oversized prompts.
 - **LLM dedup only for 3+ issues**: The LLM dedup step runs only for files with at least 3 remaining issues after heuristic dedup. *Why*: For 2-comment files, heuristic grouping is enough; skipping the LLM saves tokens with no meaningful loss.
 - **maxFixIterations 0 = unlimited**: `--max-fix-iterations 0` is treated as unlimited (not zero). *Why*: Without this, 0 meant zero iterations and the run did analysis-only with no fix attempts.
 - **File injection by issue count & dynamic budget**: Injected file contents are chosen by how many issues reference each file (most first); total injection budget is tied to the model’s context cap. *Why*: Puts the injection cap toward files most likely to need search/replace; avoids overshooting small-context or underusing large-context models.
 - **Rewrite escalation for non-injected files**: Files mentioned in the prompt but not injected (or with repeated S/R failures) are escalated to full-file rewrite. *Why*: When the model never saw file content, search/replace usually fails; asking for the full file avoids matching failures.
+- **Delay full-file escalation for simple issues**: For files where all targeting issues have importance ≤ 3 and ease ≤ 2, we only escalate to full-file rewrite when the file was not injected (not when over S/R failure threshold). *Why*: Full-file rewrites are expensive and time out more; for simple issues we rely on S/R first.
 
 ### Robustness
 - Hash-based work directories for efficient re-runs
@@ -272,6 +276,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 5. **Verify Fixes**: For each changed file, asks the LLM: "Does this diff address the concern?"
    - *Why verify*: Fixer tools can make changes that don't actually fix the issue. Catches false positives early.
+   - *Why "Code before fix" in verifier prompt*: The verifier now sees a "Code before fix" snippet (from the diff) alongside "Current Code (AFTER)" so it can compare before vs after and judge whether the issue was actually fixed instead of pattern-matching on current code alone; reduces false rejections when the fix was correct.
 
 6. **Check for New Comments**: Before declaring "done", checks if any NEW review comments were added during the fix cycle.
    - *Why*: Bot reviewers or humans might add new issues while you're fixing others. Ensures nothing slips through.

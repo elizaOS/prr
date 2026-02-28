@@ -1857,7 +1857,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       line?: number | null;
       diff: string;
       currentCode?: string;
-    }>
+    }>,
+    options?: { model?: string }
   ): Promise<Map<string, { fixed: boolean; explanation: string; lesson?: string }>> {
     if (fixes.length === 0) {
       return new Map();
@@ -1871,16 +1872,17 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     );
 
     // WHY note: Verification accuracy drives fix-loop decisions (retry vs dismiss). Audit showed ~30% wrong verdicts
-    // with a small model. If runs show many false YES/NO, use a stronger model via tool/runner config; no code change needed.
+    // with a small model. When caller passes options.model (e.g. after VERIFIER_ESCALATION_THRESHOLD rejections),
+    // we use that model for this batch to reduce fixer/verifier stalemates.
     const MAX_VERIFY_RETRIES = 1;
     for (let b = 0; b < batches.length; b++) {
       const batchFixes = batches[b];
       const batchPrompt = this.buildBatchVerifyPrompt(batchFixes);
-      debug('Batch verifying fixes', { batch: b + 1, totalBatches: batches.length, count: batchFixes.length });
+      debug('Batch verifying fixes', { batch: b + 1, totalBatches: batches.length, count: batchFixes.length, modelOverride: !!options?.model });
       let batchResults: Map<string, { fixed: boolean; explanation: string; lesson?: string }> | null = null;
       for (let attempt = 0; attempt <= MAX_VERIFY_RETRIES; attempt++) {
         try {
-          const response = await this.complete(batchPrompt);
+          const response = await this.complete(batchPrompt, undefined, options?.model ? { model: options.model } : undefined);
           batchResults = this.parseBatchVerifyResponse(batchFixes, response.content);
           break;
         } catch (err) {
@@ -1911,6 +1913,25 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     return results;
   }
 
+  /**
+   * Extract the "before" (removed) side of a unified diff so the verifier can compare before vs after.
+   * WHY: Verifier was only seeing "Current Code (AFTER)"; with before snippet it can judge whether
+   * the issue was actually fixed instead of pattern-matching on current code alone (audit: one
+   * correct fix took 17 iterations because the verifier rejected it without before context).
+   */
+  private static extractBeforeFromUnifiedDiff(diff: string, maxChars: number): string | undefined {
+    const lines = diff.split('\n');
+    const removed: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith('-') && !line.startsWith('---')) {
+        removed.push(line.slice(1)); // drop leading '-'
+      }
+    }
+    if (removed.length === 0) return undefined;
+    const joined = removed.join('\n');
+    return joined.length > maxChars ? joined.substring(0, maxChars) + '\n... (truncated)' : joined;
+  }
+
   private buildBatchVerifyPrompt(
     fixes: Array<{
       id: string;
@@ -1924,7 +1945,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     // Build batch prompt — verification + failure analysis in a single LLM call.
     const parts: string[] = [
       'You are a STRICT code reviewer. For each fix below, verify whether the code change adequately addresses the review comment.',
-      'IMPORTANT: When a "Current Code" section is provided, CHECK IT CAREFULLY. If the problematic pattern described in the review comment is still present in the current code, the fix is NOT adequate — answer NO regardless of what the diff shows.',
+      'IMPORTANT: Compare "Code before fix" with "Current Code (AFTER)". If the problematic pattern described in the review comment is still present in the current code, the fix is NOT adequate — answer NO regardless of what the diff shows.',
       '',
       'For EACH fix, respond with EXACTLY this format:',
       'FIX_ID: YES|NO: brief explanation of what was/wasn\'t fixed',
@@ -1965,6 +1986,17 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       parts.push(`File: ${fix.filePath}${fix.line ? `:${fix.line}` : ''}`);
       parts.push(`Review Comment: ${comment}`);
       parts.push('');
+      const beforeSnippet = fix.diff
+        ? LLMClient.extractBeforeFromUnifiedDiff(fix.diff, maxCode)
+        : undefined;
+      // WHY before section: Verifier can compare before vs after and answer "was the problematic pattern removed?" instead of guessing from current code only.
+      if (beforeSnippet) {
+        parts.push('Code before fix (removed lines from diff — compare with Current Code below):');
+        parts.push('```');
+        parts.push(beforeSnippet);
+        parts.push('```');
+        parts.push('');
+      }
       if (currentCode) {
         parts.push('Current Code (AFTER the fix attempt — check if the issue pattern still exists here):');
         parts.push('```');

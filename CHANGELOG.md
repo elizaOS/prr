@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-02) — Prompts.log audit: verifier before snippet, model rec skip, no-op skip verify, escalation delay, predict-bots skip
+
+**Verifier prompt: add "Code before fix" snippet**
+- In `buildBatchVerifyPrompt` (`src/llm/client.ts`), the verifier now sees a "Code before fix" section derived from the unified diff (removed lines, i.e. the `-` side) in addition to "Current Code (AFTER)" and the diff. New helper `extractBeforeFromUnifiedDiff(diff, maxChars)` strips `-`-prefixed lines (excluding `---` headers) and truncates to the same cap as current code.
+- **WHY**: The verifier previously only saw the code *after* the fix attempt. With a before snippet it can compare before vs after and judge whether the issue was actually fixed instead of pattern-matching on the current code alone; this reduces false rejections when the fix was correct (audit: one duplicated `if` took 17 fix iterations because the verifier rejected the first correct fix).
+
+**Skip model recommendation when fewer than 3 unresolved issues**
+- In `runBatchAnalysis` (`src/workflow/issue-analysis.ts`), the separate model-recommendation LLM call runs only when `unresolvedCount >= 3` (count of issues with `exists: true`). For 1–2 issues we skip the call and use the default rotation order.
+- **WHY**: Saves ~29s and tokens on simple runs; for 1–2 issues the default rotation is sufficient and the recommendation adds little value.
+
+**Treat all-no-op changes as "no changes" and skip verification**
+- In `applyFileChanges` (`src/runners/llm-api.ts`) we now track `noOpSkips` (when search and replace are identical). The return type is `{ filesWritten: string[]; noMeaningfulChanges?: boolean }` with `noMeaningfulChanges` true only when `attemptedChanges > 0`, `noOpSkips === attemptedChanges`, and `filesWritten.length === 0`. The runner returns `noMeaningfulChanges: true` in `RunnerResult` in that case. In `executeFixIteration` (`src/workflow/execute-fix-iteration.ts`), when `result.noMeaningfulChanges` we skip `handleNoChangesWithVerification` and go straight to rotation (no verification LLM call).
+- **WHY**: When every applied change was a no-op (e.g. fixer output identical search/replace), treating the iteration as "no changes" and skipping verification avoids running the verifier on unchanged code and avoids counting as "file modified"; saves latency and keeps behavior consistent with actual git state.
+
+**Delay full-file rewrite escalation for simple issues**
+- `getEscalatedFiles` (`src/runners/llm-api.ts`) now accepts optional `unresolvedIssues` (minimal shape in `RunnerOptions` to avoid circular deps). For each file we compute whether all issues targeting it have triage with `importance <= 3` and `ease <= 2`. For such "simple" files we only escalate when the file was not injected (not when over S/R failure threshold). `executeFixIteration` passes `unresolvedIssues` into `runner.run` options.
+- **WHY**: Don't escalate to full-file rewrite as quickly for low-importance, low-difficulty issues; rely on search/replace with more context or a different strategy first. Full-file rewrites are expensive and time out more often; delaying for simple issues reduces wasted time (audit: escalation was triggered after 2 S/R failures even for trivial nits).
+
+**Skip predicted-bot-feedback LLM call when `--no-wait-bot`**
+- In `handleCommitAndPush` (`src/workflow/commit-and-push-loop.ts`), the LLM-based "likely new bot feedback" prediction (`predictBotFeedback`) is now gated with `!options.noWaitBot`. When `--no-wait-bot` is set we skip this call; heuristic prediction still runs.
+- **WHY**: The prediction runs after commit and is display-only; when the user has opted out of waiting for bot reviews, skipping the prediction saves ~26s and tokens with no impact on behavior.
+
+### Fixed (2026-02) — Output.log audit: stronger verifier escalation, skip full-file after timeout
+
+**Stronger verifier after previous rejections**
+- New constant `VERIFIER_ESCALATION_THRESHOLD = 1`. When any issue in the verify batch has been rejected by the verifier at least once (`verifierRejectionCount >= 1`), the next verification uses the current fixer model (via `batchVerifyFixes(..., { model })`) instead of the default cheap verifier model. `verifyFixes` accepts optional `getCurrentModel` and passes it through from the push-iteration loop.
+- **WHY**: Output.log audit showed the default verifier (e.g. qwen-3-14b) repeatedly said "not fixed" while fixers had applied valid changes across 12 iterations; one verification with a stronger model can break the stalemate before we dismiss as exhausted.
+
+**Skip full-file rewrite for model after 504/timeout on full-file**
+- In `LLMAPIRunner` (`src/runners/llm-api.ts`), a new set `modelsTimedOutOnFullFileRewrite` tracks models that timed out on a full-file rewrite request. When building the fix prompt, if the current model is in the set, we skip escalation to full-file rewrite for that request (use search/replace only). When a 504/timeout occurs and the request was a full-file rewrite, we add the current model to the set. The set is cleared in `resetFailureTracking()`.
+- **WHY**: Audit showed gpt-4o-mini timed out twice (~19 min total) on 42k-char full-file requests; skipping full-file for that model on subsequent attempts avoids repeated 504s and uses S/R or other models instead.
+
 ### Fixed (2026-02) — Rebase detection, push retry cleanup, dead code removal
 
 **completeMerge rebase vs merge detection**

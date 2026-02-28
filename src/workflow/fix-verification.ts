@@ -29,6 +29,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration, formatNumber } from '../logger.js';
 import { getChangedFiles, getDiffForFile, detectFileCorruption } from '../git/git-clone-index.js';
 import { basename, dirname, extname, join } from 'path';
+import { VERIFIER_ESCALATION_THRESHOLD } from '../constants.js';
 
 /**
  * Find changed files that relate to an issue's target path.
@@ -178,7 +179,8 @@ export async function verifyFixes(
   verifiedThisSession: Set<string>,
   noBatch: boolean,
   duplicateMap?: Map<string, string[]>,
-  workdir?: string
+  workdir?: string,
+  getCurrentModel?: () => string | undefined
 ): Promise<{
   verifiedCount: number;
   failedCount: number;
@@ -384,8 +386,36 @@ export async function verifyFixes(
         );
 
         spinner.text = `Verifying ${formatNumber(fixesToVerify.length)} fixes in batch...`;
-        const result = await llm.batchVerifyFixes(fixesToVerify);
-        
+        const state = getState(stateContext);
+        // Split by escalation need so we only use the stronger model for issues that had previous rejections.
+        const needStronger = getCurrentModel
+          ? changedIssues.filter(
+              (_, i) => (state.verifierRejectionCount?.[fixesToVerify[i].id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD
+            )
+          : [];
+        const defaultIssues = needStronger.length === changedIssues.length
+          ? []
+          : changedIssues.filter((issue) => !needStronger.includes(issue));
+        const fixesDefault = defaultIssues.length ? fixesToVerify.filter((f) => defaultIssues.some((i) => i.comment.id === f.id)) : [];
+        const fixesStronger = needStronger.length ? fixesToVerify.filter((f) => needStronger.some((i) => i.comment.id === f.id)) : [];
+        const strongerModel = needStronger.length && getCurrentModel ? getCurrentModel() : undefined;
+
+        const result = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
+        if (fixesDefault.length > 0) {
+          const defaultResult = await llm.batchVerifyFixes(fixesDefault);
+          for (const [id, value] of defaultResult) result.set(id, value);
+        }
+        if (fixesStronger.length > 0) {
+          if (strongerModel) {
+            debug('Using stronger model for verification (previous rejections)', { model: strongerModel, count: fixesStronger.length });
+            const strongerResult = await llm.batchVerifyFixes(fixesStronger, { model: strongerModel });
+            for (const [id, value] of strongerResult) result.set(id, value);
+          } else {
+            const fallback = await llm.batchVerifyFixes(fixesStronger);
+            for (const [id, value] of fallback) result.set(id, value);
+          }
+        }
+
         for (const issue of changedIssues) {
           const verification = result.get(issue.comment.id);
           if (verification) {

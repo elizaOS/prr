@@ -166,6 +166,8 @@ export class LLMAPIRunner implements Runner {
   private openai?: OpenAI;
   /** Track search/replace failures per file across iterations within a session. */
   private searchReplaceFailures = new Map<string, number>();
+  /** Models that timed out on a full-file rewrite this run; we skip full-file for them to avoid repeated 504s. WHY: Audit showed gpt-4o-mini timed out twice (~19 min) on 42k-char full-file requests. */
+  private modelsTimedOutOnFullFileRewrite = new Set<string>();
   /** Consecutive 504/timeout count across attempts; reset on success. Used for cooldown. */
   private consecutive504Count = 0;
 
@@ -321,7 +323,11 @@ Working directory: ${workdir}`;
     // (so the LLM has no file content to match). Asking for the complete file avoids matching failures.
     // WHY original prompt: getEscalatedFiles uses a regex for "File:/FILE:/Issue N: path". Enriched prompt
     // contains injected sections like "### path (N lines)"; scanning that could add false path matches.
-    const rewriteFiles = this.getEscalatedFiles(workdir, prompt, injectedPaths);
+    let rewriteFiles = this.getEscalatedFiles(workdir, prompt, injectedPaths, options?.unresolvedIssues);
+    if (this.modelsTimedOutOnFullFileRewrite.has(model)) {
+      rewriteFiles = [];
+      debug('Skipping full-file rewrite for model (timed out on full-file earlier this run); will use S/R until rotation', { model });
+    }
     if (rewriteFiles.length > 0) {
       const rewriteInstructions = rewriteFiles
         .map(f => {
@@ -430,9 +436,19 @@ Working directory: ${workdir}`;
       debugResponse('llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
 
       // Parse and apply file changes (pass escalated files so <file> blocks are applied even when S/R ran)
-      const filesWritten = await this.applyFileChanges(workdir, response, rewriteFiles);
+      const applyResult = await this.applyFileChanges(workdir, response, rewriteFiles);
+      const { filesWritten, noMeaningfulChanges } = applyResult;
 
       if (filesWritten.length === 0) {
+        // All change blocks were no-ops (search === replace): signal so workflow skips verification. WHY: Verifier on unchanged code wastes latency; go straight to rotation.
+        if (noMeaningfulChanges) {
+          this.consecutive504Count = 0;
+          return {
+            success: true,
+            output: response,
+            noMeaningfulChanges: true,
+          };
+        }
         // Check if LLM tried to make changes but all search/replace failed
         const hasChangeBlocks = /<change\s+path="/.test(response) || /<file\s+path="/.test(response) || /<newfile\s+path="/.test(response);
         if (hasChangeBlocks) {
@@ -472,8 +488,9 @@ Working directory: ${workdir}`;
         }
         // De-escalate full-file rewrite so next attempt uses smaller prompt and may complete.
         if (rewriteFiles.length > 0) {
+          this.modelsTimedOutOnFullFileRewrite.add(model);
           this.clearEscalationForFiles(rewriteFiles);
-          debug('De-escalated files after timeout (retry with search/replace)', { files: rewriteFiles });
+          debug('De-escalated files after timeout (retry with search/replace); will skip full-file for this model next time', { model, files: rewriteFiles });
         }
       }
 
@@ -686,7 +703,12 @@ Working directory: ${workdir}`;
    * output for those avoids S/R matching failures. Caller must pass the original prompt (not enriched)
    * so we only see issue references, not injected file content.
    */
-  private getEscalatedFiles(workdir: string, prompt: string, injectedPaths: string[] = []): string[] {
+  private getEscalatedFiles(
+    workdir: string,
+    prompt: string,
+    injectedPaths: string[] = [],
+    unresolvedIssues?: Array<{ comment: { path: string }; triage?: { importance: number; ease: number } }>
+  ): string[] {
     // WHY skip for conflict prompts: buildConflictResolutionPromptWithContent already embeds file content
     // (or chunked sections). Escalating to full-file rewrite would duplicate content and cause huge prompts
     // and 180s timeouts (audit: CHANGELOG.md conflict round 1 wasted ~10 min on 3 timeouts then fell back to deterministic merge).
@@ -702,11 +724,30 @@ Working directory: ${workdir}`;
 
     const escalated: string[] = [];
     const injectedSet = new Set(injectedPaths);
+    const issuesByPath = new Map<string, Array<{ triage?: { importance: number; ease: number } }>>();
+    if (unresolvedIssues?.length) {
+      for (const issue of unresolvedIssues) {
+        const p = issue.comment.path;
+        if (!issuesByPath.has(p)) issuesByPath.set(p, []);
+        issuesByPath.get(p)!.push(issue);
+      }
+    }
 
     for (const filePath of pathsInPrompt) {
       const notInjected = !injectedSet.has(filePath);
       const failures = this.searchReplaceFailures.get(filePath) || 0;
       const overThreshold = failures >= REWRITE_ESCALATION_THRESHOLD;
+      const fileIssues = issuesByPath.get(filePath) ?? [];
+      // WHY: For simple issues (importance ≤3, ease ≤2) we only escalate when file wasn't injected; don't escalate just for S/R failure threshold so we rely on S/R with context first (full-file is expensive and times out more).
+      const isSimpleFile =
+        fileIssues.length > 0 &&
+        fileIssues.every(
+          (i) => i.triage != null && i.triage.importance <= 3 && i.triage.ease <= 2
+        );
+      if (isSimpleFile && overThreshold && !notInjected) {
+        debug('Delaying full-file rewrite for simple issues (importance ≤3, ease ≤2) — rely on S/R', { filePath });
+        continue;
+      }
       if (notInjected || overThreshold) {
         escalated.push(filePath);
         if (notInjected) {
@@ -740,6 +781,7 @@ Working directory: ${workdir}`;
   /** Reset failure tracker (e.g., at start of a new PR or after a successful push). */
   resetFailureTracking(): void {
     this.searchReplaceFailures.clear();
+    this.modelsTimedOutOnFullFileRewrite.clear();
   }
 
   /** Clear escalation for given files so next attempt uses search/replace instead of full-file rewrite. Used after timeout. */
@@ -754,9 +796,10 @@ Working directory: ${workdir}`;
     return new Map(this.searchReplaceFailures);
   }
 
-  private async applyFileChanges(workdir: string, response: string, escalatedFiles: string[] = []): Promise<string[]> {
+  private async applyFileChanges(workdir: string, response: string, escalatedFiles: string[] = []): Promise<{ filesWritten: string[]; noMeaningfulChanges?: boolean }> {
     const filesModified = new Set<string>();
     let attemptedChanges = 0;
+    let noOpSkips = 0;
     let failedSearchReplace = 0;
     const failedFiles = new Set<string>();
     const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -783,6 +826,7 @@ Working directory: ${workdir}`;
       // ALREADY_FIXED). Applying them would trigger verification on unchanged code; skipping keeps filesModified accurate.
       if (searchText.trim() === replaceContent.trim()) {
         debug('Skipping no-op change — search and replace are identical', { filePath });
+        noOpSkips++;
         continue;
       }
 
@@ -957,7 +1001,10 @@ Working directory: ${workdir}`;
       }
     }
 
-    return Array.from(filesModified);
+    const filesWritten = Array.from(filesModified);
+    // WHY: When every change block was a no-op (search === replace), we signal so the workflow skips verification and treats as "no changes" for rotation.
+    const noMeaningfulChanges = attemptedChanges > 0 && noOpSkips === attemptedChanges && filesWritten.length === 0;
+    return { filesWritten, noMeaningfulChanges: noMeaningfulChanges ? true : undefined };
   }
 }
 

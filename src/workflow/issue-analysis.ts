@@ -1428,7 +1428,10 @@ export async function findUnresolvedIssues(
     }
 
     // Separate model recommendation call after all verification batches (saves tokens vs baking into first batch).
-    if (modelContext?.availableModels?.length) {
+    // Skip when fewer than 3 unresolved issues — use default rotation; saves ~29s and tokens on simple runs.
+    // WHY: For 1–2 issues the recommendation adds little value; default rotation is sufficient.
+    const unresolvedCount = [...batchResult.issues.values()].filter((r) => r.exists).length;
+    if (unresolvedCount >= 3 && modelContext?.availableModels?.length) {
       const summaryLines = [...batchResult.issues.entries()].map(([id, r]) => {
         const triage = r.exists ? ` I${r.importance} D${r.ease}` : '';
         const snippet = r.explanation.slice(0, 120).replace(/\n/g, ' ');

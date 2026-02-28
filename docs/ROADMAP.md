@@ -2,6 +2,18 @@
 
 Items here are potential directions to explore, not committed plans. Each idea includes **why** it would help, so we can revisit tradeoffs later.
 
+## Recently completed (from audits)
+
+The following items from Prompts.log / Output.log audits are already implemented and documented in [CHANGELOG](../CHANGELOG.md) under "Fixed (2026-02) — Prompts.log audit: verifier before snippet, model rec skip, no-op skip verify, escalation delay, predict-bots skip":
+
+- **Verifier before snippet** — Verifier prompt now includes "Code before fix" (from diff) so it can compare before vs after. WHY: Reduces false rejections when the fix was correct.
+- **Model recommendation skip (&lt; 3 issues)** — No separate recommendation call for 1–2 issues; use default rotation. WHY: Saves ~29s and tokens.
+- **All-no-op skip verification** — When all change blocks are no-ops, skip verification and treat as no changes. WHY: Avoids verifier on unchanged code.
+- **Delay full-file escalation for simple issues** — For importance ≤ 3 and ease ≤ 2, escalate only when file not injected. WHY: Rely on S/R first; full-file is expensive.
+- **Skip predict-bots when --no-wait-bot** — Omit LLM prediction of likely bot feedback when user isn't waiting for bots. WHY: Saves ~26s.
+
+---
+
 ## Blast radius and focus masking
 
 **Idea:** Use the PR diff to compute a "blast radius" (changed files plus their upstream dependencies and downstream dependents), then focus the fix loop on that set and effectively ignore or deprioritize the rest.

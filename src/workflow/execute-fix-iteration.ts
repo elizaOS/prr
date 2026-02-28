@@ -239,6 +239,7 @@ export async function executeFixIteration(
        model: currentModel,
        codexAddDirs,
        openaiApiKey: keyForRunner,
+       unresolvedIssues,
      });
    } finally {
      spinner.stop();
@@ -348,6 +349,38 @@ export async function executeFixIteration(
   }
   
   console.log(chalk.gray(`\n  Fixer completed in ${formatDuration(fixerTime)}`));
+
+  // All changes were no-op (search === replace): skip verification and treat as no changes for rotation.
+  // WHY: handleNoChangesWithVerification would run an LLM call to parse ALREADY_FIXED etc.; when we know all changes were no-ops there's nothing to verify, so we skip that call and go straight to rotation.
+  if (result.noMeaningfulChanges) {
+    console.log(chalk.yellow('\n  All fixer changes were no-ops (no files modified) — skipping verification'));
+    const updatedConsecutiveFailures = consecutiveFailures + 1;
+    const updatedModelFailuresInCycle = modelFailuresInCycle + 1;
+    if (prompt.length > 200_000) {
+      stateContext.forceNextBatchSizeReduce = true;
+      debug('Large prompt produced only no-ops — will reduce batch size next iteration', { promptLength: prompt.length, threshold: 200_000 });
+    }
+    const rotationResult = await ResolverProc.handleRotationStrategy(
+      unresolvedIssues, comments, git,
+      updatedConsecutiveFailures, updatedModelFailuresInCycle, progressThisCycle,
+      stateContext, lessonsContext, options, verifiedThisSession, runner.name,
+      trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut,
+      result.usedFullFileRewrite ? 'full_rewrite_no_diff' : undefined
+    );
+    return {
+      shouldContinue: !rotationResult.shouldBreak,
+      shouldBreak: rotationResult.shouldBreak,
+      shouldExit: false,
+      allFixed: false,
+      updatedRapidFailureCount: rapidFailureCount,
+      updatedLastFailureTime: lastFailureTime,
+      updatedConsecutiveFailures: rotationResult.updatedConsecutiveFailures,
+      updatedModelFailuresInCycle: rotationResult.updatedModelFailuresInCycle,
+      updatedProgressThisCycle: rotationResult.updatedProgressThisCycle,
+      updatedUnresolvedIssues: rotationResult.updatedUnresolvedIssues,
+      lessonsBeforeFix,
+    };
+  }
 
   // Check for changes
   if (!(await hasChanges(git))) {

@@ -69,6 +69,13 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 - **Judge rule**: Verification prompt now says "If the Current Code already implements what the review asks for, respond NO and cite the specific code." **WHY**: Reduces unnecessary ALREADY_FIXED fix attempts when the judge would otherwise say YES.
 - **Model recommendation wording**: Prompt asks "explain why these models in this order" instead of "brief reasoning". **WHY**: Models echoed "brief reasoning" literally; the new wording yields actionable explanation.
 
+**Prompts.log audit (2026-02) — verifier before snippet, model rec skip, no-op skip verify, escalation delay, predict-bots skip:**
+- **Verifier "Code before fix"**: Batch verification prompt now includes a "Code before fix" section (removed lines from the diff) alongside "Current Code (AFTER)" so the verifier can compare before vs after. **WHY**: Verifier was only seeing post-fix code; with before snippet it can judge whether the issue was actually fixed and reduce false rejections (audit: one correct fix took 17 iterations due to verifier rejections).
+- **Skip model recommendation for fewer than 3 issues**: The separate model-recommendation LLM call runs only when there are 3+ unresolved issues; otherwise we use default rotation. **WHY**: Saves ~29s and tokens on simple runs.
+- **All-no-op = no changes**: When every fixer change block was a no-op (search === replace), we treat the iteration as "no changes" and skip verification (runner returns `noMeaningfulChanges`; workflow skips `handleNoChangesWithVerification` and goes to rotation). **WHY**: Avoids running the verifier on unchanged code and keeps "file modified" accurate.
+- **Delay full-file escalation for simple issues**: For files where all targeting issues have importance ≤ 3 and ease ≤ 2, we only escalate to full-file rewrite when the file was not injected (not when over S/R failure threshold). **WHY**: Full-file rewrites are expensive and time out more; for simple issues we rely on S/R first.
+- **Skip predict-bots when --no-wait-bot**: The LLM "likely new bot feedback" prediction is skipped when `--no-wait-bot` is set. **WHY**: Prediction is display-only and runs after commit; skipping saves ~26s when the user isn't waiting for bot reviews.
+
 **Security & cleanup (2026-02)** — credential redaction, worktree, conflict-resolve, commit:
 - **Credential redaction**: All push and rebase error/debug logs in `git-push.ts` use `redactUrlCredentials()` so `https://token@...` is never logged. **WHY**: Git stderr and error messages can contain remote URLs with tokens; redacting prevents credential leakage.
 - **Worktree rebase detection**: `getResolvedGitDir(git)` in git-merge.ts resolves the real git dir when `.git` is a file (worktree); used by `completeMerge` and the pull conflict loop in repository.ts. **WHY**: In worktrees the rebase-merge check would otherwise fail; one shared helper keeps behavior correct and consistent.
@@ -504,4 +511,4 @@ These docs explain **how** the cat works its magic. Happy reading! 📚
 
 ---
 
-**Last Updated**: 2026-02-25
+**Last Updated**: 2026-02-27

@@ -249,9 +249,12 @@ export const WRONG_FILE_EXHAUST_THRESHOLD = 2;
 /**
  * Times the verifier can reject an issue (fixer claimed fixed / ALREADY_FIXED but verifier said no)
  * before we dismiss it to avoid token waste on repeated retries.
- * WHY 2: Fixer/verifier stalemates otherwise loop indefinitely; two rejections is enough signal to defer to human.
+ * WHY 3: With VERIFIER_ESCALATION_THRESHOLD=1 we use the stronger (fixer) model after the first rejection. Dismissing at 3 gives two verification attempts with the stronger model before deferring to human.
  */
-export const VERIFIER_REJECTION_DISMISS_THRESHOLD = 2;
+export const VERIFIER_REJECTION_DISMISS_THRESHOLD = 3;
+
+/** After this many verifier rejections for an issue, use the current fixer model for the next verification. WHY: Audit showed cheap verifier repeatedly said "not fixed" while fixers had applied valid changes. */
+export const VERIFIER_ESCALATION_THRESHOLD = 1;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VERIFICATION & CACHING

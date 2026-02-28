@@ -49,6 +49,8 @@ export interface RunnerResult {
   usage?: TokenUsage;
   /** True when this run used full-file rewrite and wrote files (caller may see no git diff if content was identical). Skip single-issue and rotate. */
   usedFullFileRewrite?: boolean;
+  /** True when the fixer emitted change blocks but every one was a no-op (search === replace). Skip verification and treat as no changes. WHY: Avoids running the verifier on unchanged code; workflow goes straight to rotation. */
+  noMeaningfulChanges?: boolean;
 }
 
 export interface RunnerOptions {
@@ -56,6 +58,8 @@ export interface RunnerOptions {
   codexAddDirs?: string[];
   /** OpenAI API key for runners that use OpenAI (e.g. Codex). When set, passed to the child process so it sees the key even if process.env was not set in the runner's cwd. */
   openaiApiKey?: string;
+  /** Unresolved issues (for runners that use importance/difficulty to delay full-file escalation). Minimal shape to avoid circular deps. WHY: llm-api uses triage (importance, ease) to delay full-file rewrite for simple issues. */
+  unresolvedIssues?: Array<{ comment: { path: string }; triage?: { importance: number; ease: number } }>;
 }
 
 export interface RunnerStatus {
