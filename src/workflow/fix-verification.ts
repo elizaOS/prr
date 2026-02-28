@@ -290,19 +290,49 @@ export async function verifyFixes(
           spinner.text = `Verifying [${formatNumber(i + 1)}/${formatNumber(changedIssues.length)}] ${issue.comment.path}:${issue.comment.line || '?'}`;
           
           try {
-            const diff = await getIssueDiff(issue);
-            const verification = await llm.verifyFix(
-              issue.comment.body,
-              issue.comment.path,
-              diff
-            );
+              const diff = await getIssueDiff(issue);
+              
+              // Check if this issue needs a stronger model due to previous rejections
+              const state = getState(stateContext);
+              const needsStrongerModel = getCurrentModel && (state.verifierRejectionCount?.[issue.comment.id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD;
+              
+              let verification;
+              if (needsStrongerModel) {
+                const rawStrongerModel = getCurrentModel?.();
+                const runner = getRunner?.();
+                const strongerModel = rawStrongerModel && runner && isModelProviderCompatible(runner, rawStrongerModel) 
+                  ? rawStrongerModel 
+                  : undefined;
+                
+                if (strongerModel && isModelProviderCompatible(strongerModel, llm.provider)) {
+                  debug('Using stronger model for sequential verification (previous rejections)', { model: strongerModel, issue: issue.comment.id });
+                  verification = await llm.verifyFix(
+                    issue.comment.body,
+                    issue.comment.path,
+                    diff,
+                    { model: strongerModel }
+                  );
+                } else {
+                  verification = await llm.verifyFix(
+                    issue.comment.body,
+                    issue.comment.path,
+                    diff
+                  );
+                }
+              } else {
+                verification = await llm.verifyFix(
+                  issue.comment.body,
+                  issue.comment.path,
+                  diff
+                );
+              }
 
-            Iterations.addVerificationResult(stateContext, issue.comment.id, {
-              passed: verification.fixed,
-              reason: verification.explanation,
-            });
+              Iterations.addVerificationResult(stateContext, issue.comment.id, {
+                passed: verification.fixed,
+                reason: verification.explanation,
+              });
 
-            debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, verification);
+              debug(`Verification for ${issue.comment.path}:${issue.comment.line}`, verification);
             
             if (verification.fixed) {
               verifiedCount++;
@@ -413,7 +443,7 @@ export async function verifyFixes(
             fixesDefault.push(fix);
           }
         }
-        const rawStrongerModel = needStrongerIds.size > 0 && getCurrentModel ? getCurrentModel() : undefined;
+        const rawStrongerModel = needStrongerIdSet.size > 0 && getCurrentModel ? getCurrentModel() : undefined;
         const runner = getRunner?.();
         const strongerModel =
           rawStrongerModel && runner && isModelProviderCompatible(runner, rawStrongerModel)
