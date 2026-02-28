@@ -409,17 +409,13 @@ function resolvePackageJsonConflict(content: string): { resolved: boolean; conte
 
       // Try to merge ours and theirs
       const merged = mergePackageJsonChunks(ours, theirs, needsTrailingComma);
-if (merged) {
-  resolved.push(...merged);
-  conflictsResolved++;
-} else {
-  // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
-  return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
-}
-        // Couldn't parse as dependency entries — keep conflict for manual/LLM resolution
+      if (merged) {
+        resolved.push(...merged);
+        conflictsResolved++;
+      } else {
         return { resolved: false, content, explanation: 'Conflict section not parseable as dependency entries' };
       }
-      
+
       inConflict = false;
       ours = [];
       theirs = [];

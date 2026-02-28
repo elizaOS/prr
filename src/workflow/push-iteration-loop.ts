@@ -28,8 +28,7 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../git/git-clone-index.js';
-import { formatNumber, debugStep, startTimer, endTimer, debug } from '../logger.ts';
-import * as Performance from '../state/state-performance.js';
+import { formatNumber, debugStep, startTimer, endTimer, debug } from '../logger.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -239,6 +238,7 @@ export async function executePushIteration(
   let exitDetails = '';
   let committedThisIteration = false;
 
+  // This is the primary fix iteration loop - runs until we've fixed all issues or hit max iterations
   while (fixIteration < effectiveMaxFixIterations && !allFixed) {
     fixIteration++;
     
@@ -316,8 +316,8 @@ export async function executePushIteration(
     }
 
     // Verify fixes
-const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir);
-const totalIssues = unresolvedIssues.length;
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir);
+    const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
 
     // Invalidate "open" comment statuses for files that were modified by the fixer.
@@ -419,12 +419,12 @@ const totalIssues = unresolvedIssues.length;
     }
   }
 
-  if (!allFixed && effectiveMaxFixIterations !== Infinity) {
-    if (!allFixed && maxFixIterations !== Infinity) {
-        console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(maxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
-        exitReason = 'max_iterations';
-        exitDetails = `Hit max fix iterations (${maxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
-    finalUnresolvedIssuesRef.current = [...unresolvedIssues]; // issue refs preserved for AAR (verifierContradiction etc.)
+  // Single check for max iterations exit condition - no inner duplicate needed since we already broke out of the loop
+  if (!allFixed && fixIteration >= effectiveMaxFixIterations) {
+    console.log(chalk.yellow(`\nMax fix iterations (${formatNumber(effectiveMaxFixIterations)}) reached. ${formatNumber(unresolvedIssues.length)} issues remain.`));
+    exitReason = 'max_iterations';
+    exitDetails = `Hit max fix iterations (${effectiveMaxFixIterations}) with ${unresolvedIssues.length} issue(s) remaining`;
+    finalUnresolvedIssuesRef.current = [...unresolvedIssues];
     finalCommentsRef.current = [...comments];
   }
 
