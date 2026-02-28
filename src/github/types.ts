@@ -16,6 +16,18 @@ export interface PRInfo {
   owner: string;
   repo: string;
   number: number;
+  /**
+   * PR title and body give fix prompts context about what the PR is trying
+   * to accomplish. Without this, the fixer sees individual review comments
+   * in isolation and may produce fixes that are technically correct but
+   * misaligned with the PR's intent.
+   *
+   * WHY `body: string` (not `string | null`): GitHub's API returns `null`
+   * for PRs with no description. We coerce to `''` at the source (`getPRInfo`)
+   * so downstream code never has to null-check.
+   */
+  title: string;
+  body: string;
   branch: string;
   baseBranch: string;
   headSha: string;

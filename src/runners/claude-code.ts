@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
+import { execFile as execFileCallback } from 'child_process';
 import { writeFileSync, unlinkSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -8,7 +8,7 @@ import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 // Validate model name to prevent injection (defense in depth)
 function isValidModel(model: string): boolean {
@@ -65,12 +65,13 @@ function shouldSkipPermissions(): boolean {
 export class ClaudeCodeRunner implements Runner {
   name = 'claude-code';
   displayName = 'Claude Code';
+  installHint = 'npm install -g @anthropic-ai/claude-code';
   private binaryPath: string = 'claude';
 
   async isAvailable(): Promise<boolean> {
     for (const binary of CLAUDE_BINARIES) {
       try {
-        await exec(`which ${binary}`);
+        await execFile('which', [binary]);
         this.binaryPath = binary;
         debug(`Found Claude Code CLI at: ${binary}`);
         return true;
@@ -101,15 +102,15 @@ export class ClaudeCodeRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec(`${this.binaryPath} --version 2>&1`);
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile(this.binaryPath, ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might fail
     }
 
     // Check if authenticated
     try {
-      const { stdout, stderr } = await exec(`${this.binaryPath} --help 2>&1`);
+      const { stdout, stderr } = await execFile(this.binaryPath, ['--help']);
       const output = stdout + stderr;
       if (output.includes('login') || output.includes('ANTHROPIC_API_KEY')) {
         // Check if API key is set
@@ -146,6 +147,13 @@ export class ClaudeCodeRunner implements Runner {
 
     if (options?.model && !isValidModel(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
+    }
+
+    // Guard: Reject non-Anthropic models — Claude Code only supports Anthropic models.
+    if (options?.model && /^(gpt|o[34]|codex|davinci|gemini)/i.test(options.model)) {
+      const msg = `Model "${options.model}" is not an Anthropic model — skipping for Claude Code`;
+      debug(msg);
+      return { success: false, output: '', error: msg, errorType: 'model' };
     }
 
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
@@ -236,9 +244,14 @@ export class ClaudeCodeRunner implements Runner {
         } else {
           // Determine error type for non-permission failures
           let errorType: RunnerErrorType = 'tool';
-          const errorText = (stderr || '').toLowerCase();
-          if (errorText.includes('api key') || errorText.includes('unauthorized') || errorText.includes('authentication')) {
+          const combinedLower = (stdout + stderr).toLowerCase();
+          // Quota/rate-limit must be checked BEFORE auth — rotate, don't bail
+          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedLower)) {
+            errorType = 'quota';
+          } else if (combinedLower.includes('api key') || combinedLower.includes('unauthorized') || combinedLower.includes('authentication')) {
             errorType = 'auth';
+          } else if (/does not exist|model.*not found|you do not have access/i.test(combinedLower)) {
+            errorType = 'auth'; // Model access errors bail immediately, same as auth
           }
           resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}`, errorType });
         }

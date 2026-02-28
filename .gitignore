@@ -11,6 +11,7 @@ dist/
 # IDE
 .vscode/
 .idea/
+.cursor/
 
 # OS
 .DS_Store
@@ -21,3 +22,8 @@ bun.lockb
 
 # State files (should not be committed)
 .pr-resolver-state.json
+
+# Runtime logs
+output.log
+prompts.log
+debug.log

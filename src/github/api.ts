@@ -3,6 +3,25 @@ import { graphql } from '@octokit/graphql';
 import type { PRInfo, ReviewThread, ReviewComment, PRStatus, BotResponseTiming } from './types.js';
 import { debug } from '../logger.js';
 
+// Static configuration for PR status / bot detection (allocated once, not per call)
+const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
+const RATE_LIMIT_PATTERNS = [
+  /rate.?limit/i,
+  /review.?(cancel|fail|skip|paus|throttl)/i,
+  /too many (requests|reviews|commits)/i,
+  /exceeded.*review/i,
+  /review.*exceeded/i,
+  /reviews? (are |is )?paused/i,
+  /temporarily unavailable/i,
+  /will (retry|review) (later|shortly|soon)/i,
+  /queued for review/i,
+];
+const BOT_PATTERNS = [
+  { name: 'coderabbit', pattern: /coderabbitai\[bot\]/i },
+  { name: 'copilot', pattern: /copilot/i },
+  { name: 'cursor', pattern: /cursor\[bot\]/i },
+];
+
 export class GitHubAPI {
   private octokit: Octokit;
   private graphqlWithAuth: typeof graphql;
@@ -33,6 +52,8 @@ export class GitHubAPI {
       owner,
       repo,
       number: prNumber,
+      title: pr.title,
+      body: pr.body ?? '',
       branch: pr.head.ref,
       baseBranch: pr.base.ref,
       headSha: pr.head.sha,
@@ -65,11 +86,15 @@ export class GitHubAPI {
       }
     }
 
+    // Exclude review-bot check runs from inProgressChecks so we don't treat them as CI.
     const inProgressChecks: string[] = [];
     const pendingChecks: string[] = [];
     let completedChecks = 0;
 
     for (const check of allCheckRuns) {
+      if (REVIEW_BOT_CHECKS.has(check.name.toLowerCase())) {
+        continue;
+      }
       if (check.status === 'in_progress') {
         inProgressChecks.push(check.name);
       } else if (check.status === 'queued' || check.status === 'pending') {
@@ -79,7 +104,8 @@ export class GitHubAPI {
       }
     }
 
-    const totalChecks = allCheckRuns.length;
+    // Total excludes review-bot checks so CI completion reflects real CI only.
+    const totalChecks = inProgressChecks.length + pendingChecks.length + completedChecks;
 
     // Get combined status
     const { data: status } = await this.octokit.repos.getCombinedStatusForRef({
@@ -346,7 +372,122 @@ export class GitHubAPI {
     }
 
     debug(`Extracted ${reviewComments.length} review comments from threads`);
+
+    // Also fetch issue comments (conversation tab) from review bots like claude[bot].
+    // These bots post full markdown reviews as issue comments rather than inline
+    // review threads, so we need to parse them to extract individual issues.
+    try {
+      const botComments = await this.getReviewBotIssueComments(owner, repo, prNumber);
+      if (botComments.length > 0) {
+        debug(`Found ${botComments.length} issue(s) from bot review comments`);
+        reviewComments.push(...botComments);
+      }
+    } catch (err) {
+      // Non-fatal: if issue comment parsing fails, we still have the thread comments
+      debug('Failed to fetch/parse bot issue comments', { error: String(err) });
+    }
+
     return reviewComments;
+  }
+
+  /**
+   * Normalize bot login names for cleaner display in prompts.
+   *
+   * WHY: GitHub bot logins like `claude[bot]` display as `(claude)` after
+   * stripping the suffix. Capitalizing to `(Claude)` is cleaner and matches
+   * how users refer to these tools. Only applied in the REVIEW_BOTS
+   * (issue-comment) path — NOT in getReviewThreads(), where raw logins are
+   * used as identity keys for dedup and verification tracking.
+   */
+  private normalizeBotName(login: string): string {
+    const lower = login.toLowerCase();
+    if (lower.includes('claude')) return 'Claude';
+    if (lower.includes('greptile')) return 'Greptile';
+    return login.replace(/\[bot\]$/, '');
+  }
+
+  /**
+   * Fetch issue comments (conversation tab) and extract review issues from bots.
+   *
+   * Some review bots (notably claude[bot]) post structured markdown reviews as
+   * issue comments rather than inline review comments. We take the LATEST comment
+   * from each known review bot, parse it into individual file-specific issues,
+   * and return them as ReviewComment objects.
+   */
+  private async getReviewBotIssueComments(
+    owner: string, repo: string, prNumber: number
+  ): Promise<ReviewComment[]> {
+    // Known bots that post review-style issue comments.
+    //
+    // WHY only these two: This list is specifically for bots that post
+    // structured reviews as ISSUE COMMENTS (conversation tab). Bots that
+    // use inline review threads (CodeRabbit, Copilot) are already captured
+    // by getReviewThreads() and should NOT be added here — doing so would
+    // parse their summary/walkthrough comment into pseudo-issues that
+    // duplicate the inline threads already captured.
+    const REVIEW_BOTS = ['claude[bot]', 'greptile[bot]'];
+
+    const allIssueComments: Array<{
+      id: number;
+      user: { login: string } | null;
+      body: string;
+      created_at: string;
+    }> = [];
+
+    // Paginate through all issue comments
+    for await (const response of this.octokit.paginate.iterator(
+      this.octokit.issues.listComments,
+      { owner, repo, issue_number: prNumber, per_page: 100 }
+    )) {
+      for (const c of response.data) {
+        if (c.body) {
+          allIssueComments.push({
+            id: c.id,
+            user: c.user,
+            body: c.body,
+            created_at: c.created_at,
+          });
+        }
+      }
+    }
+
+    const results: ReviewComment[] = [];
+
+    for (const botLogin of REVIEW_BOTS) {
+      // Filter to this bot's comments and take only the LATEST one.
+      // Bots re-review on each push, so the latest reflects current code state.
+      const botComments = allIssueComments
+        .filter(c => c.user?.login === botLogin)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+
+      if (botComments.length === 0) continue;
+
+      const latest = botComments[0];
+      const authorClean = this.normalizeBotName(botLogin);
+      debug(`Parsing latest ${botLogin} issue comment`, {
+        commentId: latest.id,
+        bodyLength: latest.body.length,
+        totalComments: botComments.length,
+      });
+
+      const parsed = parseMarkdownReviewIssues(latest.body);
+      debug(`Parsed ${parsed.length} issue(s) from ${botLogin} comment`);
+
+      for (let i = 0; i < parsed.length; i++) {
+        const issue = parsed[i];
+        results.push({
+          id: `ic-${latest.id}-${i}`,
+          threadId: `ic-${latest.id}-${i}`,
+          author: authorClean,
+          body: issue.body,
+          path: issue.path,
+          line: issue.line,
+          createdAt: latest.created_at,
+        });
+      }
+    }
+
+    return results;
   }
 
   async getFileContent(owner: string, repo: string, branch: string, path: string): Promise<string | null> {
@@ -825,4 +966,269 @@ export class GitHubAPI {
       reviewedCurrentCommit: false,
     };
   }
+
+  /**
+   * Check if review bots are rate-limited by scanning recent issue comments
+   * for rate-limit / review-cancelled / review-paused signals.
+   *
+   * CodeRabbit (and other bots) post issue comments when they can't review
+   * due to rate limits. When prr pushes many commits in rapid succession the
+   * bot may throttle reviews, leaving a notice that disappears once it
+   * catches up. Detecting this lets prr back off and wait longer.
+   *
+   * Returns per-bot rate-limit status with the message found (if any).
+   */
+  async checkBotRateLimits(
+    owner: string,
+    repo: string,
+    prNumber: number,
+  ): Promise<Array<{ bot: string; rateLimited: boolean; message?: string }>> {
+    const results: Array<{ bot: string; rateLimited: boolean; message?: string }> = [];
+
+    try {
+      // Single-issue list endpoint supports since, per_page (max 100), and pagination.
+      // Fetch all comments in the rate-limit window so we don't miss recent ones on large threads.
+      const windowMs = 30 * 60 * 1000;
+      const since = new Date(Date.now() - windowMs).toISOString();
+      const cutoff = new Date(Date.now() - windowMs);
+      const comments = await this.octokit.paginate(this.octokit.issues.listComments, {
+        owner,
+        repo,
+        issue_number: prNumber,
+        per_page: 100,
+        since,
+      // Review: paginate retrieves all comments, ensuring we process the latest ones correctly.
+      });
+      const commentsNewestFirst = [...comments].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+
+      for (const bot of BOT_PATTERNS) {
+        const botComments = commentsNewestFirst.filter(
+          c => bot.pattern.test(c.user?.login || '') &&
+               new Date(c.created_at) > cutoff
+        );
+
+        let rateLimited = false;
+        let message: string | undefined;
+
+        for (const comment of botComments) {
+          const body = comment.body || '';
+          for (const pattern of RATE_LIMIT_PATTERNS) {
+            if (pattern.test(body)) {
+              rateLimited = true;
+              const match = body.match(pattern);
+              message = match ? body.substring(
+                Math.max(0, (match.index ?? 0) - 40),
+                Math.min(body.length, (match.index ?? 0) + (match[0]?.length ?? 0) + 60)
+              ).trim() : undefined;
+              break;
+            }
+          }
+          if (rateLimited) break;
+        }
+
+        results.push({ bot: bot.name, rateLimited, message });
+      }
+    } catch (error) {
+      debug('Failed to check bot rate limits', { error });
+    }
+
+    return results;
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Markdown review comment parser
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+interface ParsedIssue {
+  body: string;
+  path: string;
+  line: number | null;
+}
+
+/**
+ * File path + optional line pattern.  Matches patterns like:
+ *   `lib/cache/client.ts:470`
+ *   `app/api/auth/siwe/verify/route.ts:155`
+ *   verify/route.ts:304-376
+ *   nonce/route.ts:49
+ *   (lib/cache/consume.ts:15-20)
+ *
+ * Uses [\w./-]+ for path chars to avoid capturing leading punctuation like `(`.
+ * Requires at least one `/` to avoid matching bare words like `client.ts`.
+ */
+const FILE_EXTENSIONS = '(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)';
+const FILE_PATH_RE = `[\\w.-]+(?:/[\\w./-]+)*\\.${FILE_EXTENSIONS}`;
+const FILE_LINE_RE = new RegExp(
+  `(?:[\`(])?(?:\\./)?(${FILE_PATH_RE})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`
+);
+// Review: requires a `/` to ensure valid paths, avoiding false positives in filenames.
+
+/**
+ * Section headers to SKIP entirely — these never contain issues.
+ * Everything else gets processed (we rely on items having file:line refs to filter).
+ */
+const SKIP_SECTION_KEYWORDS = [
+  'overview', 'summary', 'verdict', 'approve', 'overall assessment',
+];
+
+/**
+ * Parse a structured markdown review comment (as posted by claude[bot] etc.)
+ * into individual file-specific issues.
+ *
+ * Strategy:
+ * 1. Split the markdown into sections by ## / ### headers
+ * 2. Identify sections that contain issue/problem content (vs. "strengths")
+ * 3. Within issue sections, split by numbered items (### N. or **N.)
+ * 4. For each item, extract the first file:line reference as the location
+ * 5. Return each item as a ParsedIssue with path, line, and body
+ */
+export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
+  const issues: ParsedIssue[] = [];
+  const lines = markdown.split('\n');
+
+  // Phase 1: Split into top-level sections by ## headers
+  const sections: Array<{ header: string; body: string }> = [];
+  let currentHeader = '';
+  let currentBody: string[] = [];
+
+  for (const line of lines) {
+    const h2Match = line.match(/^##\s+(.+)/);
+    if (h2Match) {
+      if (currentBody.length > 0) {
+        sections.push({ header: currentHeader, body: currentBody.join('\n') });
+      }
+      currentHeader = h2Match[1];
+      currentBody = [];
+    } else {
+      currentBody.push(line);
+    }
+  }
+  if (currentBody.length > 0) {
+    sections.push({ header: currentHeader, body: currentBody.join('\n') });
+  }
+
+  // Phase 2: Process sections, extracting issue items with file references.
+  // We skip only known non-issue sections (verdicts, summaries). Everything
+  // else gets processed — items without file:line refs are naturally filtered.
+  for (const section of sections) {
+    const headerLower = section.header.toLowerCase();
+    if (SKIP_SECTION_KEYWORDS.some(kw => headerLower.includes(kw))) continue;
+
+    // Within a section, focus on sub-areas that contain issues.
+    // Claude uses two patterns:
+    //   Format A: items directly under the ## header (e.g. "## 🚨 BLOCKING ISSUES")
+    //   Format B: **Issues:** / **Concerns:** sub-headers within a larger section
+    // We extract items from both.
+    const textToProcess = extractIssueSubsections(section.body);
+
+    // Phase 3: Split into individual items
+    const items = splitIntoItems(textToProcess);
+
+    for (const item of items) {
+      // Phase 4: Extract file:line from the item.
+      // Try structured **Location(s):** pattern first, then fall back to generic.
+      const locationMatch = item.match(
+        new RegExp(`\\*\\*Locations?:\\*\\*\\s*\`?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?`)
+      );
+      // Review: uses specific regex pattern first for structured locations, favoring precise matches.
+      const fileMatch = locationMatch || item.match(FILE_LINE_RE);
+      if (!fileMatch) continue; // Skip items without file references
+
+      const path = fileMatch[1];
+      const line = fileMatch[2] ? parseInt(fileMatch[2], 10) : null;
+
+      // Clean the body: trim, remove excessive blank lines
+      const body = item.trim().replace(/\n{3,}/g, '\n\n');
+      if (body.length < 20) continue; // Skip trivially short items
+
+      issues.push({ body, path, line });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Extract issue-bearing subsections from a section body.
+ *
+ * Claude's Format B uses subsections like:
+ *   **Strengths:**
+ *   - ...
+ *   **Issues:**
+ *   1. ...
+ *
+ * We keep only lines under sub-headers that indicate issues/concerns,
+ * plus any ### subsections (which are always issue-level in Format A).
+ * If there are no **Label:** sub-headers, returns the body as-is.
+ */
+function extractIssueSubsections(body: string): string {
+  const ISSUE_LABELS = ['issue', 'concern', 'problem', 'bug', 'critical', 'warning', 'fix'];
+  const SKIP_LABELS = ['strength', 'good', 'strong', 'highlight'];
+
+  // Check if this section uses **Label:** sub-headers (any case, e.g. **issues:** or **Issues:**)
+  const hasSubHeaders = /^\*\*[A-Za-z][\w\s]*:\*\*\s*$/m.test(body);
+  if (!hasSubHeaders) return body;
+
+  const lines = body.split('\n');
+  const result: string[] = [];
+  // Content before the first sub-header is treated as issue content by default.
+  let inIssueBlock = true;
+  let inSkipBlock = false;
+
+  for (const line of lines) {
+    const subHeaderMatch = line.match(/^\*\*([^*]+):\*\*\s*$/);
+    if (subHeaderMatch) {
+      const label = subHeaderMatch[1].toLowerCase();
+      inIssueBlock = ISSUE_LABELS.some(kw => label.includes(kw));
+      inSkipBlock = SKIP_LABELS.some(kw => label.includes(kw));
+      continue;
+    }
+
+    // ### headers are always issue items (Format A under Format B sections)
+    if (/^###\s+/.test(line)) {
+      inIssueBlock = true;
+      inSkipBlock = false;
+    }
+
+    if (inIssueBlock && !inSkipBlock) {
+      result.push(line);
+    }
+  }
+
+  return result.length > 0 ? result.join('\n') : body;
+}
+
+/**
+ * Split a section body into individual items.
+ * Looks for ### headers, **N. patterns, or N. ** patterns.
+ */
+function splitIntoItems(body: string): string[] {
+  const items: string[] = [];
+  const lines = body.split('\n');
+  let current: string[] = [];
+
+  for (const line of lines) {
+    // New item boundary patterns:
+    //   ### N. **Title**  (Format A)
+    //   **N. Title**      (Format A variant)
+    //   N. **Title**      (Format B)
+    const isNewItem = /^###\s+/.test(line)
+      || /^\*\*\d+[\.\)]\s+/.test(line)
+      || /^\d+\.\s+\*\*/.test(line);
+
+    if (isNewItem && current.length > 0) {
+      items.push(current.join('\n'));
+      current = [];
+    }
+    current.push(line);
+  }
+
+  if (current.length > 0) {
+    items.push(current.join('\n'));
+  }
+
+  return items;
 }

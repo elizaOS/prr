@@ -1,7 +1,174 @@
 import type { UnresolvedIssue, FixPrompt } from './types.js';
-import { formatLessonForDisplay } from '../state/lessons.js';
+import type { BotRiskEntry } from '../workflow/bot-risk.js';
+import { formatLessonForDisplay } from '../state/lessons-normalize.js';
+import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../constants.js';
+import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
 
-export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string[]): FixPrompt {
+/**
+ * Strip HTML noise, base64 JWT links, and metadata from PR comment bodies
+ * before including them in LLM prompts.
+ *
+ * WHY: Bot comments (Cursor bugbot, CodeRabbit) include "Fix in Cursor" links
+ * with 600+ char base64 JWT tokens, HTML comments with bugbot UUIDs, <picture>
+ * tags, etc. This wastes 20-30% of prompt tokens on data the LLM can't use
+ * and often confuses it.
+ *
+ * Keeps: The actual issue description text, code suggestions, markdown.
+ * Strips: JWT links, HTML comments, LOCATIONS blocks, <picture>/<img> tags.
+ */
+export function sanitizeCommentForPrompt(body: string): string {
+  let s = body;
+
+  // 1. Remove "Fix in Cursor" / "Fix in Web" anchor+picture blocks.
+  //    These are <p><a href="...cursor.com/open?data=eyJ..."><picture>...</picture></a>...</p>
+  //    and can be 1000+ chars each.  Match the whole <p>..cursor.com/open?data=..</p> block.
+  s = s.replace(/<p>\s*<a\s+href="https?:\/\/cursor\.com\/[^"]*"[^>]*>[\s\S]*?<\/a>(?:&nbsp;|\s)*(?:<a\s+href="https?:\/\/cursor\.com\/[^"]*"[^>]*>[\s\S]*?<\/a>\s*)*<\/p>/gi, '');
+
+  // 2. Remove HTML comments: <!-- BUGBOT_BUG_ID: ... -->, <!-- LOCATIONS START ... LOCATIONS END -->
+  //    Keep the text between DESCRIPTION START/END markers but remove the markers themselves.
+  s = s.replace(/<!--\s*LOCATIONS START[\s\S]*?LOCATIONS END\s*-->/gi, '');
+  s = s.replace(/<!--\s*BUGBOT_BUG_ID:[^>]*-->/gi, '');
+  s = s.replace(/<!--\s*suggestion_start\s*-->/gi, '');
+  s = s.replace(/<!--\s*DESCRIPTION START\s*-->/gi, '');
+  s = s.replace(/<!--\s*DESCRIPTION END\s*-->/gi, '');
+  // Catch any remaining HTML comments
+  s = s.replace(/<!--[\s\S]*?-->/g, '');
+
+  // 3. Remove <details> blocks that contain "Committable suggestion" (rendered code suggestion buttons)
+  s = s.replace(/<details>\s*<summary>\s*📝\s*Committable suggestion[\s\S]*?<\/details>/gi, '');
+
+  // 4. Remove stray <details>/<summary> tags but keep their text content
+  s = s.replace(/<\/?details>/gi, '');
+  s = s.replace(/<\/?summary>/gi, '');
+
+  // 5. Remove any remaining <picture>, <source>, <img> tags
+  s = s.replace(/<picture>[\s\S]*?<\/picture>/gi, '');
+  s = s.replace(/<source[^>]*>/gi, '');
+  s = s.replace(/<img[^>]*>/gi, '');
+
+  // 6. Remove standalone <p> and </p> tags (keep content)
+  s = s.replace(/<\/?p>/gi, '');
+
+  // 7. Remove orphaned <a> tags pointing to cursor.com (residual from partial matches)
+  s = s.replace(/<a\s+href="https?:\/\/cursor\.com\/[^"]*"[^>]*>[^<]*<\/a>/gi, '');
+
+  // 8. Collapse runs of 3+ blank lines to 2
+  s = s.replace(/\n{3,}/g, '\n\n');
+
+  // 9. Strip CodeRabbit "Analysis chain" and "Script executed" blocks.
+  // WHY: CodeRabbit embeds 5–15 shell script runs (rg, cat, head, etc.) with Repository/Length metadata.
+  // Each block is 200–1500 chars; one comment had 11 blocks (~3.5k chars). The analyzer only needs
+  // the actual finding (e.g. "**Align CACHE_TTL keys**" or "Suggested fix"); script output is noise.
+  s = s.replace(/\s*🏁\s*Script executed:\s*```[\s\S]*?```\s*Repository:[\s\S]*?Length of output:[^\n]*\n?(\s*---\n?)?/g, '');
+  s = s.replace(/\s*🧩\s*Analysis chain\s*\n*/gi, '\n\n');
+
+  return s.trim();
+}
+
+/**
+ * Estimate token count for a string.
+ * WHY: Anthropic has 200k token limit. We need to detect when prompts are too large.
+ * Rough estimate: 1 token ≈ 4 characters (conservative for English text)
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Refactor/duplication keywords in comment or verifier text → allow broader changes for that issue */
+const REFACTOR_KEYWORDS = /\b(duplicate[sd]?|duplication|refactor(?:ing)?|share\s+logic|consolidate|extract\s+(?:common|shared)|remove\s+duplication|redundant)\b/i;
+
+/**
+ * Detect whether an issue likely requires refactoring (e.g. removing duplication, sharing logic).
+ * When true, we relax "minimal only" / "do not reorganize" for that issue so the fixer can consolidate code.
+ *
+ * Signals: triage ease 4–5 (complex/major refactor), or comment/verifier text mentioning
+ * duplicate, refactor, share logic, consolidate, extract common, etc.
+ */
+export function issueRequiresRefactor(issue: UnresolvedIssue): boolean {
+  if (issue.triage && issue.triage.ease >= 4) return true;
+  const body = issue.comment?.body ?? '';
+  if (REFACTOR_KEYWORDS.test(body)) return true;
+  if (issue.verifierContradiction && REFACTOR_KEYWORDS.test(issue.verifierContradiction)) return true;
+  return false;
+}
+
+/** True if the review comment or explanation asks for adding/updating tests (so we allow __tests__/). */
+function issueRequestsTests(issue: UnresolvedIssue): boolean {
+  const text = `${issue.comment?.body ?? ''} ${issue.explanation ?? ''}`;
+  return /\b(?:add(?:ing)?|writing|no\s+tests?\s+cover|tests?\s+cover|test\s+coverage)\s+(?:tests?|here|for)\b/i.test(text) ||
+         /\b__tests__\b/i.test(text) ||
+         /\b(?:vitest|jest|mocha)\b/i.test(text) ||
+         /\badding\s+tests?\s+here\s+would\s+help\b/i.test(text);
+}
+
+/** If the issue is on a test file and mentions lesson-normalize impl, return the impl path so the fixer may edit it. Audit: test-file issues (e.g. normalize-lesson-text.test.ts) need impl changes in src/state/lessons-normalize.ts. Exported for single-issue prompt. */
+export function getImplPathForTestFileIssue(issue: UnresolvedIssue, fileLessons: string[] | undefined): string | null {
+  if (!/\.test\.(ts|js)$/.test(issue.comment.path)) return null;
+  const text = `${issue.comment.body ?? ''} ${(fileLessons ?? []).join(' ')}`;
+  if (/\b(?:normalizeLessonText|sanitizeLessonText|lessons-normalize)\b/i.test(text)) return 'src/state/lessons-normalize.ts';
+  return null;
+}
+
+/**
+ * Compute effective batch size using adaptive batching.
+ *
+ * WHY: When the fixer repeatedly fails to fix any issues, the batch is likely
+ * too large for the model to handle effectively. Halving after each zero-fix
+ * iteration lets the system converge on a manageable size before falling back
+ * to single-issue focus mode.
+ *
+ * @param consecutiveZeroFixIterations Number of consecutive iterations with 0 verified fixes
+ * @returns Effective max issues for this prompt
+ */
+export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number): number {
+  if (consecutiveZeroFixIterations <= 0) return MAX_ISSUES_PER_PROMPT;
+  // Halve the batch size for each consecutive zero-fix iteration
+  // e.g. 50 → 25 → 12 → 6 → 5 (clamped to MIN)
+  const reduced = Math.floor(MAX_ISSUES_PER_PROMPT / Math.pow(2, consecutiveZeroFixIterations));
+  return Math.max(MIN_ISSUES_PER_PROMPT, reduced);
+}
+
+export function buildFixPrompt(
+  issues: UnresolvedIssue[],
+  lessonsLearned: string[],
+  options?: {
+    maxIssues?: number;
+    /**
+     * Per-file lesson lookup for inline injection alongside each issue.
+     *
+     * HISTORY: Originally lessons were only shown in a top-level "Lessons
+     * Learned" section, 2000+ tokens before the issue they apply to. The
+     * fixer kept ignoring file-specific lessons (e.g. "delete lines 429-506"
+     * for verify/route.ts) because by the time it processed that issue, the
+     * lesson was out of its attention window. Now file-specific lessons are
+     * ALSO injected inline right after the issue's code snippet, so the fixer
+     * sees them in immediate context.
+     */
+    perFileLessons?: Map<string, string[]>;
+    /**
+     * PR metadata injected into the prompt so the fixer understands what the
+     * PR is trying to accomplish, not just individual review comments.
+     *
+     * WHY: Without this context, a fixer seeing "incorrect error handling in
+     * the auth flow" has no idea the PR is adding OAuth2 PKCE for mobile.
+     * The fix might be technically valid but semantically wrong for the PR's
+     * intent. Including title, description, and base branch gives the fixer
+     * the big picture.
+     */
+    prInfo?: { title: string; body: string; baseBranch: string };
+    /**
+     * Output of `git diff base...HEAD --stat` run by the workflow.
+     * Injected so the fixer sees what files/lines this PR changes without
+     * needing shell access (e.g. llm-api runner).
+     */
+    diffStat?: string;
+    /**
+     * Per-file bot comment counts (from summarizeBotRiskByFile).
+     * When a file has total >= 2, we add a note so the fixer is more thorough there.
+     */
+    botRiskByFile?: Map<string, BotRiskEntry>;
+  }
+): FixPrompt {
   // Guard: Return empty prompt if no issues
   // WHY: Prevents confusing "Fixing 0 issues" output and wasted fixer runs
   if (issues.length === 0) {
@@ -14,26 +181,53 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
     };
   }
 
+  // Cap lessons to prevent prompt bloat (73+ lessons = prompt poisoning).
+  const MAX_LESSONS = 15;
+  // WHY large-batch cap: With 10+ issues, 15 lessons + full content produced 278k+ char prompts and
+  // gateway timeouts; 5 global + 1 per-file keeps prompts under ~100k chars while still surfacing recent failures.
+  const lessonCap = issues.length > 10 ? 5 : MAX_LESSONS;
+
+  // Limit issues per prompt to prevent token overflow
+  // WHY: 124 issues at once = 202k tokens which exceeds Anthropic's 200k limit
+  // The effective limit may be reduced by adaptive batching when consecutive iterations fail.
+  // Treat maxIssues === 0 as unlimited (return full array). Coerce and clamp other values
+  // so negative/NaN don't produce bad slices (e.g. issues.slice(0, -1)).
+  const requestedMax = options?.maxIssues;
+  const effectiveMax =
+    requestedMax === 0
+      ? Infinity
+      : (Number.isFinite(Number(requestedMax))
+          ? Math.min(MAX_ISSUES_PER_PROMPT, Math.max(1, Math.floor(Number(requestedMax))))
+          : MAX_ISSUES_PER_PROMPT);
+  const originalCount = issues.length;
+  const limitedIssues = effectiveMax === Infinity ? issues : issues.slice(0, effectiveMax);
+  const wasLimited = originalCount > effectiveMax;
+
   const parts: string[] = [];
 
   parts.push('# Code Review Issues to Fix\n');
-  parts.push('Please address the following code review issues.\n');
+  if (wasLimited) {
+    parts.push(`Processing first ${limitedIssues.length} of ${originalCount} issues (batched to prevent token overflow).\n`);
+    parts.push('Please address the following code review issues.\n');
+  } else {
+    parts.push('Please address the following code review issues.\n');
+  }
 
   // Build a short summary for console output
-  const fileSet = new Set(issues.map(i => i.comment.path));
+  const fileSet = new Set(limitedIssues.map(i => i.comment.path));
   const files = Array.from(fileSet);
   const filesSummary = files.length <= 3 
     ? files.map(f => f.split('/').pop()).join(', ')  // Just filename
     : `${files.slice(0, 2).map(f => f.split('/').pop()).join(', ')} +${files.length - 2} more`;
   
-  const authors = Array.from(new Set(issues.map(i => i.comment.author)));
+  const authors = Array.from(new Set(limitedIssues.map(i => i.comment.author)));
   const authorsSummary = authors.length <= 2 
     ? authors.join(', ') 
     : `${authors.slice(0, 2).join(', ')} +${authors.length - 2} more`;
 
   // Group issues by type of comment (look for keywords)
   const issueTypes: string[] = [];
-  const bodies = issues.map(i => i.comment.body.toLowerCase());
+  const bodies = limitedIssues.map(i => i.comment.body.toLowerCase());
   if (bodies.some(b => b.includes('error') || b.includes('bug') || b.includes('fix'))) issueTypes.push('bugs');
   if (bodies.some(b => b.includes('type') || b.includes('typescript'))) issueTypes.push('types');
   if (bodies.some(b => b.includes('test'))) issueTypes.push('tests');
@@ -43,30 +237,34 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
   
   const typesStr = issueTypes.length > 0 ? ` (${issueTypes.join(', ')})` : '';
 
-  const summary = `Fixing ${issues.length} issue${issues.length > 1 ? 's' : ''} in ${filesSummary}${typesStr}`;
+  const summaryIssueCount = wasLimited ? `${limitedIssues.length}/${originalCount}` : `${limitedIssues.length}`;
+  const summary = `Fixing ${summaryIssueCount} issue${limitedIssues.length > 1 ? 's' : ''} in ${filesSummary}${typesStr}`;
   
   // Build detailed summary lines
   const detailedLines: string[] = [];
+  if (wasLimited) {
+    detailedLines.push(`  ⚠ Batched: Processing ${limitedIssues.length} of ${originalCount} issues (prompt size limit)`);
+  }
   detailedLines.push(`  From: ${authorsSummary}`);
   detailedLines.push(`  Files: ${files.length} (${files.map(f => f.split('/').pop()).slice(0, 5).join(', ')}${files.length > 5 ? '...' : ''})`);
   
-  // Show first few issue previews
-  const previews = issues.slice(0, 3).map((issue, i) => {
-    const preview = issue.comment.body.split('\n')[0].substring(0, 60);
-    return `  ${i + 1}. ${preview}${issue.comment.body.length > 60 ? '...' : ''}`;
+  // Show first few issue previews (sanitize so BUGBOT/metadata never appears in logs or summaries)
+  const previews = limitedIssues.slice(0, 3).map((issue, i) => {
+    const firstLine = sanitizeCommentForPrompt(issue.comment.body).split('\n')[0].substring(0, 60);
+    return `  ${i + 1}. ${firstLine}${issue.comment.body.length > 60 ? '...' : ''}`;
   });
-  if (issues.length > 3) {
-    previews.push(`  ... and ${issues.length - 3} more`);
+  if (limitedIssues.length > 3) {
+    previews.push(`  ... and ${limitedIssues.length - 3} more`);
   }
 
-  // Add lessons learned section to detailed summary
+  // Add lessons section to detailed summary (use same cap as prompt so log matches what fixer sees)
   const lessonsSection: string[] = [];
   if (lessonsLearned.length > 0) {
+    const displayCount = Math.min(lessonsLearned.length, lessonCap);
+    const displayLessons = lessonsLearned.slice(-displayCount);
     lessonsSection.push('');
-    lessonsSection.push(`  ⚠ Previous Attempts (${lessonsLearned.length}):`);
-    // Show all lessons - these are critical for debugging progress
-    for (const lesson of lessonsLearned) {
-      // Strip redundant prefix, show just the useful content
+    lessonsSection.push(`  ⚠ Lessons Learned (${displayCount}${lessonsLearned.length > displayCount ? `/${lessonsLearned.length}` : ''}):`);
+    for (const lesson of displayLessons) {
       const displayLesson = formatLessonForDisplay(lesson);
       const wrapped = displayLesson.length > 80 
         ? displayLesson.substring(0, 77) + '...'
@@ -77,65 +275,220 @@ export function buildFixPrompt(issues: UnresolvedIssue[], lessonsLearned: string
 
   const detailedSummary = [summary, ...detailedLines, '', '  Issues:', ...previews, ...lessonsSection].join('\n');
 
-  // Add lessons learned to prevent flip-flopping
+  // Add lessons learned — technical constraints discovered from previous fix attempts.
   if (lessonsLearned.length > 0) {
-    parts.push('## Previous Attempts (DO NOT REPEAT THESE MISTAKES)\n');
-    parts.push('The following approaches have already been tried and FAILED. Do NOT repeat them:\n');
-    for (const lesson of lessonsLearned) {
-      // Strip redundant prefix, show just the useful content
+    // Take only the most recent lessons (most relevant to current state)
+    const capped = lessonsLearned.slice(-lessonCap);
+    const skipped = lessonsLearned.length - capped.length;
+
+    parts.push('## Lessons Learned (from previous attempts)\n');
+    parts.push('These lessons were learned from prior fix attempts on these same issues. Each one represents a failed approach — account for them so you make progress instead of repeating the same mistakes:\n');
+    if (skipped > 0) {
+      parts.push(`_(${skipped} older entries omitted — showing ${capped.length} most recent)_\n`);
+    }
+    for (const lesson of capped) {
       parts.push(`- ${formatLessonForDisplay(lesson)}`);
     }
     parts.push('');
   }
 
+  // Add PR context so the fixer knows what the PR is trying to accomplish.
+  // WHY: The fixer only sees individual review comments + code snippets.
+  // Without the PR title/description, it has no idea whether the PR is a
+  // refactor, a new feature, or a bug fix — and may produce fixes that are
+  // technically correct but semantically wrong for the PR's intent.
+  //
+  // WHY 500 chars: PR descriptions can be huge (templates, checklists, HTML
+  // image embeds). Unbounded inclusion would blow the token budget. 500 chars
+  // captures the intent without the noise.
+  if (options?.prInfo && options.prInfo.title) {
+    parts.push('## PR Context\n');
+    parts.push(`**Title:** ${options.prInfo.title}`);
+    if (options.prInfo.body) {
+      const truncatedBody = options.prInfo.body.length > 500
+        ? options.prInfo.body.substring(0, 500) + '...'
+        : options.prInfo.body;
+      parts.push(`**Description:** ${truncatedBody}`);
+    }
+    parts.push(`**Base branch:** ${options.prInfo.baseBranch}`);
+    parts.push('\nKeep fixes aligned with this PR\'s intent.\n');
+  }
+
+  // WHY: The fixer only sees individual review comments + code snippets; showing
+  // the diff summary (files/lines changed) helps it understand PR scope and make
+  // targeted, contextual fixes instead of guessing what this PR is changing.
+  if (options?.diffStat && options.diffStat.trim()) {
+    parts.push('## What this PR changes (diff summary)\n');
+    parts.push('```');
+    parts.push(options.diffStat.trim());
+    parts.push('```\n');
+  }
+
+  // High-attention files: bots have commented multiple times here; fixer should be thorough.
+  const botRiskByFile = options?.botRiskByFile;
+  if (botRiskByFile && botRiskByFile.size > 0) {
+    const hotFiles = files.filter(f => (botRiskByFile.get(f)?.total ?? 0) >= 2);
+    for (const f of hotFiles) {
+      parts.push(`Bots have commented multiple times in ${f}; consider addressing similar concerns.\n`);
+    }
+  }
+
   parts.push('## Issues to Fix\n');
 
-  for (let i = 0; i < issues.length; i++) {
-    const issue = issues[i];
-    parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}\n`);
+  for (let i = 0; i < limitedIssues.length; i++) {
+    const issue = limitedIssues[i];
+    // Add triage labels if available
+    // WHY: The fixer should know which issues are critical (need careful handling)
+    // vs trivial style nits (can get quick fixes). Importance 1-2 = critical/major,
+    // difficulty 1-2 = easy/simple fix.
+    const triageLabel = issue.triage
+      ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
+      : '';
+    parts.push(`### Issue ${i + 1}: ${issue.comment.path}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}`);
+    const basePaths = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+    const fileLessons = options?.perFileLessons?.get(issue.comment.path);
+    const implPath = getImplPathForTestFileIssue(issue, fileLessons);
+    const allowedPaths = implPath && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
+    parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
+    if (issueRequestsTests(issue)) {
+      parts.push(`If the review asks for new or updated tests, you may create or modify files in \`__tests__/\` as needed.`);
+    }
+    if (issueRequiresRefactor(issue)) {
+      parts.push(`**This issue likely requires refactoring** (e.g. removing duplication, sharing logic). You may make broader changes in this file to consolidate code — the usual "minimal only" constraint is relaxed for this issue.\n`);
+    } else {
+      parts.push('');
+    }
     parts.push(`**Review Comment** (${issue.comment.author}):`);
     parts.push('```');
-    parts.push(issue.comment.body);
+    
+    // Truncate very long comments to prevent prompt overflow
+    // WHY: Some automated tools generate 10k+ char comments with HTML/details
+    // Keep first 2000 chars which is enough context for the fix
+    
+    const cleanBody = sanitizeCommentForPrompt(issue.comment.body);
+    if (cleanBody.length > MAX_COMMENT_CHARS) {
+      parts.push(cleanBody.substring(0, MAX_COMMENT_CHARS));
+      parts.push('\n... (comment truncated for brevity - see PR for full text)');
+    } else {
+      parts.push(cleanBody);
+    }
+    
     parts.push('```\n');
     
-    if (issue.codeSnippet) {
+    // Render merged duplicates if present
+    if (issue.mergedDuplicates && issue.mergedDuplicates.length > 0) {
+      parts.push(`**Also flagged by** (${issue.mergedDuplicates.length} related comment${issue.mergedDuplicates.length > 1 ? 's' : ''}):`);
+      for (const dup of issue.mergedDuplicates) {
+        const cleanDup = sanitizeCommentForPrompt(dup.body);
+        const preview = cleanDup.length > 200
+          ? cleanDup.substring(0, 200) + '...'
+          : cleanDup;
+        const lineInfo = dup.line !== null ? `:${dup.line}` : '';
+        parts.push(`- ${dup.path}${lineInfo} (${dup.author}): "${preview}"`);
+      }
+      parts.push('');
+    }
+    
+    // Current Code is critical for fix quality — fixer needs actual context to apply search/replace (audit: include whenever available).
+    if (issue.codeSnippet && issue.codeSnippet !== SNIPPET_PLACEHOLDER) {
       parts.push('**Current Code:**');
       parts.push('```');
-      parts.push(issue.codeSnippet);
+      
+      // Truncate very large code snippets to prevent prompt overflow
+      // WHY: Sometimes entire files are included (10k+ lines)
+      // Keep first 500 lines which is usually more than enough for context
+      
+      const snippetLines = issue.codeSnippet.split('\n');
+      if (snippetLines.length > MAX_SNIPPET_LINES) {
+        parts.push(snippetLines.slice(0, MAX_SNIPPET_LINES).join('\n'));
+        parts.push(`\n... (${snippetLines.length - MAX_SNIPPET_LINES} more lines omitted)`);
+      } else {
+        parts.push(issue.codeSnippet);
+      }
+      
       parts.push('```\n');
     }
 
     if (issue.explanation) {
       parts.push(`**Analysis:** ${issue.explanation}\n`);
     }
+
+    if (issue.verifierContradiction) {
+      parts.push(`**⚠ VERIFIER DISAGREES — issue NOT fixed:** ${issue.verifierContradiction}`);
+      parts.push('The verifier checked the actual code and found the issue still exists. Treat the verifier\'s explanation above as the source of truth for what is still missing or wrong. Your fix for this issue must directly address that feedback (e.g. add the missing code or change the cited location) so the next verification passes.');
+      parts.push('Do NOT respond with RESULT: ALREADY_FIXED for this issue — the verifier has already rejected a prior "already fixed" claim. You must make a concrete code change that addresses the verifier\'s citation above.');
+      parts.push('If the verifier suggested a more robust or structural approach (e.g. "restructure", "use X instead", "a more robust fix would be"), prefer that over a minimal workaround — the verifier will reject fragile heuristics.');
+      parts.push('Re-check the current file content at the lines the verifier cited — the code snippet in this prompt may be stale or partial; the verifier saw the actual file.\n');
+    }
+
+    // Inject file-specific lessons INLINE with each issue.
+    // HISTORY: Lessons in the top-level section were 2000+ tokens away from the
+    // issue they applied to. The fixer ignored "delete lines 429-506" for
+    // verify/route.ts because it was out of the attention window by the time
+    // it processed that issue. Putting lessons right here, next to the code
+    // snippet, ensures the fixer sees them in immediate context.
+    // (fileLessons already fetched at the top of this loop iteration for implPath detection)
+    if (fileLessons && fileLessons.length > 0) {
+      const maxInline = issues.length > 10 ? 1 : 3; // WHY: Same as lessonCap — large batch needs smaller prompt.
+      const shown = fileLessons.slice(-maxInline);
+      parts.push(`**⚠ File-specific lessons (from previous failed attempts on this file):**`);
+      for (const lesson of shown) {
+        parts.push(`- ${formatLessonForDisplay(lesson)}`);
+      }
+      if (fileLessons.length > maxInline) {
+        parts.push(`_(${fileLessons.length - maxInline} older lessons omitted)_`);
+      }
+      parts.push('');
+    }
   }
 
   parts.push('## Instructions\n');
-  parts.push('1. Address each issue listed above');
-  parts.push('2. Make MINIMAL, SURGICAL changes - only modify lines directly related to the fix');
-  parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes');
+  parts.push('1. Address each issue listed above. Each issue specifies its file — apply that issue\'s fix only in that file; do not fix an issue by editing a different file.');
+  parts.push('   Exception: If an issue asks for adding or updating tests, you may create or modify files in __tests__/ as needed.');
+  parts.push('2. Make targeted changes that fully address the fix — only modify lines directly related to the issue');
+  parts.push('   Exception: For issues that request removing duplication or sharing logic (e.g. "duplicates X", "refactor to share"), you may refactor and consolidate code in that file as needed.');
+  parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes (except when an issue explicitly requires refactoring as above)');
   parts.push('4. Do NOT change working code that is not mentioned in the review');
   parts.push('5. Preserve existing code structure, variable names, and formatting');
-  parts.push('6. If an issue is unclear, make the smallest reasonable fix');
+  parts.push('6. If an issue is unclear, use RESULT: UNCLEAR to explain what is ambiguous instead of guessing.');
+  parts.push('7. When using search/replace, copy the search text EXACTLY from the actual file content — the code snippet in the review comment may be stale');
+  parts.push('8. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, import, etc.)');
   parts.push('');
-  parts.push('## CRITICAL: If You Make Zero Changes\n');
-  parts.push('If you decide NOT to make any file changes, you MUST explain why in your output.');
-  parts.push('Output a line starting with "NO_CHANGES:" followed by a detailed explanation.\n');
-  parts.push('Valid reasons include:');
-  parts.push('- Issue is already fixed (cite specific code)');
-  parts.push('- Cannot determine correct fix (explain what is unclear)');
-  parts.push('- Issue is not actually a problem (explain why)');
-  parts.push('- Code already handles this correctly (cite specific implementation)\n');
-  parts.push('Example:');
-  parts.push('NO_CHANGES: Issue 1 is already fixed - Line 45 has null check: if (value === null) return;\n');
-  parts.push('DO NOT make zero changes without this explanation. The system requires documentation of why no changes were made.');
+  parts.push('## Reporting Your Outcome\n');
+  parts.push('After addressing the issues, include a RESULT line for each issue (or one overall):');
+  parts.push('RESULT: FIXED — <brief description of what was changed>');
+  parts.push('RESULT: ALREADY_FIXED — <cite the specific code that already handles this>');
+  parts.push('RESULT: NEEDS_DISCUSSION — <reasoning> (add a // Note: comment near the relevant code)');
+  parts.push('RESULT: UNCLEAR — <what is ambiguous in the review instructions>');
+  parts.push('RESULT: WRONG_LOCATION — <the review mentions lines X-Y but the code there is different>');
+  parts.push('RESULT: CANNOT_FIX — <why this requires non-code changes>');
+  parts.push('RESULT: ATTEMPTED — <what was changed> (optional: CAVEAT: <risks or uncertainties>)\n');
+  parts.push('Rules:');
+  parts.push('- If you make code changes, RESULT: FIXED is assumed (the line is optional).');
+  parts.push('- If an issue is ALREADY FIXED, do NOT make cosmetic changes. Cite the evidence.');
+  parts.push('- If instructions are UNCLEAR, explain the ambiguity instead of guessing.');
+  parts.push('- For NEEDS_DISCUSSION, add ONE short code comment: // Note: <durable explanation>.');
+  parts.push('  Comment must be long-term documentation: no line numbers, no commit hashes, no tool names. Example: "Note: Backoff is enforced in acquire(); explicit sleep here is redundant."');
+  parts.push('- NEVER add comments (// or #) to .json files — JSON has no comment syntax and it will break parsing. For JSON issues, use RESULT: NEEDS_DISCUSSION without adding an inline comment.');
+  parts.push('- Do NOT make zero changes without at least one RESULT line (or NO_CHANGES:) explaining why.');
+  const fullPrompt = parts.join('\n');
+  const estimatedTokens = estimateTokens(fullPrompt);
+  
+  // Safety check: Warn if prompt is approaching token limits
+  // WHY: Anthropic has 200k token limit, we want to stay well under
+  const MAX_SAFE_TOKENS = 180000; // Leave 20k buffer for model response
+  if (estimatedTokens > MAX_SAFE_TOKENS) {
+    console.warn(`⚠ Warning: Fix prompt is very large (${estimatedTokens.toLocaleString()} tokens)`);
+    console.warn(`  This may fail with some LLM providers (200k token limit)`);
+    console.warn(`  Consider using --max-fix-iterations to process fewer issues per batch`);
+  }
 
   return {
-    prompt: parts.join('\n'),
+    prompt: fullPrompt,
     summary,
     detailedSummary,
-    lessonsIncluded: lessonsLearned.length,
-    issues,
+    lessonsIncluded: Math.min(lessonsLearned.length, lessonCap),
+    issues: limitedIssues,  // Return only the issues included in the prompt
   };
 }
 
@@ -144,9 +497,10 @@ export function buildVerificationPrompt(
   filePath: string,
   diff: string
 ): string {
+  const cleanComment = sanitizeCommentForPrompt(commentBody);
   return `Given this code review comment:
 ---
-Comment: ${commentBody}
+Comment: ${cleanComment}
 File: ${filePath}
 ---
 

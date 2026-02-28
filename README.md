@@ -1,3 +1,4 @@
+// Note: prr is a whimsical name reflecting the fun, yet serious nature of this resolver tool.
 # prr (PR Resolver)
 
 ```text
@@ -43,25 +44,64 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
 - **LLM-powered failure analysis**: Learns from rejected fixes to generate actionable guidance
 - **Smart model rotation**: Interleaves model families (Claude → GPT → Gemini) for better coverage
+- **Rotation order & skip list (llm-api/elizacloud)**: Default lists ordered by observed fix success (Claude first); models that 500/timeout or have 0% fix rate are in a skip list and never selected. *Why*: Audit showed 0%-success and error-prone models wasting rotation slots; leading with best performers improves throughput.
+- **Duplicate prompt skip**: When the same set of issue IDs and lesson count is sent to the same model again, we skip the fixer and rotate to the next model. *Why*: Full-prompt hashes rarely matched; hashing issue IDs + lesson count detects same-issues-same-context and avoids redundant LLM calls.
+- **Proportional batch reduce**: When the fix prompt exceeds the context cap, batch size is reduced proportionally (cap/promptLength) instead of halving. *Why*: Halving wasted iterations when only slightly over cap; proportional reduction converges in 1–2 steps.
+- **Rotation reset per push iteration**: At the start of each push cycle (after the first), the model index resets to the first model so each cycle gets a "best model first" attempt instead of continuing from where the previous cycle left off. *Why*: Later push iterations were reusing the last model from the previous cycle (often one that had just 500'd or timed out), wasting time.
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
 - **Stalemate detection & bail-out**: Detects when agents disagree, bails out after N cycles with zero progress
+- **Large-prompt batch reduce**: When a fix prompt exceeds ~200k chars and fails (error or no-changes), the next fix iteration immediately uses a smaller batch size. *Why*: Oversized prompts cause gateway 500s and timeouts; reducing batch size on the next attempt keeps prompts within limits without burning rotation slots.
 
 ### Git Integration
 - **Auto-stashing**: Handles interrupted runs gracefully by stashing/restoring local changes
 - **Auto-rebase on push rejection**: If remote has new commits, automatically rebases and retries
+- **Rebase vs merge detection**: When finishing after conflict resolution, we detect rebase (`.git/rebase-merge`) using the repo’s absolute path so the right command runs (`rebase --continue` vs `commit`). *Why*: PRR runs in a workdir that’s often not the process cwd; a relative `.git` path would miss `rebase-merge` and wrongly run `commit` during a rebase, leaving a stuck state.
+- **Push retry cleanup**: If the post-rejection rebase fails (e.g. conflicts or "rebase-merge directory already exists"), we try `rebase --abort` first, then fall back to full git cleanup only if abort fails. *Why*: Abort restores commits; full cleanup is for stuck/corrupt state so the next run isn’t blocked.
+- **Non-interactive rebase continue**: All `rebase --continue` paths use `continueRebase(git)`, which sets `GIT_EDITOR=true` so git never opens an editor. *Why*: In headless/workdir runs there’s no TTY; the configured editor would fail with "Standard input is not a terminal" or "problem with the editor 'editor'". One helper keeps behavior consistent.
 - **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
+- **Conflict prompt injection skip**: File-content injection is skipped for conflict-resolution prompts. *Why*: The conflict prompt already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), blow prompt size, and cause 504s.
+- **Large conflicted files (chunked embed)**: For files over ~30k chars with conflicts, only the conflict sections (with context) are embedded in the prompt, not the full file. *Why*: Full-file embed doubles prompt size and causes 504s; sections are enough for correct `<search>`/`<replace>` output.
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
 
+### Token & cost optimizations
+- **Fix iterations default**: `--max-fix-iterations` defaults to `0` meaning *unlimited* — the fix loop runs until all issues are resolved or another exit (e.g. stalemate). *Why*: Previously 0 was used literally so the loop ran zero times; we now map 0 to "no cap" so the default behaves as documented.
+- **Think-tag stripping**: Models like Qwen emit `<think>` reasoning blocks; we strip them from responses and ask Qwen not to emit them. *Why*: Saves ~30% output tokens and avoids breaking parsers that expect responses to start with "YES"/"NO".
+- **Verifier rejection cap**: After the verifier rejects an issue twice (fix or ALREADY_FIXED claim), we dismiss it as "exhausted" and stop retrying. *Why*: Fixer/verifier stalemates otherwise loop indefinitely.
+- **No-verified-progress exit**: After two consecutive push iterations with zero new verified fixes, we exit cleanly. *Why*: Same issues keep failing; re-run after manual edits or new bot comments.
+- **Dismissal-comment pre-check**: Before calling the LLM to generate a "Note:" comment, we check a ±7 line window for an existing Note:/Review: comment, and also skip when the reason already describes a code change (already-fixed). *Why*: Avoids redundant LLM calls when a comment was already added or the fix is self-documenting.
+- **Skip dismissal LLM for already-fixed**: We no longer call the LLM to generate a Note for issues dismissed as already-fixed; code/diff is self-documenting. *Why*: Audit showed 62% of dismissal LLM responses were EXISTING; skipping saves tokens.
+- **Relax file constraint on retry**: When the fixer returns CANNOT_FIX/WRONG_LOCATION and mentions another file, we persist that path and allow it on the next attempt so the fixer can edit the correct file. *Why*: Prompts.log audit showed 7 identical 33k-char prompts for one cross-file issue; persisting the other file avoids burning all models and can resolve on retry.
+- **Persisted dedup cache**: LLM dedup results are stored in state keyed by comment ID set; repeat runs with the same comments skip the dedup LLM step. *Why*: In-memory cache reset each run; persisting saves tokens and latency.
+- **Wider batch snippets**: When context headroom ≥100k chars, batch verification uses 2500/3000 char limits per comment/code snippet (vs 2000/2000). *Why*: Reduces false positives from truncation.
+- **Rotation by success rate**: Legacy model rotation orders models by persisted success rate (best first). *Why*: Low-success models no longer get tried before proven performers.
+- **CodeRabbit analysis chain stripping**: Comment bodies are sanitized to remove CodeRabbit "Analysis chain" and "Script executed" blocks before analysis/fix prompts. *Why*: CodeRabbit embeds 5–15 shell runs per comment (~200–1500 chars each); the analyzer only needs the actual finding, not script output—saves ~30% on affected prompts.
+- **No-op change skip**: Identical search/replace blocks from the fixer are skipped. *Why*: Prevents wasted verification and keeps file-change counts accurate.
+- **Lesson caps for large batches**: When fixing 10+ issues at once, we cap global and per-file lessons so the prompt stays under ~100k chars. *Why*: Prevents gateway timeouts and prompt poisoning from oversized prompts.
+- **LLM dedup only for 3+ issues**: The LLM dedup step runs only for files with at least 3 remaining issues after heuristic dedup. *Why*: For 2-comment files, heuristic grouping is enough; skipping the LLM saves tokens with no meaningful loss.
+- **maxFixIterations 0 = unlimited**: `--max-fix-iterations 0` is treated as unlimited (not zero). *Why*: Without this, 0 meant zero iterations and the run did analysis-only with no fix attempts.
+- **File injection by issue count & dynamic budget**: Injected file contents are chosen by how many issues reference each file (most first); total injection budget is tied to the model’s context cap. *Why*: Puts the injection cap toward files most likely to need search/replace; avoids overshooting small-context or underusing large-context models.
+- **Rewrite escalation for non-injected files**: Files mentioned in the prompt but not injected (or with repeated S/R failures) are escalated to full-file rewrite. *Why*: When the model never saw file content, search/replace usually fails; asking for the full file avoids matching failures.
+
 ### Robustness
 - Hash-based work directories for efficient re-runs
-- **State persistence**: Resumes from where it left off, including tool/model rotation position
-- **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run
+- **State persistence**: Resumes from where it left off, including tool/model rotation position and dedup cache (comment set → duplicate grouping). *Why*: Dedup is deterministic for the same comment set; persisting avoids re-running the dedup LLM on every run.
+- **Model performance tracking**: Records which models fix issues vs fail, displayed at end of run; used to sort rotation order (best first). *Why*: Tries proven models before chronic low performers.
 - **5-layer empty issue guards**: Prevents wasted fixer runs when nothing to fix
 - **Graceful shutdown**: Ctrl+C saves state immediately; double Ctrl+C force exits
 - **Session vs overall stats**: Distinguishes "this run" from "total across all runs"
+- **Prompt size and injection caps**: Base prompt + injected file content are capped (e.g. 200k total) with a minimum injection allowance so the model still sees key files when the base prompt is large. *Why*: Prevents gateway 500s from oversized requests while avoiding "zero injection" when the base is already big.
+- **No-changes parsing**: When the fixer reports "no changes", the explanation is parsed from prose only; content inside `<change>`, `<newfile>`, and `<file>` blocks is ignored. *Why*: Prevents false positives from code or test fixtures that happen to contain phrases like "already fixed" or "no changes".
+- **Empty snippet handling**: When the judge or fix-verifier has no code snippet for an issue, we show an explicit placeholder instead of an empty block (e.g. "snippet unavailable — do NOT respond STALE"). *Why*: Empty blocks forced the model to guess; the placeholder steers toward YES-with-explanation when code isn't visible and avoids false STALE.
+- **Grouping rule (same method, different fix)**: Comment dedup does not group comments that target the same method but require different fixes (e.g. "add method" vs "change call site"). *Why*: Wrong merges cause one fix to address both or drop nuance; the rule reduces false groupings observed in audits.
+- **504/gateway timeout: two retries with backoff**: On 504 or request timeout, we retry up to twice with 10s then 20s delay. *Why*: Single retry was often insufficient for transient gateways; two retries give the gateway time to recover.
+- **AAR exhausted list**: The After-Action Report lists every exhausted issue (path:line) so operators know which need human follow-up. *Why*: Exhausted issues were only summarized by count; listing them makes follow-up actionable.
+- **Judge rule (NO when code already implements)**: Batch verification prompt instructs the judge to respond NO and cite code when the current code already addresses the review. *Why*: Reduces unnecessary ALREADY_FIXED fix attempts when the judge would otherwise say YES.
+- **Model recommendation wording**: We ask "explain why these models in this order" instead of "brief reasoning". *Why*: Models echoed "brief reasoning" literally; the new wording yields actionable explanation.
+- **Credential redaction in push logs**: All push and rebase error/debug output is sanitized so `https://token@host` is never logged. *Why*: Git errors can contain remote URLs with tokens; redacting prevents credential leakage.
+- **Worktree-safe rebase detection**: Rebase-vs-merge and "rebase still in progress?" use a shared helper that resolves the real git dir when `.git` is a file (worktrees). *Why*: In worktrees the check would otherwise fail; one implementation keeps completeMerge and pull conflict loop correct.
 
 ## Installation
 
@@ -561,7 +601,7 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. Examples:
+Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **example** models; actual availability depends on your Cursor account/plan:
 
 | Model | Notes |
 |-------|-------|
@@ -570,17 +610,15 @@ Model names change over time — use `agent models`, `cursor-agent --list-models
 | `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
 | `o3` | OpenAI reasoning |
 | `gpt-5` | GPT-5 |
-| `grok-2` | Grok 2 |
-| `grok-3-beta` | Grok 3 Beta |
-| `grok-3-mini` | Grok 3 Mini |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 
 ```text
-Round 1: claude-4-sonnet-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
-Round 2: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → grok-3-mini (Other)
+Round 1: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
+Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
 ... then next tool ...
+// Review: interleaving models enhances diversity in responses, reducing similar failure patterns.
 ```
 
 
@@ -592,6 +630,43 @@ prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123
+```
+
+## Debugging
+
+### Debug Output Files
+
+When `PRR_DEBUG_PROMPTS=1` is set, prr saves prompts and responses to debug files:
+
+```bash
+# Enable debug output
+export PRR_DEBUG_PROMPTS=1
+prr https://github.com/owner/repo/pull/123
+
+# Operational log — what happened, when, and why
+cat ~/.prr/debug/output.log
+
+# Full prompt/response log — what the LLM actually saw
+cat ~/.prr/debug/prompts.log
+
+# Standalone debug files (requires PRR_DEBUG_PROMPTS=1)
+ls ~/.prr/debug/*/*.txt
+# or: find ~/.prr/debug -name '*.txt'
+```
+
+Files are saved under `~/.prr/debug/<timestamp>/` with descriptive names.
+
+To view debug files:
+
+```bash
+# List all debug files (recursive, since files are in timestamp subdirs)
+find ~/.prr/debug -name '*.txt' -type f
+
+# Or use a recursive glob
+ls ~/.prr/debug/*/*.txt
+
+# View most recent
+ls -lt ~/.prr/debug/*/*.txt | head -5
 ```
 
 ## License

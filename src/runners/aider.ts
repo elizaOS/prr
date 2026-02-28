@@ -1,13 +1,13 @@
 import { spawn } from 'child_process';
 import { promisify } from 'util';
-import { exec as execCallback } from 'child_process';
-import { writeFileSync, unlinkSync, readFileSync } from 'fs';
+import { execFile as execFileCallback } from 'child_process';
+import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 
-const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 
 // Validate model name to prevent injection (defense in depth - also validated in CLI)
 // Allows forward slashes for provider-prefixed names like "anthropic/claude-..." or "openrouter/anthropic/..."
@@ -18,10 +18,11 @@ function isValidModel(model: string): boolean {
 export class AiderRunner implements Runner {
   name = 'aider';
   displayName = 'Aider';
+  installHint = 'pip install aider-chat';
 
   async isAvailable(): Promise<boolean> {
     try {
-      await exec('which aider');
+      await execFile('which', ['aider']);
       debug('Found Aider CLI');
       return true;
     } catch {
@@ -39,8 +40,8 @@ export class AiderRunner implements Runner {
     // Check version
     let version: string | undefined;
     try {
-      const { stdout } = await exec('aider --version 2>&1');
-      version = stdout.trim();
+      const { stdout, stderr } = await execFile('aider', ['--version']);
+      version = (stdout || stderr).trim();
     } catch {
       // Version check might fail
     }
@@ -69,9 +70,6 @@ export class AiderRunner implements Runner {
     }
 
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
-    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
-    debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('aider', prompt, { workdir, model: options?.model });
     const cleanupPromptFile = () => {
       try {
         unlinkSync(promptFile);
@@ -79,6 +77,16 @@ export class AiderRunner implements Runner {
         // Ignore cleanup errors
       }
     };
+
+    try {
+      writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
+    } catch (error) {
+      cleanupPromptFile();
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, output: '', error: `Failed to write prompt file: ${errorMessage}` };
+    }
+    debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('aider', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -89,9 +97,9 @@ export class AiderRunner implements Runner {
         args.push('--model', options.model);
       }
       
-      // Read prompt from file and pass via --message
-      const promptContent = readFileSync(promptFile, 'utf-8');
-      args.push('--message', promptContent);
+      // Pass prompt via file to avoid OS arg limits (E2BIG)
+      // aider's --message-file reads the file as the prompt and exits
+      args.push('--message-file', promptFile);
 
       const modelInfo = options?.model ? ` (model: ${options.model})` : '';
       console.log(`\nRunning: aider${modelInfo} [prompt]\n`);
@@ -127,7 +135,16 @@ export class AiderRunner implements Runner {
         if (code === 0) {
           resolve({ success: true, output: stdout });
         } else {
-          resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
+          const combinedOutput = stdout + stderr;
+          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Quota or rate limit exceeded', errorType: 'quota' });
+          } else if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Model not found or not accessible', errorType: 'auth' });
+          } else if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Authentication error', errorType: 'auth' });
+          } else {
+            resolve({ success: false, output: stdout, error: stderr || `Process exited with code ${code}` });
+          }
         }
       });
 

@@ -7,9 +7,21 @@
  * WHY defaults are "full automation": prr is designed to run unattended.
  * --auto-push=true, commit by default, push by default.
  */
-import { Command } from 'commander';
+import { Command, InvalidOptionArgumentError } from 'commander';
 import chalk from 'chalk';
 import { validateTool, isValidModelName, type FixerTool } from './config.js';
+import type { PriorityOrder } from './analyzer/severity.js';
+
+const PRIORITY_ORDER_VALUES: PriorityOrder[] = ['important', 'important-asc', 'easy', 'easy-asc', 'newest', 'oldest', 'none'];
+
+function validatePriorityOrder(value: string): PriorityOrder {
+  if (!PRIORITY_ORDER_VALUES.includes(value as PriorityOrder)) {
+    throw new InvalidOptionArgumentError(
+      `Invalid --priority-order: "${value}". Must be one of: ${PRIORITY_ORDER_VALUES.join(', ')}`
+    );
+  }
+  return value as PriorityOrder;
+}
 
 export interface CLIOptions {
   tool: FixerTool | undefined;  // undefined = use PRR_TOOL env var or default
@@ -31,10 +43,40 @@ export interface CLIOptions {
   noBell: boolean;
   mergeBase: boolean;
   incrementalCommits: boolean;
+  /** When true (default), make one commit per file when multiple issues fixed in one iteration. */
+  commitPerFile: boolean;
   noHandoffPrompt: boolean;
   noAfterAction: boolean;
   /** Use legacy model rotation instead of smart LLM-based model selection */
   modelRotation: boolean;
+  /** Don't sync lessons to CLAUDE.md (only use .prr/lessons.md) */
+  noClaudeMd: boolean;
+  /** Don't sync lessons to AGENTS.md */
+  noAgentsMd: boolean;
+  /** Cleanup mode: remove prr section from CLAUDE.md */
+  cleanClaudeMd: boolean;
+  /** Cleanup mode: remove prr section from AGENTS.md */
+  cleanAgentsMd: boolean;
+  /** Cleanup mode: remove state file from git */
+  cleanState: boolean;
+  /** Cleanup mode: run both cleanups */
+  cleanAll: boolean;
+  /** Disable distributed locking */
+  noLock: boolean;
+  /** Issue processing order */
+  priorityOrder: PriorityOrder;
+  /** Clear lock file and exit */
+  clearLock: boolean;
+  /** Check installed tools and exit */
+  checkTools: boolean;
+  /** Update all installed AI tools and exit */
+  updateTools: boolean;
+  /** Tidy lessons: re-normalize, deduplicate, prune garbage */
+  tidyLessons: boolean;
+  /** Before push, run LLM to predict likely new bot feedback (display only) */
+  predictBots: boolean;
+  /** Don't wait for bot re-review after push; continue and pick up new comments when they land. */
+  noWaitBot: boolean;
 }
 
 export interface ParsedArgs {
@@ -75,8 +117,8 @@ export function createCLI(): Command {
     .name('prr')
     .description('Automatically resolve PR review comments')
     .version(CAT_BANNER, '-V, --version', 'output the version number')
-    .argument('<pr-url>', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
-    .option('-t, --tool <tool>', 'LLM tool to use for fixing (auto, cursor, opencode, claude-code, aider, codex, llm-api)')
+    .argument('[pr-url]', 'GitHub PR URL (e.g., https://github.com/owner/repo/pull/123 or owner/repo#123)')
+    .option('-t, --tool <tool>', 'LLM tool to use for fixing (elizacloud, auto, cursor, opencode, claude-code, aider, codex, gemini, junie, goose, openhands, llm-api)')
     .option('-m, --model <model>', 'Model for fixer tool (e.g., claude-4-opus-thinking, claude-4-sonnet-thinking, o3)', (value) => {
       validateModelName(value);
       return value;
@@ -89,6 +131,7 @@ export function createCLI(): Command {
     .option('--max-push-iterations <n>', 'Maximum push/re-review cycles (0 = unlimited)', '0')
     .option('--max-stale-cycles <n>', 'Bail out after N complete tool/model cycles with zero progress (default: 1)', '1')
     .option('--poll-interval <seconds>', 'Seconds to wait for bot re-review (auto-push mode)', '120')
+    .option('--wait-bot', 'Wait for bot re-review after push (default: continue without waiting; new comments picked up when they land)')
     .option('--dry-run', 'Show unresolved issues without fixing', false)
     .option('--no-commit', 'Make changes but do not commit (for testing)')
     .option('--no-push', 'Commit but do not push')
@@ -99,10 +142,30 @@ export function createCLI(): Command {
     .option('--no-bell', 'Disable terminal bell on completion')
     .option('--incremental-commits', 'Commit after each fix iteration (default: true)', true)
     .option('--no-incremental-commits', 'Batch all fixes into single commit at end')
-    .option('--merge-base', 'Auto-merge base branch (main/master) into PR when conflicts detected', false)
+    .option('--commit-per-file', 'One commit per file when multiple issues fixed in one iteration (default: true)', true)
+    .option('--no-commit-per-file', 'Single commit per iteration even when multiple files changed')
+    .option('--merge-base', 'Auto-merge base branch (main/master) when conflicts detected (default: true)', true)
+    .option('--no-merge-base', 'Skip auto-merging base branch even if conflicts exist')
     .option('--no-handoff-prompt', 'Disable developer handoff prompt in final output')
     .option('--no-after-action', 'Disable after action report in final output')
-    .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false);
+    .option('--model-rotation', 'Use legacy model rotation instead of smart LLM-based model selection', false)
+    .option('--no-claude-md', 'Don\'t sync lessons to CLAUDE.md (only use .prr/lessons.md)')
+    .option('--no-agents-md', 'Don\'t sync lessons to AGENTS.md')
+    .option('--priority-order <order>', 'Issue processing order: important (default), important-asc, easy, easy-asc, newest, oldest, none', validatePriorityOrder, 'important')
+    // Cleanup-only modes (run and exit)
+    .option('--clean-claude-md', 'Remove prr section from CLAUDE.md (or delete if only prr content) and exit')
+    .option('--clean-agents-md', 'Remove prr section from AGENTS.md (or delete if only prr content) and exit')
+    .option('--clean-state', 'Remove .pr-resolver-state.json from git tracking and exit')
+    .option('--clean-all', 'Run all cleanup modes (CLAUDE.md, AGENTS.md, state) and exit')
+    // Distributed locking for multi-instance coordination
+    .option('--no-lock', 'Disable distributed locking (allow parallel instances on same PR)')
+    .option('--clear-lock', 'Clear the lock file and exit (use if a previous instance crashed)')
+    // Tool/version checking
+    .option('--check-tools', 'Check installed AI coding tools and show upgrade instructions, then exit')
+    .option('--update-tools', 'Update all installed AI coding tools to latest versions, then exit')
+    .option('--tidy-lessons', 'Clean up lessons: re-normalize, deduplicate, remove garbage entries, then exit')
+    .option('--predict-bots', 'Before push, predict likely new bot feedback via LLM (display only)', true)
+    .option('--no-predict-bots', 'Disable bot prediction (skip extra LLM call before push)');
 
   return program;
 }
@@ -126,7 +189,10 @@ export function parseArgs(program: Command): ParsedArgs {
   const args = program.args;
   const opts = program.opts();
 
-  if (args.length === 0) {
+  // PR URL is optional for --check-tools, --update-tools, --tidy-lessons, and local cleanup/lock modes
+  const noUrlNeeded = opts.checkTools || opts.updateTools || opts.tidyLessons ||
+    opts.cleanClaudeMd || opts.cleanAgentsMd || opts.cleanState || opts.cleanAll || opts.clearLock;
+  if (args.length === 0 && !noUrlNeeded) {
     program.help();
     process.exit(1);
   }
@@ -152,7 +218,7 @@ export function parseArgs(program: Command): ParsedArgs {
   //
   // This is non-obvious and caused bugs. See DEVELOPMENT.md for details.
   return {
-    prUrl: args[0],
+    prUrl: args[0] || '',  // Empty string for --check-tools mode
     options: {
       tool: validatedTool,
       toolModel,
@@ -161,7 +227,7 @@ export function parseArgs(program: Command): ParsedArgs {
       keepWorkdir: opts.keepWorkdir ?? true,
       maxFixIterations: parseIntOrExit(opts.maxFixIterations, '--max-fix-iterations'),
       maxPushIterations: parseIntOrExit(opts.maxPushIterations, '--max-push-iterations'),
-      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles') || 1,
+      maxStaleCycles: parseIntOrExit(opts.maxStaleCycles, '--max-stale-cycles'),
       pollInterval: parseIntOrExit(opts.pollInterval, '--poll-interval'),
       dryRun: opts.dryRun,
       noCommit: !opts.commit,                 // --no-commit sets opts.commit=false
@@ -169,13 +235,32 @@ export function parseArgs(program: Command): ParsedArgs {
       verbose: opts.verbose ?? true,
       noBatch: !opts.batch,                   // --no-batch sets opts.batch=false
       reverify: opts.reverify ?? false,
-      maxContextChars: parseIntOrExit(opts.maxContext, '--max-context') || 400_000,
+      maxContextChars: parseIntOrExit(opts.maxContext, '--max-context'),
       noBell: !opts.bell,                     // --no-bell sets opts.bell=false
       incrementalCommits: opts.incrementalCommits ?? true,  // Default: true
-      mergeBase: opts.mergeBase ?? false,     // Default: don't auto-merge base branch
+      commitPerFile: opts.commitPerFile ?? true,            // Default: one commit per file when multiple fixes
+      mergeBase: opts.mergeBase ?? true,      // Default: auto-merge base branch when conflicts exist
       noHandoffPrompt: !opts.handoffPrompt,   // --no-handoff-prompt sets opts.handoffPrompt=false
       noAfterAction: !opts.afterAction,       // --no-after-action sets opts.afterAction=false
       modelRotation: opts.modelRotation ?? false,  // Default: use smart model selection
+      noClaudeMd: !opts.claudeMd,             // --no-claude-md sets opts.claudeMd=false
+      noAgentsMd: !opts.agentsMd,             // --no-agents-md sets opts.agentsMd=false
+      priorityOrder: validatePriorityOrder(opts.priorityOrder ?? 'important'),
+      // Cleanup modes
+      cleanClaudeMd: opts.cleanClaudeMd ?? false,
+      cleanAgentsMd: opts.cleanAgentsMd ?? false,
+      cleanState: opts.cleanState ?? false,
+      cleanAll: opts.cleanAll ?? false,
+      // Distributed locking
+      noLock: !opts.lock,           // --no-lock sets opts.lock=false
+      clearLock: opts.clearLock ?? false,
+      // Tool checking
+      checkTools: opts.checkTools ?? false,
+      updateTools: opts.updateTools ?? false,
+      tidyLessons: opts.tidyLessons ?? false,
+      predictBots: opts.predictBots ?? true,
+      // Default: don't wait for bot; pass --wait-bot to wait for CodeRabbit etc. after push
+      noWaitBot: !(opts.waitBot === true),
     },
   };
 }

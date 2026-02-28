@@ -4,6 +4,10 @@ import { OpencodeRunner } from './opencode.js';
 import { ClaudeCodeRunner } from './claude-code.js';
 import { AiderRunner } from './aider.js';
 import { CodexRunner } from './codex.js';
+import { GeminiRunner } from './gemini.js';
+import { JunieRunner } from './junie.js';
+import { GooseRunner } from './goose.js';
+import { OpenHandsRunner } from './openhands.js';
 import { LLMAPIRunner } from './llm-api.js';
 import chalk from 'chalk';
 
@@ -12,6 +16,10 @@ export { OpencodeRunner } from './opencode.js';
 export { ClaudeCodeRunner } from './claude-code.js';
 export { AiderRunner } from './aider.js';
 export { CodexRunner } from './codex.js';
+export { GeminiRunner } from './gemini.js';
+export { JunieRunner } from './junie.js';
+export { GooseRunner } from './goose.js';
+export { OpenHandsRunner } from './openhands.js';
 export { LLMAPIRunner } from './llm-api.js';
 export type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 export { DEFAULT_MODEL_ROTATIONS } from './types.js';
@@ -24,6 +32,10 @@ export const ALL_RUNNERS: Runner[] = [
   new AiderRunner(),
   new OpencodeRunner(),
   new CodexRunner(),
+  new GeminiRunner(),
+  new JunieRunner(),
+  new GooseRunner(),
+  new OpenHandsRunner(),
   new LLMAPIRunner(),  // Direct API fallback - always available with API key
 ];
 
@@ -43,7 +55,16 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
   }
 
   for (const runner of ALL_RUNNERS) {
-    const status = await runner.checkStatus();
+    let status: RunnerStatus;
+    try {
+      status = await runner.checkStatus();
+    } catch (err) {
+      status = {
+        installed: false,
+        ready: false,
+        error: `checkStatus failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
     
     if (verbose) {
       const icon = status.ready ? chalk.green('✓') : status.installed ? chalk.yellow('○') : chalk.gray('✗');
@@ -54,6 +75,10 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
           : chalk.gray('not installed');
       const versionText = status.version ? chalk.gray(` (${status.version})`) : '';
       console.log(`  ${icon} ${runner.displayName}${versionText}: ${statusText}`);
+      // Show install hint for tools that aren't installed
+      if (!status.installed && runner.installHint) {
+        console.log(chalk.gray(`    → ${runner.installHint}`));
+      }
     }
 
     if (status.ready) {
@@ -72,6 +97,10 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
  * Get a runner by name
  */
 export function getRunnerByName(name: string): Runner | undefined {
+  // 'elizacloud' is an alias for 'llm-api' with ElizaCloud backend
+  if (name === 'elizacloud') {
+    return ALL_RUNNERS.find(r => r.name === 'llm-api');
+  }
   return ALL_RUNNERS.find(r => r.name === name);
 }
 
@@ -81,8 +110,8 @@ export function getRunnerByName(name: string): Runner | undefined {
 export function printRunnerSummary(detected: DetectedRunner[]): void {
   if (detected.length === 0) {
     console.log(chalk.red('No fix tools available!'));
-    console.log(chalk.gray('Install one of: cursor, claude-code, aider, opencode, codex, llm-api'));
-    console.log(chalk.gray('Or set ANTHROPIC_API_KEY / OPENAI_API_KEY for direct LLM API'));
+    console.log(chalk.gray('Install one of: elizacloud, cursor, claude-code, aider, opencode, codex, gemini, junie, goose, openhands, llm-api'));
+    console.log(chalk.gray('Or set ELIZACLOUD_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY for direct LLM API'));
     return;
   }
 

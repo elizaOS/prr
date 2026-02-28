@@ -26,6 +26,47 @@ export interface VerifiedComment {
   commentId: string;
   verifiedAt: string;        // ISO timestamp when verified
   verifiedAtIteration: number;  // Which iteration it was verified in
+  autoVerifiedFrom?: string;  // If this was auto-verified, the canonical comment ID
+}
+
+/**
+ * Explicit open/resolved lifecycle for each PR comment.
+ *
+ * HISTORY: Previously, comments not in verifiedFixed or dismissedIssues were
+ * implicitly "open" — but we had no record that we'd ALREADY analyzed them and
+ * confirmed they still need fixing. Every push iteration re-sent the entire
+ * unresolved set to the LLM for classification, burning tokens on identical
+ * "still exists" verdicts. Now we persist the LLM's classification so
+ * subsequent iterations skip the analysis LLM call for comments whose target
+ * file hasn't changed. The status transitions are:
+ *
+ *   (new comment) ──analyze──► open ──fix+verify──► resolved
+ *                                  ──dismiss──────► resolved
+ *                  ──analyze──► resolved (already fixed / stale)
+ *
+ * "open" comments are only re-analyzed when their target file is modified
+ * (our fix may have resolved them) or during a final audit (--reverify).
+ */
+export interface CommentStatus {
+  /** Current lifecycle status */
+  status: 'open' | 'resolved';
+  /** LLM classification when status was set */
+  classification: 'exists' | 'stale' | 'fixed';
+  /** LLM explanation of why the issue exists / is stale / is fixed */
+  explanation: string;
+  /** Triage scores from LLM analysis (1-5 scale) */
+  importance: number;
+  ease: number;
+  /** File path this comment targets */
+  filePath: string;
+  /** SHA-1 prefix of file content when status was last set */
+  fileContentHash: string;
+  /** When the status was last set/updated */
+  updatedAt: string;
+  /** Iteration when status was last set */
+  updatedAtIteration: number;
+  /** When resolved via dismiss: actual dismiss category (stale, exhausted, etc.) */
+  dismissCategory?: DismissedIssue['category'];
 }
 
 /**
@@ -43,10 +84,12 @@ export interface DismissedIssue {
   reason: string;                 // Detailed explanation of why it doesn't need fixing
   dismissedAt: string;            // ISO timestamp when dismissed
   dismissedAtIteration: number;   // Which iteration it was dismissed in
-  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate';
+  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted' | 'chronic-failure';
   filePath: string;               // File the comment was about
   line: number | null;            // Line number if specified
   commentBody: string;            // Original review comment text
+  /** Optional next-step for humans (e.g. lockfile: "Run: bun install") */
+  remediationHint?: string;
 }
 
 /**
@@ -84,6 +127,8 @@ export interface IssueAttempt {
   result: 'fixed' | 'failed' | 'no-changes' | 'error';
   lessonLearned?: string;       // If a lesson was extracted from this attempt
   rejectionCount?: number;      // How many times the fix was rejected
+  /** File content hash when attempt was made; used to ignore attempts after file changed */
+  fileContentHash?: string;
 }
 
 export type IssueAttempts = Record<string, IssueAttempt[]>;  // commentId -> attempts
@@ -126,6 +171,10 @@ export interface ResolverState {
   verifiedFixed: string[];   // Comment IDs that have been verified as fixed (legacy, for backwards compat)
   verifiedComments?: VerifiedComment[];  // New: detailed verification records with timestamps
   dismissedIssues?: DismissedIssue[];    // Issues that don't need fixing with reasons
+  /** Per-comment open/resolved status with LLM classification.
+   *  HISTORY: Replaces the ephemeral analysis cache — this is persisted across
+   *  sessions so even a resumed run doesn't re-analyze unchanged comments. */
+  commentStatuses?: Record<string, CommentStatus>;
   interrupted?: boolean;     // True if last run was interrupted
   interruptPhase?: string;   // Phase where interruption occurred
   // Tool/model rotation state - persisted so we resume where we left off
@@ -135,9 +184,32 @@ export interface ResolverState {
   modelPerformance?: ModelPerformance;   // "tool/model" -> stats
   // Per-issue attempt tracking - what's been tried on each issue
   issueAttempts?: IssueAttempts;         // commentId -> attempts
+  /** Per-issue count of verifier rejections; dismiss after VERIFIER_REJECTION_DISMISS_THRESHOLD. WHY: avoid fixer/verifier stalemate token waste. */
+  verifierRejectionCount?: Record<string, number>;
+  /** Per-comment count of "tool modified wrong files" lessons; dismiss after WRONG_FILE_EXHAUST_THRESHOLD. WHY: cross-file fixes (e.g. fix in commit.ts but comment on git-push.ts) burn all models. */
+  wrongFileLessonCountByCommentId?: Record<string, number>;
+  /**
+   * Per-comment additional paths the fixer said the fix belongs in (from CANNOT_FIX/WRONG_LOCATION).
+   * Merged into allowedPaths on next attempt so we relax "only modify this file" and let the fixer edit the correct file.
+   * WHY: Prompts.log audit showed 7 identical 33k-char prompts for git-push.ts:42 (fix in commit.ts); persisting
+   * the other file and allowing it on retry avoids burning models and can resolve the issue.
+   */
+  wrongFileAllowedPathsByCommentId?: Record<string, string[]>;
   // Bail-out tracking - document when/why automation stopped
   bailOutRecord?: BailOutRecord;         // Last bail-out event
   noProgressCycles?: number;             // Cycles completed with zero progress (persisted for resume)
+  /** When a review bot was last detected as rate-limited (bot name -> ISO timestamp). Used to short-wait on next run. */
+  botRateLimitDetectedAt?: Record<string, string>;
+  /**
+   * LLM dedup cache: keyed by sorted comment ID set; stores duplicateMap and dedupedIds.
+   * WHY: Repeat runs with the same comments (e.g. re-run or next push iteration) can skip the dedup LLM step
+   * and reuse this grouping, saving tokens and latency. Previously in-memory cache reset each run.
+   */
+  dedupCache?: {
+    commentIds: string;
+    duplicateMap: Record<string, string[]>;
+    dedupedIds: string[];
+  };
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms
   totalTokenUsage?: TokenUsageRecord[];   // token usage per phase
@@ -155,6 +227,7 @@ export function createInitialState(pr: string, branch: string, headSha: string):
     verifiedFixed: [],
     verifiedComments: [],
     dismissedIssues: [],
+    commentStatuses: {},
     modelPerformance: {},
     issueAttempts: {},
     noProgressCycles: 0,

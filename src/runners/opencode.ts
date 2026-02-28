@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { writeFileSync, unlinkSync, createReadStream } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -26,9 +26,17 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
         reject(new Error(`Command failed with code ${code}`));
       }
     });
-    child.on('error', reject);
+    child.on('error', (err) => {
+      // Redact any sensitive information from error messages
+      reject(new Error('Failed to start command'));
+    });
   });
 }
+
+// Maximum time (ms) to wait for opencode to complete before killing it.
+// 10 minutes is generous — most successful runs complete in 2-3 minutes.
+// Without this, a hung opencode blocks the entire fix loop indefinitely.
+const OPENCODE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * Runner for OpenCode CLI
@@ -39,6 +47,7 @@ function execNoShell(command: string, args: string[] = []): Promise<{ stdout: st
 export class OpencodeRunner implements Runner {
   name = 'opencode';
   displayName = 'OpenCode';
+  installHint = 'go install github.com/opencode-ai/opencode@latest';
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -82,9 +91,6 @@ export class OpencodeRunner implements Runner {
 
     // Write prompt to a temp file to avoid command line length limits
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
-    writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
-    debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('opencode', prompt, { workdir, model: options?.model });
     const cleanupPromptFile = () => {
       try {
         unlinkSync(promptFile);
@@ -92,6 +98,17 @@ export class OpencodeRunner implements Runner {
         // Ignore cleanup errors
       }
     };
+
+    // Register cleanup before any file operations
+    try {
+      writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
+    } catch (error) {
+      cleanupPromptFile();
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return { success: false, output: '', error: `Failed to write prompt file: ${errorMessage}` };
+    }
+    debug('Wrote prompt to file', { promptFile, length: prompt.length });
+    debugPrompt('opencode', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -111,13 +128,14 @@ export class OpencodeRunner implements Runner {
         cwd: workdir,
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
+        detached: true,
         env: { ...process.env },
       });
 
       // Pipe the prompt file to stdin
       const promptStream = createReadStream(promptFile);
       promptStream.pipe(child.stdin);
-      promptStream.on('error', (err) => {
+      promptStream.on('error', (err: Error) => {
         debug('Error reading prompt file', { error: err.message });
         child.stdin?.destroy();
         child.kill('SIGTERM');
@@ -125,6 +143,30 @@ export class OpencodeRunner implements Runner {
 
       let stdout = '';
       let stderr = '';
+      let killed = false;
+      let closed = false;
+
+      const killTree = (signal: NodeJS.Signals) => {
+        try {
+          // Kill the entire process group (opencode + any children it spawned)
+          if (child.pid) process.kill(-child.pid, signal);
+        } catch {
+          try { child.kill(signal); } catch { /* already dead */ }
+        }
+      };
+
+      let sigkillFallbackHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeoutHandle = setTimeout(() => {
+        killed = true;
+        debug('OpenCode timeout reached, killing process', { timeoutMs: OPENCODE_TIMEOUT_MS });
+        killTree('SIGTERM');
+        sigkillFallbackHandle = setTimeout(() => {
+          if (!closed) {
+            debug('OpenCode still alive after SIGTERM, sending SIGKILL');
+            killTree('SIGKILL');
+          }
+        }, 5000);
+      }, OPENCODE_TIMEOUT_MS);
 
       child.stdout?.on('data', (data) => {
         const str = data.toString();
@@ -139,26 +181,44 @@ export class OpencodeRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        // Clean up prompt file
+        closed = true;
+        clearTimeout(timeoutHandle);
+        if (sigkillFallbackHandle !== undefined) clearTimeout(sigkillFallbackHandle);
         cleanupPromptFile();
-        debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length, timedOut: killed });
 
-        if (code === 0) {
+        if (killed) {
+          resolve({
+            success: false,
+            output: stdout,
+            error: `OpenCode timed out after ${OPENCODE_TIMEOUT_MS / 1000}s`,
+            errorType: 'tool_timeout',
+          });
+        } else if (code === 0) {
           resolve({
             success: true,
             output: stdout,
           });
         } else {
-          resolve({
-            success: false,
-            output: stdout,
-            error: stderr || `Process exited with code ${code}`,
-          });
+          const combinedOutput = stdout + stderr;
+          if (/quota exceeded|rate.?limit|too many requests|billing|exceeded.*plan/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Quota or rate limit exceeded', errorType: 'quota' });
+          } else if (/does not exist|model.*not found|you do not have access/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Model not found or not accessible', errorType: 'auth' });
+          } else if (/authentication|unauthorized|invalid.*key|api.*key/i.test(combinedOutput)) {
+            resolve({ success: false, output: stdout, error: stderr || 'Authentication error', errorType: 'auth' });
+          } else {
+            resolve({
+              success: false,
+              output: stdout,
+              error: stderr || `Process exited with code ${code}`,
+            });
+          }
         }
       });
 
       child.on('error', (err) => {
-        // Clean up prompt file
+        clearTimeout(timeoutHandle);
         cleanupPromptFile();
 
         resolve({

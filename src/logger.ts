@@ -1,11 +1,123 @@
+/**
+ * Logging: output log tee, prompts log, debug files, and structured debug().
+ *
+ * WHY two log files (output.log + prompts.log): output.log mirrors the console
+ * for operational flow; inlining full prompts would make it unreadable. prompts.log
+ * holds full LLM content with searchable slugs so you can jump from a line in
+ * output.log to the exact prompt that produced it. WHY strip ANSI: Log files are
+ * for grepping and sharing; escape codes add noise. WHY exclude spinner output:
+ * ora/spinner write via process.stdout.write, not console.log; excluding them
+ * keeps the log free of progress-bar artifacts.
+ */
 import chalk from 'chalk';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, createWriteStream } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { format } from 'node:util';
+import { finished } from 'stream/promises';
+import type { WriteStream } from 'fs';
 
 let verboseEnabled = false;
 let debugLogDir: string | null = null;
 let debugLogCounter = 0;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OUTPUT LOG TEE — mirrors all console output to ~/.prr/output.log
+// Provides persistent logging in a consistent user-specific location
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+let outputLogStream: WriteStream | null = null;
+let outputLogPath: string | null = null;
+let promptLogStream: WriteStream | null = null;
+
+/**
+ * Strip ANSI escape codes from a string for plain-text logging.
+ */
+function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1B(?:\[[\x20-\x3F]*[\x40-\x7E]|\].*?(?:\x07|\x1B\\)|\(B)/g, '');
+}
+
+/**
+ * Initialize the output log tee.
+ *
+ * Creates/truncates ~/.prr/output.log and patches console.log/warn/error
+ * to mirror all formatted output (ANSI-stripped) to the file.
+ *
+ * Spinner output (ora etc.) goes through process.stdout.write — NOT console.log —
+ * and is intentionally excluded.  It's pure UI noise with no analytical value.
+ *
+ * Call this once at startup, before any meaningful output.
+ */
+export function initOutputLog(): void {
+  const logDir = process.cwd();
+
+  outputLogPath = join(logDir, 'output.log');
+
+  writeFileSync(outputLogPath, '', 'utf-8');
+  // Review: ensures logging to a single stream, preventing double initialization issues.
+  outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
+
+  // Companion log for full prompts & responses — search by slug (e.g. "#0009")
+  // to jump from output.log to the exact prompt/response in prompts.log.
+  const promptLogPath = join(logDir, 'prompts.log');
+  writeFileSync(promptLogPath, '', 'utf-8');
+  promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
+
+  const origLog = console.log.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origError = console.error.bind(console);
+
+  function logToStream(...args: unknown[]): void {
+    if (!outputLogStream) return;
+    try {
+      const text = format(...args);
+      const clean = stripAnsi(text);
+      if (clean) outputLogStream.write(clean + '\n');
+    } catch (err) {
+      origError('Log stream write failed:', err);
+    }
+  }
+
+  console.log = (...args: unknown[]) => { logToStream(...args); origLog(...args); };
+  console.warn = (...args: unknown[]) => { logToStream(...args); origWarn(...args); };
+  console.error = (...args: unknown[]) => { logToStream(...args); origError(...args); };
+}
+
+/**
+ * Close the output log and prompts log streams (call during shutdown).
+ * WHY: Without closing, the last lines may stay buffered and the file may be
+ * unreadable or truncated when the user opens it after the process exits.
+ * Waits for streams to flush so callers (e.g. before process.exit()) can rely on logs being written.
+ */
+export async function closeOutputLog(): Promise<void> {
+  const streams: WriteStream[] = [];
+  if (outputLogStream) {
+    streams.push(outputLogStream);
+    outputLogStream.end();
+    outputLogStream = null;
+  }
+  if (promptLogStream) {
+    streams.push(promptLogStream);
+    promptLogStream.end();
+    promptLogStream = null;
+  }
+  for (const stream of streams) {
+    try {
+      await finished(stream);
+    } catch (err) {
+      // Log but don't throw; caller expects shutdown to complete
+      console.error('Log stream close/flush failed:', err);
+    }
+  }
+}
+
+/**
+ * Get the path to the current output log file.
+ */
+export function getOutputLogPath(): string | null {
+  return outputLogPath;
+}
 
 export function setVerbose(enabled: boolean): void {
   verboseEnabled = enabled;
@@ -59,6 +171,16 @@ function formatCompact(data: unknown): string {
       }
       if (typeof v === 'object' && v !== null) {
         if (Array.isArray(v)) {
+          // Show short arrays of primitives inline, collapse long/complex ones.
+          // WHY: [14] (a number array) was displayed as [1] (its length),
+          // which looks like "array containing 1" — genuinely misleading.
+          if (v.length <= 5 && v.every(item => typeof item !== 'object' || item === null)) {
+            const items = v.map(item => {
+              if (typeof item === 'string' && item.length > 40) return `"${item.substring(0, 40)}..."`;
+              return safeStringify(item);
+            });
+            return `${k}: [${items.join(', ')}]`;
+          }
           return `${k}: [${v.length}]`;
         }
         return `${k}: {...}`;
@@ -104,17 +226,69 @@ export function error(message: string): void {
 }
 
 /**
- * Log a prompt to a debug file.
+ * Generate the searchable slug for a prompt/response entry.
+ * Format: "#0009/llm-anthropic" — unique, greppable from output.log into prompts.log.
+ */
+function promptSlug(counter: number, label: string): string {
+  return `#${String(counter).padStart(4, '0')}/${label}`;
+}
+
+/**
+ * Write a prompt or response to prompts.log (the companion file to output.log).
+ *
+ * WHY a separate file: Prompts can be 5-50K chars each. Inlining them in
+ * output.log would make it unsearchable (a single run can produce 500K+ of
+ * prompt data vs ~20K of console output). prompts.log keeps the full content
+ * available for analysis without drowning the operational log.
+ *
+ * WHY the slug format (#0001/llm-anthropic): The same slug appears as a
+ * one-liner in output.log. When you see a suspicious LLM response in
+ * output.log, Cmd+F the slug in prompts.log to jump directly to the full
+ * prompt that produced it. This cross-file navigation pattern replaces the
+ * need to correlate timestamps or count log entries manually.
+ */
+function writeToPromptLog(
+  slug: string, kind: 'PROMPT' | 'RESPONSE', label: string,
+  body: string, metadata?: Record<string, unknown>,
+): void {
+  if (!promptLogStream) return;
+  try {
+    const sep = '═'.repeat(70);
+    let header = `${sep}\n ${slug}  ${kind}: ${label} (${body.length} chars)\n`;
+    header += ` ${new Date().toISOString()}\n`;
+    if (metadata) header += ` ${safeStringify(metadata, true)}\n`;
+    header += `${sep}\n`;
+    promptLogStream.write(header);
+    promptLogStream.write(body);
+    promptLogStream.write(`\n${sep}\n\n`);
+  } catch (err) {
+    console.error('Prompt log stream write failed:', err);
+  }
+}
+
+/**
+ * Log a prompt to the prompts.log companion file and (optionally) a standalone
+ * debug file. A one-liner with a searchable slug is written to output.log so
+ * you can grep the slug in prompts.log to see the full content.
+ *
+ * WHY dual logging (standalone files + prompts.log): Standalone files are
+ * useful for sharing individual prompts or diffing prompt evolution across
+ * iterations. prompts.log provides chronological search across ALL prompts
+ * and responses in a single file — critical for diagnosing "the LLM got
+ * confused at step 5" type issues where you need to see the conversation flow.
+ *
  * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
- * Files are written to ~/.prr/debug/<timestamp>/
+ * Standalone files are written to ~/.prr/debug/<timestamp>/
  */
 export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
   if (!debugLogDir) return;
   
   debugLogCounter++;
+  const slug = promptSlug(debugLogCounter, label);
+
+  // Standalone file (still useful for sharing/diffing individual prompts)
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-prompt.txt`;
   const filepath = join(debugLogDir, filename);
-  
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
   if (metadata) {
@@ -123,22 +297,30 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
   content += `Length: ${prompt.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
   content += prompt;
-  
   writeFileSync(filepath, content, 'utf-8');
-  debug(`Prompt logged to ${filename}`, { length: prompt.length });
+
+  // Searchable one-liner in output.log
+  debug(`PROMPT ${slug}`, { chars: prompt.length });
+
+  // Full content in prompts.log
+  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
 }
 
 /**
- * Log a response to a debug file.
+ * Log a response to the prompts.log companion file and (optionally) a standalone
+ * debug file. A one-liner with a searchable slug is written to output.log.
+ *
  * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
  */
 export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
   if (!debugLogDir) return;
   
   debugLogCounter++;
+  const slug = promptSlug(debugLogCounter, label);
+
+  // Standalone file
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-response.txt`;
   const filepath = join(debugLogDir, filename);
-  
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
   if (metadata) {
@@ -147,9 +329,13 @@ export function debugResponse(label: string, response: string, metadata?: Record
   content += `Length: ${response.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
   content += response;
-  
   writeFileSync(filepath, content, 'utf-8');
-  debug(`Response logged to ${filename}`, { length: response.length });
+
+  // Searchable one-liner in output.log
+  debug(`RESPONSE ${slug}`, { chars: response.length });
+
+  // Full content in prompts.log
+  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
 }
 
 /**
@@ -188,9 +374,7 @@ export function formatDuration(ms: number): string {
     return `${(ms / 1000).toFixed(1)}s`;
   } else {
     const mins = Math.floor(ms / 60000);
-    // Use Math.floor to prevent rounding to 60 seconds
     const secs = Math.floor((ms % 60000) / 1000);
-    // Pad seconds with leading zero for consistency (e.g., "1m 05s")
     const secsStr = secs.toString().padStart(2, '0');
     return `${mins}m ${secsStr}s`;
   }

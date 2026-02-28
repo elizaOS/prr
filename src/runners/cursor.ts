@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import { writeFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
+import type { Runner, RunnerResult, RunnerOptions, RunnerStatus, RunnerErrorType } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
@@ -22,13 +22,15 @@ function isSafePath(value: string): boolean {
 // Cursor Agent CLI binary - DO NOT include 'cursor' as that's the IDE, not the CLI agent
 const CURSOR_AGENT_BINARY = 'cursor-agent';
 
-// Fallback model list if dynamic discovery fails
+// Fallback model list if dynamic discovery fails.
+// WHY these names: Cursor uses its own short aliases, not full API IDs.
+// These are common Cursor model names as of Feb 2026.
 const FALLBACK_MODELS = [
-  'claude-4-sonnet-thinking',
-  'gpt-4o',
-  'claude-4-opus-thinking',
-  'gpt-4o-mini',
-  'o3',
+  'claude-sonnet-4-5',
+  'gpt-4.1',
+  'claude-opus-4-6',
+  'gpt-5.2',
+  'gpt-5-mini',
 ];
 
 /**
@@ -156,9 +158,14 @@ function parseAndPrioritizeModels(output: string): string[] {
 export class CursorRunner implements Runner {
   name = 'cursor';
   displayName = 'Cursor Agent';
+  // Review: installHint includes options for better user experience; debug should match it.
+  installHint = 'curl -fsSL https://cursor.com/install | bash';
   
   // Dynamically discovered models (populated on checkStatus)
   supportedModels?: string[];
+  
+  /** Whether `--trust` is supported by this version of cursor-agent (probed once in checkStatus) */
+  private trustSupported: boolean | undefined;
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -185,6 +192,25 @@ export class CursorRunner implements Runner {
       version = stdout.trim();
     } catch {
       // Version check failed, but might still work
+    }
+
+    // Probe --trust flag support (only on first check)
+    if (this.trustSupported === undefined) {
+      try {
+        await execFile(CURSOR_AGENT_BINARY, ['--trust', '--help']);
+        this.trustSupported = true;
+        debug('cursor-agent supports --trust flag');
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('unknown option') || msg.includes('--trust')) {
+          this.trustSupported = false;
+          debug('cursor-agent does NOT support --trust flag — will omit it');
+        } else {
+          // --help might fail for other reasons; assume supported to be safe
+          this.trustSupported = true;
+          debug('cursor-agent --trust probe inconclusive, assuming supported', { error: msg });
+        }
+      }
     }
 
     // Check if logged in and get available models
@@ -268,8 +294,14 @@ export class CursorRunner implements Runner {
         '--print',
         '--output-format', 'stream-json',
         '--stream-partial-output',
-        '--workspace', workdir,
       ];
+
+      // Only add --trust if this version supports it (probed in checkStatus)
+      if (this.trustSupported !== false) {
+        args.push('--trust');
+      }
+
+      args.push('--workspace', workdir);
       
       // Add model if specified
       if (options?.model) {
@@ -294,7 +326,13 @@ export class CursorRunner implements Runner {
       child.stdin?.write(prompt);
       child.stdin?.end();
 
-      let stdout = '';
+      let stdout = '';       // Raw stdout (all JSON frames) — for debug logging
+      // WHY separate textContent: The raw stdout includes JSON protocol frames like
+      // {"type":"text","content":"..."} and {"session_id":"..."}. Downstream consumers
+      // (parseNoChangesExplanation, lesson extraction) search for patterns like "NO_CHANGES:"
+      // and "already fixed" — matching against raw JSON caused false positives where
+      // embedded instruction examples were treated as real fixer explanations.
+      let textContent = '';  // Clean text content extracted from JSON stream — for output parsing
       let stderr = '';
       let lastContent = '';
       let pending = '';
@@ -307,6 +345,7 @@ export class CursorRunner implements Runner {
             // Incremental text output
             process.stdout.write(json.content);
             lastContent += json.content;
+            textContent += json.content;
           } else if (json.type === 'tool_use') {
             // Tool being used
             console.log(`\n🔧 ${json.name || 'tool'}: ${json.input?.path || json.input?.command || ''}`);
@@ -321,16 +360,19 @@ export class CursorRunner implements Runner {
             // Message ended
             if (lastContent) {
               process.stdout.write('\n');
+              textContent += '\n';
               lastContent = '';
             }
           } else if (json.content) {
             // Fallback: if there's content, print it
             process.stdout.write(json.content);
+            textContent += json.content;
           }
         } catch {
           // Not JSON, print raw (might be plain text mode)
           if (line.trim() && !line.includes('"type"')) {
             process.stdout.write(line + '\n');
+            textContent += line + '\n';
           }
         }
       };
@@ -374,13 +416,27 @@ export class CursorRunner implements Runner {
         if (code === 0) {
           resolve({
             success: true,
-            output: stdout,
+            output: textContent,  // Clean text, not raw JSON stream
           });
         } else {
+          const errorMsg = stderr || `Process exited with code ${code}`;
+          // Detect non-transient errors for correct handling
+          const combined = (stderr + '\n' + textContent).trim();
+          let errorType: RunnerErrorType | undefined;
+          if (/Workspace Trust Required/i.test(errorMsg)) {
+            errorType = 'environment';
+          } else if (/unknown option|unrecognized.*option|invalid.*flag/i.test(errorMsg)) {
+            // CLI/version mismatch (e.g. --trust not supported) — skip this tool for rest of run
+            errorType = 'tool_config';
+          } else if (/not available in the slow pool|switch to auto/i.test(combined)) {
+            // Cursor backend reports model not in slow pool — rotate to next model, don't retry same one
+            errorType = 'model';
+          }
           resolve({
             success: false,
-            output: stdout,
-            error: stderr || `Process exited with code ${code}`,
+            output: textContent,  // Clean text for NO_CHANGES parsing
+            error: errorMsg,
+            errorType,
           });
         }
       });
@@ -391,7 +447,7 @@ export class CursorRunner implements Runner {
 
         resolve({
           success: false,
-          output: stdout,
+          output: textContent,
           error: err.message,
         });
       });

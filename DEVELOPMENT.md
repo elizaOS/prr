@@ -13,6 +13,8 @@ prr is designed around **human-in-the-loop** automation, not full autonomy:
 
 This contrasts with fully autonomous agents that create PRs without human involvement. prr assumes a human made the PR, received review feedback, and wants help addressing it - not a replacement for the human developer.
 
+**Why human-in-the-loop drives the design:** When the human can interrupt (Ctrl+C), inspect the workdir, and decide when to push, the system must persist state, avoid silent failures, and keep the workdir usable. That’s why we save state on signal, close logs before exit, and never assume the process runs to completion.
+
 **Technical implications**:
 - State persistence is critical (resume after interruption)
 - Workdir preservation by default (inspect before pushing)
@@ -46,6 +48,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 │ - Status      │    │ - AiderRunner     │    │ - Conflict res.   │
 │               │    │ - OpencodeRunner  │    │                   │
 │               │    │ - CodexRunner     │    │                   │
+│               │    │ - GeminiRunner    │    │                   │
 │               │    │ - LLMAPIRunner    │    │                   │
 └───────────────┘    └───────────────────┘    └───────────────────┘
         │                       │                       │
@@ -68,7 +71,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/index.ts` | CLI entry point, signal handlers |
 | `src/cli.ts` | Argument parsing, validation |
 | `src/config.ts` | Environment/config loading |
-| `src/resolver.ts` | Main orchestration (1300+ lines) |
+| `src/resolver.ts` | Main orchestration (delegates to workflow/) |
 | `src/logger.ts` | Logging, timing, token tracking |
 
 
@@ -86,7 +89,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/git/clone.ts` | Clone, fetch, conflict detection, pullLatest with auto-rebase |
+| `src/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
 | `src/git/commit.ts` | Squash commit, push with retry, token injection |
 | `src/git/workdir.ts` | Hash-based workdir management |
 
@@ -102,6 +105,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 | `src/runners/aider.ts` | Aider CLI |
 | `src/runners/opencode.ts` | OpenCode CLI |
 | `src/runners/codex.ts` | OpenAI Codex CLI |
+| `src/runners/gemini.ts` | Google Gemini CLI |
 | `src/runners/llm-api.ts` | Direct API (fallback) |
 
 
@@ -118,8 +122,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/state/manager.ts` | Per-workdir state (iterations, verified fixes, bail-out tracking) |
-| `src/state/lessons.ts` | Branch-permanent lessons (~/.prr/lessons/) |
+| `src/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
+// Review: clearly distinguishes per-workdir state from persistent lessons for clarity.
+| `src/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
 | `src/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 
 
@@ -220,7 +225,42 @@ Layer 3: Final audit (before declaring done)
 - Stale verifications get re-checked instead of blindly trusted
 - `--reverify` flag forces re-verification of ALL cached items
 
-### 3. Model & Tool Rotation with Single-Issue Focus
+### 3. System communication (handoffs)
+
+Data flows between subsystems so the next step has the right context. Improving these handoffs reduces fixer/verifier stalemates and "no access to code" failures.
+
+**Analyzer → Fixer**
+
+- **Input:** Review comments + workdir. Solvability (sync) filters impossible issues; batch check (LLM) returns which still exist.
+- **Output:** `UnresolvedIssue[]` with `codeSnippet` (current code at comment path/line), `explanation` (analysis), and optional `retargetedLine` when the cited line is out of range.
+- **Handoff:** Fix prompt builder (`prompt-builder.ts`, `utils.buildSingleIssuePrompt`) receives these issues and injects **Current Code** and **Analysis** so the fixer sees the same code the analyzer saw. Snippets are refreshed after verify for changed files (`recheckSolvability`) so the next iteration shows post-fix state.
+
+**Verifier → Fixer**
+
+- **Input:** After the fixer runs, verification (batch or single) gets the **current diff** and answers YES/NO + explanation (and optional LESSON for batch).
+- **Output:** For each NO we set `issue.verifierContradiction = explanation` (and lesson if present). This is persisted on the issue object for the rest of the session.
+- **Handoff:** The next fix prompt (batch and single-issue) includes a **VERIFIER DISAGREES** block with that text and instructs: "Treat the verifier's explanation as the source of truth for what is still missing or wrong." Batch verify prompt explicitly says the NO explanation is "used as the source of truth for the next fix attempt" and must cite code/method/line.
+
+**Lessons → Fixer**
+
+- Failed verifications (and some no-changes results) add file-scoped or global lessons. Fix prompt builder injects **per-file lessons** inline with each issue (not only at the top) so the fixer sees them next to the code they apply to.
+
+**No-changes re-check → Fixer**
+
+- When the fixer claims "already fixed" but made no edits, we re-verify with the LLM. If the re-check says "still exists", we set `issue.verifierContradiction` so the next iteration sees the verifier's view and can try again (or rotate).
+
+**Dismissal comments (review → LLM → file)**
+
+- We pass **effectiveLine** (clamped to file length), **surroundingCode** (snippet with line numbers), review comment, and dismissal reason so the LLM has the code in the prompt. Prompt states "The code is provided above" and requires response format `EXISTING` or `COMMENT: Review: ...` only. Insertion uses the same effective line so we never ask the LLM about a line we don't show or insert past end of file.
+
+**Where to change behavior**
+
+- Verifier → Fixer: `fix-verification.ts` (sets `verifierContradiction`), `prompt-builder.ts` and `workflow/utils.ts` (VERIFIER DISAGREES block).
+- Analyzer → Fixer: `issue-analysis.ts` (builds issues with snippets), `fix-loop-utils.ts` / `recheckSolvability` (refresh after verify). When refreshing snippets, `recheckSolvability` preserves `verifierContradiction` via `{ ...issue, codeSnippet }` so the next fix prompt and AAR see it.
+- AAR "Verifier said": `push-iteration-loop.ts` sets `finalUnresolvedIssuesRef.current` from the same issue refs (so `verifierContradiction` is preserved); `final-cleanup.ts` passes them to `printAfterActionReport`. See `docs/audit-run-2026-02-22.md` (Actions executed).
+- Dismissal: `workflow/dismissal-comments.ts` (effectiveLine, surroundingCode), `llm/client.ts` (`generateDismissalComment` prompt).
+
+### 4. Model & Tool Rotation with Single-Issue Focus
 
 **The Problem**: AI tools get stuck. They'll make the same mistake repeatedly.
 
@@ -271,7 +311,7 @@ Model rotation (interleaved by family):
   Round 2: claude-4-opus-thinking (Claude) → gpt-5.2-high (GPT) → gemini-3-flash (Gemini)
   
 Tool rotation (after MAX_MODELS_PER_TOOL_ROUND models tried):
-  Cursor → Claude Code → Aider → Direct LLM API
+  Cursor → Claude Code → Aider → OpenCode → Codex → Gemini → Junie → Goose → OpenHands → Direct LLM API
   (then back to Cursor with next model in rotation)
 
 Strategy per failure:
@@ -299,7 +339,203 @@ Strategy per failure:
 
 **State persistence**: Tool index and per-tool model indices saved to state file. Resuming continues from same position instead of restarting rotation.
 
-### 4. Lessons Learned System
+### 5. Adaptive Batch Sizing
+
+**The Problem**: The first iteration stuffed 50 issues into a single 213K-char prompt. The model fixed 5 (5% success). Iterations 2-3 sent the same 50-issue prompt and fixed 0 — the model was overwhelmed.
+
+**Why not just reduce `MAX_ISSUES_PER_PROMPT`?** Fixed reduction wastes capacity on easy runs. With 10 simple issues, a small batch size means unnecessary iterations.
+
+**Solution**: Halve the batch size after each consecutive zero-fix iteration:
+
+```typescript
+// src/analyzer/prompt-builder.ts
+export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number): number {
+  if (consecutiveZeroFixIterations <= 0) return MAX_ISSUES_PER_PROMPT;  // 50
+  const reduced = Math.floor(MAX_ISSUES_PER_PROMPT / Math.pow(2, consecutiveZeroFixIterations));
+  return Math.max(MIN_ISSUES_PER_PROMPT, reduced);  // Floor: 5
+}
+// Iteration 1: 50 issues → 5 fixed → reset
+// Iteration 2: 50 issues → 0 fixed → next time use 25
+// Iteration 3: 25 issues → 0 fixed → next time use 12
+// Iteration 4: 12 issues → 0 fixed → next time use 6
+// Iteration 5: 6 issues → 0 fixed → next time use 5 (minimum)
+```
+
+**Why halve (exponential backoff)?** Linear reduction (50 → 49 → 48...) is too slow. Halving matches the severity — if 50 issues produced zero fixes, there's no reason to believe 49 will be better. Get to smaller batches quickly.
+
+**Why MIN_ISSUES_PER_PROMPT = 5?** Below 5, single-issue focus mode is more efficient (it also includes focused context per issue). The adaptive sizing bridges the gap between "try everything" and "try one thing at a time."
+
+**Where the counter resets**: Any iteration with verified fixes resets `consecutiveFailures` to 0, bringing batch size back to MAX. WHY: The model might have been overwhelmed by a specific mix of hard issues; after resolving some, the remaining set may be tractable at full batch size.
+
+### 4a. Issue Priority Triage
+
+**The Problem**: When adaptive batching limits prompts to 50 of 93 issues, the selection was arbitrary — trivial style nits could crowd out critical security fixes. All 93 issues had equal priority (essentially random GitHub thread creation order).
+
+// Review: prioritizes issue urgency over age, ensuring critical fixes are addressed first
+**Why not just process chronologically?** Older comments aren't necessarily more important. A critical security issue added yesterday should be fixed before a 2-week-old style nit.
+
+**Solution**: LLM-based importance and difficulty assessment during the existing analysis phase:
+
+```typescript
+// src/llm/client.ts - Extended response format
+// OLD: ISSUE_ID: YES|NO|STALE: explanation
+// NEW: ISSUE_ID: YES|NO|STALE: I<1-5>: D<1-5>: explanation
+
+// Prompt addition:
+For issues that still exist (YES), also rate:
+- I<1-5> importance: 1=critical security/data loss, 2=major bug, 3=moderate, 4=minor, 5=trivial style
+- D<1-5> difficulty: 1=one-line fix, 2=simple, 3=moderate, 4=complex multi-file, 5=major refactor
+
+For NO/STALE responses, you may omit the I/D ratings (they won't be used).
+
+// Parser - two-stage with graceful defaults:
+const match = line.match(/^([^:]+):\s*(YES|NO|STALE):\s*(.*)$/i);
+if (match) {
+  let [, id, response, rest] = match;
+  let importance = 3, ease = 3;  // Graceful defaults
+  const triageMatch = rest.match(/^I(\d):\s*D(\d):\s*(.*)$/i);
+  if (triageMatch) {
+    importance = Math.min(5, Math.max(1, parseInt(triageMatch[1], 10)));
+    ease = Math.min(5, Math.max(1, parseInt(triageMatch[2], 10)));
+    rest = triageMatch[3];
+  }
+  // ... store with importance/ease
+}
+```
+
+**Why piggyback onto existing analysis call?** The LLM already reads every comment to judge "does this still exist?". Asking for two additional numbers costs essentially nothing (same context, ~5 extra tokens per issue in response).
+
+**Why graceful defaults (3/3)?** 
+- LLM may omit ratings for NO/STALE responses (they won't be used anyway)
+- Old-format responses still parse correctly (backwards compatible)
+- Default to middle of pack (3), not worst (5) — issues without triage aren't necessarily trivial
+
+**Why clamp to 1-5?** LLMs sometimes output 0 or 6. Clamping ensures scores stay in range.
+
+**Data flow** (11 construction sites):
+
+```typescript
+// src/analyzer/types.ts
+export interface IssueTriage {
+  importance: number;  // 1-5
+  ease: number;        // 1-5
+}
+
+export interface UnresolvedIssue {
+  comment: ReviewComment;
+  codeSnippet: string;
+  stillExists: boolean;
+  explanation: string;
+  triage?: IssueTriage;  // Optional - see WHY below
+}
+```
+
+**Why `triage?` optional?** There are 11 places that construct `UnresolvedIssue` objects across 5 files. Making it required would break all of them simultaneously during implementation. Optional means:
+- Type system accepts objects without triage
+- Can add triage incrementally, one site at a time
+- Recovery paths (audit failures, new mid-cycle comments) can use default values
+
+**11 construction sites and their triage strategy**:
+
+| File | Sites | Triage Source |
+|------|-------|---------------|
+| `workflow/issue-analysis.ts` | 7 | LLM result map (batch mode) or default `{3,3}` (sequential mode) |
+| `workflow/main-loop-setup.ts` | 1 | `{2,3}` — audit failures are important (fooled verifier) |
+| `workflow/fix-loop-utils.ts` | 2 | `{3,3}` — new comments, re-added (not yet analyzed) |
+| `workflow/analysis.ts` | 1 | `{3,3}` — new comment mid-cycle |
+
+**NOT** `llm/client.ts` audit site (~line 942): That constructs audit result objects `{ stillExists, explanation }`, NOT `UnresolvedIssue` — different type.
+
+**Sorting** (`src/analyzer/severity.ts`):
+
+```typescript
+export type PriorityOrder =
+  | 'important'      // Most important first (1=critical first)
+  | 'important-asc'  // Least important first (5=trivial first)
+  | 'easy'           // Easiest fixes first (1=one-liner first)
+  | 'easy-asc'       // Hardest fixes first (5=refactor first)
+  | 'newest'         // Newest comments first
+  | 'oldest'         // Oldest comments first (GitHub default)
+  | 'none';          // No sorting (preserve input order)
+
+export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder): UnresolvedIssue[] {
+  if (order === 'none') return issues;
+  const sorted = [...issues];  // NEVER mutate input
+  sorted.sort((a, b) => {
+    switch (order) {
+      case 'important':
+        return (a.triage?.importance ?? 3) - (b.triage?.importance ?? 3);
+      // ... other cases
+    }
+  });
+  return sorted;
+}
+```
+
+**Why return new array (non-mutating)?** The `unresolvedIssues` array is shared state used by:
+- Fix iteration loop
+- No-changes verification
+- Single-issue focus mode (which intentionally randomizes)
+
+If we mutated, single-issue randomization and priority sort would fight each other on alternate iterations. Returning a new array means each consumer gets its own ordering.
+
+**Where sorting happens** (`src/workflow/prompt-building.ts`):
+
+```typescript
+// WHY sort here, not in issue-analysis:
+// Same unresolvedIssues array shared with single-issue mode (randomizes)
+// and no-changes verification. Sorting at prompt boundary means we pick
+// the best issues for the batch without affecting other consumers.
+const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
+const { prompt, detailedSummary } = buildPrompt(sortedIssues, lessons, { maxIssues: effectiveMax });
+```
+
+**Triage labels in prompts** (`src/analyzer/prompt-builder.ts`):
+
+```typescript
+// WHY tell the fixer: The model should know which issues are critical
+// (need careful handling) vs trivial style nits (can get quick fixes)
+const triageLabel = issue.triage
+  ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
+  : '';
+parts.push(`### Issue ${i + 1}: ${issue.comment.path}${triageLabel}\n`);
+```
+
+**Console display** (`src/workflow/prompt-building.ts`):
+
+```typescript
+// Console shows breakdown:
+// "Priority: 8 critical/major, 22 moderate, 12 minor/trivial (sorted: critical first)"
+const critical = triaged.filter(i => i.triage!.importance <= 2).length;
+const moderate = triaged.filter(i => i.triage!.importance === 3).length;
+const minor = triaged.filter(i => i.triage!.importance >= 4).length;
+```
+
+**Per-batch debug logging** (`src/llm/client.ts`):
+
+```typescript
+// Added to existing per-batch summary:
+const avgImportance = countTriage > 0 ? (sumImportance / countTriage).toFixed(1) : 'N/A';
+const avgEase = countTriage > 0 ? (sumEase / countTriage).toFixed(1) : 'N/A';
+debug(`Batch ${batchIdx + 1}/${batches.length} results`, {
+  parsed, expected, stillExists, alreadyFixed, stale, unparsed,
+  avgImportance, avgEase  // NEW
+});
+```
+
+**Strategy comparison**:
+
+| Order | Use Case | Example |
+|-------|----------|---------|
+| `important` (default) | Tackle critical issues first | Security fixes before style nits |
+| `easy` | Quick wins first | Show progress, build confidence |
+| `newest` | Address recent feedback | Show responsiveness to reviewers |
+| `oldest` | FIFO queue | GitHub's default behavior |
+| `none` | Debug/comparison | Preserve original behavior |
+
+**Why default to `important`?** Critical security issues should be fixed before trivial style nits. The fixer has limited context window and iteration budget — spend it on what matters most.
+
+### 4b. Lessons Learned System
 
 **The Problem**: Fixer tools flip-flop. Attempt #1 adds a try/catch. Verification rejects it. Attempt #2 adds the same try/catch. Loop forever.
 
@@ -388,7 +624,10 @@ if (!lessons.includes(lesson)) {
 
 **Why deduplicated?** One lesson per `file:line`. If we learn something new about line 45, it replaces the old lesson.
 
-### 4b. Two-Tier Lessons Storage
+**Batch vs sequential lesson quality**:
+Both batch and sequential verification modes now call `llm.analyzeFailedFix()` for failed verifications. WHY: Batch mode previously recorded raw verification explanations (e.g., "diff doesn't show changes to progressiveTrimMatch") as lessons. These describe what went wrong but not what to do differently. `analyzeFailedFix` produces actionable guidance (e.g., "Don't just add null check at line 45, also need to handle the undefined case at line 47") by analyzing the original issue, the attempted diff, and the rejection reason together.
+
+### 4c. Two-Tier Lessons Storage
 
 **The Problem**: Where should lessons live? If we write to CLAUDE.md, we might overwrite user content. If we use a hidden file, tools like Cursor/Claude Code won't read it.
 
@@ -449,6 +688,51 @@ if (existsSync('.cursor/rules/')) {
 - BEFORE each commit (so lessons are included with fixes)
 - Final export at end of run (catches edge cases)
 - NOT after commit (would require separate commit for lessons)
+
+### 4d. NO_CHANGES Handling & Regurgitation Detection
+
+**The Problem**: When a fixer tool makes zero changes, it may provide a reason. The system needs to distinguish three cases:
+1. **Legitimately already fixed** — issues were resolved by previous iterations
+2. **Garbled output** — the model echoed its own instructions instead of reasoning
+3. **Genuine failure** — the model couldn't figure out what to change
+
+**Why this is hard**: Cursor (and other runners) stream JSON frames. The raw stdout includes metadata like `{"session_id":"..."}` alongside actual text content. Searching raw output for patterns like "already fixed" produces false matches against embedded JSON values.
+
+**Solution layers**:
+
+```text
+Layer 1: Clean runner output (src/runners/cursor.ts)
+  └─ Extract only text content from JSON stream
+  └─ WHY: Prevents downstream pattern matching against protocol metadata
+
+Layer 2: Regurgitation detection (src/workflow/utils.ts)
+  └─ PROMPT_REGURGITATION_MARKERS = known instruction fragments
+  └─ If output matches known template text → reject as invalid
+  └─ WHY: When overwhelmed, models echo "Issue 1 is already fixed -
+     Line 45 has null check" verbatim from the instruction template.
+     This looks like a valid explanation but isn't.
+
+Layer 3: Strict "already fixed" patterns (src/workflow/no-changes-verification.ts)
+  └─ Replaced .includes('has') with /\balready\s+fixed\b/
+  └─ WHY: includes('has') matches "This has not been resolved";
+     includes('exists') matches "The file no longer exists".
+     Word-boundary regexes prevent single-word false positives.
+
+Layer 4: Spot-check verification cap
+  └─ Sample 5 issues before full verification of all unresolved
+  └─ Skip if < 40% of sample pass
+  └─ WHY: A garbled "already fixed" claim triggered verification of
+     88 issues (2+ min, significant tokens). Sampling rejects
+     bogus claims cheaply before committing to the full pass.
+```
+
+**Spot-check constants**:
+```typescript
+const SPOT_CHECK_SAMPLE_SIZE = 5;    // Issues to verify in sample
+const SPOT_CHECK_PASS_THRESHOLD = 0.4;  // 40% must pass to justify full check
+```
+
+**Why 40% threshold?** If the fixer legitimately believes issues are fixed, at least 2/5 sampled issues should verify. Below that, the "already fixed" claim is almost certainly wrong and full verification would be wasted work.
 
 ### 5. Context Size Management
 
@@ -1103,6 +1387,90 @@ if (resolution.success) {
 - Better to abort and preserve the conflict markers for human review
 - User can see exactly what couldn't be resolved
 
+### Delete Conflict Resolution
+
+**The Problem**: Git conflicts where one side deleted a file (`CLAUDE.md` "deleted by them") lack traditional `<<<<<<<` markers. The existing resolution logic skipped these files silently.
+
+**Solution**: Detect delete conflicts via `git status --porcelain` and resolve with `git rm`:
+
+```typescript
+// Detect UD (we modified, they deleted), DU (they modified, we deleted), DD (both deleted)
+const deleteConflicts = await detectDeleteConflicts(git, codeFiles, workdir);
+for (const dc of deleteConflicts) {
+  await resolveDeleteConflict(git, dc, workdir);  // git rm <file>
+  codeFiles.splice(codeFiles.indexOf(dc.file), 1);  // Don't try LLM resolution
+}
+```
+
+**WHY accept deletion?** The remote branch reflects the team's intent. If they deleted a file, our local modifications to it are likely stale.
+
+### Model Validation at Startup
+
+**The Problem**: Models like `gpt-5.3-codex` would fail repeatedly with "model does not exist" errors, wasting retries and API calls.
+
+**Solution**: Query OpenAI (`GET /v1/models`) and Anthropic APIs at startup to discover accessible models. Filter internal rotation lists so only available models are attempted.
+
+### Issue Solvability Detection
+
+**The Problem**: Review comments referencing deleted files or fundamentally stale code would waste LLM tokens on unsolvable issues.
+
+**Solution**: Pre-screen review comments to identify issues that cannot be fixed (deleted files, stale references). These are dismissed before the fix loop begins.
+
+### Batch Analysis Size Cap
+
+**The Problem**: 189 issues in a single batch caused haiku to produce a 4K summary instead of 189 structured response lines (`parsed: 0/189`).
+
+**Solution**: Cap batch issue analysis at 50 issues per batch. Batching was only gated on prompt size (chars), not response size (issue count). Now 189 issues → 4 batches of ~47 each.
+
+### CodeRabbit Final-Push-Only Trigger
+
+**The Problem**: Triggering CodeRabbit re-review after every push created a "moving target" with new comments appearing mid-fix.
+
+**Solution**: Only trigger CodeRabbit for a final review when all issues are resolved. Intermediate pushes skip CodeRabbit.
+
+### Lesson Cleanup (`--tidy-lessons`)
+
+**The Problem**: Lesson stores accumulated garbage entries like "No verification result returned, treating as failed" that polluted fix prompts.
+
+**Solution**: 
+1. **Prevention**: Stopped generating non-actionable lessons at source
+2. **Normalization filters**: `lessons-normalize.ts` rejects known garbage patterns
+3. **CLI cleanup**: `--tidy-lessons` scans all JSON files in `~/.prr/lessons/` and `.prr/lessons.md`, re-normalizes, deduplicates, and prunes
+
+### Review comments (durable inline)
+
+**The Problem**: PR review tools (including prr) can leave inline comments like `// REVIEW: line 248 uses || but should use ?? (b340047)`. Those references go stale as the code changes and look like tool cruft in the long term.
+
+**Policy**: We still leave a short comment so there can be dialog (with bots or humans), but **how we leave it** matters. All `// Review:` (or equivalent) text must be **long-term documentation**:
+
+- **No** line numbers, commit hashes, or references to prr/review tools.
+- **Yes** short, intent-based explanation that stays valid as the code evolves (e.g. "Backoff enforced in acquire(); explicit sleep here is redundant" or "handled in getConfig()").
+
+**Where it’s enforced**: Fixer prompts (`prompt-builder.ts`, `workflow/utils.ts`) and the dismissal-comment LLM prompt (`llm/client.ts` → `generateDismissalComment`) instruct the model to produce durable explanations only. The prefix remains `Review:` for consistency; the content is constrained to be documentation-style.
+
+### Empty or placeholder test files not committed
+
+**The Problem**: Empty or placeholder test files (e.g. `test_fail.ts` with a single blank line) get committed when a fixer or user adds them by mistake. Review bots then flag "empty test file accidentally committed".
+
+**Solution**: Pre-commit checks in `git-commit-core.ts` (`runPreCommitChecks`):
+
+- **Detection**: Staged files whose names look like tests (`*.test.ts`, `*.spec.ts`, `*_test.*`, `test_*.*`) are inspected. If the staged content is empty or "placeholder" (very short, no test keywords like `test(`, `it(`, `expect(`), the file is excluded.
+- **Action**: The file is unstaged. If it was a **new** file, it is also removed from the working tree so the next run does not stage it again; the user sees a message like `Excluded empty test file (removed from commit and working tree): path/to/test_fail.ts`. If it was a **modified** file (e.g. someone emptied it), the file is reverted to HEAD.
+
+Both commit paths use this: `squashCommit` (main fix loop) and `commitIteration` (iteration cleanup) call `runPreCommitChecks` after staging.
+
+### Fixer/verifier alignment (verifier citation feedback)
+
+**The Problem**: When the fixer claims ALREADY_FIXED but the verifier says the issue still exists, the next fix attempt often repeated the same claim because the fixer never saw **what the verifier cited** (e.g. "getHistoricalPrices method not found", "start() does not validate JUPITER_API_KEY"). This caused stalemates (e.g. Jupiter audit: many cycles with zero progress).
+
+**Solution**:
+
+1. **Verifier explanation on the issue:** When batch or sequential verify returns NO, we set `issue.verifierContradiction = explanation` (and optionally append the lesson). The same issue object is reused in the next iteration; `recheckSolvability` preserves fields when refreshing snippets (`{ ...issue, codeSnippet: newSnippet }`).
+2. **Fix prompt injection:** Both `buildFixPrompt` (batch) and `buildSingleIssuePrompt` (single-issue) inject a **⚠ VERIFIER DISAGREES** block when `verifierContradiction` is set, telling the fixer to treat the verifier's explanation as the source of truth for what is still missing or wrong.
+3. **Verifier prompt:** The batch verify prompt instructs the LLM that when answering NO, the explanation is used as the source of truth for the next fix; it must cite specific code, method names, or lines (e.g. "getHistoricalPrices method not found in Current Code") so the fixer can target the gap.
+
+**Where:** `fix-verification.ts` (set `verifierContradiction` on failure in both batch and sequential paths), `prompt-builder.ts` (batch fix prompt), `workflow/utils.ts` (single-issue prompt), `llm/client.ts` (batch verify prompt). The no-changes path (`no-changes-verification.ts`) already set `verifierContradiction` when the ALREADY_FIXED re-check said still exists.
+
 ### 9. Commit Message Generation
 
 **The Problem**: Early versions produced commit messages like:
@@ -1569,6 +1937,40 @@ overallTokenUsage: TokenUsageRecord[]     // Cumulative across runs
 Cost estimate uses rough rates:
 - Input: ~$3/M tokens
 - Output: ~$15/M tokens
+
+## Output Log Tee
+
+**The Problem**: Debugging prr requires reading its console output, but terminal scrollback is finite, hard to search, and loses formatting on copy-paste. When feeding output to another LLM for analysis, you need a clean text file.
+
+**Solution**: Monkey-patch `process.stdout.write` and `process.stderr.write` at startup to mirror all output to `~/.prr/output.log`:
+
+```typescript
+// src/logger.ts
+export function initOutputLog(): void {
+  const logPath = path.join(os.homedir(), '.prr', 'output.log');
+  // Truncate on each run start — always latest session only
+  outputLogStream = fs.createWriteStream(logPath, { flags: 'w' });
+  
+  const origStdoutWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = function(chunk: any, ...args: any[]): boolean {
+    // Strip ANSI escape codes for clean text
+    outputLogStream.write(stripAnsi(String(chunk)));
+    return origStdoutWrite(chunk, ...args);
+  };
+  // Same for stderr
+}
+```
+
+**Why monkey-patch stdout/stderr?** All output paths (console.log, spinner libraries, debug logging, child process output) go through these. Wrapping at this level captures everything without modifying every log call site.
+
+**Why strip ANSI?** Terminal escape codes (`\x1b[32m` etc.) make the file unreadable in plain text editors and confuse LLMs. Stripping produces clean text that works everywhere.
+
+**Why truncate on start, not append?** Appending would require the user to figure out where the latest run begins. Truncation means the file always contains exactly one session — the most recent one. If you need historical output, use `--verbose` with dedicated debug log files.
+
+**Lifecycle**:
+1. `initOutputLog()` called at the top of `src/index.ts` (before any output)
+2. `closeOutputLog()` called in success path, error handler, and signal handlers
+3. Path printed at end: `Full output log: ~/.prr/output.log`
 
 ## Graceful Shutdown
 

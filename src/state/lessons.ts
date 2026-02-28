@@ -2,6 +2,8 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
+import * as Normalize from './lessons-normalize.js';
+import type { LessonsSyncTarget } from './lessons-context.js';
 
 /**
  * Format a lesson for display by stripping the redundant prefix.
@@ -23,6 +25,51 @@ export function formatLessonForDisplay(lesson: string): string {
     return noChangesMatch[1];
   }
   return lesson;
+}
+
+/**
+ * Sanitize lesson text by removing code fragments and noise.
+ * Returns null if sanitization results in an empty or non-actionable string.
+ */
+export function sanitizeLessonText(lesson: string): string | null {
+  let result = lesson;
+  
+  // Remove code blocks
+  result = result.replace(/```[\s\S]*?```/g, '');
+  
+  // Remove inline code
+  result = result.replace(/`[^`]+`/g, '');
+  
+  // Remove URLs
+  result = result.replace(/https?:\/\/\S+/g, '');
+  
+  // Remove file paths that look like code references
+  result = result.replace(/\b[\w./\\-]+\.(ts|js|tsx|jsx|json|md|yaml|yml)\b/g, '');
+  
+  // Remove "(inferred) ts" and similar parsing artifacts (including trailing)
+  result = result.replace(/\s*-?\s*\(inferred\)\s*\w*\s*/gi, ' ');
+  
+  // Normalize "made no changes" malformed variants
+  result = result.replace(/made no changes\s*(?=trying)/gi, 'made no changes - ');
+  result = result.replace(/made no changes\s*(?=already)/gi, 'made no changes - ');
+  result = result.replace(/made no changes\s+already/gi, 'made no changes - already');
+  
+  // Collapse double hyphens into single separator
+  result = result.replace(/\s*-\s*-\s*/g, ' - ');
+  
+  // Collapse multiple spaces/newlines into single space
+  result = result.replace(/\s+/g, ' ');
+  
+  // Trim trailing separators
+  result = result.replace(/\s*:\s*$/, '');
+  result = result.replace(/\s*-\s*$/, '');
+  
+  const trimmed = result.trim();
+  if (!trimmed) return null;
+  if (/^\s*[\d.]+\s*$/.test(trimmed)) return null;
+  if (/\bchars\s+truncated\b/i.test(trimmed)) return null;
+  if (/^Fix for\s+\S+(?::(?:null|undefined|\d+))?$/i.test(trimmed)) return null;
+  return trimmed;
 }
 
 export interface LessonsStore {
@@ -49,7 +96,7 @@ function getLocalLessonsPath(owner: string, repo: string, branch: string): strin
  * WHY: Different AI tools read different files.
  * We preserve existing content and only update our delimited section.
  */
-export type LessonsSyncTarget = 'claude-md' | 'conventions-md' | 'cursor-rules';
+export type { LessonsSyncTarget };
 
 interface SyncTargetConfig {
   path: (workdir: string) => string;
@@ -64,6 +111,12 @@ const SYNC_TARGETS: Record<LessonsSyncTarget, SyncTargetConfig> = {
     description: 'CLAUDE.md',
     tools: ['Cursor', 'Claude Code'],
     createHeader: '# Project Configuration\n\n',
+  },
+  'agents-md': {
+    path: (workdir) => join(workdir, 'AGENTS.md'),
+    description: 'AGENTS.md',
+    tools: ['OpenAI Codex'],
+    createHeader: '# Agent Instructions\n\n',
   },
   'conventions-md': {
     path: (workdir) => join(workdir, 'CONVENTIONS.md'),
@@ -93,10 +146,7 @@ const PRR_SECTION_START = '<!-- PRR_LESSONS_START -->';
 const PRR_SECTION_END = '<!-- PRR_LESSONS_END -->';
 
 // Size limits for synced files (CLAUDE.md, etc.) to prevent bloat
-// Our canonical .prr/lessons.md has no limits
-const MAX_GLOBAL_LESSONS_FOR_SYNC = 15;
-const MAX_FILE_LESSONS_FOR_SYNC = 5;
-const MAX_FILES_FOR_SYNC = 20;
+import { MAX_GLOBAL_LESSONS_FOR_SYNC, MAX_FILE_LESSONS_FOR_SYNC, MAX_FILES_FOR_SYNC } from './lessons-paths.js';
 
 export class LessonsManager {
   private store: LessonsStore;
@@ -154,6 +204,11 @@ export class LessonsManager {
     // Always sync to CLAUDE.md (Cursor + Claude Code both read it)
     detected.push('claude-md');
 
+    // AGENTS.md — used by OpenAI Codex CLI
+    if (existsSync(join(this.workdir, 'AGENTS.md'))) {
+      detected.push('agents-md');
+    }
+
     // Check for Aider's CONVENTIONS.md or config
     if (existsSync(join(this.workdir, 'CONVENTIONS.md')) ||
         existsSync(join(this.workdir, '.aider.conf.yml'))) {
@@ -161,7 +216,11 @@ export class LessonsManager {
     }
 
     // Check for Cursor native rules directory
-    if (existsSync(join(this.workdir, '.cursor', 'rules'))) {
+    const cursorRulesDir = join(this.workdir, '.cursor', 'rules');
+    const cursorRulesFile = join(cursorRulesDir, 'prr-lessons.mdc');
+    const cursorRulesDirExists = existsSync(cursorRulesDir);
+    const cursorRulesFileExists = existsSync(cursorRulesFile);
+    if (cursorRulesDirExists || cursorRulesFileExists) {
       detected.push('cursor-rules');
     }
 
@@ -232,23 +291,39 @@ export class LessonsManager {
       let merged = 0;
 
       // Merge global lessons
-      for (const lesson of repoLessons.global) {
-        if (!this.store.global.includes(lesson)) {
-          this.store.global.push(lesson);
-          merged++;
-        }
+      const globalSeen = new Set(this.store.global.map(l => Normalize.lessonKey(l)));
+      const globalNearSeen = new Set(this.store.global.map(l => Normalize.lessonNearKey(l)));
+      for (const rawLesson of repoLessons.global) {
+        const normalized = Normalize.normalizeLessonText(rawLesson);
+        if (!normalized) continue;
+        const key = Normalize.lessonKey(normalized);
+        const nearKey = Normalize.lessonNearKey(normalized);
+        if (globalSeen.has(key) || globalNearSeen.has(nearKey)) continue;
+        globalSeen.add(key);
+        globalNearSeen.add(nearKey);
+        this.store.global.push(normalized);
+        merged++;
       }
-
+      
       // Merge file-specific lessons
-      for (const [path, lessons] of Object.entries(repoLessons.files)) {
-        if (!this.store.files[path]) {
-          this.store.files[path] = [];
+      for (const [rawPath, lessons] of Object.entries(repoLessons.files)) {
+        const cleanedPath = Normalize.sanitizeFilePathHeader(rawPath);
+        if (!cleanedPath) continue;
+        if (!this.store.files[cleanedPath]) {
+          this.store.files[cleanedPath] = [];
         }
-        for (const lesson of lessons) {
-          if (!this.store.files[path].includes(lesson)) {
-            this.store.files[path].push(lesson);
-            merged++;
-          }
+        const fileSeen = new Set(this.store.files[cleanedPath].map(l => Normalize.lessonKey(l)));
+        const fileNearSeen = new Set(this.store.files[cleanedPath].map(l => Normalize.lessonNearKey(l)));
+        for (const rawLesson of lessons) {
+          const normalized = Normalize.normalizeLessonText(rawLesson);
+          if (!normalized) continue;
+          const key = Normalize.lessonKey(normalized);
+          const nearKey = Normalize.lessonNearKey(normalized);
+          if (fileSeen.has(key) || fileNearSeen.has(nearKey)) continue;
+          fileSeen.add(key);
+          fileNearSeen.add(nearKey);
+          this.store.files[cleanedPath].push(normalized);
+          merged++;
         }
       }
 
@@ -263,17 +338,6 @@ export class LessonsManager {
   /**
    * Extract the prr lessons section from a file's content.
    */
-  private extractPrrSection(content: string): string | null {
-    const startIdx = content.indexOf(PRR_SECTION_START);
-    const endIdx = content.indexOf(PRR_SECTION_END);
-
-    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
-      return null;
-    }
-
-    return content.slice(startIdx + PRR_SECTION_START.length, endIdx).trim();
-  }
-
   /**
    * Parse markdown lessons file into structured data.
    *
@@ -314,7 +378,13 @@ export class LessonsManager {
 
       // File path header (### path/to/file.ts)
       if (currentSection === 'file' && trimmed.startsWith('### ')) {
-        currentFile = trimmed.slice(4).trim();
+        const rawFile = trimmed.slice(4).trim();
+        const cleanedFile = Normalize.sanitizeFilePathHeader(rawFile);
+        if (!cleanedFile) {
+          currentFile = null;
+          continue;
+        }
+        currentFile = cleanedFile;
         if (!result.files[currentFile]) {
           result.files[currentFile] = [];
         }
@@ -351,23 +421,67 @@ export class LessonsManager {
       '',
     ];
 
+    const orphanLessons: string[] = [];
+    const mergedFiles = new Map<string, { lessons: string[]; seenKeys: Set<string>; seenNear: Set<string>; order: number }>();
+    let order = 0;
+    
+    for (const [rawPath, lessons] of Object.entries(this.store.files)) {
+      const cleanedPath = Normalize.sanitizeFilePathHeader(rawPath);
+      if (!cleanedPath) continue;
+      
+      if (!mergedFiles.has(cleanedPath)) {
+        mergedFiles.set(cleanedPath, {
+          lessons: [],
+          seenKeys: new Set(),
+          seenNear: new Set(),
+          order: order++,
+        });
+      }
+      
+      const entry = mergedFiles.get(cleanedPath)!;
+      for (const lesson of lessons) {
+        const normalized = Normalize.normalizeLessonText(lesson);
+        if (!normalized) continue;
+        const lessonFilePath = Normalize.extractLessonFilePath(normalized);
+        const cleanedLessonPath = lessonFilePath ? Normalize.sanitizeFilePathHeader(lessonFilePath) : null;
+        if (!cleanedLessonPath || cleanedLessonPath !== cleanedPath) {
+          orphanLessons.push(normalized);
+          continue;
+        }
+        const key = Normalize.lessonKey(normalized);
+        const nearKey = Normalize.lessonNearKey(normalized);
+        if (entry.seenKeys.has(key) || entry.seenNear.has(nearKey)) continue;
+        entry.seenKeys.add(key);
+        entry.seenNear.add(nearKey);
+        entry.lessons.push(normalized);
+      }
+    }
+    
     // Global lessons
-    if (this.store.global.length > 0) {
+    const globalLessons = Normalize.sanitizeLessonsList([...this.store.global, ...orphanLessons]);
+    if (globalLessons.length > 0) {
       lines.push('## Global Lessons');
       lines.push('');
-      for (const lesson of this.store.global) {
+      for (const lesson of globalLessons) {
         lines.push(`- ${lesson}`);
       }
       lines.push('');
     }
 
     // File-specific lessons
-    const fileEntries = Object.entries(this.store.files).filter(([, lessons]) => lessons.length > 0);
+    const fileEntries = Array.from(mergedFiles.entries())
+      .map(([filePath, data]) => ({
+        filePath,
+        lessons: data.lessons,
+        order: data.order,
+      }))
+      .filter(entry => entry.lessons.length > 0)
+      .sort((a, b) => a.order - b.order);
     if (fileEntries.length > 0) {
       lines.push('## File-Specific Lessons');
       lines.push('');
 
-      for (const [filePath, lessons] of fileEntries.sort((a, b) => a[0].localeCompare(b[0]))) {
+      for (const { filePath, lessons } of fileEntries) {
         lines.push(`### ${filePath}`);
         lines.push('');
         for (const lesson of lessons) {
@@ -523,7 +637,8 @@ export class LessonsManager {
         await writeFile(filePath, finalContent, 'utf-8');
         syncedTo.push(config.description);
       } catch (error) {
-        // Silently skip files that can't be written
+        // Log but don't fail - sync targets are best-effort
+        console.warn(`Failed to sync lessons to ${config.description}:`, error);
       }
     }
 
@@ -549,31 +664,73 @@ export class LessonsManager {
       '',
     ];
 
+    const orphanLessons: string[] = [];
+    const mergedFiles = new Map<string, { lessons: string[]; seenKeys: Set<string>; seenNear: Set<string>; order: number }>();
+    let order = 0;
+    
+    for (const [rawPath, lessons] of Object.entries(this.store.files)) {
+      const cleanedPath = Normalize.sanitizeFilePathHeader(rawPath);
+      if (!cleanedPath) continue;
+      
+      if (!mergedFiles.has(cleanedPath)) {
+        mergedFiles.set(cleanedPath, {
+          lessons: [],
+          seenKeys: new Set(),
+          seenNear: new Set(),
+          order: order++,
+        });
+      }
+      
+      const entry = mergedFiles.get(cleanedPath)!;
+      for (const lesson of lessons) {
+        const normalized = Normalize.normalizeLessonText(lesson);
+        if (!normalized) continue;
+        const lessonFilePath = Normalize.extractLessonFilePath(normalized);
+        const cleanedLessonPath = lessonFilePath ? Normalize.sanitizeFilePathHeader(lessonFilePath) : null;
+        if (!cleanedLessonPath || cleanedLessonPath !== cleanedPath) {
+          orphanLessons.push(normalized);
+          continue;
+        }
+        const key = Normalize.lessonKey(normalized);
+        const nearKey = Normalize.lessonNearKey(normalized);
+        if (entry.seenKeys.has(key) || entry.seenNear.has(nearKey)) continue;
+        entry.seenKeys.add(key);
+        entry.seenNear.add(nearKey);
+        entry.lessons.push(normalized);
+      }
+    }
+    
     // Compact global lessons (most recent N)
-    const globalLessons = this.store.global.slice(-MAX_GLOBAL_LESSONS_FOR_SYNC);
+    const globalLessons = Normalize.sanitizeLessonsList([...this.store.global, ...orphanLessons]);
     if (globalLessons.length > 0) {
+      const topGlobal = globalLessons.slice(-MAX_GLOBAL_LESSONS_FOR_SYNC);
       lines.push('### Global');
       lines.push('');
-      for (const lesson of globalLessons) {
+      for (const lesson of topGlobal) {
         lines.push(`- ${lesson}`);
       }
-      if (this.store.global.length > MAX_GLOBAL_LESSONS_FOR_SYNC) {
-        lines.push(`- _(${this.store.global.length - MAX_GLOBAL_LESSONS_FOR_SYNC} more in .prr/lessons.md)_`);
+      if (globalLessons.length > MAX_GLOBAL_LESSONS_FOR_SYNC) {
+        lines.push(`- _(${globalLessons.length - MAX_GLOBAL_LESSONS_FOR_SYNC} more in .prr/lessons.md)_`);
       }
       lines.push('');
     }
 
     // Compact file-specific lessons (top N files, M lessons each)
-    const sortedFiles = Object.entries(this.store.files)
-      .filter(([, lessons]) => lessons.length > 0)
-      .sort((a, b) => b[1].length - a[1].length)
+    const sortedFiles = Array.from(mergedFiles.entries())
+      .map(([filePath, data]) => ({
+        filePath,
+        lessons: data.lessons,
+        order: data.order,
+      }))
+      .filter(entry => entry.lessons.length > 0)
+      .sort((a, b) => a.order - b.order)
       .slice(0, MAX_FILES_FOR_SYNC);
 
     if (sortedFiles.length > 0) {
       lines.push('### By File');
       lines.push('');
 
-      for (const [filePath, lessons] of sortedFiles) {
+      for (const { filePath, lessons } of sortedFiles) {
         const recentLessons = lessons.slice(-MAX_FILE_LESSONS_FOR_SYNC);
         lines.push(`**${filePath}**`);
         for (const lesson of recentLessons) {
@@ -585,7 +742,7 @@ export class LessonsManager {
         lines.push('');
       }
 
-      const totalFiles = Object.keys(this.store.files).length;
+      const totalFiles = mergedFiles.size;
       if (totalFiles > MAX_FILES_FOR_SYNC) {
         lines.push(`_(${totalFiles - MAX_FILES_FOR_SYNC} more files in .prr/lessons.md)_`);
         lines.push('');
@@ -607,75 +764,82 @@ export class LessonsManager {
    * Format: "Fix for path/file.ext:line rejected: reason"
    */
   addLesson(lesson: string): void {
-    // Extract file path from lesson
-    let filePath: string | null = null;
-    if (lesson.startsWith('Fix for ')) {
-      const remainder = lesson.slice('Fix for '.length);
-      const matches = Array.from(remainder.matchAll(/:(\d+)(?::\d+)?(?=\s|$)/g));
-      if (matches.length > 0) {
-        const lastMatch = matches[matches.length - 1];
-        if (typeof lastMatch.index === 'number') {
-          filePath = remainder.slice(0, lastMatch.index);
-        }
-      }
-    }
+    const filePath = Normalize.extractLessonFilePath(lesson);
+    const cleanedPath = filePath ? Normalize.sanitizeFilePathHeader(filePath) : null;
 
-    if (filePath) {
-      this.addFileLesson(filePath, lesson);
+    if (cleanedPath) {
+      this.addFileLesson(cleanedPath, lesson);
     } else {
       this.addGlobalLesson(lesson);
     }
   }
 
   addGlobalLesson(lesson: string): void {
-    // Deduplicate
-    if (!this.store.global.includes(lesson)) {
-      // Check for similar lesson (same prefix)
-      const prefix = lesson.substring(0, 50);
-      const existingIndex = this.store.global.findIndex(l => l.startsWith(prefix));
+    const normalized = Normalize.normalizeLessonText(lesson);
+    if (!normalized) return;
+    
+    const key = Normalize.lessonKey(normalized);
+    const nearKey = Normalize.lessonNearKey(normalized);
+    const existingKeys = this.store.global.map(l => Normalize.lessonKey(l));
+    const existingNearKeys = this.store.global.map(l => Normalize.lessonNearKey(l));
+    
+    if (existingKeys.includes(key) || existingNearKeys.includes(nearKey)) return;
 
-      if (existingIndex !== -1) {
-        // Replace with newer (not a new lesson, just an update)
-        this.store.global[existingIndex] = lesson;
-      } else {
-        // Truly new lesson
-        this.store.global.push(lesson);
-        this.newLessonsThisSession++;
-      }
-      this.dirty = true;
-      this.repoLessonsDirty = true;
-    }
+    // Jaccard similarity — catches semantic duplicates that key/nearKey miss
+    if (this.isSemanticallyDuplicate(normalized, this.store.global)) return;
+
+    this.store.global.push(normalized);
+    this.newLessonsThisSession++;
+    this.dirty = true;
+    this.repoLessonsDirty = true;
   }
 
   addFileLesson(filePath: string, lesson: string): void {
-    if (!this.store.files[filePath]) {
-      this.store.files[filePath] = [];
+    const normalized = Normalize.normalizeLessonText(lesson);
+    if (!normalized) return;
+    
+    const cleanedPath = Normalize.sanitizeFilePathHeader(filePath);
+    if (!cleanedPath) return;
+    
+    if (!this.store.files[cleanedPath]) {
+      this.store.files[cleanedPath] = [];
     }
+    
+    const lessons = this.store.files[cleanedPath];
+    const key = Normalize.lessonKey(normalized);
+    const nearKey = Normalize.lessonNearKey(normalized);
+    const existingKeys = lessons.map(l => Normalize.lessonKey(l));
+    const existingNearKeys = lessons.map(l => Normalize.lessonNearKey(l));
+    
+    if (existingKeys.includes(key) || existingNearKeys.includes(nearKey)) return;
 
-    const lessons = this.store.files[filePath];
+    // Jaccard similarity — catches semantic duplicates that key/nearKey miss
+    if (this.isSemanticallyDuplicate(normalized, lessons)) return;
 
-    // Deduplicate by file:line key
-    const keyMatch = lesson.match(/^Fix for ([^:]+:\S+)/);
-    const key = keyMatch ? keyMatch[1] : null;
+    lessons.push(normalized);
+    this.newLessonsThisSession++;
+    this.dirty = true;
+    this.repoLessonsDirty = true;
+  }
 
-    if (key) {
-      const existingIndex = lessons.findIndex(l => l.startsWith(`Fix for ${key}`));
-      if (existingIndex !== -1) {
-        // Replace with newer (not a new lesson, just an update)
-        lessons[existingIndex] = lesson;
-        this.dirty = true;
-        this.repoLessonsDirty = true;
-        return;
+  private normalizeLessonText(lesson: string): string | null {
+    return Normalize.normalizeLessonText(lesson);
+  }
+
+  /**
+   * Check if a lesson is semantically duplicate of any existing lesson.
+   * WHY: key/nearKey dedup catches exact and whitespace-collapsed matches.
+   * Jaccard on significant tokens catches "same idea, different wording."
+   */
+  private isSemanticallyDuplicate(newLesson: string, existingLessons: string[]): boolean {
+    const newTokens = Normalize.lessonTokens(newLesson);
+    for (const existing of existingLessons) {
+      const existingTokens = Normalize.lessonTokens(existing);
+      if (Normalize.jaccardSimilarity(newTokens, existingTokens) >= Normalize.LESSON_SIMILARITY_THRESHOLD) {
+        return true;
       }
     }
-
-    if (!lessons.includes(lesson)) {
-      // Truly new lesson
-      lessons.push(lesson);
-      this.newLessonsThisSession++;
-      this.dirty = true;
-      this.repoLessonsDirty = true;
-    }
+    return false;
   }
 
   /**
