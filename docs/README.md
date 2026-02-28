@@ -63,6 +63,12 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 - **Chunked embed for large conflicted files**: For files over 30k chars with conflict markers, only conflict sections (with 7 lines context) are embedded; section headers show the actual line range; instructions tell the LLM to use the plain file path in `<change path="...">`. **WHY**: Full-file embed doubled prompt size and caused 504s; sections are enough for correct search/replace blocks.
 - **Conflict model fallback and context cap**: When `getCurrentModel()` is undefined (e.g. setup phase), Attempt 2 falls back to `DEFAULT_ELIZACLOUD_MODEL` for ElizaCloud; "file too large" uses the effective model’s context limit. **WHY**: Avoids weak default (qwen-3-14b) that may 504; correct limit prevents wrongly skipping files that fit the actual model’s window.
 
+**Prompts.log audit follow-up (2026-02)** — relax file constraint, dismissal skip, judge rule, model recommendation:
+- **Relax file constraint**: When the fixer returns CANNOT_FIX/WRONG_LOCATION and mentions another file, we persist that path in `wrongFileAllowedPathsByCommentId` and merge it into `allowedPaths` on the next attempt so the fixer can edit the correct file. **WHY**: Audit showed 7 identical 33k-char prompts for one cross-file issue; persisting the other file avoids burning all models and can resolve the issue on retry.
+- **Skip dismissal LLM for already-fixed**: We no longer call the LLM to generate a Note for `already-fixed` issues; code/diff is self-documenting. **WHY**: 62% of dismissal LLM responses were EXISTING; skipping saves tokens.
+- **Judge rule**: Verification prompt now says "If the Current Code already implements what the review asks for, respond NO and cite the specific code." **WHY**: Reduces unnecessary ALREADY_FIXED fix attempts when the judge would otherwise say YES.
+- **Model recommendation wording**: Prompt asks "explain why these models in this order" instead of "brief reasoning". **WHY**: Models echoed "brief reasoning" literally; the new wording yields actionable explanation.
+
 **Earlier audit items**: Dismissal-comment pre-check radius, no-op search/replace skip, lesson caps, dedup threshold, commit wording, think-tag stripping, verifier rejection cap, no-verified-progress exit — see CHANGELOG for full list and WHYs.
 
 **Read this if**: You want to know why we reorder models, skip certain models, inject files by issue count, escalate to full-file rewrite, skip injection for conflict prompts, or embed only conflict sections for large files.

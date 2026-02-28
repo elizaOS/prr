@@ -18,7 +18,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatNumber } from '../logger.js';
-import { parseResultCode } from './utils.js';
+import { parseResultCode, parseOtherFileFromResultDetail } from './utils.js';
 
 /**
  * Number of issues to spot-check before committing to full verification.
@@ -77,7 +77,9 @@ export async function handleNoChangesWithVerification(
   stateContext: StateContext,
   lessonsContext: LessonsContext,
   verifiedThisSession: Set<string>,
-  parseNoChangesExplanation: (output: string) => string | null
+  parseNoChangesExplanation: (output: string) => string | null,
+  /** When provided, CANNOT_FIX/WRONG_LOCATION responses can persist other-file paths for retry. When omitted, persistence is skipped. */
+  workdir?: string
 ): Promise<{
   shouldBreak: boolean;
   shouldContinue: boolean;
@@ -105,6 +107,19 @@ export async function handleNoChangesWithVerification(
         const detail = structuredResult.resultDetail?.substring(0, 200) ?? structuredResult.resultCode;
         if (firstIssue0) {
           LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${firstIssue0.comment.path}:${firstIssue0.comment.line} - ${structuredResult.resultCode}: ${detail}`);
+          // WHY persist other file: Prompts.log audit showed 7 identical 33k-char prompts for one issue (comment on git-push.ts, fix in commit.ts). Allowing that path on retry gives the next attempt a chance to succeed.
+          if (workdir && stateContext.state && structuredResult.resultCode === 'CANNOT_FIX') {
+            const otherFile = parseOtherFileFromResultDetail(detail, firstIssue0.comment.path, workdir);
+            if (otherFile) {
+              const state = stateContext.state;
+              if (!state.wrongFileAllowedPathsByCommentId) state.wrongFileAllowedPathsByCommentId = {};
+              const existing = state.wrongFileAllowedPathsByCommentId[firstIssue0.comment.id] ?? [];
+              if (!existing.includes(otherFile)) {
+                state.wrongFileAllowedPathsByCommentId[firstIssue0.comment.id] = [...existing, otherFile];
+                debug('Allow other file on retry (CANNOT_FIX)', { commentId: firstIssue0.comment.id, otherFile });
+              }
+            }
+          }
         } else {
           LessonsAPI.Add.addGlobalLesson(lessonsContext, `${structuredResult.resultCode}: ${detail}`);
         }
@@ -122,6 +137,20 @@ export async function handleNoChangesWithVerification(
         const wrongDetail = `WRONG_LOCATION: ${structuredResult.resultDetail} — provide wider code context`;
         if (firstIssue1) {
           LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${firstIssue1.comment.path}:${firstIssue1.comment.line} - ${wrongDetail}`);
+          // Persist other file path so next attempt can allow it (e.g. fix in commit.ts, comment on git-push.ts).
+          if (workdir && stateContext.state) {
+            const detail = structuredResult.resultDetail ?? '';
+            const otherFile = parseOtherFileFromResultDetail(detail, firstIssue1.comment.path, workdir);
+            if (otherFile) {
+              const state = stateContext.state;
+              if (!state.wrongFileAllowedPathsByCommentId) state.wrongFileAllowedPathsByCommentId = {};
+              const existing = state.wrongFileAllowedPathsByCommentId[firstIssue1.comment.id] ?? [];
+              if (!existing.includes(otherFile)) {
+                state.wrongFileAllowedPathsByCommentId[firstIssue1.comment.id] = [...existing, otherFile];
+                debug('Allow other file on retry (WRONG_LOCATION)', { commentId: firstIssue1.comment.id, otherFile });
+              }
+            }
+          }
         } else {
           LessonsAPI.Add.addGlobalLesson(lessonsContext, wrongDetail);
         }

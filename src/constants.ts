@@ -238,6 +238,14 @@ export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && proce
   : 5;
 
 /**
+ * Number of "tool modified wrong files" lessons for an issue before we dismiss as exhausted.
+ * WHY: When the fix requires a different file than the comment's path (e.g. duplicate interface in commit.ts
+ * but comment is on git-push.ts), the fixer correctly refuses to change the wrong file and we burn through
+ * all models. Exhausting after 2 wrong-file lessons defers to human and saves ~5 min of LLM calls.
+ */
+export const WRONG_FILE_EXHAUST_THRESHOLD = 2;
+
+/**
  * Times the verifier can reject an issue (fixer claimed fixed / ALREADY_FIXED but verifier said no)
  * before we dismiss it to avoid token waste on repeated retries.
  * WHY 2: Fixer/verifier stalemates otherwise loop indefinitely; two rejections is enough signal to defer to human.

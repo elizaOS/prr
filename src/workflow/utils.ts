@@ -2,6 +2,8 @@
  * Utility functions for PR resolution workflow
  */
 
+import { resolve, sep } from 'path';
+import * as fs from 'fs';
 import type { Config } from '../config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
@@ -230,6 +232,40 @@ export function parseResultCode(output: string): {
   const caveatMatch = output.match(/^CAVEAT:\s*(.+)$/m);
   const caveat = caveatMatch?.[1]?.trim();
   return { resultCode, resultDetail, ...(caveat ? { caveat } : {}) };
+}
+
+/** Match path-like tokens (e.g. "build.ts", "src/service.ts") in CANNOT_FIX/WRONG_LOCATION detail text. */
+const OTHER_FILE_PATTERN = /\b([a-zA-Z0-9_][a-zA-Z0-9_.\/-]*\.(?:ts|tsx|js|jsx|mjs|cjs|json|py|go|rs|java|kt))\b/g;
+
+/**
+ * If CANNOT_FIX or WRONG_LOCATION explanation mentions another file path (e.g. "fix is in commit.ts"),
+ * return that file's repo-relative path when it exists under workdir.
+ * WHY: Fixer may correctly refuse to edit the commented file when the fix belongs elsewhere; persisting
+ * the path and allowing it on retry (wrongFileAllowedPathsByCommentId) lets the next attempt succeed.
+ */
+export function parseOtherFileFromResultDetail(
+  detail: string,
+  currentPath: string,
+  workdir: string
+): string | null {
+  const resolvedWorkdir = resolve(workdir);
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  OTHER_FILE_PATTERN.lastIndex = 0;
+  while ((m = OTHER_FILE_PATTERN.exec(detail)) !== null) {
+    const raw = m[1];
+    const normalized = raw.replace(/^\.\//, '');
+    if (normalized === currentPath || seen.has(normalized)) continue;
+    seen.add(normalized);
+    const abs = resolve(workdir, normalized);
+    if (!abs.startsWith(resolvedWorkdir + sep) && abs !== resolvedWorkdir) continue;
+    try {
+      if (fs.statSync(abs).isFile()) return normalized;
+    } catch {
+      // not found or not a file
+    }
+  }
+  return null;
 }
 
 /**

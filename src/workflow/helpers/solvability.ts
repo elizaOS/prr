@@ -12,7 +12,7 @@ import type { StateContext } from '../../state/state-context.js';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
 import * as Performance from '../../state/state-performance.js';
 import * as Dismissed from '../../state/state-dismissed.js';
-import { MAX_DISTINCT_FAILED_ATTEMPTS, CHRONIC_FAILURE_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD } from '../../constants.js';
+import { MAX_DISTINCT_FAILED_ATTEMPTS, CHRONIC_FAILURE_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD } from '../../constants.js';
 import { isLockFile, getLockFileInfo } from '../../git/git-lock-files.js';
 import { hashFileContentSync } from '../../utils/file-hash.js';
 
@@ -97,6 +97,18 @@ export function assessSolvability(
       solvable: false,
       dismissCategory: 'exhausted',
       reason: `Verifier rejected fix/claim ${rejectionCount} time(s) — dismissing to avoid repeated retries`,
+    };
+  }
+
+  // Check 0f: "Tool modified wrong files" N+ times — fix likely requires a different file than comment path.
+  // WHY: When the fix belongs in another file (e.g. duplicate interface in commit.ts, comment on git-push.ts),
+  // the fixer keeps trying the commented file and burns all models; exhausting defers to human.
+  const wrongFileCount = stateContext.state?.wrongFileLessonCountByCommentId?.[comment.id] ?? 0;
+  if (wrongFileCount >= WRONG_FILE_EXHAUST_THRESHOLD) {
+    return {
+      solvable: false,
+      dismissCategory: 'exhausted',
+      reason: `Fixer modified wrong files ${wrongFileCount} time(s) — issue may require changes in another file; dismissing for human follow-up`,
     };
   }
 

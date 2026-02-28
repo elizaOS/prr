@@ -686,6 +686,12 @@ Working directory: ${workdir}`;
    * so we only see issue references, not injected file content.
    */
   private getEscalatedFiles(workdir: string, prompt: string, injectedPaths: string[] = []): string[] {
+    // WHY skip for conflict prompts: buildConflictResolutionPromptWithContent already embeds file content
+    // (or chunked sections). Escalating to full-file rewrite would duplicate content and cause huge prompts
+    // and 180s timeouts (audit: CHANGELOG.md conflict round 1 wasted ~10 min on 3 timeouts then fell back to deterministic merge).
+    if (prompt.startsWith('MERGE CONFLICT RESOLUTION')) {
+      return [];
+    }
     const filePathPattern = /(?:File|FILE|Issue \d+):\s*([^\s:]+\.[a-zA-Z]+)/g;
     const pathsInPrompt = new Set<string>();
     let match;

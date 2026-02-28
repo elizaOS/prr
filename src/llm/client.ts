@@ -936,6 +936,8 @@ ${codeSnippet}
       '- Be STRICT: partial fixes, workarounds, or tangentially related changes do NOT count as fixed',
       '- If the comment asks for X and the code does Y, that is NOT fixed unless Y fully addresses X',
       '- When in doubt, say YES (issue still exists) - false negatives are worse than false positives',
+      // WHY: Without this, judge sometimes said YES when code already addressed the comment, triggering unnecessary fixer attempts; NO + citation reduces ALREADY_FIXED cycles.
+      '- If the Current Code already implements what the review asks for, respond NO and cite the specific code that resolves it (reduces ALREADY_FIXED fix attempts).',
       '',
       'CRITICAL - Your explanations will be recorded for feedback between the issue generator and judge:',
       '- For NO (not present), you MUST cite the SPECIFIC code that resolves the issue',
@@ -1152,7 +1154,7 @@ ${codeSnippet}
         }
         
         parts.push('End your response with this line:');
-        parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | brief reasoning');
+        parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | explain why these models in this order');
         parts.push('');
         parts.push('Examples:');
         parts.push('MODEL_RECOMMENDATION: claude-sonnet-4-5, gpt-5.2 | Complex security issues, skip mini models');
@@ -1411,9 +1413,10 @@ ${codeSnippet}
       parts.push(a.length <= ATTEMPT_HISTORY_MAX ? a : a.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)');
       parts.push('');
     }
-    parts.push('End your response with: MODEL_RECOMMENDATION: model1, model2, model3 | brief reasoning');
+    // WHY "explain why these models in this order": Asking "brief reasoning" caused models to literally echo that phrase; this wording yields actionable explanation.
+    parts.push('End your response with: MODEL_RECOMMENDATION: model1, model2, model3 | explain why these models in this order');
 
-    const systemPrompt = 'You recommend which AI models should fix the issues below. Consider complexity, count, and previous attempts. Respond with exactly: MODEL_RECOMMENDATION: model1, model2 | brief reasoning';
+    const systemPrompt = 'You recommend which AI models should fix the issues below. Consider complexity, count, and previous attempts. Respond with exactly: MODEL_RECOMMENDATION: model1, model2 | explain why these models in this order';
     const promptText = parts.join('\n');
     const RECOMMENDATION_RETRY_DELAY_MS = 8_000;
     let response: { content: string };

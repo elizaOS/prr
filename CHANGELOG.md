@@ -53,6 +53,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - For files over 30k characters with conflict markers, `buildConflictResolutionPromptWithContent` (`src/git/git-conflict-prompts.ts`) now embeds only the conflict sections (each with 7 lines of context before/after) instead of the full file. Section headers show the actual embedded line range (from context start to context end). Instructions tell the LLM to use the plain file path in `<change path="...">` (e.g. `CHANGELOG.md`), not the section annotation.
 - **WHY**: Embedding the full file (e.g. CHANGELOG 600+ lines) doubles prompt size and causes 504s; the LLM only needs the conflicted regions to produce correct `<search>`/`<replace>` blocks. Accurate line numbers and path instruction ensure the LLM’s output matches the file and applies cleanly.
 
+### Fixed (2026-02) — Output.log audit: conflict escalation skip, wrong-file exhaust
+
+**Skip full-file rewrite escalation for conflict resolution prompts**
+- `getEscalatedFiles` in `src/runners/llm-api.ts` now returns no files when the prompt starts with `MERGE CONFLICT RESOLUTION`.
+- **WHY**: The conflict prompt builder already embeds file content (or chunked sections). Escalating to full-file rewrite duplicated content and caused ~10 min of 180s timeouts on CHANGELOG.md in round 1 before falling back to deterministic merge; skipping escalation avoids that waste.
+
+**Auto-exhaust after repeated "wrong file" lessons**
+- New state field `wrongFileLessonCountByCommentId` and constant `WRONG_FILE_EXHAUST_THRESHOLD = 2`. When the fixer modifies the wrong files (e.g. fix belongs in `commit.ts` but comment is on `git-push.ts`), we add a lesson and increment the count; when the count reaches 2, `assessSolvability` dismisses the issue as exhausted.
+- **WHY**: Cross-file fixes burn through all models with no progress; exhausting after 2 wrong-file lessons defers to human and saves ~5 min of LLM calls (audit: git-push.ts:42 took 14 iterations across 4 models).
+
+### Fixed (2026-02) — Prompts.log audit follow-up: relax file constraint, dismissal skip, judge rule, model recommendation
+
+**Relax file constraint when fixer says fix is in another file**
+- New state field `wrongFileAllowedPathsByCommentId`. When the fixer returns CANNOT_FIX or WRONG_LOCATION and the result detail mentions another file path (e.g. "fix is in commit.ts"), we parse and persist that path. On the next fix attempt we merge it into the issue's `allowedPaths` so the fixer is permitted to edit the correct file. Shared `parseOtherFileFromResultDetail(detail, currentPath, workdir)` in `src/workflow/utils.ts`; used in no-changes verification (persist on no-changes) and in `execute-fix-iteration.ts` (merge into issues before building the prompt). Caller passes optional `workdir` into `handleNoChangesWithVerification` so persistence runs when available.
+- **WHY**: Prompts.log audit showed 7 identical ~33k-char prompts for one issue (comment on git-push.ts, fix in commit.ts). The fixer correctly refused to edit the wrong file but we kept retrying the same file; persisting the other file and allowing it on retry gives the next attempt a chance to succeed and avoids burning all models.
+
+**Skip dismissal LLM for all already-fixed issues**
+- In `addDismissalComments` (`src/workflow/dismissal-comments.ts`), we no longer call the LLM to generate a "Note:" comment for issues with category `already-fixed`. We skip the call entirely and do not add an inline comment (code/diff is self-documenting).
+- **WHY**: Audit showed 62% of dismissal LLM responses were EXISTING (issue already reflected in code). For already-fixed, the LLM would only echo that; skipping saves tokens and latency with no loss of information.
+
+**Judge rule: NO when Current Code already implements the suggestion**
+- Batch verification system prompt in `src/llm/client.ts` now includes: "If the Current Code already implements what the review asks for, respond NO and cite the specific code that resolves it (reduces ALREADY_FIXED fix attempts)."
+- **WHY**: Without this, the judge sometimes said YES (issue still exists) when the code already addressed the comment, triggering unnecessary fixer attempts. Explicitly instructing NO with citation reduces ALREADY_FIXED cycles and improves verification accuracy.
+
+**Model recommendation prompt: avoid echoing "brief reasoning"**
+- User and system prompts for the model recommendation call now ask for "explain why these models in this order" instead of "brief reasoning".
+- **WHY**: Models tended to literally echo "brief reasoning" in the response; asking for an explanation in this order yields actionable text and avoids placeholder output.
+
 ---
 
 ### Added (2026-02) — Analysis cache, line remap, prompt caps, model recommendation, graduation

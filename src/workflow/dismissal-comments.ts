@@ -296,11 +296,9 @@ export async function addDismissalComments(
       return false;
     }
 
-    // Skip already-fixed when the reason describes a code change; the LLM would return EXISTING.
-    // WHY: Audit showed 7/11 dismissal calls returned EXISTING because the code itself addressed
-    // the concern (e.g. "Line 190 throws if agentId undefined"). Skipping saves tokens and latency.
-    if (issue.category === 'already-fixed' && isReasonCodeChange(issue.reason)) {
-      debug('Skipping dismissal comment (already-fixed, code is self-documenting)', {
+    // WHY skip: For already-fixed, the LLM would only respond EXISTING; audit showed 62% of dismissal LLM responses were EXISTING. Skipping saves tokens; code/diff is self-documenting.
+    if (issue.category === 'already-fixed') {
+      debug('Skipping dismissal comment (already-fixed — no LLM call; code/diff is self-documenting)', {
         filePath: issue.filePath,
         line: issue.line,
         reasonPreview: issue.reason.substring(0, 60),

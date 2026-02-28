@@ -186,6 +186,15 @@ export interface ResolverState {
   issueAttempts?: IssueAttempts;         // commentId -> attempts
   /** Per-issue count of verifier rejections; dismiss after VERIFIER_REJECTION_DISMISS_THRESHOLD. WHY: avoid fixer/verifier stalemate token waste. */
   verifierRejectionCount?: Record<string, number>;
+  /** Per-comment count of "tool modified wrong files" lessons; dismiss after WRONG_FILE_EXHAUST_THRESHOLD. WHY: cross-file fixes (e.g. fix in commit.ts but comment on git-push.ts) burn all models. */
+  wrongFileLessonCountByCommentId?: Record<string, number>;
+  /**
+   * Per-comment additional paths the fixer said the fix belongs in (from CANNOT_FIX/WRONG_LOCATION).
+   * Merged into allowedPaths on next attempt so we relax "only modify this file" and let the fixer edit the correct file.
+   * WHY: Prompts.log audit showed 7 identical 33k-char prompts for git-push.ts:42 (fix in commit.ts); persisting
+   * the other file and allowing it on retry avoids burning models and can resolve the issue.
+   */
+  wrongFileAllowedPathsByCommentId?: Record<string, string[]>;
   // Bail-out tracking - document when/why automation stopped
   bailOutRecord?: BailOutRecord;         // Last bail-out event
   noProgressCycles?: number;             // Cycles completed with zero progress (persisted for resume)

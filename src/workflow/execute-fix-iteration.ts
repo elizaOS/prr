@@ -110,6 +110,17 @@ export async function executeFixIteration(
   // WHY: consecutiveFailures drives batch size reduction (50→25→12→6→5) so the model
   // gets fewer issues per prompt when it's struggling. Resets to MAX on any success.
   debugStep('GENERATING FIX PROMPT');
+  // WHY merge allowed paths: When fixer returned CANNOT_FIX/WRONG_LOCATION and mentioned another file, we persisted it in wrongFileAllowedPathsByCommentId; merging here lets the fixer edit the correct file on this attempt.
+  const allowedPathsByComment = stateContext.state?.wrongFileAllowedPathsByCommentId;
+  const issuesForPrompt = allowedPathsByComment
+    ? unresolvedIssues.map((issue) => {
+        const extra = allowedPathsByComment[issue.comment.id];
+        if (!extra?.length) return issue;
+        const base = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+        const merged = [...new Set([...base, ...extra])];
+        return { ...issue, allowedPaths: merged };
+      })
+    : unresolvedIssues;
   // Run git diff ourselves so the fixer sees what this PR changes; no need for tools to run it.
   let diffStat: string | undefined;
   try {
@@ -135,7 +146,7 @@ export async function executeFixIteration(
       ? { provider: runner.provider, model: currentModelForCap }
       : undefined;
   const promptDetails = ResolverProc.buildAndDisplayFixPrompt(
-    unresolvedIssues,
+    issuesForPrompt,
     lessonsContext,
     options.verbose,
     effectiveConsecutive,
@@ -341,7 +352,7 @@ export async function executeFixIteration(
   // Check for changes
   if (!(await hasChanges(git))) {
     // Handle no-changes scenario with verification
-    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(unresolvedIssues, runner.name, currentModel, result.output || '', llm, stateContext, lessonsContext, verifiedThisSession, parseNoChangesExplanation);
+    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(unresolvedIssues, runner.name, currentModel, result.output || '', llm, stateContext, lessonsContext, verifiedThisSession, parseNoChangesExplanation, workdir);
     
     let updatedConsecutiveFailures = consecutiveFailures;
     let updatedModelFailuresInCycle = modelFailuresInCycle;
