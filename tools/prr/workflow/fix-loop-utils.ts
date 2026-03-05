@@ -21,6 +21,7 @@ import { checkRemoteAhead } from '../../../shared/git/git-conflicts.js';
 import { pullLatest } from '../../../shared/git/git-pull.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
+import { assessSolvability } from './helpers/solvability.js';
 
 // Note: All imports must be at module top level - do not use dynamic imports inside functions
 
@@ -43,6 +44,9 @@ import { dedupeNewCommentsByQueue } from './utils.js';
  * @param unresolvedIssues - Array of unresolved issues (mutated)
  * @param checkForNewBotReviews - Function to check for new reviews
  * @param getCodeSnippet - Function to fetch code snippets
+ * @param headSha - Optional PR head SHA for the check
+ * @param stateContext - State context (for solvability and dismissals)
+ * @param workdir - Repo workdir (for solvability path checks). If missing, solvability is skipped for new comments.
  */
 export async function processNewBotReviews(
   github: GitHubAPI,
@@ -54,7 +58,9 @@ export async function processNewBotReviews(
   unresolvedIssues: UnresolvedIssue[],
   checkForNewBotReviews: (owner: string, repo: string, prNumber: number, existingIds: Set<string>, headSha?: string) => Promise<{ newComments: ReviewComment[]; message: string } | null>,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
-  headSha?: string
+  headSha?: string,
+  stateContext?: StateContext,
+  workdir?: string
 ): Promise<void> {
   // Check for new bot reviews if expected time has passed. Skip fetch when head unchanged and recently fetched (backoff).
   const newReviewResult = await checkForNewBotReviews(owner, repo, prNumber, existingCommentIds, headSha);
@@ -69,18 +75,53 @@ export async function processNewBotReviews(
       console.log(chalk.gray('   (All new comments were duplicates of current queue — none added)\n'));
       return;
     }
-    // Add new comments to tracking — fetch all snippets concurrently
-    for (const comment of newComments) {
+    // P1 (prompts.log audit): Run solvability on new comments before adding to queue.
+    // WHY: (PR comment), lockfiles, and other unsolvable items were added mid-loop without assessSolvability
+    // and burned 10+ fix iterations each. Apply the same filter as findUnresolvedIssues.
+    const solvableComments: ReviewComment[] = [];
+    if (workdir && stateContext) {
+      for (const comment of newComments) {
+        // WHY: Track every new comment ID (including ones we will dismiss) so the next checkForNewBotReviews does not return them again as "new".
+        existingCommentIds.add(comment.id);
+        const solvability = assessSolvability(workdir, comment, stateContext);
+        if (!solvability.solvable) {
+          Dismissed.dismissIssue(
+            stateContext,
+            comment.id,
+            solvability.reason ?? 'Not solvable',
+            solvability.dismissCategory ?? 'not-an-issue',
+            comment.path,
+            comment.line,
+            comment.body,
+            solvability.remediationHint
+          );
+          debug('P1: dismissed unsolvable new comment (solvability)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
+        } else {
+          solvableComments.push(comment);
+        }
+      }
+      if (solvableComments.length < newComments.length) {
+        console.log(chalk.gray(`   ${formatNumber(newComments.length - solvableComments.length)} new comment(s) dismissed (not solvable — e.g. (PR comment), lockfile)\n`));
+      }
+      // WHY: All new comments were unsolvable; nothing to add to the queue. Return without fetching snippets or mutating comments/unresolvedIssues.
+      if (solvableComments.length === 0) {
+        return;
+      }
+    } else {
+      solvableComments.push(...newComments);
+    }
+    // Add solvable new comments to tracking — fetch all snippets concurrently
+    for (const comment of solvableComments) {
       existingCommentIds.add(comment.id);
       comments.push(comment);
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
     }
     const newSnippets = await Promise.all(
-      newComments.map((c) => getCodeSnippet(c.path, c.line, c.body))
+      solvableComments.map((c) => getCodeSnippet(c.path, c.line, c.body))
     );
-    for (let i = 0; i < newComments.length; i++) {
+    for (let i = 0; i < solvableComments.length; i++) {
       unresolvedIssues.push({
-        comment: newComments[i],
+        comment: solvableComments[i],
         codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment from bot review',
@@ -88,7 +129,7 @@ export async function processNewBotReviews(
       });
     }
     
-    console.log(chalk.cyan(`   Added ${formatNumber(newComments.length)} new issue(s) to workflow\n`));
+    console.log(chalk.cyan(`   Added ${formatNumber(solvableComments.length)} new issue(s) to workflow\n`));
   }
 }
 

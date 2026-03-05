@@ -1227,14 +1227,25 @@ ${codeSnippet}
             stale = true;
           }
 
-          // Override: STALE only because symbol "not visible in excerpt" — treat as YES to avoid false dismissal (skip if snippet was unavailable).
-          if (stale && !snippetUnavailable && (
+          // Override: STALE only because symbol/code "not visible" or "can't evaluate" — treat as YES (skip if snippet was unavailable).
+          // WHY: Judge instructions say "if you would say 'not visible in the provided excerpt' or 'not in excerpt', say YES not STALE".
+          // The verifier often used different phrasings ("can't be evaluated", "code doesn't show", "only shows the beginning"); without this override
+          // we falsely dismiss issues as STALE when the real reason is incomplete snippet (prompts.log audit: 48 such verdicts). "only shows" is
+          // tightened with a trailing indicator (not/beginning/start/first/lines N) to avoid flipping legitimate STALE (e.g. "file only shows re-export").
+          const staleButMissingCode = stale && !snippetUnavailable && (
             /not visible in the provided excerpt/i.test(explanation) ||
             /not (?:visible|found) in the provided .* excerpt/i.test(explanation) ||
             /not visible in provided .* excerpt/i.test(explanation) ||
             /are not visible in the provided/i.test(explanation) ||
-            /excerpt does not (?:include|show|contain)/i.test(explanation)
-          )) {
+            /excerpt does not (?:include|show|contain)/i.test(explanation) ||
+            /can'?t (?:be )?evaluat/i.test(explanation) ||
+            /cannot (?:assess|determine|verify)/i.test(explanation) ||
+            /(?:code|snippet|excerpt|current code) (?:doesn'?t|does not) show/i.test(explanation) ||
+            /\bonly shows\b.*\b(?:not |beginning|start|first|lines? \d)/i.test(explanation) ||
+            /\bincomplete\b.*\b(?:show|visible|implementation)\b/i.test(explanation) ||
+            /not (?:visible|shown|included) in the (?:current |provided )?(?:excerpt|code|snippet)/i.test(explanation)
+          );
+          if (staleButMissingCode) {
             debug('Batch override: STALE→YES (reason was missing from excerpt, not removed)', { resultId, explanationPreview: explanation.slice(0, 80) });
             exists = true;
             stale = false;

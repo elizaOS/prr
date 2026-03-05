@@ -29,6 +29,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import { formatNumber, debugStep, startTimer, endTimer, debug } from '../../../shared/logger.js';
+import { COULD_NOT_INJECT_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -247,7 +248,8 @@ export async function executePushIteration(
     // Pre-iteration checks
     const preChecks = await ResolverProc.executePreIterationChecks(
       fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, getRunner(), options,
-      checkForNewBotReviews, getCodeSnippet, getCurrentModel, config.githubToken
+      checkForNewBotReviews, getCodeSnippet, getCurrentModel, config.githubToken,
+      workdir
     );
     
     if (preChecks.shouldBreak) {
@@ -257,6 +259,29 @@ export async function executePushIteration(
     }
     if (preChecks.updatedHeadSha) {
       prInfoRef.current.headSha = preChecks.updatedHeadSha;
+    }
+
+    // Dismiss issues that hit couldNotInject threshold (file unresolved in repo + no-change cycles).
+    // WHY: The threshold is also checked in findUnresolvedIssues, but that only runs at the start of
+    // a push iteration. Inside the fix loop we keep retrying single-issue focus without re-running
+    // analysis, so we must apply the same dismissal here to stop burning tokens (output.log audit).
+    const couldNotInjectDismiss = unresolvedIssues.filter(
+      (i) => (stateContext.state?.couldNotInjectCountByCommentId?.[i.comment.id] ?? 0) >= COULD_NOT_INJECT_DISMISS_THRESHOLD
+    );
+    if (couldNotInjectDismiss.length > 0) {
+      const reason = 'Target file could not be resolved in the repository (repeated could-not-inject + no-change cycles)';
+      const dismissedIds = new Set(couldNotInjectDismiss.map((i) => i.comment.id));
+      for (const issue of couldNotInjectDismiss) {
+        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'file-unchanged', issue.comment.path, issue.comment.line, issue.comment.body, undefined);
+      }
+      unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
+      console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after ${COULD_NOT_INJECT_DISMISS_THRESHOLD}+ attempts)`));
+      debug('Dismissed issues at couldNotInject threshold (in fix loop)', { count: couldNotInjectDismiss.length, commentIds: [...dismissedIds] });
+      // WHY: If every remaining issue was couldNotInject, queue is now empty; treat as all fixed and exit instead of running fixer with no issues.
+      if (unresolvedIssues.length === 0) {
+        allFixed = true;
+        break;
+      }
     }
 
     // 3.1(a): Re-fetch file content for issues where verifier said still exists

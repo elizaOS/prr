@@ -198,9 +198,15 @@ export async function executeFixIteration(
     : workingUnresolved;
   // Exclude already-verified issues from the fix prompt (they stay in unresolvedIssues for re-verification if file changed).
   // WHY: Avoids sending them to the fixer and wasting tokens; verifyFixes still re-checks them when their file is in changedFiles.
-  const issuesForPrompt = mergedIssues.filter(
-    (i) => !Verification.isVerified(stateContext, i.comment.id)
-  );
+  // Exclude issues the fixer already said ALREADY_FIXED 2+ times (P3 prompts.log audit).
+  // WHY: Batch prompts were re-including these; the fixer would again return ALREADY_FIXED and we'd burn a 64k+ char prompt. Filter at 2 so we stop sending before dismissal at 3.
+  const alreadyFixedCount = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId;
+  const issuesForPrompt = mergedIssues.filter((i) => {
+    if (Verification.isVerified(stateContext, i.comment.id)) return false;
+    const n = alreadyFixedCount?.[i.comment.id] ?? 0;
+    if (n >= 2) return false;
+    return true;
+  });
   // Run git diff ourselves so the fixer sees what this PR changes; no need for tools to run it.
   let diffStat: string | undefined;
   try {

@@ -63,7 +63,9 @@ export async function executePreIterationChecks(
   ) => Promise<{ newComments: ReviewComment[]; message: string } | null>,
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>,
   getCurrentModel: () => string | undefined,
-  githubToken?: string
+  githubToken?: string,
+  // WHY: Required for P1 (prompts.log audit) — new comments are run through assessSolvability when workdir is set; without it, (PR comment) and other unsolvable items would enter the fix queue mid-loop.
+  workdir?: string
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -82,7 +84,9 @@ export async function executePreIterationChecks(
       unresolvedIssues,
       checkForNewBotReviews,
       getCodeSnippet,
-      prInfo.headSha
+      prInfo.headSha,
+      stateContext,
+      workdir
     );
   }
   

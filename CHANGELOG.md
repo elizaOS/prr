@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Output.log + prompts.log audit (Cycle 12): in-loop dismissal, new-comment solvability, ALREADY_FIXED filter, STALE→YES
+
+**couldNotInject in-loop dismissal**
+- At the start of each fix iteration in `push-iteration-loop.ts`, issues whose `couldNotInjectCountByCommentId` is at or above `COULD_NOT_INJECT_DISMISS_THRESHOLD` (3) are dismissed as `file-unchanged` and removed from the queue. If the queue becomes empty after this step, we set `allFixed` and break.
+- **WHY**: The threshold was only checked in `findUnresolvedIssues`, which runs at the start of a push iteration. Inside the fix loop we keep retrying single-issue focus without re-running analysis, so issues that hit the threshold mid-loop were never dismissed and were retried 10+ times (output.log audit: 4 comments reached count 11+). Applying the same dismissal at the start of each fix iteration stops the loop and saves ~40–50 wasted iterations per run.
+
+**New-comment solvability (P1)**
+- `processNewBotReviews` in `fix-loop-utils.ts` now accepts optional `stateContext` and `workdir`. When both are provided, each new comment is run through `assessSolvability` before being added to the queue; unsolvable comments (e.g. path `(PR comment)`, lockfiles, path traversal) are dismissed with `Dismissed.dismissIssue` and only solvable ones are added. All new comment IDs (including dismissed) are added to `existingCommentIds` so they are not re-fetched as "new" on the next check.
+- `executePreIterationChecks` accepts an optional `workdir` and passes it and `stateContext` to `processNewBotReviews`; `push-iteration-loop` passes `workdir` from the git context.
+- **WHY**: New bot comments arriving mid-fix-loop were added directly to `unresolvedIssues` without running solvability. The `(PR comment)` path and other unsolvable items therefore entered the fix queue and burned 10+ iterations each with RESULT: UNCLEAR (prompts.log audit). Applying the same solvability filter as at push-iteration start prevents this; tracking dismissed IDs in `existingCommentIds` avoids re-fetching them.
+
+**ALREADY_FIXED batch filter (P3)**
+- In `execute-fix-iteration.ts`, when building `issuesForPrompt`, we now also exclude any issue whose `consecutiveAlreadyFixedAnyByCommentId` is >= 2 (in addition to excluding already-verified issues).
+- **WHY**: Single-issue focus correctly returned ALREADY_FIXED for some issues; the next batch fix prompt re-included those same issues (e.g. server-wallets, topup/10, topup/100) because the prompt builder only filtered by `Verification.isVerified`. The fixer again returned ALREADY_FIXED, wasting a 64k+ char batch (prompts.log audit). Excluding issues that have already been reported ALREADY_FIXED 2× avoids re-sending them until they are dismissed at the 3× threshold.
+
+**STALE→YES override expansion (P2)**
+- In `tools/prr/llm/client.ts`, the batch override that flips STALE to YES when the explanation indicates "code/snippet not visible" now also matches: "can't be evaluated", "cannot assess/determine/verify", "(code|snippet|excerpt|current code) doesn't show", "only shows" when followed by "not/beginning/start/first/lines N", "incomplete" when followed by "show/visible/implementation", and "not visible/shown/included in (current|provided) (excerpt|code|snippet)". The "only shows" branch is tightened so it does not match legitimate STALE (e.g. "file only shows a re-export now").
+- **WHY**: Judge instructions say: if you would say "not visible in the provided excerpt" or "not in excerpt", say YES not STALE. The verifier often used different phrasings ("can't be evaluated from the current code snippets", "code doesn't show the SIWE logic", "only shows the beginning"). Forty-eight such STALE verdicts in prompts.log were false dismissals; expanding the override catches these while avoiding false positives on genuine STALE.
+
 ### Added (2026-03) — Prompts.log audit: ALREADY_FIXED counter, batch injection filter, single-issue full file, verifier type/signature context
 
 **ALREADY_FIXED multi-model dismissal (P1)**

@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-04 · **Recorded cycles:** 11 · **Historical (legacy):** 4
+**Last updated:** 2026-03-05 · **Recorded cycles:** 12 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -25,6 +25,8 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **Noise in queue** | 5, 7, 9, 10 | Approval/summary comments, "file no longer exists", or generic dismissal comments get fix or LLM comment attempts. Guard: solvability approval/summary filter; skip dismissal when reason = file missing; post-filter generic COMMENT; file-exists before dismissal prompt. |
 | **Multi-file / call sites** | 7, 10 | Fixer updates one file but not callers (e.g. async signature) → verifier or next run finds broken call site. Guard: pathExists for test path; multi-file nudge when body mentions callers; TARGET FILE(S) includes caller when relevant. |
 | **Model strength** | 5, 8, 9, 10 | Weak default model (e.g. qwen-3-14b) approves bad fixes or rejects good ones; model rec ignores success rate. Guard: verifier model floor for API/signature; model rec prompt "weight overall success rate heavily"; escalation for repeated rejections. |
+| **Mid-loop bypass** | 12 | Thresholds (couldNotInject) or filters (solvability) only run at push-iteration start; new comments or in-loop state bypass them and burn iterations. Guard: apply same dismissal/threshold checks at start of each fix iteration; run assessSolvability on new comments before adding to queue. |
+| **STALE vs YES (snippet)** | 12 | Verifier returns STALE when explanation is "can't evaluate", "doesn't show", "only shows" (incomplete snippet) — judge instructions say use YES. Guard: STALE→YES override for these phrasings; avoid false positives on legitimate STALE ("only shows re-export"). |
 
 ---
 
@@ -38,10 +40,10 @@ Improvements should reinforce these, not reverse.
 | **Snippet visibility** | Quality gate (too-short note), wider fallback for analysis batch, anchor-aware expansion. |
 | **Queue / log clarity** | One clear "still in queue" line, queue subtitle (to-fix vs already-verified), no contradictory "No issues" vs "N in queue". |
 | **Allow-path / test path** | Expand for test-coverage, plausible-path checks, test path at issue build; migration journal in allowedPaths when review mentions it; consolidate-duplicate "other file" when refactor issue. Do *not* add a file when comment only *references* it — use isReferencePathInComment before persisting otherFile from CANNOT_FIX/WRONG_LOCATION. |
-| **Loop prevention** | Counters and thresholds (WRONG_LOCATION/UNCLEAR, wrong-file, verifier rejection, CANNOT_FIX missing content); exhaust and dismiss instead of burning models. Auto-verify when bug pattern absent after N verifier rejections. |
+| **Loop prevention** | Counters and thresholds (WRONG_LOCATION/UNCLEAR, wrong-file, verifier rejection, CANNOT_FIX missing content); exhaust and dismiss instead of burning models. Auto-verify when bug pattern absent after N verifier rejections. Apply threshold checks (couldNotInject, ALREADY_FIXED) inside the fix loop, not only at analysis; run solvability on new comments before adding to queue. |
 | **File injection** | Basename fallback for short/fragment paths; placeholder detection before injection; hallucination guard for full-file rewrite output (< 15% of original = reject). |
 | **Approval/noise filter** | Summary/meta-review tables, approval comments ("Approve", "LGTM", "All issues resolved"), PR metadata requests — all dismissed in solvability. |
-| **Judge / verifier** | Judge NO must cite specific code or line numbers; format colons. Verifier: LESSON only for NO; for duplicate/shared-util steer to canonical lib/utils/..., not reference file; "Code before fix" empty/artifact → base verdict on Current Code and diff; multi-fix same file → judge by review comment. |
+| **Judge / verifier** | Judge NO must cite specific code or line numbers; format colons. Verifier: LESSON only for NO; for duplicate/shared-util steer to canonical lib/utils/..., not reference file; "Code before fix" empty/artifact → base verdict on Current Code and diff; multi-fix same file → judge by review comment. STALE→YES override when explanation indicates code/snippet not visible or "can't evaluate" (per judge instructions: if you would say "not in excerpt", say YES not STALE). |
 | **Output / UX** | Pluralize (1 file / N files); timing aggregated by phase; model recommendation only when real reasoning; AAR title from first meaningful line. Exhausted issues appear in AAR and handoff until resolved (fix, conversation, or other). |
 | **Conflict resolution** | Skip batch when prompt > 40 KB; hasConflictMarkers(); 504/timeout → chunked fallback; heartbeat every 30 s. |
 | **Dedup across authors** | Same file + same primary symbol + same caller file (e.g. runner.py) → heuristic merge even when authors differ. LLM dedup still runs for 3+ issues per file; GROUP lines take priority over NONE. |
@@ -73,6 +75,12 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] When snippet is "(file not found or unreadable)", batch analysis tries getFileContentFromRepo (git show HEAD:path) before sending to verifier.
 - [ ] No-changes lessons: single-issue uses "Fix for path:line - ..."; batch uses "(N issues in batch)" in global lesson.
 - [ ] Multi-file fix: when allowedPaths.length > 1 and body mentions callers (calls/caller/await/file:line), prompt includes nudge to update all listed files and call sites.
+
+**Loop / mid-loop guards (Cycle 12)**
+- [ ] couldNotInject: at start of each fix iteration, issues with couldNotInjectCountByCommentId >= threshold are dismissed and removed from queue; empty queue after dismiss → allFixed and break.
+- [ ] New comments: processNewBotReviews runs assessSolvability when workdir + stateContext provided; unsolvable (e.g. (PR comment), lockfile) dismissed and not added to unresolvedIssues; dismissed comment IDs added to existingCommentIds.
+- [ ] issuesForPrompt excludes Verification.isVerified and consecutiveAlreadyFixedAnyByCommentId >= 2.
+- [ ] STALE→YES override: phrasings for "can't evaluate", "doesn't show", "only shows" (with not/beginning/start/first/lines), "incomplete"; no false positive on legitimate STALE ("only shows re-export").
 
 **File injection / circuit breakers**
 - [ ] Placeholder content ("COMPLETE FILE CONTENTS", "[Previous content remains identical]") never injected into fix prompts.
@@ -373,6 +381,31 @@ Copy the block below for each new cycle.
 - (L4) analysis.ts: When `analyzeTime === 0` (reused cache), print only "Issues dismissed: N total (cached)"; skip per-category breakdown and dismissal reasons.
 
 **Flip-flop check:** N — Additive batching and filters; no behavior reverted.
+
+---
+
+### Cycle 12 — 2026-03-05 (output.log + prompts.log audit: couldNotInject loop, new-comment solvability, ALREADY_FIXED re-queue, STALE overuse)
+
+**Artifacts audited:** output.log (elizaOS/eliza-cloud-v2#373, ~2h session, 74 fix iterations, 22450 lines), prompts.log (same run, 260972 lines, 1386 entries), and code: push-iteration-loop, fix-loop-utils, fix-iteration-pre-checks, execute-fix-iteration, llm/client.ts.
+
+**Findings:**
+- **High:** (none)
+- **Medium (M1):** couldNotInject threshold (3) only checked in findUnresolvedIssues (start of push iteration). Inside the fix loop, single-issue focus kept retrying the same 4 comments; count reached 11+ and they were never dismissed until exit — ~40–50 wasted iterations.
+- **Medium (M2):** New bot comments added mid-loop (processNewBotReviews) were pushed into unresolvedIssues without assessSolvability. (PR comment), lockfiles, and other unsolvable paths entered the fix queue and burned 10+ iterations each with RESULT: UNCLEAR.
+- **Medium (M3):** Batch fix prompt re-included issues the fixer had already said ALREADY_FIXED 2× in single-issue mode (e.g. server-wallets, topup/10, topup/100). Same issues sent again in 64k+ batch; fixer again returned ALREADY_FIXED — token waste.
+- **Medium (M4):** Verifier returned STALE when explanation was "can't be evaluated", "code doesn't show", "only shows the beginning", "incomplete" — judge instructions say use YES when code/snippet not visible. 48 such STALE verdicts in prompts.log; override regex missed these phrasings.
+- **Low (L1):** Duplicate `StateContext` import in fix-loop-utils (P1 change added redundant import). Dismissed new comments not added to existingCommentIds → would be re-fetched as "new" next time. "only shows" STALE→YES regex could false-positive on legitimate STALE ("file only shows re-export now").
+
+**Improvements implemented:**
+- **couldNotInject in-loop:** At start of each fix iteration, filter unresolvedIssues by couldNotInjectCountByCommentId >= threshold; dismiss and remove from queue; log count; if queue empty, set allFixed and break. Use Set for dismissed IDs. (push-iteration-loop.ts)
+- **P1 (new-comment solvability):** processNewBotReviews accepts optional workdir + stateContext. When both present, run assessSolvability on each new comment before adding; dismiss unsolvable with Dismissed.dismissIssue; only add solvable comments to comments + unresolvedIssues. Add workdir to executePreIterationChecks signature and pass from push-iteration-loop. Track all new comment IDs in existingCommentIds before solvability so dismissed comments are not re-fetched. (fix-loop-utils.ts, fix-iteration-pre-checks.ts)
+- **P2 (STALE→YES):** Expand override in llm/client.ts: can't evaluate, cannot assess/determine/verify, (code|snippet|excerpt|current code) doesn't show, only shows + (not|beginning|start|first|lines N), incomplete + (show|visible|implementation), not visible/shown/included in excerpt/code/snippet. Tighten "only shows" so it does not match legitimate STALE ("only shows re-export").
+- **P3 (ALREADY_FIXED filter):** In execute-fix-iteration, exclude from issuesForPrompt any issue with consecutiveAlreadyFixedAnyByCommentId >= 2 (in addition to already-verified).
+- **Audit follow-ups:** Removed duplicate StateContext import (fix-loop-utils). existingCommentIds.add(comment.id) before solvability loop so dismissed comments are tracked.
+
+**Flip-flop check:** N — Additive in-loop dismissal, optional params for processNewBotReviews (backward compatible), and filter/override expansions; no behavior reverted.
+
+**Notes:** Patterns assessed: (1) Mid-loop bypass — thresholds and solvability must apply inside the fix loop and to new comments, not only at push-iteration start. (2) STALE overuse — verifier phrasing often "can't evaluate / doesn't show" rather than literal "not visible in excerpt"; override regex expanded and tightened to avoid false positives. (3) ALREADY_FIXED re-queue — batch prompt builder had no visibility into fixer's prior ALREADY_FIXED count; filter at prompt build avoids re-sending. P8 (no-op search/replace) already implemented (noMeaningfulChanges skips verification).
 
 ---
 
