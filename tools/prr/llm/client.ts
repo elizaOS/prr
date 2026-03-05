@@ -1931,8 +1931,15 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const lines = diff.split('\n');
     const removed: string[] = [];
     for (const line of lines) {
-      // Skip only diff file header markers (--- plus space/tab/EOF), not removed content that starts with '---'
-      if (line.startsWith('-') && !/^---(\s|\t|$)/.test(line)) {
+      if (line.startsWith('-')) {
+        // Skip only real unified-diff header lines like `--- a/...`, `--- b/...`, or `--- /dev/null`.
+        if (
+          line.startsWith('--- a/') ||
+          line.startsWith('--- b/') ||
+          line.startsWith('--- /dev/null')
+        ) {
+          continue;
+        }
         removed.push(line.slice(1)); // drop leading '-'
       }
     }

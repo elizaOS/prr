@@ -377,6 +377,7 @@ export async function verifyFixes(
           
           try {
             const diff = await getIssueDiff(issue);
+            // Sequential verifyFix has no model override; escalation to stronger model is done in batch path only.
             const verification = await llm.verifyFix(
               issue.comment.body,
               primaryPathSeq,
@@ -510,15 +511,23 @@ export async function verifyFixes(
         spinner.text = `Verifying ${formatNumber(fixesToVerify.length)} fixes in batch...`;
         const state = getState(stateContext);
         // Split by escalation need so we only use the stronger model for issues that had previous rejections.
-        const needStrongerIds = new Set(
+        // Create an ID set for O(1) lookup instead of O(n²) nested loops
+        const needStrongerIdSet = new Set(
           getCurrentModel
             ? changedIssues
                 .filter((_, i) => (state.verifierRejectionCount?.[fixesToVerify[i].id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD)
                 .map((i) => i.comment.id)
             : []
         );
-        const fixesDefault = fixesToVerify.filter((f) => !needStrongerIds.has(f.id));
-        const fixesStronger = fixesToVerify.filter((f) => needStrongerIds.has(f.id));
+        const fixesDefault: typeof fixesToVerify = [];
+        const fixesStronger: typeof fixesToVerify = [];
+        for (const fix of fixesToVerify) {
+          if (needStrongerIdSet.has(fix.id)) {
+            fixesStronger.push(fix);
+          } else {
+            fixesDefault.push(fix);
+          }
+        }
         const runner = getRunner?.();
         const preferredVerifier = typeof llm.getVerifierModel === 'function' ? llm.getVerifierModel() : undefined;
         const currentModel = getCurrentModel ? getCurrentModel() : undefined;
