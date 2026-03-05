@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Prompts.log audit: ALREADY_FIXED counter, batch injection filter, single-issue full file, verifier type/signature context
+
+**ALREADY_FIXED multi-model dismissal (P1)**
+- New `consecutiveAlreadyFixedAnyByCommentId` state counter tracks how many consecutive times any model returns ALREADY_FIXED for an issue, regardless of explanation text. When the count reaches `ALREADY_FIXED_ANY_THRESHOLD` (3), the issue is dismissed as `already-fixed`.
+- Counter is incremented in `no-changes-verification.ts` on every ALREADY_FIXED result. Reset in `execute-fix-iteration.ts` when the fixer actually makes changes (streak broken) and in `iteration-cleanup.ts` when an issue is verified fixed.
+- `assessSolvability` in `solvability.ts` also checks the counter so issues are dismissed before any LLM call on subsequent iterations.
+- **WHY**: Prompts.log audit showed issues where 3+ different models all returned ALREADY_FIXED with varying explanations ("guard clause exists", "null check present", "already handled"). The existing same-explanation counter (`ALREADY_FIXED_EXHAUST_THRESHOLD = 2`) only fired when the explanation text matched. A separate any-explanation counter catches the broader pattern: when multiple models independently agree the issue is already fixed, it almost certainly is. Dismissing saves 3-5 wasted fix iterations per issue.
+
+**Batch file injection filter (P3)**
+- New `allowedPathsForInjection` option on `RunnerOptions`. When set, `injectFileContents` in `llm-api.ts` only injects file contents for paths in the allowed set, skipping files that have no remaining unfixed issues.
+- `execute-fix-iteration.ts` passes `allowedPathsForBatch` (the set of file paths with unresolved issues) as `allowedPathsForInjection` to the runner.
+- **WHY**: In later fix rounds (push iteration 2+), many files referenced in the prompt are already fixed. Injecting their full contents wastes context budget on files the fixer doesn't need to touch. Filtering injection to only files with unfixed issues keeps the prompt focused and leaves more room for files that actually need changes. Observed: 40-60% reduction in injected content on rounds 2+ for PRs with many files.
+
+**Single-issue full file context (P5)**
+- New `getFullFileContentForSingleIssue(workdir, path, maxLines = 600)` in `workflow/utils.ts` reads a file's content up to 600 lines.
+- `resolver.ts` `buildSingleIssuePrompt` now uses this as a default `codeSnippetOverride` when no wider snippet was explicitly requested. The fixer sees the full file (or first 600 lines) instead of a short 20-30 line snippet.
+- **WHY**: Prompts.log audit showed single-issue fix prompts sending only a 15-30 line snippet around the issue line. Models frequently responded INCOMPLETE_FILE or UNCLEAR because they couldn't see imports, type definitions, or the broader function context. Sending the full file (capped at 600 lines to avoid prompt bloat) gives the model enough context to make correct fixes. For files under 600 lines this is the complete file; for larger files it's the first 600 lines which typically covers the issue.
+
+**Verifier expanded context for type/signature issues (P7)**
+- New `commentMentionsApiOrSignature(fix)` helper in `fix-verification.ts` detects when a review comment mentions async/await, signatures, TypeErrors, callers, or method parameter changes.
+- `getCurrentCodeAtLine` accepts optional `expandForTypeSignature` flag. When true, returns up to `MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE` (500) lines instead of the default 200.
+- Both sequential and batch verification paths pass the flag based on `commentMentionsApiOrSignature`.
+- **WHY**: For type- or signature-related issues, the verifier needs to see the full function body and potentially call sites to determine whether the fix is correct. With the default 200-line limit, the verifier would say "role never assigned" or "method not found" because the relevant code was outside the window. 500 lines covers most function bodies and their immediate call sites. This complements the stronger-model verifier (from the earlier audit) — expanded context + stronger model together reduce false rejections for API/signature fixes.
+
+### Added (2026-03) — Comment parsing: parse all bot comments, noise filter, path-less gap fix
+
+**Bot noise filter**
+- New `isBotNoiseComment(body)` in `github/api.ts` filters out junk comments before parsing: comments shorter than 60 chars, "IGNORE THIS" prefixed, or bare bot trigger commands (e.g. `@coderabbitai review`).
+- **WHY**: When parsing ALL bot comments (not just the latest), noise comments that are test messages, trigger commands, or placeholder text would pollute the issue list. The noise filter runs before `parseMarkdownReviewIssues` so these never enter the pipeline. The 60-char threshold is conservative — real review comments are always longer; trigger commands and test messages are always shorter.
+
+**Parse all bot comments (not just latest)**
+- `getReviewBotIssueComments` now iterates ALL comments from known review bots (`REVIEW_BOTS_PARSE`), not just the latest one per bot. The `.sort()` by date was removed; comments are processed in API order.
+- Each comment gets a unique ID: `ic-${comment.id}-${i}` for structured issues, `ic-${comment.id}` for unstructured fallback.
+- Non-structured comments fall back to `inferPathLineFromBody` to extract a file path.
+- The `otherComments` section (non-bot PR conversation comments) remains unchanged.
+- **WHY**: Previously only the latest comment per bot was parsed, under the assumption that bots re-review on each push and the latest comment is the most current. This missed issues from earlier comments that were never re-posted — e.g. a bot's initial review might flag 15 issues, but a later re-review only mentions 3 new ones. The old code would see only the 3, missing the original 15. Parsing all comments ensures zero missed issues. The noise filter prevents junk from inflating the issue count.
+
+**Path-less items included with actionable filter**
+- `parseMarkdownReviewIssues` no longer silently drops items that have no recognizable file path. If an item's body is >= 100 chars and contains actionable language (fix, bug, error, missing, should, must, add, remove, change, update, incorrect, broken, crash, fail, import, undefined, null), it's included with `path: '(PR comment)'`.
+- Downstream, `assessSolvability` dismisses `(PR comment)` issues at zero LLM cost, so including them is safe.
+- **WHY**: Some bot review comments describe real issues without citing a specific file (e.g. "The error handling across the authentication flow is inconsistent — some endpoints return 401, others return 403 for the same condition"). These were silently dropped, meaning PRR never saw them. Including them with a synthetic path lets the solvability check decide whether they're actionable. The 100-char minimum filters out section intros ("Here are the issues:") and the actionable regex filters out pure prose summaries. The `continue` after the path-less branch prevents fall-through to the path-having branch.
+
 ### Added (2026-03) — Prompts.log audit: dedup same-caller, verifier strength, dismissal skips, multi-file nudge
 
 **Skip dismissal-comment when file no longer exists**

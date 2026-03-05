@@ -34,6 +34,7 @@ import * as GitOps from './git/git-operations-index.js';
 import * as ResolverProc from './resolver-proc.js';
 import * as Performance from './state/state-performance.js';
 import { getWiderSnippetForAnalysis } from './workflow/issue-analysis.js';
+import { getFullFileContentForSingleIssue } from './workflow/utils.js';
 
 export class PRResolver {
   private config: Config;
@@ -122,6 +123,12 @@ export class PRResolver {
     let codeSnippetOverride: string | undefined;
     if (this.stateContext.state?.widerSnippetRequestedByCommentId?.[issue.comment.id]) {
       codeSnippetOverride = await getWiderSnippetForAnalysis(this.workdir, issue.comment.path, issue.comment.line ?? null, issue.comment.body);
+    }
+    // WHY full file as default: Single-issue prompts with only 15-30 line snippets caused
+    // models to respond INCOMPLETE_FILE/UNCLEAR. Full file (capped at 600 lines) gives
+    // enough context for imports, types, and broader function structure.
+    if (codeSnippetOverride === undefined && this.workdir) {
+      codeSnippetOverride = await getFullFileContentForSingleIssue(this.workdir, issue.comment.path) ?? undefined;
     }
     return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride);
   }

@@ -2,8 +2,9 @@
  * Utility functions for PR resolution workflow
  */
 
-import { resolve, sep } from 'path';
+import { resolve, sep, join } from 'path';
 import * as fs from 'fs';
+import { readFile } from 'fs/promises';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
@@ -379,6 +380,30 @@ export function dedupeNewCommentsByQueue<T extends { path: string; body: string 
   return newComments.filter(
     (c) => !queueKeys.has(`${c.path}\n${normalizeCommentBodyForDedupe(c.body)}`)
   );
+}
+
+/**
+ * Read full file content for single-issue fix prompts.
+ *
+ * WHY full file instead of snippet: Single-issue prompts previously sent only 15-30 lines
+ * around the issue line. Models frequently responded INCOMPLETE_FILE or UNCLEAR because they
+ * couldn't see imports, type definitions, or the broader function context. Sending the full
+ * file gives enough context for correct fixes.
+ *
+ * WHY cap at 600 lines: Very large files (e.g. 3000+ line generated code) would blow the
+ * prompt budget. 600 lines covers most source files entirely; for larger files the first
+ * 600 lines typically include the issue area (issues are usually in the first half of a file).
+ */
+export async function getFullFileContentForSingleIssue(workdir: string, path: string, maxLines = 600): Promise<string | undefined> {
+  try {
+    const fullPath = join(workdir, path);
+    const content = await readFile(fullPath, 'utf-8');
+    const lines = content.split('\n');
+    if (lines.length <= maxLines) return content;
+    return lines.slice(0, maxLines).join('\n');
+  } catch {
+    return undefined;
+  }
 }
 
 /**

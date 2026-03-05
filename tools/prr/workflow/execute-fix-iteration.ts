@@ -14,7 +14,7 @@ import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import type { StateContext } from '../state/state-context.js';
-import { setPhase, addTokenUsage } from '../state/state-context.js';
+import { setPhase, addTokenUsage, getState } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -348,6 +348,7 @@ export async function executeFixIteration(
        openaiApiKey: keyForRunner,
        unresolvedIssues: workingUnresolved,
        allowedPathsForBatch,
+       allowedPathsForInjection: allowedPathsForBatch,
      });
    } finally {
      spinner.stop();
@@ -622,6 +623,16 @@ export async function executeFixIteration(
       updatedUnresolvedIssues: workingUnresolved,
       lessonsBeforeFix,
     };
+  }
+
+  // WHY reset here: The fixer made actual file changes, breaking the "no changes" streak.
+  // Without this, the counter would carry over from previous no-change iterations and
+  // incorrectly count non-consecutive ALREADY_FIXED results as consecutive.
+  const stateForReset = getState(stateContext);
+  if (stateForReset.consecutiveAlreadyFixedAnyByCommentId) {
+    for (const issue of workingUnresolved) {
+      delete stateForReset.consecutiveAlreadyFixedAnyByCommentId[issue.comment.id];
+    }
   }
 
   // Has changes - return for verification

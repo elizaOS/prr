@@ -4,6 +4,16 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## Recently completed
 
+**Prompts.log audit: ALREADY_FIXED counter, batch injection, single-issue full file, verifier context (2026-03)**
+- **P1 — ALREADY_FIXED multi-model dismissal**: New `consecutiveAlreadyFixedAnyByCommentId` counter dismisses issues after 3+ models return ALREADY_FIXED (any explanation). Counter resets on fixer changes or verification. **WHY**: Existing same-explanation counter missed the broader pattern where multiple models independently agree the issue is resolved; saves 3-5 wasted iterations per issue.
+- **P3 — Batch injection filter**: `allowedPathsForInjection` limits file injection to files with unfixed issues in later rounds. **WHY**: Already-fixed files waste context budget; filtering observed 40-60% reduction in injected content on rounds 2+.
+- **P5 — Single-issue full file**: `getFullFileContentForSingleIssue` sends up to 600 lines instead of 15-30 line snippets. **WHY**: Models responded INCOMPLETE_FILE/UNCLEAR without broader context.
+- **P7 — Verifier type/signature context**: `commentMentionsApiOrSignature` expands verifier window to 500 lines for type/signature issues. **WHY**: 200-line default caused false "never assigned" rejections.
+- See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Prompts.log audit: ALREADY_FIXED counter, batch injection filter, single-issue full file, verifier type/signature context".
+
+**Comment parsing: parse all bot comments, noise filter, path-less gap (2026-03)**
+- Parse ALL comments from known review bots (not just latest); `isBotNoiseComment` filters junk before parsing; `parseMarkdownReviewIssues` includes path-less items with actionable language as `(PR comment)`. **WHY**: Only reading the latest comment per bot missed issues from earlier reviews. Zero missed issues is the mission — noise filter and actionable regex prevent false positives. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Comment parsing".
+
 **Prompts.log audit: dedup, verifier strength, dismissal comments, multi-file (2026-03)**  
 - Skip dismissal-comment when reason says "file no longer exists" / "file not found"; post-filter generated COMMENT when it mostly restates surrounding code; heuristic dedup merges same file + same symbol + same caller file across authors; multi-file nudge in fix prompt when TARGET FILE(S) has multiple files and body mentions callers; verifier uses stronger model for API/signature-related fixes when available. **WHY**: Audit of a BFCL/reporting.py run found duplicate issues from different authors not merged (wasted fix attempts), weak verifier approving call-site bugs, dismissal prompt for missing file, generic dismissal comments inserted, and fixer updating only one of two target files. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Prompts.log audit: dedup same-caller, verifier strength, dismissal skips, multi-file nudge" and [AUDIT-CYCLES.md](AUDIT-CYCLES.md) Cycle 10.
 

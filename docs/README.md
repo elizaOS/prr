@@ -89,6 +89,17 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 - **CodeRabbit meta comments**: `isCodeRabbitMetaComment` in `tools/prr/github/api.ts` now matches `<!-- This is an auto-generated reply` and `✅ Actions performed`; the same filter is applied to issue comments so those blurbs are not treated as fixable. **WHY**: CodeRabbit's confirmation blurb is not a code review; sending it to the fix loop wasted iterations and produced only UNCLEAR/WRONG_LOCATION.
 - **(PR comment) dismissal**: In `tools/prr/workflow/helpers/solvability.ts`, issues whose path is the synthetic `(PR comment)` are dismissed as `not-an-issue` before any LLM call. **WHY**: The fixer cannot edit a non-file; every attempt fails and burns iterations.
 
+**Prompts.log audit: ALREADY_FIXED counter, batch injection, single-issue full file, verifier context (2026-03)** — P1/P3/P5/P7:
+- **ALREADY_FIXED multi-model dismissal (P1)**: New `consecutiveAlreadyFixedAnyByCommentId` counter in `tools/prr/state/types.ts`. Incremented in `no-changes-verification.ts` on every ALREADY_FIXED result; reset in `execute-fix-iteration.ts` when fixer makes changes and in `iteration-cleanup.ts` when verified. When count reaches `ALREADY_FIXED_ANY_THRESHOLD` (3), issue is dismissed. `assessSolvability` also checks the counter. **WHY**: The existing same-explanation counter only fired when explanation text matched. When 3+ different models independently say ALREADY_FIXED (with varying explanations), the issue is almost certainly resolved. Saves 3-5 wasted fix iterations per issue.
+- **Batch injection filter (P3)**: New `allowedPathsForInjection` on `RunnerOptions` in `shared/runners/types.ts`. `injectFileContents` in `shared/runners/llm-api.ts` filters `sortedPaths` to the allowed set. `execute-fix-iteration.ts` passes `allowedPathsForBatch` as the filter. **WHY**: In later fix rounds, many files are already fixed. Injecting their contents wastes context budget. Filtering to files with unfixed issues keeps the prompt focused — observed 40-60% reduction in injected content on rounds 2+.
+- **Single-issue full file context (P5)**: New `getFullFileContentForSingleIssue(workdir, path, maxLines=600)` in `tools/prr/workflow/utils.ts`. Used as default `codeSnippetOverride` in `resolver.ts` `buildSingleIssuePrompt`. **WHY**: Single-issue prompts were sending only 15-30 line snippets. Models responded INCOMPLETE_FILE/UNCLEAR because they couldn't see imports, types, or broader context. Full file (capped at 600 lines) gives enough context for correct fixes.
+- **Verifier expanded context for type/signature issues (P7)**: New `commentMentionsApiOrSignature(fix)` in `tools/prr/workflow/fix-verification.ts`. `getCurrentCodeAtLine` accepts `expandForTypeSignature` flag, returning up to 500 lines (vs 200). Both sequential and batch verification pass the flag. **WHY**: For type/signature issues, the verifier needs to see function bodies and call sites. The 200-line default caused false "never assigned" rejections. 500 lines covers most function bodies and immediate call sites.
+
+**Comment parsing: parse all bot comments, noise filter, path-less gap (2026-03)**:
+- **Bot noise filter**: New `isBotNoiseComment(body)` in `tools/prr/github/api.ts` filters comments < 60 chars, "IGNORE THIS", and bare trigger commands before parsing. **WHY**: When parsing ALL bot comments, noise pollutes the issue list. The 60-char threshold is conservative — real reviews are always longer.
+- **Parse all bot comments**: `getReviewBotIssueComments` iterates ALL comments from known bots, not just the latest. Sort removed; unique IDs per comment (`ic-${comment.id}-${i}`). Non-structured comments fall back to `inferPathLineFromBody`. **WHY**: Previously only the latest comment per bot was parsed, missing issues from earlier reviews that were never re-posted. Zero missed issues is the goal.
+- **Path-less items included**: `parseMarkdownReviewIssues` no longer drops items without file paths. Items >= 100 chars with actionable language get `path: '(PR comment)'`. Downstream `assessSolvability` dismisses at zero LLM cost. **WHY**: Some bot comments describe real issues without citing a file. Including them lets solvability decide; the 100-char minimum and actionable regex filter noise.
+
 **Prompts.log audit: dedup, verifier strength, dismissal comments, multi-file (2026-03)** — Cycle 10:
 - **Dismissal skip when file no longer exists**: In `tools/prr/workflow/dismissal-comments.ts`, we filter out issues whose dismissal reason matches "file no longer exists" / "file not found" before building the commentable list. **WHY**: Audit showed a dismissal-comment prompt sent for a file with reason "File no longer exists: stores/task.store.ts"; the LLM was asked to write a comment in a missing file, wasting tokens and producing a comment that would never be inserted.
 - **Post-filter generic dismissal comments**: In `tools/prr/llm/client.ts` (`generateDismissalComment`), after parsing `COMMENT: Note: ...` we check if the comment mostly restates the surrounding code (2–8 words, ≥2 words appear in code); if so we return `needed: false`. **WHY**: gpt-4o-mini often produced comments like "extracts relevant metrics" that only narrate the code; they add no value and we skip inserting them.
@@ -473,16 +484,25 @@ If you find errors or want to improve documentation:
 │   ├── 📄 MODELS.md              ← Claude & OpenAI models reference
 │   └── 📄 ARCHITECTURE.md        ← Technical deep-dive
 │
-├── 📁 src/                       ← Source code
+├── 📁 shared/                    ← Shared library (constants, runners, git, logger)
+│   ├── 📄 constants.ts           ← Global thresholds and limits
+│   ├── 📁 runners/               ← AI tool integrations (llm-api, cursor, etc.)
+│   ├── 📁 git/                   ← Git operations
+│   └── 📄 logger.ts              ← Logging utilities
+│
+├── 📁 tools/prr/                 ← PRR tool source code
 │   ├── 📄 index.ts               ← Entry point
 │   ├── 📄 resolver.ts            ← Main orchestrator
 │   ├── 📁 workflow/              ← Workflow modules
 │   ├── 📁 state/                 ← State management
-│   ├── 📁 runners/               ← AI tool integrations
 │   ├── 📁 llm/                   ← LLM client
-│   ├── 📁 github/                ← GitHub API
-│   ├── 📁 git/                   ← Git operations
+│   ├── 📁 github/                ← GitHub API & comment parsing
+│   ├── 📁 analyzer/              ← Issue analysis & prompt building
 │   └── ...
+│
+├── 📁 tools/pill/                ← Pill tool source code
+│
+├── 📁 types/                     ← Shared type definitions
 │
 └── 📁 tests/                     ← Test files
 ```
@@ -531,4 +551,4 @@ These docs explain **how** the cat works its magic. Happy reading! 📚
 
 ---
 
-**Last Updated**: 2026-02-27
+**Last Updated**: 2026-03-03

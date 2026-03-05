@@ -18,7 +18,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
-import { ALREADY_FIXED_EXHAUST_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
+import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
 import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from './utils.js';
 import { getTestPathForSourceFileIssue } from '../analyzer/prompt-builder.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -114,6 +114,34 @@ export async function handleNoChangesWithVerification(
             : 1;
           state.alreadyFixedLastDetailByCommentId[firstIssueAf.comment.id] = detail;
           state.alreadyFixedConsecutiveSameByCommentId[firstIssueAf.comment.id] = consecutive;
+          // WHY separate counter from same-explanation counter above: The same-explanation counter
+          // (ALREADY_FIXED_EXHAUST_THRESHOLD) only fires when explanation text matches. This counter
+          // catches the broader pattern: 3+ models independently say ALREADY_FIXED with *different*
+          // explanations (e.g. "guard clause exists", "null check present", "already handled").
+          // When multiple models agree regardless of wording, the issue is almost certainly resolved.
+          if (!state.consecutiveAlreadyFixedAnyByCommentId) state.consecutiveAlreadyFixedAnyByCommentId = {};
+          state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id] = (state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id] ?? 0) + 1;
+          const anyCount = state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id];
+          if (anyCount >= ALREADY_FIXED_ANY_THRESHOLD) {
+            Dismissed.dismissIssue(
+              stateContext,
+              firstIssueAf.comment.id,
+              `ALREADY_FIXED ${anyCount}× (multiple models) — dismissing as already-fixed`,
+              'already-fixed',
+              firstIssueAf.comment.path,
+              firstIssueAf.comment.line,
+              firstIssueAf.comment.body,
+              undefined
+            );
+            Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+            return {
+              shouldBreak: false,
+              shouldContinue: false,
+              verifiedCount: 0,
+              updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssueAf.comment.id),
+              progressMade: 0,
+            };
+          }
           if (consecutive >= ALREADY_FIXED_EXHAUST_THRESHOLD) {
             Dismissed.dismissIssue(
               stateContext,

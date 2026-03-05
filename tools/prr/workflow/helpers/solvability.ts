@@ -12,7 +12,7 @@ import type { StateContext } from '../../state/state-context.js';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
 import * as Performance from '../../state/state-performance.js';
 import * as Dismissed from '../../state/state-dismissed.js';
-import { ALREADY_FIXED_EXHAUST_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
+import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 
@@ -21,7 +21,7 @@ export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 export interface SolvabilityResult {
   solvable: boolean;
   reason?: string;                    // For logging
-  dismissCategory?: 'stale' | 'remaining' | 'not-an-issue' | 'chronic-failure';
+  dismissCategory?: 'stale' | 'remaining' | 'not-an-issue' | 'chronic-failure' | 'already-fixed';
   /** Next-step for humans (e.g. lockfile: "Run: bun install") */
   remediationHint?: string;
   contextHints?: string[];            // Injected into LLM prompt in Phase 3
@@ -256,7 +256,19 @@ export function assessSolvability(
     };
   }
 
-  // Check 5: ALREADY_FIXED exhaustion — after N consecutive same explanation, dismiss as not-an-issue (prompts.log audit).
+  // Check 5a: ALREADY_FIXED any-explanation counter.
+  // WHY check here (before LLM calls): If 3+ models already said ALREADY_FIXED, re-running
+  // the fixer would waste another iteration. Dismissing in solvability avoids the LLM call entirely.
+  const alreadyFixedAny = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
+  if (alreadyFixedAny >= ALREADY_FIXED_ANY_THRESHOLD) {
+    return {
+      solvable: false,
+      dismissCategory: 'already-fixed',
+      reason: `ALREADY_FIXED ${alreadyFixedAny}× (multiple models) — dismissing as already-fixed`,
+    };
+  }
+
+  // Check 5b: ALREADY_FIXED exhaustion — after N consecutive same explanation, dismiss as not-an-issue (prompts.log audit).
   const alreadyFixedConsecutive = stateContext.state?.alreadyFixedConsecutiveSameByCommentId?.[comment.id] ?? 0;
   if (alreadyFixedConsecutive >= ALREADY_FIXED_EXHAUST_THRESHOLD) {
     return {

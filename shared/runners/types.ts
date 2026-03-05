@@ -66,6 +66,10 @@ export interface RunnerOptions {
   unresolvedIssues?: Array<{ comment: { path: string }; triage?: { importance: number; ease: number } }>;
   /** When set, only apply change/newfile/file blocks whose path is in this set. WHY: Prevents fixer from editing wrong file (e.g. user-service.ts when issue is in signup-code.ts); changes to disallowed files are skipped. */
   allowedPathsForBatch?: string[];
+  /** When set, only inject file contents for paths in this set.
+   * WHY: In later fix rounds, already-fixed files waste context budget. Filtering injection
+   * to files with unfixed issues keeps the prompt focused and leaves room for files that need changes. */
+  allowedPathsForInjection?: string[];
 }
 
 export interface RunnerStatus {

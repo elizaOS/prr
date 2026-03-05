@@ -2053,13 +2053,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
-    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", or "FIX_ID: 1" then "NO: ..." on next line
+    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..." (no colon after FIX_ID), or "FIX_ID: 1" then "NO: ..." on next line
     const lines = content.split('\n');
     let currentOriginalId: string | null = null;
 
     for (const line of lines) {
-      // Match "1: YES: ..." or "fix_2: NO: ..." or "FIX_ID: 1: NO: ..." (model sometimes echoes FIX_ID from prompt)
-      const verifyMatch = line.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
+      // Match "1: YES: ..." or "fix_2: NO: ..." or "FIX_ID: 1: NO: ..." or "FIX_ID 1: YES: ..." (output.log audit: model used "FIX_ID 1:" with space, no colon)
+      const verifyMatch = line.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
       if (verifyMatch) {
         const [, numStr, yesNo, explanation] = verifyMatch;
         const idx = parseInt(numStr, 10);
@@ -2074,8 +2074,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         continue;
       }
 
-      // "FIX_ID: 1" only (YES/NO on next line) — set currentOriginalId so next line can supply result
-      const fixIdOnlyMatch = line.match(/^FIX_ID\s*:\s*(\d+)\s*$/i);
+      // "FIX_ID: 1" or "FIX_ID 1" only (YES/NO on next line) — set currentOriginalId so next line can supply result
+      const fixIdOnlyMatch = line.match(/^FIX_ID\s*[:\s]\s*(\d+)\s*$/i);
       if (fixIdOnlyMatch) {
         const idx = parseInt(fixIdOnlyMatch[1], 10);
         const originalId = indexToId.get(idx);
@@ -2119,9 +2119,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       const unmatchedLines = lines
         .map(l => l.trim())
         .filter(l => l.length > 0)
-        .filter(l => !l.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*)?(\d+)\s*:\s*(YES|NO)\s*:/i))
+        .filter(l => !l.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:/i))
         // Review: ensures unmatched lines are filtered out for cleaner output without silent omissions
-        .filter(l => !l.match(/^FIX_ID\s*:\s*\d+\s*$/i))
+        .filter(l => !l.match(/^FIX_ID\s*[:\s]\s*\d+\s*$/i))
         .filter(l => !l.match(/^(YES|NO)\s*:/i))
         .filter(l => !l.match(/^LESSON:/i))
         .slice(0, 10);

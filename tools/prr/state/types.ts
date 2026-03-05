@@ -198,6 +198,14 @@ export interface ResolverState {
   alreadyFixedConsecutiveSameByCommentId?: Record<string, number>;
   /** Per-comment last ALREADY_FIXED detail (normalized) for same-explanation detection. */
   alreadyFixedLastDetailByCommentId?: Record<string, string>;
+  /**
+   * Per-comment consecutive ALREADY_FIXED count regardless of explanation text.
+   * WHY: The same-explanation counter (alreadyFixedConsecutiveSameByCommentId) misses the
+   * pattern where 3+ different models independently agree the issue is resolved with
+   * different wording. This counter tracks any ALREADY_FIXED result. Resets when fixer
+   * makes changes (streak broken) or issue is verified fixed.
+   */
+  consecutiveAlreadyFixedAnyByCommentId?: Record<string, number>;
   /** Per-comment count of "could not inject file from repo" + no-change cycles; dismiss as file-unchanged after threshold (output.log audit H2). */
   couldNotInjectCountByCommentId?: Record<string, number>;
   /** Per-comment count of CANNOT_FIX results citing missing/placeholder file content. WHY: audit showed 10+ retries on placeholder files burning 500K+ tokens. */

@@ -32,7 +32,7 @@ import { formatNumber, debugStep, startTimer, endTimer, debug } from '../../../s
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
-import { recheckSolvability } from './helpers/solvability.js';
+import { assessSolvability, recheckSolvability } from './helpers/solvability.js';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 
 /** Git and GitHub context for a push iteration */
@@ -395,7 +395,49 @@ export async function executePushIteration(
     // WHY: allFixed was previously (failedCount === 0), which is true when no verification failures
     // occurred — so we broke out after fixing 2 of 17, thinking we were done. Now we only consider
     // the queue empty when there are no unresolved issues left.
-    const stillUnresolved = unresolvedIssues.filter((i) => !Verification.isVerified(stateContext, i.comment.id));
+    let stillUnresolved = unresolvedIssues.filter((i) => !Verification.isVerified(stateContext, i.comment.id));
+
+    // WHY re-check solvability after cleanup: The iteration may have incremented counters
+    // (ALREADY_FIXED, chronic failure) that now cross dismissal thresholds. Checking here
+    // removes issues mid-loop so the next iteration doesn't waste time on them.
+    const chronicDismissed: string[] = [];
+    const alreadyFixedDismissed: string[] = [];
+    for (const issue of stillUnresolved) {
+      const solvability = assessSolvability(gitCtx.workdir, issue.comment, stateContext);
+      if (!solvability.solvable && solvability.dismissCategory === 'chronic-failure') {
+        Dismissed.dismissIssue(
+          stateContext,
+          issue.comment.id,
+          solvability.reason ?? 'Chronic failure — too many fix attempts with no success',
+          'chronic-failure',
+          issue.comment.path,
+          issue.comment.line,
+          issue.comment.body
+        );
+        chronicDismissed.push(issue.comment.id);
+      } else if (!solvability.solvable && solvability.dismissCategory === 'already-fixed') {
+        Dismissed.dismissIssue(
+          stateContext,
+          issue.comment.id,
+          solvability.reason ?? 'Multiple models reported already fixed — dismissing',
+          'already-fixed',
+          issue.comment.path,
+          issue.comment.line,
+          issue.comment.body
+        );
+        alreadyFixedDismissed.push(issue.comment.id);
+      }
+    }
+    if (chronicDismissed.length > 0) {
+      console.log(chalk.yellow(`  ${formatNumber(chronicDismissed.length)} issue(s) dismissed (chronic failure — too many attempts, need human attention)`));
+    }
+    if (alreadyFixedDismissed.length > 0) {
+      console.log(chalk.green(`  ${formatNumber(alreadyFixedDismissed.length)} issue(s) dismissed (already fixed — multiple models agreed)`));
+    }
+    const midLoopDismissed = new Set([...chronicDismissed, ...alreadyFixedDismissed]);
+    if (midLoopDismissed.size > 0) {
+      stillUnresolved = stillUnresolved.filter((i) => !midLoopDismissed.has(i.comment.id));
+    }
     unresolvedIssues.splice(0, unresolvedIssues.length, ...stillUnresolved);
 
     // All fixed only when the queue is empty, not when this batch had no verification failures.

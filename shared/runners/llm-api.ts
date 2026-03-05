@@ -331,7 +331,7 @@ Working directory: ${workdir}`;
         : MAX_FIX_PROMPT_CHARS;
     const maxEnrichedChars = Math.min(baseCap * 2.5, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP);
     const capForInjection = Math.max(0, maxEnrichedChars - REWRITE_ESCALATION_RESERVE_CHARS);
-    const { enrichedPrompt: injectedPrompt, injectedPaths } = this.injectFileContents(workdir, prompt, capForInjection);
+    const { enrichedPrompt: injectedPrompt, injectedPaths } = this.injectFileContents(workdir, prompt, capForInjection, options?.allowedPathsForInjection);
     let enrichedPrompt = injectedPrompt;
 
     // Escalate to full-file-rewrite for files with repeated S/R failures or that weren't injected
@@ -691,7 +691,7 @@ Working directory: ${workdir}`;
    * Limits: files > 200KB or > 5000 lines are skipped, max 10 files injected,
    * and total injected content capped so base + injection stays under gateway limits.
    */
-  private injectFileContents(workdir: string, prompt: string, maxTotalEnrichedChars?: number): { enrichedPrompt: string; injectedPaths: string[] } {
+  private injectFileContents(workdir: string, prompt: string, maxTotalEnrichedChars?: number, allowedPathsForInjection?: string[]): { enrichedPrompt: string; injectedPaths: string[] } {
     // WHY skip injection for conflict prompts: buildConflictResolutionPromptWithContent already
     // embeds each file as "--- FILE: path ---" + full content. Re-injecting would duplicate
     // file content (e.g. CHANGELOG twice) and blow prompt size / cause 504s.
@@ -722,9 +722,17 @@ Working directory: ${workdir}`;
     }
 
     // Inject files with the most issues first so the cap is used for files most likely to need search/replace.
-    const sortedPaths = [...pathCounts.entries()]
+    let sortedPaths = [...pathCounts.entries()]
       .sort((a, b) => b[1] - a[1])
       .map(([path]) => path);
+    // WHY filter: In later fix rounds, many files referenced in the prompt are already fixed.
+    // Injecting their contents wastes context budget on files the fixer doesn't need to touch.
+    // Filtering to files with unfixed issues keeps the prompt focused and leaves room for
+    // files that actually need changes (observed 40-60% reduction in injected content on rounds 2+).
+    if (allowedPathsForInjection?.length) {
+      const allowedSet = new Set(allowedPathsForInjection.map((p) => p.replace(/^\.\//, '')));
+      sortedPaths = sortedPaths.filter((p) => allowedSet.has(p.replace(/^\.\//, '')));
+    }
 
     const fileSections: string[] = [];
     const injectedPaths: string[] = [];

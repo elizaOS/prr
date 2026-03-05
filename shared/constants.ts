@@ -273,6 +273,21 @@ export const WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD = 3;
 export const ALREADY_FIXED_EXHAUST_THRESHOLD = 2;
 
 /**
+ * Consecutive ALREADY_FIXED results (any explanation) before we dismiss as already-fixed.
+ *
+ * WHY separate from ALREADY_FIXED_EXHAUST_THRESHOLD: That counter only fires when the
+ * explanation text matches (same model, same wording). This counter catches the broader
+ * pattern: 3+ different models independently return ALREADY_FIXED with varying explanations
+ * (e.g. "guard clause exists", "null check present", "already handled"). When multiple
+ * models agree regardless of wording, the issue is almost certainly resolved.
+ *
+ * WHY 3: Conservative enough to avoid false dismissals (one model can be wrong, two is
+ * suspicious, three is a consensus). Counter resets when the fixer makes actual changes
+ * or the issue is verified fixed, so only truly consecutive no-change results count.
+ */
+export const ALREADY_FIXED_ANY_THRESHOLD = 3;
+
+/**
  * Number of CANNOT_FIX results citing missing/placeholder file content before we skip the issue.
  * WHY 2: Audit showed 10+ retries on placeholder files (500K+ tokens wasted). After 2 CANNOT_FIX
  * with "file content missing/placeholder", the file injection is broken and retrying won't help.

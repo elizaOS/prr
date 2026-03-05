@@ -8,7 +8,7 @@ import ora from 'ora';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
-import { setPhase } from '../state/state-context.js';
+import { setPhase, getState } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -106,6 +106,17 @@ export async function handleIterationCleanup(
       undefined,
       commentIdToHash.get(issue.comment.id)
     );
+  }
+
+  // WHY reset here: A verified fix breaks the ALREADY_FIXED streak. Without this, the counter
+  // would persist and dismiss the issue on the next run even though it was genuinely fixed.
+  if (verifiedThisSession.size > 0) {
+    const state = getState(stateContext);
+    if (state.consecutiveAlreadyFixedAnyByCommentId) {
+      for (const id of verifiedThisSession) {
+        delete state.consecutiveAlreadyFixedAnyByCommentId[id];
+      }
+    }
   }
   
   const progressPct = Math.round((verifiedCount / totalIssues) * 100);

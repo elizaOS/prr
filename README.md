@@ -35,6 +35,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ### Core Loop
 - Fetches review comments from PRs (humans, bots, or any reviewer)
+- **Parses all bot comments**: Reads every comment from known review bots (not just the latest), with noise filtering and path-less issue recovery. *Why*: Bots may post multiple comments across re-reviews; parsing only the latest missed issues from earlier reviews.
 - Uses LLM to detect which issues still exist in the code
 - Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
@@ -48,6 +49,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Duplicate prompt skip**: When the same set of issue IDs and lesson count is sent to the same model again, we skip the fixer and rotate to the next model. *Why*: Full-prompt hashes rarely matched; hashing issue IDs + lesson count detects same-issues-same-context and avoids redundant LLM calls.
 - **Proportional batch reduce**: When the fix prompt exceeds the context cap, batch size is reduced proportionally (cap/promptLength) instead of halving. *Why*: Halving wasted iterations when only slightly over cap; proportional reduction converges in 1–2 steps.
 - **Rotation reset per push iteration**: At the start of each push cycle (after the first), the model index resets to the first model so each cycle gets a "best model first" attempt instead of continuing from where the previous cycle left off. *Why*: Later push iterations were reusing the last model from the previous cycle (often one that had just 500'd or timed out), wasting time.
+- **ALREADY_FIXED multi-model dismissal**: When 3+ consecutive models return ALREADY_FIXED for the same issue (any explanation), dismiss as already-fixed. Counter resets when the fixer makes changes or the issue is verified. *Why*: The existing same-explanation counter only fired when explanation text matched; a separate any-explanation counter catches the broader pattern where multiple models independently agree the issue is resolved.
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
 - **Stalemate detection & bail-out**: Detects when agents disagree, bails out after N cycles with zero progress
@@ -77,6 +79,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Persisted dedup cache**: LLM dedup results are stored in state keyed by comment ID set; repeat runs with the same comments skip the dedup LLM step. *Why*: In-memory cache reset each run; persisting saves tokens and latency.
 - **Heuristic dedup same-caller**: Comments on the same file that share the same primary symbol (e.g. method name) and the same caller file (e.g. "runner.py:146") are merged even when authors differ. *Why*: Prompts.log audit showed duplicate issues from cursor vs claude describing the same async/caller mismatch; merging them avoids duplicate fix attempts.
 - **Verifier strength for API/signature fixes**: Fixes whose comment mentions async/await, caller, signature, or TypeError are verified with a stronger model when available. *Why*: Weak default verifier approved a fix that missed the call-site update (e.g. print_results still calling generate_report() without await/args); stronger model catches call-site bugs.
+- **Verifier expanded context for type/signature issues**: When a review comment mentions async/await, signatures, TypeErrors, or callers, the verifier sees up to 500 lines of the file (vs default 200). *Why*: Type/signature fixes often involve function bodies and their call sites; the default window was too narrow, causing false "never assigned" rejections.
 - **Dismissal-comment skips**: We skip the dismissal-comment LLM when the reason says "file no longer exists" or "file not found", and we post-filter generated comments that only restate the surrounding code. *Why*: Avoids sending a prompt for a missing file and avoids inserting generic "extracts metrics"-style noise.
 - **Multi-file nudge**: When TARGET FILE(S) lists multiple files and the review mentions callers (await, file:line), the fix prompt adds a line urging updates to implementation and every call site. *Why*: Reduces fixer updating only one file and leaving call sites broken.
 - **Wider batch snippets**: When context headroom ≥100k chars, batch verification uses 2500/3000 char limits per comment/code snippet (vs 2000/2000). *Why*: Reduces false positives from truncation.
@@ -90,6 +93,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **LLM dedup only for 3+ issues**: The LLM dedup step runs only for files with at least 3 remaining issues after heuristic dedup. *Why*: For 2-comment files, heuristic grouping is enough; skipping the LLM saves tokens with no meaningful loss.
 - **maxFixIterations 0 = unlimited**: `--max-fix-iterations 0` is treated as unlimited (not zero). *Why*: Without this, 0 meant zero iterations and the run did analysis-only with no fix attempts.
 - **File injection by issue count & dynamic budget**: Injected file contents are chosen by how many issues reference each file (most first); total injection budget is tied to the model’s context cap. *Why*: Puts the injection cap toward files most likely to need search/replace; avoids overshooting small-context or underusing large-context models.
+- **Batch injection filter (rounds 2+)**: In later fix rounds, file injection is limited to files that still have at least one unfixed issue via `allowedPathsForInjection`. *Why*: Already-fixed files waste context budget; filtering keeps the prompt focused and leaves room for files that need changes.
+- **Single-issue full file context**: Single-issue fix prompts send the full file (up to 600 lines) instead of a short snippet. *Why*: Models responded INCOMPLETE_FILE/UNCLEAR when given only 15-30 lines; full file gives enough context for correct fixes.
 - **Rewrite escalation for non-injected files**: Files mentioned in the prompt but not injected (or with repeated S/R failures) are escalated to full-file rewrite. *Why*: When the model never saw file content, search/replace usually fails; asking for the full file avoids matching failures.
 - **Delay full-file escalation for simple issues**: For files where all targeting issues have importance ≤ 3 and ease ≤ 2, we only escalate to full-file rewrite when the file was not injected (not when over S/R failure threshold). *Why*: Full-file rewrites are expensive and time out more; for simple issues we rely on S/R first.
 
@@ -263,7 +268,10 @@ When fixes fail, prr escalates through multiple strategies:
 
 ### Why Each Step Matters
 
-1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Copilot), or any reviewer.
+1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Copilot, Claude), or any reviewer.
+   - *Why parse ALL bot comments*: Bots may post multiple comments across re-reviews. Only reading the latest missed issues from earlier reviews. We parse every comment, filter noise (short messages, trigger commands), and recover path-less items with actionable language.
+   - *Why noise filter*: When reading all comments, test messages and trigger commands would pollute the issue list. The filter runs before parsing so junk never enters the pipeline.
+   - *Why include path-less items*: Some bot comments describe real issues without citing a file. Including them with a synthetic `(PR comment)` path lets downstream solvability checks decide whether they're actionable — at zero LLM cost if not.
 
 2. **Analyze Issues**: For each comment, asks the LLM: "Is this issue still present in the code?" 
    - *Why*: Review comments may already be addressed, or partially addressed. We don't want to re-fix solved problems.

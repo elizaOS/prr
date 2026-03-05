@@ -37,6 +37,28 @@ function isCodeRabbitMetaComment(comment: { author: string; body: string }): boo
   return false;
 }
 
+/**
+ * Filter out bot noise comments before parsing.
+ *
+ * WHY needed: When we parse ALL bot comments (not just the latest), test messages,
+ * trigger commands, and placeholder text would pollute the issue list. This filter
+ * runs before parseMarkdownReviewIssues so junk never enters the pipeline.
+ *
+ * WHY 60 chars: Real review comments are always longer (structured markdown with
+ * file paths, code blocks, explanations). Trigger commands ("@coderabbitai review")
+ * and test messages ("test", "IGNORE THIS") are always shorter.
+ *
+ * WHY anchored regexes: We only match at start-of-string to avoid false positives
+ * on comments that happen to contain "IGNORE THIS" in a code block mid-body.
+ */
+function isBotNoiseComment(body: string): boolean {
+  const trimmed = body.trim();
+  if (trimmed.length < 60) return true;
+  if (/^IGNORE\s+THIS/i.test(trimmed)) return true;
+  if (/^@\w+\s+review$/i.test(trimmed)) return true;
+  return false;
+}
+
 export class GitHubAPI {
   private octokit: Octokit;
   private graphqlWithAuth: typeof graphql;
@@ -442,9 +464,21 @@ export class GitHubAPI {
    * Fetch issue comments (conversation tab) and extract review issues from bots.
    *
    * Some review bots (notably claude[bot]) post structured markdown reviews as
-   * issue comments rather than inline review comments. We take the LATEST comment
-   * from each known review bot, parse it into individual file-specific issues,
-   * and return them as ReviewComment objects.
+   * issue comments rather than inline review comments.
+   *
+   * WHY parse ALL comments (not just latest): Bots may post multiple comments across
+   * re-reviews. Only reading the latest missed issues from earlier reviews that were
+   * never re-posted — e.g. a bot's initial review flags 15 issues, but a later re-review
+   * only mentions 3 new ones. The old code saw only the 3, missing the original 15.
+   * Parsing all comments ensures zero missed issues. Downstream dedup (heuristic + LLM)
+   * collapses any duplicates across comments.
+   *
+   * WHY noise filter before parsing: When reading all comments, test messages and
+   * trigger commands would pollute the issue list. isBotNoiseComment runs first.
+   *
+   * WHY include non-bot "other" comments: PR conversation comments from humans or
+   * other bots that are not in REVIEW_BOTS_PARSE were previously never fetched,
+   * causing "no issues" when the user sees feedback in the PR conversation.
    */
   private async getReviewBotIssueComments(
     owner: string, repo: string, prNumber: number
@@ -479,35 +513,49 @@ export class GitHubAPI {
     const results: ReviewComment[] = [];
 
     for (const botLogin of REVIEW_BOTS_PARSE) {
-      // Filter to this bot's comments and take only the LATEST one.
       const botComments = allIssueComments
-        .filter(c => c.user?.login === botLogin)
-        .sort((a, b) => b.created_at.localeCompare(a.created_at));
+        .filter(c => c.user?.login === botLogin);
 
       if (botComments.length === 0) continue;
 
-      const latest = botComments[0];
       const authorClean = this.normalizeBotName(botLogin);
-      debug(`Parsing latest ${botLogin} issue comment`, {
-        commentId: latest.id,
-        bodyLength: latest.body.length,
-        totalComments: botComments.length,
+      debug(`Parsing all ${botLogin} issue comments`, {
+        count: botComments.length,
       });
 
-      const parsed = parseMarkdownReviewIssues(latest.body);
-      debug(`Parsed ${parsed.length} issue(s) from ${botLogin} comment`);
+      for (const comment of botComments) {
+        if (isBotNoiseComment(comment.body)) {
+          debug(`Skipping noise comment from ${botLogin}`, { id: comment.id, len: comment.body.length });
+          continue;
+        }
 
-      for (let i = 0; i < parsed.length; i++) {
-        const issue = parsed[i];
-        results.push({
-          id: `ic-${latest.id}-${i}`,
-          threadId: `ic-${latest.id}-${i}`,
-          author: authorClean,
-          body: issue.body,
-          path: issue.path,
-          line: issue.line,
-          createdAt: latest.created_at,
-        });
+        const parsed = parseMarkdownReviewIssues(comment.body);
+        if (parsed.length > 0) {
+          for (let i = 0; i < parsed.length; i++) {
+            const issue = parsed[i];
+            results.push({
+              id: `ic-${comment.id}-${i}`,
+              threadId: `ic-${comment.id}-${i}`,
+              author: authorClean,
+              body: issue.body,
+              path: issue.path,
+              line: issue.line,
+              createdAt: comment.created_at,
+            });
+          }
+        } else {
+          // Non-structured comment (e.g. "Critical Bug 1: ...") — try to extract a file path
+          const { path, line } = this.inferPathLineFromBody(comment.body);
+          results.push({
+            id: `ic-${comment.id}`,
+            threadId: `ic-${comment.id}`,
+            author: authorClean,
+            body: comment.body,
+            path,
+            line,
+            createdAt: comment.created_at,
+          });
+        }
       }
     }
 
@@ -1231,21 +1279,28 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
 
     for (const item of items) {
       // Phase 4: Extract file:line from the item.
-      // Try structured **Location(s):** pattern first, then fall back to generic.
-      const locationMatch = item.match(
-        new RegExp(`\\*\\*Locations?:\\*\\*\\s*\`?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?`)
-      );
-      // Review: uses specific regex pattern first for structured locations, favoring precise matches.
-      const fileMatch = locationMatch || item.match(FILE_LINE_RE);
-      if (!fileMatch) continue; // Skip items without file references
-
-      const path = fileMatch[1];
-      const line = fileMatch[2] ? parseInt(fileMatch[2], 10) : null;
-
-      // Clean the body: trim, remove excessive blank lines
+      // Clean the body first so both branches can use it (path-less and path-having).
       const body = item.trim().replace(/\n{3,}/g, '\n\n');
       if (body.length < 20) continue; // Skip trivially short items
 
+      const locationMatch = item.match(
+        new RegExp(`\\*\\*Locations?:\\*\\*\\s*\`?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?`)
+      );
+      const fileMatch = locationMatch || item.match(FILE_LINE_RE);
+
+      if (!fileMatch) {
+        // Path-less item: include if body is substantial and contains actionable language.
+        // Downstream solvability dismisses (PR comment) at zero LLM cost if truly unfixable.
+        // WHY 100 chars: shorter items are usually section intros ("Here are the issues:") not real issues.
+        // WHY actionable regex: filters out pure prose summaries that happen to be long.
+        if (body.length >= 100 && /\b(?:fix|bug|error|missing|should|must|add|remove|change|update|incorrect|broken|crash|fail|import|undefined|null)\b/i.test(body)) {
+          issues.push({ body, path: '(PR comment)', line: null });
+        }
+        continue;
+      }
+
+      const path = fileMatch[1];
+      const line = fileMatch[2] ? parseInt(fileMatch[2], 10) : null;
       issues.push({ body, path, line });
     }
   }

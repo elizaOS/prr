@@ -208,25 +208,43 @@ function findRelatedChangedFiles(targetPath: string, changedFiles: string[]): st
  */
 /** Max lines for "small file" — return full content so verifier sees whole file (avoids false negatives). */
 const MAX_LINES_FULL_FILE_VERIFY = 200;
+/**
+ * For type/signature issues, verifier needs a larger window to see function bodies and call sites.
+ * WHY 500 (not 200): Type/signature fixes often span the function definition plus its callers.
+ * With 200 lines, the verifier said "role never assigned" or "method not found" because the
+ * relevant code was outside the window. 500 covers most function bodies and immediate call sites.
+ */
+const MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE = 500;
 
 /**
  * Get current code at (or around) the issue line for verification.
  * WHY anchor + size: Audit (prompts.log) showed verifier received first 2000 chars only; for a 204-line
  * file the models array at line 169 was never seen, so verifier wrongly said "still present". We now
  * return full file when small, or a larger anchored window (30/70 lines), and client uses 8k char limit.
+ * When expandForTypeSignature, return full file up to MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE so verifier
+ * can see function body and call sites (avoids false "role never assigned" etc.).
  */
 async function getCurrentCodeAtLine(
   workdir: string,
   filePath: string,
-  line: number | null
+  line: number | null,
+  expandForTypeSignature?: boolean
 ): Promise<string> {
   try {
     const fullPath = join(workdir, filePath);
     const content = await readFile(fullPath, 'utf-8');
     const lines = content.split('\n');
 
-    if (lines.length <= MAX_LINES_FULL_FILE_VERIFY) {
+    const fullFileLimit = expandForTypeSignature ? MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE : MAX_LINES_FULL_FILE_VERIFY;
+    if (lines.length <= fullFileLimit) {
       return lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
+    }
+
+    if (expandForTypeSignature) {
+      return lines
+        .slice(0, fullFileLimit)
+        .map((l, i) => `${i + 1}: ${l}`)
+        .join('\n') + `\n... (${lines.length - fullFileLimit} more lines)`;
     }
 
     if (line === null) {
@@ -422,7 +440,7 @@ export async function verifyFixes(
               const stateSeq = getState(stateContext);
               const rejectionCountSeq = (stateSeq.verifierRejectionCount?.[issue.comment.id] ?? 0) + 1;
               const currentCodeSeq = workdir
-                ? await getCurrentCodeAtLine(workdir, primaryPathSeq, issue.comment.line)
+                ? await getCurrentCodeAtLine(workdir, primaryPathSeq, issue.comment.line, commentMentionsApiOrSignature({ comment: issue.comment.body }))
                 : '';
               if (
                 rejectionCountSeq >= AUTO_VERIFY_PATTERN_ABSENT_THRESHOLD &&
@@ -494,7 +512,7 @@ export async function verifyFixes(
             const [diff, currentCode] = await Promise.all([
               getIssueDiff(issue),
               workdir
-                ? getCurrentCodeAtLine(workdir, primaryPath, issue.comment.line)
+                ? getCurrentCodeAtLine(workdir, primaryPath, issue.comment.line, commentMentionsApiOrSignature({ comment: issue.comment.body }))
                 : Promise.resolve(undefined),
             ]);
             return {
