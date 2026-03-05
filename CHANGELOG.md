@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Prompts.log audit: dedup same-caller, verifier strength, dismissal skips, multi-file nudge
+
+**Skip dismissal-comment when file no longer exists**
+- In `tools/prr/workflow/dismissal-comments.ts`, issues whose dismissal reason matches "file no longer exists", "file not found", or "no longer exists" are filtered out before any LLM call or file read.
+- **WHY**: Prompts.log audit showed a dismissal-comment prompt sent for a file with reason "File no longer exists: stores/task.store.ts" — the LLM was asked to write a comment in a missing file, wasting tokens and producing a comment that would never be inserted. Skipping at filter time avoids the call and any path-resolution work.
+
+**Post-filter generic dismissal comments**
+- In `tools/prr/llm/client.ts` (`generateDismissalComment`), after parsing a `COMMENT: Note: ...` response we check whether the comment mostly restates the surrounding code (2–8 words, ≥2 words of length ≥4 appear in the code). If so, we return `needed: false` and do not insert.
+- **WHY**: Audit showed gpt-4o-mini producing comments like "extracts relevant metrics for consistent report generation" and "Adds section header for clarity" — they narrate what the code does rather than explaining design intent, add no value, and violate the prompt's "self-explanatory → SKIP" rule. Post-filtering treats obvious restatements as SKIP so we don't insert noise.
+
+**Heuristic dedup: same method + same caller file**
+- In `tools/prr/workflow/issue-analysis.ts`, added `callerFileFromBody(body)` to extract a caller/referenced file from comment text (e.g. "runner.py:146", "in runner.py", "callers in X"). Heuristic dedup now merges two comments on the same file when they share the same primary symbol and the same caller file, even when authors differ.
+- **WHY**: Prompts.log audit showed dedup returning NONE for four comments on the same file; comments from different authors (cursor vs claude) described the same async/caller mismatch (generate_report + runner.py) but were not grouped, so duplicate issues reached the fix prompt and wasted attempts. Same symbol + same caller file is a strong signal for "same issue".
+
+**Multi-file nudge in fix prompt**
+- In `tools/prr/analyzer/prompt-builder.ts`, when TARGET FILE(S) has more than one file and the review body mentions callers (e.g. "calls", "caller", "await", "file:line"), we add a line: "This issue requires changes in **all** listed files — update the implementation and every call site (e.g. `await` / method calls) so signatures match."
+- **WHY**: Audit showed the fixer updated only reporting.py while runner.py was in TARGET FILE(S); the verifier then correctly rejected because print_results still called generate_report() without await/args. Explicitly nudging to update all listed files and call sites reduces incomplete multi-file fixes.
+
+**Verifier model floor for API/signature-related fixes**
+- In `tools/prr/workflow/fix-verification.ts`, added `commentMentionsApiOrSignature(fix)` (true when the comment mentions async/await, signature/TypeError/caller, method accepts/takes, or file:line call pattern). The verify batch is split into `fixesApiSignature` and `fixesDefaultRest`; when a stronger verifier model is available, API/signature fixes are verified with that model instead of the default.
+- **WHY**: Prompts.log audit showed the default verifier (qwen-3-14b) approved a fix that made generate_report async and added a required argument, but missed that print_results still called it without await or args — a call-site bug. Weak verifiers are more likely to miss call-site mismatches; using a stronger model for API/signature-related fixes improves verification accuracy and reduces "fixed then broken at call site" outcomes.
+
+### Fixed (2026-03) — CLAUDE.md / sync targets: do not delete repo-owned files
+
+**Sync target existence recorded and re-checked after clone**
+- `setWorkdir` in `tools/prr/state/lessons-context.ts` now calls `Detect.autoDetectSyncTargets(ctx)` from `lessons-detect.ts` instead of a local helper that only updated `syncTargets`. The shared detector sets **both** `syncTargets` and `originalSyncTargetState` (which files existed at detection time).
+- **WHY**: The local helper never set `originalSyncTargetState`, so the map stayed empty. Final cleanup uses `didSyncTargetExist(ctx, 'claude-md')` to decide whether to remove CLAUDE.md; with an empty map it always returned false, so we always assumed PRR had "created" it and deleted it at end of run — nuking the repo's actual CLAUDE.md when the user never ran `--clean-claude-md`.
+
+- After clone/update in `tools/prr/workflow/run-setup-phase.ts`, we call `LessonsAPI.Detect.autoDetectSyncTargets(lessonsContext)` again so "existed at start" reflects the **post-checkout** workdir, not the pre-clone state.
+- **WHY**: On first run the workdir is created empty, then we set workdir and detect — no CLAUDE.md yet. Clone runs later and checks out the repo (which may include CLAUDE.md). Without re-detection we would still have "claude-md didn't exist" and would delete it at final cleanup. Re-running detection after clone ensures we only treat files as "created by prr" when they were absent after checkout.
+
+### Fixed (2026-03) — Output.log audit: allowed paths, CodeRabbit meta, (PR comment) dismissal
+
+**Runner allowed paths aligned with prompt-builder expansion**
+- In `tools/prr/workflow/execute-fix-iteration.ts`, `allowedPathsForBatch` now includes the same extra paths the prompt-builder uses: migration journal (`getMigrationJournalPath`), consolidate-duplicate target (`getConsolidateDuplicateTargetPath`), and test-impl path (`getImplPathForTestFileIssue`). The runner no longer blocks edits that the fix prompt explicitly asked for.
+- **WHY**: The prompt told the fixer to edit e.g. `db/migrations/meta/_journal.json` for Drizzle migration issues, but the runner's allow-list was built only from `issue.allowedPaths` / `issue.comment.path`, so every journal edit was rejected as "disallowed file" and the fix never applied.
+
+**CodeRabbit "Actions performed" and auto-reply filtered out**
+- `isCodeRabbitMetaComment` in `tools/prr/github/api.ts` now also matches `<!-- This is an auto-generated reply` and `✅ Actions performed` (short comments). The same filter is applied to **issue comments** (the "other comments" path in `getReviewBotIssueComments`) so CodeRabbit's confirmation blurb is not added as a fixable issue.
+- **WHY**: That blurb is not a code review; sending it to the fix loop wasted 4+ iterations across models and produced only RESULT: UNCLEAR / WRONG_LOCATION.
+
+**(PR comment) synthetic path dismissed in solvability**
+- In `tools/prr/workflow/helpers/solvability.ts`, issues whose path is the synthetic `(PR comment)` (from `inferPathLineFromBody` when no file path is found) are now dismissed as `not-an-issue` before any LLM call.
+- **WHY**: The fixer cannot edit a non-file; every attempt fails and burns iterations. Dismissing up front avoids wasted fix/verify cycles.
+
+### Added (2026-03) — Git fetch: timeout, stdout on timeout, GitHub token auth
+
+**Fetch timeout and captured output on timeout**
+- Conflict check and remote-ahead check now run `git fetch` via `spawn` (in `shared/git/git-conflicts.ts`) with a 60s timeout instead of using simple-git's fetch (which could hang indefinitely). On timeout the process is killed and the error message includes any stdout/stderr captured so far.
+- **WHY**: Users reported the "Checking for conflicts with remote..." step sticking with no output. Fetch can hang on network issues, SSH prompts, or credential prompts. A timeout prevents infinite wait; including git's stdout/stderr in the error (e.g. "Password for 'https://...':") makes it obvious that credentials were the cause so the token fix can be applied.
+
+**GitHub token for fetch and pull**
+- `fetchOriginBranch(git, branch, options?)` accepts optional `FetchOptions.githubToken`. When the remote `origin` URL is HTTPS and has no embedded credentials, we use a one-shot auth URL (`https://${token}@...`) for the fetch (same pattern as push in `git-push.ts`). Fetch uses the refspec `refs/heads/<branch>:refs/remotes/origin/<branch>` so `git status()` still sees updated `origin/branch`.
+- **WHY**: Repos cloned without a token in the URL (or with SSH that isn't configured) cause git to prompt for a password during fetch; in headless/prr runs there is no TTY so the process hangs. We already have `GITHUB_TOKEN` in config for push; using it for fetch and pull avoids the prompt and unblocks setup and fix-loop sync.
+- `pullLatest` now takes optional `FetchOptions` and uses `fetchOriginBranch` for its internal fetch so pull also benefits from token auth.
+- **WHY**: After "branch is behind remote" we pull; that pull's fetch would otherwise prompt for password again. Reusing the same fetch path keeps behavior consistent.
+- Token is passed from setup (`checkAndSyncWithRemote(..., config.githubToken)`), from the fix-loop pre-iteration check (`checkAndPullRemoteCommits(..., githubToken)`), and from the pull path inside `checkAndSyncWithRemote` when behind. Credentials in URLs are redacted before any log/error output.
+- **WHY**: Token is never written to `.git/config` (one-shot URL only), so SIGKILL or crash doesn't leave secrets on disk; redaction prevents credential leakage in logs.
+
 ### Fixed (2026-02) — Prompts.log audit: verifier before snippet, model rec skip, no-op skip verify, escalation delay, predict-bots skip
 
 **Verifier prompt: add "Code before fix" snippet**

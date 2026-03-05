@@ -62,7 +62,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
 - **Conflict prompt injection skip**: File-content injection is skipped for conflict-resolution prompts. *Why*: The conflict prompt already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), blow prompt size, and cause 504s.
 - **Large conflicted files (chunked embed)**: For files over ~30k chars with conflicts, only the conflict sections (with context) are embedded in the prompt, not the full file. *Why*: Full-file embed doubles prompt size and causes 504s; sections are enough for correct `<search>`/`<replace>` output.
-- **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
+- **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication; fetch and pull also use the token when the remote has no credentials (one-shot auth URL), so "Checking for conflicts" and pull never hang on a password prompt. **Why:** Repos cloned without token in the URL would otherwise block during fetch with no visible output; timeout + token fix it (see CHANGELOG).
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
 
@@ -75,6 +75,10 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Skip dismissal LLM for already-fixed**: We no longer call the LLM to generate a Note for issues dismissed as already-fixed; code/diff is self-documenting. *Why*: Audit showed 62% of dismissal LLM responses were EXISTING; skipping saves tokens.
 - **Relax file constraint on retry**: When the fixer returns CANNOT_FIX/WRONG_LOCATION and mentions another file, we persist that path and allow it on the next attempt so the fixer can edit the correct file. *Why*: Prompts.log audit showed 7 identical 33k-char prompts for one cross-file issue; persisting the other file avoids burning all models and can resolve on retry.
 - **Persisted dedup cache**: LLM dedup results are stored in state keyed by comment ID set; repeat runs with the same comments skip the dedup LLM step. *Why*: In-memory cache reset each run; persisting saves tokens and latency.
+- **Heuristic dedup same-caller**: Comments on the same file that share the same primary symbol (e.g. method name) and the same caller file (e.g. "runner.py:146") are merged even when authors differ. *Why*: Prompts.log audit showed duplicate issues from cursor vs claude describing the same async/caller mismatch; merging them avoids duplicate fix attempts.
+- **Verifier strength for API/signature fixes**: Fixes whose comment mentions async/await, caller, signature, or TypeError are verified with a stronger model when available. *Why*: Weak default verifier approved a fix that missed the call-site update (e.g. print_results still calling generate_report() without await/args); stronger model catches call-site bugs.
+- **Dismissal-comment skips**: We skip the dismissal-comment LLM when the reason says "file no longer exists" or "file not found", and we post-filter generated comments that only restate the surrounding code. *Why*: Avoids sending a prompt for a missing file and avoids inserting generic "extracts metrics"-style noise.
+- **Multi-file nudge**: When TARGET FILE(S) lists multiple files and the review mentions callers (await, file:line), the fix prompt adds a line urging updates to implementation and every call site. *Why*: Reduces fixer updating only one file and leaving call sites broken.
 - **Wider batch snippets**: When context headroom ≥100k chars, batch verification uses 2500/3000 char limits per comment/code snippet (vs 2000/2000). *Why*: Reduces false positives from truncation.
 - **Rotation by success rate**: Legacy model rotation orders models by persisted success rate (best first). *Why*: Low-success models no longer get tried before proven performers.
 - **CodeRabbit analysis chain stripping**: Comment bodies are sanitized to remove CodeRabbit "Analysis chain" and "Script executed" blocks before analysis/fix prompts. *Why*: CodeRabbit embeds 5–15 shell runs per comment (~200–1500 chars each); the analyzer only needs the actual finding, not script output—saves ~30% on affected prompts.
@@ -109,16 +113,19 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ## Installation
 
+This repo contains **prr** (PR Resolver) and **pill** (Program Improvement Log Looker). Both use a shared library under `shared/`; tool code lives under `tools/prr/` and `tools/pill/`.
+
 ```bash
-bun install
-bun run build
+npm install
+npm run build
 
-# Run directly
-bun dist/index.js <pr-url>
+# Run prr directly
+node dist/tools/prr/index.js <pr-url>
 
-# Or link globally
-bun link
-prr --version  # See the cat!
+# Or link globally (both prr and pill available)
+npm link
+prr --version   # See the cat!
+pill --help    # Pill CLI
 ```
 
 ## Configuration
@@ -524,7 +531,7 @@ Team gets everything in one atomic update
 ### Why This Approach?
 
 1. **Full history preserved**: `.prr/lessons.md` keeps everything
-2. **User content safe**: CLAUDE.md's existing content isn't touched
+2. **User content safe**: CLAUDE.md's existing content isn't touched. We never delete repo-owned sync targets: final cleanup only removes files prr created this run (we record which existed at detection and re-detect after clone so we know what was in the repo).
 3. **Multi-tool support**: Works with Cursor, Claude Code, Aider
 4. **No bloat**: Synced files get only recent/relevant lessons
 5. **Team sync**: `git pull` gives everyone the latest

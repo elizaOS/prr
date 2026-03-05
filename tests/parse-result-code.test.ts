@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseResultCode } from '../src/workflow/utils.js';
+import { parseResultCode } from '../tools/prr/workflow/utils.js';
 
 describe('parseResultCode', () => {
   it('parses RESULT: ALREADY_FIXED — detail', () => {

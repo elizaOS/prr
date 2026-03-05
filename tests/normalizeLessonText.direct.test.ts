@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { LessonsManager } from '../src/state/lessons.js';
+import { LessonsManager } from '../tools/prr/state/lessons.js';
 
 function normalize(lesson: string): string | null {
   const manager = new LessonsManager('test-owner', 'test-repo', 'test-branch');

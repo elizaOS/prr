@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeLessonText } from '../src/state/lessons-normalize';
+import { normalizeLessonText } from '../tools/prr/state/lessons-normalize.js';
 
 describe('normalizeLessonText', () => {
   function normalize(lesson: string): string | null {

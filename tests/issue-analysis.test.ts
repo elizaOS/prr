@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLineReferencesFromBody } from '../src/workflow/issue-analysis.js';
+import { parseLineReferencesFromBody } from '../tools/prr/workflow/issue-analysis.js';
 
 describe('parseLineReferencesFromBody', () => {
   it('extracts "around lines N - M" (CodeRabbit format)', () => {

@@ -2,6 +2,22 @@
 
 Items here are potential directions to explore, not committed plans. Each idea includes **why** it would help, so we can revisit tradeoffs later.
 
+## Recently completed
+
+**Prompts.log audit: dedup, verifier strength, dismissal comments, multi-file (2026-03)**  
+- Skip dismissal-comment when reason says "file no longer exists" / "file not found"; post-filter generated COMMENT when it mostly restates surrounding code; heuristic dedup merges same file + same symbol + same caller file across authors; multi-file nudge in fix prompt when TARGET FILE(S) has multiple files and body mentions callers; verifier uses stronger model for API/signature-related fixes when available. **WHY**: Audit of a BFCL/reporting.py run found duplicate issues from different authors not merged (wasted fix attempts), weak verifier approving call-site bugs, dismissal prompt for missing file, generic dismissal comments inserted, and fixer updating only one of two target files. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Prompts.log audit: dedup same-caller, verifier strength, dismissal skips, multi-file nudge" and [AUDIT-CYCLES.md](AUDIT-CYCLES.md) Cycle 10.
+
+**CLAUDE.md / sync target fix (2026-03)**  
+- setWorkdir now uses shared `Detect.autoDetectSyncTargets` so `originalSyncTargetState` is set; re-detect after clone so "existed at start" reflects the post-checkout workdir. **WHY**: We were always deleting CLAUDE.md at final cleanup because we never recorded that it existed in the repo; we only remove sync targets we created this run. See [CHANGELOG](../CHANGELOG.md) "Fixed (2026-03) — CLAUDE.md / sync targets" and [docs/README](README.md) "CLAUDE.md / sync target fix".
+
+**Output.log audit follow-up (2026-03)**  
+- Runner allowed paths expanded (journal, consolidate-duplicate, test-impl); CodeRabbit "Actions performed" / auto-reply filtered from fixable comments; issues with path `(PR comment)` dismissed in solvability. **WHY**: Blocked journal edits, meta comments as issues, and non-file paths wasted fix iterations. See [CHANGELOG](../CHANGELOG.md) "Fixed (2026-03) — Output.log audit" and [docs/README](README.md) "Output.log audit follow-up".
+
+**Git fetch: timeout and token auth (2026-03)**  
+- Conflict-check and remote-ahead fetch now run via spawn with a 60s timeout; on timeout the error includes git’s stdout/stderr so users see e.g. password prompts. Optional `githubToken` is used for one-shot HTTPS auth when the remote has no credentials, so fetch/pull no longer hang waiting for a password. **WHY**: Stuck “Checking for conflicts…” with no output was caused by fetch waiting for credentials; timeout + output + token auth fix it. See [CHANGELOG](../CHANGELOG.md) “Added (2026-03) — Git fetch: timeout, stdout on timeout, GitHub token auth”.
+
+---
+
 ## Recently completed (from audits)
 
 The following items from Prompts.log / Output.log audits are already implemented and documented in [CHANGELOG](../CHANGELOG.md) under "Fixed (2026-02) — Prompts.log audit: verifier before snippet, model rec skip, no-op skip verify, escalation delay, predict-bots skip":
@@ -25,6 +41,15 @@ The following items from Prompts.log / Output.log audits are already implemented
 **WHY:** Audits show waste when the fix loop processes comments on files outside the PR’s logical scope or when the prompt is diluted by many unrelated files. Focusing on blast radius reduces prompt size, improves fix accuracy, and avoids cross-file confusion (e.g. wrong-file exhaust). Tradeoff: some valid cross-file fixes might be deprioritized; depth limit and “changed files only” fallback keep scope reasonable.
 
 Would require: PR changed-file list (`git diff base...HEAD --name-only`), a dependency graph (e.g. TS/JS import/require parsing), radius computation (depth limit), and integration into issue filtering and prompt building. Start with TS/JS; fallback to "changed files only" when no graph is available.
+
+## Audit-derived follow-ups (optional)
+
+From [AUDIT-CYCLES.md](AUDIT-CYCLES.md) consolidated findings; not committed, low priority.
+
+- **getConsolidateDuplicateTargetPath:** Iterate all path matches in comment body and return the first that is not `comment.path` and not `lib/utils/db-errors.(ts|js)` (today we use first match only, so if db-errors is mentioned first we return null). **WHY:** When the canonical duplicate file is listed after db-errors, fixer could get allowed path for the right file.
+- **pathExists for single-issue prompt:** `buildSingleIssuePrompt` in `workflow/utils.ts` calls `getTestPathForSourceFileIssue(issue)` without `pathExists`; batch prompt and recovery already pass it. **WHY:** Single-issue focus mode can resolve to a colocated test path that does not exist when the real file is in __tests__/integration/; passing pathExists would align behavior and reduce wrong-file attempts.
+- **Path normalization:** In runner `allowedSet`, add `.replace(/\\/g, '/')` so Windows-style paths match. **WHY:** Avoid cross-platform mismatches when comparing paths.
+- **Tests:** Unit tests for `getMigrationJournalPath`, `getConsolidateDuplicateTargetPath`, `getFixedIssueTitle`, `pluralize`, and optionally `isCodeRabbitMetaComment`. **WHY:** Future refactors don’t break behavior.
 
 ## Dismissal feedback loop (generator-judge learning)
 
