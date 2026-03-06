@@ -32,6 +32,7 @@ import {
   getReferencedFullPathFromComment,
   getDocumentationPathFromComment,
   getImplPathForTestFileIssue,
+  getPathsToDeleteFromComment,
   getSiblingFilePathsFromComment,
 } from '../../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../../shared/path-utils.js';
@@ -129,6 +130,9 @@ export async function trySingleIssueFix(
     if (docPath && isPathAllowedForFix(docPath) && !allowedForIssue.includes(docPath)) allowedForIssue = [...allowedForIssue, docPath];
     for (const sibling of getSiblingFilePathsFromComment(issue)) {
       if (!allowedForIssue.includes(sibling)) allowedForIssue = [...allowedForIssue, sibling];
+    }
+    for (const p of getPathsToDeleteFromComment(issue)) {
+      if (!allowedForIssue.includes(p)) allowedForIssue = [...allowedForIssue, p];
     }
     const implPath = getImplPathForTestFileIssue(issue, undefined);
     if (implPath && isPathAllowedForFix(implPath) && !allowedForIssue.includes(implPath)) allowedForIssue = [...allowedForIssue, implPath];

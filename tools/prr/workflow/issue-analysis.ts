@@ -34,7 +34,7 @@ import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getTestPathForSourceFileIssue, isSnippetTooShort, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getPathsToDeleteFromCommentBody, getTestPathForSourceFileIssue, isSnippetTooShort, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
@@ -1032,6 +1032,14 @@ function getAllowedPathsForNewIssue(comment: ReviewComment, codeSnippet: string,
   return filterAllowedPathsForFix([comment.path, testPath]);
 }
 
+/** Allowed paths for a new issue: test path when relevant, plus any paths listed in "delete/remove these files" body. */
+function getEffectiveAllowedPathsForNewIssue(comment: ReviewComment, codeSnippet: string, explanation: string | undefined): string[] {
+  const base = getAllowedPathsForNewIssue(comment, codeSnippet, explanation) ?? [comment.path];
+  const deletePaths = getPathsToDeleteFromCommentBody(comment.body ?? '');
+  if (deletePaths.length === 0) return base;
+  return filterAllowedPathsForFix([...base, ...deletePaths]);
+}
+
 /** When comment.path is a basename (no directory), resolve to full path from diff if present. Prompts.log audit: fixer was sent wrong file (root reporting.py) when issue was about benchmarks/bfcl/reporting.py. */
 function resolvePathFromDiff(commentPath: string, changedFiles: string[] | undefined): string | undefined {
   if (!changedFiles?.length || commentPath.includes('/')) return undefined;
@@ -1409,7 +1417,7 @@ export async function findUnresolvedIssues(
         explanation: validStatus.explanation,
         triage: { importance: validStatus.importance, ease: validStatus.ease },
         mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-        allowedPaths: getAllowedPathsForNewIssue(item.comment, item.codeSnippet, validStatus.explanation),
+        allowedPaths: getEffectiveAllowedPathsForNewIssue(item.comment, item.codeSnippet, validStatus.explanation),
         resolvedPath: item.resolvedPath,
       });
     } else if (validStatus && validStatus.status === 'resolved') {
@@ -1539,7 +1547,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getAllowedPathsForNewIssue(comment, codeSnippet, undefined),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, undefined),
             resolvedPath,
           });
         }
@@ -1564,7 +1572,7 @@ export async function findUnresolvedIssues(
           explanation: result.explanation,
           triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getAllowedPathsForNewIssue(comment, codeSnippet, result.explanation),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, result.explanation),
           resolvedPath,
         });
       } else {
@@ -1605,7 +1613,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getAllowedPathsForNewIssue(comment, codeSnippet, undefined),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, undefined),
             resolvedPath,
           });
         }
@@ -1820,7 +1828,7 @@ export async function findUnresolvedIssues(
           explanation: 'Unable to determine status',
           triage: { importance: 3, ease: 3 },  // Default: fallback path
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getAllowedPathsForNewIssue(comment, codeSnippet, undefined),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, undefined),
           resolvedPath,
         });
         continue;
@@ -1889,7 +1897,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
             resolvedPath,
           });
         }
@@ -1914,7 +1922,7 @@ export async function findUnresolvedIssues(
           explanation: effectiveResult.explanation,
           triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
           resolvedPath,
         });
       } else {
@@ -1955,7 +1963,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
             resolvedPath,
           });
         }

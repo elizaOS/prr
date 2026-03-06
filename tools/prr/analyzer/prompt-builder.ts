@@ -247,6 +247,50 @@ export function getDocumentationPathFromComment(issue: UnresolvedIssue): string 
   return null;
 }
 
+/** Same trigger as mentionsDeleteOrStray; used by getPathsToDeleteFromCommentBody. */
+function bodyMentionsDeleteOrStray(body: string): boolean {
+  return /\b(?:delete|remove from repo|stray|garbage file|should not be in the repo|mistakenly committed|remove (?:these?|the) files?)\b/i.test(body);
+}
+
+/**
+ * Extract file paths from a comment body when it lists files to delete/remove (e.g. stray files).
+ * Used at issue creation so allowedPaths can include all listed paths. Only runs when body
+ * mentions delete/remove/stray/garbage so we don't pull random paths from other issues.
+ */
+export function getPathsToDeleteFromCommentBody(body: string): string[] {
+  if (!body || !bodyMentionsDeleteOrStray(body)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  // Bullet lines with backtick-wrapped path: - `path` or - `path` - description
+  const backtickRe = /^[\s]*[-*]\s*`([^`]+)`/gm;
+  let m: RegExpExecArray | null;
+  while ((m = backtickRe.exec(body)) !== null) {
+    const p = m[1].trim();
+    if (p && (p.includes('/') || /\.(ts|tsx|js|jsx|py|json)$/i.test(p) || /^[a-zA-Z0-9_.-]+$/i.test(p)) && !seen.has(p)) {
+      seen.add(p);
+      if (isPathAllowedForFix(p)) out.push(p);
+    }
+  }
+  // Bullet lines with path not in backticks: - path or - path - description (path has extension or slash)
+  const plainRe = /^[\s]*[-*]\s+([a-zA-Z0-9][a-zA-Z0-9/_.-]*\.(?:ts|tsx|js|jsx|py|json)|[a-zA-Z0-9][a-zA-Z0-9/_.-]*\/[a-zA-Z0-9/_.-]+)(?:\s|$)/gm;
+  while ((m = plainRe.exec(body)) !== null) {
+    const p = m[1].trim();
+    if (p && !seen.has(p) && isPathAllowedForFix(p)) {
+      seen.add(p);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/**
+ * When the comment body lists files to delete/remove (e.g. "Stray files: - 10/route.ts - 50/route.ts"),
+ * return those paths so we can add them to allowedPaths and the runner will accept <deletefile path="..."/>.
+ */
+export function getPathsToDeleteFromComment(issue: UnresolvedIssue): string[] {
+  return getPathsToDeleteFromCommentBody(issue.comment.body ?? '');
+}
+
 /**
  * When the comment body mentions sibling files by name (e.g. "entity.store.ts and task.store.ts"),
  * return repo-relative paths in the same directory as the issue file so we can add them to
@@ -526,9 +570,7 @@ export function buildFixPrompt(
 
   parts.push('## Issues to Fix\n');
   // When any issue asks to delete/remove files, nudge to use <deletefile> (Cycle 13 M2).
-  const mentionsDeleteOrStray = limitedIssues.some((i) =>
-    /\b(?:delete|remove from repo|stray|garbage file|should not be in the repo|mistakenly committed|remove (?:these?|the) files?)\b/i.test(i.comment.body ?? '')
-  );
+  const mentionsDeleteOrStray = limitedIssues.some((i) => bodyMentionsDeleteOrStray(i.comment.body ?? ''));
   if (mentionsDeleteOrStray) {
     parts.push('**If the review asks to delete or remove files from the repo:** output `<deletefile path="relative/path"/>` for each file to remove. Do not just empty the file or add a comment — the file must be deleted.\n');
   }
@@ -556,6 +598,9 @@ export function buildFixPrompt(
     if (docPath && isPathAllowedForFix(docPath) && !basePaths.includes(docPath)) basePaths = [...basePaths, docPath];
     for (const sibling of getSiblingFilePathsFromComment(issue)) {
       if (!basePaths.includes(sibling)) basePaths = [...basePaths, sibling];
+    }
+    for (const p of getPathsToDeleteFromComment(issue)) {
+      if (!basePaths.includes(p)) basePaths = [...basePaths, p];
     }
     const fileLessons = options?.perFileLessons?.get(primaryPath) ?? options?.perFileLessons?.get(issue.comment.path);
     const implPath = getImplPathForTestFileIssue(issue, fileLessons);
