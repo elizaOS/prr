@@ -208,6 +208,8 @@ export interface ResolverState {
   consecutiveAlreadyFixedAnyByCommentId?: Record<string, number>;
   /** Per-comment count of "could not inject file from repo" + no-change cycles; dismiss as file-unchanged after threshold (output.log audit H2). */
   couldNotInjectCountByCommentId?: Record<string, number>;
+  /** Per-comment count of verifier verdicts saying "delete entirely" / "remove from repo". Dismiss after threshold so we don't burn iterations when fixer keeps emptying files instead of deleting (Cycle 13 M2). */
+  deleteEntirelyVerdictCountByCommentId?: Record<string, number>;
   /** Per-comment count of CANNOT_FIX results citing missing/placeholder file content. WHY: audit showed 10+ retries on placeholder files burning 500K+ tokens. */
   cannotFixMissingContentCountByCommentId?: Record<string, number>;
   /** Per-comment consecutive CANNOT_FIX count (any reason); when >= CANNOT_FIX_EXHAUST_THRESHOLD, dismiss as not-an-issue. */

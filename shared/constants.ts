@@ -302,6 +302,12 @@ export const CANNOT_FIX_MISSING_CONTENT_THRESHOLD = 2;
 export const COULD_NOT_INJECT_DISMISS_THRESHOLD = 3;
 
 /**
+ * Verifier verdicts saying "delete entirely" / "remove from repo" before we dismiss (Cycle 13 M2).
+ * Gives the model 2 chances to output <deletefile> before deferring to handoff.
+ */
+export const DELETE_ENTIRELY_DISMISS_THRESHOLD = 2;
+
+/**
  * Per-file search/replace (or hallucinated-stub) failure count before dismissing issues targeting that file as remaining.
  * WHY: output.log audit H3 — wallet-auth.ts had 26 failures and was still retried; dismiss so we stop burning tokens.
  */

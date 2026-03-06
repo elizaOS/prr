@@ -29,7 +29,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import { formatNumber, debugStep, startTimer, endTimer, debug } from '../../../shared/logger.js';
-import { COULD_NOT_INJECT_DISMISS_THRESHOLD } from '../../../shared/constants.js';
+import { COULD_NOT_INJECT_DISMISS_THRESHOLD, DELETE_ENTIRELY_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -279,6 +279,25 @@ export async function executePushIteration(
       console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after ${COULD_NOT_INJECT_DISMISS_THRESHOLD}+ attempts)`));
       debug('Dismissed issues at couldNotInject threshold (in fix loop)', { count: couldNotInjectDismiss.length, commentIds: [...dismissedIds] });
       // WHY: If every remaining issue was couldNotInject, queue is now empty; treat as all fixed and exit instead of running fixer with no issues.
+      if (unresolvedIssues.length === 0) {
+        allFixed = true;
+        break;
+      }
+    }
+
+    // Dismiss issues that hit "delete entirely" verdict threshold (Cycle 13 M2).
+    const deleteEntirelyDismiss = unresolvedIssues.filter(
+      (i) => (stateContext.state?.deleteEntirelyVerdictCountByCommentId?.[i.comment.id] ?? 0) >= DELETE_ENTIRELY_DISMISS_THRESHOLD
+    );
+    if (deleteEntirelyDismiss.length > 0) {
+      const reason = 'Requires file deletion (use <deletefile path="..."/> or resolve manually)';
+      const dismissedIds = new Set(deleteEntirelyDismiss.map((i) => i.comment.id));
+      for (const issue of deleteEntirelyDismiss) {
+        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'remaining', issue.comment.path, issue.comment.line, issue.comment.body, undefined);
+      }
+      unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
+      console.log(chalk.yellow(`  ${formatNumber(deleteEntirelyDismiss.length)} issue(s) dismissed (requires file deletion after ${DELETE_ENTIRELY_DISMISS_THRESHOLD}+ verifier verdicts)`));
+      debug('Dismissed issues at deleteEntirely threshold (in fix loop)', { count: deleteEntirelyDismiss.length, commentIds: [...dismissedIds] });
       if (unresolvedIssues.length === 0) {
         allFixed = true;
         break;

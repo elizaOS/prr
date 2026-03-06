@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, realpathSync, readdirSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, unlinkSync, realpathSync, readdirSync } from 'fs';
 import { dirname, join, resolve, relative, sep, isAbsolute, basename } from 'path';
 import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
@@ -320,6 +320,9 @@ If creating a new file, use:
 <newfile path="relative/path/to/new-file.ext">
 file contents
 </newfile>
+
+To remove a file from the repo entirely (e.g. stray/garbage files that should not exist), use:
+<deletefile path="relative/path/to/file"/>
 
 OUTCOME REPORTING: After your changes (or instead of changes), include a RESULT line as instructed in the prompt. If you make changes, RESULT: FIXED is optional. If you make NO changes, a RESULT line is REQUIRED.
 
@@ -1024,6 +1027,34 @@ Working directory: ${workdir}`;
     const MAX_WHITESPACE = 1000;
     const normalizePathForAllow = (p: string) => p.replace(/^\.\//, '');
     const allowedSet = allowedPathsForBatch?.length ? new Set(allowedPathsForBatch.map(normalizePathForAllow)) : null;
+
+    // Parse <deletefile path="..."/> or <deletefile path="..."></deletefile> — remove file from repo (Cycle 13 M2).
+    // WHY: Review often asks to "delete stray files" / "remove from repo"; fixer can't do that with search/replace.
+    const deletefilePattern = /<deletefile\s+path="([^"]+)"(?:\s*\/>|>[\s\S]*?<\/deletefile>)/g;
+    let delMatch: RegExpExecArray | null;
+    while ((delMatch = deletefilePattern.exec(response)) !== null) {
+      const filePath = (delMatch[1] || '').trim();
+      if (!filePath) continue;
+      if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
+        skippedDisallowed.add(filePath);
+        debug('Skipping deletefile — not in TARGET FILE(S)', { filePath });
+        continue;
+      }
+      const { safe, fullPath } = this.isPathSafe(workdir, filePath);
+      if (!safe) {
+        debug('Skipping deletefile outside workdir', { filePath });
+        continue;
+      }
+      try {
+        if (existsSync(fullPath)) {
+          unlinkSync(fullPath);
+          filesModified.add(filePath);
+          debug('Deleted file (deletefile)', { filePath });
+        }
+      } catch (err) {
+        debug('Failed to delete file', { filePath, error: err });
+      }
+    }
 
     // Parse <change path="..."><search>...</search><replace>...</replace></change> blocks
     const changePattern = /<change\s+path="([^"]+)">\s*<search>([\s\S]*?)<\/search>\s*<replace>([\s\S]*?)<\/replace>\s*<\/change>/g;

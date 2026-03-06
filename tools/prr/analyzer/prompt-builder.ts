@@ -525,6 +525,13 @@ export function buildFixPrompt(
   }
 
   parts.push('## Issues to Fix\n');
+  // When any issue asks to delete/remove files, nudge to use <deletefile> (Cycle 13 M2).
+  const mentionsDeleteOrStray = limitedIssues.some((i) =>
+    /\b(?:delete|remove from repo|stray|garbage file|should not be in the repo|mistakenly committed|remove (?:these?|the) files?)\b/i.test(i.comment.body ?? '')
+  );
+  if (mentionsDeleteOrStray) {
+    parts.push('**If the review asks to delete or remove files from the repo:** output `<deletefile path="relative/path"/>` for each file to remove. Do not just empty the file or add a comment — the file must be deleted.\n');
+  }
 
   for (let i = 0; i < limitedIssues.length; i++) {
     const issue = limitedIssues[i];

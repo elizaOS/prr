@@ -31,6 +31,14 @@ import { VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
 import { getChangedFiles, getDiffForFile, detectFileCorruption, filterUnifiedDiffByLineRange } from '../../../shared/git/git-clone-index.js';
 import { basename, dirname, extname, join } from 'path';
 import { VERIFIER_ESCALATION_THRESHOLD, AUTO_VERIFY_PATTERN_ABSENT_THRESHOLD } from '../../../shared/constants.js';
+
+/** True when verifier explanation says the file must be deleted (not just emptied). Cycle 13 M2. */
+function isDeleteEntirelyVerdict(explanation: string): boolean {
+  return (
+    /delete (?:the )?file entirely|remove (?:the )?file (?:from the repo)?|file (?:must be |needs to be )?deleted|git rm|should be (?:completely )?removed|delete (?:those?|these?|stray) files?/i.test(explanation) ||
+    /(?:stray|garbage) file.*(?:delete|remove)/i.test(explanation)
+  );
+}
 import { isModelProviderCompatible, getModelsForRunner } from '../models/rotation.js';
 import type { Runner } from '../../../shared/runners/types.js';
 
@@ -481,6 +489,10 @@ export async function verifyFixes(
                 }
                 if (!stateSeq.verifierRejectionCount) stateSeq.verifierRejectionCount = {};
                 stateSeq.verifierRejectionCount[issue.comment.id] = rejectionCountSeq;
+                if (isDeleteEntirelyVerdict(verification.explanation)) {
+                  if (!stateSeq.deleteEntirelyVerdictCountByCommentId) stateSeq.deleteEntirelyVerdictCountByCommentId = {};
+                  stateSeq.deleteEntirelyVerdictCountByCommentId[issue.comment.id] = (stateSeq.deleteEntirelyVerdictCountByCommentId[issue.comment.id] ?? 0) + 1;
+                }
                 if (isInfrastructureFailure(verification.explanation)) {
                   const shortReason = verification.explanation.substring(0, 120);
                   LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPathSeq}:${issue.comment.line} - infra failure: ${shortReason}`);
@@ -662,6 +674,10 @@ export async function verifyFixes(
                 }
                 if (!state.verifierRejectionCount) state.verifierRejectionCount = {};
                 state.verifierRejectionCount[issue.comment.id] = rejectionCount;
+                if (isDeleteEntirelyVerdict(verification.explanation)) {
+                  if (!state.deleteEntirelyVerdictCountByCommentId) state.deleteEntirelyVerdictCountByCommentId = {};
+                  state.deleteEntirelyVerdictCountByCommentId[issue.comment.id] = (state.deleteEntirelyVerdictCountByCommentId[issue.comment.id] ?? 0) + 1;
+                }
                 const lesson = verification.lesson
                   || `Fix rejected: ${verification.explanation}`;
                 LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
