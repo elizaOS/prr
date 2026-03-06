@@ -11,10 +11,6 @@ import { isValidModelName } from '../config.js';
 const execFile = promisify(execFileCallback);
 
 // Validate model name to prevent injection (defense in depth)
-function isValidModel(model: string): boolean {
-  return isValidModelName(model);
-}
-
 // Claude Code CLI binary names
 const CLAUDE_BINARIES = ['claude', 'claude-code'];
 
@@ -145,7 +141,7 @@ export class ClaudeCodeRunner implements Runner {
       };
     }
 
-    if (options?.model && !isValidModel(options.model)) {
+    if (options?.model && !isValidModelName(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 

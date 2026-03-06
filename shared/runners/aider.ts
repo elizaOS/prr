@@ -6,14 +6,9 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { debug, debugPrompt, debugResponse } from '../logger.js';
+import { isValidModelName } from '../config.js';
 
 const execFile = promisify(execFileCallback);
-
-// Validate model name to prevent injection (defense in depth - also validated in CLI)
-// Allows forward slashes for provider-prefixed names like "anthropic/claude-..." or "openrouter/anthropic/..."
-function isValidModel(model: string): boolean {
-  return /^[A-Za-z0-9._\/-]+$/.test(model);
-}
 
 export class AiderRunner implements Runner {
   name = 'aider';
@@ -65,7 +60,7 @@ export class AiderRunner implements Runner {
     }
     
     // Validate model before writing sensitive prompt to disk
-    if (options?.model && !isValidModel(options.model)) {
+    if (options?.model && !isValidModelName(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 

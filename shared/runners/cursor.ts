@@ -9,12 +9,6 @@ import { isValidModelName } from '../config.js';
 
 const execFile = promisify(execFileCallback);
 
-// Validate model name to prevent injection (defense in depth)
-// Allows forward slashes for provider-prefixed names like "anthropic/claude-..."
-function isValidModel(model: string): boolean {
-  return isValidModelName(model);
-}
-
 function isSafePath(value: string): boolean {
   return value.length > 0 && !/[\0\r\n]/.test(value);
 }
@@ -260,7 +254,7 @@ export class CursorRunner implements Runner {
     }
     
     // Validate model before writing sensitive prompt to disk
-    if (options?.model && !isValidModel(options.model)) {
+    if (options?.model && !isValidModelName(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 

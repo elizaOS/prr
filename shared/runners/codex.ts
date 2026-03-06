@@ -12,10 +12,6 @@ import { isValidModelName } from '../config.js';
 const execFile = promisify(execFileCallback);
 
 // Validate model name to prevent injection (defense in depth)
-function isValidModel(model: string): boolean {
-  return isValidModelName(model);
-}
-
 // OpenAI Codex CLI binary names
 const CODEX_BINARIES = ['codex', 'openai-codex'];
 
@@ -74,7 +70,7 @@ export class CodexRunner implements Runner {
     }
     
     // Validate model before writing sensitive prompt to disk
-    if (options?.model && !isValidModel(options.model)) {
+    if (options?.model && !isValidModelName(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
     

@@ -21,10 +21,6 @@ import { isValidModelName } from '../config.js';
 
 const execFile = promisify(execFileCallback);
 
-function isValidModel(model: string): boolean {
-  return isValidModelName(model);
-}
-
 export class GeminiRunner implements Runner {
   name = 'gemini';
   displayName = 'Gemini CLI';
@@ -81,7 +77,7 @@ export class GeminiRunner implements Runner {
       return { success: false, output: '', error: 'No prompt provided (nothing to fix)' };
     }
 
-    if (options?.model && !isValidModel(options.model)) {
+    if (options?.model && !isValidModelName(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 

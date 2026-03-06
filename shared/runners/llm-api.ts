@@ -11,6 +11,7 @@ import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL
 import { getMaxFixPromptCharsForModel, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient } from '../llm/elizacloud.js';
 import { acquireElizacloud, releaseElizacloud } from '../llm/rate-limit.js';
+import { normalizePathForAllow, normalizeRepoPath } from '../path-utils.js';
 
 /**
  * Direct LLM API runner - uses ElizaCloud, Anthropic, or OpenAI API directly to fix code.
@@ -51,7 +52,7 @@ function sanitizeToolMarkupInReplacement(text: string): string {
  * L2 (output.log audit): Reject obviously invalid new-file paths (e.g. 50/Next.js, framework-name as file).
  */
 function isSuspiciousNewFilePath(path: string): boolean {
-  const normalized = path.replace(/\\/g, '/').trim();
+  const normalized = normalizeRepoPath(path);
   if (/\/\d+\//.test(normalized) || /^\d+\//.test(normalized)) return true;
   const base = basename(normalized);
   const suspiciousBasenames = ['Next.js', 'Nuxt.js', 'Vue.js', 'React'];
@@ -632,8 +633,8 @@ Working directory: ${workdir}`;
    * Used to prefer resolving fragments to files in the same directory as other issue paths.
    */
   private static commonPathPrefixSegments(a: string, b: string): number {
-    const segA = a.replace(/\\/g, '/').split('/').filter(Boolean);
-    const segB = b.replace(/\\/g, '/').split('/').filter(Boolean);
+    const segA = normalizeRepoPath(a).split('/').filter(Boolean);
+    const segB = normalizeRepoPath(b).split('/').filter(Boolean);
     let i = 0;
     while (i < segA.length && i < segB.length && segA[i] === segB[i]) i++;
     return i;
@@ -686,7 +687,7 @@ Working directory: ${workdir}`;
       // at least one path segment with the requested path. A bare basename (1 segment) like
       // "route.ts" is a legitimate fragment and is not restricted.
       const reqSegmentCount = requestedPath
-        ? requestedPath.replace(/\\/g, '/').split('/').filter(Boolean).length
+        ? normalizeRepoPath(requestedPath).split('/').filter(Boolean).length
         : 0;
       const requirePrefixMatch = requestedPath && reqSegmentCount >= 2;
 
@@ -1025,7 +1026,6 @@ Working directory: ${workdir}`;
     let placeholderTestContent = false;
     const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const MAX_WHITESPACE = 1000;
-    const normalizePathForAllow = (p: string) => p.replace(/^\.\//, '');
     const allowedSet = allowedPathsForBatch?.length ? new Set(allowedPathsForBatch.map(normalizePathForAllow)) : null;
 
     // Parse <deletefile path="..."/> or <deletefile path="..."></deletefile> — remove file from repo (Cycle 13 M2).

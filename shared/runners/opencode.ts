@@ -6,11 +6,6 @@ import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.
 import { debug, debugPrompt, debugResponse } from '../logger.js';
 import { isValidModelName } from '../config.js';
 
-// Validate model name to prevent injection (defense in depth)
-function isValidModel(model: string): boolean {
-  return isValidModelName(model);
-}
-
 // Helper to run a command without shell (prevents injection)
 function execNoShell(command: string, args: string[] = []): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -85,7 +80,7 @@ export class OpencodeRunner implements Runner {
     }
     
     // Validate model before writing sensitive prompt to disk
-    if (options?.model && !isValidModel(options.model)) {
+    if (options?.model && !isValidModelName(options.model)) {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 
