@@ -253,7 +253,8 @@ export function printFinalSummary(
   if (toolFixedCount > 0) {
     let sessionNote = '';
     if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) {
-      sessionNote = ` (${formatNumber(fixedThisSession)} this session)`;
+      // Cycle 13 L1: Clarify that the total includes fixes from previous runs.
+      sessionNote = ` (of which ${formatNumber(fixedThisSession)} this session)`;
     } else if (fixedThisSession === 0) {
       // Nothing verified this run — count is from state (e.g. resumed run that never reached fix loop)
       sessionNote = ' (from previous runs)';

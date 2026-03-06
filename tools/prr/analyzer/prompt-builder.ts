@@ -441,8 +441,13 @@ export function buildFixPrompt(
     // Take only the most recent lessons (most relevant to current state)
     const capped = lessonsLearned.slice(-lessonCap);
     const skipped = lessonsLearned.length - capped.length;
+    // Cycle 13 L3 / 14 L2: When file-specific lessons exist, nudge that they apply to this batch.
+    const hasFileSpecificLessons = capped.some((l) => /^Fix for\s+[^\s]+(\s|-)/.test(l));
 
     parts.push('## Lessons Learned (from previous attempts)\n');
+    if (hasFileSpecificLessons) {
+      parts.push('One or more lessons below apply directly to the TARGET FILE(S) in this batch — use them to avoid repeating past failures.\n');
+    }
     parts.push('These lessons were learned from prior fix attempts on these same issues. Each one represents a failed approach — account for them so you make progress instead of repeating the same mistakes:\n');
     if (skipped > 0) {
       parts.push(`_(${skipped} older entries omitted — showing ${capped.length} most recent)_\n`);

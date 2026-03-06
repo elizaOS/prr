@@ -1210,6 +1210,30 @@ ${codeSnippet}
             stale = false;
           }
 
+          // Override: NO but explanation says code/excerpt not visible or can't confirm — per judge instructions
+          // "if you would say 'not in excerpt', say YES not STALE". Verifier said NO (fixed) while admitting
+          // they couldn't see the code; that contradicts NO (we should treat as unverified / still exists).
+          if (responseUpper === 'NO' && (
+            /relevant code is not visible in the provided excerpt/i.test(explanation) ||
+            /not (?:visible|included|shown) in the (?:provided )?excerpt/i.test(explanation) ||
+            /can'?t (?:confirm|verify|determine) whether/i.test(explanation) ||
+            /(?:file is )?missing from the provided excerpts/i.test(explanation) ||
+            /truncated portion would contain/i.test(explanation) ||
+            /not visible here|not visible in (?:this )?(?:excerpt|snippet)/i.test(explanation)
+          )) {
+            debug('Batch override: NO→YES (explanation says not visible / can\'t confirm)', { resultId, explanationPreview: explanation.slice(0, 80) });
+            exists = true;
+            stale = false;
+          }
+
+          // Override: NO but explanation says the requested fix is missing (e.g. "without any mapping of editor").
+          // Cycle 14 M2: Verifier said NO (fixed) while describing that the code still lacks the requested behavior.
+          if (responseUpper === 'NO' && /\bwithout (?:any|proper) (?:mapping|handling|validation)\b/i.test(explanation)) {
+            debug('Batch override: NO→YES (explanation says requested fix missing)', { resultId, explanationPreview: explanation.slice(0, 80) });
+            exists = true;
+            stale = false;
+          }
+
           // Override: YES but explanation says the code is already correct or the review comment is mistaken.
           // Guard: skip override if explanation also says "still needs", "but X is missing", "however" — partial fix, not fully resolved.
           const looksAlreadyCorrect = (
@@ -1850,17 +1874,20 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     try {
       const response = await this.complete(prompt);
-      const lesson = response.content.trim();
+      let lesson = response.content.trim();
       
       // Ensure it's not too long and is actually useful
       if (lesson.length > 200) {
-        return lesson.substring(0, 197) + '...';
+        lesson = lesson.substring(0, 197) + '...';
       }
       if (lesson.length < 10) {
-        // Too short, fall back to basic lesson
         return `Fix rejected: ${rejectionReason}`;
       }
-      
+      // Cycle 14 L3: Reject generic/vague lessons that add no insight (prompt lists these as BAD examples).
+      // Only reject when the lesson IS the generic phrase — not when it contains useful context after it.
+      if (/^(the )?fix( was| is)? incomplete\.?$/i.test(lesson) || /^no insight about why\.?$/i.test(lesson)) {
+        return `Fix rejected: ${rejectionReason}`;
+      }
       return lesson;
     } catch (error) {
       // If analysis fails, return basic lesson

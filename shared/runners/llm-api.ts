@@ -644,13 +644,19 @@ Working directory: ${workdir}`;
    * When pathHints are provided (other paths from the same prompt), prefers a candidate
    * that shares directory structure with a hint (output.log audit H1: avoid resolving
    * "50/route.ts" to app/api/mcps/github/[transport]/route.ts when issue is in topup/).
+   * When requestedPath is provided, it is used first for prefix matching (Cycle 13:
+   * avoid substituting wrong file for repo-root-like paths e.g. 10/route.ts).
+   * When requestedPath has 2+ segments (fake directory path), never returns a candidate
+   * that shares zero path prefix — if the best candidate has no directory in common with
+   * the requested path, returns null (avoids cross-directory substitution).
    */
   private findLargerFileByBasename(
     workdir: string,
     baseName: string,
     maxSize: number,
     maxLines: number,
-    pathHints?: string[]
+    pathHints?: string[],
+    requestedPath?: string
   ): { relativePath: string; content: string } | null {
     try {
       const entries = readdirSync(workdir, { recursive: true });
@@ -671,18 +677,36 @@ Working directory: ${workdir}`;
         }
       }
       if (candidates.length === 0) return null;
-      if (candidates.length === 1) return candidates[0];
-      // Prefer candidate that shares path segments with a hint (same directory as other issue paths).
-      if (pathHints && pathHints.length > 0) {
+
+      // Cycle 13: when requestedPath has 2+ segments (fake directory like "10/route.ts" or
+      // "modelcontextprotocol/sdk/server/auto-top-up.ts"), only accept a candidate that shares
+      // at least one path segment with the requested path. A bare basename (1 segment) like
+      // "route.ts" is a legitimate fragment and is not restricted.
+      const reqSegmentCount = requestedPath
+        ? requestedPath.replace(/\\/g, '/').split('/').filter(Boolean).length
+        : 0;
+      const requirePrefixMatch = requestedPath && reqSegmentCount >= 2;
+
+      if (candidates.length === 1) {
+        if (requirePrefixMatch && LLMAPIRunner.commonPathPrefixSegments(candidates[0].relativePath, requestedPath!) === 0) return null;
+        return candidates[0];
+      }
+      // Prefer candidate that shares path segments with requested path first, then other hints.
+      const hints = requestedPath ? [requestedPath, ...(pathHints || [])] : pathHints;
+      if (hints && hints.length > 0) {
         const scored = candidates.map((c) => {
-          const pathScore = Math.max(...pathHints.map((h) => LLMAPIRunner.commonPathPrefixSegments(c.relativePath, h)));
+          const pathScore = Math.max(...hints.map((h) => LLMAPIRunner.commonPathPrefixSegments(c.relativePath, h)));
           return { ...c, pathScore };
         });
         scored.sort((a, b) => b.pathScore - a.pathScore || b.content.length - a.content.length);
-        return scored[0];
+        const best = scored[0];
+        if (requirePrefixMatch && best.pathScore === 0) return null;
+        return best;
       }
       candidates.sort((a, b) => b.content.length - a.content.length);
-      return candidates[0];
+      const fallback = candidates[0];
+      if (requirePrefixMatch && LLMAPIRunner.commonPathPrefixSegments(fallback.relativePath, requestedPath!) === 0) return null;
+      return fallback;
     } catch {
       return null;
     }
@@ -771,7 +795,7 @@ Working directory: ${workdir}`;
         ) {
           const base = basename(filePath);
           const pathHints = sortedPaths.filter((p) => p !== filePath);
-          const candidate = this.findLargerFileByBasename(workdir, base, MAX_FILE_SIZE, MAX_LINES, pathHints);
+          const candidate = this.findLargerFileByBasename(workdir, base, MAX_FILE_SIZE, MAX_LINES, pathHints, filePath);
           if (candidate && candidate.content.length >= content.length) {
             content = candidate.content;
             pathToInject = candidate.relativePath;

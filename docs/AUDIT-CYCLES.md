@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-05 · **Recorded cycles:** 12 · **Historical (legacy):** 4
+**Last updated:** 2026-03-05 · **Recorded cycles:** 14 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -27,6 +27,7 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **Model strength** | 5, 8, 9, 10 | Weak default model (e.g. qwen-3-14b) approves bad fixes or rejects good ones; model rec ignores success rate. Guard: verifier model floor for API/signature; model rec prompt "weight overall success rate heavily"; escalation for repeated rejections. |
 | **Mid-loop bypass** | 12 | Thresholds (couldNotInject) or filters (solvability) only run at push-iteration start; new comments or in-loop state bypass them and burn iterations. Guard: apply same dismissal/threshold checks at start of each fix iteration; run assessSolvability on new comments before adding to queue. |
 | **STALE vs YES (snippet)** | 12 | Verifier returns STALE when explanation is "can't evaluate", "doesn't show", "only shows" (incomplete snippet) — judge instructions say use YES. Guard: STALE→YES override for these phrasings; avoid false positives on legitimate STALE ("only shows re-export"). |
+| **Basename / fragment path** | 13 | Short or fragment paths (e.g. `10/route.ts`, `modelcontextprotocol/.../auto-top-up.ts`) resolved by basename to a *different* file with same basename → wrong content injected, S/R fails or wrong file edited. Guard: prefer basename candidate that shares path prefix with requested path; skip substitution when fragment looks like repo-root and no exact match. |
 
 ---
 
@@ -71,6 +72,7 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] Verifier: API/signature-related fixes (async/await, caller, TypeError) use stronger model when available (commentMentionsApiOrSignature).
 - [ ] Judge: NO must cite specific code or line numbers; format uses colons.
 - [ ] Verifier: YES→NO override when explanation says "already correct", "comment mistaken", etc.
+- [ ] Verifier: NO→YES override when explanation says "not visible in excerpt", "can't confirm whether", "missing from excerpts", "truncated portion would contain" (Cycle 14).
 - [ ] Summary/meta-review comments (status recap tables, "### Summary" with 3+ status phrases) dismissed as not-an-issue (solvability).
 - [ ] When snippet is "(file not found or unreadable)", batch analysis tries getFileContentFromRepo (git show HEAD:path) before sending to verifier.
 - [ ] No-changes lessons: single-issue uses "Fix for path:line - ..."; batch uses "(N issues in batch)" in global lesson.
@@ -83,6 +85,7 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] STALE→YES override: phrasings for "can't evaluate", "doesn't show", "only shows" (with not/beginning/start/first/lines), "incomplete"; no false positive on legitimate STALE ("only shows re-export").
 
 **File injection / circuit breakers**
+- [ ] Basename fallback: when requestedPath has 2+ segments, only accept a candidate with ≥1 shared prefix segment; return null if best candidate has pathScore 0 (avoids `10/route.ts` → `app/.../route.ts`, `verify/route.ts` → `app/.../nonce/route.ts`). Bare basenames (1 segment) are unrestricted. (Cycle 13)
 - [ ] Placeholder content ("COMPLETE FILE CONTENTS", "[Previous content remains identical]") never injected into fix prompts.
 - [ ] CANNOT_FIX missing content counter increments and solvability dismisses after threshold.
 - [ ] Hallucination guard rejects `<file>` blocks < 15% of original size.
@@ -406,6 +409,52 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Additive in-loop dismissal, optional params for processNewBotReviews (backward compatible), and filter/override expansions; no behavior reverted.
 
 **Notes:** Patterns assessed: (1) Mid-loop bypass — thresholds and solvability must apply inside the fix loop and to new comments, not only at push-iteration start. (2) STALE overuse — verifier phrasing often "can't evaluate / doesn't show" rather than literal "not visible in excerpt"; override regex expanded and tightened to avoid false positives. (3) ALREADY_FIXED re-queue — batch prompt builder had no visibility into fixer's prior ALREADY_FIXED count; filter at prompt build avoids re-sending. P8 (no-op search/replace) already implemented (noMeaningfulChanges skips verification).
+
+---
+
+### Cycle 13 — 2026-03-05 (output.log audit: same run as Cycle 12, post–Cycle 12 code)
+
+**Artifacts audited:** output.log (elizaOS/eliza-cloud-v2#373, ~2h, 74 fix iterations, 8k+ lines sampled: start, queue/verification/dismissal lines, fixer failures, verifier "Changed but not verified" + lessons, couldNotInject/could not inject, AAR and RESULTS SUMMARY).
+
+**Findings:**
+- **High:** (none)
+- **Medium (M1):** Basename fallback for short/fragment paths can inject the **wrong file**: e.g. comment path `10/route.ts` (garbage file at repo root) or `modelcontextprotocol/sdk/server/auto-top-up.ts` (nonexistent) resolved via `findLargerFileByBasename` to `lib/services/auto-top-up.ts` or `50/route.ts`. Fixer then gets content for a different file; S/R fails or edits wrong file; couldNotInject / chronic failure. Prefer candidate that shares path prefix with requested path, or skip substitution when fragment looks like repo-root (e.g. single-segment dir) and no exact match in workdir.
+- **Medium (M2):** "Delete file" / "garbage file" / "remove from repo" issues repeatedly get fixer attempts that empty the file or add a comment; verifier correctly says "file needs to be deleted entirely". Discussion response was added ("need to be deleted via `git rm`") but the issue stays in queue. No runner support for file deletion; fixer can't express `git rm` via search/replace. Consider: dismiss after N verifier "delete entirely" verdicts, or add explicit "delete file" instruction / allowed path so runner can emit a delete action if supported later.
+- **Low (L1):** AAR Summary says "Fixed 171" (unique comment IDs in Fixed bucket) while RESULTS block says "136 issues fixed and verified (from previous runs)". Different denominators (AAR uses comments + verification state; RESULTS uses state filtered by currentCommentIds + session note). Acceptable but could be clarified in RESULTS (e.g. "of which N this session") when both are shown.
+- **Low (L2):** Server timeout/retry ("Server error or request timeout, retrying") observed once; recovery succeeded. No change needed; already in watchlist.
+- **Low (L3):** Repeated "Changed but not verified" + lesson for same class (e.g. requireEnv/production validation, fee transparency, toFixed/string type, idempotency) — lessons are recorded but same issue types recur in batch. Optional: stronger prompt nudge when a lesson's path+topic matches current issue (e.g. "This matches a prior lesson: ...").
+
+**Improvements implemented:**
+- **M1 (basename fallback):** shared/runners/llm-api.ts — findLargerFileByBasename now takes optional `requestedPath`. When requestedPath has 2+ segments (fake directory like `10/route.ts`, `modelcontextprotocol/sdk/server/auto-top-up.ts`, `verify/route.ts`, `db/schemas/route.ts`), only accept a candidate that shares at least one path prefix segment with requestedPath; return null otherwise. A bare basename (1 segment) is a legitimate fragment and is not restricted. requestedPath is also prepended to pathHints so multi-candidate scoring prefers the same directory.
+
+**Flip-flop check:** N — Audit only; no code changes.
+
+**Notes:** Cycle 12 guards (couldNotInject in-loop, new-comment solvability, ALREADY_FIXED filter, STALE→YES) would have reduced wasted iterations in this run; this audit focuses on remaining patterns. Basename resolution lives in shared/runners/llm-api.ts (`findLargerFileByBasename`). File-deletion limitation is known (runner output is search/replace or full-file rewrite; no `git rm`). Recurring verifier themes: comment/code mismatch (review says "removed" but diff still shows), partial fix (schema updated but error message not), transparency/customer communication not addressed.
+
+---
+
+### Cycle 14 — 2026-03-05 (prompts.log audit: verifier NO when "not visible", judge format, LESSONs)
+
+**Artifacts audited:** prompts.log (91k lines, same run as Cycle 12/13), sampled: batch verifier prompts/responses (#0001–#0023, #0145, model rec), single-issue verify/judge, fix prompts, LESSON lines, STALE/YES/NO patterns.
+
+**Findings:**
+- **High:** (none)
+- **Medium (M1):** Verifier returned **NO** (issue resolved) with explanations that say code/excerpt is **not visible** or **can't confirm** (e.g. "The relevant code is not visible in the provided excerpt", "The file is missing from the provided excerpts, so I can't confirm whether the issue has been fixed"). Judge instructions say: if you would say "not in excerpt", say **YES** not STALE — so NO is wrong when the reason is inability to see the code. Those issues were incorrectly marked fixed and left the queue.
+- **Medium (M2):** One verifier response (issue_5) said NO with "Line 299-300 shows ... without any mapping of editor" — explanation describes the issue still present (no editor mapping); contradictory NO. Optional: extend NO→YES to phrases like "without any mapping/handling" when the comment asked for that.
+- **Low (L1):** Batch verifier responses sometimes use pipes between fields (e.g. `issue_1: YES I2 D2 | explanation`) instead of colons; parser tolerates both. No change needed.
+- **Low (L2):** LESSON "Review asks for pre-call validation (line 32), not post-call error handling" repeated many times; same issue type recurring. Optional: lesson dedup or stronger nudge when lesson path+topic matches current issue.
+- **Low (L3):** "Fix was incomplete" (no insight about why) appears in lesson output despite being in BAD examples; optional post-filter to reject or replace with generic.
+
+**Improvements implemented:**
+- **M1 (NO→YES when not visible/can't confirm):** llm/client.ts batch parsing — when verdict is NO and explanation indicates code/excerpt not visible or can't confirm (e.g. "relevant code is not visible in the provided excerpt", "can't confirm whether", "missing from the provided excerpts", "truncated portion would contain", "not visible in this excerpt"), override to YES (exists = true) so the issue is not incorrectly marked resolved.
+- **Optional (Cycle 14 M2):** NO→YES when explanation says "without any/proper mapping/handling/validation" (contradictory NO — requested fix still missing). llm/client.ts.
+- **Optional (Cycle 14 L3):** analyzeFailedFix post-filter: if lesson is generic ("Fix was incomplete", "no insight about why"), return `Fix rejected: ${rejectionReason}` instead. llm/client.ts.
+- **Optional (Cycle 13 L1):** RESULTS summary — when mixed session/previous, show "of which N this session" instead of "N this session". reporter.ts.
+- **Optional (Cycle 13 L3 / 14 L2):** When lessons include file-specific ("Fix for path..."), add nudge line: "One or more lessons below apply directly to the TARGET FILE(S) in this batch". prompt-builder.ts.
+
+**Flip-flop check:** N — Additive override only; no behavior reverted.
+
+**Notes:** STALE→YES override (Cycle 12) already handles STALE with "not visible"; this handles the symmetric mistake where the model said NO instead of STALE/YES. File-deletion LESSONs ("delete entirely", "git rm") recur — matches Cycle 13 M2 (runner can't do git rm). Follow-up: optional fixes (Cycle 14 M2, L3; Cycle 13 L1, L3/14 L2) implemented — NO→YES "without any mapping/handling", lesson post-filter for "Fix was incomplete", reporter "of which N this session", prompt-builder nudge when file-specific lessons exist.
 
 ---
 
