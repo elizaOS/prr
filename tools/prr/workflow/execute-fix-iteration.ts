@@ -137,6 +137,8 @@ export async function executeFixIteration(
   tryRotation: (failureErrorType?: string) => boolean,
   tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
+  /** Current fix iteration (1-based). When 1, use conservative prompt cap to avoid timeout (audit). */
+  fixIteration: number,
   onDisableRunner?: (runnerName: string) => void
 ): Promise<{
   shouldContinue: boolean;
@@ -152,6 +154,8 @@ export async function executeFixIteration(
   exitReason?: string;
   exitDetails?: string;
   lessonsBeforeFix: number;
+  /** True when duplicate prompt was skipped (caller should not count this as an iteration). */
+  skippedDuplicatePrompt?: boolean;
 }> {
   const spinner = ora();
 
@@ -244,7 +248,8 @@ export async function executeFixIteration(
     runner.name,
     undefined,
     modelContext,
-    pathExists
+    pathExists,
+    fixIteration === 1
   );
   
   if (promptDetails.shouldSkip) {
@@ -309,6 +314,7 @@ export async function executeFixIteration(
       updatedProgressThisCycle: rotationResult.updatedProgressThisCycle,
       updatedUnresolvedIssues: rotationResult.updatedUnresolvedIssues,
       lessonsBeforeFix,
+      skippedDuplicatePrompt: true,
     };
   }
   lastPromptKey = promptKey;

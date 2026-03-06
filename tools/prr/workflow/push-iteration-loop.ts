@@ -351,9 +351,15 @@ export async function executePushIteration(
       unresolvedIssues, comments, git, workdir, getRunner(), stateContext, lessonsContext, llm, options, config.openaiApiKey, prInfo, verifiedThisSession,
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut,
+      fixIteration,
       callbacks.onDisableRunner
     );
     
+    // Audit: don't count duplicate-prompt skip as an iteration (next iteration keeps same number).
+    if (iterResult.skippedDuplicatePrompt) {
+      fixIteration--;
+    }
+
     // Update state
     rapidFailureCount = iterResult.updatedRapidFailureCount;
     lastFailureTime = iterResult.updatedLastFailureTime;

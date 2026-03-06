@@ -21,7 +21,7 @@ import type { PRInfo } from '../github/types.js';
 import type { ReviewComment } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { buildFixPrompt as buildPrompt, computeEffectiveBatchSize } from '../analyzer/prompt-builder.js';
-import { OPENCODE_MAX_ISSUES_PER_PROMPT, MAX_FIX_PROMPT_CHARS, MIN_ISSUES_PER_PROMPT, MAX_ISSUES_PER_FIX_PROMPT } from '../../../shared/constants.js';
+import { OPENCODE_MAX_ISSUES_PER_PROMPT, MAX_FIX_PROMPT_CHARS, FIRST_ATTEMPT_MAX_PROMPT_CHARS, MIN_ISSUES_PER_PROMPT, MAX_ISSUES_PER_FIX_PROMPT } from '../../../shared/constants.js';
 import { getMaxFixPromptCharsForModel } from '../llm/model-context-limits.js';
 import { summarizeBotRiskByFile } from './bot-risk.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -58,6 +58,8 @@ export function buildAndDisplayFixPrompt(
   modelContext?: { provider: 'elizacloud' | 'anthropic' | 'openai'; model: string },
   /** When provided, used to resolve test file paths so TARGET FILE(S) point to the path that exists (e.g. __tests__/integration vs colocated). */
   pathExists?: (path: string) => boolean,
+  /** When true, use a conservative cap (80k) to avoid gateway timeout on first attempt (audit: 94k timed out). */
+  firstFixAttempt?: boolean,
 ): {
   prompt: string;
   detailedSummary: string;
@@ -125,10 +127,14 @@ export function buildAndDisplayFixPrompt(
     ? summarizeBotRiskByFile(comments, affectedFiles)
     : undefined;
 
-  const effectiveCap =
+  let effectiveCap =
     maxPromptChars ??
     (modelContext ? getMaxFixPromptCharsForModel(modelContext.provider, modelContext.model) : undefined) ??
     MAX_FIX_PROMPT_CHARS;
+  if (firstFixAttempt && effectiveCap > FIRST_ATTEMPT_MAX_PROMPT_CHARS) {
+    effectiveCap = FIRST_ATTEMPT_MAX_PROMPT_CHARS;
+    debug('First fix attempt: using conservative prompt cap to avoid timeout', { cap: effectiveCap });
+  }
 
   // Cap prompt size: reduce batch until under limit so file injection doesn't push total over gateway limit.
   // WHY proportional: Halving (50→25→12→6) wasted iterations when prompt was only slightly over cap.

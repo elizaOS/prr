@@ -70,6 +70,13 @@ export const REWRITE_ESCALATION_RESERVE_CHARS = 2_000;
 export const MAX_FIX_PROMPT_CHARS = 200_000;
 
 /**
+ * Conservative cap for the first fix attempt to avoid gateway timeouts (90s).
+ * WHY: Audit (output.log) showed 94k char prompt timed out on first attempt;
+ * pre-flight cap reduces batch so first call stays under ~80k and completes.
+ */
+export const FIRST_ATTEMPT_MAX_PROMPT_CHARS = 80_000;
+
+/**
  * Minimum issues per prompt when adaptive batching reduces the batch size.
  * Below this, single-issue focus mode is more appropriate.
  *

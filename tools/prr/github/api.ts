@@ -299,6 +299,7 @@ export class GitHubAPI {
               nodes {
                 id
                 isResolved
+                isOutdated
                 path
                 line
                 diffSide
@@ -330,6 +331,7 @@ export class GitHubAPI {
             nodes: Array<{
               id: string;
               isResolved: boolean;
+              isOutdated?: boolean;
               path: string;
               line: number | null;
               diffSide: 'LEFT' | 'RIGHT' | null;
@@ -377,6 +379,7 @@ export class GitHubAPI {
           line: thread.line,
           diffSide: thread.diffSide,
           isResolved: thread.isResolved,
+          isOutdated: thread.isOutdated ?? false,
           comments: thread.comments.nodes.map((comment) => ({
             id: comment.id,
             threadId: thread.id,
@@ -417,6 +420,7 @@ export class GitHubAPI {
           path: thread.path,
           line: thread.line,
           createdAt: firstComment.createdAt,
+          outdated: thread.isOutdated === true,
         });
       }
     }

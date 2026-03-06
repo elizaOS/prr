@@ -1130,6 +1130,12 @@ export async function findUnresolvedIssues(
   }> = [];
 
   for (const comment of comments) {
+    // GitHub marks threads as outdated when the commented line no longer exists in the current diff.
+    // Treat them as not unaddressed so PRR's list matches the PR conversation view.
+    if (comment.outdated) {
+      continue;
+    }
+
     const isStale = staleVerifications.includes(comment.id);
     
     // If --reverify flag is set, ignore the cache and re-check everything
@@ -1770,8 +1776,11 @@ export async function findUnresolvedIssues(
         const snippet = r.explanation.slice(0, 200).replace(/\n/g, ' ');
         return `${id}: ${r.exists ? 'YES' : r.stale ? 'STALE' : 'NO'}${triage} | ${snippet}`;
       });
+      // Audit: recommender didn't account for prompt size; 94k prompt timed out. Rough estimate: ~5k chars per issue + header.
+      const estimatedFixPromptChars = toFixCount * 5000 + 20000;
+      const modelContextWithEstimate = { ...modelContext, estimatedFixPromptChars };
       try {
-        const rec = await llm.getModelRecommendationOnly(summaryLines.join('\n'), modelContext);
+        const rec = await llm.getModelRecommendationOnly(summaryLines.join('\n'), modelContextWithEstimate);
         if (rec.recommendedModels?.length) {
           batchResult = {
             ...batchResult,

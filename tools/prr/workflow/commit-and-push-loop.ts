@@ -143,19 +143,23 @@ export async function handleCommitAndPush(
 
   // LLM prediction (opt-in): simulate likely new bot comments; display only, never block.
   // Skip when --no-wait-bot or skipBotWait to save ~26s; prediction is display-only so skipping has no impact on behavior.
+  // Audit: use diff of this commit only (HEAD^..HEAD), not full PR diff, so "Likely new bot feedback" matches staged files.
   if (options.predictBots && !options.noWaitBot && !skipBotWait && llm) {
     try {
-      const diff = await git.raw(['diff', `origin/${prInfo.baseBranch}...HEAD`]);
-      const predictions = await predictBotFeedback(
-        {
-          diff,
-          comments,
-          changedFiles: commit.stagedFiles,
-          prTitle: prInfo.title,
-          prBodyOneLine: (prInfo.body || '').split('\n')[0]?.trim() || '',
-        },
-        llm
-      );
+      const hasParent = await git.revparse(['HEAD^']).then(() => true).catch(() => false);
+      const diff = hasParent ? await git.raw(['diff', 'HEAD^', 'HEAD']) : '';
+      const predictions = diff
+        ? await predictBotFeedback(
+            {
+              diff,
+              comments,
+              changedFiles: commit.stagedFiles,
+              prTitle: prInfo.title,
+              prBodyOneLine: (prInfo.body || '').split('\n')[0]?.trim() || '',
+            },
+            llm
+          )
+        : [];
       if (predictions.length > 0) {
         console.log(chalk.gray('  Likely new bot feedback after push:'));
         for (const p of predictions) {

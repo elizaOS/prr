@@ -67,6 +67,8 @@ export interface ReviewThread {
   line: number | null;
   diffSide: 'LEFT' | 'RIGHT' | null;
   isResolved: boolean;
+  /** True when the comment was on a line that no longer exists in the current diff (GitHub marks these "Outdated"). */
+  isOutdated?: boolean;
   comments: ThreadComment[];
 }
 
@@ -78,6 +80,8 @@ export interface ReviewComment {
   path: string;
   line: number | null;
   createdAt: string;
+  /** True when GitHub marks this thread as outdated (line no longer in current diff). Such comments are not shown as unaddressed. */
+  outdated?: boolean;
 }
 
 export function parsePRUrl(url: string): { owner: string; repo: string; number: number } {

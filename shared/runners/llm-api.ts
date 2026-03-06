@@ -1059,12 +1059,27 @@ Working directory: ${workdir}`;
     // Parse <change path="..."><search>...</search><replace>...</replace></change> blocks
     const changePattern = /<change\s+path="([^"]+)">\s*<search>([\s\S]*?)<\/search>\s*<replace>([\s\S]*?)<\/replace>\s*<\/change>/g;
 
+    // Audit: very short search blocks (e.g. single line "*") match the wrong location and corrupt the file.
+    const isSearchTooShortOrOnlyPunctuation = (search: string): boolean => {
+      const trimmed = search.trim();
+      const lines = trimmed.split('\n').filter((l) => l.length > 0);
+      if (lines.length > 2) return false;
+      const onlyPunctuationOrWhitespace = /^[\s*\-_.#/\\[\]{}():;,'"]*$/;
+      return lines.length === 0 || lines.every((l) => onlyPunctuationOrWhitespace.test(l.trim()));
+    };
+
     let match;
     while ((match = changePattern.exec(response)) !== null) {
       let [, filePath, searchText, replaceText] = match;
       searchText = stripLineNumberPrefixes(searchText);
       replaceText = stripLineNumberPrefixes(replaceText);
       attemptedChanges++;
+      if (isSearchTooShortOrOnlyPunctuation(searchText)) {
+        debug('Skipping change — search block too short or only punctuation (likely non-unique)', { filePath, searchPreview: searchText.slice(0, 60) });
+        failedSearchReplace++;
+        failedFiles.add(filePath);
+        continue;
+      }
       const replaceContent = sanitizeToolMarkupInReplacement(replaceText);
       if (!replaceContent && replaceText.trim()) {
         debug('Skipping change — replacement was only tool markup after sanitization', { filePath });

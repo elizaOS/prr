@@ -70,6 +70,15 @@ export function sanitizeCommentForPrompt(body: string): string {
 }
 
 /**
+ * Escape nested ``` inside review comments so the fix prompt doesn't have triple-backtick confusion.
+ * WHY: Review comments often contain GitHub ```suggestion blocks; when we wrap the whole comment in ```,
+ * we get nested ``` which can confuse models (audit: prompts.log).
+ */
+export function escapeSuggestionBlocksInComment(body: string): string {
+  return body.replace(/```suggestion\b([\s\S]*?)```/gi, '~~~suggestion$1~~~');
+}
+
+/**
  * Estimate token count for a string.
  * WHY: Anthropic has 200k token limit. We need to detect when prompts are too large.
  * Rough estimate: 1 token ≈ 4 characters (conservative for English text)
@@ -633,8 +642,8 @@ export function buildFixPrompt(
     // Truncate very long comments to prevent prompt overflow
     // WHY: Some automated tools generate 10k+ char comments with HTML/details
     // Keep first 2000 chars which is enough context for the fix
-    
-    const cleanBody = sanitizeCommentForPrompt(issue.comment.body);
+    // Escape ```suggestion blocks so nested ``` don't break the outer code fence (audit: prompts.log).
+    const cleanBody = escapeSuggestionBlocksInComment(sanitizeCommentForPrompt(issue.comment.body));
     if (cleanBody.length > MAX_COMMENT_CHARS) {
       parts.push(cleanBody.substring(0, MAX_COMMENT_CHARS));
       parts.push('\n... (comment truncated for brevity - see PR for full text)');
@@ -710,6 +719,9 @@ export function buildFixPrompt(
         } else {
           parts.push('**⚠ Address the latest feedback above.**');
         }
+        parts.push('');
+        // Audit: full-file rewrite can perpetuate corruption from failed S/R (e.g. duplicate "Architecture" line).
+        parts.push('**Note:** Previous fix attempts may have left artifacts in this file. Compare carefully with the original review comment so your fix addresses the original issue, not just the corruption.');
         parts.push('');
       } else if (issue.verifierContradiction) {
         parts.push(`**⚠ Latest — address this:** ${issue.verifierContradiction}`);

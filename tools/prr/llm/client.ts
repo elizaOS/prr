@@ -157,6 +157,8 @@ export interface ModelRecommendationContext {
   attemptHistory?: string;
   /** When false, omit model recommendation block and Previous Attempts from prompt. WHY: Verification doesn't fix issues; audit showed ~60k chars wasted per run sending full history to every batch. */
   includeModelRecommendation?: boolean;
+  /** Estimated fix prompt size in chars (audit: recommender didn't account for gateway timeout on 94k prompt). */
+  estimatedFixPromptChars?: number;
 }
 
 /**
@@ -956,8 +958,8 @@ ${codeSnippet}
       'different — if the underlying issue still exists, say YES.',
       '',
       'CRITICAL - Distinguish TRUNCATED snippets from COMPLETE files:',
-      '- If the Current code block ends with "... (truncated — file has N lines total)", the snippet is PARTIAL.',
-      '  Do NOT conclude a function/symbol was removed just because it does not appear. Say YES (still exists).',
+      '- If the Current code block ends with "... (truncated — file has N lines total)" or "... (truncated — snippet was cut for prompt size)", the snippet is PARTIAL.',
+      '  If you cannot see the specific lines referenced in the review at all, answer STALE (do not speculate). If you can see the referenced area and the issue still exists there, answer YES. Do NOT conclude a function/symbol was removed just because it does not appear in the excerpt.',
       '- If the Current code block ends with "(end of file — N lines total)", you are seeing the ENTIRE file.',
       '  If the review references code/lines that do not exist anywhere in the shown file, the code was genuinely',
       '  removed or rewritten. Use STALE.',
@@ -1468,6 +1470,10 @@ ${codeSnippet}
       'Consider: issue complexity, count/diversity, and previous attempts.',
       '',
     ];
+    if (modelContext.estimatedFixPromptChars != null && modelContext.estimatedFixPromptChars > 0) {
+      parts.push(`Estimated fix prompt size for this batch: ~${Math.round(modelContext.estimatedFixPromptChars / 1000)}k chars. Consider model throughput and gateway timeout limits (e.g. 90s).`);
+      parts.push('');
+    }
     if (modelContext.modelHistory) {
       const m = modelContext.modelHistory;
       parts.push('## Model performance on this codebase');
@@ -1974,24 +1980,51 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
    * the issue was actually fixed instead of pattern-matching on current code alone (audit: one
    * correct fix took 17 iterations because the verifier rejected it without before context).
    */
+  /** Min removed-line length below which we add context lines so verifier has enough to judge (audit: "Code before fix" was just `/**`). */
+  private static readonly MIN_BEFORE_SNIPPET_LINES = 3;
+  private static readonly MIN_BEFORE_SNIPPET_CHARS = 150;
+
   private static extractBeforeFromUnifiedDiff(diff: string, maxChars: number): string | undefined {
     const lines = diff.split('\n');
     const removed: string[] = [];
-    for (const line of lines) {
-      if (line.startsWith('-')) {
-        // Skip only real unified-diff header lines like `--- a/...`, `--- b/...`, or `--- /dev/null`.
+    let firstRemovedIdx = -1;
+    let lastRemovedIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line!.startsWith('-')) {
         if (
-          line.startsWith('--- a/') ||
-          line.startsWith('--- b/') ||
-          line.startsWith('--- /dev/null')
+          line!.startsWith('--- a/') ||
+          line!.startsWith('--- b/') ||
+          line!.startsWith('--- /dev/null')
         ) {
           continue;
         }
-        removed.push(line.slice(1)); // drop leading '-'
+        if (firstRemovedIdx < 0) firstRemovedIdx = i;
+        lastRemovedIdx = i;
+        removed.push(line!.slice(1));
       }
     }
     if (removed.length === 0) return undefined;
-    const joined = removed.join('\n');
+    let joined = removed.join('\n');
+    const needExpand =
+      removed.length < LLMClient.MIN_BEFORE_SNIPPET_LINES ||
+      joined.length < LLMClient.MIN_BEFORE_SNIPPET_CHARS;
+    if (needExpand && firstRemovedIdx >= 0 && lastRemovedIdx >= 0) {
+      const contextBefore: string[] = [];
+      for (let j = firstRemovedIdx - 1; j >= 0 && lines[j]!.startsWith(' '); j--) {
+        contextBefore.unshift(lines[j]!.slice(1));
+      }
+      const contextAfter: string[] = [];
+      for (let j = lastRemovedIdx + 1; j < lines.length && lines[j]!.startsWith(' '); j++) {
+        contextAfter.push(lines[j]!.slice(1));
+      }
+      const extra = [
+        ...contextBefore.slice(-5),
+        ...removed,
+        ...contextAfter.slice(0, 5),
+      ].join('\n');
+      if (extra.length <= maxChars) joined = extra;
+    }
     return joined.length > maxChars ? joined.substring(0, maxChars) + '\n... (truncated)' : joined;
   }
 
