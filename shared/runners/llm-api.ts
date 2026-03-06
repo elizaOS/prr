@@ -27,6 +27,9 @@ const REWRITE_ESCALATION_THRESHOLD = 2;
 /** Max file size (chars) to escalate to full-file rewrite; larger files produce hallucinated stubs. */
 const REWRITE_MAX_FILE_SIZE = 15_000;
 
+/** Max full-file rewrite attempts per file per run. After this many, we stop escalating that file (audit: reporting.py had 3+ full rewrites and still failed). */
+const FULL_FILE_REWRITE_MAX_ATTEMPTS = 2;
+
 /**
  * Strip tool markup that the model may have pasted inside a replacement block.
  * Prevents self-corruption (search/replace XML ending up in source files).
@@ -181,6 +184,8 @@ export class LLMAPIRunner implements Runner {
   private openai?: OpenAI;
   /** Track search/replace failures per file across iterations within a session. */
   private searchReplaceFailures = new Map<string, number>();
+  /** Per-file count of full-file rewrite attempts this run; we stop escalating after FULL_FILE_REWRITE_MAX_ATTEMPTS (audit: reporting.py had 3+ rewrites, still failed verification). */
+  private fullFileRewriteAttempts = new Map<string, number>();
   /** Models that timed out on a full-file rewrite this run; we skip full-file for them to avoid repeated 504s. WHY: Audit showed gpt-4o-mini timed out twice (~19 min) on 42k-char full-file requests. */
   private modelsTimedOutOnFullFileRewrite = new Set<string>();
   /** Consecutive 504/timeout count across attempts; reset on success. Used for cooldown. */
@@ -501,6 +506,12 @@ Working directory: ${workdir}`;
       }
 
       this.consecutive504Count = 0;
+      if (rewriteFiles.length > 0) {
+        for (const f of rewriteFiles) {
+          const c = (this.fullFileRewriteAttempts.get(f) ?? 0) + 1;
+          this.fullFileRewriteAttempts.set(f, c);
+        }
+      }
       return {
         success: true,
         output: response,
@@ -867,6 +878,11 @@ Working directory: ${workdir}`;
     }
 
     for (const filePath of pathsInPrompt) {
+      const rewriteAttempts = this.fullFileRewriteAttempts.get(filePath) || 0;
+      if (rewriteAttempts >= FULL_FILE_REWRITE_MAX_ATTEMPTS) {
+        debug('Skipping full-file rewrite — max attempts reached for file', { filePath, rewriteAttempts });
+        continue;
+      }
       const notInjected = !injectedSet.has(filePath);
       const failures = this.searchReplaceFailures.get(filePath) || 0;
       const overThreshold = failures >= REWRITE_ESCALATION_THRESHOLD;
@@ -933,6 +949,7 @@ Working directory: ${workdir}`;
   /** Reset failure tracker (e.g., at start of a new PR or after a successful push). */
   resetFailureTracking(): void {
     this.searchReplaceFailures.clear();
+    this.fullFileRewriteAttempts.clear();
     this.modelsTimedOutOnFullFileRewrite.clear();
   }
 

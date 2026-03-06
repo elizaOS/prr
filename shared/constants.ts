@@ -260,10 +260,10 @@ export const WRONG_FILE_EXHAUST_THRESHOLD = 2;
 
 /**
  * Number of WRONG_LOCATION/UNCLEAR results for an issue before we mark as remaining (stop retries).
- * WHY: Repeated "snippet doesn't show the right section" or "target is test file but only impl in prompt"
- * burns models; marking as remaining defers to human and avoids token waste.
+ * WHY: Audit showed 10+ LLM calls on one issue where fixer repeatedly said WRONG_LOCATION (code not in file);
+ * 2 is enough to confirm the issue is about another file or stale context — defers to human and saves tokens.
  */
-export const WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD = 3;
+export const WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD = 2;
 
 /**
  * Number of consecutive ALREADY_FIXED results (same explanation) before we dismiss as not-an-issue.

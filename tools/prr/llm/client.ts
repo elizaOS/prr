@@ -955,11 +955,21 @@ ${codeSnippet}
       'pattern referenced is gone. Do NOT use STALE just because the fix approach would be',
       'different — if the underlying issue still exists, say YES.',
       '',
-      'CRITICAL - Do NOT use STALE when the referenced code is simply missing from the excerpt:',
-      '- If the Current code block ends with "... (truncated)", the snippet is partial. Do NOT conclude',
-      '  a function/symbol was removed just because it does not appear in the snippet. Say YES (still exists).',
-      '- If you would say "not visible in the provided excerpt" or "not in excerpt", say YES, not STALE.',
-      '- Only use STALE when you can see enough of the file (e.g. the relevant area) and the symbol is genuinely gone.',
+      'CRITICAL - Distinguish TRUNCATED snippets from COMPLETE files:',
+      '- If the Current code block ends with "... (truncated — file has N lines total)", the snippet is PARTIAL.',
+      '  Do NOT conclude a function/symbol was removed just because it does not appear. Say YES (still exists).',
+      '- If the Current code block ends with "(end of file — N lines total)", you are seeing the ENTIRE file.',
+      '  If the review references code/lines that do not exist anywhere in the shown file, the code was genuinely',
+      '  removed or rewritten. Use STALE.',
+      '- If "(end of file)" says the file has N lines but the comment references line M where M > N,',
+      '  the file was shortened and the referenced code no longer exists. Use STALE.',
+      '',
+      'CRITICAL - Base your verdict on the ACTUAL CODE shown, not the review comment\'s description:',
+      '- Read the Current Code carefully. If the review says "rank += 1 inside enumerate" but the Current Code',
+      '  contains no enumerate loop and no rank += 1, do NOT claim the bug still exists.',
+      '- Your job is to check whether the CURRENT CODE has the problem, not whether the review\'s description sounds bad.',
+      '- If the code pattern described in the review is absent from the Current Code (and the snippet is complete),',
+      '  the issue is resolved or stale — do NOT parrot the review comment as if it describes the current state.',
       '',
       'CRITICAL - Verdict must match explanation: if your explanation says the issue "still exists"',
       'or "confirming the issue still exists", your verdict must be YES, not NO.',
@@ -1009,7 +1019,7 @@ ${codeSnippet}
       const hasCode = (issue.codeSnippet ?? '').trim().length > 0;
       const truncatedCode = hasCode
         ? (issue.codeSnippet.length > maxCodeLen
-            ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
+            ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated — snippet was cut for prompt size)'
             : issue.codeSnippet)
         : '';
 
@@ -1711,8 +1721,7 @@ ${codeSnippet}
       ? cleanComment.substring(0, maxCommentLen) + '...'
       : cleanComment;
     const truncatedCode = issue.codeSnippet.length > maxCodeLen
-      ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated)'
-      // Note: truncating ensures we don't exceed limits while maintaining comment clarity
+      ? issue.codeSnippet.substring(0, maxCodeLen) + '\n... (truncated — snippet was cut for prompt size)'
       : issue.codeSnippet;
 
     return [
@@ -1974,6 +1983,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'You are a STRICT code reviewer. For each fix below, verify whether the code change adequately addresses the review comment.',
       'IMPORTANT: Compare "Code before fix" with "Current Code (AFTER)". If the problematic pattern described in the review comment is still present in the current code, the fix is NOT adequate — answer NO regardless of what the diff shows.',
       'Evaluate whether the UNDERLYING CONCERN is addressed, not whether the exact suggested code from the review was applied. If the code was restructured (e.g. different loop pattern) but the concern (e.g. correct rank, no duplicate numbers) is satisfied, answer YES and cite the relevant code.',
+      'CRITICAL: Base your verdict on the ACTUAL CODE shown in "Current Code (AFTER)", not on the review comment\'s description of what the code looked like. If the review describes a bug pattern (e.g. "rank += 1 inside enumerate") but that pattern does not exist in the current code, the bug was fixed — answer YES.',
       'If multiple fixes apply to the same file, "Code before fix" may show removed lines from any part of that file. Judge whether the REVIEW COMMENT\'s specific concern is addressed in Current Code (or in the diff), not whether the "Code before fix" snippet matches the comment.',
       'If "Code before fix" is empty or shows only formatting/line-number artifacts (e.g. backticks and "N | " lines), base your verdict on Current Code and the diff only.',
       'If the concern is fully addressed in another file or by a different function (e.g. this code now delegates to a function that implements the fix), answer YES and cite where the fix is implemented.',
@@ -2009,7 +2019,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       // as missing and emit "Current Code: (unavailable — verify from diff only)" so the model knows to rely on diff.
       const rawCurrent = fix.currentCode?.trim();
       const currentCode = rawCurrent && rawCurrent.length > 0
-        ? (rawCurrent.length > maxCode ? rawCurrent.substring(0, maxCode) + '\n... (truncated)' : rawCurrent)
+        ? (rawCurrent.length > maxCode ? rawCurrent.substring(0, maxCode) + '\n... (truncated — snippet was cut for prompt size)' : rawCurrent)
         : undefined;
       const diff =
         fix.diff.length > maxDiff ? fix.diff.substring(0, maxDiff) + '\n... (truncated)' : fix.diff;

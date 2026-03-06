@@ -222,7 +222,8 @@ export async function executePushIteration(
   // always false so the loop ran zero iterations (analysis-only with no fix attempts); we map 0/null to Infinity.
   const effectiveMaxFixIterations =
     (options.maxFixIterations == null || options.maxFixIterations === 0) ? Infinity : options.maxFixIterations;
-  debug('Fix loop config', { pushIteration, maxFixIterations: options.maxFixIterations, effectiveMaxFixIterations, unresolvedCount: unresolvedIssues.length });
+  // WHY log string: JSON.stringify(Infinity) is null; log "unlimited" so debug output is clear (audit: logs showed effectiveMaxFixIterations: null).
+  debug('Fix loop config', { pushIteration, maxFixIterations: options.maxFixIterations, effectiveMaxFixIterations: effectiveMaxFixIterations === Infinity ? 'unlimited' : effectiveMaxFixIterations, unresolvedCount: unresolvedIssues.length });
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
   let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
 

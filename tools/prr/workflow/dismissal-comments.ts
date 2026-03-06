@@ -312,10 +312,20 @@ export async function addDismissalComments(
     }
 
     // Skip when the reason says the file no longer exists.
-    // WHY: Prompts.log audit showed the dismissal-comment LLM was called for a file with reason "File no longer exists: ..."; the prompt asked for a comment in a missing file, wasting tokens. Skipping at filter time avoids the call.
     if (/\b(?:file\s+no\s+longer\s+exists|file\s+not\s+found|no\s+longer\s+exists)\b/i.test(issue.reason)) {
       debug('Skipping dismissal comment (file no longer exists)', {
         filePath: issue.filePath,
+        reasonPreview: issue.reason.substring(0, 60),
+      });
+      return false;
+    }
+
+    // Skip fix-failure categories: these are real issues the fixer couldn't resolve.
+    // Adding a "Note:" that explains them as intentional is misleading.
+    if (['exhausted', 'remaining', 'chronic-failure'].includes(issue.category)) {
+      debug('Skipping dismissal comment (fix-failure category — real issue, not intentional)', {
+        filePath: issue.filePath,
+        category: issue.category,
         reasonPreview: issue.reason.substring(0, 60),
       });
       return false;

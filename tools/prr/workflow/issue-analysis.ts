@@ -800,9 +800,25 @@ export async function getCodeSnippet(
       }
     }
 
+    // When the comment references lines beyond the file length, the file was likely
+    // shortened/rewritten and the comment is stale. Provide the full file (if small)
+    // so the verifier can see the code is gone rather than defaulting to YES.
+    const maxAnchorAll = anchors.size > 0 ? Math.max(...anchors) : null;
+    const commentRefsBeyondFile = maxAnchorAll !== null && maxAnchorAll > lines.length;
+
+    // Small file or stale-reference: return entire file with (end of file) marker
+    const SMALL_FILE_FULL_THRESHOLD = 250;
+    if (lines.length <= SMALL_FILE_FULL_THRESHOLD || commentRefsBeyondFile) {
+      const numbered = lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
+      const meta = commentRefsBeyondFile
+        ? `\n(end of file — ${lines.length} lines total; comment references line ${maxAnchorAll} which no longer exists)`
+        : `\n(end of file — ${lines.length} lines total)`;
+      return numbered + meta;
+    }
+
     if (startLine === null) {
       // No anchors: return first 50 lines
-      return lines.slice(0, 50).join('\n');
+      return lines.slice(0, 50).join('\n') + `\n... (${lines.length - 50} more lines)`;
     }
 
     // Use union of anchors for range when we have body-derived refs
@@ -813,19 +829,22 @@ export async function getCodeSnippet(
     let end = Math.min(lines.length, maxAnchor + CODE_SNIPPET_CONTEXT_AFTER);
 
     if (end - start > MAX_SNIPPET_LINES) {
-      // WHY cap: A comment referencing "lines 1 to 400" plus 20/30 context would request 450 lines.
-      // Multiple refs can push the range past 500. Capping and centering keeps the prompt bounded
-      // while still including the anchor range so the fixer sees the relevant code.
       const center = Math.floor((minAnchor + maxAnchor) / 2);
       const half = Math.floor(MAX_SNIPPET_LINES / 2);
       start = Math.max(0, center - half - 1);
       end = Math.min(lines.length, start + MAX_SNIPPET_LINES);
     }
 
-    return lines
+    const snippet = lines
       .slice(start, end)
       .map((l, i) => `${start + i + 1}: ${l}`)
       .join('\n');
+
+    // Append (end of file) when snippet reaches the last line, or truncation marker otherwise
+    if (end >= lines.length) {
+      return snippet + `\n(end of file — ${lines.length} lines total)`;
+    }
+    return snippet + `\n... (truncated — file has ${lines.length} lines total)`;
   } catch {
     return '(file not found or unreadable)';
   }

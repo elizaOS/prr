@@ -237,18 +237,20 @@ async function getCurrentCodeAtLine(
 
     const fullFileLimit = expandForTypeSignature ? MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE : MAX_LINES_FULL_FILE_VERIFY;
     if (lines.length <= fullFileLimit) {
-      return lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
+      return lines.map((l, i) => `${i + 1}: ${l}`).join('\n')
+        + `\n(end of file — ${lines.length} lines total)`;
     }
 
     if (expandForTypeSignature) {
       return lines
         .slice(0, fullFileLimit)
         .map((l, i) => `${i + 1}: ${l}`)
-        .join('\n') + `\n... (${lines.length - fullFileLimit} more lines)`;
+        .join('\n') + `\n... (truncated — file has ${lines.length} lines total)`;
     }
 
     if (line === null) {
-      return lines.slice(0, 50).map((l, i) => `${i + 1}: ${l}`).join('\n');
+      return lines.slice(0, 50).map((l, i) => `${i + 1}: ${l}`).join('\n')
+        + `\n... (truncated — file has ${lines.length} lines total)`;
     }
 
     const contextBefore = 30;
@@ -256,10 +258,15 @@ async function getCurrentCodeAtLine(
     const start = Math.max(0, line - contextBefore - 1);
     const end = Math.min(lines.length, line + contextAfter);
 
-    return lines
+    const snippet = lines
       .slice(start, end)
       .map((l, i) => `${start + i + 1}: ${l}`)
       .join('\n');
+
+    if (end >= lines.length) {
+      return snippet + `\n(end of file — ${lines.length} lines total)`;
+    }
+    return snippet + `\n... (truncated — file has ${lines.length} lines total)`;
   } catch {
     return '(file not found or unreadable)';
   }

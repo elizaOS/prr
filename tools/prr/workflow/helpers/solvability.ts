@@ -73,6 +73,16 @@ export function assessSolvability(
     };
   }
 
+  // Check 0a4: "What's Good" / positive-summary meta-comments (reviewer recap, not a single fixable issue).
+  // WHY: Audit showed "### ✅ What's Good" comments entered the fix loop and consumed iterations; they are meta-review, not actionable.
+  if (isWhatsGoodOrPositiveSummaryComment(comment.body)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: "Positive summary / \"What's Good\" meta-comment — not a single fixable issue",
+    };
+  }
+
   // Check 0b: Path traversal guard (comment.path comes from GitHub API)
   const fullPath = join(workdir, comment.path);
   const resolvedWorkdir = resolve(workdir);
@@ -117,6 +127,25 @@ export function assessSolvability(
       dismissCategory: 'not-an-issue',
       reason: 'Synthetic path "(PR comment)" — no target file for fixer to edit',
     };
+  }
+
+  // Check 0e1: Issue references line numbers beyond current file length (file was shortened → comment stale).
+  // WHY: output.log audit — DATABASE_API_README.md had 37 lines but review referenced "lines 56-57, 120-121"; verifier couldn't confirm and we burned 3+ iterations.
+  try {
+    if (existsSync(fullPath)) {
+      const content = readFileSync(fullPath, 'utf8');
+      const lineCount = content.split('\n').length;
+      const maxRef = extractMaxLineRefFromBody(comment.body);
+      if (maxRef != null && lineCount < maxRef) {
+        return {
+          solvable: false,
+          dismissCategory: 'stale',
+          reason: `Issue references line(s) up to ${maxRef} but file has ${lineCount} line(s) — likely stale (file shortened)`,
+        };
+      }
+    }
+  } catch {
+    /* ignore read errors */
   }
 
   // Check 0e2: CANNOT_FIX exhaustion — fixer said CANNOT_FIX N times (output.log audit); dismiss as not-an-issue.
@@ -446,6 +475,35 @@ function isApprovalComment(commentBody: string): boolean {
   if (/\ball\s+(?:critical\s+)?issues?\s+(?:have\s+been\s+)?(?:addressed|resolved|fixed)\b/i.test(lower) && !/\bbut\b|\bhowever\b|\bexcept\b|\bstill\b/i.test(lower)) return true;
   if (/\ball\s+(?:critical\s+)?issues?\s+addressed\s*✅/i.test(lower)) return true;
   return false;
+}
+
+/**
+ * Detect "What's Good" / positive-summary meta-comments that list strengths, not a single fix request.
+ * WHY: output.log audit — "### ✅ What's Good" at component.test.ts:12 entered fix loop and wasted iterations.
+ */
+function isWhatsGoodOrPositiveSummaryComment(commentBody: string): boolean {
+  const head = commentBody.slice(0, 400);
+  if (/^#+\s*✅\s*What'?s Good\b/im.test(head)) return true;
+  if (/^#+\s*What'?s Good\s*$/im.test(head)) return true;
+  if (/^#+\s*Strengths\b/im.test(head) && !/\b(fix|change|add|remove|update)\b.*\b(line|here)\b/i.test(head)) return true;
+  return false;
+}
+
+/**
+ * Extract the highest line number referenced in text (e.g. "lines 56-57, 120-121" → 121).
+ * Used to detect when a review comment references lines beyond the current file length (stale).
+ */
+function extractMaxLineRefFromBody(body: string): number | null {
+  let max = 0;
+  const rangeRe = /\blines?\s+(\d+)(?:\s*[-–]\s*(\d+))?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = rangeRe.exec(body)) !== null) {
+    const a = parseInt(m[1], 10);
+    const b = m[2] ? parseInt(m[2], 10) : a;
+    if (a > max) max = a;
+    if (b > max) max = b;
+  }
+  return max > 0 ? max : null;
 }
 
 function isPRMetadataRequest(commentBody: string): boolean {
