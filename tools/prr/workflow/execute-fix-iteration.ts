@@ -33,7 +33,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 import { tryRestoreFromBaseIfRequested } from './restore-from-base.js';
-import { getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getReferencedFullPathFromComment, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests } from '../analyzer/prompt-builder.js';
+import { getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests } from '../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
 import { HALLUCINATION_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 import { existsSync } from 'fs';
@@ -338,6 +338,9 @@ export async function executeFixIteration(
     if (docPath && !base.includes(docPath)) base.push(docPath);
     for (const sibling of getSiblingFilePathsFromComment(i)) {
       if (!base.includes(sibling)) base.push(sibling);
+    }
+    for (const p of getPathsToDeleteFromComment(i)) {
+      if (!base.includes(p)) base.push(p);
     }
     const impl = getImplPathForTestFileIssue(i, undefined);
     if (impl && !base.includes(impl)) base.push(impl);
