@@ -231,6 +231,53 @@ prr https://github.com/owner/repo/pull/123 \
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 
+## GitHub Actions (manual trigger on PRs)
+
+You can run PRR from a GitHub Actions workflow that is **manually triggered** on any PR. Useful for running PRR from the Actions tab without using your local machine.
+
+### In this repo (PRR itself)
+
+Use **Actions → Run PRR (client) → Run workflow**, then enter the PR number. The client workflow calls the server workflow and runs PRR with `--no-wait-bot` (one push cycle, then exit; re-run for more cycles).
+
+### In any other repo
+
+1. **Add a client workflow** (e.g. `.github/workflows/run-prr-client.yml`) that calls the server workflow:
+
+```yaml
+name: Run PRR
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to run PRR on'
+        required: true
+        type: number
+jobs:
+  prr:
+    uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      prr_repo: 'OWNER/prr'
+    secrets:
+      GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+      ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+      # or ANTHROPIC_API_KEY / OPENAI_API_KEY
+```
+
+Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`), and use the branch you want (`@main` or `@v1`).
+
+2. **Configure secrets** in that repo:
+
+- **GITHUB_TOKEN**: Use `secrets.GITHUB_TOKEN` (already provided) or a PAT with `repo` scope if you need cross-repo or higher limits.
+- **One LLM key**: Add a repository secret for at least one of:
+  - `ELIZACLOUD_API_KEY`
+  - `ANTHROPIC_API_KEY`
+  - `OPENAI_API_KEY`
+
+3. **Run it**: Actions → Run PRR → Run workflow → enter the PR number.
+
+The workflow checks out the PRR repo, builds it, and runs PRR on the given PR. It uses `--no-wait-bot` so the job exits after one push cycle (no waiting for bot re-review); you can re-run the workflow for another cycle.
+
 ## How It Works
 
 ### The Fix Loop

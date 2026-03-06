@@ -1,0 +1,103 @@
+# SERVER: Reusable workflow that runs PRR on a GitHub PR.
+# Called by run-prr-client.yml (or any repo's client workflow).
+#
+# Required secrets in the calling repo:
+#   - GITHUB_TOKEN: a PAT with `repo` scope (NOT the default secrets.GITHUB_TOKEN,
+#     which can't push to other repos or post review comments cross-repo).
+#   - One of: ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
+#
+# Example client workflow (add to your repo's .github/workflows/run-prr-client.yml):
+#
+#   name: Run PRR
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         pr_number:
+#           description: 'PR number to run PRR on'
+#           required: true
+#           type: number
+#   jobs:
+#     prr:
+#       uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+#       with:
+#         pr_number: ${{ inputs.pr_number }}
+#         prr_repo: 'OWNER/prr'
+#       secrets:
+#         GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+#         ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+#         # or ANTHROPIC_API_KEY / OPENAI_API_KEY
+#
+name: Run PRR (server)
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'PR number to run PRR on'
+        required: true
+        type: number
+      prr_repo:
+        description: 'Repo containing the PRR tool (e.g. owner/prr)'
+        required: true
+        type: string
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+      ELIZACLOUD_API_KEY:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+
+jobs:
+  prr:
+    name: Run PRR
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout PRR
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.prr_repo }}
+          path: prr
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: prr/package-lock.json
+
+      - name: Install and build PRR
+        run: |
+          cd prr
+          npm ci
+          npm run build
+
+      - name: Run PRR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cd prr
+          node dist/tools/prr/index.js \
+            "https://github.com/${{ github.repository }}/pull/${{ inputs.pr_number }}" \
+            --tool llm-api \
+            --no-wait-bot
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prr-logs-${{ inputs.pr_number }}
+          path: |
+            prr/output.log
+            prr/prompts.log
+          retention-days: 14
+          if-no-files-found: ignore

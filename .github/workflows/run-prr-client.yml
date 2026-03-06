@@ -1,0 +1,23 @@
+# CLIENT: Manual trigger that calls the PRR server workflow.
+# Actions → Run PRR (manual) → Run workflow → enter PR number.
+name: Run PRR (client)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to run PRR on'
+        required: true
+        type: number
+
+jobs:
+  prr:
+    uses: ./.github/workflows/run-prr-server.yml
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      prr_repo: ${{ github.repository }}
+    secrets:
+      GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+      ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
