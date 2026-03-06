@@ -1101,6 +1101,7 @@ export async function findUnresolvedIssues(
   let dismissedChronicFailure = 0;
   let dismissedNotAnIssue = 0;
   let dismissedPlaceholder = 0;
+  let dismissedRemaining = 0;
 
   const iterationCount = stateContext.state?.iterations?.length ?? 0;
   const effectiveExpiry = getVerificationExpiryForIterationCount(iterationCount);
@@ -1211,6 +1212,8 @@ export async function findUnresolvedIssues(
         dismissedChronicFailure++;
       } else if (solvability.dismissCategory === 'not-an-issue') {
         dismissedNotAnIssue++;
+      } else if (solvability.dismissCategory === 'remaining') {
+        dismissedRemaining++;
       }
       continue;
     }
@@ -1439,16 +1442,17 @@ export async function findUnresolvedIssues(
   }
 
   // Report solvability dismissals — issues leaving the queue before fix attempt
-  const totalDismissed = dismissedStaleFiles + dismissedChronicFailure + dismissedNotAnIssue + dismissedPlaceholder;
+  const totalDismissed = dismissedStaleFiles + dismissedChronicFailure + dismissedNotAnIssue + dismissedPlaceholder + dismissedRemaining;
   if (totalDismissed > 0) {
     const parts: string[] = [];
-    if (dismissedStaleFiles > 0) parts.push(`${dismissedStaleFiles} stale file(s)`);
-    if (dismissedChronicFailure > 0) parts.push(`${dismissedChronicFailure} chronic failure(s)`);
-    if (dismissedNotAnIssue > 0) parts.push(`${dismissedNotAnIssue} lockfile/not-an-issue`);
-    if (dismissedPlaceholder > 0) parts.push(`${dismissedPlaceholder} unreadable file(s)`);
-    console.log(chalk.gray(`  DISMISSED: ${totalDismissed} issue(s) removed from queue (${parts.join(', ')})`));
+    if (dismissedStaleFiles > 0) parts.push(`${formatNumber(dismissedStaleFiles)} stale file(s)`);
+    if (dismissedChronicFailure > 0) parts.push(`${formatNumber(dismissedChronicFailure)} chronic failure(s)`);
+    if (dismissedNotAnIssue > 0) parts.push(`${formatNumber(dismissedNotAnIssue)} lockfile/not-an-issue`);
+    if (dismissedPlaceholder > 0) parts.push(`${formatNumber(dismissedPlaceholder)} unreadable file(s)`);
+    if (dismissedRemaining > 0) parts.push(`${formatNumber(dismissedRemaining)} remaining (verifier/wrong-file exhaust)`);
+    console.log(chalk.gray(`  DISMISSED: ${formatNumber(totalDismissed)} issue(s) removed from queue (${parts.join(', ')})`));
     if (dismissedChronicFailure > 0) {
-      console.log(chalk.cyan(`  ↳ ${dismissedChronicFailure} chronic-failure dismissal(s) — token-saving (no LLM retries)`));
+      console.log(chalk.cyan(`  ↳ ${formatNumber(dismissedChronicFailure)} chronic-failure dismissal(s) — token-saving (no LLM retries)`));
     }
   }
 

@@ -447,6 +447,7 @@ export async function executePushIteration(
     // removes issues mid-loop so the next iteration doesn't waste time on them.
     const chronicDismissed: string[] = [];
     const alreadyFixedDismissed: string[] = [];
+    const remainingDismissed: string[] = [];
     for (const issue of stillUnresolved) {
       const solvability = assessSolvability(gitCtx.workdir, issue.comment, stateContext);
       if (!solvability.solvable && solvability.dismissCategory === 'chronic-failure') {
@@ -471,6 +472,17 @@ export async function executePushIteration(
           issue.comment.body
         );
         alreadyFixedDismissed.push(issue.comment.id);
+      } else if (!solvability.solvable && solvability.dismissCategory === 'remaining') {
+        Dismissed.dismissIssue(
+          stateContext,
+          issue.comment.id,
+          solvability.reason ?? 'Repeated failures — dismissing for human follow-up',
+          'remaining',
+          issue.comment.path,
+          issue.comment.line,
+          issue.comment.body
+        );
+        remainingDismissed.push(issue.comment.id);
       }
     }
     if (chronicDismissed.length > 0) {
@@ -479,7 +491,10 @@ export async function executePushIteration(
     if (alreadyFixedDismissed.length > 0) {
       console.log(chalk.green(`  ${formatNumber(alreadyFixedDismissed.length)} issue(s) dismissed (already fixed — multiple models agreed)`));
     }
-    const midLoopDismissed = new Set([...chronicDismissed, ...alreadyFixedDismissed]);
+    if (remainingDismissed.length > 0) {
+      console.log(chalk.yellow(`  ${formatNumber(remainingDismissed.length)} issue(s) dismissed (verifier rejections or wrong-file edits — resolve by fix or conversation)`));
+    }
+    const midLoopDismissed = new Set([...chronicDismissed, ...alreadyFixedDismissed, ...remainingDismissed]);
     if (midLoopDismissed.size > 0) {
       stillUnresolved = stillUnresolved.filter((i) => !midLoopDismissed.has(i.comment.id));
     }
