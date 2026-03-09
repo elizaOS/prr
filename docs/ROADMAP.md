@@ -4,6 +4,12 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## Recently completed
 
+**Conservative issue detection + debug issue tables (2026-03)**
+- Analysis now treats lifecycle/cache/leak comments and ordering/history comments as conservative-detection cases, not just conservative-verification cases. It uses broader context before deciding an issue is already fixed. **WHY**: We found real bugs being dismissed during issue analysis, before the verifier ever saw them.
+- Verbose runs now print a per-comment debug issue table after analysis and again at exit, with decision precedence matching the real workflow (`open` -> `dismissed/<category>` -> `verified`). **WHY**: Operators need to compare PRR's internal decision map against the PR conversation directly, especially when a run says "clean" but the PR still looks noisy.
+- Ordering/history comments now use multi-range ordering excerpts when the file is too large for full-file analysis. **WHY**: Large-file newest-vs-oldest bugs often depend on two distant sites; the old single-window fallback still missed half the bug.
+- See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Conservative issue detection and debug issue tables".
+
 **Conservative verifier for lifecycle/cache/leak issues (2026-03)**
 - Lifecycle comments now get broader symbol-lifecycle verification context instead of a narrow line-anchored snippet. The verifier sees declaration plus key usage and cleanup sites across the file. **WHY**: Output.log showed a `latestResponseIds` leak being marked fixed from local context even though the real failure was in distant early-return and cleanup paths.
 - Those same issues now use the stronger verifier lane and do **not** use the "pattern absent after N rejections" auto-verify shortcut. **WHY**: For stateful cleanup bugs, "pattern absent near the anchor line" is weak evidence. Safer policy is to keep the issue open unless the whole lifecycle looks correct.

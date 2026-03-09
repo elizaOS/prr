@@ -60,6 +60,8 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
 import { assessSolvability, resolveTrackedPath, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
+import { buildLifecycleAwareVerificationSnippet, commentNeedsLifecycleContext } from './fix-verification.js';
+import { printDebugIssueTable } from './debug-issue-table.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Post-STALE symbol verification (override false STALE when symbol still in file)
@@ -94,6 +96,187 @@ async function fileContainsSymbol(workdir: string, filePath: string, symbol: str
   } catch {
     return false;
   }
+}
+
+/**
+ * True when the comment is about ordering/retention semantics that often span
+ * more than the anchored line (e.g. newest-first vs oldest-first trimming).
+ */
+export function commentNeedsOrderingContext(commentBody: string): boolean {
+  const c = commentBody.toLowerCase();
+  return (
+    /\bfromend\b/.test(c) ||
+    /\b(?:newest|oldest)-first\b/.test(c) ||
+    /\bkeep(?:s|ing)?\s+(?:the\s+)?(?:newest|oldest)\b/.test(c) ||
+    /\btrim(?:s|ming)?\s+the\s+wrong\s+side\b/.test(c) ||
+    /\bdrops?\s+the\s+(?:newest|oldest)\b/.test(c) ||
+    /\bpreserv(?:e|es|ing)\s+the\s+(?:newest|oldest)\b/.test(c) ||
+    /\bslicetofitbudget\b/.test(c)
+  );
+}
+
+export function commentNeedsConservativeAnalysisContext(commentBody: string): boolean {
+  return (
+    commentNeedsLifecycleContext({ comment: commentBody }) ||
+    commentNeedsOrderingContext(commentBody)
+  );
+}
+
+function buildNumberedFullFileSnippet(content: string, note?: string): string {
+  const lines = content.split('\n');
+  const body = lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
+  return body + `\n(${note ?? `end of file — ${lines.length} lines total`})`;
+}
+
+function mergeAnalysisRanges(ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of sorted) {
+    const last = merged[merged.length - 1];
+    if (!last || range.start > last.end + 1) {
+      merged.push({ ...range });
+      continue;
+    }
+    last.end = Math.max(last.end, range.end);
+  }
+  return merged;
+}
+
+/**
+ * Pull likely ordering-related symbols out of the comment so we can stitch
+ * together multiple relevant regions from a large file.
+ *
+ * WHY: "fromEnd keeps oldest runs" bugs are rarely local to the anchor line.
+ * We usually need both the ordering source (`groupedByRun`, `getMemories`) and
+ * the later trimming call (`sliceToFitBudget`, `reverse`) in one prompt.
+ */
+function extractOrderingCandidateSymbols(commentBody: string): string[] {
+  const symbols: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string | undefined) => {
+    if (!value) return;
+    if (!/^[A-Za-z_$][\w$]{2,}$/.test(value)) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    symbols.push(value);
+  };
+
+  const backtick = /`([A-Za-z_$][\w$]{2,})`/g;
+  let match: RegExpExecArray | null;
+  while ((match = backtick.exec(commentBody)) !== null) add(match[1]);
+
+  const camelOrSnake = /\b([a-z]+_[a-z0-9_]+|[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*)\b/g;
+  while ((match = camelOrSnake.exec(commentBody)) !== null) add(match[1]);
+
+  if (/\bfromend\b/i.test(commentBody)) add('fromEnd');
+  if (/\bslicetofitbudget\b/i.test(commentBody)) add('sliceToFitBudget');
+  if (/\bgroupedbyrun\b/i.test(commentBody)) add('groupedByRun');
+  if (/\bgetmemories\b/i.test(commentBody)) add('getMemories');
+  if (/\breverse\b/i.test(commentBody)) add('reverse');
+
+  return symbols;
+}
+
+/**
+ * Build a multi-range analysis snippet for ordering/history issues.
+ *
+ * WHY: For large files, sending one centered 80-line window reintroduced the
+ * same blind spot this change set was meant to fix. Multi-range excerpts let
+ * the model see both the "data order comes from here" site and the later
+ * "selection/trimming happens here" site without needing the entire file.
+ */
+function buildOrderingAwareAnalysisSnippet(
+  content: string,
+  filePath: string,
+  line: number | null,
+  commentBody: string
+): string | null {
+  const lines = content.split('\n');
+  const candidates = extractOrderingCandidateSymbols(commentBody);
+  if (candidates.length === 0) return null;
+
+  const ranges: Array<{ start: number; end: number }> = [];
+  if (line != null) {
+    ranges.push({
+      start: Math.max(1, line - 10),
+      end: Math.min(lines.length, line + 16),
+    });
+  }
+
+  for (const symbol of candidates) {
+    const rx = new RegExp(`\\b${escapeRegExpForSnippet(symbol)}\\b`);
+    for (let i = 0; i < lines.length; i++) {
+      if (!rx.test(lines[i]!)) continue;
+      ranges.push({
+        start: Math.max(1, i + 1 - 5),
+        end: Math.min(lines.length, i + 1 + 8),
+      });
+    }
+  }
+
+  const merged = mergeAnalysisRanges(ranges);
+  if (merged.length === 0) return null;
+
+  const parts = [
+    `Ordering excerpts for ${filePath} (relevant ordering/selection sites):`,
+    '',
+  ];
+  const maxChars = 20_000;
+  let usedChars = parts.join('\n').length;
+  let included = 0;
+
+  for (const range of merged) {
+    const body = lines
+      .slice(range.start - 1, range.end)
+      .map((l, i) => `${range.start + i}: ${l}`)
+      .join('\n');
+    const block = `--- lines ${range.start}-${range.end} ---\n${body}\n`;
+    if (usedChars + block.length > maxChars) break;
+    parts.push(block);
+    usedChars += block.length;
+    included++;
+  }
+
+  if (included === 0) return null;
+  if (included < merged.length) {
+    parts.push(`... (${merged.length - included} additional ordering section(s) omitted; file has ${lines.length} lines total)`);
+  } else {
+    parts.push(`(full ordering excerpt set shown; file has ${lines.length} lines total)`);
+  }
+  return parts.join('\n');
+}
+
+function buildConservativeAnalysisSnippet(
+  content: string,
+  filePath: string,
+  line: number | null,
+  commentBody: string
+): string | null {
+  if (commentNeedsLifecycleContext({ comment: commentBody })) {
+    const lifecycleSnippet = buildLifecycleAwareVerificationSnippet(content, filePath, line, commentBody);
+    if (lifecycleSnippet) return lifecycleSnippet;
+  }
+
+  if (commentNeedsOrderingContext(commentBody)) {
+    // WHY prefer targeted multi-range excerpts before full-file fallback: large
+    // ordering bugs often need distant sites, but whole-file embedding would
+    // waste prompt budget and still fail on very large files.
+    const orderingSnippet = buildOrderingAwareAnalysisSnippet(content, filePath, line, commentBody);
+    if (orderingSnippet) return orderingSnippet;
+  }
+
+  // Prefer the full numbered file for order/history issues when it fits.
+  // WHY: The bug is often in collection ordering plus the later selection call.
+  const fullFileSnippet = buildNumberedFullFileSnippet(content);
+  const MAX_CONSERVATIVE_ANALYSIS_CHARS = 20_000;
+  if (fullFileSnippet.length <= MAX_CONSERVATIVE_ANALYSIS_CHARS) {
+    return fullFileSnippet;
+  }
+
+  const widened = buildWindowedSnippet(content, line, commentBody);
+  return widened.length <= MAX_CONSERVATIVE_ANALYSIS_CHARS
+    ? widened
+    : widened.slice(0, MAX_CONSERVATIVE_ANALYSIS_CHARS) + '\n... (truncated)';
 }
 
 /**
@@ -821,11 +1004,15 @@ export async function getCodeSnippet(
     // Small file or stale-reference: return entire file with (end of file) marker
     const SMALL_FILE_FULL_THRESHOLD = 250;
     if (lines.length <= SMALL_FILE_FULL_THRESHOLD || commentRefsBeyondFile) {
-      const numbered = lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
-      const meta = commentRefsBeyondFile
-        ? `\n(end of file — ${lines.length} lines total; comment references line ${maxAnchorAll} which no longer exists)`
-        : `\n(end of file — ${lines.length} lines total)`;
-      return numbered + meta;
+      const note = commentRefsBeyondFile
+        ? `end of file — ${lines.length} lines total; comment references line ${maxAnchorAll} which no longer exists`
+        : `end of file — ${lines.length} lines total`;
+      return buildNumberedFullFileSnippet(content, note);
+    }
+
+    if (commentBody && commentNeedsConservativeAnalysisContext(commentBody)) {
+      const conservativeSnippet = buildConservativeAnalysisSnippet(content, path, line, commentBody);
+      if (conservativeSnippet) return conservativeSnippet;
     }
 
     if (startLine === null) {
@@ -993,8 +1180,13 @@ export async function getWiderSnippetForAnalysis(
 function buildSnippetFromRepoContent(
   content: string,
   line: number | null,
-  commentBody?: string
+  commentBody?: string,
+  filePath = '(repo content)'
 ): string {
+  if (commentBody && commentNeedsConservativeAnalysisContext(commentBody)) {
+    const conservativeSnippet = buildConservativeAnalysisSnippet(content, filePath, line, commentBody);
+    if (conservativeSnippet) return conservativeSnippet;
+  }
   return buildWindowedSnippet(content, line, commentBody);
 }
 
@@ -1250,6 +1442,12 @@ export async function findUnresolvedIssues(
         'A previous fix attempt claimed to address this issue. Verify whether the current code actually resolves it before making new changes.',
       ];
     }
+    if (commentNeedsConservativeAnalysisContext(comment.body ?? '')) {
+      contextHints = [
+        ...(contextHints || []),
+        'This is a lifecycle/order-sensitive issue. Answer NO only if the shown code provides concrete evidence that the full behavior is now correct.',
+      ];
+    }
     const resolvedPath = resolvePathFromDiff(comment.path, changedFiles) ?? resolveTrackedPath(workdir, comment.path) ?? undefined;
     needSnippets.push({ comment, snippetLine, contextHints, resolvedPath });
   }
@@ -1500,6 +1698,9 @@ export async function findUnresolvedIssues(
     if (statusHits > 0 && toAnalyze.length > 0) {
       console.log(chalk.green(`  ✓ All ${formatNumber(statusHits)} issue(s) served from persisted status — skipping LLM analysis`));
     }
+    if (options.verbose) {
+      printDebugIssueTable('after analysis', comments, stateContext, unresolved);
+    }
     return {
       unresolved,
       recommendedModelIndex: 0,
@@ -1659,7 +1860,7 @@ export async function findUnresolvedIssues(
         if (codeSnippet === '(file not found or unreadable)' && findUnresolvedIssuesOptions?.getFileContentFromRepo) {
           const content = await findUnresolvedIssuesOptions.getFileContentFromRepo(primaryPath);
           if (content) {
-            codeSnippet = buildSnippetFromRepoContent(content, item.comment.line, item.comment.body);
+            codeSnippet = buildSnippetFromRepoContent(content, item.comment.line, item.comment.body, primaryPath);
           }
         }
         return {
@@ -2014,6 +2215,9 @@ export async function findUnresolvedIssues(
 
   await State.saveState(stateContext);
   await LessonsAPI.Save.save(lessonsContext);
+  if (options.verbose) {
+    printDebugIssueTable('after analysis', comments, stateContext, unresolved);
+  }
   
   return {
     unresolved,

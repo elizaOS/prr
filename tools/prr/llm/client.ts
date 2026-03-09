@@ -155,6 +155,37 @@ export interface BatchCheckResult {
   partial?: boolean;
 }
 
+export function commentNeedsConservativeExistenceCheck(comment: string): boolean {
+  const c = comment.toLowerCase();
+  return (
+    /\bmemory leak\b/.test(c) ||
+    /\b(?:potential )?leak\b/.test(c) ||
+    /\b(?:cleanup|clean up|prune|evict|ttl|lru)\b/.test(c) ||
+    /\b(?:stale|orphaned|dangling)\s+(?:entry|entries|state|map|set|cache)\b/.test(c) ||
+    /\bnever\s+(?:cleared|cleaned|pruned|deleted|removed)\b/.test(c) ||
+    /\bfromend\b/.test(c) ||
+    /\b(?:newest|oldest)-first\b/.test(c) ||
+    /\bkeep(?:s|ing)?\s+(?:the\s+)?(?:newest|oldest)\b/.test(c) ||
+    /\bslicetofitbudget\b/.test(c)
+  );
+}
+
+/**
+ * True when the "already correct" explanation contains concrete code evidence
+ * rather than generic reassurance.
+ *
+ * WHY: The YES->NO override is useful for obvious false positives, but vague
+ * phrases like "already correct" are too risky for lifecycle/order-sensitive
+ * bugs. Requiring evidence keeps the override from silently hiding real issues.
+ */
+export function explanationHasConcreteFixEvidence(explanation: string): boolean {
+  return (
+    /\bline\s+\d+\b/i.test(explanation) ||
+    /`[^`\n]{2,120}`/.test(explanation) ||
+    /\b(?:now|uses?|returns?|deletes?|removes?|calls?|sets?|sorts?|reverses?)\b.{0,80}\b(?:if|map|set|sliceToFitBudget|fromEnd|delete|cleanup|prune|reverse)\b/i.test(explanation)
+  );
+}
+
 /**
  * Context for model recommendation (optional)
  */
@@ -1260,9 +1291,19 @@ ${codeSnippet}
             /\bbut\b.*\b(?:missing|needs?|lacks?|doesn't|does not)\b/i.test(explanation) ||
             /\bhowever\b.*\b(?:missing|needs?|lacks?|doesn't|does not)\b/i.test(explanation)
           );
-          if (exists && looksAlreadyCorrect && !hasCounterSignal) {
+          const sourceIssue = batchIssues.find((issue) => normalizeIssueId(issue.id) === resultId);
+          const conservativeExistenceCheck = commentNeedsConservativeExistenceCheck(sourceIssue?.comment ?? '');
+          const concreteEvidence = explanationHasConcreteFixEvidence(explanation);
+          if (exists && looksAlreadyCorrect && !hasCounterSignal && !conservativeExistenceCheck && concreteEvidence) {
             debug('Batch override: YES→NO (explanation says code is already correct or comment is mistaken)', { resultId, explanationPreview: explanation.slice(0, 120) });
             exists = false;
+          } else if (exists && looksAlreadyCorrect && !hasCounterSignal && (!conservativeExistenceCheck || !concreteEvidence)) {
+            debug('Batch kept as YES (already-correct override lacked concrete evidence or comment needs conservative check)', {
+              resultId,
+              conservativeExistenceCheck,
+              concreteEvidence,
+              explanationPreview: explanation.slice(0, 120),
+            });
           }
 
           // Snippet truncated/unavailable: verifier couldn't see code — treat as STALE. Check first so we don't flip STALE→YES then YES→STALE.

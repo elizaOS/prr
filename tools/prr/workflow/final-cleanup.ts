@@ -29,6 +29,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { endTimer, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
+import { printDebugIssueTable } from './debug-issue-table.js';
 
 /** Dedupe by (filePath, line) so remaining count matches AAR (same location = one remaining). */
 function dedupeDismissedByLocation(issues: DismissedIssue[]): DismissedIssue[] {
@@ -134,6 +135,9 @@ export async function executeFinalCleanup(
 
   // Final results summary - remaining = unresolved + legacy exhausted/remaining (same formula as AAR)
   printFinalSummary(remainingCount);
+  if (options.verbose) {
+    printDebugIssueTable('final state', finalComments, stateContext, trulyUnresolved);
+  }
   
   // Ring terminal bell to notify user completion
   // WHY: Long-running processes need audio notification when done
@@ -193,6 +197,9 @@ export async function executeErrorCleanup(
   }
 
   printFinalSummary(remainingCountErr);  // same formula as AAR: unresolved + exhausted/remaining deduped
+  if (options.verbose && stateContext) {
+    printDebugIssueTable('final state (error)', finalComments, stateContext, trulyUnresolved);
+  }
   spinner.fail('Error');
   
   // Clean up workdir on error if not keeping it

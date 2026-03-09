@@ -191,6 +191,19 @@ Low-stakes text generation tasks (`generateCommitMessage`, `generateDismissalCom
 
 WHY: These bugs are often distributed across multiple control-flow exits. A narrow snippet around the commented line can make broken lifecycle code look fixed, which is worse than a conservative false negative. PRR therefore biases toward "keep the issue open unless the broader flow is clearly safe."
 
+**Conservative issue detection before the fixer runs:**
+- The same conservative philosophy now applies earlier in `workflow/issue-analysis.ts`. Lifecycle/cache/leak comments and ordering/history comments are recognized as "distributed" issue shapes, and analysis broadens the context it sends to `batchCheckIssuesExist()` before PRR decides a comment is already fixed.
+- Ordering/history issues use full-file context when feasible; otherwise PRR builds multi-range ordering excerpts that pull together ordering sources and later trimming/selection sites.
+- The issue-existence parser in `llm/client.ts` also refuses to downgrade those conservative issue types from `YES` to `NO` on vague "already correct" language unless the explanation contains concrete fix evidence.
+
+WHY: Verification hardening alone was not enough. Some real bugs were being dismissed during the analysis phase itself, before they ever reached the fixer or verifier. Conservative detection closes that earlier gap.
+
+**Debug issue table for operator trust:**
+- `workflow/debug-issue-table.ts` prints a human-readable table after analysis and again during final cleanup when verbose mode is enabled.
+- The table reports the effective per-comment decision with workflow-aligned precedence: `open`, then `dismissed/<category>`, then `verified`, then cached status.
+
+WHY: PRR is often operating against dozens of bot comments at once. When the tool's internal state and the PR UI diverge, operators need a direct, comment-level explanation of what PRR thinks happened and why.
+
 ### 4. Analyzer (`src/analyzer/`)
 
 Issue analysis and prompt building:

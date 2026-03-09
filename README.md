@@ -29,6 +29,10 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 **WHY**: False negatives cost another pass. False positives hide real bugs, create misleading "all fixed" states, and make PR threads look cleaner than the code really is.
 
+**Visible decisions over hidden confidence**: In verbose runs, PRR should show the actual per-comment decisions it is using internally, not just aggregate counts or a final "done" message.
+
+**WHY**: When the PR still shows open comments, operators need to compare PRR's internal state with the GitHub conversation directly. A readable issue table makes classification mistakes obvious and auditable.
+
 **Philosophy in practice**:
 - Run prr on a specific PR (you choose)
 - Watch it work, interrupt with Ctrl+C anytime
@@ -41,8 +45,10 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - Fetches review comments from PRs (humans, bots, or any reviewer)
 - **Parses all bot comments**: Reads every comment from known review bots (not just the latest), with noise filtering and path-less issue recovery. *Why*: Bots may post multiple comments across re-reviews; parsing only the latest missed issues from earlier reviews.
 - Uses LLM to detect which issues still exist in the code
+- **Conservative issue detection for distributed bugs**: Lifecycle/cache/leak comments and ordering/history comments now get broader analysis context before PRR decides they are already fixed. *Why*: Some bugs live across declaration, usage, cleanup, and trimming sites; a narrow anchor snippet can make a real issue look resolved.
 - Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
+- **Debug issue table**: Verbose mode prints a human-readable per-comment table after analysis and again at exit. *Why*: This exposes the exact `open` / `dismissed/<category>` / `verified` decision PRR is using so you can compare it with the PR thread list.
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
 
 ### Smart Retry Strategies
@@ -90,6 +96,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Verifier strength for API/signature fixes**: Fixes whose comment mentions async/await, caller, signature, or TypeError are verified with a stronger model when available. *Why*: Weak default verifier approved a fix that missed the call-site update (e.g. print_results still calling generate_report() without await/args); stronger model catches call-site bugs.
 - **Verifier expanded context for type/signature issues**: When a review comment mentions async/await, signatures, TypeErrors, or callers, the verifier sees up to 500 lines of the file (vs default 200). *Why*: Type/signature fixes often involve function bodies and their call sites; the default window was too narrow, causing false "never assigned" rejections.
 - **Lifecycle-aware verification context**: Comments about leaks, stale cache entries, missing cleanup, or unbounded maps/sets now get lifecycle-aware snippets that include declaration, usage, and cleanup sites across the file, and they bypass the risky "pattern absent" auto-verify shortcut. *Why*: These issues are about control flow over time, not a single line. A narrow local snippet can make a broken cleanup path look fixed.
+- **Ordering-aware analysis context**: Comments about newest-vs-oldest retention, `fromEnd`, or history trimming now use either full-file context or multi-range ordering excerpts during analysis. *Why*: These bugs usually depend on the interaction between data ordering and a later selection call; a single local excerpt often misses half the bug.
 - **Dismissal-comment skips**: We skip the dismissal-comment LLM when the reason says "file no longer exists" or "file not found", and we post-filter generated comments that only restate the surrounding code. *Why*: Avoids sending a prompt for a missing file and avoids inserting generic "extracts metrics"-style noise.
 - **Multi-file nudge**: When TARGET FILE(S) lists multiple files and the review mentions callers (await, file:line), the fix prompt adds a line urging updates to implementation and every call site. *Why*: Reduces fixer updating only one file and leaving call sites broken.
 - **Wider batch snippets**: When context headroom ≥100k chars, batch verification uses 2500/3000 char limits per comment/code snippet (vs 2000/2000). *Why*: Reduces false positives from truncation.

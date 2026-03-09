@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Conservative issue detection and debug issue tables
+
+**Conservative analysis context for lifecycle/order-sensitive issues**
+- `tools/prr/workflow/issue-analysis.ts` now classifies lifecycle/cache/leak comments and ordering/history comments (for example `sliceToFitBudget` / `fromEnd` newest-vs-oldest issues) as needing broader analysis context before the fixer runs.
+- Lifecycle issues reuse `buildLifecycleAwareVerificationSnippet()` so analysis sees declaration plus usage/cleanup sites across the file, not just a local anchor window.
+- Ordering/history issues now use a multi-range `buildOrderingAwareAnalysisSnippet()` that pulls together the ordering source and the later selection/trimming sites when the full file is too large to embed.
+- **WHY**: PRR was still dismissing some real issues during the *analysis* phase, before verification ever got a chance to be conservative. Narrow local snippets made distributed bugs look already fixed when the real failure lived in distant cleanup or retention code.
+
+**Safer "already correct" override in issue existence checks**
+- `tools/prr/llm/client.ts` now treats lifecycle/order-sensitive comments as conservative issue-existence checks and requires concrete evidence before flipping a model's `YES` verdict to `NO` based on "already correct" language.
+- **WHY**: The old override could accept vague explanations like "already correct" and silently downgrade real issues to resolved. For the risky bug classes, conservative false negatives are cheaper than false positives that hide real defects.
+
+**Human-readable debug issue tables**
+- `tools/prr/workflow/debug-issue-table.ts` adds a verbose-mode table printed after analysis and again at final cleanup. It shows each comment's location, PRR status, reason, and short comment preview.
+- The table now prefers the actual decision category order: `open` -> `dismissed/<category>` -> `verified` -> cached status.
+- **WHY**: When PRR says "all fixed" but the PR still shows open comments, operators need a direct side-by-side view of what PRR thinks each thread is. The table is meant to make classification mistakes obvious, not hide them behind aggregate counts.
+
+**Targeted tests for conservative analysis**
+- `tests/issue-analysis.test.ts` now covers lifecycle-aware analysis snippets and ordering-aware multi-range snippets for large files.
+- `tests/llm-issue-existence.test.ts` covers conservative existence-check classification and the requirement for concrete evidence in "already correct" explanations.
+- **WHY**: Prompt/snippet heuristics are easy to regress. These tests lock in the conservative bias and the new debug-facing behavior so future tuning does not quietly reintroduce the same false dismissals.
+
 ### Added (2026-03) — Conservative verification for lifecycle/cache/leak issues
 
 **Lifecycle-aware verifier context**
