@@ -4,6 +4,11 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## Recently completed
 
+**Conservative verifier for lifecycle/cache/leak issues (2026-03)**
+- Lifecycle comments now get broader symbol-lifecycle verification context instead of a narrow line-anchored snippet. The verifier sees declaration plus key usage and cleanup sites across the file. **WHY**: Output.log showed a `latestResponseIds` leak being marked fixed from local context even though the real failure was in distant early-return and cleanup paths.
+- Those same issues now use the stronger verifier lane and do **not** use the "pattern absent after N rejections" auto-verify shortcut. **WHY**: For stateful cleanup bugs, "pattern absent near the anchor line" is weak evidence. Safer policy is to keep the issue open unless the whole lifecycle looks correct.
+- See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Conservative verification for lifecycle/cache/leak issues".
+
 **Prompts.log audit: ALREADY_FIXED counter, batch injection, single-issue full file, verifier context (2026-03)**
 - **P1 — ALREADY_FIXED multi-model dismissal**: New `consecutiveAlreadyFixedAnyByCommentId` counter dismisses issues after 3+ models return ALREADY_FIXED (any explanation). Counter resets on fixer changes or verification. **WHY**: Existing same-explanation counter missed the broader pattern where multiple models independently agree the issue is resolved; saves 3-5 wasted iterations per issue.
 - **P3 — Batch injection filter**: `allowedPathsForInjection` limits file injection to files with unfixed issues in later rounds. **WHY**: Already-fixed files waste context budget; filtering observed 40-60% reduction in injected content on rounds 2+.

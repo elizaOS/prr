@@ -25,6 +25,10 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 **AI talking to AI, supervised by humans**: Modern PRs often involve bot reviewers (CodeRabbit, Copilot, etc.) that leave dozens of comments. Instead of manually addressing each one, let prr's AI negotiate with the reviewer AI while you focus on what matters. You can always interrupt, inspect, and override.
 
+**Safe over sorry verification**: When PRR is unsure whether a fix really covers a lifecycle, cache, cleanup, or multi-path issue, it should keep the issue open instead of optimistically marking it fixed.
+
+**WHY**: False negatives cost another pass. False positives hide real bugs, create misleading "all fixed" states, and make PR threads look cleaner than the code really is.
+
 **Philosophy in practice**:
 - Run prr on a specific PR (you choose)
 - Watch it work, interrupt with Ctrl+C anytime
@@ -85,6 +89,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Dedup GROUP validation + prompt guard**: Dedup now rejects malformed `GROUP:` lines when any index is out of range or the canonical index is not in the group, and the prompt explicitly says valid indices are only `1..N`. *Why*: A prompts.log audit showed the model returning `GROUP: 2,5,7` for only 3 comments; rejecting invalid groups avoids wrong merges and the prompt reduces those hallucinations up front.
 - **Verifier strength for API/signature fixes**: Fixes whose comment mentions async/await, caller, signature, or TypeError are verified with a stronger model when available. *Why*: Weak default verifier approved a fix that missed the call-site update (e.g. print_results still calling generate_report() without await/args); stronger model catches call-site bugs.
 - **Verifier expanded context for type/signature issues**: When a review comment mentions async/await, signatures, TypeErrors, or callers, the verifier sees up to 500 lines of the file (vs default 200). *Why*: Type/signature fixes often involve function bodies and their call sites; the default window was too narrow, causing false "never assigned" rejections.
+- **Lifecycle-aware verification context**: Comments about leaks, stale cache entries, missing cleanup, or unbounded maps/sets now get lifecycle-aware snippets that include declaration, usage, and cleanup sites across the file, and they bypass the risky "pattern absent" auto-verify shortcut. *Why*: These issues are about control flow over time, not a single line. A narrow local snippet can make a broken cleanup path look fixed.
 - **Dismissal-comment skips**: We skip the dismissal-comment LLM when the reason says "file no longer exists" or "file not found", and we post-filter generated comments that only restate the surrounding code. *Why*: Avoids sending a prompt for a missing file and avoids inserting generic "extracts metrics"-style noise.
 - **Multi-file nudge**: When TARGET FILE(S) lists multiple files and the review mentions callers (await, file:line), the fix prompt adds a line urging updates to implementation and every call site. *Why*: Reduces fixer updating only one file and leaving call sites broken.
 - **Wider batch snippets**: When context headroom ≥100k chars, batch verification uses 2500/3000 char limits per comment/code snippet (vs 2000/2000). *Why*: Reduces false positives from truncation.

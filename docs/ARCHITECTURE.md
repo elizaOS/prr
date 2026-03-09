@@ -185,6 +185,12 @@ Low-stakes text generation tasks (`generateCommitMessage`, `generateDismissalCom
 - Anthropic: Set to 128,000 (required parameter). WHY: Anthropic's API won't accept a request without `max_tokens`. Setting it high ensures it's never the constraint — response length is controlled via prompt instructions, not this parameter. You only pay for tokens actually generated, not the budget ceiling. Previously hardcoded to 4096, which silently truncated responses mid-file.
 - OpenAI: Omitted entirely (optional parameter). WHY: The hardcoded 4096 was truncating code-fix responses mid-file. Omitting lets the model use its natural context limit.
 
+**Conservative verification for lifecycle/state issues:**
+- Verification now treats leak/cache/cleanup comments as a separate class. `fix-verification.ts` detects these comments, builds lifecycle-aware snippets that include declaration + usage + cleanup sites for the relevant symbol, and routes them through the stronger verifier lane when available.
+- The verifier prompt also explicitly says declaration-only tweaks are insufficient for lifecycle/cache/leak issues; the relevant creation, replacement, and cleanup paths must all look safe before answering `YES`.
+
+WHY: These bugs are often distributed across multiple control-flow exits. A narrow snippet around the commented line can make broken lifecycle code look fixed, which is worse than a conservative false negative. PRR therefore biases toward "keep the issue open unless the broader flow is clearly safe."
+
 ### 4. Analyzer (`src/analyzer/`)
 
 Issue analysis and prompt building:

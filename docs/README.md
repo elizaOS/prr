@@ -43,6 +43,11 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 ### 📉 Audit Improvements
 Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANGELOG](../CHANGELOG.md) under "Audit improvements" and "Output.log audit" headings.
 
+**Conservative verification for lifecycle/cache/leak issues (2026-03)**:
+- Lifecycle comments now receive broader symbol-lifecycle verification context rather than a tiny line-anchored snippet, and they are verified with the stronger lane when available.
+- The risky "pattern absent after N rejections" auto-pass is disabled for these issues.
+- **WHY**: Cleanup and leak bugs often live in distant creation/replacement/cleanup paths. A local snippet can look correct while the real leak still exists elsewhere in the file. PRR now prefers leaving those issues open over claiming a premature fix.
+
 **Output.log audit follow-up (2026-02)** — rebase detection, push retry, non-interactive rebase:
 - **Rebase detection**: `completeMerge` and the pull conflict loop use `--show-toplevel` to get the repo root so `.git/rebase-merge` is checked with an absolute path. **WHY**: Relative `.git` was resolved against process cwd, not the PRR workdir, so we often ran `commit` during a rebase and left `.git/rebase-merge` behind.
 - **Push retry cleanup**: On failed fetch+rebase after push rejection, we try `rebase --abort` first, then `cleanupGitState` only if abort fails. **WHY**: Abort keeps commits; full cleanup is for stale state so the next run doesn’t hit "rebase-merge directory already exists".

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Conservative verification for lifecycle/cache/leak issues
+
+**Lifecycle-aware verifier context**
+- `tools/prr/workflow/fix-verification.ts` now classifies leak/cache/cleanup comments with `commentNeedsLifecycleContext()` and builds broader verification snippets with `buildLifecycleAwareVerificationSnippet()`. Instead of checking only the anchor line, the verifier now sees the tracked symbol's declaration plus key usage and cleanup sites across the file.
+- **WHY**: Output.log showed PRR marking a `latestResponseIds` leak as fixed after seeing a narrow declaration-area snippet, even though the real failure lived in distant early-return and cleanup paths. Leak/lifecycle issues are whole-flow problems, not local-line problems.
+
+**Safer verification policy for stateful issues**
+- Lifecycle/cache/leak issues now use the stronger verifier lane alongside API/signature issues, and they are excluded from the "pattern absent after N rejections" auto-verify shortcut.
+- `tools/prr/llm/client.ts` batch verification prompt now explicitly tells the verifier that declaration-only tweaks are not sufficient for lifecycle/cache/leak issues; the relevant creation, replacement, and cleanup paths must be safe together before answering `YES`.
+- **WHY**: When we are unsure, PRR should leave an issue open rather than prematurely dismiss it as fixed. False negatives cost another iteration; false positives leave bugs in the PR and make the review state look deceptively clean.
+
+**Targeted verifier tests**
+- Added `tests/fix-verification.test.ts` to cover lifecycle-comment detection and lifecycle-aware snippet extraction.
+- **WHY**: This behavior is easy to regress during future prompt/snippet tuning. Tests keep the conservative verification bias intentional and visible.
+
 ### Added (2026-03) — Output.log + prompts.log follow-up: finish canonical paths, commit gating, rename targets
 
 **Canonical paths now reach cleanup / refresh / verification / commit flows**

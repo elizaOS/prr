@@ -79,6 +79,24 @@ function commentMentionsApiOrSignature(fix: { comment: string }): boolean {
 }
 
 /**
+ * True when the review comment is about cache/state lifecycle behavior rather than
+ * a single local line. These issues need broader verification context so the model
+ * can inspect creation, replacement, pruning, and cleanup paths together.
+ */
+export function commentNeedsLifecycleContext(fix: { comment: string }): boolean {
+  const c = fix.comment.toLowerCase();
+  return (
+    /\bmemory leak\b/.test(c) ||
+    /\b(?:potential )?leak\b/.test(c) ||
+    /\bgrows?\s+unbounded/i.test(c) ||
+    /\bnever\s+(?:cleared|cleaned|pruned|deleted|evicted|removed)\b/.test(c) ||
+    /\b(?:cleanup|clean up|prune|evict|ttl|lru)\b/.test(c) ||
+    /\b(?:stale|orphaned|dangling)\s+(?:entry|entries|state|map|set|cache)\b/.test(c) ||
+    /\b(?:map|set|weakmap|weakset|cache)\s+potential\s+(?:memory\s+)?leak\b/.test(c)
+  );
+}
+
+/**
  * Extract likely bug-indicating code from the review comment (backtick blocks or
  * common patterns like enumerate(), range()). If any such pattern appears in the
  * comment but NONE appear in currentCode, the bug may be fixed and the verifier
@@ -106,6 +124,122 @@ function bugPatternAbsentInCode(commentBody: string, currentCode: string): boole
     if (codeNorm.includes(p.replace(/\s+/g, ' '))) return false;
   }
   return true;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function mergeLineRanges(ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const range of sorted) {
+    const last = merged[merged.length - 1];
+    if (!last || range.start > last.end + 1) {
+      merged.push({ ...range });
+      continue;
+    }
+    last.end = Math.max(last.end, range.end);
+  }
+  return merged;
+}
+
+function extractCandidateSymbols(commentBody: string, anchorLine: string | undefined): string[] {
+  const symbols: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string | undefined) => {
+    if (!value) return;
+    if (!/^[A-Za-z_$][\w$]{2,}$/.test(value)) return;
+    if (/^(Map|Set|WeakMap|WeakSet|LRU|TTL|code|file|line|memory|cache|cleanup|comment)$/i.test(value)) return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    symbols.push(value);
+  };
+
+  const backtick = /`([A-Za-z_$][\w$]{2,})`/g;
+  let match: RegExpExecArray | null;
+  while ((match = backtick.exec(commentBody)) !== null) {
+    add(match[1]);
+  }
+
+  const declared = anchorLine?.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b/);
+  add(declared?.[1]);
+
+  return symbols;
+}
+
+/**
+ * Build a lifecycle-aware verification snippet that includes the tracked symbol's
+ * declaration plus its key read/write/cleanup sites across the file.
+ */
+export function buildLifecycleAwareVerificationSnippet(
+  content: string,
+  filePath: string,
+  line: number | null,
+  commentBody: string
+): string | null {
+  const lines = content.split('\n');
+  const anchorLine = line != null && line >= 1 && line <= lines.length ? lines[line - 1] : undefined;
+  const candidates = extractCandidateSymbols(commentBody, anchorLine);
+  if (candidates.length === 0) return null;
+
+  let bestSymbol: string | null = null;
+  let bestOccurrences: number[] = [];
+  for (const symbol of candidates) {
+    const rx = new RegExp(`\\b${escapeRegExp(symbol)}\\b`);
+    const occurrences: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (rx.test(lines[i]!)) occurrences.push(i + 1);
+    }
+    if (occurrences.length > bestOccurrences.length) {
+      bestSymbol = symbol;
+      bestOccurrences = occurrences;
+    }
+  }
+  if (!bestSymbol || bestOccurrences.length < 2) return null;
+
+  const ranges: Array<{ start: number; end: number }> = [];
+  if (line != null) {
+    ranges.push({
+      start: Math.max(1, line - 12),
+      end: Math.min(lines.length, line + 20),
+    });
+  }
+  for (const occurrence of bestOccurrences) {
+    ranges.push({
+      start: Math.max(1, occurrence - 4),
+      end: Math.min(lines.length, occurrence + 6),
+    });
+  }
+
+  const merged = mergeLineRanges(ranges);
+  const parts = [
+    `Lifecycle excerpts for \`${bestSymbol}\` in ${filePath} (declaration + usage/cleanup sites):`,
+    '',
+  ];
+  const maxChars = 7000;
+  let usedChars = parts.join('\n').length;
+  let included = 0;
+
+  for (const range of merged) {
+    const body = lines
+      .slice(range.start - 1, range.end)
+      .map((l, i) => `${range.start + i}: ${l}`)
+      .join('\n');
+    const block = `--- lines ${range.start}-${range.end} ---\n${body}\n`;
+    if (usedChars + block.length > maxChars) break;
+    parts.push(block);
+    usedChars += block.length;
+    included++;
+  }
+
+  if (included === 0) return null;
+  if (included < merged.length) {
+    parts.push(`... (${merged.length - included} additional lifecycle section(s) omitted; file has ${lines.length} lines total)`);
+  } else {
+    parts.push(`(full lifecycle excerpt set shown; file has ${lines.length} lines total)`);
+  }
+  return parts.join('\n');
 }
 
 /**
@@ -224,6 +358,12 @@ const MAX_LINES_FULL_FILE_VERIFY = 200;
  */
 const MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE = 500;
 
+type CurrentCodeAtLineOptions = {
+  expandForTypeSignature?: boolean;
+  expandForLifecycle?: boolean;
+  commentBody?: string;
+};
+
 /**
  * Get current code at (or around) the issue line for verification.
  * WHY anchor + size: Audit (prompts.log) showed verifier received first 2000 chars only; for a 204-line
@@ -236,12 +376,14 @@ async function getCurrentCodeAtLine(
   workdir: string,
   filePath: string,
   line: number | null,
-  expandForTypeSignature?: boolean
+  options?: CurrentCodeAtLineOptions
 ): Promise<string> {
   try {
     const fullPath = join(workdir, filePath);
     const content = await readFile(fullPath, 'utf-8');
     const lines = content.split('\n');
+    const expandForTypeSignature = options?.expandForTypeSignature === true;
+    const expandForLifecycle = options?.expandForLifecycle === true;
 
     const fullFileLimit = expandForTypeSignature ? MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE : MAX_LINES_FULL_FILE_VERIFY;
     if (lines.length <= fullFileLimit) {
@@ -254,6 +396,11 @@ async function getCurrentCodeAtLine(
         .slice(0, fullFileLimit)
         .map((l, i) => `${i + 1}: ${l}`)
         .join('\n') + `\n... (truncated — file has ${lines.length} lines total)`;
+    }
+
+    if (expandForLifecycle && options?.commentBody) {
+      const lifecycleSnippet = buildLifecycleAwareVerificationSnippet(content, filePath, line, options.commentBody);
+      if (lifecycleSnippet) return lifecycleSnippet;
     }
 
     if (line === null) {
@@ -456,10 +603,18 @@ export async function verifyFixes(
               const stateSeq = getState(stateContext);
               const rejectionCountSeq = (stateSeq.verifierRejectionCount?.[issue.comment.id] ?? 0) + 1;
               const currentCodeSeq = workdir
-                ? await getCurrentCodeAtLine(workdir, primaryPathSeq, issue.comment.line, commentMentionsApiOrSignature({ comment: issue.comment.body }))
+                ? await getCurrentCodeAtLine(workdir, primaryPathSeq, issue.comment.line, {
+                    expandForTypeSignature: commentMentionsApiOrSignature({ comment: issue.comment.body }),
+                    expandForLifecycle: commentNeedsLifecycleContext({ comment: issue.comment.body }),
+                    commentBody: issue.comment.body,
+                  })
                 : '';
               if (
                 rejectionCountSeq >= AUTO_VERIFY_PATTERN_ABSENT_THRESHOLD &&
+                // WHY conservative gate: For lifecycle/cache/leak issues, a local snippet can lose
+                // the creation or cleanup path that still makes the bug real. Keep these issues open
+                // until the verifier explicitly sees enough lifecycle context and says they are fixed.
+                !commentNeedsLifecycleContext({ comment: issue.comment.body }) &&
                 currentCodeSeq &&
                 currentCodeSeq !== '(file not found or unreadable)' &&
                 bugPatternAbsentInCode(issue.comment.body, currentCodeSeq)
@@ -532,7 +687,11 @@ export async function verifyFixes(
             const [diff, currentCode] = await Promise.all([
               getIssueDiff(issue),
               workdir
-                ? getCurrentCodeAtLine(workdir, primaryPath, issue.comment.line, commentMentionsApiOrSignature({ comment: issue.comment.body }))
+                ? getCurrentCodeAtLine(workdir, primaryPath, issue.comment.line, {
+                    expandForTypeSignature: commentMentionsApiOrSignature({ comment: issue.comment.body }),
+                    expandForLifecycle: commentNeedsLifecycleContext({ comment: issue.comment.body }),
+                    commentBody: issue.comment.body,
+                  })
                 : Promise.resolve(undefined),
             ]);
             return {
@@ -575,13 +734,17 @@ export async function verifyFixes(
 
         // Split out API/signature-related fixes so we can verify them with a stronger model.
         // WHY: Weak default verifier often approves fixes that miss call-site updates (e.g. await/args); stronger model catches those and reduces "fixed then broken at call site".
-        const fixesApiSignature = fixesDefault.filter((f) => commentMentionsApiOrSignature(f));
-        const fixesDefaultRest = fixesDefault.filter((f) => !commentMentionsApiOrSignature(f));
+        const fixesNeedStrongerVerifier = fixesDefault.filter((f) =>
+          commentMentionsApiOrSignature(f) || commentNeedsLifecycleContext(f)
+        );
+        const fixesDefaultRest = fixesDefault.filter((f) =>
+          !commentMentionsApiOrSignature(f) && !commentNeedsLifecycleContext(f)
+        );
 
         // Batch all stronger-model verifications into one call when possible (prompts.log audit: avoid two separate opus calls for same file).
         const fixesForStronger =
-          strongerModel && (fixesApiSignature.length > 0 || fixesStronger.length > 0)
-            ? [...fixesApiSignature, ...fixesStronger]
+          strongerModel && (fixesNeedStrongerVerifier.length > 0 || fixesStronger.length > 0)
+            ? [...fixesNeedStrongerVerifier, ...fixesStronger]
             : [];
 
         const result = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
@@ -593,8 +756,8 @@ export async function verifyFixes(
           debug('Using stronger model for verification (API/signature + previous rejections)', { model: strongerModel, count: fixesForStronger.length });
           const strongerResult = await llm.batchVerifyFixes(fixesForStronger, { model: strongerModel });
           for (const [id, value] of strongerResult) result.set(id, value);
-        } else if (fixesApiSignature.length > 0 && !strongerModel) {
-          const apiResult = await llm.batchVerifyFixes(fixesApiSignature);
+        } else if (fixesNeedStrongerVerifier.length > 0 && !strongerModel) {
+          const apiResult = await llm.batchVerifyFixes(fixesNeedStrongerVerifier);
           for (const [id, value] of apiResult) result.set(id, value);
         } else if (fixesStronger.length > 0 && !strongerModel) {
           const fallback = await llm.batchVerifyFixes(fixesStronger);
@@ -644,6 +807,10 @@ export async function verifyFixes(
               // to break fixer/verifier stalemates (audit: reporting.py enumerate was fixed but verifier kept rejecting).
               if (
                 rejectionCount >= AUTO_VERIFY_PATTERN_ABSENT_THRESHOLD &&
+                // WHY conservative gate: "pattern absent near the anchor line" is weak evidence for
+                // stateful lifecycle bugs. Avoid auto-passing leak/cleanup issues unless the verifier
+                // reviewed the broader symbol lifecycle and explicitly accepted the fix.
+                !commentNeedsLifecycleContext({ comment: issue.comment.body }) &&
                 currentCode &&
                 currentCode !== '(file not found or unreadable)' &&
                 bugPatternAbsentInCode(issue.comment.body, currentCode)

@@ -118,6 +118,16 @@ export interface LLMResponse {
   };
 }
 
+interface CompleteOptions {
+  model?: string;
+  /**
+   * Override the generic ElizaCloud 500/504 retry count for special callers.
+   * WHY: Conflict resolution should fall back to chunked/manual strategies quickly
+   * instead of spending ~10 minutes exhausting the global retry ladder first.
+   */
+  max504Retries?: number;
+}
+
 /**
  * Batch check result with optional model recommendation
  */
@@ -477,7 +487,7 @@ export class LLMClient {
     }
   }
 
-  async complete(prompt: string, systemPrompt?: string, options?: { model?: string }): Promise<LLMResponse> {
+  async complete(prompt: string, systemPrompt?: string, options?: CompleteOptions): Promise<LLMResponse> {
     // Sanitize inputs: strip unpaired UTF-16 surrogates that cause JSON serialization
     // errors (Anthropic API returns 400 "no low surrogate in string"). These can appear
     // in code snippets read from binary or corrupted files.
@@ -518,7 +528,7 @@ export class LLMClient {
         elizaAcquired = true;
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
-      const max504Retries = this.provider === 'elizacloud' ? 2 : 0;
+      const max504Retries = options?.max504Retries ?? (this.provider === 'elizacloud' ? 2 : 0);
       const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
       const backoff504Ms = this.provider === 'elizacloud' ? [10_000, 20_000] : [10_000];
       // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
@@ -2047,6 +2057,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'If multiple fixes apply to the same file, "Code before fix" may show removed lines from any part of that file. Judge whether the REVIEW COMMENT\'s specific concern is addressed in Current Code (or in the diff), not whether the "Code before fix" snippet matches the comment.',
       'If "Code before fix" is empty or shows only formatting/line-number artifacts (e.g. backticks and "N | " lines), base your verdict on Current Code and the diff only.',
       'If the concern is fully addressed in another file or by a different function (e.g. this code now delegates to a function that implements the fix), answer YES and cite where the fix is implemented.',
+      'For lifecycle/cache/leak issues (Map/Set/cache cleanup, pruning, TTL, stale entries), answer YES only if the code shown demonstrates safe cleanup across the relevant creation/replacement/cleanup paths. A declaration-only tweak is not enough if stale entries can still survive on early returns or thrown errors.',
       '',
       'For "duplicate" / "extract to shared utility" issues: The fix is usually to remove the duplicate from THIS file and import from the shared module (often lib/utils/...). The review may mention another file as where the duplicate already exists — that is a reference only; the canonical shared source is typically a dedicated util (e.g. lib/utils/db-errors.ts), not that reference file. In LESSON lines, do not suggest "use from [reference file]" as the shared source when a lib/utils/... module is the intended canonical location.',
       '',
@@ -2272,7 +2283,10 @@ RESOLVED:
 
     debug('Resolving conflict via LLM API', { filePath, contentLength: conflictedContent.length, model: options?.model });
     // Use caller-provided model when given (e.g. same as attempt 1) so fallback doesn't use weak default (qwen-3-14b) that may 504.
-    const response = await this.complete(prompt, undefined, options?.model ? { model: options.model } : undefined);
+    const response = await this.complete(prompt, undefined, {
+      model: options?.model,
+      max504Retries: 0,
+    });
     const content = response.content;
     
     // Parse the response with better error reporting
