@@ -245,7 +245,14 @@ export function assessSolvability(
     };
   }
 
-  // Check 0b: Path traversal guard (comment.path comes from GitHub API)
+  // Check 0b: Path traversal guard (comment.path comes from GitHub API; can be null from GraphQL/bot parsing)
+  if (comment.path == null || comment.path === '') {
+    return {
+      solvable: false,
+      dismissCategory: 'stale',
+      reason: 'Comment has no file path — cannot target a fix',
+    };
+  }
   const fullPath = join(workdir, comment.path);
   const resolvedWorkdir = resolve(workdir);
   const resolvedPath = resolve(fullPath);

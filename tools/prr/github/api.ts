@@ -371,11 +371,12 @@ export class GitHubAPI {
         cursor: pageInfo.endCursor?.slice(0, 20),
       });
 
-      // Map threads from this page
+      // Map threads from this page (GitHub GraphQL can return path: null for some threads)
       for (const thread of nodes) {
+        const path = thread.path ?? '(unknown file)';
         allThreads.push({
           id: thread.id,
-          path: thread.path,
+          path,
           line: thread.line,
           diffSide: thread.diffSide,
           isResolved: thread.isResolved,
@@ -385,7 +386,7 @@ export class GitHubAPI {
             threadId: thread.id,
             author: comment.author?.login || 'unknown',
             body: comment.body,
-            path: thread.path,
+            path,
             line: thread.line,
             diffSide: thread.diffSide,
             createdAt: comment.createdAt,
@@ -542,7 +543,7 @@ export class GitHubAPI {
               threadId: `ic-${comment.id}-${i}`,
               author: authorClean,
               body: issue.body,
-              path: issue.path,
+              path: issue.path ?? '(PR comment)',
               line: issue.line,
               createdAt: comment.created_at,
             });
@@ -555,7 +556,7 @@ export class GitHubAPI {
             threadId: `ic-${comment.id}`,
             author: authorClean,
             body: comment.body,
-            path,
+            path: path ?? '(PR comment)',
             line,
             createdAt: comment.created_at,
           });
@@ -582,7 +583,7 @@ export class GitHubAPI {
             threadId: `ic-${c.id}-${i}`,
             author,
             body: issue.body,
-            path: issue.path,
+            path: issue.path ?? '(PR comment)',
             line: issue.line,
             createdAt: c.created_at,
           });
@@ -594,7 +595,7 @@ export class GitHubAPI {
           threadId: `ic-${c.id}`,
           author,
           body: c.body,
-          path,
+          path: path ?? '(PR comment)',
           line,
           createdAt: c.created_at,
         });
@@ -1343,7 +1344,7 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
         continue;
       }
 
-      const path = bareFileMatch?.path ?? fileMatch![1];
+      const path = (bareFileMatch?.path ?? fileMatch![1]) ?? '(PR comment)';
       const line = bareFileMatch?.line ?? (fileMatch![2] ? parseInt(fileMatch![2], 10) : null);
       issues.push({ body, path, line });
     }

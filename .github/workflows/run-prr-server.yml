@@ -1,9 +1,9 @@
 # SERVER: Reusable workflow that runs PRR on a GitHub PR.
 # Called by run-prr-client.yml (or any repo's client workflow).
 #
-# Required secrets in the calling repo:
-#   - GITHUB_TOKEN: a PAT with `repo` scope (NOT the default secrets.GITHUB_TOKEN,
-#     which can't push to other repos or post review comments cross-repo).
+# Required in the calling repo:
+#   - Pass PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} to use the caller's token (no extra secret).
+#     Or pass a PAT if you need cross-repo or higher rate limits.
 #   - One of: ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
 #
 # Example client workflow (add to your repo's .github/workflows/run-prr-client.yml):
@@ -23,7 +23,7 @@
 #         pr_number: ${{ inputs.pr_number }}
 #         prr_repo: 'OWNER/prr'
 #       secrets:
-#         GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+#         PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # caller's token, no PAT needed
 #         ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
 #         # or ANTHROPIC_API_KEY / OPENAI_API_KEY
 #
@@ -41,7 +41,7 @@ on:
         required: true
         type: string
     secrets:
-      GITHUB_TOKEN:
+      PRR_GITHUB_TOKEN:
         required: true
       ELIZACLOUD_API_KEY:
         required: false
@@ -63,7 +63,7 @@ jobs:
         with:
           repository: ${{ inputs.prr_repo }}
           path: prr
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PRR_GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -80,7 +80,7 @@ jobs:
 
       - name: Run PRR
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
           ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

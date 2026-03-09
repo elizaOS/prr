@@ -281,7 +281,7 @@ jobs:
       pr_number: ${{ inputs.pr_number }}
       prr_repo: 'OWNER/prr'
     secrets:
-      GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+      PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # caller's token, no extra secret needed
       ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
       # or ANTHROPIC_API_KEY / OPENAI_API_KEY
 ```
@@ -290,7 +290,7 @@ Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`
 
 2. **Configure secrets** in that repo:
 
-- **GITHUB_TOKEN**: Use `secrets.GITHUB_TOKEN` (already provided) or a PAT with `repo` scope if you need cross-repo or higher limits.
+- **Token**: Pass `PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` (as above) to use the workflow's built-in token — no extra secret. Use a PAT only if you need cross-repo access or higher rate limits.
 - **One LLM key**: Add a repository secret for at least one of:
   - `ELIZACLOUD_API_KEY`
   - `ANTHROPIC_API_KEY`
