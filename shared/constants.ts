@@ -122,6 +122,14 @@ export const MAX_CONFLICT_RESOLUTION_FILE_SIZE = 50000;
 export const CONFLICT_USE_CHUNKED_FIRST_CHARS = 22_000;
 
 /**
+ * Use chunked resolution when a file has many distinct conflict regions even if
+ * the total file size is modest.
+ * WHY: prompts.log showed files like test_autonomy.py work much better as many
+ * 1-2KB chunk prompts than as a single 20KB whole-file conflict prompt.
+ */
+export const CONFLICT_USE_CHUNKED_FIRST_CHUNKS = 5;
+
+/**
  * Minimum ratio of resolved content lines to the larger conflict side's lines.
  * If a resolution is smaller than this fraction, reject it as likely corrupted.
  *

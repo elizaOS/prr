@@ -4,6 +4,7 @@
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../../../shared/constants.js';
 import { extractConflictChunks } from './git-conflict-chunked.js';
 
 /** Above this size we embed only conflict sections, not the full file. WHY: Large files (e.g. CHANGELOG 600+ lines) double prompt size and cause 504s; conflict sections are enough for <search>/<replace>. */
@@ -78,10 +79,14 @@ export function buildConflictResolutionPromptWithContent(
     }
 
     const hasConflictMarkers = content.includes('<<<<<<<');
-    const useChunkedEmbed = hasConflictMarkers && content.length > CONFLICT_EMBED_FULL_MAX_CHARS;
+    const chunks = hasConflictMarkers ? extractConflictChunks(content, 7) : [];
+    const useChunkedEmbed = hasConflictMarkers
+      && (
+        content.length > CONFLICT_EMBED_FULL_MAX_CHARS
+        || chunks.length >= CONFLICT_USE_CHUNKED_FIRST_CHUNKS
+      );
 
     if (useChunkedEmbed) {
-      const chunks = extractConflictChunks(content, 7);
       // Malformed conflict (no closing >>>>>>>) — embed full file so LLM can still attempt resolution.
       if (chunks.length === 0) {
         const wrappedLength =
@@ -96,24 +101,32 @@ export function buildConflictResolutionPromptWithContent(
           charsUsed += wrappedLength;
         }
       } else {
-        let sectionChars = 0;
-        for (let i = 0; i < chunks.length; i++) {
-          const chunk = chunks[i];
+        const sectionEntries = chunks.map((chunk, i) => {
           const segment = chunk.fullContent;
           // WHY line range from context arrays: header should match what we actually embed (contextBefore + conflict + contextAfter), not just conflict marker lines.
           const embedStart = chunk.startLine - chunk.contextBefore.length + 1;
           const embedEnd = chunk.endLine + chunk.contextAfter.length + 1;
-          const sectionWrappedLength =
-            `--- FILE: ${file} (section ${i + 1}/${chunks.length}, lines ${embedStart}-${embedEnd}) ---\n${segment}\n--- END: ${file} section ${i + 1} ---\n\n`.length;
-          if (charsUsed + sectionChars + sectionWrappedLength > maxTotalChars) break;
-          parts.push(`--- FILE: ${file} (section ${i + 1}/${chunks.length}, lines ${embedStart}-${embedEnd}) ---`);
-          parts.push(segment);
-          parts.push(`--- END: ${file} section ${i + 1} ---`);
-          parts.push('');
-          sectionChars += sectionWrappedLength;
+          const header = `--- FILE: ${file} (section ${i + 1}/${chunks.length}, lines ${embedStart}-${embedEnd}) ---`;
+          const footer = `--- END: ${file} section ${i + 1} ---`;
+          const wrappedLength = `${header}\n${segment}\n${footer}\n\n`.length;
+          return { header, segment, footer, wrappedLength };
+        });
+        const totalSectionChars = sectionEntries.reduce((sum, entry) => sum + entry.wrappedLength, 0);
+
+        // Do not partially embed a file's sections. Partial inclusion silently hides
+        // unresolved conflicts from the model and wastes the batch attempt.
+        if (charsUsed + totalSectionChars > maxTotalChars) {
+          oversized.push(file);
+          continue;
         }
-        charsUsed += sectionChars;
-        if (sectionChars === 0) oversized.push(file);
+
+        for (const entry of sectionEntries) {
+          parts.push(entry.header);
+          parts.push(entry.segment);
+          parts.push(entry.footer);
+          parts.push('');
+        }
+        charsUsed += totalSectionChars;
       }
     } else {
       const wrappedLength =

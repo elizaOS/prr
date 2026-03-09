@@ -8,7 +8,7 @@
  */
 import chalk from 'chalk';
 import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import type { SimpleGit } from 'simple-git';
 import { isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../../shared/git/git-clone-index.js';
 import type { LLMClient } from '../llm/client.js';
@@ -21,6 +21,7 @@ import { setTokenPhase, debug } from '../../../shared/logger.js';
 import {
   MAX_CONFLICT_RESOLUTION_FILE_SIZE,
   CONFLICT_USE_CHUNKED_FIRST_CHARS,
+  CONFLICT_USE_CHUNKED_FIRST_CHUNKS,
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   DEFAULT_ELIZACLOUD_MODEL,
@@ -32,7 +33,8 @@ import {
   tryHeuristicResolution,
   extractConflictSides,
   extractConflictChunks,
-  isGeneratedSchemaFile,
+  isGeneratedArtifactFile,
+  tryResolveGeneratedArtifactSides,
   hasAsymmetricConflict,
   resolveAsymmetricConflict,
 } from './git-conflict-chunked.js';
@@ -73,6 +75,56 @@ function shouldUseDeterministicMerge(filePath: string): boolean {
   const basename = filePath.split('/').pop() || filePath;
   if (DETERMINISTIC_MERGE_FILES.has(basename)) return true;
   return DETERMINISTIC_MERGE_PATTERNS.some(p => p.test(filePath));
+}
+
+function isExplicitMarkerlessPolicyFile(filePath: string): boolean {
+  const basename = filePath.split('/').pop() || filePath;
+  return shouldUseDeterministicMerge(filePath)
+    || basename.toUpperCase() === 'LICENSE';
+}
+
+async function readConflictStage(git: SimpleGit, filePath: string, stage: 2 | 3): Promise<string | null> {
+  try {
+    return await git.raw(['show', `:${stage}:${filePath}`]);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveMarkerlessConflict(
+  git: SimpleGit,
+  filePath: string,
+  fullPath: string,
+  conflictedContent: string
+): Promise<{ resolved: boolean; explanation?: string }> {
+  const oursText = await readConflictStage(git, filePath, 2);
+  const theirsText = await readConflictStage(git, filePath, 3);
+
+  if (isExplicitMarkerlessPolicyFile(filePath)) {
+    if (!oursText && !theirsText) {
+      return { resolved: false, explanation: 'No stage-2/3 conflict blobs found' };
+    }
+    const chosen = oursText ?? theirsText!;
+    const policy = oursText ? 'kept ours from conflict index' : 'used incoming content (ours missing)';
+    const fs = await import('fs');
+    fs.writeFileSync(fullPath, chosen, 'utf-8');
+    await git.add(filePath);
+    return { resolved: true, explanation: `${policy} for markerless deterministic conflict` };
+  }
+
+  if (isGeneratedArtifactFile(filePath) && oursText != null && theirsText != null) {
+    const generated = tryResolveGeneratedArtifactSides(filePath, oursText, theirsText);
+    if (generated?.resolved) {
+      const fs = await import('fs');
+      fs.writeFileSync(fullPath, generated.content, 'utf-8');
+      await git.add(filePath);
+      return { resolved: true, explanation: generated.explanation };
+    }
+  }
+
+  // No safe deterministic policy available.
+  void conflictedContent;
+  return { resolved: false };
 }
 
 /**
@@ -239,43 +291,25 @@ export async function resolveConflictsWithLLM(
   if (codeFiles.length > 0 && runner) {
     const activeRunner = runner;
     const isNonAgentic = activeRunner.name === 'llm-api';
-    let skipBatch = false;
-    if (isNonAgentic) {
-      let estimatedPromptLength = 0;
-      for (const file of codeFiles) {
-        try {
-          const content = readFileSync(join(workdir, file), 'utf-8');
-          estimatedPromptLength += content.length + 500;
-        } catch {
-          estimatedPromptLength += 1000;
-        }
-      }
-      if (estimatedPromptLength > BATCH_CONFLICT_PROMPT_MAX_CHARS) {
-        console.log(chalk.cyan(`\n  Batch prompt too large (${Math.round(estimatedPromptLength / 1024)} KB), skipping runner — using per-file resolution.`));
-        skipBatch = true;
-      }
-    }
-    if (!skipBatch) {
-      const conflictPrompt = isNonAgentic
-        ? buildConflictResolutionPromptWithContent(codeFiles, mergingBranch, workdir, modelMaxChars)
-        : buildConflictResolutionPrompt(codeFiles, mergingBranch);
+    const conflictPrompt = isNonAgentic
+      ? buildConflictResolutionPromptWithContent(codeFiles, mergingBranch, workdir, modelMaxChars)
+      : buildConflictResolutionPrompt(codeFiles, mergingBranch);
 
-      if (isNonAgentic && conflictPrompt.length > BATCH_CONFLICT_PROMPT_MAX_CHARS) {
-        console.log(chalk.cyan(`\n  Batch prompt built but too large (${Math.round(conflictPrompt.length / 1024)} KB), skipping runner — using per-file resolution.`));
+    if (isNonAgentic && conflictPrompt.length > BATCH_CONFLICT_PROMPT_MAX_CHARS) {
+      console.log(chalk.cyan(`\n  Batch prompt built but too large (${Math.round(conflictPrompt.length / 1024)} KB), skipping runner — using per-file resolution.`));
+    } else {
+      console.log(chalk.cyan(`\n  Attempt 1: Using ${activeRunner.name} to resolve conflicts...`));
+      const runResult = await activeRunner.run(workdir, conflictPrompt, { model: getCurrentModel() });
+
+      if (!runResult.success) {
+        console.log(chalk.yellow(`  ${activeRunner.name} failed, will try direct API...`));
       } else {
-        console.log(chalk.cyan(`\n  Attempt 1: Using ${activeRunner.name} to resolve conflicts...`));
-        const runResult = await activeRunner.run(workdir, conflictPrompt, { model: getCurrentModel() });
-
-        if (!runResult.success) {
-          console.log(chalk.yellow(`  ${activeRunner.name} failed, will try direct API...`));
-        } else {
-          console.log(chalk.cyan('  Staging resolved files...'));
-          for (const file of codeFiles) {
-            try {
-              await git.add(file);
-            } catch {
-              // File might still have conflicts, ignore
-            }
+        console.log(chalk.cyan('  Staging resolved files...'));
+        for (const file of codeFiles) {
+          try {
+            await git.add(file);
+          } catch {
+            // File might still have conflicts, ignore
           }
         }
       }
@@ -374,12 +408,18 @@ export async function resolveConflictsWithLLM(
         const conflictedContent = fs.readFileSync(fullPath, 'utf-8');
 
         if (!conflictedContent.includes('<<<<<<<')) {
-          console.log(chalk.gray(`    - ${conflictFile}: no conflict markers found`));
+          const markerless = await resolveMarkerlessConflict(git, conflictFile, fullPath, conflictedContent);
+          if (markerless.resolved) {
+            console.log(chalk.green(`    ✓ ${conflictFile}: ${markerless.explanation}`));
+          } else {
+            console.log(chalk.gray(`    - ${conflictFile}: no conflict markers found`));
+          }
           continue;
         }
 
         console.log(chalk.cyan(`    Resolving: ${conflictFile}`));
         const fileSize = Math.round(conflictedContent.length / 1024);
+        const conflictChunkCount = extractConflictChunks(conflictedContent, 0).length;
 
         let result = tryHeuristicResolution(conflictFile, conflictedContent);
 
@@ -396,7 +436,7 @@ export async function resolveConflictsWithLLM(
             explanation: `File too large for model context (${fileSize}KB > ${Math.round(effectiveMaxChars / 1024)}KB)`,
           };
         } else if (
-          isGeneratedSchemaFile(conflictFile) &&
+          isGeneratedArtifactFile(conflictFile) &&
           hasAsymmetricConflict(conflictedContent)
         ) {
           console.log(chalk.blue(`    → Using asymmetric merge for generated file (${fileSize}KB)`));
@@ -412,8 +452,14 @@ export async function resolveConflictsWithLLM(
           } finally {
             stopHeartbeat();
           }
-        } else if (conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS) {
-          console.log(chalk.blue(`    → Using chunked strategy (${fileSize}KB file)`));
+        } else if (
+          conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS ||
+          conflictChunkCount >= CONFLICT_USE_CHUNKED_FIRST_CHUNKS
+        ) {
+          const reason = conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS
+            ? `${fileSize}KB file`
+            : `${conflictChunkCount} conflict chunks`;
+          console.log(chalk.blue(`    → Using chunked strategy (${reason})`));
           startHeartbeat();
           try {
             result = await resolveConflictsChunked(

@@ -122,38 +122,37 @@ export async function resolveConflictChunk(
   baseBranch: string,
   model?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
-  const prompt = `You are resolving a single Git merge conflict in ${filePath}.
+  const prompt = `Resolve this single Git merge conflict region in ${filePath}.
 
-MERGING: ${baseBranch} into current branch
+MERGING: ${baseBranch}
 
-Context before conflict:
+Context before:
 \`\`\`
 ${chunk.contextBefore.join('\n')}
 \`\`\`
 
-CONFLICTED SECTION (resolve this):
+Conflict:
 \`\`\`
 ${chunk.conflictLines.join('\n')}
 \`\`\`
 
-Context after conflict:
+Context after:
 \`\`\`
 ${chunk.contextAfter.join('\n')}
 \`\`\`
 
-Instructions:
-1. Analyze both sides of the conflict (between <<<<<<< and =======, and between ======= and >>>>>>>)
-2. Intelligently merge both changes, keeping what makes sense
-3. Remove ALL conflict markers (<<<<<<<, =======, >>>>>>>)
-4. Output ONLY the resolved lines (no markers, no explanations in the code)
-5. After the code block, explain your resolution in one sentence
-
-Format:
+Return exactly:
 RESOLVED:
 \`\`\`
-resolved code here
+<resolved lines only for this region>
 \`\`\`
-EXPLANATION: Brief explanation of what you merged/kept/changed`;
+EXPLANATION: <one sentence describing what you kept or merged>
+
+Rules:
+- Remove all conflict markers.
+- Output only the resolved lines for this region, not the whole file.
+- Preserve valid syntax and indentation.
+- Do not use placeholder text in the explanation.`;
 
   try {
     const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
@@ -187,7 +186,10 @@ EXPLANATION: Brief explanation of what you merged/kept/changed`;
     }
 
     const resolvedCode = codeMatch[1].trim();
-    const explanation = explanationMatch?.[1]?.trim() || 'Resolved';
+    let explanation = explanationMatch?.[1]?.trim() || 'Resolved';
+    if (/^<one sentence/i.test(explanation) || /^brief explanation/i.test(explanation)) {
+      explanation = 'Resolved';
+    }
 
     // Verify no conflict markers remain
     const markerRe = /^(<{7}|={7}|>{7})/m;
@@ -252,6 +254,11 @@ export async function resolveConflictsChunked(
   baseBranch: string,
   model?: string
 ): Promise<{ resolved: boolean; content: string; explanation: string }> {
+  const wholeFileGeneratedResolution = tryResolveWholeFileGeneratedConflict(filePath, content);
+  if (wholeFileGeneratedResolution) {
+    return wholeFileGeneratedResolution;
+  }
+
   const chunks = extractConflictChunks(content);
 
   if (chunks.length === 0) {
@@ -548,6 +555,109 @@ export function isGeneratedSchemaFile(filePath: string): boolean {
   if (normalized.endsWith('.schema.json') && normalized.includes('/migration')) return true;
 
   return false;
+}
+
+/**
+ * Broader generated-artifact detection used for deterministic conflict fallbacks.
+ * WHY: examples manifests, generated action docs, and plugins.generated.json are
+ * machine-produced artifacts that often conflict as a single huge region.
+ */
+export function isGeneratedArtifactFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  if (isGeneratedSchemaFile(filePath)) return true;
+  if (normalized.endsWith('/examples-manifest.json')) return true;
+  if (normalized.endsWith('/plugins.generated.json')) return true;
+  if (/\/generated\/.+\.(json|py|rs|ts|tsx|js)$/i.test(normalized)) return true;
+  if (/action[-_]?docs?\.(py|rs|ts|tsx|js)$/i.test(normalized)) return true;
+  return false;
+}
+
+function getSignificantLines(lines: string[]): string[] {
+  return lines
+    .map(line => line.trim())
+    .filter(line =>
+      line.length >= 4 &&
+      line !== '{' &&
+      line !== '}' &&
+      line !== '[' &&
+      line !== ']' &&
+      line !== ',' &&
+      !/^\/\/\s*generated/i.test(line)
+    );
+}
+
+/**
+ * Resolve a whole-file generated conflict without the LLM when possible.
+ * WHY: If a generated file collapses into one giant conflict region, chunked mode
+ * is effectively another full-file request and still 504s. Prefer structural merges.
+ */
+function tryResolveWholeFileGeneratedConflict(
+  filePath: string,
+  content: string
+): { resolved: boolean; content: string; explanation: string } | null {
+  if (!isGeneratedArtifactFile(filePath)) return null;
+
+  const chunks = extractConflictChunks(content, 0);
+  if (chunks.length !== 1) return null;
+
+  const lines = content.split('\n');
+  const chunk = chunks[0];
+  const before = lines.slice(0, chunk.startLine).join('\n').trim();
+  const after = lines.slice(chunk.endLine + 1).join('\n').trim();
+  if (before.length > 0 || after.length > 0) return null;
+
+  const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+  const oursText = ours.join('\n');
+  const theirsText = theirs.join('\n');
+  return tryResolveGeneratedArtifactSides(filePath, oursText, theirsText);
+}
+
+export function tryResolveGeneratedArtifactSides(
+  filePath: string,
+  oursText: string,
+  theirsText: string
+): { resolved: boolean; content: string; explanation: string } | null {
+  if (!isGeneratedArtifactFile(filePath)) return null;
+
+  if (filePath.endsWith('.json')) {
+    try {
+      const oursObj = JSON.parse(oursText) as JSONValue;
+      const theirsObj = JSON.parse(theirsText) as JSONValue;
+
+      if (isJsonSubset(oursObj, theirsObj)) {
+        return {
+          resolved: true,
+          content: JSON.stringify(theirsObj, null, detectJSONIndent(theirsText)),
+          explanation: 'Resolved generated JSON conflict by choosing the structural superset (incoming contained all HEAD data)',
+        };
+      }
+
+      if (isJsonSubset(theirsObj, oursObj)) {
+        return {
+          resolved: true,
+          content: JSON.stringify(oursObj, null, detectJSONIndent(oursText)),
+          explanation: 'Resolved generated JSON conflict by choosing the structural superset (HEAD contained all incoming data)',
+        };
+      }
+    } catch {
+      // Fall through to text containment heuristic
+    }
+  }
+
+  const oursSig = getSignificantLines(oursText.split('\n'));
+  const theirsSig = getSignificantLines(theirsText.split('\n'));
+  const oursInTheirs = oursSig.every(line => theirsText.includes(line));
+  const theirsInOurs = theirsSig.every(line => oursText.includes(line));
+  if (oursInTheirs || theirsInOurs) {
+    const keepOurs = theirsInOurs || oursText.length >= theirsText.length;
+    return {
+      resolved: true,
+      content: keepOurs ? oursText : theirsText,
+      explanation: `Resolved generated artifact conflict by keeping the structural superset (${keepOurs ? 'HEAD' : 'incoming'})`,
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -861,6 +971,35 @@ function deepMergeJSON(
 
 /** JSON-compatible value type for deep merge operations */
 type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
+
+function isJsonSubset(subset: JSONValue, superset: JSONValue): boolean {
+  if (isEmptyJSONValue(subset)) return true;
+
+  if (typeof subset !== 'object' || subset === null || typeof superset !== 'object' || superset === null) {
+    return subset === superset;
+  }
+
+  if (Array.isArray(subset)) {
+    if (!Array.isArray(superset)) return false;
+    const supersetSerialized = new Set(superset.map(item => JSON.stringify(item)));
+    return subset.every(item => supersetSerialized.has(JSON.stringify(item)));
+  }
+
+  if (Array.isArray(superset)) return false;
+
+  const subsetRecord = subset as Record<string, JSONValue>;
+  const supersetRecord = superset as Record<string, JSONValue>;
+  for (const [key, value] of Object.entries(subsetRecord)) {
+    if (!(key in supersetRecord)) {
+      if (isEmptyJSONValue(value)) continue;
+      return false;
+    }
+    if (!isJsonSubset(value, supersetRecord[key])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /** Check if a JSON value is "empty" (null, empty string, empty object/array) */
 function isEmptyJSONValue(val: JSONValue): boolean {
