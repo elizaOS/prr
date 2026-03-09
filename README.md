@@ -259,7 +259,10 @@ You can run PRR from a GitHub Actions workflow that is **manually triggered** on
 
 ### In this repo (PRR itself)
 
-Use **Actions → Run PRR (client) → Run workflow**, then enter the PR number. The client workflow calls the server workflow and runs PRR with `--no-wait-bot` (one push cycle, then exit; re-run for more cycles).
+- **From the PR:** Add the **run-prr** label to the PR. The workflow runs on that PR (no need to open the Actions tab). Create the label in the repo if it doesn’t exist yet (e.g. when adding the label, choose “Create new label” and name it `run-prr`).
+- **From Actions:** **Actions → Run PRR (client) → Run workflow**, then enter the PR number.
+
+The workflow runs PRR with `--no-wait-bot` (one push cycle, then exit); add the label again or re-run for another cycle.
 
 ### In any other repo
 

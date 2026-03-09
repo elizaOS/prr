@@ -238,7 +238,11 @@ export function printFinalSummary(
   console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
   
   // Exit reason - most important info
-  const exitReasonDisplay = getExitReasonDisplay(exitReason);
+  // WHEN no_changes but 0 remaining: we fixed everything in a previous iteration; show success.
+  const effectiveReason = (exitReason === 'no_changes' && remainingCount === 0)
+    ? 'all_fixed'
+    : exitReason;
+  const exitReasonDisplay = getExitReasonDisplay(effectiveReason);
   console.log(exitReasonDisplay.color(`\n  ${exitReasonDisplay.icon} Exit: ${exitReasonDisplay.label}`));
   if (exitDetails) {
     console.log(chalk.gray(`     ${exitDetails}`));

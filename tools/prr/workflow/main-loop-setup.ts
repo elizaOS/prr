@@ -148,7 +148,7 @@ export async function processCommentsAndPrepareFixLoop(
     unresolvedIssues = cache.unresolvedIssues;
     duplicateMap = cache.duplicateMap;
     analyzeTime = 0;
-    console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, head unchanged)`));
+    console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, same as previous iteration)`));
     debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7) });
   } else {
     debugStep('ANALYZING ISSUES');

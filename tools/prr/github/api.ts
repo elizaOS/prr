@@ -441,7 +441,9 @@ export class GitHubAPI {
     } catch (err) {
       // Non-fatal: if issue comment parsing fails, we still have the thread comments.
       // WHY: Bot parsing can throw when path is null/undefined (e.g. parser edge case); we harden path below so this is rare.
-      debug('Failed to fetch/parse bot issue comments', { error: String(err) });
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? err.stack : undefined;
+      debug('Failed to fetch/parse bot issue comments', { error: errMsg, stack: errStack });
     }
 
     const filtered = reviewComments.filter((c) => !isCodeRabbitMetaComment(c));
