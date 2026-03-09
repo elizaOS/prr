@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-05 · **Recorded cycles:** 14 · **Historical (legacy):** 4
+**Last updated:** 2026-03-05 · **Recorded cycles:** 18 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -28,6 +28,7 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **Mid-loop bypass** | 12 | Thresholds (couldNotInject) or filters (solvability) only run at push-iteration start; new comments or in-loop state bypass them and burn iterations. Guard: apply same dismissal/threshold checks at start of each fix iteration; run assessSolvability on new comments before adding to queue. |
 | **STALE vs YES (snippet)** | 12 | Verifier returns STALE when explanation is "can't evaluate", "doesn't show", "only shows" (incomplete snippet) — judge instructions say use YES. Guard: STALE→YES override for these phrasings; avoid false positives on legitimate STALE ("only shows re-export"). |
 | **Basename / fragment path** | 13 | Short or fragment paths (e.g. `10/route.ts`, `modelcontextprotocol/.../auto-top-up.ts`) resolved by basename to a *different* file with same basename → wrong content injected, S/R fails or wrong file edited. Guard: prefer basename candidate that shares path prefix with requested path; skip substitution when fragment looks like repo-root and no exact match. |
+| **Fix-in-test vs production** | 15 | Review says "fix mocks in tests" / "root cause in tests" but TARGET FILE(S) only lists production file → fixer edits production (no-op or workaround) or tries test file and is blocked. Guard: when review body indicates fix-in-test, add co-located test file to allowed paths so fixer can edit it. |
 
 ---
 
@@ -51,6 +52,7 @@ Improvements should reinforce these, not reverse.
 | **Verifier strength** | Escalation for previous rejections; stronger model for API/signature-related fixes (async, await, caller, TypeError). Weak default verifier kept approving call-site bugs. |
 | **Dismissal comments** | Skip when reason says "file no longer exists" / "file not found"; skip when file missing in workdir; post-filter comments that only restate code (e.g. "extracts metrics"). |
 | **Multi-file / call sites** | When TARGET FILE(S) has multiple files and review mentions callers (await, file:line), nudge: update implementation and every call site so signatures match. |
+| **Fix-in-test allowed path** | When review says to fix root cause in tests / update mocks (e.g. "fix logger mocks in tests" rather than workaround in production), add co-located test file to allowed paths so fixer can edit it (optional follow-up from Cycle 15). |
 
 ---
 
@@ -94,6 +96,7 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] Dedup: GROUP lines take priority over NONE in LLM response; heuristic merges same file + same symbol + same caller file (callerFileFromBody) across authors.
 - [ ] Diff summary capped for all batch sizes (not just ≤2 issues); filters to batch-relevant files.
 - [ ] Dismissal comments: skip when reason matches "file no longer exists" / "file not found"; skip when file missing in workdir; post-filter COMMENT that only restates code (words from comment in surroundingCode).
+- [ ] Fix-in-test: when review says "fix mocks in test" / "root cause in tests", add co-located test file to allowed paths (Cycle 15). When all S/R fail and fixer attempted a path not in allowedPaths, ensure skippedDisallowedFiles is used so wrong-file lesson/state is added (runner returns it on failure path).
 
 **Output / UX / conflict**
 - [ ] Pluralize for "N file(s)" / "N fix(es)" in verification, iteration, repository, llm-api.
@@ -455,6 +458,91 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Additive override only; no behavior reverted.
 
 **Notes:** STALE→YES override (Cycle 12) already handles STALE with "not visible"; this handles the symmetric mistake where the model said NO instead of STALE/YES. File-deletion LESSONs ("delete entirely", "git rm") recur — matches Cycle 13 M2 (runner can't do git rm). Follow-up: optional fixes (Cycle 14 M2, L3; Cycle 13 L1, L3/14 L2) implemented — NO→YES "without any mapping/handling", lesson post-filter for "Fix was incomplete", reporter "of which N this session", prompt-builder nudge when file-specific lessons exist.
+
+---
+
+### Cycle 15 — 2026-03-05 (output.log audit: BabylonSocial/babylon#1207)
+
+**Artifacts audited:** output.log (babylon PR #1207: autobuild skills.md & test adjustments). Run: 30 comments → 20 dismissed → 6 in queue; iteration 1: 5 fixed (test-unit-isolated.ts, generate-skills-md.ts, packages/db); 1 failed verification (packages/engine/src/rate-limiting/index.ts — "debugLog workaround"; review asked to fix mocks in tests). Iterations 2–10: same issue only; fixer no-op or attempted error-handler-sentry.test.ts (not in TARGET FILE(S)); duplicate-prompt skip and rotation; bail-out after 1 cycle with zero progress.
+
+**Findings:**
+- **Medium (M1):** Stalemate on "fix in test, not production": review asked to fix logger mocks in tests; TARGET FILE(S) was only `index.ts`, so fixer either did nothing (identical S/R) or edited `error-handler-sentry.test.ts` and was blocked (disallowed or file-not-found). No path to apply the suggested fix.
+- **Low (L1):** When all S/R fail and fixer attempted a file not in allowed paths, that path is only added to wrong-file lesson/state when runner returns `skippedDisallowedFiles`. If the runner skips for allowlist we do call addDisallowedFilesLessonsAndState in both success and failure branches; if failure was "file not found" (path in allowlist but file missing), we don't add — edge case.
+- **Low (L2):** Tool-level failure (e.g. search_replace failed to match) is not recorded as a lesson — only "Fix for path:line - Search/replace failed to match" when we have result.failedFiles; tool_config-style failures may not set failedFiles.
+- **Positive:** New behavior (verifier API/signature split, dismissal "file no longer exists" skip) behaved as intended.
+
+**Improvements implemented:**
+- **Fix-in-test allowed path:** When review body indicates "fix mocks in test" / "root cause in tests" (e.g. "fix logger mocks in tests"), `reviewSuggestsFixInTest(body)` returns true; `getTestPathForSourceFileIssue(issue, { forceTestPath: true })` then returns the co-located test path. That path is added to allowed paths in execute-fix-iteration, prompt-builder (batch), utils (single-issue), recovery, no-changes-verification, and at issue creation (getEffectiveAllowedPathsForNewIssue). Fixer can now edit the test file when the review suggests fix-in-test.
+
+**Optional follow-ups:**
+- Ensure when all change blocks are no-op or disallowed, runner still returns skippedDisallowedFiles and workflow calls addDisallowedFilesLessonsAndState so next iteration can include that file in TARGET FILE(S).
+
+**Flip-flop check:** N — Audit only; no code changes.
+
+**Notes:** Recurring theme: verifier/snippet and "fix in test" — when the review explicitly asks for a change in tests, allowed paths must include the test file or the fixer cannot comply. Pattern "Fix-in-test vs production" added to watch table.
+
+---
+
+### Cycle 16 — 2026-03-05 (prompts.log audit: babylon#1207 run)
+
+**Artifacts audited:** prompts.log (~10k lines, 34 entries). Same run as Cycle 15 (babylon PR #1207). Phases: #0001 grouping, #0003–#0006 batch verifier + model rec, #0007 batch fix (66k chars), #0009–#0012 post-fix verifier, #0013–#0028 repeated single-issue fix (8× 20204 chars — rate-limiting debugLog), #0029–#0034 predict-bots + final batch verifier.
+
+**Findings:**
+- **Medium (M1):** Grouping #0001: LLM returned `GROUP: 2,5,7 → canonical 5` and `GROUP: 1,3 → canonical 3` but there were only 3 comments [1],[2],[3]. Indices 5,7 are out of range. Parser filters indices to valid range and skips canonical when out of range; for "1,3 → 3" it applied merge of comment 1 into 3 (may be wrong if they target different lines). **Improvement:** Reject an entire GROUP line when any index is out of range [1..N] or when canonical is not in the group list; avoid applying a subset the LLM did not intend.
+- **Low (L1):** Verifier #0004 said issue_5: STALE ("code not visible"); model-rec prompt #0005 then showed issue_5 as YES I3 D3 — override behaved correctly so we didn't mark resolved. Good.
+- **Low (L2):** Positive feedback correctly marked STALE in #0032 (issue_4/5: "positive feedback", "not an issue that needed fixing") — analysis treats STALE as non-fixable; no change needed.
+- **Low (L3):** Predict-bots #0029 received a very small diff (only .gitignore in the snippet); response listed scripts/build-skills-docs.js and .gitignore. If predict-bots is meant to see a representative diff, ensure it gets one; otherwise acceptable.
+- **Positive:** Fix-in-test would have added the test file to TARGET FILE(S) from the start; once the test file was in allowed paths (#0025 shows both index.ts and error-handler-sentry.test.ts), fixer #0028 returned RESULT: FIXED. Verifier format (FIX_1/FIX_2, colons) parsed correctly. Duplicate-prompt skip and rotation in place (same prompt+model skipped to rotation).
+
+**Improvements implemented:**
+- **Grouping validation (Cycle 16 M1):** In issue-analysis.ts dedup parser, when parsing GROUP lines: require all indices to be in [1, N]; require canonical to be in the group list; if any index or canonical is out of range, skip that entire GROUP line. Prevents applying merges the LLM did not intend when it hallucinates indices (e.g. "GROUP: 2,5,7" with only 3 comments).
+- **Dedup prompt tightening:** The dedup prompt now explicitly states that valid comment indices are `1..N` for the current file and that the canonical index must be one of the indices in its GROUP line. This reduces out-of-range GROUP hallucinations before parsing.
+- **Predict-bots guard/filter (Cycle 16 L3):** In `bot-prediction-llm.ts`, skip the LLM predictor for tiny meta-only diffs (e.g. `.gitignore` only with very few meaningful added/removed lines). When prediction does run, the prompt now lists the changed files and instructs the model to output only files present in that diff; parsed predictions are filtered to `changedFiles`. Prevents low-signal hallucinations like `scripts/build-skills-docs.js` when the commit diff only touched `.gitignore`.
+
+**Optional follow-ups:**
+- None from this audit.
+
+**Flip-flop check:** N — Tightened validation and display-only bot-prediction guard/filter; no behavior change for valid GROUP lines or real fixes.
+
+**Notes:** Same run as Cycle 15; prompts.log confirms the stalemate (repeated 20204-char single-issue prompts) and that once the test file was allowed, the fix succeeded. Grouping validation prevents wrong merges when the LLM returns out-of-range indices. Bot prediction is display-only, so the new tiny/meta-only diff guard is a safe token-saving improvement.
+
+---
+
+### Cycle 17 — 2026-03-05 (output.log follow-up: incorrect skips from truncated paths)
+
+**Artifacts audited:** output.log from babylon PR #1207 after reviewing why not all needed comments were addressed.
+
+**Findings:**
+- **Medium (M1):** `assessSolvability()` used raw `comment.path` for existence checks, so shortened review paths like `generate-skills-md.ts`, `SKILL.md`, `sentry-bun.d.ts`, and `wallet/nfts/route.ts` were dismissed as `stale` / "File no longer exists" even though the real repo files existed at longer paths.
+- **Medium (M2):** Single-issue and no-changes flows still inferred test paths without `pathExists`, so repos that use `__tests__/integration/...` could show the wrong TARGET FILE(S) in the prompt even when batch/recovery had the correct path.
+- **Low (L1):** The disallowed-file retry learner only keyed off `issueRequestsTests()` and could miss reviews that say "fix mocks in tests" without explicitly requesting new tests.
+
+**Improvements implemented:**
+- **Tracked-path resolution before stale dismissal:** `workflow/helpers/solvability.ts` now resolves truncated review paths against `git ls-files` before file-existence and line-validity checks. Exact tracked path wins first; unique suffix match is accepted; ambiguous bare basename is rejected instead of guessed. This prevents incorrect stale dismissal for shortened bot paths.
+- **Single-issue / no-changes `pathExists` alignment:** `buildSingleIssuePrompt` now accepts optional `pathExists`, and resolver/recovery pass it so test-path inference can choose the real integration-test path when present. `handleNoChangesWithVerification` also passes `pathExists` when persisting an inferred test path after UNCLEAR.
+- **Fix-in-test retry learning:** `execute-fix-iteration.ts` now lets the disallowed-file learner treat "fix in tests" comments the same as explicit test-request comments when allowing an attempted test file on retry.
+
+**Flip-flop check:** N — Additive path resolution and prompt alignment; no behavior changed for exact paths or already-correct test paths.
+
+**Notes:** This is the main reason some comments that "needed to be addressed" were not addressed in the babylon run: they were filtered out before the fix loop on raw-path existence checks. The new resolution keeps dismissal conservative for ambiguous bare basenames while avoiding false stale dismissals for unique suffix matches.
+
+---
+
+### Cycle 18 — 2026-03-05 (prompts.log follow-up: dedup prompt contradiction, praise-only filtering)
+
+**Artifacts audited:** prompts.log from babylon PR #1207 after Cycle 16/17 fixes.
+
+**Findings:**
+- **Low (L1):** Dedup prompt still showed an impossible example (`GROUP: 2,5,7 → canonical 5`) even when the prompt explicitly said valid indices were only `1..3`. The parser rejects malformed groups, but the example still teaches the wrong answer shape.
+- **Low (L2):** Praise-only comments still reached batch verification, e.g. "The output looks clean and follows the AgentSkills spec. Nice work on the frontmatter structure." These were resolved correctly as NO, but they still consumed analysis/verifier tokens.
+
+**Improvements implemented:**
+- **Dedup example cleanup:** Replaced the invalid `2,5,7` example with an in-range example so the prompt no longer contradicts its own `1..N` rule.
+- **Praise-only filter tightening:** `isCommentPositiveOnly()` now recognizes additional high-confidence praise/security-only phrasings observed in the run (looks clean/follows spec, nice work, no hardcoded credentials, no sensitive APIs, no security issues/concerns identified) while still requiring zero actionable language before dismissal.
+
+**Flip-flop check:** N — Prompt/example cleanup and stricter non-actionable filtering only; valid actionable comments still go through normal analysis.
+
+**Notes:** This does not solve the broader "tests requested but no tests added" verifier weakness; it only removes obviously non-actionable praise from the queue earlier and makes the dedup prompt internally consistent.
 
 ---
 

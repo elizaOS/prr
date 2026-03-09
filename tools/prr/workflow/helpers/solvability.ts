@@ -5,6 +5,7 @@
  * before any LLM call, and refreshes stale snippets between fix iterations.
  */
 
+import { execFileSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve, sep } from 'path';
 import type { ReviewComment } from '../../github/types.js';
@@ -18,6 +19,40 @@ import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-fil
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
+
+const repoFilesCache = new Map<string, string[]>();
+
+/**
+ * Resolve a possibly truncated review path to a tracked repo file.
+ *
+ * WHY: Review bots often cite non-root-relative paths like `generate-skills-md.ts`,
+ * `SKILL.md`, or `wallet/nfts/route.ts`. Using the raw path in solvability caused
+ * incorrect "File no longer exists" dismissal before the fix loop even started.
+ *
+ * Strategy:
+ * 1. Exact tracked-file match → use as-is.
+ * 2. Unique suffix match (`foo/bar.ts` or bare basename) → use that file.
+ * 3. Ambiguous basename → return null rather than guessing the wrong file.
+ */
+function resolveTrackedPath(workdir: string, rawPath: string): string | null {
+  let repoFiles = repoFilesCache.get(workdir);
+  if (!repoFiles) {
+    try {
+      const out = execFileSync('git', ['ls-files'], { cwd: workdir, encoding: 'utf8' });
+      repoFiles = out.split('\n').map((f) => f.trim()).filter(Boolean);
+      repoFilesCache.set(workdir, repoFiles);
+    } catch {
+      return null;
+    }
+  }
+  const exact = repoFiles.find((f) => f === rawPath);
+  if (exact) return exact;
+  const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + rawPath) || f === rawPath);
+  if (suffixMatches.length === 0) return null;
+  if (suffixMatches.length === 1) return suffixMatches[0];
+  if (!rawPath.includes('/')) return null;
+  return suffixMatches.reduce((a, b) => (a.length <= b.length ? a : b));
+}
 
 export interface SolvabilityResult {
   solvable: boolean;
@@ -130,11 +165,17 @@ export function assessSolvability(
     };
   }
 
+  // Resolve truncated/basename review paths to tracked repo files before existence checks.
+  // WHY: Without this, comments on `generate-skills-md.ts` or `SKILL.md` were dismissed as stale
+  // even though the real repo files existed at `scripts/...` / `skills/babylon/...`.
+  const effectivePath = resolveTrackedPath(workdir, comment.path) ?? comment.path;
+  const effectiveFullPath = join(workdir, effectivePath);
+
   // Check 0e1: Issue references line numbers beyond current file length (file was shortened → comment stale).
   // WHY: output.log audit — DATABASE_API_README.md had 37 lines but review referenced "lines 56-57, 120-121"; verifier couldn't confirm and we burned 3+ iterations.
   try {
-    if (existsSync(fullPath)) {
-      const content = readFileSync(fullPath, 'utf8');
+    if (existsSync(effectiveFullPath)) {
+      const content = readFileSync(effectiveFullPath, 'utf8');
       const lineCount = content.split('\n').length;
       const maxRef = extractMaxLineRefFromBody(comment.body);
       if (maxRef != null && lineCount < maxRef) {
@@ -172,7 +213,7 @@ export function assessSolvability(
   }
 
   // Check 1: File existence
-  if (!existsSync(fullPath)) {
+  if (!existsSync(effectiveFullPath)) {
     return {
       solvable: false,
       dismissCategory: 'stale',
@@ -183,7 +224,7 @@ export function assessSolvability(
   // Check 2: Smart snippet re-targeting for line drift
   if (comment.line !== null) {
     try {
-      const fileContent = readFileSync(fullPath, 'utf-8');
+      const fileContent = readFileSync(effectiveFullPath, 'utf-8');
       const lines = fileContent.split('\n');
       const totalLines = lines.length;
 

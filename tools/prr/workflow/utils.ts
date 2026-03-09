@@ -8,7 +8,7 @@ import { readFile } from 'fs/promises';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -414,7 +414,8 @@ export function buildSingleIssuePrompt(
   lessonsContext: LessonsContext,
   prInfo?: { title: string; body: string; baseBranch: string },
   /** When set, use this instead of issue.codeSnippet (e.g. wider snippet after WRONG_LOCATION). */
-  codeSnippetOverride?: string | null
+  codeSnippetOverride?: string | null,
+  options?: { pathExists?: (path: string) => boolean }
 ): string {
   // Get lessons relevant to this issue only (file-scoped + path-relevant global; audit M2).
   const lessons = LessonsAPI.Retrieve.getLessonsForSingleIssue(lessonsContext, issue.comment.path)
@@ -455,7 +456,10 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
   }
   const implPath = getImplPathForTestFileIssue(issue, lessons);
   let allowedPaths = implPath && isPathAllowedForFix(implPath) && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
-  const testPath = getTestPathForSourceFileIssue(issue);
+  const testPath = getTestPathForSourceFileIssue(issue, {
+    pathExists: options?.pathExists,
+    forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
+  });
   if (testPath && isPathAllowedForFix(testPath) && !allowedPaths.includes(testPath)) allowedPaths = [...allowedPaths, testPath];
   allowedPaths = filterAllowedPathsForFix(allowedPaths);
   prompt += `## Issue

@@ -9,6 +9,8 @@
  */
 
 import chalk from 'chalk';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { StateContext } from '../state/state-context.js';
 import { getState } from '../state/state-context.js';
@@ -20,7 +22,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
 import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from './utils.js';
-import { getTestPathForSourceFileIssue } from '../analyzer/prompt-builder.js';
+import { getTestPathForSourceFileIssue, reviewSuggestsFixInTest } from '../analyzer/prompt-builder.js';
 import * as Dismissed from '../state/state-dismissed.js';
 
 /**
@@ -223,7 +225,11 @@ export async function handleNoChangesWithVerification(
             }
             // Prompts.log audit: UNCLEAR often "target is implementation file but review asks for tests in test file". Persist test path so next attempt has test file in TARGET FILE(S).
             if (structuredResult.resultCode === 'UNCLEAR' && /test|coverage|\.test\.(ts|js)/i.test(detail) && /target|allowed|not in my|cannot add|not permitted/i.test(detail)) {
-              const testPath = getTestPathForSourceFileIssue(firstIssue0);
+              const pathExists = workdir ? ((p: string) => existsSync(join(workdir, p))) : undefined;
+              const testPath = getTestPathForSourceFileIssue(firstIssue0, {
+                pathExists,
+                forceTestPath: reviewSuggestsFixInTest(firstIssue0.comment.body ?? ''),
+              });
               if (testPath) {
                 const state = stateContext.state;
                 if (!state.wrongFileAllowedPathsByCommentId) state.wrongFileAllowedPathsByCommentId = {};

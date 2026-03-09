@@ -19,6 +19,7 @@ const MAX_DIFF_LINES = 300;
 const MAX_COMMENT_BODY_CHARS = 200;
 const MAX_PER_BOT_CHARS = 500;
 const MAX_PROMPT_BODY_CHARS = 20_000; // ~5k tokens; leave headroom for system + response
+const MIN_MEANINGFUL_DIFF_LINES = 8;
 
 function truncate(str: string, max: number): string {
   if (str.length <= max) return str;
@@ -88,6 +89,30 @@ function isPrrPath(path: string): boolean {
   return path.replace(/\\/g, '/').startsWith(PRR_DIR);
 }
 
+function isMetaOnlyPath(path: string): boolean {
+  return /^(?:\.gitignore|\.gitattributes|\.editorconfig|.*lock|bun\.lockb?|package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/i.test(
+    path.replace(/\\/g, '/')
+  );
+}
+
+function countMeaningfulDiffLines(diff: string): number {
+  return diff
+    .split('\n')
+    .filter((line) => {
+      if (!line) return false;
+      if (
+        line.startsWith('diff --git ') ||
+        line.startsWith('index ') ||
+        line.startsWith('--- ') ||
+        line.startsWith('+++ ') ||
+        line.startsWith('@@ ')
+      ) {
+        return false;
+      }
+      return (line.startsWith('+') || line.startsWith('-')) && !line.startsWith('+++') && !line.startsWith('---');
+    }).length;
+}
+
 /**
  * Strip .prr/ entries from git diff --stat output so the fix prompt doesn't
  * expose tool state (audit: fix prompt diff summary included .prr/lessons.md).
@@ -142,6 +167,9 @@ export interface PredictBotFeedbackOptions {
 /**
  * Predict likely new bot feedback on the given diff, conditioned on existing comments.
  * Prompt is capped (~6k tokens) to avoid overflow and cost. On failure or parse error, returns [].
+ * WHY: This is display-only UX. Cycle 16 showed that running it on tiny/meta-only diffs
+ * wastes tokens and can hallucinate files not in the commit diff, so we skip low-signal
+ * diffs and constrain both prompt and parsed output to the actual changed files.
  */
 export async function predictBotFeedback(
   options: PredictBotFeedbackOptions,
@@ -152,6 +180,21 @@ export async function predictBotFeedback(
   const riskMap = summarizeBotRiskByFile(comments, changedFiles);
   const riskMapSummary = buildRiskMapSummary(riskMap);
   const diffWithoutPrr = stripPrrFromDiff(diff);
+  const changedFilesNoPrr = changedFiles.filter((path) => !isPrrPath(path));
+  const meaningfulDiffLines = countMeaningfulDiffLines(diffWithoutPrr);
+  // WHY tiny/meta-only skip: a `.gitignore`-only diff produced hallucinated concerns for
+  // unrelated files (`scripts/build-skills-docs.js`). For display-only prediction, it's better
+  // to skip low-signal diffs than spend a model call on likely-noisy output.
+  if (
+    changedFilesNoPrr.length === 0 ||
+    (changedFilesNoPrr.every(isMetaOnlyPath) && meaningfulDiffLines < MIN_MEANINGFUL_DIFF_LINES)
+  ) {
+    debug('Skipping bot prediction for tiny/meta-only diff', {
+      changedFiles: changedFilesNoPrr,
+      meaningfulDiffLines,
+    });
+    return [];
+  }
   const truncatedDiff = truncateDiff(diffWithoutPrr, MAX_DIFF_LINES);
 
   const systemPrompt = `You are simulating what PR review bots (e.g. CodeRabbit, Cursor, Greptile) might comment when they see a new diff. Your task: list 3–5 likely *additional* issues they might raise on this diff, consistent with the style and severity of existing comments on this PR. Output only the list, one issue per block, in this exact format:
@@ -160,7 +203,8 @@ FILE: <path>
 LINE: <number or leave blank>
 CONCERN: <one-line concern>
 
-Be concise. Do not suggest fixes; only list likely concerns.`;
+Be concise. Do not suggest fixes; only list likely concerns.
+Only output FILE paths that appear in the diff / changed files below.`;
 
   const body = [
     'Existing review comments on this PR (per bot, 1–2 examples):',
@@ -168,6 +212,9 @@ Be concise. Do not suggest fixes; only list likely concerns.`;
     '',
     'Files with most bot comments so far:',
     riskMapSummary,
+    '',
+    'Changed files in this commit:',
+    changedFilesNoPrr.length ? changedFilesNoPrr.join(', ') : '(none)',
     '',
     'PR title:',
     truncate(prTitle, 200),
@@ -185,7 +232,12 @@ Be concise. Do not suggest fixes; only list likely concerns.`;
     const response = await llm.complete(prompt, systemPrompt);
     const text = (response?.content ?? '').trim();
     if (!text) return [];
-    const parsed = parsePredictedFeedback(text).filter(p => !isPrrPath(p.path));
+    const changedSet = new Set(changedFilesNoPrr.map((path) => path.replace(/\\/g, '/')));
+    // WHY changed-files filter: even with explicit prompt constraints, the predictor can name
+    // files outside the diff. Keep UX output grounded in the commit being pushed.
+    const parsed = parsePredictedFeedback(text).filter(
+      (p) => !isPrrPath(p.path) && changedSet.has(p.path.replace(/\\/g, '/'))
+    );
     return parsed.length > 5 ? parsed.slice(0, 5) : parsed;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -23,6 +23,16 @@ Items here are potential directions to explore, not committed plans. Each idea i
 **Output.log audit follow-up (2026-03)**  
 - Runner allowed paths expanded (journal, consolidate-duplicate, test-impl); CodeRabbit "Actions performed" / auto-reply filtered from fixable comments; issues with path `(PR comment)` dismissed in solvability. **WHY**: Blocked journal edits, meta comments as issues, and non-file paths wasted fix iterations. See [CHANGELOG](../CHANGELOG.md) "Fixed (2026-03) — Output.log audit" and [docs/README](README.md) "Output.log audit follow-up".
 
+**Output.log audit (Cycle 15): fix-in-test allowed path (2026-03)**  
+- When the review says to fix the root cause in tests (e.g. "fix logger mocks in tests", "root cause in tests"), the co-located test file is now added to TARGET FILE(S) so the fixer can edit it. **WHY**: Babylon #1207 run stalled because only the production file was allowed; the fixer could not apply the suggested fix. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Output.log audit (Cycle 15)" and [AUDIT-CYCLES.md](AUDIT-CYCLES.md) Cycle 15.
+
+**Prompts.log audit (Cycle 16): dedup validation + predict-bots guard (2026-03)**  
+- Dedup now rejects malformed `GROUP:` lines when any referenced index is outside `1..N`, and the prompt explicitly tells the model that valid indices are only `1..N` and the canonical index must appear in its group. **WHY**: A dedup response referenced comments `2,5,7` in a 3-comment file; rejecting invalid groups avoids wrong merges and the prompt reduces hallucinated indices.
+- Bot prediction now skips tiny meta-only diffs and filters predicted files to `changedFiles`. **WHY**: The display-only predictor hallucinated `scripts/build-skills-docs.js` from a `.gitignore`-only diff; filtering to the actual diff saves tokens and avoids noisy UX output. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Prompts.log audit (Cycle 16)" and [AUDIT-CYCLES.md](AUDIT-CYCLES.md) Cycle 16.
+
+**Output.log follow-up: avoid incorrect skips from truncated paths (2026-03)**  
+- Solvability now resolves possibly truncated review paths against tracked repo files before dismissing a comment as "file no longer exists". Single-issue / no-changes flows also pass `pathExists` so inferred test paths match the actual repo layout, and the disallowed-file learner now recognizes "fix in tests" comments when allowing retried test paths. **WHY**: Babylon #1207 output.log showed actionable comments being dismissed because paths like `generate-skills-md.ts`, `SKILL.md`, and `wallet/nfts/route.ts` were treated as missing even though the real files existed at longer repo paths. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Output.log follow-up: avoid incorrect skips from truncated paths".
+
 **Git fetch: timeout and token auth (2026-03)**  
 - Conflict-check and remote-ahead fetch now run via spawn with a 60s timeout; on timeout the error includes git’s stdout/stderr so users see e.g. password prompts. Optional `githubToken` is used for one-shot HTTPS auth when the remote has no credentials, so fetch/pull no longer hang waiting for a password. **WHY**: Stuck “Checking for conflicts…” with no output was caused by fetch waiting for credentials; timeout + output + token auth fix it. See [CHANGELOG](../CHANGELOG.md) “Added (2026-03) — Git fetch: timeout, stdout on timeout, GitHub token auth”.
 
@@ -58,6 +68,7 @@ From [AUDIT-CYCLES.md](AUDIT-CYCLES.md) consolidated findings; not committed, lo
 
 - **getConsolidateDuplicateTargetPath:** Iterate all path matches in comment body and return the first that is not `comment.path` and not `lib/utils/db-errors.(ts|js)` (today we use first match only, so if db-errors is mentioned first we return null). **WHY:** When the canonical duplicate file is listed after db-errors, fixer could get allowed path for the right file.
 - **pathExists for single-issue prompt:** `buildSingleIssuePrompt` in `workflow/utils.ts` calls `getTestPathForSourceFileIssue(issue)` without `pathExists`; batch prompt and recovery already pass it. **WHY:** Single-issue focus mode can resolve to a colocated test path that does not exist when the real file is in __tests__/integration/; passing pathExists would align behavior and reduce wrong-file attempts.
+- **Fix-in-test allowed path (Cycle 15):** Implemented — see "Recently completed" above.
 - **Path normalization:** In runner `allowedSet`, add `.replace(/\\/g, '/')` so Windows-style paths match. **WHY:** Avoid cross-platform mismatches when comparing paths.
 - **Tests:** Unit tests for `getMigrationJournalPath`, `getConsolidateDuplicateTargetPath`, `getFixedIssueTitle`, `pluralize`, and optionally `isCodeRabbitMetaComment`. **WHY:** Future refactors don’t break behavior.
 

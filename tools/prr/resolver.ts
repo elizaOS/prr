@@ -9,7 +9,9 @@
  * and reason about; the class handles lifecycle and state, procedures handle flow.
  */
 import chalk from 'chalk';
+import { existsSync } from 'fs';
 import ora from 'ora';
+import { join } from 'path';
 import type { Config } from '../../shared/config.js';
 import type { CLIOptions } from './cli.js';
 import type { ReviewComment, PRInfo, BotResponseTiming, PRStatus } from './github/types.js';
@@ -118,8 +120,8 @@ export class PRResolver {
   /** Reset model rotation to first model (call at start of each push iteration when pushIteration > 1). WHY: Each push cycle gets best model first instead of retrying the model that may have just 500'd or timed out. */
   private resetRotationToFirstModel(): void { const ctx = this.getRotationContext(); Rotation.resetCurrentModelToFirst(ctx, this.stateContext); this.syncRotationContext(ctx); }
   private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateContext, this.lessonsContext, this.runners, this.options, (runner) => this.getModelsForRunner(runner), this.workdir, this.llm); this.bailedOut = result.bailedOut; this.exitReason = result.exitReason; this.exitDetails = result.exitDetails; this.finalUnresolvedIssues = result.finalUnresolvedIssues; this.finalComments = result.finalComments; }
-  private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue) => this.buildSingleIssuePrompt(issue), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength), this.config.openaiApiKey); }
-  private async buildSingleIssuePrompt(issue: UnresolvedIssue): Promise<string> {
+  private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue, options) => this.buildSingleIssuePrompt(issue, options), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength), this.config.openaiApiKey); }
+  private async buildSingleIssuePrompt(issue: UnresolvedIssue, options?: { pathExists?: (path: string) => boolean }): Promise<string> {
     let codeSnippetOverride: string | undefined;
     if (this.stateContext.state?.widerSnippetRequestedByCommentId?.[issue.comment.id]) {
       codeSnippetOverride = await getWiderSnippetForAnalysis(this.workdir, issue.comment.path, issue.comment.line ?? null, issue.comment.body);
@@ -130,7 +132,8 @@ export class PRResolver {
     if (codeSnippetOverride === undefined && this.workdir) {
       codeSnippetOverride = await getFullFileContentForSingleIssue(this.workdir, issue.comment.path) ?? undefined;
     }
-    return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride);
+    const pathExists = options?.pathExists ?? (this.workdir ? ((p: string) => existsSync(join(this.workdir, p))) : undefined);
+    return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride, { pathExists });
   }
   private async tryDirectLLMFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.tryDirectLLMFix(issues, git, this.workdir, this.config.llmProvider, this.llm, this.stateContext, verifiedThisSession, this.lessonsContext); }
   async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateContext, () => this.printModelPerformance(), () => this.printFinalSummary()); }

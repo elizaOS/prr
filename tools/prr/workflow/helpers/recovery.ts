@@ -34,6 +34,7 @@ import {
   getImplPathForTestFileIssue,
   getPathsToDeleteFromComment,
   getSiblingFilePathsFromComment,
+  reviewSuggestsFixInTest,
 } from '../../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../../shared/path-utils.js';
 import * as fs from 'fs';
@@ -81,7 +82,7 @@ export async function trySingleIssueFix(
   lessonsContext: LessonsContext,
   llm: LLMClient,
   verifiedThisSession: Set<string> | undefined,
-  buildSingleIssuePrompt: (issue: UnresolvedIssue) => string | Promise<string>,
+  buildSingleIssuePrompt: (issue: UnresolvedIssue, options?: { pathExists?: (path: string) => boolean }) => string | Promise<string>,
   getCurrentModel: () => string | null | undefined,
   parseNoChangesExplanation: (output: string) => string | null,
   sanitizeOutputForLog: (output: string | undefined, maxLength: number) => string,
@@ -137,7 +138,10 @@ export async function trySingleIssueFix(
     const implPath = getImplPathForTestFileIssue(issue, undefined);
     if (implPath && isPathAllowedForFix(implPath) && !allowedForIssue.includes(implPath)) allowedForIssue = [...allowedForIssue, implPath];
     const pathExists = (p: string) => fs.existsSync(join(workdir, p));
-    const testPath = getTestPathForSourceFileIssue(issue, { pathExists });
+    const testPath = getTestPathForSourceFileIssue(issue, {
+      pathExists,
+      forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
+    });
     if (testPath && isPathAllowedForFix(testPath) && !allowedForIssue.includes(testPath)) allowedForIssue = [...allowedForIssue, testPath];
     allowedForIssue = filterAllowedPathsForFix(allowedForIssue);
 
@@ -158,7 +162,8 @@ export async function trySingleIssueFix(
     const filesBeforeFix = new Set(await getChangedFiles(git));
 
     // Build a focused prompt for just this one issue (caller may pass async when wider snippet is needed)
-    let focusedPrompt = await Promise.resolve(buildSingleIssuePrompt(issue));
+    const pathExistsForPrompt = (p: string) => fs.existsSync(join(workdir, p));
+    let focusedPrompt = await Promise.resolve(buildSingleIssuePrompt(issue, { pathExists: pathExistsForPrompt }));
 
     // When files are missing in workdir (e.g. sparse checkout), inject content from git so the fixer can produce valid search/replace.
     const MAX_INJECT_CHARS_PER_FILE = 80_000;

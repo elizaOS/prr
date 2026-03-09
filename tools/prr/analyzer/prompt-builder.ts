@@ -114,6 +114,22 @@ export function issueRequestsTests(issue: UnresolvedIssue): boolean {
          /\badding\s+tests?\s+here\s+would\s+help\b/i.test(text);
 }
 
+/**
+ * True when the review says to fix the root cause in tests (e.g. "fix logger mocks in tests") rather than a workaround in production.
+ * WHY: Cycle 15 (babylon#1207) — TARGET FILE(S) only listed the production file; fixer either no-opped or tried the test file and was blocked. Adding the test path when review suggests fix-in-test lets the fixer edit the test file.
+ */
+export function reviewSuggestsFixInTest(body: string): boolean {
+  const b = body ?? '';
+  return (
+    /\b(?:fix|update|improve)\s+(?:the\s+)?(?:logger\s+)?mocks?\s+in\s+(?:the\s+)?tests?\b/i.test(b) ||
+    /\broot\s+cause\s+in\s+(?:the\s+)?tests?\b/i.test(b) ||
+    /\b(?:fix|address)\s+in\s+(?:the\s+)?tests?\b/i.test(b) ||
+    /\brather\s+than\s+(?:workaround|making\s+production\s+code)\s+(?:in\s+)?(?:production\s+)?(?:—|,|\s+fix)\s+(?:the\s+)?(?:mocks?|tests?)\b/i.test(b) ||
+    /\b(?:update|fix)\s+(?:the\s+)?(?:test\s+)?mocks?\s+(?:in\s+)?(?:tests?|instead)\b/i.test(b) ||
+    /\b(?:tests?|mocks?)\s+(?:should|need\s+to|must)\s+be\s+(?:updated|fixed)\s+instead\b/i.test(b)
+  );
+}
+
 /** If the issue is on a test file and mentions lesson-normalize impl, return the impl path so the fixer may edit it. Audit: test-file issues (e.g. normalize-lesson-text.test.ts) need impl changes in tools/prr/state/lessons-normalize.ts. Exported for single-issue prompt. */
 export function getImplPathForTestFileIssue(issue: UnresolvedIssue, fileLessons: string[] | undefined): string | null {
   if (!/\.test\.(ts|js)$/.test(issue.comment.path)) return null;
@@ -126,13 +142,15 @@ export function getImplPathForTestFileIssue(issue: UnresolvedIssue, fileLessons:
  * When the issue is on a source file but the review asks for tests in another file (e.g. "add tests in component.test.ts"),
  * return that test file path so we can add it to TARGET FILE(S) and avoid UNCLEAR loops. Exported for single-issue and no-changes.
  * When pathExists is provided, prefers co-located path if it exists, otherwise falls back to __tests__/integration/ (for projects using that layout).
+ * When forceTestPath is true (e.g. review says "fix mocks in tests"), we return the co-located test path even if issueRequestsTests is false.
  */
 export function getTestPathForSourceFileIssue(
   issue: UnresolvedIssue,
-  options?: { pathExists?: (path: string) => boolean }
+  options?: { pathExists?: (path: string) => boolean; forceTestPath?: boolean }
 ): string | null {
   const pathExists = options?.pathExists;
-  if (!issueRequestsTests(issue)) return null;
+  const forceTestPath = options?.forceTestPath === true;
+  if (!forceTestPath && !issueRequestsTests(issue)) return null;
   const path = issue.comment.path ?? '';
   const body = issue.comment.body ?? '';
   // Already on a test file — no need to infer another test path
@@ -614,7 +632,10 @@ export function buildFixPrompt(
     const fileLessons = options?.perFileLessons?.get(primaryPath) ?? options?.perFileLessons?.get(issue.comment.path);
     const implPath = getImplPathForTestFileIssue(issue, fileLessons);
     let allowedPaths = implPath && isPathAllowedForFix(implPath) && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
-    const testPath = getTestPathForSourceFileIssue(issue, { pathExists: options?.pathExists });
+    const testPath = getTestPathForSourceFileIssue(issue, {
+      pathExists: options?.pathExists,
+      forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
+    });
     if (testPath && isPathAllowedForFix(testPath) && !allowedPaths.includes(testPath)) allowedPaths = [...allowedPaths, testPath];
     allowedPaths = filterAllowedPathsForFix(allowedPaths);
     parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);

@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Prompts.log follow-up: dedup prompt cleanup and stronger praise filtering
+
+**Dedup prompt examples use valid indices**
+- The dedup prompt in `issue-analysis.ts` now uses in-range example groups only (`GROUP: 1,2 → canonical 2`, `GROUP: 1,3 → canonical 3`) instead of showing impossible indices like `2,5,7` in a 3-comment prompt.
+- **WHY**: Prompts.log showed that even after adding the `1..N` rule, the prompt still contained an out-of-range example. That contradictory example teaches the wrong output shape and likely contributes to malformed GROUP lines.
+
+**Positive-only review filtering tightened**
+- `isCommentPositiveOnly()` in `issue-analysis.ts` now also catches high-confidence praise/security-only phrasings seen in the audit, including "looks clean and follows ... spec", "nice work on the frontmatter structure", "no hardcoded credentials", "doesn't expose any sensitive APIs", and "no security issues/concerns identified" so long as the comment contains no actionable language.
+- **WHY**: Prompts.log showed praise-only comments still reaching the verifier (for example, "The output looks clean and follows the AgentSkills spec. Nice work on the frontmatter structure."). Filtering them earlier saves tokens and keeps the fix queue focused on actionable issues.
+
+### Added (2026-03) — Output.log follow-up: avoid incorrect skips from truncated paths
+
+**Resolve truncated review paths before stale dismissal**
+- In `workflow/helpers/solvability.ts`, file-existence and line-validity checks now resolve possibly truncated review paths against tracked repo files before dismissing as `stale` / "File no longer exists". Exact matches win first; unique suffix matches are allowed; ambiguous bare basenames are rejected rather than guessed.
+- **WHY**: Babylon #1207 output.log showed comments for `generate-skills-md.ts`, `SKILL.md`, `sentry-bun.d.ts`, and `wallet/nfts/route.ts` being dismissed as missing even though the real repo files existed under longer paths. Resolving review paths before dismissal avoids skipping actionable comments incorrectly.
+
+**Single-issue and no-changes pathExists alignment**
+- `buildSingleIssuePrompt` now accepts optional `pathExists`, and resolver/recovery pass it so single-issue prompts can choose the real test path (`__tests__/integration/...`) instead of always guessing a co-located `*.test.ts`.
+- `handleNoChangesWithVerification` now also passes `pathExists` when persisting a test path after UNCLEAR.
+- **WHY**: Batch/recovery already used `pathExists`, but single-issue/no-changes paths could still mention the wrong test file in repos that use integration-test layouts, recreating the same wrong-target behavior in a different branch of the workflow.
+
+**Disallowed test-file retry learning**
+- In `execute-fix-iteration.ts`, the "fixer attempted disallowed test file" fallback now also triggers when the review says to fix the root cause in tests (not just explicit "add/update tests" wording), and it checks whether the inferred test path is already in `allowedPathsForBatch` before adding a retry allowance.
+- **WHY**: Reviews like "fix logger mocks in tests" should teach the retry loop to allow the attempted test file. The previous gate only looked at `issueRequestsTests()` and could miss this class of comments.
+
+### Added (2026-03) — Prompts.log audit (Cycle 16): grouping validation
+
+**Dedup GROUP line validation**
+- In `issue-analysis.ts`, when parsing LLM dedup GROUP lines (e.g. `GROUP: 1,3 → canonical 3`), we now require every index to be in [1, N], require the canonical index to be in the group list, and skip the entire line if any index is out of range. Previously we filtered to valid indices and could apply a subset (e.g. "GROUP: 2,5,7" with 3 comments yielded indices [1] and we skipped due to canonical 5 out of range; "GROUP: 1,3 → 3" merged 1 into 3 even when the LLM meant something else). **WHY**: Prompts.log audit (Cycle 16) — grouping #0001 returned "GROUP: 2,5,7" and "GROUP: 1,3" with only 3 comments; rejecting invalid lines avoids wrong merges when the model hallucinates indices.
+- The dedup prompt now explicitly says valid comment indices are `1..N` for the current file and that the canonical index must be one of the indices in its GROUP line. **WHY**: Tightening the prompt reduces malformed GROUP responses before they reach the parser.
+
+**Bot prediction changed-files guard**
+- In `bot-prediction-llm.ts`, skip the display-only bot-prediction LLM call for tiny meta-only diffs (e.g. `.gitignore`-only commit with very few meaningful added/removed lines).
+- When prediction does run, the prompt now lists the changed files and instructs the model to output only files present in that diff; parsed predictions are also filtered to `changedFiles`.
+- **WHY**: Prompts.log audit (Cycle 16) — predict-bots ran on a tiny `.gitignore` diff and hallucinated `scripts/build-skills-docs.js`. The predictor is only for UX, so skipping low-signal diffs and filtering to the actual changed files saves tokens and removes noisy output.
+
+### Added (2026-03) — Output.log audit (Cycle 15): fix-in-test allowed path
+
+**Fix-in-test allowed path**
+- New `reviewSuggestsFixInTest(body)` in `prompt-builder.ts` detects when the review says to fix the root cause in tests (e.g. "fix logger mocks in tests", "root cause in tests", "update the test mocks", "rather than workaround in production").
+- `getTestPathForSourceFileIssue` now accepts optional `forceTestPath`. When true, the co-located test path is returned even when the issue does not explicitly "request tests", so TARGET FILE(S) includes the test file when the review suggests fixing there.
+- Allowed paths (batch, single-issue, recovery, no-changes verification, and at issue creation in `getEffectiveAllowedPathsForNewIssue`) now add the co-located test file when `reviewSuggestsFixInTest(comment.body)` is true.
+- **WHY**: Cycle 15 (babylon#1207) — The run stalled because the review asked to "fix logger mocks in tests" but TARGET FILE(S) only listed the production file; the fixer either no-opped or tried the test file and was blocked. Adding the test path when the review suggests fix-in-test lets the fixer edit the test file.
+
 ### Added (2026-03) — Output.log + prompts.log audit (Cycle 12): in-loop dismissal, new-comment solvability, ALREADY_FIXED filter, STALE→YES
 
 **couldNotInject in-loop dismissal**

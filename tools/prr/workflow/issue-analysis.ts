@@ -34,7 +34,7 @@ import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getPathsToDeleteFromCommentBody, getTestPathForSourceFileIssue, isSnippetTooShort, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getPathsToDeleteFromCommentBody, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
@@ -520,6 +520,8 @@ async function llmDedup(
     }).join('\n\n');
     // WHY "same method, different fix" rule: Audit found a bad merge — two comments about the same method required
     // different fixes (add method vs change call site). Grouping them lost nuance; the rule reduces false groupings.
+    // WHY index-range rule: Cycle 16 returned GROUP lines like "2,5,7" for a 3-comment file; telling the model that
+    // only 1..N are valid indices reduces malformed groups before they reach the parser.
     const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
 You must decide which comments describe the EXACT SAME underlying problem.
 
@@ -535,8 +537,11 @@ GROUPING RULES (be conservative — wrong merges cause missed fixes):
 
 For each group of true duplicates, pick the most detailed comment as canonical.
 
+Valid comment indices in this prompt are 1 through ${items.length} only. Never reference an index outside that range.
+The canonical index MUST be one of the indices listed in its GROUP line.
+
 Reply ONLY with lines like (one per group, no other text):
-GROUP: 2,5,7 → canonical 5
+GROUP: 1,2 → canonical 2
 GROUP: 1,3 → canonical 3
 
 If no comments are duplicates, reply: NONE`;
@@ -547,13 +552,20 @@ If no comments are duplicates, reply: NONE`;
       const groups: DedupTaskResult['groups'] = [];
       const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
       let match;
+      // WHY (Cycle 16): LLM sometimes returns GROUP lines with out-of-range indices (e.g. GROUP: 2,5,7 when only 3 comments).
+      // Applying a filtered subset merges the wrong comments. Reject the entire line when any index is outside [1, N] or canonical not in group.
+      const n = items.length;
       while ((match = groupPattern.exec(content)) !== null) {
-        const indices = match[1].split(',').map(s => parseInt(s.trim(), 10) - 1).filter(i => i >= 0 && i < items.length);
-        const canonicalIdx = parseInt(match[2], 10) - 1;
-        if (canonicalIdx < 0 || canonicalIdx >= items.length) continue;
-        if (indices.length < 2) continue;
+        const rawIndices = match[1].split(',').map(s => parseInt(s.trim(), 10));
+        const canonicalOneBased = parseInt(match[2], 10);
+        if (canonicalOneBased < 1 || canonicalOneBased > n) continue;
+        const allInRange = rawIndices.every((i) => i >= 1 && i <= n);
+        if (!allInRange || rawIndices.length < 2) continue;
+        if (!rawIndices.includes(canonicalOneBased)) continue;
+        const indices = rawIndices.map((i) => i - 1);
+        const canonicalIdx = canonicalOneBased - 1;
         const canonical = items[canonicalIdx];
-        const dupes = indices.filter(i => i !== canonicalIdx).map(i => items[i]);
+        const dupes = indices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
         groups.push({ canonical, dupes });
       }
       // Only treat as NONE when no GROUP lines were parsed. Audit: response contained
@@ -1025,9 +1037,10 @@ export type FindUnresolvedIssuesOptions = {
   changedFiles?: string[];
 };
 
-/** If the issue requests tests, return [comment.path, testPath] so allowedPaths is set at issue build. */
+/** If the issue requests tests or review suggests fix-in-test (e.g. "fix mocks in tests"), return [comment.path, testPath] so allowedPaths is set at issue build. */
 function getAllowedPathsForNewIssue(comment: ReviewComment, codeSnippet: string, explanation: string | undefined): string[] | undefined {
-  const testPath = getTestPathForSourceFileIssue({ comment, codeSnippet, stillExists: true, explanation: explanation ?? '' });
+  const issueLike = { comment, codeSnippet, stillExists: true, explanation: explanation ?? '' };
+  const testPath = getTestPathForSourceFileIssue(issueLike, { forceTestPath: reviewSuggestsFixInTest(comment.body ?? '') });
   if (!testPath) return undefined;
   return filterAllowedPathsForFix([comment.path, testPath]);
 }
@@ -1052,7 +1065,7 @@ function resolvePathFromDiff(commentPath: string, changedFiles: string[] | undef
 function isCommentPositiveOnly(body: string): boolean {
   if (!body || body.length > 2000) return false;
   const trimmed = body.trim();
-  if (!/(?:^|\n)#*\s*✅\s*What's Good|Documentation:.*are now accurate|only contains positive feedback/i.test(trimmed)) return false;
+  if (!/(?:^|\n)#*\s*✅\s*What's Good|Documentation:.*are now accurate|only contains positive feedback|looks clean and follows .*spec|nice work on the frontmatter structure|no hardcoded credentials|doesn'?t expose any sensitive APIs|no security (?:issues|concerns) identified/i.test(trimmed)) return false;
   if (/\b(?:fix|change|should|incorrect|missing|add|remove|update|⚠️|❌|issue\s+(is|with)|bug|error)\b/i.test(trimmed)) return false;
   return true;
 }

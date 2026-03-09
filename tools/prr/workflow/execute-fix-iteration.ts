@@ -33,7 +33,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 import { tryRestoreFromBaseIfRequested } from './restore-from-base.js';
-import { getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests } from '../analyzer/prompt-builder.js';
+import { getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests, reviewSuggestsFixInTest } from '../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
 import { HALLUCINATION_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 import { existsSync } from 'fs';
@@ -79,7 +79,10 @@ function addDisallowedFilesLessonsAndState(
       return issueStem === attemptedStem;
     }
     for (const issue of issuesForPrompt) {
-      if (!issueRequestsTests(issue) || getTestPathForSourceFileIssue(issue) != null) continue;
+      const wantsTestPath = issueRequestsTests(issue) || reviewSuggestsFixInTest(issue.comment.body ?? '');
+      if (!wantsTestPath) continue;
+      const inferredTestPath = getTestPathForSourceFileIssue(issue, { forceTestPath: wantsTestPath });
+      if (inferredTestPath && allowedPathsForBatch.includes(inferredTestPath)) continue;
       const attemptedTestPath = skippedDisallowedFiles.find(
         (p) => testFilePattern.test(p) && isPlausibleTestPathForIssue(p, issue.comment.path)
       );
@@ -330,7 +333,7 @@ export async function executeFixIteration(
   // Pass OpenAI key explicitly so Codex gets it even when config came from env and runner spawns with a copy of process.env
   const keyForRunner = openaiApiKey ?? process.env.OPENAI_API_KEY;
   // Union of allowed paths so runner can skip change blocks targeting wrong files.
-  // WHY: Must mirror prompt-builder expansion (journal, consolidate-duplicate, test-impl) or the
+  // WHY: Must mirror prompt-builder expansion (journal, consolidate-duplicate, test-impl, fix-in-test) or the
   // runner rejects edits the prompt asked for (e.g. _journal.json for Drizzle migrations) as "disallowed file".
   const allowedPathsForBatch = filterAllowedPathsForFix(Array.from(new Set(issuesForPrompt.flatMap((i) => {
     const base = i.allowedPaths?.length ? [...i.allowedPaths] : [i.comment.path];
@@ -350,7 +353,8 @@ export async function executeFixIteration(
     }
     const impl = getImplPathForTestFileIssue(i, undefined);
     if (impl && !base.includes(impl)) base.push(impl);
-    const testPath = getTestPathForSourceFileIssue(i);
+    const forceTestPath = reviewSuggestsFixInTest(i.comment.body ?? '');
+    const testPath = getTestPathForSourceFileIssue(i, { pathExists, forceTestPath });
     if (testPath && !base.includes(testPath)) base.push(testPath);
     return base;
   }))));
