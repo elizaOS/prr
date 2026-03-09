@@ -371,7 +371,8 @@ export class GitHubAPI {
         cursor: pageInfo.endCursor?.slice(0, 20),
       });
 
-      // Map threads from this page (GitHub GraphQL can return path: null for some threads)
+      // WHY path fallback: GitHub GraphQL can return path: null for some review threads (e.g. edge cases).
+      // Using a sentinel string avoids null propagating to join(workdir, path) / path.replace() downstream.
       for (const thread of nodes) {
         const path = thread.path ?? '(unknown file)';
         allThreads.push({
@@ -438,7 +439,8 @@ export class GitHubAPI {
         reviewComments.push(...botComments);
       }
     } catch (err) {
-      // Non-fatal: if issue comment parsing fails, we still have the thread comments
+      // Non-fatal: if issue comment parsing fails, we still have the thread comments.
+      // WHY: Bot parsing can throw when path is null/undefined (e.g. parser edge case); we harden path below so this is rare.
       debug('Failed to fetch/parse bot issue comments', { error: String(err) });
     }
 
@@ -538,6 +540,7 @@ export class GitHubAPI {
         if (parsed.length > 0) {
           for (let i = 0; i < parsed.length; i++) {
             const issue = parsed[i];
+            // WHY path fallback: Parser can yield undefined path when regex capture is missing; downstream expects string.
             results.push({
               id: `ic-${comment.id}-${i}`,
               threadId: `ic-${comment.id}-${i}`,
@@ -572,6 +575,7 @@ export class GitHubAPI {
       c => !parsedBotLogins.has(c.user?.login ?? '')
         && !isCodeRabbitMetaComment({ author: c.user?.login ?? '', body: c.body })
     );
+    // Same path fallback as bot loop: issue.path / path may be undefined from parser or inferPathLineFromBody.
     for (const c of otherComments) {
       const author = c.user?.login ?? 'unknown';
       const parsed = parseMarkdownReviewIssues(c.body);
@@ -1344,6 +1348,7 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
         continue;
       }
 
+      // WHY fallback: fileMatch[1] can be undefined if the regex capture is empty in edge cases; guarantee string so callers never see null (avoids TypeError in join/replace downstream).
       const path = (bareFileMatch?.path ?? fileMatch![1]) ?? '(PR comment)';
       const line = bareFileMatch?.line ?? (fileMatch![2] ? parseInt(fileMatch![2], 10) : null);
       issues.push({ body, path, line });

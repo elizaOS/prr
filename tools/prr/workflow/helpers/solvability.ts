@@ -245,7 +245,8 @@ export function assessSolvability(
     };
   }
 
-  // Check 0b: Path traversal guard (comment.path comes from GitHub API; can be null from GraphQL/bot parsing)
+  // Check 0b: Path traversal guard (comment.path comes from GitHub API; can be null from GraphQL/bot parsing).
+  // WHY guard null/empty: join(workdir, comment.path) and comment.path.replace() throw if path is null; we dismiss path-less comments instead of crashing.
   if (comment.path == null || comment.path === '') {
     return {
       solvable: false,

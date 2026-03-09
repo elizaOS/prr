@@ -1,10 +1,16 @@
 # SERVER: Reusable workflow that runs PRR on a GitHub PR.
 # Called by run-prr-client.yml (or any repo's client workflow).
 #
-# Required in the calling repo:
+# WHY reusable: Lets any repo run PRR via "Run workflow" without hosting the tool;
+#   the job checks out this repo, builds, and runs PRR against the caller's PR.
+#
+# Token (required):
 #   - Pass PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} to use the caller's token (no extra secret).
-#     Or pass a PAT if you need cross-repo or higher rate limits.
-#   - One of: ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
+#   - Or pass a PAT (e.g. PRR_GITHUB_TOKEN: ${{ secrets.MY_PAT }}) for cross-repo or higher limits.
+# WHY not "GITHUB_TOKEN": GitHub reserves that name for workflow_call; using PRR_GITHUB_TOKEN
+#   avoids "secret name collides with system reserved name". We map it to GITHUB_TOKEN in the job.
+#
+# LLM (one of): ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY
 #
 # Example client workflow (add to your repo's .github/workflows/run-prr-client.yml):
 #
@@ -41,6 +47,7 @@ on:
         required: true
         type: string
     secrets:
+      # Caller passes their token here; we use it as GITHUB_TOKEN in the job (checkout + PRR).
       PRR_GITHUB_TOKEN:
         required: true
       ELIZACLOUD_API_KEY:
@@ -58,6 +65,7 @@ jobs:
     permissions:
       contents: read
     steps:
+      # WHY token: Checking out another repo (inputs.prr_repo) requires a token; caller's token is passed in.
       - name: Checkout PRR
         uses: actions/checkout@v4
         with:
@@ -78,6 +86,7 @@ jobs:
           npm ci
           npm run build
 
+      # WHY GITHUB_TOKEN: PRR expects GITHUB_TOKEN in env; we pass through the caller's token.
       - name: Run PRR
         env:
           GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}

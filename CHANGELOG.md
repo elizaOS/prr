@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — GitHub Actions caller token and null-safe review path handling
+
+**GitHub Actions: use caller's token and avoid reserved secret name**
+- Reusable workflow `run-prr-server.yml` now declares the token secret as `PRR_GITHUB_TOKEN` instead of `GITHUB_TOKEN`. The client workflow passes `PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` so the **caller repo's** default token is used end-to-end; no separate PAT or new secret is required for normal use.
+- **WHY (PRR_GITHUB_TOKEN name)**: GitHub does not allow a secret named `GITHUB_TOKEN` in `workflow_call` because it collides with the system-reserved name. Using a different input name (e.g. `PRR_GITHUB_TOKEN`) and mapping it to `GITHUB_TOKEN` in the job env avoids the collision while keeping the tool's expectations unchanged.
+- **WHY (caller token)**: Passing `secrets.GITHUB_TOKEN` from the caller gives the job the same permissions as the repo that triggered the run, so PRR can read/write the same PR and push commits without configuring an extra PAT. Use a PAT only when you need cross-repo access or higher rate limits.
+
+**Null-safe review comment path handling**
+- `tools/prr/github/api.ts`: When building review comments from GraphQL threads, bot-issue parsing, or markdown parsing, `path` is never left null or undefined. Fallbacks: `(unknown file)` for GraphQL threads, `(PR comment)` for parsed/bot issues when the parser does not extract a path.
+- `tools/prr/workflow/helpers/solvability.ts`: Comments with null or empty `comment.path` are dismissed early with reason "Comment has no file path — cannot target a fix"; path traversal and normalization no longer run on null.
+- **WHY**: Runs were failing with `TypeError: null is not an object (evaluating 'file...')` when parsing claude[bot] (and other) issue comments. The GraphQL API can return `path: null` for some review threads, and the markdown parser can yield undefined path when a regex capture is missing. Downstream code (e.g. `join(workdir, comment.path)`, `comment.path.replace`) then threw. Guaranteeing a string path everywhere and dismissing path-less comments in solvability keeps the pipeline safe and avoids losing thread comments when bot parsing hits an edge case.
+
 ### Added (2026-03) — Hedged visibility patterns and weak-identifier stale retargeting
 
 **Hedged “truncated snippet/excerpt” explanations keep issues open**

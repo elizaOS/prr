@@ -300,6 +300,8 @@ Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`
 
 The workflow checks out the PRR repo, builds it, and runs PRR on the given PR. It uses `--no-wait-bot` so the job exits after one push cycle (no waiting for bot re-review); you can re-run the workflow for another cycle.
 
+**Why pass the caller's token?** The job runs in the repo that triggered the workflow. Passing `PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` uses that repo's default token, so you don't create a separate PAT. PRR uses it to read the PR, post comments, and push fixes. Use a PAT only when you need cross-repo access or higher API rate limits. (GitHub doesn't allow a secret named `GITHUB_TOKEN` in reusable workflows, so we use `PRR_GITHUB_TOKEN` and map it to `GITHUB_TOKEN` inside the job.)
+
 ## How It Works
 
 ### The Fix Loop
