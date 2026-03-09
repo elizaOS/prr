@@ -206,7 +206,9 @@ export async function processCommentsAndPrepareFixLoop(
       comments,
       unresolvedIssues,
       spinner,
-      getCodeSnippet
+      getCodeSnippet,
+      stateContext,
+      workdir
     );
     if (newCommentsResult.hasNewComments) {
       comments.length = 0;

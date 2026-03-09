@@ -139,7 +139,7 @@ async function main(): Promise<void> {
           ?? Array.from(available).sort()[0];
         config.llmModel = chosen;
         if (PREFERRED_ELIZACLOUD_MODELS.some(m => available.has(m))) {
-          console.log(chalk.gray(`  Using ElizaCloud model: ${chosen} (default not in available list)`));
+          console.log(chalk.gray(`  Using ElizaCloud model: ${chosen} (configured default unavailable)`));
         } else {
           console.warn(chalk.yellow(`  ElizaCloud fallback model: ${chosen} (rotation may use other models). Set PRR_LLM_MODEL to pin.`));
         }

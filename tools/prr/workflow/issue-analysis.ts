@@ -1778,7 +1778,10 @@ export async function findUnresolvedIssues(
     // WHY: For a single fixable issue the recommendation adds little value; default rotation is sufficient.
     const analyzedIds = new Set(freshToAnalyze.map((item) => item.comment.id));
     const cachedOpenNotInBatch = comments.filter(
-      (c) => !Verification.isVerified(stateContext, c.id) && !analyzedIds.has(c.id)
+      (c) =>
+        !Verification.isVerified(stateContext, c.id)
+        && !Dismissed.isCommentDismissed(stateContext, c.id)
+        && !analyzedIds.has(c.id)
     ).length;
     let toFixFromBatch = 0;
     for (let i = 0; i < freshToAnalyze.length; i++) {

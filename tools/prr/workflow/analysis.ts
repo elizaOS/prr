@@ -21,6 +21,7 @@ import type { CLIOptions } from '../cli.js';
 import { formatNumber } from '../ui/reporter.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../../../shared/logger.js';
+import { assessSolvability } from './helpers/solvability.js';
 
 /**
  * Detect audit explanations that say no fix is needed (false positive).
@@ -168,7 +169,9 @@ export async function checkForNewComments(
   existingComments: ReviewComment[],
   unresolvedIssues: UnresolvedIssue[],
   spinner: Ora,
-  getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>
+  getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
+  stateContext: StateContext,
+  workdir: string
 ): Promise<{
   hasNewComments: boolean;
   updatedComments: ReviewComment[];
@@ -198,16 +201,46 @@ export async function checkForNewComments(
     }
     
     // Add new comments to our list
-    const updatedComments = [...existingComments, ...newComments];
-    
-    // Check which new comments need fixing — fetch snippets concurrently
+    const updatedComments = [...existingComments];
     const updatedUnresolvedIssues = [...unresolvedIssues];
+
+    const solvableComments: ReviewComment[] = [];
+    for (const comment of newComments) {
+      const solvability = assessSolvability(workdir, comment, stateContext);
+      if (!solvability.solvable) {
+        Dismissed.dismissIssue(
+          stateContext,
+          comment.id,
+          solvability.reason ?? 'Not solvable',
+          solvability.dismissCategory ?? 'not-an-issue',
+          comment.path,
+          comment.line,
+          comment.body,
+          solvability.remediationHint
+        );
+        debug('New comment dismissed by solvability', { commentId: comment.id, path: comment.path, reason: solvability.reason });
+        continue;
+      }
+      solvableComments.push(comment);
+      updatedComments.push(comment);
+    }
+
+    if (solvableComments.length === 0) {
+      console.log(chalk.gray('  All new comments were dismissed as non-actionable or unsolvable.'));
+      return {
+        hasNewComments: false,
+        updatedComments,
+        updatedUnresolvedIssues,
+      };
+    }
+
+    // Check which new comments need fixing — fetch snippets concurrently
     const newSnippets = await Promise.all(
-      newComments.map(c => getCodeSnippet(c.path, c.line, c.body))
+      solvableComments.map(c => getCodeSnippet(c.path, c.line, c.body))
     );
-    for (let i = 0; i < newComments.length; i++) {
+    for (let i = 0; i < solvableComments.length; i++) {
       updatedUnresolvedIssues.push({
-        comment: newComments[i],
+        comment: solvableComments[i],
         codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment added during fix cycle',
@@ -215,8 +248,8 @@ export async function checkForNewComments(
       });
     }
     
-    console.log(chalk.yellowBright(`\n┌─ QUEUE: +${formatNumber(newComments.length)} new issue(s) added mid-cycle ─┐`));
-    for (const comment of newComments) {
+    console.log(chalk.yellowBright(`\n┌─ QUEUE: +${formatNumber(solvableComments.length)} new issue(s) added mid-cycle ─┐`));
+    for (const comment of solvableComments) {
       const line = comment.line ? `:${comment.line}` : '';
       console.log(chalk.yellowBright(`│  + ${comment.path}${line} (${comment.author})`));
     }

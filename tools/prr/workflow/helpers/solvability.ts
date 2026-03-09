@@ -119,6 +119,17 @@ export function assessSolvability(
     };
   }
 
+  // Check 0a5: Bot progress / checklist comments ("PR Review in Progress", "Task List", etc.)
+  // WHY: output.log/prompts.log audit showed these status posts can enter the fix loop,
+  // where every model correctly says "not actionable" but we still burn a full stale cycle.
+  if (isBotProgressOrChecklistComment(comment.body)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: 'Bot progress/checklist comment — review status update, not a code issue to fix',
+    };
+  }
+
   // Check 0b: Path traversal guard (comment.path comes from GitHub API)
   const fullPath = join(workdir, comment.path);
   const resolvedWorkdir = resolve(workdir);
@@ -548,6 +559,27 @@ function isWhatsGoodOrPositiveSummaryComment(commentBody: string): boolean {
   if (/^#+\s*✅\s*What'?s Good\b/im.test(head)) return true;
   if (/^#+\s*What'?s Good\s*$/im.test(head)) return true;
   if (/^#+\s*Strengths\b/im.test(head) && !/\b(fix|change|add|remove|update)\b.*\b(line|here)\b/i.test(head)) return true;
+  return false;
+}
+
+/**
+ * Detect bot workflow/status comments that describe the review process itself.
+ * Examples: "PR Review in Progress", "Task List", checklist-only progress posts with job links.
+ */
+function isBotProgressOrChecklistComment(commentBody: string): boolean {
+  const head = commentBody.slice(0, 1400);
+  const checklistCount = (head.match(/^\s*-\s*\[[ xX]\]\s+/gm) || []).length;
+  const hasProgressHeading = /^#+\s*(?:PR Review in Progress|PR Review Complete|Task List)\b/im.test(head);
+  const hasReviewWorkflowText =
+    /\b(?:read repository guidelines|review existing feedback|analyze changed files and pr diff|check for tests|provide consolidated review feedback)\b/i.test(head);
+  const hasJobRunLink = /\[view job run\]\(https:\/\/github\.com\/.+\/actions\/runs\/\d+\)/i.test(head);
+  const requestsCodeChange =
+    /\b(?:fix|change|update|rename|remove|add|implement|refactor)\b.{0,60}\b(?:file|code|function|class|test|line|path)\b/i.test(head);
+
+  if (requestsCodeChange) return false;
+  if (hasProgressHeading && checklistCount >= 2) return true;
+  if (checklistCount >= 4 && hasReviewWorkflowText) return true;
+  if ((hasProgressHeading || hasReviewWorkflowText) && hasJobRunLink) return true;
   return false;
 }
 

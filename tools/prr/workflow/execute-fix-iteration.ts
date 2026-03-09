@@ -10,7 +10,7 @@
 
 import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import type { StateContext } from '../state/state-context.js';
@@ -38,6 +38,7 @@ import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
 import { HALLUCINATION_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 import { existsSync } from 'fs';
 import { basename, join } from 'path';
+import { assessSolvability } from './helpers/solvability.js';
 
 // Track the last prompt+model combination to detect identical retries.
 // WHY: When a fixer returns "no changes" and no new lessons are added,
@@ -186,6 +187,48 @@ export async function executeFixIteration(
       workingUnresolved = workingUnresolved.filter((i) => !dismissedIds.has(i.comment.id));
       debug('H3: dismissed issues after repeated S/R failures', { count: dismissedIds.size, ids: [...dismissedIds] });
     }
+  }
+
+  // Re-run deterministic solvability immediately before prompt building.
+  // WHY: New comments, cached unresolved issues, or changed repo state can let a now-unsolvable
+  // item slip into the queue. Dismissing here prevents burning a full model rotation on noise.
+  if (workingUnresolved.length > 0) {
+    const dismissedIds = new Set<string>();
+    for (const issue of workingUnresolved) {
+      const solvability = assessSolvability(workdir, issue.comment, stateContext);
+      if (solvability.solvable) continue;
+      const primaryPath = getIssuePrimaryPath(issue);
+      Dismissed.dismissIssue(
+        stateContext,
+        issue.comment.id,
+        solvability.reason ?? 'Not solvable',
+        solvability.dismissCategory ?? 'not-an-issue',
+        primaryPath,
+        issue.comment.line,
+        issue.comment.body,
+        solvability.remediationHint
+      );
+      dismissedIds.add(issue.comment.id);
+    }
+    if (dismissedIds.size > 0) {
+      workingUnresolved = workingUnresolved.filter((i) => !dismissedIds.has(i.comment.id));
+      debug('Dismissed unsolvable issues before fixer run', { count: dismissedIds.size, ids: [...dismissedIds] });
+    }
+  }
+  if (workingUnresolved.length === 0) {
+    return {
+      shouldContinue: false,
+      shouldBreak: false,
+      shouldExit: false,
+      allFixed: true,
+      updatedRapidFailureCount: rapidFailureCount,
+      updatedLastFailureTime: lastFailureTime,
+      updatedConsecutiveFailures: consecutiveFailures,
+      updatedModelFailuresInCycle: modelFailuresInCycle,
+      updatedProgressThisCycle: progressThisCycle,
+      updatedUnresolvedIssues: [],
+      lessonsBeforeFix: 0,
+    };
   }
 
   // Build fix prompt with adaptive batch sizing.
