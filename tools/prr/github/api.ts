@@ -612,16 +612,21 @@ export class GitHubAPI {
    * Used for issue comments that aren't structured markdown (so we still have a path for snippets).
    */
   private inferPathLineFromBody(body: string): { path: string; line: number | null } {
-    const FILE_EXT = '(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)';
-    const FILE_PATH_RE = new RegExp(
-      `[\\w.-]+(?:/[\\w./-]+)*\\.${FILE_EXT}(?::(\\d+))?`,
-      'i'
-    );
-    const match = body.match(FILE_PATH_RE);
-    if (match) {
-      const path = match[0].replace(/:\d+$/, '');
-      const line = match[1] ? parseInt(match[1], 10) : null;
-      return { path, line };
+    if (looksLikeSummaryRecapBlock(body)) {
+      return { path: '(PR comment)', line: null };
+    }
+
+    const fullPathMatch = body.match(new RegExp(`\\b(${FULL_FILE_PATH_RE})(?::(\\d+))?\\b`, 'i'));
+    if (fullPathMatch) {
+      return {
+        path: fullPathMatch[1],
+        line: fullPathMatch[2] ? parseInt(fullPathMatch[2], 10) : null,
+      };
+    }
+
+    const bareFileMatch = extractExplicitBareFileReference(body);
+    if (bareFileMatch) {
+      return bareFileMatch;
     }
     return { path: '(PR comment)', line: null };
   }
@@ -1214,11 +1219,44 @@ interface ParsedIssue {
  * Requires at least one `/` to avoid matching bare words like `client.ts`.
  */
 const FILE_EXTENSIONS = '(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)';
-const FILE_PATH_RE = `[\\w.-]+(?:/[\\w./-]+)*\\.${FILE_EXTENSIONS}`;
+const FULL_FILE_PATH_RE = `[\\w.-]+(?:/[\\w./-]+)+\\.${FILE_EXTENSIONS}`;
+const BARE_FILE_RE = `[\\w.-]+\\.${FILE_EXTENSIONS}`;
 const FILE_LINE_RE = new RegExp(
-  `(?:[\`(])?(?:\\./)?(${FILE_PATH_RE})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`
+  `(?:[\`(])?(?:\\./)?(${FULL_FILE_PATH_RE})(?::(\\d+))?(?:[:-]\\d+)?(?:[\`)])?`
 );
-// Review: requires a `/` to ensure valid paths, avoiding false positives in filenames.
+// Review: full-path parser requires a `/` to avoid treating summary prose like `banner.ts`
+// as a repo-root file. Bare filenames are handled separately with stronger context checks.
+// WHY split the parsers: Recap tables often mention `reply.ts`/`logger.ts` as labels, not
+// actionable file references. Treating full paths and bare filenames the same produced many
+// fake "file no longer exists" issues from summary comments.
+
+/** Detect reviewer recap/status tables before path inference. WHY: filtering summary prose here is cheaper and safer than turning it into fake issues and cleaning it up later. */
+function looksLikeSummaryRecapBlock(text: string): boolean {
+  const head = text.slice(0, 1000);
+  if (/\|\s*(?:Location|File(?:\(s\))?|Cohort\s*\/\s*File\(s\)|Summary|Status|Suggestion)\s*\|/i.test(head)) {
+    return true;
+  }
+  return /(?:^|\n)\s*#{1,3}\s*Summary\b/i.test(head) && /\b(?:fixed|addressed|still missing|warning|inconclusive)\b/i.test(head);
+}
+
+/** Bare filenames are only accepted in stronger contexts. WHY: a lone `banner.ts` inside recap prose is weak evidence, but "add tests for `banner.ts`" is actionable. */
+function extractExplicitBareFileReference(text: string): { path: string; line: number | null } | null {
+  const explicit = text.match(
+    new RegExp(`(?:\\b(?:in|for|to|on|within|tests?\\s+for|file)\\b\\s*[\`"]?)(${BARE_FILE_RE})(?::(\\d+))?`, 'i')
+  );
+  if (explicit) {
+    return {
+      path: explicit[1],
+      line: explicit[2] ? parseInt(explicit[2], 10) : null,
+    };
+  }
+  const backtick = text.match(new RegExp('`(' + BARE_FILE_RE + ')(?::(\\d+))?`', 'i'));
+  if (!backtick) return null;
+  return {
+    path: backtick[1],
+    line: backtick[2] ? parseInt(backtick[2], 10) : null,
+  };
+}
 
 /**
  * Section headers to SKIP entirely — these never contain issues.
@@ -1286,13 +1324,15 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
       // Clean the body first so both branches can use it (path-less and path-having).
       const body = item.trim().replace(/\n{3,}/g, '\n\n');
       if (body.length < 20) continue; // Skip trivially short items
+      if (looksLikeSummaryRecapBlock(body)) continue;
 
       const locationMatch = item.match(
         new RegExp(`\\*\\*Locations?:\\*\\*\\s*\`?(\\w[\\w./-]*\\/[\\w./-]+\\.${FILE_EXTENSIONS})(?::(\\d+))?`)
       );
       const fileMatch = locationMatch || item.match(FILE_LINE_RE);
+      const bareFileMatch = !fileMatch ? extractExplicitBareFileReference(item) : null;
 
-      if (!fileMatch) {
+      if (!fileMatch && !bareFileMatch) {
         // Path-less item: include if body is substantial and contains actionable language.
         // Downstream solvability dismisses (PR comment) at zero LLM cost if truly unfixable.
         // WHY 100 chars: shorter items are usually section intros ("Here are the issues:") not real issues.
@@ -1303,8 +1343,8 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
         continue;
       }
 
-      const path = fileMatch[1];
-      const line = fileMatch[2] ? parseInt(fileMatch[2], 10) : null;
+      const path = bareFileMatch?.path ?? fileMatch![1];
+      const line = bareFileMatch?.line ?? (fileMatch![2] ? parseInt(fileMatch![2], 10) : null);
       issues.push({ body, path, line });
     }
   }

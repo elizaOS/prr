@@ -11,6 +11,7 @@ import { join, resolve, sep } from 'path';
 import type { ReviewComment } from '../../github/types.js';
 import type { StateContext } from '../../state/state-context.js';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
+import { getTestPathForIssueLike, isTestOrSpecPath, issueRequestsTestsText } from '../../analyzer/test-path-inference.js';
 import * as Performance from '../../state/state-performance.js';
 import * as Dismissed from '../../state/state-dismissed.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
@@ -22,19 +23,22 @@ export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
 const repoFilesCache = new Map<string, string[]>();
 
+type TrackedPathResolution =
+  | { kind: 'exact'; path: string }
+  | { kind: 'suffix'; path: string }
+  | { kind: 'body-hint'; path: string }
+  | { kind: 'ambiguous'; candidates: string[] }
+  | { kind: 'missing' };
+
 /**
- * Resolve a possibly truncated review path to a tracked repo file.
+ * Cached `git ls-files` output for tracked-path resolution.
  *
- * WHY: Review bots often cite non-root-relative paths like `generate-skills-md.ts`,
- * `SKILL.md`, or `wallet/nfts/route.ts`. Using the raw path in solvability caused
- * incorrect "File no longer exists" dismissal before the fix loop even started.
- *
- * Strategy:
- * 1. Exact tracked-file match → use as-is.
- * 2. Unique suffix match (`foo/bar.ts` or bare basename) → use that file.
- * 3. Ambiguous basename → return null rather than guessing the wrong file.
+ * WHY: Solvability runs for every comment, and path resolution may be consulted
+ * by analysis, dismissal comments, and mid-run new-comment handling. Re-running
+ * `git ls-files` each time would turn the safer path categories into extra I/O
+ * noise.
  */
-export function resolveTrackedPath(workdir: string, rawPath: string): string | null {
+function getTrackedRepoFiles(workdir: string): string[] | null {
   let repoFiles = repoFilesCache.get(workdir);
   if (!repoFiles) {
     try {
@@ -45,23 +49,134 @@ export function resolveTrackedPath(workdir: string, rawPath: string): string | n
       return null;
     }
   }
+  return repoFiles;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function extractPathHintsFromBody(body: string): string[] {
+  if (!body) return [];
+  const hints: string[] = [];
+  const seen = new Set<string>();
+  const pathRe = /`?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))`?/g;
+  let match: RegExpExecArray | null;
+  while ((match = pathRe.exec(body)) !== null) {
+    const hint = match[1]!;
+    if (seen.has(hint)) continue;
+    seen.add(hint);
+    hints.push(hint);
+  }
+  return hints;
+}
+
+function scorePathCandidateAgainstBody(candidate: string, body: string): number {
+  if (!body) return 0;
+  let score = 0;
+  const lowerBody = body.toLowerCase();
+  const lowerCandidate = candidate.toLowerCase();
+  if (lowerBody.includes(lowerCandidate)) score += 100;
+  const segments = candidate.split('/').filter(Boolean);
+  for (const segment of segments.slice(-3)) {
+    if (segment.length < 3) continue;
+    if (lowerBody.includes(segment.toLowerCase())) score += 10;
+  }
+  const parentDir = segments.length > 1 ? segments[segments.length - 2] : '';
+  if (parentDir && lowerBody.includes(parentDir.toLowerCase())) score += 20;
+  return score;
+}
+
+/** Compact candidate list for debug/dismissal text. WHY: large ambiguous basename sets should explain the problem without flooding logs. */
+function formatPathCandidates(candidates: string[]): string {
+  if (candidates.length <= 3) return candidates.join(', ');
+  return `${candidates.slice(0, 3).join(', ')} (+${candidates.length - 3} more)`;
+}
+
+function commentRequestsTests(body: string): boolean {
+  return issueRequestsTestsText(body);
+}
+
+function inferCreateFileTargetPath(comment: ReviewComment): string | null {
+  return getTestPathForIssueLike(
+    { comment, explanation: '' },
+    { keepExistingTestPath: true }
+  );
+}
+
+/**
+ * Missing test/spec paths are often the thing the review wants us to create.
+ *
+ * WHY: "file missing" usually means stale, but for comments like "add
+ * widget.test.ts" the absence is the requested change. Distinguish that case
+ * before we dismiss it as missing.
+ */
+function isCreateFileCandidate(comment: ReviewComment, resolution: TrackedPathResolution): boolean {
+  const targetPath = inferCreateFileTargetPath(comment);
+  if (!targetPath || !isTestOrSpecPath(targetPath)) return false;
+  if (resolution.kind === 'exact' || resolution.kind === 'suffix' || resolution.kind === 'body-hint') return false;
+  return commentRequestsTests(comment.body ?? '') || isTestOrSpecPath(comment.path);
+}
+
+/**
+ * Resolve a possibly truncated review path to a tracked repo file.
+ *
+ * WHY: Review bots often cite non-root-relative paths like `generate-skills-md.ts`,
+ * `SKILL.md`, or `wallet/nfts/route.ts`. Using the raw path in solvability caused
+ * incorrect "File no longer exists" dismissal before the fix loop even started.
+ *
+ * Strategy:
+ * 1. Exact tracked-file match → use as-is.
+ * 2. Unique suffix match (`foo/bar.ts` or bare basename) → use that file.
+ * 3. Comment-body path hints may break suffix ties when the review mentions a fuller path.
+ * 4. Ambiguous basename → preserve ambiguity rather than guessing the wrong file.
+ *
+ * WHY preserve ambiguity: Calling an ambiguous basename "missing" or guessing a
+ * winner both mislead operators. The debug table should say "we could not tell
+ * which file this meant" when that is the real problem.
+ */
+export function resolveTrackedPathDetailed(workdir: string, rawPath: string, commentBody = ''): TrackedPathResolution {
+  const repoFiles = getTrackedRepoFiles(workdir);
+  if (!repoFiles) return { kind: 'missing' };
   const exact = repoFiles.find((f) => f === rawPath);
-  if (exact) return exact;
+  if (exact) return { kind: 'exact', path: exact };
   const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + rawPath) || f === rawPath);
-  if (suffixMatches.length === 0) return null;
-  if (suffixMatches.length === 1) return suffixMatches[0];
-  if (!rawPath.includes('/')) return null;
-  return suffixMatches.reduce((a, b) => (a.length <= b.length ? a : b));
+  if (suffixMatches.length === 0) return { kind: 'missing' };
+  if (suffixMatches.length === 1) return { kind: 'suffix', path: suffixMatches[0] };
+
+  const pathHints = extractPathHintsFromBody(commentBody);
+  for (const hint of pathHints) {
+    const hinted = suffixMatches.find((f) => f === hint || f.endsWith('/' + hint));
+    if (hinted) return { kind: 'body-hint', path: hinted };
+  }
+
+  const scored = suffixMatches
+    .map((candidate) => ({ candidate, score: scorePathCandidateAgainstBody(candidate, commentBody) }))
+    .sort((a, b) => b.score - a.score || a.candidate.length - b.candidate.length);
+  if (scored[0] && scored[0].score > 0 && scored[0].score > (scored[1]?.score ?? -1)) {
+    return { kind: 'body-hint', path: scored[0].candidate };
+  }
+
+  if (!rawPath.includes('/')) {
+    return { kind: 'ambiguous', candidates: suffixMatches };
+  }
+  return { kind: 'suffix', path: suffixMatches.reduce((a, b) => (a.length <= b.length ? a : b)) };
+}
+
+export function resolveTrackedPath(workdir: string, rawPath: string, commentBody?: string): string | null {
+  const resolved = resolveTrackedPathDetailed(workdir, rawPath, commentBody);
+  return 'path' in resolved ? resolved.path : null;
 }
 
 export interface SolvabilityResult {
   solvable: boolean;
   reason?: string;                    // For logging
-  dismissCategory?: 'stale' | 'remaining' | 'not-an-issue' | 'chronic-failure' | 'already-fixed';
+  dismissCategory?: 'stale' | 'remaining' | 'not-an-issue' | 'chronic-failure' | 'already-fixed' | 'missing-file' | 'path-unresolved';
   /** Next-step for humans (e.g. lockfile: "Run: bun install") */
   remediationHint?: string;
   contextHints?: string[];            // Injected into LLM prompt in Phase 3
   retargetedLine?: number;            // If smart re-targeting found the code at a different line
+  resolvedPath?: string;              // Canonical tracked path when raw comment path was truncated/basename-only
 }
 
 /**
@@ -179,7 +294,8 @@ export function assessSolvability(
   // Resolve truncated/basename review paths to tracked repo files before existence checks.
   // WHY: Without this, comments on `generate-skills-md.ts` or `SKILL.md` were dismissed as stale
   // even though the real repo files existed at `scripts/...` / `skills/babylon/...`.
-  const effectivePath = resolveTrackedPath(workdir, comment.path) ?? comment.path;
+  const pathResolution = resolveTrackedPathDetailed(workdir, comment.path, comment.body);
+  const effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
   const effectiveFullPath = join(workdir, effectivePath);
 
   // Check 0e1: Issue references line numbers beyond current file length (file was shortened → comment stale).
@@ -225,10 +341,42 @@ export function assessSolvability(
 
   // Check 1: File existence
   if (!existsSync(effectiveFullPath)) {
+    if (isCreateFileCandidate(comment, pathResolution)) {
+      const createFileTarget = inferCreateFileTargetPath(comment) ?? comment.path;
+      return {
+        solvable: true,
+        resolvedPath: createFileTarget,
+        contextHints: [
+          `The target test/spec file \`${createFileTarget}\` does not exist yet. Treat this as a create-file issue and add the new test file.`,
+        ],
+      };
+    }
+    if (pathResolution.kind === 'ambiguous') {
+      return {
+        solvable: false,
+        dismissCategory: 'path-unresolved',
+        reason: `Ambiguous review path "${comment.path}" matched multiple tracked files: ${formatPathCandidates(pathResolution.candidates)}`,
+      };
+    }
     return {
       solvable: false,
-      dismissCategory: 'stale',
-      reason: `File no longer exists: ${comment.path}`,
+      dismissCategory: 'missing-file',
+      reason: `Tracked file not found for review path: ${comment.path}`,
+    };
+  }
+
+  const inferredCreateFileTarget = inferCreateFileTargetPath(comment);
+  if (
+    inferredCreateFileTarget &&
+    inferredCreateFileTarget !== effectivePath &&
+    !existsSync(join(workdir, inferredCreateFileTarget))
+  ) {
+    return {
+      solvable: true,
+      resolvedPath: inferredCreateFileTarget,
+      contextHints: [
+        `This review is asking for tests in \`${inferredCreateFileTarget}\`, which does not exist yet. Treat it as a create-file issue instead of editing only \`${effectivePath}\`.`,
+      ],
     };
   }
 
@@ -381,7 +529,10 @@ export function assessSolvability(
   }
 
   // All checks passed - issue is solvable
-  return { solvable: true };
+  return {
+    solvable: true,
+    resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
+  };
 }
 
 /**

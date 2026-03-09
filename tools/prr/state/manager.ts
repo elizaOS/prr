@@ -254,7 +254,7 @@ export class StateManager {
   addDismissedIssue(
     commentId: string,
     reason: string,
-    category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate',
+    category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted' | 'remaining' | 'chronic-failure' | 'missing-file' | 'path-unresolved',
     filePath: string,
     line: number | null,
     commentBody: string

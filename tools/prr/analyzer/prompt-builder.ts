@@ -4,6 +4,7 @@ import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../../../shared/constants.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
 import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
+import { getTestPathForIssueLike, issueRequestsTestsText } from './test-path-inference.js';
 
 /**
  * Strip HTML noise, base64 JWT links, and metadata from PR comment bodies
@@ -108,10 +109,7 @@ export function issueRequiresRefactor(issue: UnresolvedIssue): boolean {
 /** True if the review comment or explanation asks for adding/updating tests (so we allow __tests__/). Exported for allow-path persistence when fixer attempts a test file. */
 export function issueRequestsTests(issue: UnresolvedIssue): boolean {
   const text = `${issue.comment?.body ?? ''} ${issue.explanation ?? ''}`;
-  return /\b(?:add(?:ing)?|writing|no\s+tests?\s+cover|tests?\s+cover|test\s+coverage)\s+(?:tests?|here|for)\b/i.test(text) ||
-         /\b__tests__\b/i.test(text) ||
-         /\b(?:vitest|jest|mocha)\b/i.test(text) ||
-         /\badding\s+tests?\s+here\s+would\s+help\b/i.test(text);
+  return issueRequestsTestsText(text);
 }
 
 /**
@@ -148,55 +146,7 @@ export function getTestPathForSourceFileIssue(
   issue: UnresolvedIssue,
   options?: { pathExists?: (path: string) => boolean; forceTestPath?: boolean }
 ): string | null {
-  const pathExists = options?.pathExists;
-  const forceTestPath = options?.forceTestPath === true;
-  if (!forceTestPath && !issueRequestsTests(issue)) return null;
-  const path = issue.comment.path ?? '';
-  const body = issue.comment.body ?? '';
-  // Already on a test file — no need to infer another test path
-  if (/\.(test|spec)\.(ts|js)$/.test(path)) return null;
-  const dir = path.includes('/') ? path.replace(/\/[^/]+$/, '') : '';
-  const norm = (p: string) => p.replace(/\/\.\//g, '/').replace(/\/[^/]+\/\.\.\//g, '/');
-  const preferOrFallback = (colocated: string, integration: string | null): string => {
-    if (pathExists) {
-      if (pathExists(colocated)) return colocated;
-      if (integration && pathExists(integration)) return integration;
-    }
-    return colocated;
-  };
-  // Explicit test file path in body (e.g. "__tests__/integration/component.test.ts")
-  const explicitFull = body.match(/(?:^|[\s(])`?([a-zA-Z0-9_/.()-]+__tests__[a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))`?(?:\s|$|[,)])/);
-  if (explicitFull?.[1]) return explicitFull[1].replace(/^[\s(]+|[\s)]+$/g, '');
-  const explicitRel = body.match(/(?:in|to|add\s+tests?\s+to?|tests?\s+in)\s+[`']?([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))[`']?(?:\s|$|[,)])/i);
-  if (explicitRel?.[1]) {
-    const name = explicitRel[1].replace(/^[\s'`]+|[\s'`]+$/g, '');
-    if (name.includes('/')) return name;
-    if (dir) {
-      const colocated = norm(`${dir}/${name}`);
-      const integration = norm(`${dir}/../__tests__/integration/${name}`);
-      return preferOrFallback(colocated, integration);
-    }
-    return name;
-  }
-  const backtick = body.match(/`([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))`/);
-  if (backtick?.[1]) {
-    const name = backtick[1];
-    if (name.includes('/')) return name;
-    if (dir) {
-      const colocated = norm(`${dir}/${name}`);
-      const integration = norm(`${dir}/../__tests__/integration/${name}`);
-      return preferOrFallback(colocated, integration);
-    }
-    return name;
-  }
-  // Convention: co-located <sourceBase>.test.ts, with __tests__/integration fallback when pathExists says colocated doesn't exist
-  const base = path.replace(/^.*\//, '').replace(/\.(ts|js)$/, '.test.$1');
-  if (dir) {
-    const colocated = norm(`${dir}/${base}`);
-    const integration = norm(`${dir}/../__tests__/integration/${base}`);
-    return preferOrFallback(colocated, integration);
-  }
-  return base;
+  return getTestPathForIssueLike(issue, options);
 }
 
 /** When the review says a migration is missing from the journal, the fix must edit db/migrations/meta/_journal.json (Drizzle Kit discovers migrations via that JSON). Returns that path if the issue is about migration journal. */

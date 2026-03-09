@@ -187,6 +187,33 @@ export function explanationHasConcreteFixEvidence(explanation: string): boolean 
 }
 
 /**
+ * True when the model is really saying "I couldn't see enough code to decide",
+ * regardless of whether it labeled the result NO or STALE.
+ *
+ * WHY: Missing snippet context should keep an issue open, not dismiss it as stale.
+ * Different models phrase this in many ways ("truncated snippet", "can't verify",
+ * "current code doesn't show"), so we centralize the detection in one helper.
+ */
+export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
+  return (
+    /snippet.*(?:truncated|unavailable)/i.test(explanation) ||
+    /(?:truncated|unavailable).*snippet/i.test(explanation) ||
+    /cannot verify.*(?:truncated|unavailable)/i.test(explanation) ||
+    /not visible in the provided excerpt/i.test(explanation) ||
+    /not (?:visible|found) in the provided .* excerpt/i.test(explanation) ||
+    /not visible in provided .* excerpt/i.test(explanation) ||
+    /are not visible in the provided/i.test(explanation) ||
+    /excerpt does not (?:include|show|contain)/i.test(explanation) ||
+    /can'?t (?:be )?evaluat/i.test(explanation) ||
+    /cannot (?:assess|determine|verify)/i.test(explanation) ||
+    /(?:code|snippet|excerpt|current code) (?:doesn'?t|does not) show/i.test(explanation) ||
+    /\bonly shows\b.*\b(?:not |beginning|start|first|lines? \d)/i.test(explanation) ||
+    /\bincomplete\b.*\b(?:show|visible|implementation)\b/i.test(explanation) ||
+    /not (?:visible|shown|included) in the (?:current |provided )?(?:excerpt|code|snippet)/i.test(explanation)
+  );
+}
+
+/**
  * Context for model recommendation (optional)
  */
 export interface ModelRecommendationContext {
@@ -1253,18 +1280,16 @@ ${codeSnippet}
             stale = false;
           }
 
+          const missingCodeVisibility = explanationMentionsMissingCodeVisibility(explanation);
+
           // Override: NO but explanation says code/excerpt not visible or can't confirm — per judge instructions
           // "if you would say 'not in excerpt', say YES not STALE". Verifier said NO (fixed) while admitting
           // they couldn't see the code; that contradicts NO (we should treat as unverified / still exists).
-          if (responseUpper === 'NO' && (
-            /relevant code is not visible in the provided excerpt/i.test(explanation) ||
-            /not (?:visible|included|shown) in the (?:provided )?excerpt/i.test(explanation) ||
-            /can'?t (?:confirm|verify|determine) whether/i.test(explanation) ||
-            /(?:file is )?missing from the provided excerpts/i.test(explanation) ||
-            /truncated portion would contain/i.test(explanation) ||
-            /not visible here|not visible in (?:this )?(?:excerpt|snippet)/i.test(explanation)
-          )) {
-            debug('Batch override: NO→YES (explanation says not visible / can\'t confirm)', { resultId, explanationPreview: explanation.slice(0, 80) });
+          // WHY use the shared helper here too: the same underlying uncertainty can arrive as either
+          // a NO or STALE verdict depending on model phrasing. In both cases the correct policy is
+          // "keep the issue open until we have enough visible code," not "trust the fixed verdict."
+          if (responseUpper === 'NO' && missingCodeVisibility) {
+            debug('Batch override: NO→YES (explanation says code visibility was incomplete)', { resultId, explanationPreview: explanation.slice(0, 80) });
             exists = true;
             stale = false;
           }
@@ -1306,32 +1331,15 @@ ${codeSnippet}
             });
           }
 
-          // Snippet truncated/unavailable: verifier couldn't see code — treat as STALE. Check first so we don't flip STALE→YES then YES→STALE.
-          const snippetUnavailable = /snippet.*(?:truncated|unavailable)|(?:truncated|unavailable).*snippet|cannot verify.*(?:truncated|unavailable)/i.test(explanation);
-          if (exists && snippetUnavailable) {
-            debug('Batch override: YES→STALE (explanation says snippet truncated/unavailable)', { resultId, explanationPreview: explanation.slice(0, 80) });
-            exists = false;
-            stale = true;
+          if (exists && missingCodeVisibility) {
+            debug('Batch kept as YES (explanation says code visibility was incomplete)', { resultId, explanationPreview: explanation.slice(0, 80) });
           }
 
-          // Override: STALE only because symbol/code "not visible" or "can't evaluate" — treat as YES (skip if snippet was unavailable).
+          // Override: STALE only because symbol/code "not visible" or "can't evaluate" — treat as YES.
           // WHY: Judge instructions say "if you would say 'not visible in the provided excerpt' or 'not in excerpt', say YES not STALE".
           // The verifier often used different phrasings ("can't be evaluated", "code doesn't show", "only shows the beginning"); without this override
-          // we falsely dismiss issues as STALE when the real reason is incomplete snippet (prompts.log audit: 48 such verdicts). "only shows" is
-          // tightened with a trailing indicator (not/beginning/start/first/lines N) to avoid flipping legitimate STALE (e.g. "file only shows re-export").
-          const staleButMissingCode = stale && !snippetUnavailable && (
-            /not visible in the provided excerpt/i.test(explanation) ||
-            /not (?:visible|found) in the provided .* excerpt/i.test(explanation) ||
-            /not visible in provided .* excerpt/i.test(explanation) ||
-            /are not visible in the provided/i.test(explanation) ||
-            /excerpt does not (?:include|show|contain)/i.test(explanation) ||
-            /can'?t (?:be )?evaluat/i.test(explanation) ||
-            /cannot (?:assess|determine|verify)/i.test(explanation) ||
-            /(?:code|snippet|excerpt|current code) (?:doesn'?t|does not) show/i.test(explanation) ||
-            /\bonly shows\b.*\b(?:not |beginning|start|first|lines? \d)/i.test(explanation) ||
-            /\bincomplete\b.*\b(?:show|visible|implementation)\b/i.test(explanation) ||
-            /not (?:visible|shown|included) in the (?:current |provided )?(?:excerpt|code|snippet)/i.test(explanation)
-          );
+          // we falsely dismiss issues as STALE when the real reason is incomplete snippet (prompts.log audit: 48 such verdicts).
+          const staleButMissingCode = stale && missingCodeVisibility;
           if (staleButMissingCode) {
             debug('Batch override: STALE→YES (reason was missing from excerpt, not removed)', { resultId, explanationPreview: explanation.slice(0, 80) });
             exists = true;

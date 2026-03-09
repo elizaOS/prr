@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Path-resolution categories, create-file test issues, and recap-comment filtering
+
+**Path resolution now distinguishes missing files from unresolved paths**
+- `tools/prr/workflow/helpers/solvability.ts` now uses structured tracked-path resolution instead of a single "exists / does not exist" outcome. Comments can now resolve as exact, suffix, body-hinted, ambiguous, or missing, and dismissed issues can be categorized as `missing-file` or `path-unresolved` instead of always `stale`.
+- Downstream workflows now carry `resolvedPath` forward when a truncated/basename review path is mapped to a canonical tracked repo file.
+- **WHY**: Output from PR #6562 showed many comments being labeled "File no longer exists" when the real problem was different: basename ambiguity (`logger.ts`), path fragments from recap prose (`banner.ts`), or a path that was valid only after expanding it to the real repo path. Splitting these cases makes the debug table and dismissal reasons match reality.
+
+**Missing test/spec paths stay fixable as create-file issues**
+- Missing paths that look like test/spec files and are requested by the review now remain solvable instead of being dismissed. PRR treats them as create-file issues, preserves the target path, and provides create-file snippet guidance during issue analysis.
+- `workflow/analysis.ts` also preserves the resolved/create-file path for new comments added mid-run so those issues enter the queue with the same behavior.
+- **WHY**: "Missing tests" comments were being thrown away as stale because the target file did not exist yet, even though the correct action was to create that file. For test coverage issues, absence is often the fix target, not proof the comment is obsolete.
+
+**Shared test-path inference and explicit test-path preservation**
+- Test-target inference now lives in `tools/prr/analyzer/test-path-inference.ts` and is reused by both prompt building and solvability. This keeps create-file inference, allowlists, and retry handling on the same path-selection rules.
+- The shared helper now preserves explicit existing test/spec paths before applying the text-based "is this asking for tests?" gate, so coverage-only wording on a missing `*.test.ts` path still stays in the create-file flow.
+- **WHY**: The first create-file fix solved the broad problem but left two smaller gaps: prompt-building and solvability could still drift apart on explicit test-file naming, and the shared helper briefly regressed the case where the review path itself was already a test file. Unifying the logic removes both classes of mismatch.
+
+**Missing-code visibility now re-opens `NO` verdicts too**
+- `tools/prr/llm/client.ts` now uses `explanationMentionsMissingCodeVisibility()` for `NO -> YES` as well as `STALE -> YES`, so explanations like "the truncated snippet doesn't show enough code" never mark an issue fixed just because the model answered `NO`.
+- **WHY**: The earlier visibility fix only rescued `STALE` verdicts. A model could still answer `NO` while admitting it had not seen enough code, which is equally unsafe. If the code was not visible, PRR should keep the issue open regardless of whether the model said `NO` or `STALE`.
+
+**Summary / recap parsing is stricter about bare filenames**
+- `tools/prr/github/api.ts` now skips summary/status recap blocks earlier and only accepts bare filenames like `reply.ts` or `banner.ts` when they appear in stronger actionable contexts (for example backticks or phrases like "add tests for `reply.ts:106`").
+- Inline dismissal-comment insertion now reuses the shared path resolver instead of maintaining a second looser suffix matcher.
+- **WHY**: The old parser would happily treat recap tables and prose bullets as file-local issues, which then produced fake stale dismissals. Tightening bare-filename parsing reduces review-summary leakage without losing explicit actionable bare-file comments.
+
+**Targeted regression tests**
+- `tests/non-actionable-comments.test.ts` now covers ambiguous basename dismissal and missing test-file create-file handling.
+- `tests/issue-analysis.test.ts` covers the create-file snippet path for missing tests.
+- `tests/github-api-parser.test.ts` covers recap-table filtering and explicit actionable bare-file parsing.
+- **WHY**: These failures are easy to reintroduce because they live in heuristics at the parser/solvability boundary. Tests keep the new categories and create-file bias intentional.
+
 ### Added (2026-03) — Conservative issue detection and debug issue tables
 
 **Conservative analysis context for lifecycle/order-sensitive issues**

@@ -4,6 +4,13 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## Recently completed
 
+**Path-resolution categories + create-file test issues (2026-03)**
+- Solvability now distinguishes `missing-file` from `path-unresolved` and carries canonical resolved paths forward instead of flattening everything into "file no longer exists." **WHY**: The same stale label was previously hiding several different failure modes: ambiguous basenames, truncated review paths, and parser leakage from summary prose.
+- Missing test/spec paths requested by review comments now stay fixable as create-file issues instead of being dismissed just because the file is absent today. **WHY**: "Add tests" often means creating the target file; treating absence as staleness was backwards for this class of issues.
+- Issue-comment parsing is stricter about recap/status tables and weaker about guessing from bare filenames unless the wording is clearly actionable. **WHY**: Summary bullets like `banner.ts` or `reply.ts` were being turned into fake file-local issues, which then inflated stale counts and made the debug table less trustworthy.
+- Test-target inference now lives in one shared helper and the missing-code-visibility override now rescues both `STALE` and `NO` verdicts that really mean "I could not see enough code." **WHY**: The initial follow-up fixes were directionally correct, but audits found two smaller gaps: prompt-building vs solvability could drift on test-file naming, and a `NO` verdict could still hide an issue if the explanation admitted the snippet was incomplete.
+- See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Path-resolution categories, create-file test issues, and recap-comment filtering".
+
 **Conservative issue detection + debug issue tables (2026-03)**
 - Analysis now treats lifecycle/cache/leak comments and ordering/history comments as conservative-detection cases, not just conservative-verification cases. It uses broader context before deciding an issue is already fixed. **WHY**: We found real bugs being dismissed during issue analysis, before the verifier ever saw them.
 - Verbose runs now print a per-comment debug issue table after analysis and again at exit, with decision precedence matching the real workflow (`open` -> `dismissed/<category>` -> `verified`). **WHY**: Operators need to compare PRR's internal decision map against the PR conversation directly, especially when a run says "clean" but the PR still looks noisy.

@@ -204,6 +204,31 @@ WHY: Verification hardening alone was not enough. Some real bugs were being dism
 
 WHY: PRR is often operating against dozens of bot comments at once. When the tool's internal state and the PR UI diverge, operators need a direct, comment-level explanation of what PRR thinks happened and why.
 
+**Path resolution must preserve ambiguity, not erase it:**
+- `workflow/helpers/solvability.ts` now resolves review paths into structured outcomes (`exact`, `suffix`, `body-hint`, `ambiguous`, `missing`) rather than a single "resolved or not" answer.
+- That result feeds both dismissal classification (`missing-file` vs `path-unresolved`) and canonical-path propagation (`resolvedPath`) for later snippet, fix, and dismissal-comment phases.
+
+WHY: A single stale bucket made fundamentally different problems look identical. If `logger.ts` could match multiple tracked files, that is an ambiguity problem, not evidence the file was deleted. Architecture-wise, preserving that distinction early lets later phases stay honest instead of inventing a misleading "file no longer exists" story.
+
+**Create-file issues are a first-class solvability case:**
+- Analysis now treats missing test/spec targets as potentially solvable when the review is clearly requesting creation of that file. Missing-file snippets can therefore become "create this file" context instead of an unreadable placeholder.
+- New comments added mid-run reuse the same resolved/create-file path handling so the queue behavior is consistent whether the comment was present at startup or arrived later.
+- Test-target inference now lives in a shared helper reused by prompt-building and solvability, and explicit test/spec paths are preserved before the helper applies looser text-based heuristics.
+
+WHY: PRR used to assume "file missing" meant "issue obsolete." That assumption is wrong for missing tests, migrations, and other review comments whose requested fix is to add a file that does not exist yet.
+
+WHY share the helper: A create-file issue only works if every phase agrees on the same target path. If prompt-building, solvability, and retries infer different test files from the same comment, the tool can oscillate between "allowed path", "missing path", and "wrong file" without ever converging.
+
+**Issue-comment parsing now resists recap leakage:**
+- `github/api.ts` separates full-path parsing from bare-filename parsing, filters recap/status blocks earlier, and only accepts bare filenames in stronger contexts such as explicit backticks or "add tests for `reply.ts:106`".
+
+WHY: Issue ingestion is the top of the funnel. If recap prose gets turned into fake file issues there, every later subsystem pays the cost: wrong stale dismissals, noisy debug tables, and wasted fix attempts. Filtering earlier is cheaper and more trustworthy than cleaning it up later.
+
+**Incomplete snippet visibility is treated as "still open", not "fixed":**
+- `llm/client.ts` centralizes "I couldn't really see the code" phrasing in `explanationMentionsMissingCodeVisibility()` and applies that policy to both `NO` and `STALE` verdict overrides.
+
+WHY: A verifier that says "the snippet is truncated" is not providing evidence the issue is fixed. Architecture-wise, this is the same trust boundary as create-file handling: when the input context is incomplete, PRR should bias toward keeping the issue open rather than collapsing uncertainty into a resolved state.
+
 ### 4. Analyzer (`src/analyzer/`)
 
 Issue analysis and prompt building:

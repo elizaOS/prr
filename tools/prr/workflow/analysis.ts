@@ -205,6 +205,7 @@ export async function checkForNewComments(
     const updatedUnresolvedIssues = [...unresolvedIssues];
 
     const solvableComments: ReviewComment[] = [];
+    const resolvedPaths = new Map<string, string>();
     for (const comment of newComments) {
       const solvability = assessSolvability(workdir, comment, stateContext);
       if (!solvability.solvable) {
@@ -221,6 +222,9 @@ export async function checkForNewComments(
         debug('New comment dismissed by solvability', { commentId: comment.id, path: comment.path, reason: solvability.reason });
         continue;
       }
+      if (solvability.resolvedPath) {
+        resolvedPaths.set(comment.id, solvability.resolvedPath);
+      }
       solvableComments.push(comment);
       updatedComments.push(comment);
     }
@@ -236,15 +240,17 @@ export async function checkForNewComments(
 
     // Check which new comments need fixing — fetch snippets concurrently
     const newSnippets = await Promise.all(
-      solvableComments.map(c => getCodeSnippet(c.path, c.line, c.body))
+      solvableComments.map(c => getCodeSnippet(resolvedPaths.get(c.id) ?? c.path, c.line, c.body))
     );
     for (let i = 0; i < solvableComments.length; i++) {
+      const comment = solvableComments[i];
       updatedUnresolvedIssues.push({
-        comment: solvableComments[i],
+        comment,
         codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment added during fix cycle',
         triage: { importance: 3, ease: 3 },
+        resolvedPath: resolvedPaths.get(comment.id),
       });
     }
     

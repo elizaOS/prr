@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { describe, it, expect, afterEach } from 'vitest';
@@ -159,5 +159,58 @@ describe('getCodeSnippet', () => {
     expect(snippet).toContain('groupedByRun = new Map');
     expect(snippet).toContain('sliceToFitBudget(');
     expect(snippet).toContain('{ fromEnd: true }');
+  });
+
+  it('returns create-file guidance for missing test files', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-issue-analysis-'));
+    tempDirs.push(dir);
+
+    writeFileSync(
+      join(dir, 'widget.ts'),
+      [
+        'export function buildWidgetState(input: string) {',
+        '  return { normalized: input.trim().toLowerCase() };',
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    const snippet = await getCodeSnippet(
+      dir,
+      'src/__tests__/widget.test.ts',
+      null,
+      'Add tests for `widget.ts` by creating `src/__tests__/widget.test.ts`.'
+    );
+
+    expect(snippet).toContain('Requested new file `src/__tests__/widget.test.ts` does not exist yet.');
+    expect(snippet).toContain('create-file issue');
+    expect(snippet).toContain('Review comment:');
+  });
+
+  it('returns create-file guidance with source context for inferred test targets', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-issue-analysis-'));
+    tempDirs.push(dir);
+    mkdirSync(join(dir, 'src'), { recursive: true });
+
+    writeFileSync(
+      join(dir, 'src', 'reply.ts'),
+      [
+        'export function hasRequestedInState(value: string) {',
+        '  return value.length > 0;',
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    const snippet = await getCodeSnippet(
+      dir,
+      'src/reply.test.ts',
+      106,
+      '`reply.ts:106-113` has no tests. Add coverage for hasRequestedInState.'
+    );
+
+    expect(snippet).toContain('Requested new file `src/reply.test.ts` does not exist yet.');
+    expect(snippet).toContain('Nearby source context from `src/reply.ts`:');
+    expect(snippet).toContain('hasRequestedInState');
   });
 });

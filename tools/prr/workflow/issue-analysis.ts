@@ -1045,6 +1045,8 @@ export async function getCodeSnippet(
     }
     return snippet + `\n... (truncated — file has ${lines.length} lines total)`;
   } catch {
+    const createFileSnippet = await buildMissingCreateFileSnippet(workdir, path, commentBody);
+    if (createFileSnippet) return createFileSnippet;
     return '(file not found or unreadable)';
   }
 }
@@ -1188,6 +1190,68 @@ function buildSnippetFromRepoContent(
     if (conservativeSnippet) return conservativeSnippet;
   }
   return buildWindowedSnippet(content, line, commentBody);
+}
+
+function isLikelyCreateFilePath(path: string): boolean {
+  return /(?:^|\/)__tests__\/|(?:^|\/)[^/]+\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(path);
+}
+
+function inferSourceCandidatesFromMissingTestPath(testPath: string, commentBody?: string): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string | undefined) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    candidates.push(value);
+  };
+
+  add(testPath.replace(/\/__tests__\//g, '/').replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/i, '.$2'));
+  add(testPath.replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/i, '.$2'));
+
+  const referencedPaths = commentBody?.match(/`([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|tsx|js|jsx))`/g) ?? [];
+  for (const ref of referencedPaths) add(ref.replace(/`/g, ''));
+
+  return candidates;
+}
+
+/**
+ * Build context for issues whose target file does not exist yet.
+ *
+ * WHY: Missing test/spec files should not degrade to the generic unreadable-file
+ * placeholder. The fixer needs to see that the correct action is "create this
+ * file", ideally with nearby source context when we can infer it.
+ */
+async function buildMissingCreateFileSnippet(
+  workdir: string,
+  missingPath: string,
+  commentBody?: string
+): Promise<string | null> {
+  if (!isLikelyCreateFilePath(missingPath)) return null;
+
+  const intro = [
+    `Requested new file \`${missingPath}\` does not exist yet.`,
+    'Treat this as a create-file issue and add the missing test/spec file.',
+  ];
+
+  for (const candidate of inferSourceCandidatesFromMissingTestPath(missingPath, commentBody)) {
+    try {
+      const content = await readFile(join(workdir, candidate), 'utf-8');
+      return [
+        ...intro,
+        '',
+        `Nearby source context from \`${candidate}\`:`,
+        '',
+        buildSnippetFromRepoContent(content, null, commentBody, candidate),
+      ].join('\n');
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  if (commentBody?.trim()) {
+    return [...intro, '', 'Review comment:', sanitizeCommentForPrompt(commentBody)].join('\n');
+  }
+  return intro.join('\n');
 }
 
 /**
@@ -1448,7 +1512,10 @@ export async function findUnresolvedIssues(
         'This is a lifecycle/order-sensitive issue. Answer NO only if the shown code provides concrete evidence that the full behavior is now correct.',
       ];
     }
-    const resolvedPath = resolvePathFromDiff(comment.path, changedFiles) ?? resolveTrackedPath(workdir, comment.path) ?? undefined;
+    const resolvedPath = solvability.resolvedPath
+      ?? resolvePathFromDiff(comment.path, changedFiles)
+      ?? resolveTrackedPath(workdir, comment.path, comment.body)
+      ?? undefined;
     needSnippets.push({ comment, snippetLine, contextHints, resolvedPath });
   }
 
