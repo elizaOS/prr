@@ -30,6 +30,7 @@ import { debug, warn, debugStep } from '../../../shared/logger.js';
 import { formatNumber } from '../ui/reporter.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import { buildCommitMessage, squashCommit, pushWithRetry } from '../../../shared/git/git-commit-index.js';
+import { resolveTrackedPath } from './helpers/solvability.js';
 
 /**
  * Commit and push changes after all issues are resolved
@@ -49,6 +50,12 @@ export async function commitAndPushChanges(
 ): Promise<{
   committed: boolean;
 }> {
+  const verifiedThisSession = stateContext.verifiedThisSession ?? new Set<string>();
+  if (verifiedThisSession.size === 0) {
+    debug('Skipping final commit: no fixes were verified in this session');
+    return { committed: false };
+  }
+
   // Check if we have uncommitted changes that need to be committed
   if (!(await hasChanges(git))) {
     return { committed: false };
@@ -80,11 +87,12 @@ export async function commitAndPushChanges(
   // WHY: Listing all verified issues (including untouched files) was misleading in git log.
   const stagedSet = new Set(commit.stagedFiles);
   const fixedIssues = comments
-    .filter((comment) => Verification.isVerified(stateContext, comment.id) && stagedSet.has(comment.path))
+    .filter((comment) => verifiedThisSession.has(comment.id) && Verification.isVerified(stateContext, comment.id))
     .map((comment) => ({
-      filePath: comment.path,
+      filePath: resolveTrackedPath(workdir, comment.path) ?? comment.path,
       comment: comment.body,
-    }));
+    }))
+    .filter((issue) => stagedSet.has(issue.filePath));
 
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);

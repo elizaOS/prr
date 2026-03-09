@@ -334,6 +334,7 @@ export function getSiblingFilePathsFromComment(issue: UnresolvedIssue): string[]
   let m: RegExpExecArray | null;
   while ((m = re.exec(body)) !== null) {
     const basename = m[1];
+    if (/^(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(basename)) continue;
     if (basename === primaryBasename) continue;
     const full = dir ? `${dir}/${basename}` : basename;
     if (seen.has(full)) continue;
@@ -341,6 +342,35 @@ export function getSiblingFilePathsFromComment(issue: UnresolvedIssue): string[]
     if (isPathAllowedForFix(full)) out.push(full);
   }
   return out;
+}
+
+/**
+ * Detect rename-target issues so the fixer may rename `foo.ts` to `foo.test.ts`
+ * instead of being trapped on the source path only.
+ */
+export function getRenameTargetPath(issue: UnresolvedIssue): string | null {
+  const primaryPath = issue.resolvedPath ?? issue.comment.path ?? '';
+  const body = issue.comment.body ?? '';
+  if (!primaryPath || !/\.(?:ts|tsx|js|jsx)$/i.test(primaryPath)) return null;
+
+  const explicitPath = body.match(/`([^`]+\.(?:test|spec)\.(?:ts|tsx|js|jsx))`/i)?.[1]
+    ?? body.match(/\b([a-zA-Z0-9_/.-]+\.(?:test|spec)\.(?:ts|tsx|js|jsx))\b/i)?.[1];
+  if (explicitPath && explicitPath !== primaryPath) {
+    return explicitPath;
+  }
+
+  const renameToBasename = body.match(/rename(?:d)?\s+(?:to|as)\s+`?([a-zA-Z0-9_.-]+\.(?:ts|tsx|js|jsx))`?/i)?.[1];
+  if (renameToBasename && renameToBasename !== primaryPath) {
+    return primaryPath.includes('/')
+      ? `${primaryPath.replace(/\/[^/]+$/, '')}/${renameToBasename}`
+      : renameToBasename;
+  }
+
+  const mentionsRename =
+    /\b(?:rename|renamed|naming|filename|file name)\b/i.test(body) &&
+    /(?:\.test\.|\.spec\.|test file)/i.test(body);
+  if (!mentionsRename || /\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(primaryPath)) return null;
+  return primaryPath.replace(/\.(ts|tsx|js|jsx)$/i, '.test.$1');
 }
 
 /**
@@ -623,6 +653,8 @@ export function buildFixPrompt(
     if (referencedFull && isPathAllowedForFix(referencedFull) && !basePaths.includes(referencedFull)) basePaths = [...basePaths, referencedFull];
     const docPath = getDocumentationPathFromComment(issue);
     if (docPath && isPathAllowedForFix(docPath) && !basePaths.includes(docPath)) basePaths = [...basePaths, docPath];
+    const renameTarget = getRenameTargetPath(issue);
+    if (renameTarget && isPathAllowedForFix(renameTarget) && !basePaths.includes(renameTarget)) basePaths = [...basePaths, renameTarget];
     for (const sibling of getSiblingFilePathsFromComment(issue)) {
       if (!basePaths.includes(sibling)) basePaths = [...basePaths, sibling];
     }
@@ -798,6 +830,9 @@ export function buildFixPrompt(
   parts.push('RESULT: CANNOT_FIX — <why this requires non-code changes>');
   parts.push('RESULT: ATTEMPTED — <what was changed> (optional: CAVEAT: <risks or uncertainties>)\n');
   parts.push('Rules:');
+  if (limitedIssues.length > 1) {
+    parts.push('- In multi-issue batches, explicitly account for every issue. If you skip one, add `ISSUE N RESULT: ALREADY_FIXED|CANNOT_FIX|UNCLEAR|WRONG_LOCATION — ...` for that specific issue.');
+  }
   parts.push('- If you make code changes, RESULT: FIXED is assumed (the line is optional).');
   parts.push('- If an issue is ALREADY FIXED, do NOT make cosmetic changes. Cite the evidence.');
   parts.push('- If instructions are UNCLEAR, explain the ambiguity instead of guessing.');

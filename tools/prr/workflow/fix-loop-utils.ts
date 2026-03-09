@@ -5,7 +5,7 @@
 
 import chalk from 'chalk';
 import type { ReviewComment } from '../github/types.js';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
@@ -358,7 +358,7 @@ export async function checkAndPullRemoteCommits(
       console.log(chalk.gray(`  Refreshing code snippets for ${formatNumber(unresolvedIssues.length)} issues...`));
       const refreshedSnippets = await Promise.all(
         unresolvedIssues.map(issue =>
-          getCodeSnippet(issue.comment.path, issue.comment.line, issue.comment.body)
+          getCodeSnippet(getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body)
         )
       );
       for (let i = 0; i < unresolvedIssues.length; i++) {
@@ -408,7 +408,7 @@ export async function refreshSnippetsForVerifierContradiction(
   await Promise.all(
     withContradiction.map(async (issue) => {
       const fresh = await getCodeSnippet(
-        issue.comment.path,
+        getIssuePrimaryPath(issue),
         issue.comment.line ?? null,
         issue.comment.body
       );
@@ -440,13 +440,13 @@ export async function refreshSnippetsForChangedFiles(
   getCodeSnippet: (path: string, line: number | null, body?: string) => Promise<string>
 ): Promise<number> {
   const changedSet = new Set(changedFiles);
-  const toRefresh = unresolvedIssues.filter((i) => changedSet.has(i.comment.path));
+  const toRefresh = unresolvedIssues.filter((i) => changedSet.has(getIssuePrimaryPath(i)));
   if (toRefresh.length === 0) return 0;
   let refreshed = 0;
   await Promise.all(
     toRefresh.map(async (issue) => {
       const fresh = await getCodeSnippet(
-        issue.comment.path,
+        getIssuePrimaryPath(issue),
         issue.comment.line ?? null,
         issue.comment.body
       );

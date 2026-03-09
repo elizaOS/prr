@@ -11,7 +11,7 @@
 import chalk from 'chalk';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { StateContext } from '../state/state-context.js';
 import { getState } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
@@ -337,7 +337,7 @@ export async function handleNoChangesWithVerification(
             updated = unresolvedIssues.map((issue, i) => {
               // Expand scope for the issue(s) that were in this fix attempt (single-issue: first only)
               if (i > 0) return issue;
-              const paths = new Set<string>([issue.comment.path, extraPath]);
+              const paths = new Set<string>([getIssuePrimaryPath(issue), extraPath]);
               return { ...issue, allowedPaths: Array.from(paths) };
             });
             debug('Expanded fix scope for NEEDS_DISCUSSION', { path: extraPath, issuePath: unresolvedIssues[0]!.comment.path });
@@ -388,7 +388,10 @@ export async function handleNoChangesWithVerification(
     if (!isAlreadyFixed) {
       if (unresolvedIssues.length === 1) {
         const issue = unresolvedIssues[0]!;
-        LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - Fixer made no changes: ${noChangesExplanation}`);
+        {
+          const primaryPath = getIssuePrimaryPath(issue);
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPath}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - Fixer made no changes: ${noChangesExplanation}`);
+        }
       } else {
         LessonsAPI.Add.addGlobalLesson(lessonsContext, `Fixer made no changes (${unresolvedIssues.length} issues in batch): ${noChangesExplanation}`);
       }
@@ -410,7 +413,7 @@ export async function handleNoChangesWithVerification(
           sample.map((issue, idx) => ({
             id: `issue_${idx + 1}`,
             comment: issue.comment.body,
-            filePath: issue.comment.path,
+            filePath: getIssuePrimaryPath(issue),
             line: issue.comment.line,
             codeSnippet: issue.codeSnippet,
           })),
@@ -499,14 +502,20 @@ export async function handleNoChangesWithVerification(
         const tailLesson = `Fixer made no changes. Output tail: ${preview.replace(/\n/g, ' ').substring(0, 150)}`;
         if (unresolvedIssues.length === 1) {
           const issue = unresolvedIssues[0]!;
-          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - ${tailLesson}`);
+          {
+            const primaryPath = getIssuePrimaryPath(issue);
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPath}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - ${tailLesson}`);
+          }
         } else {
           LessonsAPI.Add.addGlobalLesson(lessonsContext, tailLesson);
         }
       } else {
         if (unresolvedIssues.length === 1) {
           const issue = unresolvedIssues[0]!;
-          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - Fixer made no changes without explanation — trying different approach`);
+          {
+            const primaryPath = getIssuePrimaryPath(issue);
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPath}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - Fixer made no changes without explanation — trying different approach`);
+          }
         } else {
           LessonsAPI.Add.addGlobalLesson(lessonsContext, 'Fixer made no changes without explanation — trying different approach');
         }
@@ -514,7 +523,10 @@ export async function handleNoChangesWithVerification(
     } else {
       if (unresolvedIssues.length === 1) {
         const issue = unresolvedIssues[0]!;
-        LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - Fixer made no changes without explanation — trying different approach`);
+        {
+          const primaryPath = getIssuePrimaryPath(issue);
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPath}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - Fixer made no changes without explanation — trying different approach`);
+        }
       } else {
         LessonsAPI.Add.addGlobalLesson(lessonsContext, 'Fixer made no changes without explanation — trying different approach');
       }
@@ -555,7 +567,7 @@ async function verifyAllIssues(
     unresolvedIssues.map((issue, idx) => ({
       id: `issue_${idx + 1}`,
       comment: issue.comment.body,
-      filePath: issue.comment.path,
+      filePath: getIssuePrimaryPath(issue),
       line: issue.comment.line,
       codeSnippet: issue.codeSnippet,
     })),
@@ -575,7 +587,10 @@ async function verifyAllIssues(
       verifiedAsFixed++;
       Verification.markVerified(stateContext, issue.comment.id);
       verifiedThisSession.add(issue.comment.id);
-      console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}${issue.comment.line != null ? `:${issue.comment.line}` : ''} — ${result.explanation}`));
+      {
+        const primaryPath = getIssuePrimaryPath(issue);
+        console.log(chalk.greenBright(`    ✓ RESOLVED: ${primaryPath}${issue.comment.line != null ? `:${issue.comment.line}` : ''} — ${result.explanation}`));
+      }
     } else {
       if (result) {
         issue.verifierContradiction = result.explanation;
@@ -589,7 +604,10 @@ async function verifyAllIssues(
         const state = getState(stateContext);
         if (!state.verifierRejectionCount) state.verifierRejectionCount = {};
         state.verifierRejectionCount[issue.comment.id] = (state.verifierRejectionCount[issue.comment.id] ?? 0) + 1;
-        console.log(chalk.yellow(`    ○ Still exists: ${issue.comment.path}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - ${result.explanation}`));
+        {
+          const primaryPath = getIssuePrimaryPath(issue);
+          console.log(chalk.yellow(`    ○ Still exists: ${primaryPath}${issue.comment.line != null ? `:${issue.comment.line}` : ''} - ${result.explanation}`));
+        }
       }
       stillUnresolved.push(issue);
     }

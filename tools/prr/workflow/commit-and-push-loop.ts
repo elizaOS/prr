@@ -31,6 +31,7 @@ import type { LLMClient } from '../llm/client.js';
 import { buildCommitMessage, squashCommit, pushWithRetry } from '../../../shared/git/git-commit-index.js';
 import { runHeuristicPrediction } from './bot-prediction-heuristics.js';
 import { predictBotFeedback } from './bot-prediction-llm.js';
+import { resolveTrackedPath } from './helpers/solvability.js';
 
 /**
  * Handle commit and push after fixes are verified
@@ -86,6 +87,16 @@ export async function handleCommitAndPush(
   exitReason?: string;
   exitDetails?: string;
 }> {
+  const verifiedThisSession = stateContext.verifiedThisSession ?? new Set<string>();
+  if (verifiedThisSession.size === 0) {
+    debug('Skipping commit/push: no fixes were verified in this push iteration');
+    return {
+      shouldBreak: false,
+      exitReason: 'no_changes',
+      exitDetails: 'Worktree changed, but this push iteration produced no newly verified fixes',
+    };
+  }
+
   // Export lessons to repo BEFORE commit so they're included
   // WHY: Team gets lessons with the same push as fixes - single atomic update
   if (LessonsAPI.Retrieve.hasNewLessonsForRepo(lessonsContext)) {
@@ -174,11 +185,12 @@ export async function handleCommitAndPush(
   }
 
   const fixedIssues = comments
-    .filter((comment) => Verification.isVerified(stateContext, comment.id) && stagedSet.has(comment.path))
+    .filter((comment) => verifiedThisSession.has(comment.id) && Verification.isVerified(stateContext, comment.id))
     .map((comment) => ({
-      filePath: comment.path,
+      filePath: resolveTrackedPath(workdir, comment.path) ?? comment.path,
       comment: comment.body,
-    }));
+    }))
+    .filter((issue) => stagedSet.has(issue.filePath));
 
   const commitMsg = buildCommitMessage(fixedIssues, []);
   debug('Generated commit message', commitMsg);

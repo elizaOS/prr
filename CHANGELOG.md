@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Output.log + prompts.log follow-up: finish canonical paths, commit gating, rename targets
+
+**Canonical paths now reach cleanup / refresh / verification / commit flows**
+- `iteration-cleanup.ts`, `fix-loop-utils.ts`, `fix-verification.ts`, `no-changes-verification.ts`, `push-iteration-loop.ts`, and both commit helpers now consistently prefer the issue's canonical primary path (`resolvedPath ?? comment.path`) for file hashing, snippet refresh, dismissal records, verification failure escalation, lesson cleanup, and commit-message file matching.
+- `tools/prr/analyzer/types.ts` now exports `getIssuePrimaryPath()` so later workflow stages do not silently fall back to the raw truncated review path.
+- **WHY**: The earlier canonical-path work fixed issue creation and prompt building, but later phases still used bare review fragments like `sentry-bun.d.ts` or `test-unit-isolated.ts`. That let the fixer succeed on the real file and then crash in cleanup/commit/reporting with `fatal: pathspec ... did not match any files`.
+
+**Do not commit or push leftover workspace changes when this iteration verified nothing new**
+- `push-iteration-loop.ts` now skips the final commit/push phase when the worktree is dirty but this push iteration produced no newly verified, uncommitted fixes.
+- `commit.ts` and `commit-and-push-loop.ts` now scope commit messages to comments verified in the current session and resolve their paths against tracked files before matching them to staged files.
+- **WHY**: Output.log showed PRR skipping the fixer because everything in queue was already verified, then still creating a commit from unrelated leftover changes in the worktree. Commits must be tied to fixes actually verified in the current iteration, not whatever happens to be dirty.
+
+**Rename-target inference for test-file naming issues**
+- `prompt-builder.ts` now infers rename destinations like `foo.test.ts` from review comments, includes them in TARGET FILE(S), and ignores fake sibling matches such as bare `test.ts` extracted from phrases like "`.test.ts` extension".
+- Issue creation, batch allowed-path calculation, and single-issue prompt building now all include the inferred rename target so the fixer may rename the file instead of being trapped on the old path.
+- **WHY**: Naming comments about missing `.test.ts` suffixes were generating bogus allowlists like `.../test.ts` while rejecting the real renamed destination as disallowed. Explicit rename-target inference fixes the allowlist and removes the misleading extension fragment path.
+
+**Batch prompts must account for skipped issues explicitly**
+- Multi-issue fix prompts now instruct the fixer to emit per-issue `ISSUE N RESULT: ...` lines whenever any issue in the batch is left untouched, instead of hiding behind a batch-level `RESULT: FIXED`.
+- **WHY**: Prompts.log showed partial batch successes where one issue was silently skipped while the overall response still claimed `RESULT: FIXED`. Requiring explicit per-issue accounting makes silent skips much easier to detect and reason about.
+
 ### Added (2026-03) — Prompts.log follow-up: canonical path propagation and safer full-file rewrite escalation
 
 **Canonical path propagation into fix flows**

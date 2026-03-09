@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-05 · **Recorded cycles:** 19 · **Historical (legacy):** 4
+**Last updated:** 2026-03-05 · **Recorded cycles:** 20 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -29,6 +29,7 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **STALE vs YES (snippet)** | 12 | Verifier returns STALE when explanation is "can't evaluate", "doesn't show", "only shows" (incomplete snippet) — judge instructions say use YES. Guard: STALE→YES override for these phrasings; avoid false positives on legitimate STALE ("only shows re-export"). |
 | **Basename / fragment path** | 13 | Short or fragment paths (e.g. `10/route.ts`, `modelcontextprotocol/.../auto-top-up.ts`) resolved by basename to a *different* file with same basename → wrong content injected, S/R fails or wrong file edited. Guard: prefer basename candidate that shares path prefix with requested path; skip substitution when fragment looks like repo-root and no exact match. |
 | **Fix-in-test vs production** | 15 | Review says "fix mocks in tests" / "root cause in tests" but TARGET FILE(S) only lists production file → fixer edits production (no-op or workaround) or tries test file and is blocked. Guard: when review body indicates fix-in-test, add co-located test file to allowed paths so fixer can edit it. |
+| **Canonical path propagation / rename targets** | 19, 20 | Early phases resolve basename/truncated review paths, but later cleanup/commit/reporting paths still use raw fragments or extension words like `test.ts` → successful fixes crash on `git add`/hashing or the real rename target is blocked as disallowed. Guard: use canonical primary path everywhere after issue creation; infer explicit rename destinations for filename-review issues. |
 
 ---
 
@@ -53,6 +54,7 @@ Improvements should reinforce these, not reverse.
 | **Dismissal comments** | Skip when reason says "file no longer exists" / "file not found"; skip when file missing in workdir; post-filter comments that only restate code (e.g. "extracts metrics"). |
 | **Multi-file / call sites** | When TARGET FILE(S) has multiple files and review mentions callers (await, file:line), nudge: update implementation and every call site so signatures match. |
 | **Fix-in-test allowed path** | When review says to fix root cause in tests / update mocks (e.g. "fix logger mocks in tests" rather than workaround in production), add co-located test file to allowed paths so fixer can edit it (optional follow-up from Cycle 15). |
+| **Canonical paths / iteration commit scope** | Use canonical primary path (`resolvedPath ?? comment.path`) in cleanup, snippet refresh, verification, dismissal, and commit/reporting. Do not commit/push when the worktree is dirty but the current push iteration produced no newly verified fixes. For rename/file-naming issues, add the destination path (e.g. `foo.test.ts`) to TARGET FILE(S) instead of treating `.test.ts` as a sibling file named `test.ts`. |
 
 ---
 
@@ -97,6 +99,9 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] Diff summary capped for all batch sizes (not just ≤2 issues); filters to batch-relevant files.
 - [ ] Dismissal comments: skip when reason matches "file no longer exists" / "file not found"; skip when file missing in workdir; post-filter COMMENT that only restates code (words from comment in surroundingCode).
 - [ ] Fix-in-test: when review says "fix mocks in test" / "root cause in tests", add co-located test file to allowed paths (Cycle 15). When all S/R fail and fixer attempted a path not in allowedPaths, ensure skippedDisallowedFiles is used so wrong-file lesson/state is added (runner returns it on failure path).
+- [ ] Canonical path propagation: cleanup/hash/commit/snippet-refresh/verification-failure flows use `resolvedPath ?? comment.path`, not raw truncated review paths (Cycle 20).
+- [ ] Commit gate: if a push iteration verified no new fixes, do not create/push a commit from leftover dirty files in the worktree (Cycle 20).
+- [ ] Rename target inference: review comments about missing `.test.ts` / `.spec.ts` naming add the renamed destination to TARGET FILE(S), and sibling extraction does not hallucinate bare `test.ts` from extension prose (Cycle 20).
 
 **Output / UX / conflict**
 - [ ] Pluralize for "N file(s)" / "N fix(es)" in verification, iteration, repository, llm-api.
@@ -134,6 +139,28 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 20 — 2026-03-05 (output.log + prompts.log follow-up on pathspec crashes and partial batches)
+
+**Artifacts audited:** output.log (pathspec errors like `sentry-bun.d.ts` / `test-unit-isolated.ts`), prompts.log batch fix prompts, cleanup/verification/commit flows
+
+**Findings:**
+- **High:** Canonical-path propagation was still incomplete after Cycle 19: later cleanup/verification/commit paths could still use raw truncated review paths, so the fixer succeeded on the real file and a later `git add` / hashing / reporting step crashed on the short path.
+- **High:** PRR could skip the fixer because everything in queue was already verified, yet still create and push a commit from unrelated dirty files already present in the worktree.
+- **Medium:** Test-file naming issues were modeled as sibling-file edits (`.../test.ts`) instead of rename-target edits (`.../generate-skills-md.test.ts`), causing the real destination path to be rejected as disallowed.
+- **Medium:** Multi-issue batch prompts allowed a response to say `RESULT: FIXED` while silently skipping one issue.
+
+**Improvements implemented:**
+- Added shared `getIssuePrimaryPath()` and propagated canonical paths through iteration cleanup, snippet refresh, no-changes verification, verification failure escalation, dismissal bookkeeping, and commit-message file matching.
+- Added a commit/push gate so dirty leftover workspace changes are not committed unless the current push iteration actually produced newly verified, uncommitted fixes.
+- Added rename-target inference for `.test.ts` / `.spec.ts` naming comments and filtered out fake sibling matches like bare `test.ts` extracted from extension prose.
+- Tightened multi-issue prompts so untouched issues must be called out with `ISSUE N RESULT: ...` instead of hiding behind a batch-level success line.
+
+**Flip-flop check:** N — This continues the same direction as Cycles 15 and 19: stricter path correctness, tighter scope control, and less silent ambiguity.
+
+**Notes:** The commit gate intentionally prefers "skip commit" over guessing whether unrelated dirty files are safe to publish. That is conservative, but it prevents the higher-severity failure mode of shipping leftover workspace changes under a misleading "fixed review comments" commit.
+
+---
 
 ### Cycle 1 — 2026-03-04 (output.log + queue/verification messaging)
 

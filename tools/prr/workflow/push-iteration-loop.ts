@@ -13,7 +13,7 @@ import type { SimpleGit } from 'simple-git';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { StateContext } from '../state/state-context.js';
@@ -273,7 +273,7 @@ export async function executePushIteration(
       const reason = 'Target file could not be resolved in the repository (repeated could-not-inject + no-change cycles)';
       const dismissedIds = new Set(couldNotInjectDismiss.map((i) => i.comment.id));
       for (const issue of couldNotInjectDismiss) {
-        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'file-unchanged', issue.comment.path, issue.comment.line, issue.comment.body, undefined);
+        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'file-unchanged', getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body, undefined);
       }
       unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
       console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after ${COULD_NOT_INJECT_DISMISS_THRESHOLD}+ attempts)`));
@@ -293,7 +293,7 @@ export async function executePushIteration(
       const reason = 'Requires file deletion (use <deletefile path="..."/> or resolve manually)';
       const dismissedIds = new Set(deleteEntirelyDismiss.map((i) => i.comment.id));
       for (const issue of deleteEntirelyDismiss) {
-        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'remaining', issue.comment.path, issue.comment.line, issue.comment.body, undefined);
+        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'remaining', getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body, undefined);
       }
       unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
       console.log(chalk.yellow(`  ${formatNumber(deleteEntirelyDismiss.length)} issue(s) dismissed (requires file deletion after ${DELETE_ENTIRELY_DISMISS_THRESHOLD}+ verifier verdicts)`));
@@ -426,7 +426,7 @@ export async function executePushIteration(
       const failedFiles = new Set<string>();
       for (const issue of changedIssues) {
         if (!Verification.isVerified(stateContext, issue.comment.id)) {
-          failedFiles.add(issue.comment.path);
+          failedFiles.add(getIssuePrimaryPath(issue));
         }
       }
       if (failedFiles.size > 0) {
@@ -462,7 +462,7 @@ export async function executePushIteration(
           issue.comment.id,
           solvability.reason ?? 'Chronic failure — too many fix attempts with no success',
           'chronic-failure',
-          issue.comment.path,
+          getIssuePrimaryPath(issue),
           issue.comment.line,
           issue.comment.body
         );
@@ -473,7 +473,7 @@ export async function executePushIteration(
           issue.comment.id,
           solvability.reason ?? 'Multiple models reported already fixed — dismissing',
           'already-fixed',
-          issue.comment.path,
+          getIssuePrimaryPath(issue),
           issue.comment.line,
           issue.comment.body
         );
@@ -484,7 +484,7 @@ export async function executePushIteration(
           issue.comment.id,
           solvability.reason ?? 'Repeated failures — dismissing for human follow-up',
           'remaining',
-          issue.comment.path,
+          getIssuePrimaryPath(issue),
           issue.comment.line,
           issue.comment.body
         );
@@ -562,10 +562,17 @@ export async function executePushIteration(
 
   // Reflect mid-loop commits so orchestrator and exit summary are accurate when COMMIT PHASE has nothing left to commit.
   committedThisIteration = alreadyCommitted.size > 0;
+  const newlyVerifiedUncommitted = Array.from(verifiedThisSession).filter((id) => !alreadyCommitted.has(id));
 
   // Commit changes if we have any
   debugStep('COMMIT PHASE');
   if (await hasChanges(git)) {
+    if (newlyVerifiedUncommitted.length === 0) {
+      debug('Skipping commit/push: worktree changed but no newly verified fixes were produced in this push iteration');
+      if (alreadyCommitted.size === 0) {
+        console.log(chalk.yellow('\nSkipping commit: no newly verified fixes in this push iteration'));
+      }
+    } else {
     // After bail-out (or --no-wait-bot), skip the bot review wait so we continue
     // and pick up new bot comments when they land on the next run or iteration.
     const isBailOut = exitReason === 'bail_out';
@@ -594,6 +601,7 @@ export async function executePushIteration(
     committedThisIteration = true;
     // Invalidate analysis cache so next iteration re-analyzes with new head
     if (contexts.lastAnalysisCacheRef) contexts.lastAnalysisCacheRef.current = null;
+    }
   } else {
     if (alreadyCommitted.size === 0) {
       console.log(chalk.yellow('\nNo changes to commit'));

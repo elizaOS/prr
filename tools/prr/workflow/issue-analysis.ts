@@ -34,7 +34,7 @@ import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getPathsToDeleteFromCommentBody, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getPathsToDeleteFromCommentBody, getRenameTargetPath, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
@@ -1041,8 +1041,10 @@ export type FindUnresolvedIssuesOptions = {
 function getAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string, codeSnippet: string, explanation: string | undefined): string[] | undefined {
   const issueLike = { comment: { ...comment, path: primaryPath }, codeSnippet, stillExists: true, explanation: explanation ?? '' };
   const testPath = getTestPathForSourceFileIssue(issueLike, { forceTestPath: reviewSuggestsFixInTest(comment.body ?? '') });
-  if (!testPath) return undefined;
-  return filterAllowedPathsForFix([primaryPath, testPath]);
+  const renameTarget = getRenameTargetPath(issueLike);
+  const extraPaths = [testPath, renameTarget].filter((p): p is string => Boolean(p));
+  if (extraPaths.length === 0) return undefined;
+  return filterAllowedPathsForFix([primaryPath, ...extraPaths]);
 }
 
 /** Allowed paths for a new issue: test path when relevant, plus any paths listed in "delete/remove these files" body. */

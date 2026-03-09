@@ -12,7 +12,7 @@
 import chalk from 'chalk';
 import ora from 'ora';
 import { readFile } from 'fs/promises';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase, getState } from '../state/state-context.js';
@@ -353,6 +353,7 @@ export async function verifyFixes(
     // Mark unchanged files as failed immediately and document as dismissed
     // NOTE: No validation needed here - we're providing an explicit, meaningful reason
     for (const issue of unchangedIssues) {
+      const primaryPath = getIssuePrimaryPath(issue);
       Iterations.addVerificationResult(stateContext, issue.comment.id, {
         passed: false,
         reason: 'File was not modified',
@@ -361,7 +362,7 @@ export async function verifyFixes(
         issue.comment.id,
         'File was not modified by the fixer tool, so issue could not have been addressed',
         'file-unchanged',
-        issue.comment.path,
+        primaryPath,
         issue.comment.line,
         issue.comment.body
       );
@@ -616,10 +617,10 @@ export async function verifyFixes(
               
               // Clean up fix-attempt lessons now that the issue is resolved
               const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
-                lessonsContext, issue.comment.path, issue.comment.line
+                lessonsContext, getIssuePrimaryPath(issue), issue.comment.line
               );
               if (cleaned > 0) {
-                debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${issue.comment.path}:${issue.comment.line}`);
+                debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${getIssuePrimaryPath(issue)}:${issue.comment.line}`);
               }
               
               // Auto-verify duplicates of this canonical issue
@@ -656,10 +657,10 @@ export async function verifyFixes(
                 Iterations.addCommentToIteration(stateContext, issue.comment.id);
                 verifiedThisSession.add(issue.comment.id);
                 const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
-                  lessonsContext, issue.comment.path, issue.comment.line
+                  lessonsContext, getIssuePrimaryPath(issue), issue.comment.line
                 );
                 if (cleaned > 0) {
-                  debug(`Auto-verified (pattern absent) and cleaned ${cleaned} lesson(s) for ${issue.comment.path}:${issue.comment.line}`);
+                  debug(`Auto-verified (pattern absent) and cleaned ${cleaned} lesson(s) for ${getIssuePrimaryPath(issue)}:${issue.comment.line}`);
                 }
               } else {
                 failedCount++;
@@ -680,7 +681,7 @@ export async function verifyFixes(
                 }
                 const lesson = verification.lesson
                   || `Fix rejected: ${verification.explanation}`;
-                LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - ${lesson}`);
+                LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${getIssuePrimaryPath(issue)}:${issue.comment.line} - ${lesson}`);
               }
             }
           } else {
@@ -729,7 +730,7 @@ export async function verifyFixes(
       for (const issue of changedIssues) {
         if (verifiedThisSession.has(issue.comment.id)) {
           const line = issue.comment.line ? `:${issue.comment.line}` : '';
-          console.log(chalk.greenBright(`  │  - ${issue.comment.path}${line} ✓ fixed`));
+          console.log(chalk.greenBright(`  │  - ${getIssuePrimaryPath(issue)}${line} ✓ fixed`));
         }
       }
       if (autoVerifiedCount > 0) {
@@ -745,7 +746,7 @@ export async function verifyFixes(
   if (failedCount > 0 && verifiedCount === 0) {
     const failedByFile = new Map<string, number>();
     for (const issue of changedIssues) {
-      const path = issue.comment.path;
+      const path = getIssuePrimaryPath(issue);
       failedByFile.set(path, (failedByFile.get(path) || 0) + 1);
     }
 

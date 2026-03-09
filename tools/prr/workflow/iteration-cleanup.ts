@@ -5,7 +5,7 @@
 
 import chalk from 'chalk';
 import ora from 'ora';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase, getState } from '../state/state-context.js';
@@ -77,7 +77,7 @@ export async function handleIterationCleanup(
   // Record per-issue attempts (with file hash so chronic check only counts same-version attempts)
   const allIssuesForAttempts = [...changedIssues, ...unchangedIssues];
   const hashes = await Promise.all(
-    allIssuesForAttempts.map((i) => hashFileContent(workdir, i.comment.path))
+    allIssuesForAttempts.map((i) => hashFileContent(workdir, getIssuePrimaryPath(i)))
   );
   const commentIdToHash = new Map(
     allIssuesForAttempts.map((i, idx) => [i.comment.id, hashes[idx]])
@@ -152,10 +152,10 @@ export async function handleIterationCleanup(
       // Get issue details for meaningful commit messages
       const fixedIssueDetails = changedIssues
         .filter(issue => newlyVerified.includes(issue.comment.id))
-        .map(issue => ({ filePath: issue.comment.path, comment: issue.comment.body }));
+        .map(issue => ({ filePath: getIssuePrimaryPath(issue), comment: issue.comment.body }));
       const issuesWithIds = changedIssues
         .filter(issue => newlyVerified.includes(issue.comment.id))
-        .map(issue => ({ commentId: issue.comment.id, filePath: issue.comment.path, comment: issue.comment.body }));
+        .map(issue => ({ commentId: issue.comment.id, filePath: getIssuePrimaryPath(issue), comment: issue.comment.body }));
 
       let commitCount = 0;
       if (options.commitPerFile && newlyVerified.length > 1) {
@@ -194,6 +194,8 @@ export async function handleIterationCleanup(
           debug('Push error', { error: pushError });
         }
       }
+    } else if (await git.status().then((s) => !s.isClean()).catch(() => false)) {
+      debug('Skipping incremental commit: worktree changed but no newly verified fixes this iteration');
     }
   }
   

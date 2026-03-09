@@ -8,7 +8,7 @@ import { readFile } from 'fs/promises';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -449,6 +449,8 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
   if (referencedFull && isPathAllowedForFix(referencedFull) && !basePaths.includes(referencedFull)) basePaths = [...basePaths, referencedFull];
   const docPath = getDocumentationPathFromComment(issue);
   if (docPath && isPathAllowedForFix(docPath) && !basePaths.includes(docPath)) basePaths = [...basePaths, docPath];
+  const renameTarget = getRenameTargetPath(issue);
+  if (renameTarget && isPathAllowedForFix(renameTarget) && !basePaths.includes(renameTarget)) basePaths = [...basePaths, renameTarget];
   for (const sibling of getSiblingFilePathsFromComment(issue)) {
     if (!basePaths.includes(sibling)) basePaths = [...basePaths, sibling];
   }

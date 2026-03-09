@@ -65,6 +65,11 @@ export interface UnresolvedIssue {
   resolvedPath?: string;
 }
 
+/** Canonical primary path for an issue. Prefer resolvedPath once basename comments are expanded to a tracked repo path. */
+export function getIssuePrimaryPath(issue: Pick<UnresolvedIssue, 'resolvedPath' | 'comment'>): string {
+  return issue.resolvedPath ?? issue.comment.path;
+}
+
 export interface FixPrompt {
   prompt: string;
   summary: string;           // Short 1-line description
