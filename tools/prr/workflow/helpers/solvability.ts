@@ -34,7 +34,7 @@ const repoFilesCache = new Map<string, string[]>();
  * 2. Unique suffix match (`foo/bar.ts` or bare basename) → use that file.
  * 3. Ambiguous basename → return null rather than guessing the wrong file.
  */
-function resolveTrackedPath(workdir: string, rawPath: string): string | null {
+export function resolveTrackedPath(workdir: string, rawPath: string): string | null {
   let repoFiles = repoFilesCache.get(workdir);
   if (!repoFiles) {
     try {

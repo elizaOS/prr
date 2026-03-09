@@ -122,15 +122,16 @@ export class PRResolver {
   private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateContext, this.lessonsContext, this.runners, this.options, (runner) => this.getModelsForRunner(runner), this.workdir, this.llm); this.bailedOut = result.bailedOut; this.exitReason = result.exitReason; this.exitDetails = result.exitDetails; this.finalUnresolvedIssues = result.finalUnresolvedIssues; this.finalComments = result.finalComments; }
   private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue, options) => this.buildSingleIssuePrompt(issue, options), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength), this.config.openaiApiKey); }
   private async buildSingleIssuePrompt(issue: UnresolvedIssue, options?: { pathExists?: (path: string) => boolean }): Promise<string> {
+    const primaryPath = issue.resolvedPath ?? issue.comment.path;
     let codeSnippetOverride: string | undefined;
     if (this.stateContext.state?.widerSnippetRequestedByCommentId?.[issue.comment.id]) {
-      codeSnippetOverride = await getWiderSnippetForAnalysis(this.workdir, issue.comment.path, issue.comment.line ?? null, issue.comment.body);
+      codeSnippetOverride = await getWiderSnippetForAnalysis(this.workdir, primaryPath, issue.comment.line ?? null, issue.comment.body);
     }
     // WHY full file as default: Single-issue prompts with only 15-30 line snippets caused
     // models to respond INCOMPLETE_FILE/UNCLEAR. Full file (capped at 600 lines) gives
     // enough context for imports, types, and broader function structure.
     if (codeSnippetOverride === undefined && this.workdir) {
-      codeSnippetOverride = await getFullFileContentForSingleIssue(this.workdir, issue.comment.path) ?? undefined;
+      codeSnippetOverride = await getFullFileContentForSingleIssue(this.workdir, primaryPath) ?? undefined;
     }
     const pathExists = options?.pathExists ?? (this.workdir ? ((p: string) => existsSync(join(this.workdir, p))) : undefined);
     return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride, { pathExists });

@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-05 · **Recorded cycles:** 18 · **Historical (legacy):** 4
+**Last updated:** 2026-03-05 · **Recorded cycles:** 19 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -543,6 +543,24 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Prompt/example cleanup and stricter non-actionable filtering only; valid actionable comments still go through normal analysis.
 
 **Notes:** This does not solve the broader "tests requested but no tests added" verifier weakness; it only removes obviously non-actionable praise from the queue earlier and makes the dedup prompt internally consistent.
+
+---
+
+### Cycle 19 — 2026-03-05 (prompts.log follow-up: canonical path propagation, safer full-file rewrites)
+
+**Artifacts audited:** prompts.log and output.log from babylon PR #1207 after Cycle 18.
+
+**Findings:**
+- **Medium (M1):** Truncated-path handling was still split across phases. Solvability resolved shortened review paths early, but `allowedPaths`, single-issue prompt reads, and direct-fix file operations could still use the raw `comment.path`, so later fix flows could target or allowlist the wrong file.
+- **Low (L1):** The LLM runner could escalate a file to “output the COMPLETE fixed file” specifically because the file content was not injected into the prompt. That creates an internally contradictory prompt: rewrite the entire file without seeing the file.
+
+**Improvements implemented:**
+- **Canonical path propagation:** `issue-analysis.ts` now resolves tracked repo paths when creating `resolvedPath` and uses the canonical path when constructing `allowedPaths` for new issues. Resolver/recovery/direct-fix flows now prefer `resolvedPath` for snippet reads, full-file reads, git reset/diff/verify operations, and single-issue target display.
+- **Safer full-file rewrite escalation:** `shared/runners/llm-api.ts` now skips full-file rewrite escalation when the file was not injected into the prompt. Those cases stay in normal search/replace mode so PRR does not ask the model to guess a full file from missing context.
+
+**Flip-flop check:** N — The path change only makes later fix stages use the same canonical file chosen earlier; exact paths continue to behave the same. The rewrite change is conservative: it removes contradictory instructions rather than broadening edit scope.
+
+**Notes:** This still leaves room for a future improvement where the runner explicitly injects full content for rewrite-eligible files when prompt budget permits. For now, the main goal is consistency and avoiding self-contradictory prompts.
 
 ---
 

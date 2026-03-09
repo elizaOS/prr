@@ -115,12 +115,13 @@ export async function trySingleIssueFix(
 
   for (let i = 0; i < toTry.length; i++) {
     const issue = toTry[i];
-    console.log(chalk.cyan(`\n  [${i + 1}/${toTry.length}] Focusing on: ${issue.comment.path}:${issue.comment.line || '?'}`));
+    const primaryPath = issue.resolvedPath ?? issue.comment.path;
+    console.log(chalk.cyan(`\n  [${i + 1}/${toTry.length}] Focusing on: ${primaryPath}:${issue.comment.line || '?'}`));
     console.log(chalk.gray(`    "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
     
     try {
     // Compute allowed paths once (needed for enrichment and runner). Mirror buildSingleIssuePrompt / execute-fix-iteration so basename-collision and docs issues are allowed.
-    let allowedForIssue = issue.allowedPaths?.length ? filterAllowedPathsForFix(issue.allowedPaths) : [issue.comment.path];
+    let allowedForIssue = issue.allowedPaths?.length ? filterAllowedPathsForFix(issue.allowedPaths) : [primaryPath];
     const journalPath = getMigrationJournalPath(issue);
     if (journalPath && isPathAllowedForFix(journalPath) && !allowedForIssue.includes(journalPath)) allowedForIssue = [...allowedForIssue, journalPath];
     const consolidatePath = getConsolidateDuplicateTargetPath(issue);
@@ -149,10 +150,10 @@ export async function trySingleIssueFix(
     // diffs from a prior (reverted-but-incomplete) iteration. Other files'
     // committed changes are preserved — we only reset uncommitted modifications.
     const changedBefore = await getChangedFiles(git);
-    if (changedBefore.includes(issue.comment.path)) {
+    if (changedBefore.includes(primaryPath)) {
       try {
-        await git.checkout([issue.comment.path]);
-        debug('Reset target file before single-issue fix', { file: issue.comment.path });
+        await git.checkout([primaryPath]);
+        debug('Reset target file before single-issue fix', { file: primaryPath });
       } catch {
         // May fail for untracked files; not critical
       }
@@ -217,7 +218,7 @@ export async function trySingleIssueFix(
       });
     }
     if (result.success) {
-      const fileToVerify = changedExpected.includes(issue.comment.path) ? issue.comment.path : changedExpected[0];
+      const fileToVerify = changedExpected.includes(primaryPath) ? primaryPath : changedExpected[0];
 
       if (fileToVerify) {
         // Verify this single fix (fixer changed one of the allowed target files)
@@ -231,9 +232,9 @@ export async function trySingleIssueFix(
 
         if (verification.fixed) {
           const line = issue.comment.line ? `:${issue.comment.line}` : '';
-          console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}${line} — fixed and verified`));
+          console.log(chalk.greenBright(`    ✓ RESOLVED: ${primaryPath}${line} — fixed and verified`));
           debug('Fix verified successfully', {
-            file: issue.comment.path,
+            file: primaryPath,
             line: issue.comment.line,
             diffLength: diff.length,
           });
@@ -476,12 +477,13 @@ export async function tryDirectLLMFix(
   const resolvedWorkdir = resolve(workdir);
 
   for (const issue of issues) {
-    const filePath = join(workdir, issue.comment.path);
+    const primaryPath = issue.resolvedPath ?? issue.comment.path;
+    const filePath = join(workdir, primaryPath);
 
     // Guard against path traversal (comment.path comes from GitHub API)
     const resolvedPath = resolve(filePath);
     if (!resolvedPath.startsWith(resolvedWorkdir + sep) && resolvedPath !== resolvedWorkdir) {
-      console.log(chalk.gray(`    - Skipped ${issue.comment.path}: path outside workdir`));
+      console.log(chalk.gray(`    - Skipped ${primaryPath}: path outside workdir`));
       continue;
     }
     
@@ -489,7 +491,7 @@ export async function tryDirectLLMFix(
       // Guard against large files exceeding model context
       const stat = fs.statSync(filePath);
       if (stat.size > MAX_PROMPT_FILE_BYTES) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
+        console.log(chalk.gray(`    - Skipped ${primaryPath}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
         continue;
       }
       const fileContent = fs.readFileSync(filePath, 'utf-8');
@@ -497,7 +499,7 @@ export async function tryDirectLLMFix(
       // Skip files too large for direct LLM rewrite
       const MAX_FILE_CHARS = 100_000; // ~25K tokens
       if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${issue.comment.path}: file too large for direct LLM fix (${fileContent.length} chars)`));
+        console.log(chalk.gray(`    - Skipped ${primaryPath}: file too large for direct LLM fix (${fileContent.length} chars)`));
         continue;
       }
       
@@ -540,7 +542,7 @@ export async function tryDirectLLMFix(
         const escapedSection = escapeBackticks(section);
         prompt = `Fix this code review issue:
 
-FILE: ${issue.comment.path}
+FILE: ${primaryPath}
 ISSUE: ${cleanIssue}
 
 CODE AROUND THE ISSUE (lines ${startLine + 1}-${endLine}):
@@ -556,7 +558,7 @@ Keep all unchanged lines exactly as they are. Start your response with \`\`\` an
         const escapedContent = escapeBackticks(fileContent);
         prompt = `Fix this code review issue:
 
-FILE: ${issue.comment.path}
+FILE: ${primaryPath}
 ISSUE: ${cleanIssueFull}
 
 CURRENT CODE:
@@ -709,27 +711,27 @@ Provide the COMPLETE fixed content for ${otherFile} only. Output ONLY the code i
           fs.writeFileSync(filePath, fullFixed.trimEnd() + (hasTrailingNewline ? '\n' : ''), 'utf-8');
           
           // If file was staged for deletion, unstage it so we can add it back
-          const status = await git.status([issue.comment.path]).catch(() => null);
-          if (status?.deleted?.includes(issue.comment.path)) {
-            await git.reset(['HEAD', issue.comment.path]).catch(() => {});
+          const status = await git.status([primaryPath]).catch(() => null);
+          if (status?.deleted?.includes(primaryPath)) {
+            await git.reset(['HEAD', primaryPath]).catch(() => {});
           }
           
-          console.log(chalk.green(`    ✓ Written: ${issue.comment.path}`));
+          console.log(chalk.green(`    ✓ Written: ${primaryPath}`));
 
           // Verify the fix before counting it as successful
           // WHY: Direct LLM writes code but we need to verify it addresses the issue
           // Without this, the fix could be wrong and get undone by next fixer iteration
           setTokenPhase('Verify single fix');
-          const diff = await getDiffForFile(git, issue.comment.path);
+          const diff = await getDiffForFile(git, primaryPath);
           const verification = await llm.verifyFix(
             issue.comment.body,
-            issue.comment.path,
+            primaryPath,
             diff
           );
 
           if (verification.fixed) {
             const line = issue.comment.line ? `:${issue.comment.line}` : '';
-            console.log(chalk.greenBright(`    ✓ RESOLVED: ${issue.comment.path}${line} — fixed and verified`));
+            console.log(chalk.greenBright(`    ✓ RESOLVED: ${primaryPath}${line} — fixed and verified`));
             Verification.markVerified(stateContext, issue.comment.id);
             verifiedThisSession?.add(issue.comment.id);
             anyFixed = true;
@@ -765,16 +767,16 @@ Provide the COMPLETE fixed content for ${otherFile} only. Output ONLY the code i
 
             // Reset the file - the fix wasn't correct
             // First check if file exists in git
-            const tracked = await git.raw(['ls-files', issue.comment.path]).catch(() => '');
+            const tracked = await git.raw(['ls-files', primaryPath]).catch(() => '');
             if (tracked.trim()) {
-              await git.checkout([issue.comment.path]).catch(async (err) => {
+              await git.checkout([primaryPath]).catch(async (err) => {
                // If file is staged for deletion, unstage it first
                try {
-                 await git.reset(['HEAD', issue.comment.path]);
-                 await git.checkout([issue.comment.path]);
+                 await git.reset(['HEAD', primaryPath]);
+                 await git.checkout([primaryPath]);
                } catch (resetErr) {
                  // Only log warning when both reset and checkout fail
-                 console.log(chalk.yellow(`    Warning: Could not revert ${issue.comment.path}: ${err.message}`));
+                 console.log(chalk.yellow(`    Warning: Could not revert ${primaryPath}: ${err.message}`));
                }
              });
             } else {

@@ -336,7 +336,8 @@ export async function executeFixIteration(
   // WHY: Must mirror prompt-builder expansion (journal, consolidate-duplicate, test-impl, fix-in-test) or the
   // runner rejects edits the prompt asked for (e.g. _journal.json for Drizzle migrations) as "disallowed file".
   const allowedPathsForBatch = filterAllowedPathsForFix(Array.from(new Set(issuesForPrompt.flatMap((i) => {
-    const base = i.allowedPaths?.length ? [...i.allowedPaths] : [i.comment.path];
+    const primaryPath = i.resolvedPath ?? i.comment.path;
+    const base = i.allowedPaths?.length ? [...i.allowedPaths] : [primaryPath];
     const journal = getMigrationJournalPath(i);
     if (journal && !base.includes(journal)) base.push(journal);
     const consolidate = getConsolidateDuplicateTargetPath(i);

@@ -417,8 +417,9 @@ export function buildSingleIssuePrompt(
   codeSnippetOverride?: string | null,
   options?: { pathExists?: (path: string) => boolean }
 ): string {
+  const primaryPath = issue.resolvedPath ?? issue.comment.path;
   // Get lessons relevant to this issue only (file-scoped + path-relevant global; audit M2).
-  const lessons = LessonsAPI.Retrieve.getLessonsForSingleIssue(lessonsContext, issue.comment.path)
+  const lessons = LessonsAPI.Retrieve.getLessonsForSingleIssue(lessonsContext, primaryPath)
     .slice(-5); // Last 5 relevant lessons
   
   let prompt = `# SINGLE ISSUE FIX
@@ -439,7 +440,7 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
 `;
   }
 
-  let basePaths = issue.allowedPaths?.length ? filterAllowedPathsForFix(issue.allowedPaths) : [issue.comment.path];
+  let basePaths = issue.allowedPaths?.length ? filterAllowedPathsForFix(issue.allowedPaths) : [primaryPath];
   const journalPath = getMigrationJournalPath(issue);
   if (journalPath && isPathAllowedForFix(journalPath) && !basePaths.includes(journalPath)) basePaths = [...basePaths, journalPath];
   const consolidatePath = getConsolidateDuplicateTargetPath(issue);
@@ -463,7 +464,7 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
   if (testPath && isPathAllowedForFix(testPath) && !allowedPaths.includes(testPath)) allowedPaths = [...allowedPaths, testPath];
   allowedPaths = filterAllowedPathsForFix(allowedPaths);
   prompt += `## Issue
-**TARGET FILE(S) (you MAY edit only these files):** ${allowedPaths.join(', ')}${issue.comment.line ? ` (primary: ${issue.comment.path}:${issue.comment.line})` : ''}
+**TARGET FILE(S) (you MAY edit only these files):** ${allowedPaths.join(', ')}${issue.comment.line ? ` (primary: ${primaryPath}:${issue.comment.line})` : ''}
 Any change to a different file will be reverted and will not fix this issue.
 If the review mentions another file (e.g. "duplicates … in X" or "existing in X"), that file is only a reference — fix the issue in the TARGET file(s) above (e.g. remove the duplicate here and use the shared one). Do NOT edit the referenced file unless it is listed in TARGET FILE(S).
 ${journalPath ? `Drizzle's migration journal is the JSON file \`db/migrations/meta/_journal.json\`; add an entry there. Do not add SQL (e.g. INSERT INTO __journal) or table-based journal logic.\n` : ''}

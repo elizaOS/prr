@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Prompts.log follow-up: canonical path propagation and safer full-file rewrite escalation
+
+**Canonical path propagation into fix flows**
+- `issue-analysis.ts` now resolves truncated review paths against tracked repo files when constructing `resolvedPath`, and it uses that canonical path when building `allowedPaths` for new unresolved issues.
+- Single-issue prompt building, recovery flows, and direct-fix file reads now prefer `resolvedPath` over the raw review path when fetching snippets, reading full files, resetting files, diffing, and verifying.
+- **WHY**: Prompts.log/output.log still showed issues like `generate-skills-md.ts` entering later fix flows with the bare/truncated path even after early stale-dismissal resolution. That left prompts, allowlists, and git/file operations out of sync, so the fixer either missed the real file or had the correct file blocked as disallowed.
+
+**Skip contradictory full-file rewrite escalation when file content was not injected**
+- In `shared/runners/llm-api.ts`, files that were not injected into the prompt no longer auto-escalate to “Use `<file path=...>` to output the COMPLETE fixed file”.
+- **WHY**: Prompts.log showed PRR asking for full-file rewrites while also omitting the file content from the prompt. That is internally contradictory: the model is told to rewrite the entire file without seeing the file. Keeping those cases in search/replace mode avoids teaching the model to guess whole files from incomplete context.
+
 ### Added (2026-03) — Prompts.log follow-up: dedup prompt cleanup and stronger praise filtering
 
 **Dedup prompt examples use valid indices**

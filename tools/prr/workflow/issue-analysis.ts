@@ -58,7 +58,7 @@ import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
 import { validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
-import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { assessSolvability, resolveTrackedPath, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1037,17 +1037,17 @@ export type FindUnresolvedIssuesOptions = {
   changedFiles?: string[];
 };
 
-/** If the issue requests tests or review suggests fix-in-test (e.g. "fix mocks in tests"), return [comment.path, testPath] so allowedPaths is set at issue build. */
-function getAllowedPathsForNewIssue(comment: ReviewComment, codeSnippet: string, explanation: string | undefined): string[] | undefined {
-  const issueLike = { comment, codeSnippet, stillExists: true, explanation: explanation ?? '' };
+/** If the issue requests tests or review suggests fix-in-test (e.g. "fix mocks in tests"), return [primaryPath, testPath] so allowedPaths is set at issue build. */
+function getAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string, codeSnippet: string, explanation: string | undefined): string[] | undefined {
+  const issueLike = { comment: { ...comment, path: primaryPath }, codeSnippet, stillExists: true, explanation: explanation ?? '' };
   const testPath = getTestPathForSourceFileIssue(issueLike, { forceTestPath: reviewSuggestsFixInTest(comment.body ?? '') });
   if (!testPath) return undefined;
-  return filterAllowedPathsForFix([comment.path, testPath]);
+  return filterAllowedPathsForFix([primaryPath, testPath]);
 }
 
 /** Allowed paths for a new issue: test path when relevant, plus any paths listed in "delete/remove these files" body. */
-function getEffectiveAllowedPathsForNewIssue(comment: ReviewComment, codeSnippet: string, explanation: string | undefined): string[] {
-  const base = getAllowedPathsForNewIssue(comment, codeSnippet, explanation) ?? [comment.path];
+function getEffectiveAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string, codeSnippet: string, explanation: string | undefined): string[] {
+  const base = getAllowedPathsForNewIssue(comment, primaryPath, codeSnippet, explanation) ?? [primaryPath];
   const deletePaths = getPathsToDeleteFromCommentBody(comment.body ?? '');
   if (deletePaths.length === 0) return base;
   return filterAllowedPathsForFix([...base, ...deletePaths]);
@@ -1248,7 +1248,7 @@ export async function findUnresolvedIssues(
         'A previous fix attempt claimed to address this issue. Verify whether the current code actually resolves it before making new changes.',
       ];
     }
-    const resolvedPath = resolvePathFromDiff(comment.path, changedFiles);
+    const resolvedPath = resolvePathFromDiff(comment.path, changedFiles) ?? resolveTrackedPath(workdir, comment.path) ?? undefined;
     needSnippets.push({ comment, snippetLine, contextHints, resolvedPath });
   }
 
@@ -1439,7 +1439,7 @@ export async function findUnresolvedIssues(
         explanation: validStatus.explanation,
         triage: { importance: validStatus.importance, ease: validStatus.ease },
         mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-        allowedPaths: getEffectiveAllowedPathsForNewIssue(item.comment, item.codeSnippet, validStatus.explanation),
+        allowedPaths: getEffectiveAllowedPathsForNewIssue(item.comment, item.resolvedPath ?? item.comment.path, item.codeSnippet, validStatus.explanation),
         resolvedPath: item.resolvedPath,
       });
     } else if (validStatus && validStatus.status === 'resolved') {
@@ -1570,7 +1570,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, undefined),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
             resolvedPath,
           });
         }
@@ -1595,7 +1595,7 @@ export async function findUnresolvedIssues(
           explanation: result.explanation,
           triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, result.explanation),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, result.explanation),
           resolvedPath,
         });
       } else {
@@ -1636,7 +1636,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, undefined),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
             resolvedPath,
           });
         }
@@ -1649,12 +1649,13 @@ export async function findUnresolvedIssues(
     const batchInput = await Promise.all(
       freshToAnalyze.map(async (item, index) => {
         let codeSnippet = item.codeSnippet;
+        const primaryPath = item.resolvedPath ?? item.comment.path;
         if (isSnippetTooShort(codeSnippet)) {
-          codeSnippet = await getWiderSnippetForAnalysis(workdir, item.comment.path, item.comment.line, item.comment.body);
+          codeSnippet = await getWiderSnippetForAnalysis(workdir, primaryPath, item.comment.line, item.comment.body);
         }
         // When file was not in workdir, try reading from repo (e.g. git show HEAD:path) so verifier has context.
         if (codeSnippet === '(file not found or unreadable)' && findUnresolvedIssuesOptions?.getFileContentFromRepo) {
-          const content = await findUnresolvedIssuesOptions.getFileContentFromRepo(item.comment.path);
+          const content = await findUnresolvedIssuesOptions.getFileContentFromRepo(primaryPath);
           if (content) {
             codeSnippet = buildSnippetFromRepoContent(content, item.comment.line, item.comment.body);
           }
@@ -1662,7 +1663,7 @@ export async function findUnresolvedIssues(
         return {
           id: `issue_${index + 1}`,
           comment: sanitizeCommentForPrompt(item.comment.body),
-          filePath: item.comment.path,
+          filePath: primaryPath,
           line: item.comment.line,
           codeSnippet,
           contextHints: item.contextHints,
@@ -1854,7 +1855,7 @@ export async function findUnresolvedIssues(
           explanation: 'Unable to determine status',
           triage: { importance: 3, ease: 3 },  // Default: fallback path
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, undefined),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
           resolvedPath,
         });
         continue;
@@ -1864,9 +1865,10 @@ export async function findUnresolvedIssues(
       let effectiveResult = result;
       if (result.stale) {
         const symbols = extractSymbolsFromStaleExplanation(result.explanation);
+        const primaryPath = resolvedPath ?? comment.path;
         for (const sym of symbols) {
-          if (await fileContainsSymbol(workdir, comment.path, sym)) {
-            debug(`Post-STALE grep: "${sym}" found in ${comment.path}, overriding STALE→YES`);
+          if (await fileContainsSymbol(workdir, primaryPath, sym)) {
+            debug(`Post-STALE grep: "${sym}" found in ${primaryPath}, overriding STALE→YES`);
             effectiveResult = {
               ...result,
               stale: false,
@@ -1923,7 +1925,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
             resolvedPath,
           });
         }
@@ -1948,7 +1950,7 @@ export async function findUnresolvedIssues(
           explanation: effectiveResult.explanation,
           triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
           resolvedPath,
         });
       } else {
@@ -1989,7 +1991,7 @@ export async function findUnresolvedIssues(
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
             resolvedPath,
           });
         }

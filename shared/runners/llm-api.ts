@@ -932,6 +932,12 @@ Working directory: ${workdir}`;
           debug('Skipping escalation — file does not exist in workdir', { filePath });
           continue;
         }
+        // WHY prompts.log audit: asking for <file> full-file output when the file content was never
+        // injected creates a contradictory prompt ("rewrite the whole file" without showing the file).
+        // Be conservative: if we failed to inject the file, keep search/replace mode and let the
+        // workflow retry with a narrower prompt or better path resolution instead of forcing a guess.
+        debug('Skipping full-file rewrite — file content was not injected into prompt', { filePath });
+        continue;
       }
       if (notInjected || overThreshold) {
         // P2: Don't escalate large files to full-file rewrite when only over S/R threshold (not notInjected)
