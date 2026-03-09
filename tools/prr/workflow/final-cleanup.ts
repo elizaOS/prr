@@ -28,7 +28,9 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import type { PRInfo } from '../github/types.js';
 import { endTimer, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
+import { buildReviewSummaryMarkdown } from '../ui/reporter.js';
 import { printDebugIssueTable } from './debug-issue-table.js';
 
 /** Dedupe by (filePath, line) so remaining count matches AAR (same location = one remaining). */
@@ -76,7 +78,9 @@ export async function executeFinalCleanup(
   printHandoffPrompt: (issues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]) => void,
   printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
   printFinalSummary: (remainingCount?: number) => void,
-  ringBell: (times: number) => void
+  ringBell: (times: number) => void,
+  prInfo?: PRInfo | null,
+  submitReview?: (body: string, prInfo: PRInfo) => Promise<void>
 ): Promise<void> {
   // Final lessons export (catches any lessons from last iteration not yet committed)
   // WHY: Lessons are also exported before each commit, but this catches edge cases
@@ -138,7 +142,18 @@ export async function executeFinalCleanup(
   if (options.verbose) {
     printDebugIssueTable('final state', finalComments, stateContext, trulyUnresolved);
   }
-  
+
+  // Submit a formal Pull Request Review so PRR shows in the PR's Reviews section (GitHub reviewer UX).
+  if (!options.dryRun && prInfo && submitReview) {
+    try {
+      const body = buildReviewSummaryMarkdown(stateContext, exitReason, exitDetails, remainingCount);
+      await submitReview(body, prInfo);
+    } catch (err) {
+      // Non-fatal: review submission is a nice-to-have; don't fail the run
+      console.log(chalk.gray(`\nCould not submit PR review: ${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
+
   // Ring terminal bell to notify user completion
   // WHY: Long-running processes need audio notification when done
   if (!options.noBell) {

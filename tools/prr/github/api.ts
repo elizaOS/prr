@@ -658,6 +658,31 @@ export class GitHubAPI {
   }
 
   /**
+   * Submit a formal Pull Request Review so PRR appears in the PR's "Reviews" section
+   * (like CodeRabbit or a human reviewer), not just as issue comments.
+   *
+   * WHY: Users expect to "request PRR as a reviewer" and see a Review card; without this
+   * we only post comments and push commits. event: COMMENT = summary only (no approve/request changes).
+   */
+  async submitPullRequestReview(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT',
+    body: string
+  ): Promise<void> {
+    debug('Submitting PR review', { owner, repo, prNumber, event, bodyLength: body.length });
+    await this.octokit.pulls.createReview({
+      owner,
+      repo,
+      pull_number: prNumber,
+      event,
+      body,
+    });
+    debug('PR review submitted');
+  }
+
+  /**
    * Post a comment on a PR (issue comment, not review comment).
    */
   async postComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {

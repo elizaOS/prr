@@ -104,6 +104,8 @@ export interface RunCallbacks {
   printFinalSummary: (remainingCount?: number) => void;
   ringBell: (times: number) => void;
   runCleanupMode: (prUrl: string, owner: string, repo: string, prNumber: number) => Promise<void>;
+  /** Submit a formal PR Review so PRR appears in the Reviews section (optional). */
+  submitReview?: (body: string, prInfo: PRInfo) => Promise<void>;
 }
 
 export async function executeRun(
@@ -357,7 +359,8 @@ export async function executeRun(
     }
     
     await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsContext, state.stateContext, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
-      callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
+      callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell,
+      state.prInfo, callbacks.submitReview);
   } catch (error) {
     // Set exit reason so final summary shows the real error instead of "Interrupted or exited early".
     callbacks.syncResolverState?.({

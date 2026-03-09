@@ -183,7 +183,11 @@ export class PRResolver {
       printAfterActionReport: (issues, comments) => this.printAfterActionReport(issues, comments), 
       printFinalSummary: (remainingCount?: number) => this.printFinalSummary(remainingCount), 
       ringBell: (times) => this.ringBell(times), 
-      runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n) 
+      runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n),
+      submitReview: async (body, prInfo) => {
+        await this.github.submitPullRequestReview(prInfo.owner, prInfo.repo, prInfo.number, 'COMMENT', body);
+        await this.github.postComment(prInfo.owner, prInfo.repo, prInfo.number, body);
+      },
     };
     const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
     this.llm.setRunAbortSignal(null);

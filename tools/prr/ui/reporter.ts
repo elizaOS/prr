@@ -297,6 +297,48 @@ export function printFinalSummary(
 }
 
 /**
+ * Build markdown body for a formal Pull Request Review (so PRR shows in the Reviews section).
+ * Mirrors the RESULTS SUMMARY counts; used when submitting the review via GitHub API.
+ */
+export function buildReviewSummaryMarkdown(
+  stateContext: StateContext,
+  exitReason: string,
+  exitDetails: string | null,
+  remainingCount: number
+): string {
+  const verifiedFixed = stateContext.state?.verifiedFixed || [];
+  const allDismissed = Dismissed.getDismissedIssues(stateContext);
+  const allDismissedIds = new Set(allDismissed.map(d => d.commentId));
+  const dismissedIssues = allDismissed.filter(d => d.category !== 'exhausted' && d.category !== 'remaining');
+  const currentIds = stateContext.currentCommentIds;
+  const relevantVerified = currentIds
+    ? verifiedFixed.filter(id => currentIds.has(id) && !allDismissedIds.has(id))
+    : verifiedFixed.filter(id => !allDismissedIds.has(id));
+  const toolFixedCount = relevantVerified.length;
+  const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
+
+  const lines: string[] = ['## PRR run summary'];
+  if (exitDetails) lines.push(`**Exit:** ${exitDetails}`);
+  if (toolFixedCount > 0) {
+    let note = '';
+    if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) note = ` (${fixedThisSession} this run)`;
+    else if (fixedThisSession === 0) note = ' (from previous runs)';
+    lines.push(`- ✓ ${toolFixedCount} issue(s) fixed and verified${note}`);
+  }
+  if (dismissedIssues.length > 0) {
+    const byCategory = dismissedIssues.reduce((acc: Record<string, number>, issue) => {
+      acc[issue.category] = (acc[issue.category] || 0) + 1;
+      return acc;
+    }, {});
+    const catParts = Object.entries(byCategory).map(([c, n]) => `${n} ${c}`).join(', ');
+    lines.push(`- ○ ${dismissedIssues.length} dismissed (${catParts})`);
+  }
+  if (remainingCount === 0) lines.push('- ✓ No issues remaining');
+  else lines.push(`- ○ ${remainingCount} remaining (resolve by fix or conversation)`);
+  return lines.join('\n');
+}
+
+/**
  * Print developer handoff prompt for remaining issues.
  * Remaining = unresolved + any legacy exhausted; resolve by fix, conversation, or other means.
  */

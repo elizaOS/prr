@@ -253,16 +253,18 @@ prr https://github.com/owner/repo/pull/123 \
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 
-## GitHub Actions (manual trigger on PRs)
+## GitHub Actions (run when requested)
 
-You can run PRR from a GitHub Actions workflow that is **manually triggered** on any PR. Useful for running PRR from the Actions tab without using your local machine.
+You can run PRR from GitHub Actions **only when requested**: manually from the Actions tab or by adding the **run-prr** label on the PR.
 
 ### In this repo (PRR itself)
 
-- **From the PR:** Add the **run-prr** label to the PR. The workflow runs on that PR (no need to open the Actions tab). Create the label in the repo if it doesn’t exist yet (e.g. when adding the label, choose “Create new label” and name it `run-prr`).
+- **From the PR:** Add the **run-prr** label to run on that PR (no need to open the Actions tab). Create the label in the repo if it doesn’t exist yet (e.g. when adding the label, choose “Create new label” and name it `run-prr`).
 - **From Actions:** **Actions → Run PRR (client) → Run workflow**, then enter the PR number.
 
-The workflow runs PRR with `--no-wait-bot` (one push cycle, then exit); add the label again or re-run for another cycle.
+The workflow runs PRR with `--no-wait-bot` (one push cycle, then exit). Add the label again or re-run manually for another cycle.
+
+**PRR as a reviewer in the GitHub UI:** After each run, PRR submits a **formal Pull Request Review** (the card that appears in the PR's "Reviews" section), so PRR shows up like CodeRabbit or a human reviewer instead of only posting comments. You can also **request PRR as a reviewer**: add a bot user (or GitHub App) as a collaborator, set the workflow env `PRR_REVIEWER_LOGIN` to that bot's login (e.g. `prr-bot` or `my-app[bot]`), then when someone requests that reviewer on the PR, the workflow runs.
 
 ### In any other repo
 
@@ -277,14 +279,22 @@ on:
         description: 'PR number to run PRR on'
         required: true
         type: number
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: prr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
 jobs:
   prr:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-prr'
     uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
     with:
-      pr_number: ${{ inputs.pr_number }}
+      pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: 'OWNER/prr'
     secrets:
-      PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # caller's token, no extra secret needed
+      PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
       # or ANTHROPIC_API_KEY / OPENAI_API_KEY
 ```
@@ -299,9 +309,9 @@ Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`
   - `ANTHROPIC_API_KEY`
   - `OPENAI_API_KEY`
 
-3. **Run it**: Actions → Run PRR → Run workflow → enter the PR number.
+3. **Run it**: Add the **run-prr** label on the PR, or Actions → Run PRR → Run workflow → enter the PR number.
 
-The workflow checks out the PRR repo, builds it, and runs PRR on the given PR. It uses `--no-wait-bot` so the job exits after one push cycle (no waiting for bot re-review); you can re-run the workflow for another cycle.
+The workflow checks out the PRR repo, builds it, and runs PRR on the given PR. It uses `--no-wait-bot` so the job exits after one push cycle (no waiting for bot re-review); push again or re-run for another cycle.
 
 **Why pass the caller's token?** The job runs in the repo that triggered the workflow. Passing `PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` uses that repo's default token, so you don't create a separate PAT. PRR uses it to read the PR, post comments, and push fixes. Use a PAT only when you need cross-repo access or higher API rate limits. (GitHub doesn't allow a secret named `GITHUB_TOKEN` in reusable workflows, so we use `PRR_GITHUB_TOKEN` and map it to `GITHUB_TOKEN` inside the job.)
 

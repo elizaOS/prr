@@ -1,8 +1,11 @@
-# CLIENT: Run PRR from the Actions tab (manual + PR number) or from the PR (add label).
+# CLIENT: Run PRR only when requested — manual, label, or "request PRR as a reviewer".
 #
 # Trigger options:
 #   1. Actions → Run PRR (client) → Run workflow → enter PR number.
-#   2. On the PR: add the "run-prr" label; the workflow runs on that PR (no need to open Actions).
+#   2. On the PR: add the "run-prr" label.
+#   3. Request PRR as a reviewer: add a bot user (or GitHub App bot) as a collaborator,
+#      set PRR_REVIEWER_LOGIN to that bot's login (e.g. prr-bot or my-app[bot]), then
+#      when someone requests that reviewer on the PR, this workflow runs.
 #
 # WHY pass secrets.GITHUB_TOKEN: The job runs in this repo's context; no extra PAT needed.
 name: Run PRR (client)
@@ -15,15 +18,26 @@ on:
         required: true
         type: number
   pull_request:
-    types: [labeled]
+    types: [labeled, review_requested]
+
+concurrency:
+  group: prr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   prr:
-    # When triggered by label, only run if the label added is "run-prr".
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-prr'
+    # Run when: manual, or label "run-prr", or requested reviewer matches PRR_REVIEWER_LOGIN (set in env below).
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && (
+        (github.event.action == 'labeled' && github.event.label.name == 'run-prr') ||
+        (github.event.action == 'review_requested' && env.PRR_REVIEWER_LOGIN != '' && github.event.requested_reviewer.login == env.PRR_REVIEWER_LOGIN)
+      ))
+    env:
+      # Set to your bot's login (e.g. prr-bot or my-app[bot]) to run when that user is requested as a reviewer. Leave empty to disable.
+      PRR_REVIEWER_LOGIN: ''
     uses: ./.github/workflows/run-prr-server.yml
     with:
-      # Manual run: use input. Label run: use the PR that received the label.
       pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: ${{ github.repository }}
     secrets:
