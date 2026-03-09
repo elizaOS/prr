@@ -193,11 +193,17 @@ export function explanationHasConcreteFixEvidence(explanation: string): boolean 
  * WHY: Missing snippet context should keep an issue open, not dismiss it as stale.
  * Different models phrase this in many ways ("truncated snippet", "can't verify",
  * "current code doesn't show"), so we centralize the detection in one helper.
+ * Hedged phrasing ("suggests", "appears to") with truncated snippet/excerpt is still
+ * uncertainty, not evidence the issue is fixed or obsolete — we treat it as missing visibility.
  */
 export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
   return (
     /snippet.*(?:truncated|unavailable)/i.test(explanation) ||
     /(?:truncated|unavailable).*snippet/i.test(explanation) ||
+    /truncated snippet.*(?:suggests|appears?)/i.test(explanation) ||
+    /appears?\s+to\b.*\btruncated snippet/i.test(explanation) ||
+    // Hedged uncertainty about truncated excerpt (no "snippet"); only this branch matches so tests can pin it.
+    /truncated (?:snippet|excerpt).*(?:suggests|appears?)/i.test(explanation) ||
     /cannot verify.*(?:truncated|unavailable)/i.test(explanation) ||
     /not visible in the provided excerpt/i.test(explanation) ||
     /not (?:visible|found) in the provided .* excerpt/i.test(explanation) ||

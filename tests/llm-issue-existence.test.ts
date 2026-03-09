@@ -51,4 +51,20 @@ describe('explanationMentionsMissingCodeVisibility', () => {
       )
     ).toBe(true);
   });
+
+  it('matches hedged truncated-snippet explanations', () => {
+    expect(
+      explanationMentionsMissingCodeVisibility(
+        'The truncated snippet suggests the cleanup may happen elsewhere, but the relevant lifecycle code is not visible here.'
+      )
+    ).toBe(true);
+  });
+
+  it('matches hedged truncated-excerpt explanations (only new pattern; no "snippet" for old patterns)', () => {
+    expect(
+      explanationMentionsMissingCodeVisibility(
+        'The truncated excerpt suggests the cleanup may happen elsewhere; the relevant lifecycle code is not visible here.'
+      )
+    ).toBe(true);
+  });
 });

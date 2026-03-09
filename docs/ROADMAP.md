@@ -4,6 +4,10 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## Recently completed
 
+**Hedged visibility + weak-identifier stale retargeting (2026-03)**
+- Batch verifier now treats hedged "truncated snippet/excerpt suggests" (or "appears to") as missing-code visibility, so those verdicts keep the issue open. **WHY**: Low-confidence STALE/NO from "suggests" reasoning is uncertainty, not proof the issue is fixed or obsolete.
+- Solvability line-drift logic now ignores weak built-in/type identifiers (`BigInt`, `bigint`, `symbol`, etc.); when those are the only extracted anchors and the line is out of range, the issue stays solvable instead of being dismissed as stale. **WHY**: Using "identifier not found" for generic type names produced false stale dismissals. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Hedged visibility patterns and weak-identifier stale retargeting".
+
 **Path-resolution categories + create-file test issues (2026-03)**
 - Solvability now distinguishes `missing-file` from `path-unresolved` and carries canonical resolved paths forward instead of flattening everything into "file no longer exists." **WHY**: The same stale label was previously hiding several different failure modes: ambiguous basenames, truncated review paths, and parser leakage from summary prose.
 - Missing test/spec paths requested by review comments now stay fixable as create-file issues instead of being dismissed just because the file is absent today. **WHY**: "Add tests" often means creating the target file; treating absence as staleness was backwards for this class of issues.

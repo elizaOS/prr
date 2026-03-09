@@ -226,8 +226,14 @@ WHY: Issue ingestion is the top of the funnel. If recap prose gets turned into f
 
 **Incomplete snippet visibility is treated as "still open", not "fixed":**
 - `llm/client.ts` centralizes "I couldn't really see the code" phrasing in `explanationMentionsMissingCodeVisibility()` and applies that policy to both `NO` and `STALE` verdict overrides.
+- Hedged phrasing ("the truncated snippet suggests…", "the truncated excerpt suggests…", "appears to… truncated snippet") is also treated as missing visibility, so low-confidence STALE/NO from that wording keeps the issue open.
 
-WHY: A verifier that says "the snippet is truncated" is not providing evidence the issue is fixed. Architecture-wise, this is the same trust boundary as create-file handling: when the input context is incomplete, PRR should bias toward keeping the issue open rather than collapsing uncertainty into a resolved state.
+WHY: A verifier that says "the snippet is truncated" is not providing evidence the issue is fixed. Hedged "suggests" or "appears to" with truncated context is uncertainty, not staleness. Architecture-wise, this is the same trust boundary as create-file handling: when the input context is incomplete or uncertain, PRR should bias toward keeping the issue open rather than collapsing uncertainty into a resolved state.
+
+**Stale retargeting and weak identifiers:**
+- `workflow/helpers/solvability.ts` splits backtick-extracted identifiers into strong (e.g. function/variable names) and weak (built-ins and type names: `BigInt`, `bigint`, `symbol`, `Map`, `string`, etc.). When a comment targets a line that is out of range and the only extracted identifiers are weak, the issue remains solvable with a context hint instead of being dismissed as stale.
+
+WHY: Line-drift "identifier not found" dismissals were being driven by incidental tokens like `BigInt` that appear in many files. Weak identifiers are poor evidence that the reviewed code was removed or renamed; keeping those issues open avoids false stale dismissals.
 
 ### 4. Analyzer (`src/analyzer/`)
 

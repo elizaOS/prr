@@ -214,6 +214,34 @@ describe('non-actionable bot comment filtering', () => {
     expect(result.contextHints?.[0]).toContain('create-file issue');
   });
 
+  it('keeps line-drift issues open when the only extracted identifier is a weak built-in type', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solvability-'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+
+    const srcDir = join(dir, 'src');
+    mkdirSync(srcDir, { recursive: true });
+    writeFileSync(join(srcDir, 'types.ts'), 'export type JsonValue = string | number | boolean | null;\n', 'utf-8');
+    execFileSync('git', ['add', '.'], { cwd: dir, stdio: 'ignore' });
+
+    const stateContext = makeStateContext(dir);
+    const comment: ReviewComment = {
+      id: 'c-weak-identifier',
+      threadId: 'thread-weak-identifier',
+      author: 'Claude',
+      path: 'src/types.ts',
+      line: 97,
+      createdAt: new Date().toISOString(),
+      body: 'The `BigInt` handling path still needs coverage here.',
+    };
+
+    const result = assessSolvability(dir, comment, stateContext);
+
+    expect(result.solvable).toBe(true);
+    expect(result.dismissCategory).toBeUndefined();
+    expect(result.contextHints?.[0]).toContain('only weak built-in/type identifiers');
+  });
+
   it('categorizes ambiguous basename paths as path-unresolved', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prr-solvability-'));
     tempDirs.push(dir);

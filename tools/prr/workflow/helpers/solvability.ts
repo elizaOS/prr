@@ -387,8 +387,10 @@ export function assessSolvability(
       const lines = fileContent.split('\n');
       const totalLines = lines.length;
 
-      // Extract identifiers from comment (backtick-wrapped)
-      const identifiers = extractIdentifiers(comment.body);
+      // Extract identifiers from comment (backtick-wrapped).
+      // WHY: Weak built-in/type names like `BigInt` are poor stale-retarget anchors and
+      // should not be treated as evidence that the reviewed code disappeared.
+      const { strong: identifiers, weak: weakIdentifiers } = extractIdentifierSignals(comment.body);
 
       if (comment.line > totalLines) {
         // Line is out of range - try to re-target using identifiers
@@ -410,6 +412,14 @@ export function assessSolvability(
             };
           // Review: identifies no longer found indicates code has shifted; thus, marked as stale.
           }
+        }
+        // WHY: Only weak identifiers (e.g. BigInt, symbol) are poor evidence that code was removed; keep open.
+        if (weakIdentifiers.length > 0) {
+          const msg = `Comment targets line ${comment.line} but file only has ${totalLines} lines, and only weak built-in/type identifiers (${weakIdentifiers.join(', ')}) were extracted — keep the issue open for broader analysis instead of dismissing as stale`;
+          return {
+            solvable: true,
+            contextHints: [msg],
+          };
         }
         // No identifiers to re-target with - mark as stale
         const msg = `File has ${totalLines} lines but comment targets line ${comment.line} — code location may have shifted and no identifiers found to re-target`;
@@ -536,17 +546,55 @@ export function assessSolvability(
 }
 
 /**
- * Extract identifiers from comment body (backtick-wrapped).
- * Example: "The `processUser` function needs..." => ["processUser"]
+ * Built-in and type names that are poor anchors for stale retargeting.
+ * WHY: When the only backtick-wrapped token in a comment is e.g. `BigInt` or `symbol`,
+ * "identifier not found" does not imply the reviewed code disappeared — these appear
+ * in many files and are weak evidence for dismissing as stale. We keep the issue open instead.
  */
-export function extractIdentifiers(commentBody: string): string[] {
+const WEAK_RETARGET_IDENTIFIERS = new Set([
+  'Array',
+  'BigInt',
+  'Boolean',
+  'Date',
+  'Error',
+  'Function',
+  'Map',
+  'Number',
+  'Object',
+  'Promise',
+  'RegExp',
+  'Set',
+  'String',
+  'Symbol',
+  'Uint8Array',
+  'boolean',
+  'bigint',
+  'number',
+  'object',
+  'string',
+  'symbol',
+  'unknown',
+  'void',
+]);
+
+function extractIdentifierSignals(commentBody: string): { strong: string[]; weak: string[] } {
   const identPattern = /`(\w+)`/g;
-  const matches: string[] = [];
+  const strong: string[] = [];
+  const weak: string[] = [];
   let match;
   while ((match = identPattern.exec(commentBody)) !== null) {
-    matches.push(match[1]);
+    const identifier = match[1];
+    if (WEAK_RETARGET_IDENTIFIERS.has(identifier)) {
+      weak.push(identifier);
+    } else {
+      strong.push(identifier);
+    }
   }
-  return matches;
+  return { strong, weak };
+}
+
+export function extractIdentifiers(commentBody: string): string[] {
+  return extractIdentifierSignals(commentBody).strong;
 }
 
 /**

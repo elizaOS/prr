@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Hedged visibility patterns and weak-identifier stale retargeting
+
+**Hedged “truncated snippet/excerpt” explanations keep issues open**
+- `tools/prr/llm/client.ts` now treats explanations that hedge on truncated context (e.g. “the truncated snippet suggests…”, “appears to… truncated snippet”, “the truncated excerpt suggests…”) as missing-code visibility, so those verdicts are overridden to keep the issue open instead of accepting low-confidence STALE/NO.
+- A dedicated pattern for “truncated excerpt” (without “snippet”) allows tests to pin this behavior without overlapping older snippet-only patterns.
+- **WHY**: Audits showed STALE dismissals driven by “truncated snippet suggests…”-style reasoning, which is uncertainty rather than true staleness. Treating hedged language as “I couldn’t see enough” keeps PRR conservative and avoids false dismissals.
+
+**Stale retargeting ignores weak built-in/type identifiers**
+- `tools/prr/workflow/helpers/solvability.ts` now splits backtick-extracted identifiers into “strong” (e.g. function/var names) and “weak” (built-ins and type names such as `BigInt`, `bigint`, `symbol`, `Map`, `string`). When a comment’s line is out of range and the only extracted identifiers are weak, PRR keeps the issue solvable with a context hint instead of dismissing as stale.
+- **WHY**: Line-drift stale cases were being driven by incidental tokens like `BigInt` that appear in many files; using them as “identifier not found” evidence produced incorrect stale dismissals. Weak identifiers are poor anchors for “code moved or was removed.”
+
+**Targeted tests**
+- `tests/llm-issue-existence.test.ts` covers hedged truncated-snippet and truncated-excerpt explanations.
+- `tests/non-actionable-comments.test.ts` covers line-drift with only weak identifiers (e.g. `BigInt`) remaining open.
+
 ### Added (2026-03) — Path-resolution categories, create-file test issues, and recap-comment filtering
 
 **Path resolution now distinguishes missing files from unresolved paths**
