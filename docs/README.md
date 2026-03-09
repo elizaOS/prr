@@ -43,6 +43,11 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 ### 📉 Audit Improvements
 Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANGELOG](../CHANGELOG.md) under "Audit improvements" and "Output.log audit" headings.
 
+**Conservative verification for lifecycle/cache/leak issues (2026-03)**:
+- Lifecycle comments now receive broader symbol-lifecycle verification context rather than a tiny line-anchored snippet, and they are verified with the stronger lane when available.
+- The risky "pattern absent after N rejections" auto-pass is disabled for these issues.
+- **WHY**: Cleanup and leak bugs often live in distant creation/replacement/cleanup paths. A local snippet can look correct while the real leak still exists elsewhere in the file. PRR now prefers leaving those issues open over claiming a premature fix.
+
 **Output.log audit follow-up (2026-02)** — rebase detection, push retry, non-interactive rebase:
 - **Rebase detection**: `completeMerge` and the pull conflict loop use `--show-toplevel` to get the repo root so `.git/rebase-merge` is checked with an absolute path. **WHY**: Relative `.git` was resolved against process cwd, not the PRR workdir, so we often ran `commit` during a rebase and left `.git/rebase-merge` behind.
 - **Push retry cleanup**: On failed fetch+rebase after push rejection, we try `rebase --abort` first, then `cleanupGitState` only if abort fails. **WHY**: Abort keeps commits; full cleanup is for stale state so the next run doesn’t hit "rebase-merge directory already exists".
@@ -69,8 +74,57 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 - **Judge rule**: Verification prompt now says "If the Current Code already implements what the review asks for, respond NO and cite the specific code." **WHY**: Reduces unnecessary ALREADY_FIXED fix attempts when the judge would otherwise say YES.
 - **Model recommendation wording**: Prompt asks "explain why these models in this order" instead of "brief reasoning". **WHY**: Models echoed "brief reasoning" literally; the new wording yields actionable explanation.
 
+**Prompts.log audit (2026-03) — grouping validation and predict-bots guard:**
+- **Dedup GROUP validation**: `issue-analysis.ts` now rejects an entire `GROUP:` line when any referenced comment index is outside `1..N` or when the canonical index is not listed in that group. **WHY**: One dedup response returned `GROUP: 2,5,7` for only three comments; partially applying malformed groups risks merging the wrong issues.
+- **Dedup prompt tightening**: The dedup prompt now explicitly says valid indices are only `1..N` for the current file and that the canonical index must be one of the listed indices. **WHY**: Tightening the prompt reduces malformed grouping responses before they hit the parser.
+- **Predict-bots changed-files guard**: `bot-prediction-llm.ts` skips the display-only predictor for tiny meta-only diffs and filters predictions to files that are actually in `changedFiles`. **WHY**: The predictor hallucinated `scripts/build-skills-docs.js` from a `.gitignore`-only diff; changed-file filtering keeps the UX output grounded in the commit being pushed.
+
+**Prompts.log audit (2026-02) — verifier before snippet, model rec skip, no-op skip verify, escalation delay, predict-bots skip:**
+- **Verifier "Code before fix"**: Batch verification prompt now includes a "Code before fix" section (removed lines from the diff) alongside "Current Code (AFTER)" so the verifier can compare before vs after. **WHY**: Verifier was only seeing post-fix code; with before snippet it can determine whether the issue was actually fixed and reduce false rejections (audit: one correct fix took 17 iterations due to verifier rejections).
+- **Skip model recommendation for fewer than 3 issues**: The separate model-recommendation LLM call runs only when there are 3+ unresolved issues; otherwise we use default rotation. **WHY**: Saves ~29s and tokens on simple runs.
+- **All-no-op = no changes**: When every fixer change block was a no-op (search === replace), we treat the iteration as "no changes" and skip verification (runner returns `noMeaningfulChanges`; workflow skips `handleNoChangesWithVerification` and goes to rotation). **WHY**: Avoids running the verifier on unchanged code and keeps "file modified" accurate.
+- **Delay full-file escalation for simple issues**: For files where all targeting issues have importance ≤ 3 and ease ≤ 2, we only escalate to full-file rewrite when the file was not injected (not when over S/R failure threshold). **WHY**: Full-file rewrites are expensive and time out more; for simple issues we rely on S/R first.
+- **Skip predict-bots when --no-wait-bot**: The LLM "likely new bot feedback" prediction is skipped when `--no-wait-bot` is set. **WHY**: Prediction is display-only and runs after commit; skipping saves ~26s when the user isn't waiting for bot reviews.
+
+**Fetch timeout and token auth (2026-03)** — conflict check and pull no longer hang:
+- **Fetch via spawn with 60s timeout**: Conflict check and remote-ahead check run `git fetch` via spawn; on timeout the error includes git stdout/stderr (e.g. password prompt). **WHY**: simple-git fetch could hang indefinitely; timeout + output make credential/network issues obvious.
+- **GitHub token for fetch/pull**: When `origin` is HTTPS with no credentials, we use a one-shot auth URL (same as push) so fetch and pull never prompt for password. **WHY**: Headless runs have no TTY; token from config unblocks setup and fix-loop sync. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Git fetch: timeout, stdout on timeout, GitHub token auth".
+
+**CLAUDE.md / sync target fix (2026-03)** — do not delete repo-owned files:
+- **Sync target state in setWorkdir**: `setWorkdir` in `tools/prr/state/lessons-context.ts` now uses `Detect.autoDetectSyncTargets(ctx)` so both `syncTargets` and `originalSyncTargetState` are set. **WHY**: A local helper previously only set `syncTargets`; cleanup uses `didSyncTargetExist(ctx, 'claude-md')` to decide whether to remove CLAUDE.md — with an empty `originalSyncTargetState` we always assumed we had created it and deleted it at end of run, nuking the repo's CLAUDE.md when the user never ran `--clean-claude-md`.
+- **Re-detect after clone**: In `tools/prr/workflow/run-setup-phase.ts`, after `cloneOrUpdateRepository()` we call `LessonsAPI.Detect.autoDetectSyncTargets(lessonsContext)` again. **WHY**: On first run the workdir is empty when we set workdir and detect; clone runs later and may check out CLAUDE.md. Without re-detection we would still record "didn't exist" and delete it at final cleanup. Re-running after clone ensures we only remove sync targets we actually created this run.
+
+**Output.log audit follow-up (2026-03)** — allowed paths, CodeRabbit meta, (PR comment):
+- **Runner allowed paths**: In `tools/prr/workflow/execute-fix-iteration.ts`, `allowedPathsForBatch` is built by expanding each issue with `getMigrationJournalPath`, `getConsolidateDuplicateTargetPath`, and `getImplPathForTestFileIssue` (same as prompt-builder). **WHY**: The prompt asked the fixer to edit e.g. `db/migrations/meta/_journal.json` for Drizzle migration issues, but the runner's allow-list used only `issue.allowedPaths`/`comment.path`, so journal edits were rejected as "disallowed file" and fixes never applied.
+- **CodeRabbit meta comments**: `isCodeRabbitMetaComment` in `tools/prr/github/api.ts` now matches `<!-- This is an auto-generated reply` and `✅ Actions performed`; the same filter is applied to issue comments so those blurbs are not treated as fixable. **WHY**: CodeRabbit's confirmation blurb is not a code review; sending it to the fix loop wasted iterations and produced only UNCLEAR/WRONG_LOCATION.
+- **(PR comment) dismissal**: In `tools/prr/workflow/helpers/solvability.ts`, issues whose path is the synthetic `(PR comment)` are dismissed as `not-an-issue` before any LLM call. **WHY**: The fixer cannot edit a non-file; every attempt fails and burns iterations.
+
+**Prompts.log audit: ALREADY_FIXED counter, batch injection, single-issue full file, verifier context (2026-03)** — P1/P3/P5/P7:
+- **ALREADY_FIXED multi-model dismissal (P1)**: New `consecutiveAlreadyFixedAnyByCommentId` counter in `tools/prr/state/types.ts`. Incremented in `no-changes-verification.ts` on every ALREADY_FIXED result; reset in `execute-fix-iteration.ts` when fixer makes changes and in `iteration-cleanup.ts` when verified. When count reaches `ALREADY_FIXED_ANY_THRESHOLD` (3), issue is dismissed. `assessSolvability` also checks the counter. **WHY**: The existing same-explanation counter only fired when explanation text matched. When 3+ different models independently say ALREADY_FIXED (with varying explanations), the issue is almost certainly resolved. Saves 3-5 wasted fix iterations per issue.
+- **Batch injection filter (P3)**: New `allowedPathsForInjection` on `RunnerOptions` in `shared/runners/types.ts`. `injectFileContents` in `shared/runners/llm-api.ts` filters `sortedPaths` to the allowed set. `execute-fix-iteration.ts` passes `allowedPathsForBatch` as the filter. **WHY**: In later fix rounds, many files are already fixed. Injecting their contents wastes context budget. Filtering to files with unfixed issues keeps the prompt focused — observed 40-60% reduction in injected content on rounds 2+.
+- **Single-issue full file context (P5)**: New `getFullFileContentForSingleIssue(workdir, path, maxLines=600)` in `tools/prr/workflow/utils.ts`. Used as default `codeSnippetOverride` in `resolver.ts` `buildSingleIssuePrompt`. **WHY**: Single-issue prompts were sending only 15-30 line snippets. Models responded INCOMPLETE_FILE/UNCLEAR because they couldn't see imports, types, or broader context. Full file (capped at 600 lines) gives enough context for correct fixes.
+- **Verifier expanded context for type/signature issues (P7)**: New `commentMentionsApiOrSignature(fix)` in `tools/prr/workflow/fix-verification.ts`. `getCurrentCodeAtLine` accepts `expandForTypeSignature` flag, returning up to 500 lines (vs 200). Both sequential and batch verification pass the flag. **WHY**: For type/signature issues, the verifier needs to see function bodies and call sites. The 200-line default caused false "never assigned" rejections. 500 lines covers most function bodies and immediate call sites.
+
+**Comment parsing: parse all bot comments, noise filter, path-less gap (2026-03)**:
+- **Bot noise filter**: New `isBotNoiseComment(body)` in `tools/prr/github/api.ts` filters comments < 60 chars, "IGNORE THIS", and bare trigger commands before parsing. **WHY**: When parsing ALL bot comments, noise pollutes the issue list. The 60-char threshold is conservative — real reviews are always longer.
+- **Parse all bot comments**: `getReviewBotIssueComments` iterates ALL comments from known bots, not just the latest. Sort removed; unique IDs per comment (`ic-${comment.id}-${i}`). Non-structured comments fall back to `inferPathLineFromBody`. **WHY**: Previously only the latest comment per bot was parsed, missing issues from earlier reviews that were never re-posted. Zero missed issues is the goal.
+- **Path-less items included**: `parseMarkdownReviewIssues` no longer drops items without file paths. Items >= 100 chars with actionable language get `path: '(PR comment)'`. Downstream `assessSolvability` dismisses at zero LLM cost. **WHY**: Some bot comments describe real issues without citing a file. Including them lets solvability decide; the 100-char minimum and actionable regex filter noise.
+
+**Output.log + prompts.log audit (2026-03) — Cycle 12: in-loop dismissal, new-comment solvability, ALREADY_FIXED filter, STALE→YES**
+- **couldNotInject in-loop**: In `tools/prr/workflow/push-iteration-loop.ts`, at the start of each fix iteration we filter `unresolvedIssues` by `couldNotInjectCountByCommentId >= COULD_NOT_INJECT_DISMISS_THRESHOLD`, dismiss those issues, remove them from the queue, and if the queue is empty set `allFixed` and break. **WHY**: The threshold was only checked in `findUnresolvedIssues` (push-iteration start). Inside the fix loop the same issues were retried 10+ times; applying the check every iteration stops the loop (output.log audit).
+- **New-comment solvability (P1)**: `processNewBotReviews` in `tools/prr/workflow/fix-loop-utils.ts` accepts optional `workdir` and `stateContext`. When both are set, each new comment is run through `assessSolvability` before adding; unsolvable (e.g. (PR comment), lockfile) are dismissed. Dismissed and solvable comment IDs are added to `existingCommentIds` before the solvability loop so they are not re-fetched. **WHY**: New comments were added without solvability, so (PR comment) and other unfixable paths entered the queue and burned iterations (prompts.log audit).
+- **ALREADY_FIXED batch filter (P3)**: In `tools/prr/workflow/execute-fix-iteration.ts`, `issuesForPrompt` excludes issues with `consecutiveAlreadyFixedAnyByCommentId >= 2` in addition to already-verified. **WHY**: Batch prompts were re-including issues the fixer had already said ALREADY_FIXED 2×; excluding them avoids re-sending until dismissal at 3× (prompts.log audit).
+- **STALE→YES override (P2)**: In `tools/prr/llm/client.ts`, the override that flips STALE to YES when the explanation indicates "code not visible" now also matches "can't evaluate", "cannot assess/determine/verify", "(code|snippet|excerpt) doesn't show", "only shows" + (not|beginning|start|first|lines N), "incomplete" + (show|visible|implementation), and "not visible/shown/included in excerpt/code/snippet". "only shows" is tightened so legitimate STALE (e.g. "only shows re-export") is not flipped. **WHY**: Judge instructions say use YES when you would say "not in excerpt"; the verifier used different phrasings, causing false STALE dismissals (prompts.log audit).
+
+**Prompts.log audit: dedup, verifier strength, dismissal comments, multi-file (2026-03)** — Cycle 10:
+- **Dismissal skip when file no longer exists**: In `tools/prr/workflow/dismissal-comments.ts`, we filter out issues whose dismissal reason matches "file no longer exists" / "file not found" before building the commentable list. **WHY**: Audit showed a dismissal-comment prompt sent for a file with reason "File no longer exists: stores/task.store.ts"; the LLM was asked to write a comment in a missing file, wasting tokens and producing a comment that would never be inserted.
+- **Post-filter generic dismissal comments**: In `tools/prr/llm/client.ts` (`generateDismissalComment`), after parsing `COMMENT: Note: ...` we check if the comment mostly restates the surrounding code (2–8 words, ≥2 words appear in code); if so we return `needed: false`. **WHY**: gpt-4o-mini often produced comments like "extracts relevant metrics" that only narrate the code; they add no value and we skip inserting them.
+- **Heuristic dedup same-caller**: In `tools/prr/workflow/issue-analysis.ts`, `callerFileFromBody(body)` extracts a caller file (e.g. "runner.py:146", "in runner.py"); heuristic dedup now merges two comments on the same file when they share the same primary symbol and the same caller file, even when authors differ. **WHY**: Audit showed dedup returning NONE for four comments; cursor and claude both described the same async/caller mismatch but weren't grouped, so duplicate issues reached the fix prompt.
+- **Multi-file nudge**: In `tools/prr/analyzer/prompt-builder.ts`, when TARGET FILE(S) has multiple files and the review body mentions callers (calls, caller, await, file:line), we add: "This issue requires changes in **all** listed files — update the implementation and every call site so signatures match." **WHY**: The fixer had updated only reporting.py while runner.py was in TARGET FILE(S); the verifier correctly rejected because the call site wasn't updated; the nudge reduces incomplete multi-file fixes.
+- **Verifier model floor for API/signature fixes**: In `tools/prr/workflow/fix-verification.ts`, `commentMentionsApiOrSignature(fix)` detects async/await, signature/caller/TypeError, method accepts/takes; such fixes are verified with a stronger model when available. **WHY**: The default verifier (e.g. qwen-3-14b) approved a fix that missed the call-site update (print_results still calling generate_report() without await/args); stronger verifier for API-related fixes reduces "fixed then broken at call site".
+
 **Security & cleanup (2026-02)** — credential redaction, worktree, conflict-resolve, commit:
-- **Credential redaction**: All push and rebase error/debug logs in `git-push.ts` use `redactUrlCredentials()` so `https://token@...` is never logged. **WHY**: Git stderr and error messages can contain remote URLs with tokens; redacting prevents credential leakage.
+- **Credential redaction**: All push and rebase error/debug logs in `git-push.ts` use `redactUrlCredentials()` so `https://token@...` is never logged; same redaction is used for fetch timeout/error output in `git-conflicts.ts`. **WHY**: Git stderr and error messages can contain remote URLs with tokens; redacting prevents credential leakage.
 - **Worktree rebase detection**: `getResolvedGitDir(git)` in git-merge.ts resolves the real git dir when `.git` is a file (worktree); used by `completeMerge` and the pull conflict loop in repository.ts. **WHY**: In worktrees the rebase-merge check would otherwise fail; one shared helper keeps behavior correct and consistent.
 - **Sync target log**: "Removed sync target created by prr" is logged only when `git.rm` or fallback `git.add` succeeds. **WHY**: Avoids reporting success when both failed.
 - **commit.ts**: Duplicate broken push/pushWithRetry code removed; file re-exports from git-push.ts. **WHY**: Single source of truth; fixes parse errors from mangled duplicate.
@@ -446,16 +500,25 @@ If you find errors or want to improve documentation:
 │   ├── 📄 MODELS.md              ← Claude & OpenAI models reference
 │   └── 📄 ARCHITECTURE.md        ← Technical deep-dive
 │
-├── 📁 src/                       ← Source code
+├── 📁 shared/                    ← Shared library (constants, runners, git, logger)
+│   ├── 📄 constants.ts           ← Global thresholds and limits
+│   ├── 📁 runners/               ← AI tool integrations (llm-api, cursor, etc.)
+│   ├── 📁 git/                   ← Git operations
+│   └── 📄 logger.ts              ← Logging utilities
+│
+├── 📁 tools/prr/                 ← PRR tool source code
 │   ├── 📄 index.ts               ← Entry point
 │   ├── 📄 resolver.ts            ← Main orchestrator
 │   ├── 📁 workflow/              ← Workflow modules
 │   ├── 📁 state/                 ← State management
-│   ├── 📁 runners/               ← AI tool integrations
 │   ├── 📁 llm/                   ← LLM client
-│   ├── 📁 github/                ← GitHub API
-│   ├── 📁 git/                   ← Git operations
+│   ├── 📁 github/                ← GitHub API & comment parsing
+│   ├── 📁 analyzer/              ← Issue analysis & prompt building
 │   └── ...
+│
+├── 📁 tools/pill/                ← Pill tool source code
+│
+├── 📁 types/                     ← Shared type definitions
 │
 └── 📁 tests/                     ← Test files
 ```
@@ -504,4 +567,4 @@ These docs explain **how** the cat works its magic. Happy reading! 📚
 
 ---
 
-**Last Updated**: 2026-02-25
+**Last Updated**: 2026-03-03

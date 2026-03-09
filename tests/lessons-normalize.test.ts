@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { LessonsManager } from '../src/state/lessons';
+import { LessonsManager } from '../tools/prr/state/lessons.js';
 import * as fs from 'fs';
 import * as path from 'path';
 

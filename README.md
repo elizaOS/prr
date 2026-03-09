@@ -25,6 +25,14 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 **AI talking to AI, supervised by humans**: Modern PRs often involve bot reviewers (CodeRabbit, Copilot, etc.) that leave dozens of comments. Instead of manually addressing each one, let prr's AI negotiate with the reviewer AI while you focus on what matters. You can always interrupt, inspect, and override.
 
+**Safe over sorry verification**: When PRR is unsure whether a fix really covers a lifecycle, cache, cleanup, or multi-path issue, it should keep the issue open instead of optimistically marking it fixed.
+
+**WHY**: False negatives cost another pass. False positives hide real bugs, create misleading "all fixed" states, and make PR threads look cleaner than the code really is.
+
+**Visible decisions over hidden confidence**: In verbose runs, PRR should show the actual per-comment decisions it is using internally, not just aggregate counts or a final "done" message.
+
+**WHY**: When the PR still shows open comments, operators need to compare PRR's internal state with the GitHub conversation directly. A readable issue table makes classification mistakes obvious and auditable.
+
 **Philosophy in practice**:
 - Run prr on a specific PR (you choose)
 - Watch it work, interrupt with Ctrl+C anytime
@@ -35,9 +43,14 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ### Core Loop
 - Fetches review comments from PRs (humans, bots, or any reviewer)
+- **Parses all bot comments**: Reads every comment from known review bots (not just the latest), with noise filtering and path-less issue recovery. *Why*: Bots may post multiple comments across re-reviews; parsing only the latest missed issues from earlier reviews.
 - Uses LLM to detect which issues still exist in the code
+- **Conservative issue detection for distributed bugs**: Lifecycle/cache/leak comments and ordering/history comments now get broader analysis context before PRR decides they are already fixed. *Why*: Some bugs live across declaration, usage, cleanup, and trimming sites; a narrow anchor snippet can make a real issue look resolved.
+- **Path-resolution categories instead of blanket stale dismissals**: PRR now distinguishes `missing-file` from `path-unresolved`, and carries canonical resolved paths forward when a review cites a basename or truncated path. *Why*: "File no longer exists" was previously hiding very different root causes such as ambiguous basenames, summary-table leakage, and path fragments that only needed repo-path expansion.
+- **Shared test-path inference**: Prompt building, create-file solvability, and retries now reuse the same test-target inference helper instead of maintaining slightly different regex copies. *Why*: When those phases drift, PRR can decide one test file should be created while another phase allows or explains a different one.
 - Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - Verifies fixes with LLM to prevent false positives
+- **Debug issue table**: Verbose mode prints a human-readable per-comment table after analysis and again at exit. *Why*: This exposes the exact `open` / `dismissed/<category>` / `verified` decision PRR is using so you can compare it with the PR thread list.
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
 
 ### Smart Retry Strategies
@@ -48,6 +61,15 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Duplicate prompt skip**: When the same set of issue IDs and lesson count is sent to the same model again, we skip the fixer and rotate to the next model. *Why*: Full-prompt hashes rarely matched; hashing issue IDs + lesson count detects same-issues-same-context and avoids redundant LLM calls.
 - **Proportional batch reduce**: When the fix prompt exceeds the context cap, batch size is reduced proportionally (cap/promptLength) instead of halving. *Why*: Halving wasted iterations when only slightly over cap; proportional reduction converges in 1–2 steps.
 - **Rotation reset per push iteration**: At the start of each push cycle (after the first), the model index resets to the first model so each cycle gets a "best model first" attempt instead of continuing from where the previous cycle left off. *Why*: Later push iterations were reusing the last model from the previous cycle (often one that had just 500'd or timed out), wasting time.
+- **ALREADY_FIXED multi-model dismissal**: When 3+ consecutive models return ALREADY_FIXED for the same issue (any explanation), dismiss as already-fixed. Counter resets when the fixer makes changes or the issue is verified. *Why*: The existing same-explanation counter only fired when explanation text matched; a separate any-explanation counter catches the broader pattern where multiple models independently agree the issue is resolved.
+- **couldNotInject in-loop dismissal**: At the start of each fix iteration, issues that have hit the could-not-inject threshold (file not in repo + no-change cycles) are dismissed and removed from the queue; if the queue is empty afterward, the run exits as all fixed. *Why*: The threshold was only checked at push-iteration start; inside the fix loop the same issues were retried 10+ times (output.log audit). Applying the check every iteration stops the loop.
+- **Solvability for new comments**: When new bot comments arrive mid-fix-loop, they are run through the same solvability check (e.g. (PR comment), lockfiles) before being added to the queue; unsolvable ones are dismissed and not sent to the fixer. *Why*: New comments were previously added without solvability, so (PR comment) and other unfixable paths entered the queue and burned iterations (prompts.log audit).
+- **Missing test files stay actionable**: If a review asks for a test/spec file that does not exist yet, PRR keeps that issue open as a create-file target instead of dismissing it as stale. *Why*: For missing-test comments, non-existence is often the thing the fixer is supposed to change.
+- **Coverage-only wording on explicit test files stays in create-file flow**: If the review path already points at a missing `*.test.ts` file, PRR preserves that path even when the body says "coverage is missing here" instead of repeating "add tests". *Why*: The path itself is already strong evidence that the requested fix is to create or fill in that test file.
+- **ALREADY_FIXED batch filter**: Issues the fixer has already said ALREADY_FIXED 2+ times are excluded from the next batch fix prompt (they are still dismissed at 3× by the existing counter). *Why*: Batch prompts were re-including those issues and the fixer would again return ALREADY_FIXED, wasting large prompts (prompts.log audit).
+- **STALE→YES override (snippet not visible)**: When the batch verifier returns STALE but the explanation says "can't evaluate", "doesn't show", "only shows the beginning", or "incomplete", we override to YES so the issue is not falsely dismissed. *Why*: Judge instructions say use YES when code is not visible; the verifier often used different phrasings, causing 48 false STALE verdicts in one audit.
+- **Hedged visibility (truncated snippet/excerpt suggests)**: Explanations that hedge on truncated context (e.g. "the truncated snippet suggests…", "the truncated excerpt suggests…") are treated as missing-code visibility, so we keep the issue open instead of accepting low-confidence STALE/NO. *Why*: "Suggests" or "appears to" with truncated context is uncertainty, not evidence the issue is fixed or obsolete.
+- **Weak-identifier stale retargeting**: When a comment's line is out of range and the only backtick-extracted tokens are built-in/type names (e.g. `BigInt`, `symbol`, `Map`), PRR keeps the issue solvable with a context hint instead of dismissing as stale. *Why*: Those tokens are poor anchors; using "identifier not found" for them produced incorrect stale dismissals.
 - **Single-issue focus mode**: When batch fixes fail, tries one issue at a time with randomization
 - **Dynamic model discovery**: Auto-detects available models for each fixer tool
 - **Stalemate detection & bail-out**: Detects when agents disagree, bails out after N cycles with zero progress
@@ -62,7 +84,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
 - **Conflict prompt injection skip**: File-content injection is skipped for conflict-resolution prompts. *Why*: The conflict prompt already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), blow prompt size, and cause 504s.
 - **Large conflicted files (chunked embed)**: For files over ~30k chars with conflicts, only the conflict sections (with context) are embedded in the prompt, not the full file. *Why*: Full-file embed doubles prompt size and causes 504s; sections are enough for correct `<search>`/`<replace>` output.
-- **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication
+- **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication; fetch and pull also use the token when the remote has no credentials (one-shot auth URL), so "Checking for conflicts" and pull never hang on a password prompt. **Why:** Repos cloned without token in the URL would otherwise block during fetch with no visible output; timeout + token fix it (see CHANGELOG).
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
 
@@ -75,15 +97,30 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Skip dismissal LLM for already-fixed**: We no longer call the LLM to generate a Note for issues dismissed as already-fixed; code/diff is self-documenting. *Why*: Audit showed 62% of dismissal LLM responses were EXISTING; skipping saves tokens.
 - **Relax file constraint on retry**: When the fixer returns CANNOT_FIX/WRONG_LOCATION and mentions another file, we persist that path and allow it on the next attempt so the fixer can edit the correct file. *Why*: Prompts.log audit showed 7 identical 33k-char prompts for one cross-file issue; persisting the other file avoids burning all models and can resolve on retry.
 - **Persisted dedup cache**: LLM dedup results are stored in state keyed by comment ID set; repeat runs with the same comments skip the dedup LLM step. *Why*: In-memory cache reset each run; persisting saves tokens and latency.
+- **Heuristic dedup same-caller**: Comments on the same file that share the same primary symbol (e.g. method name) and the same caller file (e.g. "runner.py:146") are merged even when authors differ. *Why*: Prompts.log audit showed duplicate issues from cursor vs claude describing the same async/caller mismatch; merging them avoids duplicate fix attempts.
+- **Dedup GROUP validation + prompt guard**: Dedup now rejects malformed `GROUP:` lines when any index is out of range or the canonical index is not in the group, and the prompt explicitly says valid indices are only `1..N`. *Why*: A prompts.log audit showed the model returning `GROUP: 2,5,7` for only 3 comments; rejecting invalid groups avoids wrong merges and the prompt reduces those hallucinations up front.
+- **Verifier strength for API/signature fixes**: Fixes whose comment mentions async/await, caller, signature, or TypeError are verified with a stronger model when available. *Why*: Weak default verifier approved a fix that missed the call-site update (e.g. print_results still calling generate_report() without await/args); stronger model catches call-site bugs.
+- **Verifier expanded context for type/signature issues**: When a review comment mentions async/await, signatures, TypeErrors, or callers, the verifier sees up to 500 lines of the file (vs default 200). *Why*: Type/signature fixes often involve function bodies and their call sites; the default window was too narrow, causing false "never assigned" rejections.
+- **Lifecycle-aware verification context**: Comments about leaks, stale cache entries, missing cleanup, or unbounded maps/sets now get lifecycle-aware snippets that include declaration, usage, and cleanup sites across the file, and they bypass the risky "pattern absent" auto-verify shortcut. *Why*: These issues are about control flow over time, not a single line. A narrow local snippet can make a broken cleanup path look fixed.
+- **Ordering-aware analysis context**: Comments about newest-vs-oldest retention, `fromEnd`, or history trimming now use either full-file context or multi-range ordering excerpts during analysis. *Why*: These bugs usually depend on the interaction between data ordering and a later selection call; a single local excerpt often misses half the bug.
+- **Dismissal-comment skips**: We skip the dismissal-comment LLM when the reason says "file no longer exists" or "file not found", and we post-filter generated comments that only restate the surrounding code. *Why*: Avoids sending a prompt for a missing file and avoids inserting generic "extracts metrics"-style noise.
+- **Multi-file nudge**: When TARGET FILE(S) lists multiple files and the review mentions callers (await, file:line), the fix prompt adds a line urging updates to implementation and every call site. *Why*: Reduces fixer updating only one file and leaving call sites broken.
 - **Wider batch snippets**: When context headroom ≥100k chars, batch verification uses 2500/3000 char limits per comment/code snippet (vs 2000/2000). *Why*: Reduces false positives from truncation.
 - **Rotation by success rate**: Legacy model rotation orders models by persisted success rate (best first). *Why*: Low-success models no longer get tried before proven performers.
 - **CodeRabbit analysis chain stripping**: Comment bodies are sanitized to remove CodeRabbit "Analysis chain" and "Script executed" blocks before analysis/fix prompts. *Why*: CodeRabbit embeds 5–15 shell runs per comment (~200–1500 chars each); the analyzer only needs the actual finding, not script output—saves ~30% on affected prompts.
 - **No-op change skip**: Identical search/replace blocks from the fixer are skipped. *Why*: Prevents wasted verification and keeps file-change counts accurate.
+- **All-no-op skip verification**: When every fixer change block was a no-op (search === replace), we treat the iteration as "no changes" and skip the verification LLM call, going straight to rotation. *Why*: Avoids running the verifier on unchanged code; saves latency and keeps behavior consistent with git state.
+- **Skip model recommendation for 1–2 issues**: The separate model-recommendation LLM call runs only when there are 3+ unresolved issues; otherwise we use default rotation. *Why*: Saves ~29s and tokens on simple runs.
+- **Skip predict-bots when --no-wait-bot**: When `--no-wait-bot` is set, we skip the LLM "likely new bot feedback" prediction after commit. *Why*: Prediction is display-only; skipping saves ~26s when the user isn't waiting for bot reviews.
+- **Predict-bots changed-files guard**: The display-only predictor skips tiny meta-only diffs (e.g. small `.gitignore` changes), tells the model to output only files present in the commit diff, and filters predictions to `changedFiles`. *Why*: A prompts.log audit showed the predictor hallucinating `scripts/build-skills-docs.js` from a `.gitignore`-only diff; filtering to actual changed files saves tokens and removes noisy UX output.
 - **Lesson caps for large batches**: When fixing 10+ issues at once, we cap global and per-file lessons so the prompt stays under ~100k chars. *Why*: Prevents gateway timeouts and prompt poisoning from oversized prompts.
 - **LLM dedup only for 3+ issues**: The LLM dedup step runs only for files with at least 3 remaining issues after heuristic dedup. *Why*: For 2-comment files, heuristic grouping is enough; skipping the LLM saves tokens with no meaningful loss.
 - **maxFixIterations 0 = unlimited**: `--max-fix-iterations 0` is treated as unlimited (not zero). *Why*: Without this, 0 meant zero iterations and the run did analysis-only with no fix attempts.
 - **File injection by issue count & dynamic budget**: Injected file contents are chosen by how many issues reference each file (most first); total injection budget is tied to the model’s context cap. *Why*: Puts the injection cap toward files most likely to need search/replace; avoids overshooting small-context or underusing large-context models.
+- **Batch injection filter (rounds 2+)**: In later fix rounds, file injection is limited to files that still have at least one unfixed issue via `allowedPathsForInjection`. *Why*: Already-fixed files waste context budget; filtering keeps the prompt focused and leaves room for files that need changes.
+- **Single-issue full file context**: Single-issue fix prompts send the full file (up to 600 lines) instead of a short snippet. *Why*: Models responded INCOMPLETE_FILE/UNCLEAR when given only 15-30 lines; full file gives enough context for correct fixes.
 - **Rewrite escalation for non-injected files**: Files mentioned in the prompt but not injected (or with repeated S/R failures) are escalated to full-file rewrite. *Why*: When the model never saw file content, search/replace usually fails; asking for the full file avoids matching failures.
+- **Delay full-file escalation for simple issues**: For files where all targeting issues have importance ≤ 3 and ease ≤ 2, we only escalate to full-file rewrite when the file was not injected (not when over S/R failure threshold). *Why*: Full-file rewrites are expensive and time out more; for simple issues we rely on S/R first.
 
 ### Robustness
 - Hash-based work directories for efficient re-runs
@@ -96,6 +133,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **No-changes parsing**: When the fixer reports "no changes", the explanation is parsed from prose only; content inside `<change>`, `<newfile>`, and `<file>` blocks is ignored. *Why*: Prevents false positives from code or test fixtures that happen to contain phrases like "already fixed" or "no changes".
 - **Empty snippet handling**: When the judge or fix-verifier has no code snippet for an issue, we show an explicit placeholder instead of an empty block (e.g. "snippet unavailable — do NOT respond STALE"). *Why*: Empty blocks forced the model to guess; the placeholder steers toward YES-with-explanation when code isn't visible and avoids false STALE.
 - **Grouping rule (same method, different fix)**: Comment dedup does not group comments that target the same method but require different fixes (e.g. "add method" vs "change call site"). *Why*: Wrong merges cause one fix to address both or drop nuance; the rule reduces false groupings observed in audits.
+- **Recap/meta bare-file filtering**: Summary/status recap blocks are filtered before path inference, and bare filenames are only treated as actionable when the comment wording clearly points to a file-specific fix. *Why*: Review recaps like "| Location | Suggestion |" were leaking `banner.ts`, `logger.ts`, and `reply.ts` into the queue as fake file issues.
+- **Incomplete-snippet verdict recovery**: Explanations that admit the model could not actually see enough code now keep the issue open even if the model answered `NO`, not just `STALE`. *Why*: "Fixed" is not trustworthy when the verifier explicitly says the relevant code was truncated or not visible.
 - **504/gateway timeout: two retries with backoff**: On 504 or request timeout, we retry up to twice with 10s then 20s delay. *Why*: Single retry was often insufficient for transient gateways; two retries give the gateway time to recover.
 - **AAR exhausted list**: The After-Action Report lists every exhausted issue (path:line) so operators know which need human follow-up. *Why*: Exhausted issues were only summarized by count; listing them makes follow-up actionable.
 - **Judge rule (NO when code already implements)**: Batch verification prompt instructs the judge to respond NO and cite code when the current code already addresses the review. *Why*: Reduces unnecessary ALREADY_FIXED fix attempts when the judge would otherwise say YES.
@@ -105,16 +144,19 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ## Installation
 
+This repo contains **prr** (PR Resolver) and **pill** (Program Improvement Log Looker). Both use a shared library under `shared/`; tool code lives under `tools/prr/` and `tools/pill/`.
+
 ```bash
-bun install
-bun run build
+npm install
+npm run build
 
-# Run directly
-bun dist/index.js <pr-url>
+# Run prr directly
+node dist/tools/prr/index.js <pr-url>
 
-# Or link globally
-bun link
-prr --version  # See the cat!
+# Or link globally (both prr and pill available)
+npm link
+prr --version   # See the cat!
+pill --help    # Pill CLI
 ```
 
 ## Configuration
@@ -211,6 +253,68 @@ prr https://github.com/owner/repo/pull/123 \
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 
+## GitHub Actions (run when requested)
+
+You can run PRR from GitHub Actions **only when requested**: manually from the Actions tab or by adding the **run-prr** label on the PR.
+
+### In this repo (PRR itself)
+
+- **From the PR:** Add the **run-prr** label to run on that PR (no need to open the Actions tab). Create the label in the repo if it doesn’t exist yet (e.g. when adding the label, choose “Create new label” and name it `run-prr`).
+- **From Actions:** **Actions → Run PRR (client) → Run workflow**, then enter the PR number.
+
+The workflow runs PRR with `--no-wait-bot` (one push cycle, then exit). Add the label again or re-run manually for another cycle.
+
+**PRR as a reviewer in the GitHub UI:** After each run, PRR submits a **formal Pull Request Review** (the card that appears in the PR's "Reviews" section), so PRR shows up like CodeRabbit or a human reviewer instead of only posting comments. You can also **request PRR as a reviewer**: add a bot user (or GitHub App) as a collaborator, set the workflow env `PRR_REVIEWER_LOGIN` to that bot's login (e.g. `prr-bot` or `my-app[bot]`), then when someone requests that reviewer on the PR, the workflow runs.
+
+### In any other repo
+
+1. **Add a client workflow** (e.g. `.github/workflows/run-prr-client.yml`) that calls the server workflow:
+
+```yaml
+name: Run PRR
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to run PRR on'
+        required: true
+        type: number
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: prr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  prr:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-prr'
+    uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+    with:
+      pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+      prr_repo: 'OWNER/prr'
+    secrets:
+      PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+      # or ANTHROPIC_API_KEY / OPENAI_API_KEY
+```
+
+Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`), and use the branch you want (`@main` or `@v1`).
+
+2. **Configure secrets** in that repo:
+
+- **Token**: Pass `PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` (as above) to use the workflow's built-in token — no extra secret. Use a PAT only if you need cross-repo access or higher rate limits.
+- **One LLM key**: Add a repository secret for at least one of:
+  - `ELIZACLOUD_API_KEY`
+  - `ANTHROPIC_API_KEY`
+  - `OPENAI_API_KEY`
+
+3. **Run it**: Add the **run-prr** label on the PR, or Actions → Run PRR → Run workflow → enter the PR number.
+
+The workflow checks out the PRR repo, builds it, and runs PRR on the given PR. It uses `--no-wait-bot` so the job exits after one push cycle (no waiting for bot re-review); push again or re-run for another cycle.
+
+**Why pass the caller's token?** The job runs in the repo that triggered the workflow. Passing `PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` uses that repo's default token, so you don't create a separate PAT. PRR uses it to read the PR, post comments, and push fixes. Use a PAT only when you need cross-repo access or higher API rate limits. (GitHub doesn't allow a secret named `GITHUB_TOKEN` in reusable workflows, so we use `PRR_GITHUB_TOKEN` and map it to `GITHUB_TOKEN` inside the job.)
+
 ## How It Works
 
 ### The Fix Loop
@@ -252,7 +356,10 @@ When fixes fail, prr escalates through multiple strategies:
 
 ### Why Each Step Matters
 
-1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Copilot), or any reviewer.
+1. **Fetch Comments**: Gets all review comments via GitHub GraphQL API. Works with humans, bots (CodeRabbit, Copilot, Claude), or any reviewer.
+   - *Why parse ALL bot comments*: Bots may post multiple comments across re-reviews. Only reading the latest missed issues from earlier reviews. We parse every comment, filter noise (short messages, trigger commands), and recover path-less items with actionable language.
+   - *Why noise filter*: When reading all comments, test messages and trigger commands would pollute the issue list. The filter runs before parsing so junk never enters the pipeline.
+   - *Why include path-less items*: Some bot comments describe real issues without citing a file. Including them with a synthetic `(PR comment)` path lets downstream solvability checks decide whether they're actionable — at zero LLM cost if not.
 
 2. **Analyze Issues**: For each comment, asks the LLM: "Is this issue still present in the code?" 
    - *Why*: Review comments may already be addressed, or partially addressed. We don't want to re-fix solved problems.
@@ -272,6 +379,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 5. **Verify Fixes**: For each changed file, asks the LLM: "Does this diff address the concern?"
    - *Why verify*: Fixer tools can make changes that don't actually fix the issue. Catches false positives early.
+   - *Why "Code before fix" in verifier prompt*: The verifier now sees a "Code before fix" snippet (from the diff) alongside "Current Code (AFTER)" so it can compare before vs after and determine whether the issue was actually fixed instead of pattern-matching on current code alone; reduces false rejections when the fix was correct.
 
 6. **Check for New Comments**: Before declaring "done", checks if any NEW review comments were added during the fix cycle.
    - *Why*: Bot reviewers or humans might add new issues while you're fixing others. Ensures nothing slips through.
@@ -519,7 +627,7 @@ Team gets everything in one atomic update
 ### Why This Approach?
 
 1. **Full history preserved**: `.prr/lessons.md` keeps everything
-2. **User content safe**: CLAUDE.md's existing content isn't touched
+2. **User content safe**: CLAUDE.md's existing content isn't touched. We never delete repo-owned sync targets: final cleanup only removes files prr created this run (we record which existed at detection and re-detect after clone so we know what was in the repo).
 3. **Multi-tool support**: Works with Cursor, Claude Code, Aider
 4. **No bloat**: Synced files get only recent/relevant lessons
 5. **Team sync**: `git pull` gives everyone the latest

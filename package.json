@@ -3,18 +3,19 @@
   "version": "1.0.0",
   "description": "CLI tool to automatically resolve PR review comments",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/tools/prr/index.js",
   "bin": {
-    "prr": "./dist/index.js"
+    "prr": "./dist/tools/prr/index.js",
+    "pill": "./dist/tools/pill/index.js"
   },
   "scripts": {
     "build": "tsc",
     "build:bun": "bunx tsc",
-    "start": "node dist/index.js",
-    "start:bun": "bun dist/index.js",
-    "dev": "bun --watch src/index.ts",
+    "start": "node dist/tools/prr/index.js",
+    "start:bun": "bun dist/tools/prr/index.js",
+    "dev": "bun --watch tools/prr/index.ts",
     "test": "vitest",
-    "test:elizacloud": "bun run scripts/test-elizacloud-key.ts",
+    "test:elizacloud": "echo 'No test-elizacloud script; set ELIZACLOUD_API_KEY and run pill or prr'",
     "typecheck": "tsc --noEmit",
     "typecheck:bun": "bunx tsc --noEmit"
   },
@@ -28,6 +29,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "diff": "^5.2.0",
     "@anthropic-ai/sdk": "^0.32.1",
     "@octokit/graphql": "^8.1.1",
     "@octokit/rest": "^21.0.2",
@@ -39,6 +41,7 @@
     "simple-git": "^3.27.0"
   },
   "devDependencies": {
+    "@types/diff": "^5.2.0",
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",

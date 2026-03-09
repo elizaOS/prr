@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LessonsManager } from '../src/state/lessons.js';
+import { LessonsManager } from '../tools/prr/state/lessons.js';
 
 async function run(): Promise<void> {
   const workdir = await mkdtemp(join(tmpdir(), 'prr-lessons-test-'));

@@ -185,6 +185,56 @@ Low-stakes text generation tasks (`generateCommitMessage`, `generateDismissalCom
 - Anthropic: Set to 128,000 (required parameter). WHY: Anthropic's API won't accept a request without `max_tokens`. Setting it high ensures it's never the constraint — response length is controlled via prompt instructions, not this parameter. You only pay for tokens actually generated, not the budget ceiling. Previously hardcoded to 4096, which silently truncated responses mid-file.
 - OpenAI: Omitted entirely (optional parameter). WHY: The hardcoded 4096 was truncating code-fix responses mid-file. Omitting lets the model use its natural context limit.
 
+**Conservative verification for lifecycle/state issues:**
+- Verification now treats leak/cache/cleanup comments as a separate class. `fix-verification.ts` detects these comments, builds lifecycle-aware snippets that include declaration + usage + cleanup sites for the relevant symbol, and routes them through the stronger verifier lane when available.
+- The verifier prompt also explicitly says declaration-only tweaks are insufficient for lifecycle/cache/leak issues; the relevant creation, replacement, and cleanup paths must all look safe before answering `YES`.
+
+WHY: These bugs are often distributed across multiple control-flow exits. A narrow snippet around the commented line can make broken lifecycle code look fixed, which is worse than a conservative false negative. PRR therefore biases toward "keep the issue open unless the broader flow is clearly safe."
+
+**Conservative issue detection before the fixer runs:**
+- The same conservative philosophy now applies earlier in `workflow/issue-analysis.ts`. Lifecycle/cache/leak comments and ordering/history comments are recognized as "distributed" issue shapes, and analysis broadens the context it sends to `batchCheckIssuesExist()` before PRR decides a comment is already fixed.
+- Ordering/history issues use full-file context when feasible; otherwise PRR builds multi-range ordering excerpts that pull together ordering sources and later trimming/selection sites.
+- The issue-existence parser in `llm/client.ts` also refuses to downgrade those conservative issue types from `YES` to `NO` on vague "already correct" language unless the explanation contains concrete fix evidence.
+
+WHY: Verification hardening alone was not enough. Some real bugs were being dismissed during the analysis phase itself, before they ever reached the fixer or verifier. Conservative detection closes that earlier gap.
+
+**Debug issue table for operator trust:**
+- `workflow/debug-issue-table.ts` prints a human-readable table after analysis and again during final cleanup when verbose mode is enabled.
+- The table reports the effective per-comment decision with workflow-aligned precedence: `open`, then `dismissed/<category>`, then `verified`, then cached status.
+
+WHY: PRR is often operating against dozens of bot comments at once. When the tool's internal state and the PR UI diverge, operators need a direct, comment-level explanation of what PRR thinks happened and why.
+
+**Path resolution must preserve ambiguity, not erase it:**
+- `workflow/helpers/solvability.ts` now resolves review paths into structured outcomes (`exact`, `suffix`, `body-hint`, `ambiguous`, `missing`) rather than a single "resolved or not" answer.
+- That result feeds both dismissal classification (`missing-file` vs `path-unresolved`) and canonical-path propagation (`resolvedPath`) for later snippet, fix, and dismissal-comment phases.
+
+WHY: A single stale bucket made fundamentally different problems look identical. If `logger.ts` could match multiple tracked files, that is an ambiguity problem, not evidence the file was deleted. Architecture-wise, preserving that distinction early lets later phases stay honest instead of inventing a misleading "file no longer exists" story.
+
+**Create-file issues are a first-class solvability case:**
+- Analysis now treats missing test/spec targets as potentially solvable when the review is clearly requesting creation of that file. Missing-file snippets can therefore become "create this file" context instead of an unreadable placeholder.
+- New comments added mid-run reuse the same resolved/create-file path handling so the queue behavior is consistent whether the comment was present at startup or arrived later.
+- Test-target inference now lives in a shared helper reused by prompt-building and solvability, and explicit test/spec paths are preserved before the helper applies looser text-based heuristics.
+
+WHY: PRR used to assume "file missing" meant "issue obsolete." That assumption is wrong for missing tests, migrations, and other review comments whose requested fix is to add a file that does not exist yet.
+
+WHY share the helper: A create-file issue only works if every phase agrees on the same target path. If prompt-building, solvability, and retries infer different test files from the same comment, the tool can oscillate between "allowed path", "missing path", and "wrong file" without ever converging.
+
+**Issue-comment parsing now resists recap leakage:**
+- `github/api.ts` separates full-path parsing from bare-filename parsing, filters recap/status blocks earlier, and only accepts bare filenames in stronger contexts such as explicit backticks or "add tests for `reply.ts:106`".
+
+WHY: Issue ingestion is the top of the funnel. If recap prose gets turned into fake file issues there, every later subsystem pays the cost: wrong stale dismissals, noisy debug tables, and wasted fix attempts. Filtering earlier is cheaper and more trustworthy than cleaning it up later.
+
+**Incomplete snippet visibility is treated as "still open", not "fixed":**
+- `llm/client.ts` centralizes "I couldn't really see the code" phrasing in `explanationMentionsMissingCodeVisibility()` and applies that policy to both `NO` and `STALE` verdict overrides.
+- Hedged phrasing ("the truncated snippet suggests…", "the truncated excerpt suggests…", "appears to… truncated snippet") is also treated as missing visibility, so low-confidence STALE/NO from that wording keeps the issue open.
+
+WHY: A verifier that says "the snippet is truncated" is not providing evidence the issue is fixed. Hedged "suggests" or "appears to" with truncated context is uncertainty, not staleness. Architecture-wise, this is the same trust boundary as create-file handling: when the input context is incomplete or uncertain, PRR should bias toward keeping the issue open rather than collapsing uncertainty into a resolved state.
+
+**Stale retargeting and weak identifiers:**
+- `workflow/helpers/solvability.ts` splits backtick-extracted identifiers into strong (e.g. function/variable names) and weak (built-ins and type names: `BigInt`, `bigint`, `symbol`, `Map`, `string`, etc.). When a comment targets a line that is out of range and the only extracted identifiers are weak, the issue remains solvable with a context hint instead of being dismissed as stale.
+
+WHY: Line-drift "identifier not found" dismissals were being driven by incidental tokens like `BigInt` that appear in many files. Weak identifiers are poor evidence that the reviewed code was removed or renamed; keeping those issues open avoids false stale dismissals.
+
 ### 4. Analyzer (`src/analyzer/`)
 
 Issue analysis and prompt building:

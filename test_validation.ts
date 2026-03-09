@@ -1,5 +1,5 @@
 
-import { validateTool } from './src/config.ts';
+import { validateTool } from './shared/config.js';
 
 const tools = ['cursor', 'opencode', 'claude-code', 'aider', 'codex', 'llm-api'];
 

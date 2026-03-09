@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import * as Reporter from '../src/ui/reporter.js';
-import type { UnresolvedIssue } from '../src/analyzer/types.js';
-import type { ReviewComment } from '../src/github/types.js';
+import * as Reporter from '../tools/prr/ui/reporter.js';
+import type { UnresolvedIssue } from '../tools/prr/analyzer/types.js';
+import type { ReviewComment } from '../tools/prr/github/types.js';
 
 function makeIssue(overrides: Partial<UnresolvedIssue> & { verifierContradiction?: string }): UnresolvedIssue {
   const comment: ReviewComment = {

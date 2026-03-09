@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runHeuristicPredictionOnDiff } from '../src/workflow/bot-prediction-heuristics.js';
+import { runHeuristicPredictionOnDiff } from '../tools/prr/workflow/bot-prediction-heuristics.js';
 
 function diffWith(...addedLines: string[]): string {
   const body = addedLines.map((l) => `+${l}`).join('\n');
