@@ -126,10 +126,10 @@ export async function handleIterationCleanup(
   const totalFixedThisFixLoop = fixedThisCycleBefore + verifiedCount;
   const fixedLabel = totalFixedThisFixLoop > verifiedCount
     ? `${formatNumber(verifiedCount)} this iteration (${formatNumber(totalFixedThisFixLoop)} total this fix loop)`
-    : `${formatNumber(verifiedCount)} issues`;
+    : `${formatNumber(verifiedCount)} ${pluralize(verifiedCount, 'issue')}`;
   console.log(chalk.gray(`\n  Iteration ${fixIteration} summary:`));
   console.log(chalk.gray(`    • Fixed: ${fixedLabel}`));
-  console.log(chalk.gray(`    • Failed: ${formatNumber(failedCount)} issues`));
+  console.log(chalk.gray(`    • Failed: ${formatNumber(failedCount)} ${pluralize(failedCount, 'issue')}`));
   if (newLessons > 0) {
     console.log(chalk.yellow(`    • New lessons: +${newLessons} (total: ${lessonsAfterVerify})`));
   } else {

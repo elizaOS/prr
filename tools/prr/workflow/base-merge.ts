@@ -85,9 +85,9 @@ export async function checkAndMergeBaseBranch(
     await git.fetch('origin', prInfo.baseBranch);
     await git.fetch('origin', prInfo.branch);
 
-    // When GitHub says the PR branch is "behind" the base, always run the merge so we update the source branch with the target (don't trust merge-base short-circuit).
+    // When GitHub says the PR branch is "behind" the base, always run the merge and use --no-ff so we create a merge commit (never fast-forward). That way we always have a commit to push and GitHub stops showing "out of date with base branch".
     const forceMerge = prInfo.mergeableState === 'behind';
-    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge });
+    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge, noFastForward: forceMerge });
 
     if (!mergeResult.success) {
       // Merge failed - use LLM tool to resolve conflicts
@@ -196,7 +196,12 @@ export async function checkAndMergeBaseBranch(
         spinner.start('Pushing merge commit...');
         const pushResult = await push(git, prInfo.branch, false, githubToken);
         if (pushResult.success) {
-          spinner.succeed('Pushed merge commit');
+          if (pushResult.nothingToPush) {
+            spinner.succeed('Branch already up-to-date with remote (merge brought in no new commits to push)');
+            console.log(chalk.gray('  If GitHub still shows "out of date with base", the base may have new commits since this run — re-run prr to merge again.'));
+          } else {
+            spinner.succeed('Pushed merge commit');
+          }
         } else {
           spinner.fail('Failed to push merge commit');
           console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local.`));

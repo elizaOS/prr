@@ -230,10 +230,10 @@ export function buildAndDisplayFixPrompt(
   // "All N in queue already verified — skipping fixer" so we don't duplicate with a generic line.
   const shouldSkip = prompt.length === 0 || unresolvedIssues.length === 0;
   if (shouldSkip && unresolvedIssues.length > 0) {
-    debug('Empty prompt or no issues - skipping fixer');
+    debug('Skipping fixer: all issues in queue already verified (prompt empty)');
     console.log(chalk.green('\n✓ Nothing to fix - all issues resolved'));
   } else if (shouldSkip) {
-    debug('Empty prompt or no issues - skipping fixer');
+    debug('Skipping fixer: no issues in queue');
   }
 
   return {

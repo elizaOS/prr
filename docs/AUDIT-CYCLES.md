@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-10 · **Recorded cycles:** 28 · **Historical (legacy):** 4
+**Last updated:** 2026-03-10 · **Recorded cycles:** 30 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -268,6 +268,41 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Additive instruction only; EXISTING/SKIP/COMMENT behavior unchanged.
 
 **Notes:** Run was babylon PR #1207 (odi-public → staging); prompt sizes all under 50k; no single-issue 145k prompts in this run.
+
+---
+
+### Cycle 29 — 2026-03-10 (output.log + prompts.log BabylonSocial/babylon#1207, same run as Cycle 28)
+
+**Artifacts audited:** output.log (784 lines), prompts.log (3,451 lines, 16 entries). Run: merge staging (forceMerge, push nothingToPush), 122 comments → 4 in queue (all verified), 3 fixes committed and pushed; iteration 2 skip fixer (prompt length 0); 1 dismissal comment added; exit all resolved.
+
+**Findings:**
+- **Positive:** RESULTS SUMMARY and dismissed breakdown use formatNumber (Cycle 26). Debug issue table Counts use formatNumber. Model performance line uses formatNumber. Merge ran with forceMerge; push reported nothingToPush (branch already up-to-date with remote). Queue line clear: "4 issue(s) entering fix loop (all 4 already verified — will skip fixer)". Fix prompt #0007 69,775 chars (under 80k cap). Judge/verifier/dismissal prompts and responses as expected.
+- **Low:** When fixer is skipped because all issues in queue are already verified, debug logged "Fix prompt length → 0" and "Empty prompt or no issues - skipping fixer" — slightly ambiguous; clearer to state "all issues in queue already verified (prompt empty)" when that is the reason.
+- **Optional:** Many dismissals "File no longer exists: test-unit-isolated.ts" (or generate-skills-md.ts, format.test.ts) while the file exists at scripts/test-unit-isolated.ts etc. Path resolution for "file no longer exists" could resolve fragment/basename to repo path before checking; low priority.
+
+**Improvements implemented:**
+- prompt-building.ts: when skipping fixer because prompt is empty but unresolvedIssues.length > 0, debug now "Skipping fixer: all issues in queue already verified (prompt empty)"; when no issues in queue, "Skipping fixer: no issues in queue".
+
+**Flip-flop check:** N — Debug message wording only; no behavior change.
+
+**Notes:** Same babylon #1207 run as Cycle 28; this audit focused on output.log flow and prompts.log sizes/phase consistency.
+
+---
+
+### Cycle 30 — 2026-03-10 (output.log + prompts.log BabylonSocial/babylon#1207)
+
+**Artifacts audited:** output.log (800 lines), prompts.log (1,694 lines, 18 entries). Run: merge staging (forceMerge, nothingToPush); 136 comments → 2 in queue (1 to fix, 1 already verified); 1 fix (config/index.ts chain ID) committed and pushed; iteration 2 skip fixer (all verified); exit all resolved.
+
+**Findings:**
+- **Positive:** Queue line clear ("2 issue(s) entering fix loop (1 to fix, 1 already verified)"); single-issue fix prompt 18k chars; verifier YES for chain ID fix; RESULTS SUMMARY and dismissed counts use formatNumber; debug "Skipping fixer: no issues in queue" (Cycle 29: when all verified we now log "all issues in queue already verified (prompt empty)").
+- **Low:** Iteration summary showed "Fixed: 1 issues" and "Failed: 0 issues" — workspace rule: pluralize so "1 issue" / "0 issues" (not "1 issues").
+
+**Improvements implemented:**
+- iteration-cleanup.ts: use pluralize(verifiedCount, 'issue') and pluralize(failedCount, 'issue') for iteration summary "Fixed" and "Failed" lines so output is "1 issue" / "2 issues" not "1 issues".
+
+**Flip-flop check:** N — Display only; no behavior change.
+
+**Notes:** Merge still reported nothingToPush (run likely before --no-ff); judge issue_5 STALE (snippet doesn't show line 1120) but issue was fixed in same run via single-issue fixer.
 
 ---
 

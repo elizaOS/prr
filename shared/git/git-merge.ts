@@ -107,6 +107,8 @@ export async function ensureGitIdentity(git: SimpleGit): Promise<void> {
 export interface MergeBaseBranchOptions {
   /** When true, do not short-circuit with merge-base; always run git merge. Use when GitHub reports mergeableState === 'behind' so the source branch is actually updated with the target. */
   forceMerge?: boolean;
+  /** When true, use --no-ff so a merge commit is always created when there are incoming commits (never fast-forward). Ensures we have a commit to push and GitHub stops showing "out of date with base branch". */
+  noFastForward?: boolean;
 }
 
 export async function mergeBaseBranch(
@@ -141,9 +143,11 @@ export async function mergeBaseBranch(
       }
     }
     
-    // Try to merge
-    debug('Attempting merge');
-    const result = await git.merge([`origin/${baseBranch}`, '--no-edit']);
+    // Try to merge (--no-ff when requested so we always create a merge commit and have something to push)
+    const mergeArgs: string[] = [`origin/${baseBranch}`, '--no-edit'];
+    if (options?.noFastForward) mergeArgs.push('--no-ff');
+    debug('Attempting merge', { noFastForward: options?.noFastForward });
+    const result = await git.merge(mergeArgs);
     
     // Check if merge result indicates already up-to-date
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
