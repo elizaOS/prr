@@ -983,6 +983,78 @@ export class GitHubAPI {
   }
 
   /**
+   * Get list of files changed in a PR including unified diff patches.
+   * WHY: split-plan needs actual diff content to reason about concerns; getPRFiles omits patch and other callers don't need it. We add a new method instead of changing getPRFiles to avoid breaking story and other consumers.
+   * WHY patch optional: Binary files, files exceeding GitHub's diff size limit (~1MB), and rename-only files have no patch in the API response; always treat as optional.
+   * WHY warn at 3000 files: GitHub caps pulls.listFiles at 3000; user should know the list may be truncated when analyzing mega-PRs.
+   */
+  async getPRFilesWithPatches(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    patch: string | undefined;
+  }>> {
+    debug('Fetching PR files with patches', { owner, repo, prNumber });
+    const files = await this.octokit.paginate(
+      this.octokit.pulls.listFiles,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    if (files.length >= 3000) {
+      console.warn(`Warning: PR files list may be truncated (GitHub caps at 3,000; got ${files.length.toLocaleString()})`);
+    }
+    return files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+      patch: (f as { patch?: string }).patch,
+    }));
+  }
+
+  /**
+   * List open PRs in the repo, optionally filtered by base branch.
+   * WHY: split-plan needs "buckets" (existing open PRs) to route changes to; filtering by base ensures we only show PRs in the same branch world (e.g. v2-develop vs v3-develop). Caller caps count and truncates body to avoid context overflow.
+   * WHY base is branch name: GitHub API expects the branch ref name (e.g. "main"), not refs/heads/main; invalid base returns empty results instead of erroring.
+   * WHY paginate: Busy repos can have 100+ open PRs; single list() would miss many. excludePRNumber is applied after fetch so the target PR is not offered as a bucket.
+   */
+  async getOpenPRs(
+    owner: string,
+    repo: string,
+    baseBranch?: string,
+    excludePRNumber?: number
+  ): Promise<Array<{
+    number: number;
+    title: string;
+    body: string;
+    branch: string;
+    baseBranch: string;
+    author: string;
+  }>> {
+    debug('Fetching open PRs', { owner, repo, baseBranch, excludePRNumber });
+    const params: { owner: string; repo: string; state: 'open'; base?: string; per_page: number } = {
+      owner,
+      repo,
+      state: 'open',
+      per_page: 100,
+    };
+    if (baseBranch) params.base = baseBranch;
+    const list = await this.octokit.paginate(this.octokit.pulls.list, params);
+    let result = list.map(pr => ({
+      number: pr.number,
+      title: pr.title,
+      body: pr.body ?? '',
+      branch: pr.head.ref,
+      baseBranch: pr.base.ref,
+      author: pr.user?.login ?? 'unknown',
+    }));
+    if (excludePRNumber != null) {
+      result = result.filter(pr => pr.number !== excludePRNumber);
+    }
+    return result;
+  }
+
+  /**
    * Get commit history for a branch (or ref). Returns commits in chronological order (oldest first).
    * WHY oldest first: Narrative and changelog are easier when the model sees "then this, then that";
    * List Commits API returns newest first so we reverse after slicing to maxCommits.

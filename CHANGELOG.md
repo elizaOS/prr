@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — split-plan tool (PR decomposition planner)
+
+**New CLI: split-plan**
+- `split-plan <pr-url> [-o <file>] [--max-patch-chars <n>]` analyzes a large PR and writes a human-editable `.split-plan.md` with dependency analysis and a proposed split into smaller, reviewable PRs. Open PRs on the same base branch are shown as "buckets" to route changes to; the plan is intended for human review and for a future `split-exec` tool.
+- **WHY PR URL only (no branch spec):** Decomposition only makes sense for an existing PR; we need PR metadata, commits, and file list from the GitHub PR API. Branch-only analysis is out of scope.
+- **WHY default output is a file (`.split-plan.md`):** The plan is meant to be edited by the user before execution; writing to a file is the primary workflow. Stdout would require redirect and doesn’t match the “edit then run split-exec” flow.
+- **WHY prefix `split-plan` for logs:** `initOutputLog({ prefix: 'split-plan' })` produces split-plan-output.log and split-plan-prompts.log so runs from the same directory don’t overwrite prr/story/pill logs (same pattern as story and pill).
+- **WHY branch topology filter:** Only open PRs targeting the same base branch as the target PR are fetched. A PR into `v2-develop` must not suggest routing changes to a PR into `v3`; they are different worlds. `getOpenPRs(owner, repo, baseBranch, excludePRNumber)` uses the GitHub API `base` parameter for server-side filtering.
+- **WHY cap open PRs at 20 and truncate body to 500 chars:** Including every open PR and full descriptions can blow the LLM context. Twenty buckets and a short description per PR are enough for “route to existing PR” decisions; the prompt states “showing up to 20” so the model knows the list may be truncated.
+- **WHY patch budget (--max-patch-chars):** Full diffs for 50+ files can exceed 200k chars. We sort files by change size (additions+deletions), include patches until the budget is exhausted, and list omitted files with “[patch omitted — budget exceeded]” so the model knows what it didn’t see. Low-signal files (lockfiles, *.min.js) are listed with metadata only (no patch) so the model still sees they changed.
+- **WHY two-phase prompt (dependencies then split):** If we only ask “split this PR,” the model tends to group by file proximity and ignore cross-file dependencies. Forcing Phase 1 (identify A depends on B) before Phase 2 (group into PRs) makes dependency order a hard constraint so dependent changes stay together or merge in order.
+- **WHY validate/repair frontmatter:** The LLM may output invalid YAML (unescaped colons, wrong structure). We parse with a simple parser; on failure we discard the model’s frontmatter and inject safe values from `prInfo` and `new Date().toISOString()`. We always set `generated_at` in code so the plan file has a reliable timestamp.
+- **WHY file validation (paths not in PR):** The model can hallucinate file paths. We extract paths from the plan body under “**Files:**” sections, compare to the PR file list, and append a “## Validation” warning for unknown paths. We don’t strip them so human-added paths aren’t removed.
+- **GitHub API:** `getOpenPRs(owner, repo, baseBranch?, excludePRNumber?)` — paginated list of open PRs, optional base filter, exclude target PR. `getPRFilesWithPatches(owner, repo, prNumber)` — same as getPRFiles but includes the `patch` field (unified diff) per file; patch is optional for binary/large/rename-only files. Warning when file count >= 3000 (GitHub cap).
+- Docs: [tools/split-plan/README.md](tools/split-plan/README.md).
+
 ### Fixed (2026-03) — Pill integration: circular import, error handling, double-init, dead code
 
 **Circular import removed**

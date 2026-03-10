@@ -7,6 +7,7 @@
   "bin": {
     "prr": "./dist/tools/prr/index.js",
     "pill": "./dist/tools/pill/index.js",
+    "split-plan": "./dist/tools/split-plan/index.js",
     "story": "./dist/tools/story/index.js"
   },
   "scripts": {
