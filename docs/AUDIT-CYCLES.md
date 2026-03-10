@@ -9,8 +9,12 @@ Single audit log for output.log, prompts.log, and code changes. Use it to spot r
 ## How to use this doc
 
 1. **Before an audit:** Skim "Recurring patterns" and "Regression watchlist" so you know what to watch for.
-2. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
-3. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
+2. **During an audit (output.log / prompts.log):** Do not trust the logs alone for "fixed" or "already verified". **Verify against the workdir** when possible:
+   - Find the workdir path in the log (e.g. `Reusing existing workdir: /root/.prr/work/…` or `Workdir preserved: …`).
+   - For at least one issue that the log says is "already verified", "fixed", or "dismissed (already-fixed)", open the **actual file** at the cited path (and line range) in that workdir and confirm the fix is present (e.g. the bug pattern is gone). If the log says "skip fixer — all already verified" but the file still contains the bug, that is a finding (stale verification, head change, etc.).
+   - This catches mismatches where state says "fixed" but the branch was rebased/reverted or verification was wrong.
+3. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
+4. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
 
 ---
 
@@ -28,6 +32,7 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **Mid-loop bypass** | 12 | Thresholds (couldNotInject) or filters (solvability) only run at push-iteration start; new comments or in-loop state bypass them and burn iterations. Guard: apply same dismissal/threshold checks at start of each fix iteration; run assessSolvability on new comments before adding to queue. |
 | **STALE vs YES (snippet)** | 12 | Verifier returns STALE when explanation is "can't evaluate", "doesn't show", "only shows" (incomplete snippet) — judge instructions say use YES. Guard: STALE→YES override for these phrasings; avoid false positives on legitimate STALE ("only shows re-export"). |
 | **Basename / fragment path** | 13 | Short or fragment paths (e.g. `10/route.ts`, `modelcontextprotocol/.../auto-top-up.ts`) resolved by basename to a *different* file with same basename → wrong content injected, S/R fails or wrong file edited. Guard: prefer basename candidate that shares path prefix with requested path; skip substitution when fragment looks like repo-root and no exact match. |
+| **Stale verification / head change** | 33, 34 | Log says "already verified" or "fixed" but the workdir file still has the bug (e.g. PR head changed, state not cleared). Guard: when PR head SHA changes, clear verified state so fixes are re-checked; auditor must verify at least one "fixed" issue against workdir file content. |
 | **Fix-in-test vs production** | 15 | Review says "fix mocks in tests" / "root cause in tests" but TARGET FILE(S) only lists production file → fixer edits production (no-op or workaround) or tries test file and is blocked. Guard: when review body indicates fix-in-test, add co-located test file to allowed paths so fixer can edit it. |
 | **Canonical path propagation / rename targets** | 19, 20 | Early phases resolve basename/truncated review paths, but later cleanup/commit/reporting paths still use raw fragments or extension words like `test.ts` → successful fixes crash on `git add`/hashing or the real rename target is blocked as disallowed. Guard: use canonical primary path everywhere after issue creation; infer explicit rename destinations for filename-review issues. |
 
@@ -61,6 +66,9 @@ Improvements should reinforce these, not reverse.
 ## Regression watchlist
 
 Quick checks each audit. Drill into the category that matches what you changed.
+
+**Log vs reality (output.log / prompts.log)**
+- [ ] For runs that report "already verified" or "fixed": spot-check at least one such issue by reading the file at the cited path in the workdir (path from log: `Reusing existing workdir:` / `Workdir preserved:`). Confirm the bug pattern is actually gone. If the log says fixed but the file still has the bug, treat as a finding (stale verification, head change).
 
 **Prompt quality**
 - [ ] Queue line shows to-fix vs already-verified when relevant.
@@ -133,7 +141,7 @@ Copy the block below for each new cycle.
 
 **Flip-flop check:** Y / N — (one line: any revert or conflicting change?)
 
-**Notes:** (optional)
+**Notes:** (optional). If you verified a "fixed" issue against the workdir, note it (e.g. "Spot-checked path:line — fix present" or "Spot-checked — bug still present, finding").
 ```
 
 ---
