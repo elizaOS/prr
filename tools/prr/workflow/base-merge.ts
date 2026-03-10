@@ -8,6 +8,7 @@ import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
+import type { GitHubAPI } from '../github/api.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber } from '../../../shared/logger.js';
 import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../../../shared/git/git-clone-index.js';
 import { push } from '../../../shared/git/git-push.js';
@@ -23,7 +24,8 @@ export async function checkAndMergeBaseBranch(
   options: CLIOptions,
   spinner: Ora,
   resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
-  githubToken?: string
+  githubToken?: string,
+  github?: GitHubAPI
 ): Promise<{
   success: boolean;
   exitReason?: string;
@@ -204,8 +206,47 @@ export async function checkAndMergeBaseBranch(
       }
     }
     
+    const githubSaysBehind = prInfo.mergeableState?.toLowerCase() === 'behind';
+
+    const tryApiUpdateBranch = async (): Promise<void> => {
+      if (!github || !githubSaysBehind || options.noPush || options.noCommit) return;
+      debug('Local merge was no-op but GitHub says behind — falling back to GitHub API updateBranch', {
+        mergeableState: prInfo.mergeableState,
+      });
+      spinner.start(`Updating ${prInfo.branch} via GitHub API...`);
+      const ok = await github.updatePRBranch(prInfo.owner, prInfo.repo, prInfo.number);
+      if (ok) {
+        spinner.succeed(`Branch update accepted by GitHub API — fetching updated branch`);
+        await git.fetch('origin', prInfo.branch);
+        const newHead = (await git.revparse([`origin/${prInfo.branch}`])).trim();
+        await git.reset(['--hard', `origin/${prInfo.branch}`]);
+        debug('Local branch reset to API-updated remote', { newHead: newHead.slice(0, 10) });
+      } else {
+        spinner.warn('GitHub API branch update failed — branch may already be current or token lacks permission');
+      }
+    };
+
     if (mergeResult.alreadyUpToDate) {
       console.log(chalk.green(`✓ Already up-to-date with ${prInfo.baseBranch}`));
+      if (githubSaysBehind) {
+        console.log(chalk.gray(`  (GitHub says "behind" but git merge-base confirms all ${prInfo.baseBranch} commits are in ${prInfo.branch} — GitHub state may be stale)`));
+      }
+      if (!options.noPush && !options.noCommit) {
+        const status = await git.status();
+        if (status.ahead > 0) {
+          debug('Local branch is ahead after merge (unpushed commits from previous run)', { ahead: status.ahead });
+          spinner.start(`Pushing ${status.ahead} unpushed commit(s)...`);
+          const pushResult = await push(git, prInfo.branch, false, githubToken);
+          if (pushResult.success && !pushResult.nothingToPush) {
+            spinner.succeed(`Pushed ${status.ahead} unpushed commit(s)`);
+          } else if (pushResult.success) {
+            spinner.info('Push reports nothing to push (remote already has these commits)');
+          } else {
+            spinner.warn(`Push of unpushed commits failed: ${pushResult.error ?? 'Unknown'}`);
+          }
+        }
+      }
+      await tryApiUpdateBranch();
       await restoreStash();
     } else if (mergeResult.success) {
       console.log(chalk.green(`✓ Merged latest ${prInfo.baseBranch} into ${prInfo.branch}`));
@@ -215,7 +256,7 @@ export async function checkAndMergeBaseBranch(
         if (pushResult.success) {
           if (pushResult.nothingToPush) {
             spinner.succeed('Branch already up-to-date with remote (merge brought in no new commits to push)');
-            console.log(chalk.gray('  If GitHub still shows "out of date with base", the base may have new commits since this run — re-run prr to merge again.'));
+            await tryApiUpdateBranch();
           } else {
             spinner.succeed('Pushed merge commit');
           }

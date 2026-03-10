@@ -115,6 +115,28 @@ export class GitHubAPI {
     }
   }
 
+  /**
+   * Update a PR branch with the base branch using GitHub's API (equivalent to the "Update branch" button).
+   * Returns true on success (202), false on failure. The API responds asynchronously — the merge
+   * commit may not be immediately visible; callers should fetch the remote branch after.
+   */
+  async updatePRBranch(owner: string, repo: string, prNumber: number): Promise<boolean> {
+    debug('Updating PR branch via GitHub API', { owner, repo, prNumber });
+    try {
+      const { data } = await this.octokit.pulls.updateBranch({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+      debug('PR branch update accepted', { message: data?.message, url: data?.url });
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('PR branch update via API failed', { error: msg });
+      return false;
+    }
+  }
+
   async getPRStatus(owner: string, repo: string, prNumber: number, ref: string): Promise<PRStatus> {
     debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
 

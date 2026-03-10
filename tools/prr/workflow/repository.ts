@@ -318,7 +318,17 @@ export async function checkAndSyncWithRemote(
   }
   
   if (conflictStatus.aheadBy > 0) {
-    console.log(chalk.cyan(`  Branch is ${conflictStatus.aheadBy} commits ahead of remote (will push after fixes)`));
+    console.log(chalk.yellow(`  Branch is ${conflictStatus.aheadBy} commits ahead of remote — pushing unpushed commits`));
+    const { push } = await import('../../../shared/git/git-push.js');
+    const pushResult = await push(git, branch, false, fetchOpts?.githubToken);
+    if (pushResult.success && !pushResult.nothingToPush) {
+      console.log(chalk.green(`  ✓ Pushed ${conflictStatus.aheadBy} unpushed commit(s)`));
+    } else if (pushResult.success && pushResult.nothingToPush) {
+      debug('Ahead commits already on remote (tracking mismatch)', { aheadBy: conflictStatus.aheadBy });
+    } else {
+      console.log(chalk.yellow(`  ⚠ Push failed: ${pushResult.error ?? 'Unknown'}. Will retry after fixes.`));
+      debug('Push of ahead commits failed', { error: pushResult.error, aheadBy: conflictStatus.aheadBy });
+    }
   }
   
   return { success: true };
