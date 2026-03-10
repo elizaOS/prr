@@ -711,7 +711,7 @@ You must decide which comments describe the EXACT SAME underlying problem.
 ${summaries}
 
 GROUPING RULES (be conservative — wrong merges cause missed fixes):
-- Only group comments that target the SAME line (or same code location). Comments on different line numbers must NOT be grouped.
+- CRITICAL: Only group comments that have the SAME line number. Each comment shows "(line N)" — every comment in a GROUP must share the same N. Comments on different lines must NOT be in the same GROUP.
 - Only group comments if they point to the SAME code location AND fix the SAME specific problem.
 - Comments on DIFFERENT lines, DIFFERENT functions, or that require DIFFERENT fixes must NOT be grouped.
 - "Related" or "thematically similar" is NOT enough — they must be describing the same bug/issue.
@@ -745,7 +745,31 @@ If no comments are duplicates, reply: NONE`;
         const allInRange = rawIndices.every((i) => i >= 1 && i <= n);
         if (!allInRange || rawIndices.length < 2) continue;
         if (!rawIndices.includes(canonicalOneBased)) continue;
+        // Audit (prompts.log): model returned "GROUP: 1,2,5 → canonical 2" but [1],[5] were line 2531 and [2] was line 2493 — different lines must not be merged.
         const indices = rawIndices.map((i) => i - 1);
+        const groupLines = indices.map((i) => items[i].comment.line);
+        const sameLine = groupLines.every((l) => l === groupLines[0]);
+        if (!sameLine) {
+          // Re-split by line so we don't lose valid same-line merges (e.g. 1,5 same line; 2 different → keep group 1,5).
+          const byLine = new Map<number | null, number[]>();
+          for (let i = 0; i < indices.length; i++) {
+            const line = items[indices[i]].comment.line;
+            if (!byLine.has(line)) byLine.set(line, []);
+            byLine.get(line)!.push(indices[i]);
+          }
+          let reSplitCount = 0;
+          for (const [, lineIndices] of byLine) {
+            if (lineIndices.length < 2) continue;
+            reSplitCount++;
+            // Pick canonical: longest comment body (same tiebreak as heuristic dedup).
+            const canonicalIdx = lineIndices.reduce((best, i) =>
+              (items[i].comment.body.length > items[best].comment.body.length ? i : best));
+            const dupes = lineIndices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
+            groups.push({ canonical: items[canonicalIdx], dupes });
+          }
+          debug(`Dedup: GROUP ${rawIndices.join(',')} had mixed line numbers (${groupLines.map((l) => l ?? 'file').join(', ')}); re-split → ${reSplitCount} same-line group(s)`);
+          continue;
+        }
         const canonicalIdx = canonicalOneBased - 1;
         const canonical = items[canonicalIdx];
         const dupes = indices.filter((i) => i !== canonicalIdx).map((i) => items[i]);

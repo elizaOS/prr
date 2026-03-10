@@ -46,6 +46,11 @@ on:
         description: 'Repo containing the PRR tool (e.g. owner/prr)'
         required: true
         type: string
+      submit_review:
+        description: 'If true, PRR will submit a PR review and post a comment (only set for manual runs)'
+        required: false
+        default: false
+        type: boolean
     secrets:
       # Caller passes their token here; we use it as GITHUB_TOKEN in the job (checkout + PRR).
       PRR_GITHUB_TOKEN:
@@ -87,9 +92,11 @@ jobs:
           npm run build
 
       # WHY GITHUB_TOKEN: PRR expects GITHUB_TOKEN in env; we pass through the caller's token.
+      # PRR_SUBMIT_REVIEW: only set true by client when run is workflow_dispatch (manual); avoids posting on CLI or label/review_requested.
       - name: Run PRR
         env:
           GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+          PRR_SUBMIT_REVIEW: ${{ inputs.submit_review }}
           ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
