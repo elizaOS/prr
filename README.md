@@ -290,6 +290,7 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-batch` | off | Disable batched LLM calls |
 | `--verbose` | on | Debug output |
 
+Defaults marked **on** (e.g. `--auto-push`, `--keep-workdir`) are true by default; use `--no-auto-push` or `--no-keep-workdir` to disable them.
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 

@@ -3,6 +3,7 @@
  * WHY iterative: Process one split at a time so the user can fix conflicts or stop between splits.
  */
 import chalk from 'chalk';
+import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import ora, { type Ora } from 'ora';
 import { join } from 'path';
@@ -14,6 +15,33 @@ import { cloneOrUpdate } from '../../shared/git/git-clone-index.js';
 import { push } from '../../shared/git/git-push.js';
 import type { SimpleGit } from 'simple-git';
 import { debug, formatNumber } from '../../shared/logger.js';
+
+/** Fail fast if target branch does not exist on remote (pill-output #1). */
+function ensureTargetBranchExistsOnRemote(
+  cloneUrl: string,
+  targetBranch: string,
+  githubToken: string | undefined
+): void {
+  const authUrl = githubToken && cloneUrl.startsWith('https://')
+    ? cloneUrl.replace('https://', `https://${githubToken}@`)
+    : cloneUrl;
+  try {
+    const out = execFileSync('git', ['ls-remote', '--heads', authUrl, `refs/heads/${targetBranch}`], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    if (!out.trim() || !out.includes(`refs/heads/${targetBranch}`)) {
+      throw new Error(`Target branch ${targetBranch} does not exist on remote. Create it first or update the split plan.`);
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('does not exist on remote')) throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('could not read') || msg.includes('not found') || msg.includes('does not exist')) {
+      throw new Error(`Target branch ${targetBranch} does not exist on remote. Create it first or update the split plan.`);
+    }
+    throw new Error(`Could not verify target branch ${targetBranch} on remote: ${msg}`);
+  }
+}
 
 export async function runSplitExec(
   planPath: string,
@@ -31,6 +59,10 @@ export async function runSplitExec(
   const cloneUrl = `https://github.com/${plan.owner}/${plan.repo}.git`;
   const workdir = options.workdir ?? join(process.cwd(), '.split-exec-workdir');
 
+  spinner.start('Checking target branch on remote...');
+  ensureTargetBranchExistsOnRemote(cloneUrl, plan.targetBranch, config.githubToken);
+  spinner.succeed(`Target branch ${plan.targetBranch} exists`);
+
   spinner.start('Cloning repository (source branch)...');
   const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
     additionalBranches: [plan.targetBranch],
@@ -38,15 +70,11 @@ export async function runSplitExec(
   spinner.succeed(`Workdir: ${workdir}`);
 
   const github = new GitHubAPI(config.githubToken);
-  // WHY fetch PR branches: target_branch is already fetched via additionalBranches; fetch any "route to" PR branches.
-  spinner.start('Fetching PR branches (if any)...');
-  for (const split of plan.splits) {
-    if (split.routeToPrNumber != null) {
-      const prInfo = await github.getPRInfo(plan.owner, plan.repo, split.routeToPrNumber);
-      await git.fetch('origin', prInfo.branch).catch(() => {});
-    }
+
+  // Fail fast if target branch is missing in workdir (e.g. additionalBranches fetch warned but continued).
+  if (!options.dryRun) {
+    await ensureTargetRefOrFetch(git, plan.targetBranch, workdir);
   }
-  spinner.succeed('Fetched');
 
   let executedCount = 0;
   const failedSplits: { split: ParsedSplit; index: number; error: Error }[] = [];
@@ -75,9 +103,9 @@ export async function runSplitExec(
       executedCount++;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      console.log(chalk.red(`  Failed: ${error.message}`));
+      spinner.fail(`Failed: ${error.message}`);
       failedSplits.push({ split, index: n, error });
-      // Return to source branch so next split can create its branch from origin/target (pill-output #4).
+      // Return to source branch so next split can create its branch from origin/target.
       await git.checkout(plan.sourceBranch).catch(() => {});
     }
   }
@@ -86,10 +114,18 @@ export async function runSplitExec(
     throw new Error('No splits executed (all had no commits listed). Fix the plan file or parser.');
   }
   if (failedSplits.length > 0) {
-    console.log(chalk.red(`\n${failedSplits.length} split(s) failed:`));
-    failedSplits.forEach(({ split, index, error }) => {
-      console.log(chalk.red(`  [${index}] ${split.title}: ${error.message}`));
-    });
+    console.log(chalk.red(`\n${formatNumber(failedSplits.length)} split(s) failed:`));
+    const sameMessage = failedSplits.every(({ error }) => error.message === failedSplits[0].error.message);
+    if (sameMessage && failedSplits.length > 1) {
+      console.log(chalk.red(`  ${failedSplits[0].error.message}`));
+      failedSplits.forEach(({ split, index }) => {
+        console.log(chalk.red(`  [${index}] ${split.title}`));
+      });
+    } else {
+      failedSplits.forEach(({ split, index, error }) => {
+        console.log(chalk.red(`  [${index}] ${split.title}: ${error.message}`));
+      });
+    }
     throw new Error(
       `${formatNumber(failedSplits.length)} of ${plan.splits.length} split(s) failed. Fix errors above and re-run, or edit the plan.`
     );
@@ -97,7 +133,7 @@ export async function runSplitExec(
   console.log(chalk.green('\nDone.'));
 }
 
-/** Ensure origin/<targetBranch> exists; if not, fetch and retry. Throw with workdir hint if still missing. */
+/** Ensure origin/<targetBranch> exists; if not, add refspec and fetch. Throw with workdir hint if still missing. */
 async function ensureTargetRefOrFetch(
   git: SimpleGit,
   targetBranch: string,
@@ -108,8 +144,8 @@ async function ensureTargetRefOrFetch(
     await git.raw(['rev-parse', '--verify', ref]);
     return;
   } catch {
-    // Ref missing; try explicit fetch (clone may have swallowed the error).
     try {
+      await git.raw(['remote', 'set-branches', '--add', 'origin', targetBranch]);
       await git.fetch('origin', targetBranch);
       await git.raw(['rev-parse', '--verify', ref]);
       return;
@@ -134,17 +170,20 @@ async function executeSplit(
   let branchToPush: string;
 
   if (split.routeToPrNumber != null) {
-    const prInfo = await github.getPRInfo(plan.owner, plan.repo, split.routeToPrNumber);
-    branchToPush = prInfo.branch;
-    spinner.start(`Checking out ${branchToPush} (PR #${split.routeToPrNumber})...`);
-    await git.checkout(branchToPush);
-    await git.reset(['--hard', `origin/${branchToPush}`]);
-    spinner.succeed(`On ${branchToPush}`);
+    // Route-to modifies an existing PR's branch (cherry-pick + force-push).
+    // Disabled: too risky — if something goes wrong the existing PR is corrupted
+    // and requires manual recovery. Use "New PR" splits instead and close the old PR.
+    throw new Error(
+      `Route-to PR #${split.routeToPrNumber} is disabled (modifying existing PR branches is too risky). ` +
+      `Change the plan to use **New PR:** instead, then close the old PR after the new one is merged.`
+    );
   } else if (split.newBranch != null) {
     branchToPush = split.newBranch;
     await ensureTargetRefOrFetch(git, plan.targetBranch, workdir);
     spinner.start(`Creating branch ${branchToPush} from ${plan.targetBranch}...`);
     try {
+      // Delete stale local branch from a previous run so -b doesn't fail with "already exists".
+      await git.raw(['branch', '-D', branchToPush]).catch(() => {});
       await git.checkout(['-b', branchToPush, `origin/${plan.targetBranch}`]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -157,7 +196,7 @@ async function executeSplit(
     }
     spinner.succeed(`Branch ${branchToPush} created`);
   } else {
-    spinner.fail('Split has neither Route to nor New PR — skipping');
+    console.log(chalk.yellow('  Split has neither Route to nor New PR — skipping'));
     return;
   }
 

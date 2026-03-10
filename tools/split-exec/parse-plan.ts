@@ -140,7 +140,8 @@ function parseSplits(body: string): ParsedSplit[] {
       if (newMatch) newBranch = newMatch[1].trim();
       const commitsMatch = line.match(COMMITS_LINE_REGEX);
       if (commitsMatch) {
-        commits = parseCommitsLine(commitsMatch[1]);
+        const inline = parseCommitsLine(commitsMatch[1]);
+        if (inline.length > 0) commits.push(...inline);
         rawCommitLines.push(line);
       } else {
         const bulletMatch = line.match(COMMIT_BULLET_REGEX);

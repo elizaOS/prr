@@ -2,6 +2,10 @@
 
 This file helps AI assistants (Cursor, Claude Code, Aider, etc.) work effectively in this repo.
 
+## Generated artifacts (not committed)
+
+These are created by tools and should not be committed: `.split-plan.md`, `split-exec-output.log`, `split-exec-prompts.log`, `split-plan-output.log`, `split-plan-prompts.log`, `pill-output.md`, `pill-summary.md`, `output.log`, `prompts.log`. See `.gitignore`.
+
 ## Repo layout
 
 - **`tools/prr/`** — PR Resolver (main CLI): entry point, workflow, GitHub, LLM, state, runners integration.
@@ -17,6 +21,7 @@ Entry points: `tools/<tool>/index.ts` (e.g. `tools/prr/index.js` after build). B
 
 - **Typecheck (compile to dist/):** `npm run typecheck` or `npx tsc`. Use `npm run typecheck:noemit` for type-only check (no emit).
 - **Tests:** `npm test` (vitest).
+- **split-exec:** Requires the plan's **target branch to exist on the remote** (checked before clone). Run from any directory; it clones the plan's repo into the workdir.
 
 ## Conventions
 

@@ -537,7 +537,7 @@ PRR tracks and reports:
 - **Architecture Guide**: `docs/ARCHITECTURE.md`
 - **Development Guide**: `DEVELOPMENT.md`
 - **Changelog**: `CHANGELOG.md`
-- **Split-plan / split-exec**: `tools/split-plan/README.md`, `tools/split-exec/README.md`. For split-exec, ensure the target branch (e.g. `staging`) exists on the remote; the tool fetches it after clone and retries once if the ref is missing. On failure the error message includes the workdir path and the exact `cd &lt;workdir&gt; && git fetch origin &lt;target-branch&gt` command.
+- **Split-plan / split-exec**: `tools/split-plan/README.md`, `tools/split-exec/README.md`. For split-exec, ensure the target branch (e.g. `staging`) exists on the remote; the tool fetches it after clone and retries once if the ref is missing. On failure the error message includes the workdir path and the exact command, e.g. `cd <workdir> && git fetch origin <target-branch>`.
 
 ---
 

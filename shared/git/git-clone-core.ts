@@ -98,9 +98,17 @@ export async function cloneOrUpdate(
         for (const b of options.additionalBranches) {
           if (b && b !== branch) {
             try {
+              await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
               await git.fetch('origin', b);
             } catch (err) {
-              debug(`Failed to fetch origin/${b}`, { err: err instanceof Error ? err.message : String(err) });
+              const msg = err instanceof Error ? err.message : String(err);
+              debug(`Failed to fetch origin/${b}`, { err: msg });
+              const isBranchMissing = /couldn't find|does not exist|not found|invalid refspec/i.test(msg);
+              if (isBranchMissing) {
+                console.warn(`  ⚠ Branch ${b} does not exist on remote; ref origin/${b} will be missing.`);
+              } else {
+                console.warn(`  ⚠ Failed to fetch origin/${b}: ${msg.slice(0, 80)}${msg.length > 80 ? '…' : ''}`);
+              }
             }
           }
         }
@@ -121,9 +129,20 @@ export async function cloneOrUpdate(
       for (const b of options.additionalBranches) {
         if (b && b !== branch) {
           try {
+            // --single-branch restricts the fetch refspec to the cloned branch only.
+            // Without adding the refspec, `git fetch origin <b>` downloads objects but
+            // does NOT create the tracking ref `origin/<b>`, so checkout fails later.
+            await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
             await git.fetch('origin', b);
           } catch (err) {
-            debug(`Failed to fetch origin/${b}`, { err: err instanceof Error ? err.message : String(err) });
+            const msg = err instanceof Error ? err.message : String(err);
+            debug(`Failed to fetch origin/${b}`, { err: msg });
+            const isBranchMissing = /couldn't find|does not exist|not found|invalid refspec/i.test(msg);
+            if (isBranchMissing) {
+              console.warn(`  ⚠ Branch ${b} does not exist on remote; ref origin/${b} will be missing.`);
+            } else {
+              console.warn(`  ⚠ Failed to fetch origin/${b}: ${msg.slice(0, 80)}${msg.length > 80 ? '…' : ''}`);
+            }
           }
         }
       }

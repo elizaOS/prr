@@ -194,6 +194,7 @@ export async function closeOutputLog(): Promise<void> {
         }
       } else {
         appendFileSync(outputLogPath, '[Pill] Skipped (no API key or no config in target dir).\n', 'utf-8');
+        if (origLogRef) origLogRef('\n[Pill] Skipped (no API key or no config in target dir).');
       }
     } catch (err) {
       // Log to real console so operators see pill failures (pill-output.md #6); still complete shutdown.
