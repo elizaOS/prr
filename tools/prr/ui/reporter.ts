@@ -14,6 +14,7 @@ import type { DismissedIssue } from '../state/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
+import { debug } from '../../../shared/logger.js';
 
 /** Format path:line for display; use "PR-level comment" when path is the synthetic (PR comment). */
 function formatCommentLocation(comment: { path: string; line?: number | null }): string {
@@ -239,6 +240,24 @@ export function printFinalSummary(
   ).filter(id => !alreadyFixedDismissedIds.has(id));
   const toolFixedCount = relevantVerified.length;
   
+  // Overlap detection: IDs in verifiedFixed that are also dismissed (including already-fixed).
+  const overlapIds = verifiedFixed.filter(id => allDismissedIds.has(id));
+  const alreadyFixedOverlap = verifiedFixed.filter(id => alreadyFixedDismissedIds.has(id));
+  debug('RESULTS SUMMARY counts', {
+    rawVerifiedFixed: verifiedFixed.length,
+    allDismissed: allDismissed.length,
+    dismissedExclExhaustedRemaining: dismissedIssues.length,
+    alreadyFixedDismissed: alreadyFixedDismissedIds.size,
+    currentCommentIds: currentIds?.size ?? 'all',
+    overlapVerifiedAndDismissed: overlapIds.length,
+    overlapVerifiedAndAlreadyFixed: alreadyFixedOverlap.length,
+    relevantVerified: relevantVerified.length,
+    toolFixedCount,
+  });
+  if (overlapIds.length > 0) {
+    debug('Overlap IDs (verifiedFixed ∩ dismissed)', overlapIds);
+  }
+
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
   console.log(chalk.cyan('════════════════════════════════════════════════════════════'));

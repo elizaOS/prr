@@ -7,6 +7,7 @@
  * User-facing numbers use n.toLocaleString() here (workspace rule allows that when logger is not imported).
  */
 import chalk from 'chalk';
+import ora from 'ora';
 import { appendFileSync } from 'fs';
 import { join } from 'path';
 import type { PillConfig, ImprovementPlan, Improvement } from './types.js';
@@ -180,65 +181,87 @@ export async function runPillAnalysis(config: PillConfig): Promise<
   | { result: PillAnalysisResult; reason?: never }
   | { result: null; reason: PillNoImprovementsReason }
 > {
-  if (config.verbose) {
-    console.log('Provider:', config.llmProvider);
-    console.log('Audit model:', config.auditModel);
-  }
-
-  const llmClient = new LLMClient(config);
-  const ctx = await assembleContext(config, llmClient);
-
-  const hasLogs = ctx.outputLog.trim().length > 0 || (ctx.promptsDigest ?? '').trim().length > 0;
-  if (!hasLogs) {
-    return { result: null, reason: 'no_logs' };
-  }
-
-  const counts = getContextTokenCounts(ctx);
-  if (config.verbose) {
-    console.log('Context token counts:');
-    console.log('  docs:', counts.docs);
-    console.log('  sourceFiles:', counts.sourceFiles);
-    console.log('  directoryTree:', counts.directoryTree);
-    console.log('  outputLog:', counts.outputLog);
-    console.log('  promptsDigest:', counts.promptsDigest);
-    const total =
-      counts.docs + counts.sourceFiles + counts.directoryTree + counts.outputLog + counts.promptsDigest;
-    console.log('  total:', total);
-  }
-
-  const userMessage = buildAuditUserMessage(ctx);
-  const response = await llmClient.complete(userMessage, AUDIT_SYSTEM_PROMPT, {
-    model: config.auditModel,
-  });
-  const plan = parseImprovementPlan(response.content);
-
-  if (config.verbose) {
-    displayPlan(plan);
-  }
-  if (response.usage) {
-    console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
-  }
-
-  if (plan.improvements.length === 0) {
-    return { result: null, reason: 'zero_improvements_from_llm' };
-  }
-
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
-  const source = config.logPrefix === 'story' ? 'story' : config.logPrefix === 'pill' ? 'pill' : 'prr';
-  const meta: PillOutputMeta = { date: dateStr, source };
-
-  const instructionsPathOverride = config.instructionsOut;
-  const { instructionsPath, summaryPath } = config.dryRun
-    ? { instructionsPath: join(config.targetDir, 'pill-output.md'), summaryPath: join(config.targetDir, 'pill-summary.md') }
-    : appendPillOutput(config.targetDir, plan, meta, instructionsPathOverride);
-
-  return {
-    result: {
-      pitch: plan.pitch,
-      plan,
-      instructionsPath,
-      summaryPath,
-    },
+  const spinner = config.verbose ? null : ora();
+  const update = (text: string) => {
+    if (spinner) spinner.text = text;
   };
+
+  try {
+    if (config.verbose) {
+      console.log('Provider:', config.llmProvider);
+      console.log('Audit model:', config.auditModel);
+    } else if (spinner) {
+      spinner.start('Assembling context…');
+    }
+
+    const llmClient = new LLMClient(config);
+    const ctx = await assembleContext(config, llmClient);
+
+    const hasLogs = ctx.outputLog.trim().length > 0 || (ctx.promptsDigest ?? '').trim().length > 0;
+    if (!hasLogs) {
+      if (spinner) spinner.info('No logs to analyze');
+      return { result: null, reason: 'no_logs' };
+    }
+
+    const counts = getContextTokenCounts(ctx);
+    if (config.verbose) {
+      console.log('Context token counts:');
+      console.log('  docs:', counts.docs);
+      console.log('  sourceFiles:', counts.sourceFiles);
+      console.log('  directoryTree:', counts.directoryTree);
+      console.log('  outputLog:', counts.outputLog);
+      console.log('  promptsDigest:', counts.promptsDigest);
+      const total =
+        counts.docs + counts.sourceFiles + counts.directoryTree + counts.outputLog + counts.promptsDigest;
+      console.log('  total:', total);
+    } else {
+      update('Running audit…');
+    }
+
+    const userMessage = buildAuditUserMessage(ctx);
+    const response = await llmClient.complete(userMessage, AUDIT_SYSTEM_PROMPT, {
+      model: config.auditModel,
+    });
+    const plan = parseImprovementPlan(response.content);
+
+    if (config.verbose) {
+      displayPlan(plan);
+    }
+    if (response.usage && config.verbose) {
+      console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
+    }
+
+    if (plan.improvements.length === 0) {
+      if (spinner) spinner.succeed('No improvements suggested');
+      return { result: null, reason: 'zero_improvements_from_llm' };
+    }
+
+    if (spinner) update('Writing results…');
+
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
+    const source = config.logPrefix === 'story' ? 'story' : config.logPrefix === 'pill' ? 'pill' : 'prr';
+    const meta: PillOutputMeta = { date: dateStr, source };
+
+    const instructionsPathOverride = config.instructionsOut;
+    const { instructionsPath, summaryPath } = config.dryRun
+      ? { instructionsPath: join(config.targetDir, 'pill-output.md'), summaryPath: join(config.targetDir, 'pill-summary.md') }
+      : appendPillOutput(config.targetDir, plan, meta, instructionsPathOverride);
+
+    if (spinner) spinner.succeed(`${plan.improvements.length.toLocaleString()} improvement(s) recorded`);
+
+    return {
+      result: {
+        pitch: plan.pitch,
+        plan,
+        instructionsPath,
+        summaryPath,
+      },
+    };
+  } catch (err) {
+    if (spinner) spinner.fail(err instanceof Error ? err.message : String(err));
+    throw err;
+  } finally {
+    if (spinner && spinner.isSpinning) spinner.stop();
+  }
 }

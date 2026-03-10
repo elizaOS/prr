@@ -348,8 +348,8 @@ export async function checkAndPullRemoteCommits(
       const previouslyVerified = Verification.getVerifiedComments(stateContext).length;
       if (previouslyVerified > 0) {
         console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
+        debug('Stale verification: clearing all after remote pull', { previouslyVerified, behind: remoteStatus.behind });
         Verification.clearAllVerifications(stateContext);
-      
       }
       
       // Re-fetch code snippets for unresolved issues concurrently

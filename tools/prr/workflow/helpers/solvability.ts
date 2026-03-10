@@ -15,7 +15,7 @@ import { getTestPathForIssueLike, isTestOrSpecPath, issueRequestsTestsText } fro
 import * as Performance from '../../state/state-performance.js';
 import * as Dismissed from '../../state/state-dismissed.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
-import { pluralize } from '../../../../shared/logger.js';
+import { pluralize, debug } from '../../../../shared/logger.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 
@@ -486,6 +486,7 @@ export function assessSolvability(
   const currentHash = hashFileContentSync(fullPath);
   failedAttempts = failedAttempts.filter(a => !a.fileContentHash || a.fileContentHash === currentHash);
   if (failedAttempts.length >= CHRONIC_FAILURE_THRESHOLD) {
+    debug('Solvability dismiss: chronic-failure', { commentId: comment.id, path: comment.path, failedAttempts: failedAttempts.length, threshold: CHRONIC_FAILURE_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'chronic-failure',
@@ -497,6 +498,7 @@ export function assessSolvability(
   // Check 3b: Verifier rejection exhaustion — verifier kept rejecting fix/ALREADY_FIXED; stop retries (remaining for human follow-up).
   const verifierRejections = stateContext.state?.verifierRejectionCount?.[comment.id] ?? 0;
   if (verifierRejections >= VERIFIER_REJECTION_DISMISS_THRESHOLD) {
+    debug('Solvability dismiss: verifier-rejection', { commentId: comment.id, path: comment.path, rejections: verifierRejections, threshold: VERIFIER_REJECTION_DISMISS_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'remaining',
@@ -507,6 +509,7 @@ export function assessSolvability(
   // Check 3c: Wrong-file exhaustion — fixer kept editing the wrong file; issue may need another file (e.g. tests, README). Stop retries.
   const wrongFileCount = stateContext.state?.wrongFileLessonCountByCommentId?.[comment.id] ?? 0;
   if (wrongFileCount >= WRONG_FILE_EXHAUST_THRESHOLD) {
+    debug('Solvability dismiss: wrong-file', { commentId: comment.id, path: comment.path, wrongFileCount, threshold: WRONG_FILE_EXHAUST_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'remaining',
@@ -517,6 +520,7 @@ export function assessSolvability(
   // Check 4: WRONG_LOCATION/UNCLEAR — after N consecutive same explanation, stop retries (remaining for human follow-up).
   const consecutiveSame = stateContext.state?.wrongLocationUnclearConsecutiveSameByCommentId?.[comment.id] ?? 0;
   if (consecutiveSame >= WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD) {
+    debug('Solvability dismiss: wrong-location/unclear', { commentId: comment.id, path: comment.path, consecutiveSame, threshold: WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'remaining',
@@ -529,6 +533,7 @@ export function assessSolvability(
   // the fixer would waste another iteration. Dismissing in solvability avoids the LLM call entirely.
   const alreadyFixedAny = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
   if (alreadyFixedAny >= ALREADY_FIXED_ANY_THRESHOLD) {
+    debug('Solvability dismiss: already-fixed-any', { commentId: comment.id, path: comment.path, alreadyFixedAny, threshold: ALREADY_FIXED_ANY_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'already-fixed',
@@ -539,6 +544,7 @@ export function assessSolvability(
   // Check 5b: ALREADY_FIXED exhaustion — after N consecutive same explanation, dismiss as not-an-issue (prompts.log audit).
   const alreadyFixedConsecutive = stateContext.state?.alreadyFixedConsecutiveSameByCommentId?.[comment.id] ?? 0;
   if (alreadyFixedConsecutive >= ALREADY_FIXED_EXHAUST_THRESHOLD) {
+    debug('Solvability dismiss: already-fixed-exhaust', { commentId: comment.id, path: comment.path, alreadyFixedConsecutive, threshold: ALREADY_FIXED_EXHAUST_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'not-an-issue',

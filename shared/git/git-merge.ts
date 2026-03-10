@@ -146,10 +146,11 @@ export async function mergeBaseBranch(
     // Try to merge (--no-ff when requested so we always create a merge commit and have something to push)
     const mergeArgs: string[] = [`origin/${baseBranch}`, '--no-edit'];
     if (options?.noFastForward) mergeArgs.push('--no-ff');
-    debug('Attempting merge', { noFastForward: options?.noFastForward });
     const headBefore = (await git.revparse(['HEAD'])).trim();
+    debug('Attempting merge', { noFastForward: options?.noFastForward, headBefore: headBefore.slice(0, 10) });
     const result = await git.merge(mergeArgs);
     const headAfter = (await git.revparse(['HEAD'])).trim();
+    debug('Merge completed', { headBefore: headBefore.slice(0, 10), headAfter: headAfter.slice(0, 10), headMoved: headBefore !== headAfter });
     
     // Detect "Already up to date": simple-git's MergeResult (PullResult & MergeDetail)
     // does not store the "Already up to date" text in any parsed field — the line parsers

@@ -116,6 +116,7 @@ export async function handleNoChangesWithVerification(
             : 1;
           state.alreadyFixedLastDetailByCommentId[firstIssueAf.comment.id] = detail;
           state.alreadyFixedConsecutiveSameByCommentId[firstIssueAf.comment.id] = consecutive;
+          debug('ALREADY_FIXED counter update', { commentId: firstIssueAf.comment.id, consecutiveSame: consecutive, sameAsLast: last === detail, detail: detail.slice(0, 60) });
           // WHY separate counter from same-explanation counter above: The same-explanation counter
           // (ALREADY_FIXED_EXHAUST_THRESHOLD) only fires when explanation text matches. This counter
           // catches the broader pattern: 3+ models independently say ALREADY_FIXED with *different*
@@ -124,7 +125,9 @@ export async function handleNoChangesWithVerification(
           if (!state.consecutiveAlreadyFixedAnyByCommentId) state.consecutiveAlreadyFixedAnyByCommentId = {};
           state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id] = (state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id] ?? 0) + 1;
           const anyCount = state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id];
+          debug('ALREADY_FIXED any-counter', { commentId: firstIssueAf.comment.id, anyCount, threshold: ALREADY_FIXED_ANY_THRESHOLD });
           if (anyCount >= ALREADY_FIXED_ANY_THRESHOLD) {
+            debug('ALREADY_FIXED dismiss: any-threshold reached', { commentId: firstIssueAf.comment.id, anyCount });
             Dismissed.dismissIssue(
               stateContext,
               firstIssueAf.comment.id,

@@ -86,11 +86,21 @@ export async function checkAndMergeBaseBranch(
     await git.fetch('origin', prInfo.branch);
 
     // When the PR branch is behind the base (locally or per GitHub), merge with --no-ff and push so the branch is up to date. Use local state after fetch so we don't rely only on GitHub's mergeableState (which can be stale or missing). WHY: User expects PRR to "update the branch, pull target into source, and push" so the PR is not "out of date with base branch".
+    const headSha = (await git.revparse(['HEAD'])).trim();
     const baseSha = (await git.revparse([`origin/${prInfo.baseBranch}`])).trim();
     const mergeBaseSha = (await git.raw(['merge-base', 'HEAD', `origin/${prInfo.baseBranch}`])).trim();
     const isBehindLocally = baseSha !== mergeBaseSha;
     const forceMerge = isBehindLocally || prInfo.mergeableState?.toLowerCase() === 'behind';
+    debug('Base merge decision', {
+      headSha: headSha.slice(0, 10),
+      baseSha: baseSha.slice(0, 10),
+      mergeBaseSha: mergeBaseSha.slice(0, 10),
+      isBehindLocally,
+      githubMergeableState: prInfo.mergeableState,
+      forceMerge,
+    });
     const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge, noFastForward: forceMerge });
+    debug('Base merge result', { success: mergeResult.success, alreadyUpToDate: mergeResult.alreadyUpToDate, error: mergeResult.error });
 
     if (!mergeResult.success) {
       // Merge failed - use LLM tool to resolve conflicts
