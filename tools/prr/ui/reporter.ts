@@ -298,6 +298,17 @@ export function printFinalSummary(
     }
   }
 
+  // When run in GitHub Actions, hint how to get logs to an agent (artifact download via gh CLI)
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const runId = process.env.GITHUB_RUN_ID;
+    const repo = process.env.GITHUB_REPOSITORY;
+    if (runId && repo) {
+      console.log(chalk.gray(`\n  Tip: To share logs with an agent, download the run artifact: gh run download ${runId} --repo ${repo} --name prr-logs-<PR>`));
+    } else {
+      console.log(chalk.gray(`\n  Tip: To share logs with an agent, download the workflow artifact (output.log, prompts.log) and point the agent at the files.`));
+    }
+  }
+
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
 }
 

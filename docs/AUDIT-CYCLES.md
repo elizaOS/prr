@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-10 · **Recorded cycles:** 22 · **Historical (legacy):** 4
+**Last updated:** 2026-03-10 · **Recorded cycles:** 23 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -156,6 +156,25 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Additive prompt + defensive parser; no behavior revert.
 
 **Notes:** Optional: dedup prompt could add "Before replying, verify every index in a GROUP has the same (line N); if any two differ, do NOT group them."
+
+---
+
+### Cycle 23 — 2026-03-10 (prr-logs-5 elizaOS/prr#5)
+
+**Artifacts audited:** output.log + prompts.log from Actions run 22882523900 (gh run download); PR #5, 4 comments, 3 fixed, 1 dismissed, push failed
+
+**Findings:**
+- **High:** Push after base-branch merge used `git.push('origin', branch)` (simple-git) instead of shared `push()` from git-push.ts. In CI this led to "could not read Password for 'https://...@github.com': No such device or address" (merge push) then 403 on fix push — token was in URL but credential helper/TTY prompt still triggered; fix push already used shared push with auth URL.
+- **High:** Fix push 403 "Permission to elizaOS/prr.git denied to github-actions[bot]" — workflow had `contents: read` only (fixed in earlier change: `contents: write`).
+- **Medium:** types.ts:167 "add tests for parseBranchSpec/normalizeCompareBranch" — fixer created `tools/prr/github/github-api-parser.test.ts`; allowed path was different (`tests/github-api-parser.test.ts` or similar). Lesson "Fixer attempted disallowed file(s): tests/github-branch-parser.test.ts"; then "Skipping newfile — path already exists" for tests/github-api-parser.test.ts; verifier saw "code change is empty" (new file not in diff shown?). Issue dismissed as file-unchanged after single-issue attempts. Aligns with Cycle 21/22: single-file explicit path and test-path resolution for "add tests" issues.
+
+**Improvements implemented:**
+- base-merge: After merging base branch, use shared `push()` from git-push.ts with `githubToken` instead of `git.push('origin', branch)`. Ensures merge-commit push uses same one-shot auth URL and credential.helper= / GIT_TERMINAL_PROMPT=0 as fix push (avoids "could not read Password" in CI).
+- run-setup-phase: Pass `config.githubToken` into `checkAndMergeBaseBranch`.
+
+**Flip-flop check:** N — Same push path as fix loop; no behavior change for local/dev.
+
+**Notes:** Run downloaded via `gh run download 22882523900 --repo elizaOS/prr --name prr-logs-5`. Optional: when "add tests for X" resolves to a test path that doesn't exist, ensure allowedPaths and verifier diff include the to-be-created path so newfile isn't treated as "empty change".
 
 ---
 

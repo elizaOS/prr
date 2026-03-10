@@ -10,6 +10,7 @@ import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber } from '../../../shared/logger.js';
 import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../../../shared/git/git-clone-index.js';
+import { push } from '../../../shared/git/git-push.js';
 
 /**
  * Check and merge base branch into PR branch
@@ -21,7 +22,8 @@ export async function checkAndMergeBaseBranch(
   prInfo: PRInfo,
   options: CLIOptions,
   spinner: Ora,
-  resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>
+  resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
+  githubToken?: string
 ): Promise<{
   success: boolean;
   exitReason?: string;
@@ -167,13 +169,13 @@ export async function checkAndMergeBaseBranch(
           }
           console.log(chalk.green(`✓ Conflicts resolved and merged ${prInfo.baseBranch}`));
           if (!options.noPush && !options.noCommit) {
-            try {
-              spinner.start('Pushing merge commit...');
-              await git.push('origin', prInfo.branch);
+            spinner.start('Pushing merge commit...');
+            const pushResult = await push(git, prInfo.branch, false, githubToken);
+            if (pushResult.success) {
               spinner.succeed('Pushed merge commit');
-            } catch (pushErr) {
+            } else {
               spinner.fail('Failed to push merge commit');
-              console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
+              console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local.`));
             }
           }
           await restoreStash();
@@ -189,13 +191,13 @@ export async function checkAndMergeBaseBranch(
     } else if (mergeResult.success) {
       console.log(chalk.green(`✓ Merged latest ${prInfo.baseBranch} into ${prInfo.branch}`));
       if (!options.noPush && !options.noCommit) {
-        try {
-          spinner.start('Pushing merge commit...');
-          await git.push('origin', prInfo.branch);
+        spinner.start('Pushing merge commit...');
+        const pushResult = await push(git, prInfo.branch, false, githubToken);
+        if (pushResult.success) {
           spinner.succeed('Pushed merge commit');
-        } catch (pushErr) {
+        } else {
           spinner.fail('Failed to push merge commit');
-          console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
+          console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local.`));
         }
       } else {
         console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit is set).'));

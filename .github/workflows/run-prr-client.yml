@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: read
+      contents: write   # read for checkout; write required for PRR to push fix commits
     steps:
       - name: Checkout PRR
         uses: actions/checkout@v4
