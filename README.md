@@ -205,6 +205,7 @@ prr https://github.com/owner/repo/pull/123 --tool claude-code
 
 # Dry run - show issues without fixing
 prr https://github.com/owner/repo/pull/123 --dry-run
+```
 
 ### Story: PR or branch narrative & changelog
 
@@ -229,6 +230,7 @@ story owner/repo@branch -v --max-commits 200 --max-files 500
 
 Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`). Logs: `story-output.log`, `story-prompts.log`.
 
+```bash
 # Keep work directory for inspection
 prr https://github.com/owner/repo/pull/123 --keep-workdir
 

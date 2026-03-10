@@ -972,18 +972,24 @@ export class GitHubAPI {
     maxCommits: number = 500
   ): Promise<Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>> {
     debug('Fetching branch commit history', { owner, repo, branch, maxCommits });
-    const all = await this.octokit.paginate(this.octokit.repos.listCommits, {
+    const commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }> = [];
+    for await (const response of this.octokit.paginate.iterator(this.octokit.repos.listCommits, {
       owner,
       repo,
       sha: branch,
       per_page: 100,
-    });
-    const commits = all.slice(0, maxCommits).map(c => ({
-      sha: c.sha,
-      message: c.commit.message,
-      authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
-      committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
-    }));
+    })) {
+      for (const c of response.data) {
+        commits.push({
+          sha: c.sha,
+          message: c.commit.message,
+          authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
+          committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
+        });
+        if (commits.length >= maxCommits) break;
+      }
+      if (commits.length >= maxCommits) break;
+    }
     return commits.reverse();
   }
 
