@@ -2130,6 +2130,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       '2: NO: Added try/catch but the comment asks for input validation before the call',
       'LESSON: Review asks for pre-call validation (line 32), not post-call error handling',
       '',
+      'CRITICAL FORMAT: Reply with plain lines starting with the fix number (e.g. 1: YES: ... or 2: NO: ...).',
+      'Do NOT use markdown headings in your response. Wrong: ## Fix 1: YES: ... Right: 1: YES: ...',
+      '',
       '---',
       '',
     ];
@@ -2185,7 +2188,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     parts.push('---');
     parts.push('');
-    parts.push('Now verify each fix. Use the fix number (e.g. "1: YES: ..." or "2: NO: ..."). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
+    parts.push('Now verify each fix. Reply with lines like 1: YES: ... or 2: NO: ... (plain text, no ## Fix headings). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
     return parts.join('\n');
   }
 
@@ -2200,13 +2203,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
-    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..." (no colon after FIX_ID), or "FIX_ID: 1" then "NO: ..." on next line
+    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "## Fix 1: YES: ..." (prompts.log audit), or "FIX_ID: 1" then "NO: ..." on next line
     const lines = content.split('\n');
     let currentOriginalId: string | null = null;
 
     for (const line of lines) {
-      // Match "1: YES: ..." or "fix_2: NO: ..." or "FIX_ID: 1: NO: ..." or "FIX_ID 1: YES: ..." (output.log audit: model used "FIX_ID 1:" with space, no colon)
-      const verifyMatch = line.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
+      // Match "1: YES: ...", "## Fix 1: YES: ...", "fix_2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..."
+      const verifyMatch = line.match(/^(?:##\s*[Ff]ix\s+|fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
       if (verifyMatch) {
         const [, numStr, yesNo, explanation] = verifyMatch;
         const idx = parseInt(numStr, 10);

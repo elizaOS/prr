@@ -468,6 +468,7 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
   prompt += `## Issue
 **TARGET FILE(S) (you MAY edit only these files):** ${allowedPaths.join(', ')}${issue.comment.line ? ` (primary: ${primaryPath}:${issue.comment.line})` : ''}
 Any change to a different file will be reverted and will not fix this issue.
+${allowedPaths.length === 1 ? `The ONLY file you may create or edit for this issue is: \`${allowedPaths[0]}\`. Do not create or edit files in any other directory (e.g. plugins/ or a colocated path).\n` : ''}
 If the review mentions another file (e.g. "duplicates … in X" or "existing in X"), that file is only a reference — fix the issue in the TARGET file(s) above (e.g. remove the duplicate here and use the shared one). Do NOT edit the referenced file unless it is listed in TARGET FILE(S).
 ${journalPath ? `Drizzle's migration journal is the JSON file \`db/migrations/meta/_journal.json\`; add an entry there. Do not add SQL (e.g. INSERT INTO __journal) or table-based journal logic.\n` : ''}
 ${allowedPaths.length > 1 ? '\n' + allowedPaths.map(p => `File: ${p}`).join('\n') + '\n' : ''}

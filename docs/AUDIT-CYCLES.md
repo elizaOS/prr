@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-05 · **Recorded cycles:** 20 · **Historical (legacy):** 4
+**Last updated:** 2026-03-10 · **Recorded cycles:** 22 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -139,6 +139,45 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 22 — 2026-03-10 (prompts.log elizaOS/eliza#6562)
+
+**Artifacts audited:** prompts.log (#0001–#0048: dedup, fix, batch verify, analysis prompts and responses)
+
+**Findings:**
+- **Medium:** Batch verifier responded with "## Fix 1: YES: ..." / "## Fix 2: NO: ..." (markdown headings) instead of "1: YES: ..." / "2: NO: ...", causing parse shortfall (parsed: 0, expected: 2); retry with stronger model parsed correctly. Prompt uses "## Fix N" as section headers, so model echoed that format.
+- **Low:** Dedup prompt (#0001): model returned "GROUP: 1,3,4,5 → canonical 3" for comments on lines 2493, 2530, 2531, 2507 — violated "CRITICAL: Only group comments that have the SAME line number." Re-split logic correctly rejected; prompt could reinforce same-line check before replying.
+- **Low:** Fix prompt structure (TARGET FILE(S), PR context, diff summary) is clear; single-file explicit path (Cycle 21) should reduce wrong-path attempts.
+
+**Improvements implemented:**
+- Batch verify prompt: added BAD example "Do NOT use headings: ## Fix 1: YES: ... is invalid; use 1: YES: ..." and instruction that parser expects plain lines starting with fix number.
+- Batch verify parser: extended regex to accept "## Fix N: YES|NO: ..." so responses in that format are parsed (resilience when model still uses headings).
+
+**Flip-flop check:** N — Additive prompt + defensive parser; no behavior revert.
+
+**Notes:** Optional: dedup prompt could add "Before replying, verify every index in a GROUP has the same (line N); if any two differ, do NOT group them."
+
+---
+
+### Cycle 21 — 2026-03-10 (output.log elizaOS/eliza#6562)
+
+**Artifacts audited:** output.log (exit "All issues resolved", 34 fixed from prior runs, 90 dismissed, 0 remaining; ~78 LLM calls)
+
+**Findings:**
+- **Medium:** "Add tests for banner.ts" — TARGET FILE(S) was single path `banner.test.ts` (resolved to `packages/.../__tests__/banner.test.ts`), but fixer repeatedly created `plugins/plugin-discord/.../banner.test.ts`; disallowed-file lesson existed but model still inferred colocated path.
+- **Low:** Dedup re-split: GROUP had mixed line numbers (2493, 2530, 2531, 2507) → re-split correctly yielded 0 same-line groups; no change needed.
+- **Low:** Verifier sometimes responded "## Fix 1: YES..." instead of `issue_1: YES: ...` → parse shortfall; stronger model retry parsed correctly.
+- **Low:** Exit when nothing to commit: "No changes to commit" could add "All remaining issues were already fixed or dismissed; nothing new to commit or push."
+- **Low:** Number formatting: reminder to use `formatNumber` for user-visible counts (workspace rule).
+
+**Improvements implemented:**
+- Single-issue prompt: when `allowedPaths.length === 1`, add explicit line "The ONLY file you may create or edit for this issue is: `<full path>`. Do not create or edit files in any other directory (e.g. plugins/ or a colocated path)." (utils.ts `buildSingleIssuePrompt`)
+
+**Flip-flop check:** N — Additive prompt clarity; no behavior revert.
+
+**Notes:** Optional follow-ups: verifier prompt BAD example for "## Fix N" format; final summary line when 0 remaining and no commit; optional dedup fallback "within N lines" when re-split yields 0 (low priority).
+
+---
 
 ### Cycle 20 — 2026-03-05 (output.log + prompts.log follow-up on pathspec crashes and partial batches)
 

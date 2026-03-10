@@ -711,7 +711,7 @@ You must decide which comments describe the EXACT SAME underlying problem.
 ${summaries}
 
 GROUPING RULES (be conservative — wrong merges cause missed fixes):
-- CRITICAL: Only group comments that have the SAME line number. Each comment shows "(line N)" — every comment in a GROUP must share the same N. Comments on different lines must NOT be in the same GROUP.
+- CRITICAL: Only group comments that have the SAME line number. Each comment shows "(line N)" — every comment in a GROUP must share the same N. Comments on different lines must NOT be in the same GROUP. Before replying, verify: every index you put in one GROUP has the same (line N); if any two have different line numbers, do NOT put them in the same GROUP.
 - Only group comments if they point to the SAME code location AND fix the SAME specific problem.
 - Comments on DIFFERENT lines, DIFFERENT functions, or that require DIFFERENT fixes must NOT be grouped.
 - "Related" or "thematically similar" is NOT enough — they must be describing the same bug/issue.
