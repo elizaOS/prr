@@ -74,6 +74,7 @@ jobs:
             --tool llm-api \
             --no-wait-bot
 
+      # output.log + prompts.log are written to CWD (repo root) by PRR; upload as artifacts for debugging.
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

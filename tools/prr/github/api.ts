@@ -118,21 +118,30 @@ export class GitHubAPI {
   async getPRStatus(owner: string, repo: string, prNumber: number, ref: string): Promise<PRStatus> {
     debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
 
-    // Get all check runs for this ref using pagination
+    // Get all check runs for this ref using pagination.
+    // 422/404 can occur when Checks API is unavailable (e.g. token lacks checks:read, or repo settings).
     const allCheckRuns: Array<{ status: string; name: string }> = [];
-    for await (const response of this.octokit.paginate.iterator(
-      this.octokit.checks.listForRef,
-      {
-        owner,
-        repo,
-        ref,
-        per_page: 100,
+    try {
+      for await (const response of this.octokit.paginate.iterator(
+        this.octokit.checks.listForRef,
+        {
+          owner,
+          repo,
+          ref,
+          per_page: 100,
+        }
+      )) {
+        const runs = (response.data as any).check_runs || response.data;
+        if (Array.isArray(runs)) {
+          allCheckRuns.push(...runs);
+        }
       }
-    )) {
-      // paginate.iterator returns items directly in response.data for this endpoint
-      const runs = (response.data as any).check_runs || response.data;
-      if (Array.isArray(runs)) {
-        allCheckRuns.push(...runs);
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status === 422 || status === 404) {
+        debug('Check runs API unavailable (422/404), assuming no check runs', { owner, repo, ref });
+      } else {
+        throw err;
       }
     }
 
@@ -157,12 +166,24 @@ export class GitHubAPI {
     // Total excludes review-bot checks so CI completion reflects real CI only.
     const totalChecks = inProgressChecks.length + pendingChecks.length + completedChecks;
 
-    // Get combined status
-    const { data: status } = await this.octokit.repos.getCombinedStatusForRef({
-      owner,
-      repo,
-      ref,
-    });
+    // Get combined status (commit statuses; can also 422 if token lacks scope).
+    let status: { state: string };
+    try {
+      const res = await this.octokit.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref,
+      });
+      status = res.data;
+    } catch (err: unknown) {
+      const code = (err as { status?: number })?.status;
+      if (code === 422 || code === 404) {
+        debug('Combined status API unavailable (422/404), assuming success', { owner, repo, ref });
+        status = { state: 'success' };
+      } else {
+        throw err;
+      }
+    }
 
     // Get requested reviewers (pending review requests)
     const { data: pr } = await this.octokit.pulls.get({

@@ -107,14 +107,22 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     ? ['push', authPushUrl, `HEAD:${branch}`]
     : ['push', 'origin', branch];
   if (force) args.push('--force');
-  
-  const fullCommand = `git ${args.join(' ')}`;
+  // When using auth URL, disable credential helper so git uses URL credentials only (avoids "could not read Password" in CI).
+  const pushArgs = authPushUrl ? ['-c', 'credential.helper=', ...args] : args;
+
+  const fullCommand = `git ${pushArgs.join(' ')}`;
   debug('Starting git push', { command: fullCommand, workdir });
-  
+
+  const spawnEnv = { ...process.env };
+  if (authPushUrl) {
+    spawnEnv.GIT_TERMINAL_PROMPT = '0';  // Never prompt for credentials (CI has no TTY)
+  }
+
   return new Promise((resolve) => {
-    const gitProcess = spawn('git', args, {
+    const gitProcess = spawn('git', pushArgs, {
       cwd: workdir,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: spawnEnv,
     });
     
     let stdout = '';
