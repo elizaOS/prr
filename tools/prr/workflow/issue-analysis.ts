@@ -1036,8 +1036,9 @@ export async function getCodeSnippet(
       return buildNumberedFullFileSnippet(content, note);
     }
 
-    if (commentBody && commentNeedsConservativeAnalysisContext(commentBody)) {
-      const conservativeSnippet = buildConservativeAnalysisSnippet(content, path, line, commentBody);
+    // Cycle 27: reply.ts gets broader snippet so judge sees enough of reply action handler (avoids STALE).
+    if (path.endsWith('reply.ts') || (commentBody && commentNeedsConservativeAnalysisContext(commentBody))) {
+      const conservativeSnippet = buildConservativeAnalysisSnippet(content, path, line, commentBody ?? '');
       if (conservativeSnippet) return conservativeSnippet;
     }
 

@@ -23,6 +23,20 @@ export function normalizePathForAllow(path: string): string {
 }
 
 /**
+ * Fix URL-encoding artifacts in path segments (e.g. from GitHub links in comment bodies).
+ * A segment like "2Fmessage-service.test.ts" comes from "%2Fmessage..." with % stripped;
+ * 2F is hex for '/', so we strip that prefix so the path is valid repo-relative.
+ */
+export function normalizePathSegmentEncoding(path: string): string {
+  const normalized = normalizeRepoPath(path);
+  const segments = normalized.split('/').map((seg) => {
+    if (/^(2F|2f)[a-zA-Z0-9_.-]/.test(seg)) return seg.slice(2);
+    return seg;
+  });
+  return segments.filter(Boolean).join('/');
+}
+
+/**
  * True if the path is safe to use as an allowed path for the fixer (repo-relative, not internal).
  * WHY: Comment bodies can contain absolute paths (e.g. /root/.cursor/plans/foo.plan.md). Adding
  * those to allowedPaths causes "file outside workdir" and wasted LLM calls.
@@ -40,7 +54,10 @@ export function isPathAllowedForFix(path: string): boolean {
 
 /**
  * Filter an array of paths to only those allowed for fix (repo-relative, not internal).
+ * Normalizes path segment encoding (e.g. "2F" prefix from URL-encoded "/") so TARGET FILE(S)
+ * never show artifacts like "packages/.../2Fmessage-service.test.ts".
  */
 export function filterAllowedPathsForFix(paths: string[]): string[] {
-  return paths.filter(isPathAllowedForFix);
+  const normalized = paths.map(normalizePathSegmentEncoding);
+  return [...new Set(normalized)].filter(isPathAllowedForFix);
 }

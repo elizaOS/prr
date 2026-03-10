@@ -82,6 +82,8 @@ function commentMentionsApiOrSignature(fix: { comment: string }): boolean {
  * True when the review comment is about cache/state lifecycle behavior rather than
  * a single local line. These issues need broader verification context so the model
  * can inspect creation, replacement, pruning, and cleanup paths together.
+ * Cycle 27: Added reply/action-state patterns so judge gets lifecycle-aware snippet
+ * (avoids STALE when "truncated code doesn't show enough of the reply action handler").
  */
 export function commentNeedsLifecycleContext(fix: { comment: string }): boolean {
   const c = fix.comment.toLowerCase();
@@ -92,7 +94,11 @@ export function commentNeedsLifecycleContext(fix: { comment: string }): boolean 
     /\bnever\s+(?:cleared|cleaned|pruned|deleted|evicted|removed)\b/.test(c) ||
     /\b(?:cleanup|clean up|prune|evict|ttl|lru)\b/.test(c) ||
     /\b(?:stale|orphaned|dangling)\s+(?:entry|entries|state|map|set|cache)\b/.test(c) ||
-    /\b(?:map|set|weakmap|weakset|cache)\s+potential\s+(?:memory\s+)?leak\b/.test(c)
+    /\b(?:map|set|weakmap|weakset|cache)\s+potential\s+(?:memory\s+)?leak\b/.test(c) ||
+    /\bhasrequestedinstate\b/.test(c) ||
+    /\brecent_messages\b/.test(c) ||
+    /\baction_state\b/.test(c) ||
+    /\breply\s+(?:action\s+)?handler\b/.test(c)
   );
 }
 

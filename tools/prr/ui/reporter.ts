@@ -279,7 +279,7 @@ export function printFinalSummary(
     }, {} as Record<string, number>);
     
     const categoryParts = Object.entries(byCategory)
-      .map(([cat, count]) => `${count} ${cat}`)
+      .map(([cat, count]) => `${formatNumber(count)} ${cat}`)
       .join(', ');
     
     console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
@@ -339,20 +339,20 @@ export function buildReviewSummaryMarkdown(
   if (exitDetails) lines.push(`**Exit:** ${exitDetails}`);
   if (toolFixedCount > 0) {
     let note = '';
-    if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) note = ` (${fixedThisSession} this run)`;
+    if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) note = ` (${formatNumber(fixedThisSession)} this run)`;
     else if (fixedThisSession === 0) note = ' (from previous runs)';
-    lines.push(`- ✓ ${toolFixedCount} issue(s) fixed and verified${note}`);
+    lines.push(`- ✓ ${formatNumber(toolFixedCount)} issue(s) fixed and verified${note}`);
   }
   if (dismissedIssues.length > 0) {
     const byCategory = dismissedIssues.reduce((acc: Record<string, number>, issue) => {
       acc[issue.category] = (acc[issue.category] || 0) + 1;
       return acc;
     }, {});
-    const catParts = Object.entries(byCategory).map(([c, n]) => `${n} ${c}`).join(', ');
-    lines.push(`- ○ ${dismissedIssues.length} dismissed (${catParts})`);
+    const catParts = Object.entries(byCategory).map(([c, n]) => `${formatNumber(n)} ${c}`).join(', ');
+    lines.push(`- ○ ${formatNumber(dismissedIssues.length)} dismissed (${catParts})`);
   }
   if (remainingCount === 0) lines.push('- ✓ No issues remaining');
-  else lines.push(`- ○ ${remainingCount} remaining (resolve by fix or conversation)`);
+  else lines.push(`- ○ ${formatNumber(remainingCount)} remaining (resolve by fix or conversation)`);
   return lines.join('\n');
 }
 

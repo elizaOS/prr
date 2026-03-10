@@ -167,8 +167,9 @@ export async function trySingleIssueFix(
     let focusedPrompt = await Promise.resolve(buildSingleIssuePrompt(issue, { pathExists: pathExistsForPrompt }));
 
     // When files are missing in workdir (e.g. sparse checkout), inject content from git so the fixer can produce valid search/replace.
-    const MAX_INJECT_CHARS_PER_FILE = 80_000;
-    const MAX_INJECT_CHARS_TOTAL = 160_000;
+    // Cycle 27: Lowered from 80k/160k so single-issue prompts stay under ~120k (audit: #0067/#0077 reached ~145k).
+    const MAX_INJECT_CHARS_PER_FILE = 60_000;
+    const MAX_INJECT_CHARS_TOTAL = 120_000;
     let totalInjected = 0;
     const couldNotInjectPaths: string[] = [];
     for (const p of allowedForIssue) {

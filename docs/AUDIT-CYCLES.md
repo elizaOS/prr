@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-10 · **Recorded cycles:** 25 · **Historical (legacy):** 4
+**Last updated:** 2026-03-10 · **Recorded cycles:** 27 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -214,6 +214,42 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Prompt clarification only; re-split already enforces same-line.
 
 **Notes:** Run matched output.log (Cycle 24): one fix applied and verified; exit clean. Prompts.log audit confirms judge/fixer/verifier/dismissal prompts and responses were coherent and produced correct outcomes.
+
+---
+
+### Cycle 26 — 2026-03-10 (output.log elizaOS/eliza#6562, full run complete)
+
+**Artifacts audited:** output.log (2,011 lines). Exit: All issues resolved; 36 fixed and verified (from previous runs), 105 dismissed, 0 remaining. No new commits this run (all already resolved); dismissal comments added: 1, skipped: 11.
+
+**Findings:**
+- **Low:** RESULTS SUMMARY and GitHub review markdown showed raw numbers for dismissed breakdown (e.g. "24 stale, 38 not-an-issue") and for fixed/dismissed counts in buildReviewSummaryMarkdown. Workspace rule requires formatNumber for user-visible numbers.
+- **Positive:** Exit message correct ("All issues were already resolved (fixed or dismissed); nothing new to commit or push."). Queue and final state consistent (no remaining). Timing, token summary, model performance, and debug issue table all present. Single duplicate summary post fixed in prior commit (review only, no issue comment).
+
+**Improvements implemented:**
+- reporter.ts: use formatNumber for category counts in printFinalSummary dismissed line (24 → formatNumber(count) in categoryParts).
+- reporter.ts: use formatNumber in buildReviewSummaryMarkdown for fixed count, dismissed total, per-category counts, remaining count, and "this run" note so GitHub comment matches locale formatting.
+
+**Flip-flop check:** N — Number formatting only; no behavior change.
+
+**Notes:** Run completed as intended; 106 LLM calls, ~$2.34 estimated cost; 36 verified from state, 105 dismissed (stale/not-an-issue/file-unchanged/already-fixed/path-unresolved).
+
+---
+
+### Cycle 27 — 2026-03-10 (prompts.log full run, elizaOS/eliza#6562)
+
+**Artifacts audited:** prompts.log (~24k lines). Judge prompts ~49–82k chars; fix prompts #0005 ~85k, #0067 ~145,336 chars, #0077 ~145,178 chars (single-issue with full file injection). One TARGET FILE(S) line showed **`2Fmessage-service.test.ts`** (path segment from URL-encoding). Judge response #0050: issue_6 STALE (“truncated code doesn’t show enough of the reply action handler”).
+
+**Findings:**
+- **Medium:** Single-issue prompts (#0067, #0077) reached ~145k chars (MAX_INJECT_CHARS_TOTAL = 160k; two files at 80k each + template). Acceptable but costly; optional: lower effective cap or inject line window (±N lines) for very large files to keep prompts under ~120k.
+- **Low:** Judge returned STALE for reply optimization (issue_6) because truncated reply action snippet didn’t show enough context. Optional: expand snippet for `bootstrap/actions/reply.ts` (or when comment mentions hasRequestedInState / RECENT_MESSAGES / ACTION_STATE) so judge can return YES/NO instead of STALE.
+- **Low:** Path `packages/typescript/src/__tests__/2Fmessage-service.test.ts` in TARGET FILE(S) — URL-encoding artifact (“%2F” with % stripped). Paths extracted from comment body (e.g. GitHub links) can contain 2F at start of segment.
+
+**Improvements implemented:**
+- shared/path-utils.ts: added `normalizePathSegmentEncoding(path)` to strip leading "2F"/"2f" from path segments (hex for '/'); `filterAllowedPathsForFix` now normalizes then dedupes then filters so TARGET FILE(S) never show `2Fmessage-service.test.ts`.
+
+**Flip-flop check:** N — Path normalization only; valid paths unchanged; 2F-prefixed segments become correct repo-relative paths.
+
+**Notes:** Recorded cycles = 27. Follow-ups implemented: (1) single-issue inject cap lowered to 60k/120k in recovery.ts; (2) commentNeedsLifecycleContext extended with hasRequestedInState, RECENT_MESSAGES, ACTION_STATE, reply action handler, and getCodeSnippet uses conservative analysis for path ending in reply.ts so judge gets broader snippet.
 
 ---
 
