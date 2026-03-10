@@ -616,7 +616,9 @@ export async function validateAndFilterModels(
   runners: Runner[],
   openaiApiKey?: string,
   anthropicApiKey?: string,
-  elizacloudApiKey?: string
+  elizacloudApiKey?: string,
+  /** Resolved configured model (e.g. PRR_LLM_MODEL); warn when this one is skipped (pill-output.md). */
+  configuredModel?: string
 ): Promise<{ removed: Array<{ runner: string; model: string }>}> {
   const removed: Array<{ runner: string; model: string }> = [];
   
@@ -721,7 +723,9 @@ export async function validateAndFilterModels(
         if (ELIZACLOUD_SKIP_MODELS.has(model)) {
           removed.push({ runner: runner.name, model });
           debug(`ElizaCloud: skipping ${model} (known timeout)`);
-          if (model === DEFAULT_ELIZACLOUD_MODEL) skippedConfiguredDefault = model;
+          if (model === DEFAULT_ELIZACLOUD_MODEL || (configuredModel && model === configuredModel)) {
+            skippedConfiguredDefault = model;
+          }
           continue;
         }
         if (elizacloudModels.size === 0) {
@@ -858,7 +862,7 @@ export async function setupRunner(
   // WHY: Remove models the user doesn't have access to BEFORE any fixer runs,
   // instead of discovering them one-by-one through failed retries
   const allDetectedRunners = detected.map(d => d.runner);
-  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey);
+  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey, config.llmModel);
 
   // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
   let primaryRunner: Runner;

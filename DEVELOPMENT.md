@@ -1629,10 +1629,10 @@ noCommit: !opts.commit,  // --no-commit -> opts.commit=false -> noCommit=true
 bun install
 
 # Build
-bun run build
+bun run typecheck
 
 # Run locally
-bun dist/index.js https://github.com/owner/repo/pull/123
+bun dist/tools/prr/index.js https://github.com/owner/repo/pull/123
 
 # Or link globally
 bun link

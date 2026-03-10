@@ -194,17 +194,17 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     if (spinner) spinner.text = text;
   };
 
-  // No API key — avoid confusing "no logs" when LLM was never called (pill-output.md #3)
+  // No API key — distinct message so operators know why (pill-output.md #3)
   if (config.llmProvider === 'elizacloud' && !config.elizacloudApiKey?.trim()) {
-    if (spinner) spinner.info('No improvements to record (no API key)');
+    if (spinner) spinner.info('Pill: No API key configured (elizacloud). Set ELIZACLOUD_API_KEY in .env.');
     return { result: null, reason: 'no_api_key' };
   }
   if (config.llmProvider === 'openai' && !config.openaiApiKey?.trim()) {
-    if (spinner) spinner.info('No improvements to record (no API key)');
+    if (spinner) spinner.info('Pill: No API key configured (openai). Set OPENAI_API_KEY in .env.');
     return { result: null, reason: 'no_api_key' };
   }
   if (config.llmProvider === 'anthropic' && !config.anthropicApiKey?.trim()) {
-    if (spinner) spinner.info('No improvements to record (no API key)');
+    if (spinner) spinner.info('Pill: No API key configured (anthropic). Set ANTHROPIC_API_KEY in .env.');
     return { result: null, reason: 'no_api_key' };
   }
 
@@ -221,7 +221,7 @@ export async function runPillAnalysis(config: PillConfig): Promise<
 
     const hasLogs = ctx.outputLog.trim().length > 0 || (ctx.promptsDigest ?? '').trim().length > 0;
     if (!hasLogs) {
-      if (spinner) spinner.info('No logs to analyze');
+      if (spinner) spinner.info('Pill: No logs to analyze (output/prompts log empty or missing for this prefix).');
       return { result: null, reason: 'no_logs' };
     }
 
@@ -254,7 +254,7 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     }
 
     if (plan.improvements.length === 0) {
-      if (spinner) spinner.succeed('No improvements suggested');
+      if (spinner) spinner.succeed('Pill: LLM returned zero improvements (audit ran successfully).');
       return { result: null, reason: 'zero_improvements_from_llm' };
     }
 
@@ -262,7 +262,8 @@ export async function runPillAnalysis(config: PillConfig): Promise<
 
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
-    const source = config.logPrefix === 'story' ? 'story' : config.logPrefix === 'pill' ? 'pill' : 'prr';
+    // Use logPrefix so pill labels split-exec, split-plan, story, etc. correctly; default 'prr' when no prefix (main prr logs).
+    const source = (config.logPrefix?.trim()) ? config.logPrefix : 'prr';
     const meta: PillOutputMeta = { date: dateStr, source };
 
     const instructionsPathOverride = config.instructionsOut;

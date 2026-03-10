@@ -1,0 +1,203 @@
+/**
+ * split-exec runner: read plan, clone repo, execute each split (cherry-pick, push, create PR).
+ * WHY iterative: Process one split at a time so the user can fix conflicts or stop between splits.
+ */
+import chalk from 'chalk';
+import { existsSync } from 'fs';
+import ora, { type Ora } from 'ora';
+import { join } from 'path';
+import type { Config } from '../../shared/config.js';
+import type { SplitExecOptions } from './cli.js';
+import { parsePlanFile, type ParsedPlan, type ParsedSplit } from './parse-plan.js';
+import { GitHubAPI } from '../prr/github/api.js';
+import { cloneOrUpdate } from '../../shared/git/git-clone-index.js';
+import { push } from '../../shared/git/git-push.js';
+import type { SimpleGit } from 'simple-git';
+import { debug, formatNumber } from '../../shared/logger.js';
+
+export async function runSplitExec(
+  planPath: string,
+  config: Config,
+  options: SplitExecOptions
+): Promise<void> {
+  if (!existsSync(planPath)) {
+    throw new Error(`Plan file not found: ${planPath}. Usage: split-exec <plan-file> (e.g. .split-plan.md)`);
+  }
+  const spinner = ora();
+  spinner.start('Parsing plan...');
+  const plan: ParsedPlan = parsePlanFile(planPath);
+  spinner.succeed(`Plan: ${plan.splits.length} splits (${plan.sourceBranch} → ${plan.targetBranch})`);
+
+  const cloneUrl = `https://github.com/${plan.owner}/${plan.repo}.git`;
+  const workdir = options.workdir ?? join(process.cwd(), '.split-exec-workdir');
+
+  spinner.start('Cloning repository (source branch)...');
+  const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
+    additionalBranches: [plan.targetBranch],
+  });
+  spinner.succeed(`Workdir: ${workdir}`);
+
+  const github = new GitHubAPI(config.githubToken);
+  // WHY fetch PR branches: target_branch is already fetched via additionalBranches; fetch any "route to" PR branches.
+  spinner.start('Fetching PR branches (if any)...');
+  for (const split of plan.splits) {
+    if (split.routeToPrNumber != null) {
+      const prInfo = await github.getPRInfo(plan.owner, plan.repo, split.routeToPrNumber);
+      await git.fetch('origin', prInfo.branch).catch(() => {});
+    }
+  }
+  spinner.succeed('Fetched');
+
+  let executedCount = 0;
+  const failedSplits: { split: ParsedSplit; index: number; error: Error }[] = [];
+  for (let i = 0; i < plan.splits.length; i++) {
+    const split = plan.splits[i];
+    const n = i + 1;
+    console.log(chalk.cyan(`\n[${n}/${plan.splits.length}] ${split.title}`));
+    if (split.commits.length === 0) {
+      console.log(chalk.yellow('  No commits listed — skipping'));
+      if (split.rawCommitLines.length > 0) {
+        console.log(chalk.gray('  Parser saw commit section:'));
+        split.rawCommitLines.forEach((l) => console.log(chalk.gray('    ' + l)));
+      } else {
+        console.log(chalk.gray('  Parser found no **Commits:** line nor bullet lines with `sha` in this split.'));
+      }
+      continue;
+    }
+    if (options.dryRun) {
+      console.log(chalk.gray(`  Dry run: would cherry-pick ${formatNumber(split.commits.length)} commits`));
+      if (split.routeToPrNumber != null) console.log(chalk.gray(`  Route to PR #${split.routeToPrNumber}`));
+      if (split.newBranch != null) console.log(chalk.gray(`  New PR branch: ${split.newBranch}`));
+      continue;
+    }
+    try {
+      await executeSplit(git, plan, split, github, config.githubToken, workdir, spinner);
+      executedCount++;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.log(chalk.red(`  Failed: ${error.message}`));
+      failedSplits.push({ split, index: n, error });
+      // Return to source branch so next split can create its branch from origin/target (pill-output #4).
+      await git.checkout(plan.sourceBranch).catch(() => {});
+    }
+  }
+
+  if (plan.splits.length > 0 && executedCount === 0 && !options.dryRun && failedSplits.length === 0) {
+    throw new Error('No splits executed (all had no commits listed). Fix the plan file or parser.');
+  }
+  if (failedSplits.length > 0) {
+    console.log(chalk.red(`\n${failedSplits.length} split(s) failed:`));
+    failedSplits.forEach(({ split, index, error }) => {
+      console.log(chalk.red(`  [${index}] ${split.title}: ${error.message}`));
+    });
+    throw new Error(
+      `${formatNumber(failedSplits.length)} of ${plan.splits.length} split(s) failed. Fix errors above and re-run, or edit the plan.`
+    );
+  }
+  console.log(chalk.green('\nDone.'));
+}
+
+/** Ensure origin/<targetBranch> exists; if not, fetch and retry. Throw with workdir hint if still missing. */
+async function ensureTargetRefOrFetch(
+  git: SimpleGit,
+  targetBranch: string,
+  workdir: string
+): Promise<void> {
+  const ref = `origin/${targetBranch}`;
+  try {
+    await git.raw(['rev-parse', '--verify', ref]);
+    return;
+  } catch {
+    // Ref missing; try explicit fetch (clone may have swallowed the error).
+    try {
+      await git.fetch('origin', targetBranch);
+      await git.raw(['rev-parse', '--verify', ref]);
+      return;
+    } catch {
+      throw new Error(
+        `Target branch ${targetBranch} does not exist on remote. Create it first or update the split plan. Workdir: ${workdir} — to fetch manually: cd ${workdir} && git fetch origin ${targetBranch}`
+      );
+    }
+  }
+}
+
+/** Execute one split: checkout target branch, cherry-pick commits, push, create PR if new. */
+async function executeSplit(
+  git: SimpleGit,
+  plan: ParsedPlan,
+  split: ParsedSplit,
+  github: GitHubAPI,
+  githubToken: string,
+  workdir: string,
+  spinner: Ora
+): Promise<void> {
+  let branchToPush: string;
+
+  if (split.routeToPrNumber != null) {
+    const prInfo = await github.getPRInfo(plan.owner, plan.repo, split.routeToPrNumber);
+    branchToPush = prInfo.branch;
+    spinner.start(`Checking out ${branchToPush} (PR #${split.routeToPrNumber})...`);
+    await git.checkout(branchToPush);
+    await git.reset(['--hard', `origin/${branchToPush}`]);
+    spinner.succeed(`On ${branchToPush}`);
+  } else if (split.newBranch != null) {
+    branchToPush = split.newBranch;
+    await ensureTargetRefOrFetch(git, plan.targetBranch, workdir);
+    spinner.start(`Creating branch ${branchToPush} from ${plan.targetBranch}...`);
+    try {
+      await git.checkout(['-b', branchToPush, `origin/${plan.targetBranch}`]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('is not a commit') || msg.includes('not found')) {
+        throw new Error(
+          `Could not create branch ${branchToPush} from origin/${plan.targetBranch}. Ensure the target branch exists on the remote. Workdir: ${workdir} — try: cd ${workdir} && git fetch origin ${plan.targetBranch}`
+        );
+      }
+      throw err;
+    }
+    spinner.succeed(`Branch ${branchToPush} created`);
+  } else {
+    spinner.fail('Split has neither Route to nor New PR — skipping');
+    return;
+  }
+
+  for (let c = 0; c < split.commits.length; c++) {
+    const sha = split.commits[c];
+    spinner.start(`Cherry-picking ${sha.slice(0, 7)} (${c + 1}/${split.commits.length})...`);
+    try {
+      await git.raw(['cherry-pick', sha]);
+      spinner.succeed(`Cherry-picked ${sha.slice(0, 7)}`);
+    } catch (err) {
+      spinner.fail(`Cherry-pick failed for ${sha}`);
+      await git.raw(['cherry-pick', '--abort']).catch(() => {});
+      throw new Error(
+        `Conflict or error cherry-picking ${sha}. Resolve in ${workdir} and run again, or edit the plan and skip this commit.`
+      );
+    }
+  }
+
+  spinner.start(`Pushing ${branchToPush}...`);
+  const pushResult = await push(git, branchToPush, false, githubToken);
+  if (!pushResult.success) {
+    spinner.fail(`Push failed: ${pushResult.error ?? 'unknown'}`);
+    throw new Error(`Push to ${branchToPush} failed. Fix in ${workdir} and push manually if needed.`);
+  }
+  if (pushResult.nothingToPush) {
+    spinner.info('Nothing to push (already up to date)');
+  } else {
+    spinner.succeed(`Pushed ${branchToPush}`);
+  }
+
+  if (split.newBranch != null) {
+    spinner.start('Creating pull request...');
+    const { number, url } = await github.createPullRequest(
+      plan.owner,
+      plan.repo,
+      branchToPush,
+      plan.targetBranch,
+      split.title,
+      `Split from plan (${plan.sourcePrUrl}).\n\n${split.title}`
+    );
+    spinner.succeed(`PR #${number}: ${url}`);
+  }
+}

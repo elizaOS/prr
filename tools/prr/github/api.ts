@@ -1055,6 +1055,30 @@ export class GitHubAPI {
   }
 
   /**
+   * Create a pull request. head = branch with changes, base = branch to merge into.
+   * WHY: split-exec creates new branches and opens PRs for each "New PR" split in the plan.
+   */
+  async createPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+    base: string,
+    title: string,
+    body?: string
+  ): Promise<{ number: number; url: string }> {
+    debug('Creating pull request', { owner, repo, head, base, title: title.slice(0, 50) });
+    const { data } = await this.octokit.pulls.create({
+      owner,
+      repo,
+      head,
+      base,
+      title,
+      body: body ?? '',
+    });
+    return { number: data.number, url: data.html_url ?? '' };
+  }
+
+  /**
    * Get commit history for a branch (or ref). Returns commits in chronological order (oldest first).
    * WHY oldest first: Narrative and changelog are easier when the model sees "then this, then that";
    * List Commits API returns newest first so we reverse after slicing to maxCommits.

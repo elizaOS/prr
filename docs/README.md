@@ -546,7 +546,7 @@ If you find errors or want to improve documentation:
 1. **New to PRR?**
    - Read [main README](../README.md)
    - Try [Quick Reference](QUICK_REFERENCE.md)
-   - Run: `prr --check-tools`
+   - Run: `prr --help` to see options and ensure tools/API keys are configured
 
 2. **Want to understand the flow?**
    - Study [Flowcharts](flowchart.md)

@@ -144,11 +144,11 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ## Installation
 
-This repo contains **prr** (PR Resolver), **pill** (Program Improvement Log Looker), **split-plan** (PR decomposition planner), and **story** (PR narrative & changelog). All use a shared library under `shared/`; tool code lives under `tools/prr/`, `tools/pill/`, `tools/split-plan/`, and `tools/story/`.
+This repo contains **prr** (PR Resolver), **pill** (Program Improvement Log Looker), **split-plan** (PR decomposition planner), **split-exec** (execute split plan), and **story** (PR narrative & changelog). All use a shared library under `shared/`; tool code lives under `tools/prr/`, `tools/pill/`, `tools/split-plan/`, `tools/split-exec/`, and `tools/story/`.
 
 ```bash
 npm install
-npm run build
+npm run typecheck
 
 # Run prr directly
 node dist/tools/prr/index.js <pr-url>
@@ -160,18 +160,19 @@ The **story** tool builds a narrative, feature catalog, and changelog (Added/Cha
 
 ### Split-plan: PR decomposition planner
 
-The **split-plan** tool analyzes a large PR (diffs, commits, dependencies), discovers open PRs on the same base branch as “buckets,” and writes a human-editable `.split-plan.md` with a dependency analysis and a proposed split into smaller, reviewable PRs. *Why*: LLM agents often produce PRs that mix refactors, features, and fixes; splitting by concern keeps reviews human-sized. The plan is intended for human editing and for a future `split-exec` tool. See **[tools/split-plan/README.md](tools/split-plan/README.md)** for full documentation and WHYs.
+The **split-plan** tool analyzes a large PR (diffs, commits, dependencies), discovers open PRs on the same base branch as “buckets,” and writes a human-editable `.split-plan.md` with a dependency analysis and a proposed split into smaller, reviewable PRs. *Why*: LLM agents often produce PRs that mix refactors, features, and fixes; splitting by concern keeps reviews human-sized. **split-exec** reads that plan and iteratively cherry-picks commits into existing or new PR branches and opens new PRs. See **[tools/split-plan/README.md](tools/split-plan/README.md)** and **[tools/split-exec/README.md](tools/split-exec/README.md)** for full documentation and WHYs.
 
 ### Pill: Program Improvement Log Looker
 
 **pill** audits a project using its output.log and prompts.log (from prr, story, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. When prr or story run with pill enabled, `closeOutputLog()` runs pill on the closed logs and prints the pitch and file paths to the real console. See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
 
 ```bash
-# Or link globally (prr, pill, split-plan, and story available)
+# Or link globally (prr, pill, split-plan, split-exec, and story available)
 npm link
 prr --version     # See the cat!
 pill --help       # Pill CLI
-split-plan --help # PR decomposition planner
+split-plan --help  # PR decomposition planner
+split-exec --help  # Execute split plan (cherry-pick, push, create PRs)
 story --help      # PR narrative & changelog
 ```
 
@@ -190,7 +191,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 
 # Or use OpenAI
 # PRR_LLM_PROVIDER=openai
-# PRR_LLM_MODEL=gpt-5.2
+# PRR_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-xxxx
 
 # Default fixer tool (rotates automatically when stuck)
@@ -222,9 +223,7 @@ prr https://github.com/owner/repo/pull/123 --tool claude-code
 prr https://github.com/owner/repo/pull/123 --dry-run
 ```
 
-### Story: PR or branch narrative & changelog
-
-The **story** tool builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a PR or branch. Three modes: **PR** (title/body + commits + files), **single branch** (commit history only, no comparison), **two branches** (`--compare <branch>`; order auto-detected, story is about the branch you passed first). See **[tools/story/README.md](tools/story/README.md)** for full documentation and WHYs.
+### Story (examples)
 
 ```bash
 # PR
@@ -245,6 +244,8 @@ story --help   # PR narrative & changelog
 ```
 
 Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`). Logs: `story-output.log`, `story-prompts.log`.
+
+```bash
 prr https://github.com/owner/repo/pull/123 --keep-workdir
 
 # Re-verify all issues (ignore verification cache)

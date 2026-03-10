@@ -59,6 +59,21 @@ When you run **prr** or **story**, the shared logger can be initialized with **e
 
 ---
 
+## Failure modes and debugging
+
+When pill records **no improvements**, it returns one of four distinct reasons so you can fix the cause (pill-output.md #3):
+
+| Reason | Meaning | What to do |
+|--------|---------|------------|
+| **no_logs** | Output/prompts log for this prefix is empty or missing. | Ensure the tool that produced the logs (prr, story, split-exec) wrote to the expected files (e.g. `split-exec-output.log` when prefix is `split-exec`). Run from the directory that contains those logs, or pass that directory to the pill CLI. |
+| **no_api_key** | No LLM API key configured for the chosen provider. | Set the right key in `.env`: `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` (see Configuration in main README). When pill runs from the hook, it uses the same env as the parent process. |
+| **api_call_failed** | The audit LLM request failed (network, rate limit, model error). | Check the error message in the console or in the log line. Ensure the model ID is valid and the key has access. Look at **pill-prompts.log** for the request if it was written before the failure. |
+| **zero_improvements_from_llm** | The audit ran successfully but the LLM suggested zero improvements. | Not a failure — the logs were analyzed and the model had nothing to add. |
+
+**Where you see the reason:** When pill is run from the **CLI**, it prints a single line (e.g. `No improvements to record: No logs to analyze.`). When pill runs from the **hook** (after prr/story/split-exec close their logs), the shared logger prints a short message to the console (e.g. `[Pill] No logs to analyze (output/prompts log empty or missing for this prefix).`) and appends a `[Pill] No improvements to record (reason: …)` line to the output log. Check **pill-output.log** (or the tool’s output log) for the exact reason string.
+
+---
+
 ## Output files
 
 | File              | Purpose |

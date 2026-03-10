@@ -90,7 +90,7 @@ jobs:
         run: |
           cd prr
           npm ci
-          npm run build
+          npm run typecheck
 
       - name: Configure Git
         run: |

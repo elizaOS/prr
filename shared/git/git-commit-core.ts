@@ -313,7 +313,8 @@ async function unstageEmptyTestFiles(git: SimpleGit): Promise<void> {
       try {
         stagedContent = await git.raw(['show', ':0:' + file]);
       } catch {
-        continue; // e.g. binary or missing; skip
+        debug(`Could not read staged content for: ${file} (e.g. binary or missing; skip)`);
+        continue;
       }
       if (typeof stagedContent !== 'string') continue;
       if (!isEmptyOrPlaceholder(stagedContent)) continue;

@@ -179,6 +179,18 @@ export async function closeOutputLog(): Promise<void> {
               ? `[Pill] No improvements to record (reason: ${out.reason}: ${(out as { errorMessage?: string }).errorMessage}).\n`
               : `[Pill] No improvements to record (reason: ${out.reason}).\n`;
           appendFileSync(outputLogPath, reasonLine, 'utf-8');
+          // WHY distinct console message: Operators need to know why pill recorded nothing (pill-output.md #3, #7).
+          const consoleMsg =
+            out.reason === 'no_logs'
+              ? 'Pill: No logs to analyze (output/prompts log empty or missing for this prefix).'
+              : out.reason === 'no_api_key'
+                ? 'Pill: No improvements to record (no API key configured). Set API key in .env.'
+                : out.reason === 'zero_improvements_from_llm'
+                  ? 'Pill: LLM returned zero improvements (audit ran successfully).'
+                  : out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
+                    ? `Pill: Audit failed: ${(out as { errorMessage?: string }).errorMessage}`
+                    : `Pill: No improvements to record (reason: ${out.reason}).`;
+          if (origLogRef) origLogRef('\n[Pill] ' + consoleMsg);
         }
       } else {
         appendFileSync(outputLogPath, '[Pill] Skipped (no API key or no config in target dir).\n', 'utf-8');

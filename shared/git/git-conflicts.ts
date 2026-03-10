@@ -11,17 +11,13 @@
 import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
+import { redactUrlCredentials } from './redact-url.js';
 
 const FETCH_TIMEOUT_MS = 60_000;
 
 export interface FetchOptions {
   /** GitHub token for one-shot auth when remote URL has no credentials. Avoids password prompt. */
   githubToken?: string;
-}
-
-/** Redact credentials from URLs in git output. WHY: Git stderr can contain https://token@...; we never log tokens. */
-function redactUrlCredentials(text: string): string {
-  return text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
 }
 
 /**

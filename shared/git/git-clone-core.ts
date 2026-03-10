@@ -16,6 +16,8 @@ export interface GitOperations {
 
 export interface CloneOptions {
   preserveChanges?: boolean;  // If true, don't reset - keep existing uncommitted changes
+  /** Fetch these branches after clone/update so refs exist (e.g. split-exec needs origin/targetBranch). */
+  additionalBranches?: string[];
 }
 
 export async function cloneOrUpdate(
@@ -92,7 +94,17 @@ export async function cloneOrUpdate(
       await git.fetch('origin', branch);
       await git.checkout(branch);
       await git.reset(['--hard', `origin/${branch}`]);
-      
+      if (options?.additionalBranches?.length) {
+        for (const b of options.additionalBranches) {
+          if (b && b !== branch) {
+            try {
+              await git.fetch('origin', b);
+            } catch (err) {
+              debug(`Failed to fetch origin/${b}`, { err: err instanceof Error ? err.message : String(err) });
+            }
+          }
+        }
+      }
       console.log(`Updated to latest ${branch}`);
     }
     
@@ -105,7 +117,17 @@ export async function cloneOrUpdate(
     await git.clone(authUrl, workdir, ['--branch', branch, '--single-branch']);
     
     git = simpleGit(workdir);
-    
+    if (options?.additionalBranches?.length) {
+      for (const b of options.additionalBranches) {
+        if (b && b !== branch) {
+          try {
+            await git.fetch('origin', b);
+          } catch (err) {
+            debug(`Failed to fetch origin/${b}`, { err: err instanceof Error ? err.message : String(err) });
+          }
+        }
+      }
+    }
     console.log(`Cloned ${branch} successfully`);
   }
 

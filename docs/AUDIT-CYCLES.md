@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-02-11 · **Recorded cycles:** 35 · **Historical (legacy):** 4
+**Last updated:** 2026-03-10 · **Recorded cycles:** 36 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -149,6 +149,31 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 36 — 2026-03-10 (split-exec + pill hook, .split-plan.md)
+
+**Artifacts audited:** split-exec-output.log (2 splits, 0 commits cherry-picked), .split-plan.md, pill-output.md improvements #1–#7.
+
+**Findings:**
+- **High:** split-exec commit parser only read inline `**Commits:** sha1, sha2`; plan listed commits as bullet lines (`- \`12d870a\` (partial — …)`), so parser found 0 commits and every split was skipped (tool no-op).
+- **Medium:** .split-plan.md contained duplicate YAML frontmatter (two `---` blocks); second block could confuse body offset.
+- **Medium:** Pill zero-improvements path still gave one generic message from the hook; Cycle 35 had flagged distinct reasons but console output from closeOutputLog() didn’t surface them.
+- **Low:** When split-exec skipped a split (0 commits), log said only "No commits listed — skipping" with no hint of what the parser saw.
+- **Low:** package-lock.json bin section lacked split-exec/split-plan (npm link wouldn’t expose them).
+
+**Improvements implemented:**
+- parse-plan.ts: Extract SHAs from bullet lines matching `- \`sha\` (note)` in addition to inline **Commits:**; strip optional second frontmatter from body; add rawCommitLines per split for diagnostics.
+- .split-plan.md: Removed duplicate frontmatter block.
+- pill orchestrator: Distinct spinner messages per reason (no API key, no logs, zero improvements, API failed); same reasons already returned for callers.
+- shared/logger.ts: When pill hook gets no result, print actionable console message per reason (no logs, no API key, zero improvements, audit failed).
+- split-exec/run.ts: When 0 commits for a split, log rawCommitLines or hint that **Commits:**/bullets were missing.
+- AUDIT-CYCLES.md: This cycle; header bumped to 36.
+
+**Flip-flop check:** N — Parser and pill messages additive; no behavior revert.
+
+**Notes:** package-lock.json bins: run `npm install` to refresh lockfile so bin includes split-exec/split-plan.
+
+---
 
 ### Cycle 22 — 2026-03-10 (prompts.log elizaOS/eliza#6562)
 

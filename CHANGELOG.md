@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub API:** `getOpenPRs(owner, repo, baseBranch?, excludePRNumber?)` — paginated list of open PRs, optional base filter, exclude target PR. `getPRFilesWithPatches(owner, repo, prNumber)` — same as getPRFiles but includes the `patch` field (unified diff) per file; patch is optional for binary/large/rename-only files. Warning when file count >= 3000 (GitHub cap).
 - Docs: [tools/split-plan/README.md](tools/split-plan/README.md).
 
+### Added (2026-03) — split-exec tool (execute split plan)
+
+**New CLI: split-exec**
+- `split-exec <plan-file> [-w <workdir>] [--dry-run]` reads a `.split-plan.md` from split-plan, clones the repo at the source branch, then executes each split in order: checkout target branch (existing PR or new branch from base), cherry-pick listed commits, push, and create a new PR when the plan says "New PR".
+- **WHY iterative (one split at a time):** So the user can fix conflicts or stop between splits; batch execution would leave the repo in a hard-to-recover state on the first conflict.
+- **WHY default workdir `.split-exec-workdir`:** So the user can inspect or fix the repo between runs; re-run uses the same dir (cloneOrUpdate updates existing clone).
+- **Route to existing PR:** For "Route to: PR #N", split-exec checks out that PR's branch, cherry-picks the listed commits, and pushes so the existing PR gets the new commits. **New PR:** For "New PR: \`branch-name\`", creates that branch from the plan's target_branch, cherry-picks, pushes, and calls GitHub API to open a pull request.
+- **GitHub API:** `createPullRequest(owner, repo, head, base, title, body?)` for opening new PRs. Plan parser extracts frontmatter and ## Split sections (Route to, New PR, Commits) with a forgiving regex-based parser.
+- Docs: [tools/split-exec/README.md](tools/split-exec/README.md).
+
 ### Fixed (2026-03) — Pill integration: circular import, error handling, double-init, dead code
 
 **Circular import removed**

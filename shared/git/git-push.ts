@@ -28,11 +28,7 @@ import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
 import { debug } from '../logger.js';
 import { cleanupGitState, continueRebase } from './git-merge.js';
-
-/** Redact credentials from URLs in error messages before logging. WHY: Git errors can contain remote URLs with tokens. */
-function redactUrlCredentials(text: string): string {
-  return text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
-}
+import { redactUrlCredentials } from './redact-url.js';
 
 /**
  * Result of a git push operation.

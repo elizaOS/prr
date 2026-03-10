@@ -7,19 +7,18 @@
   "bin": {
     "prr": "./dist/tools/prr/index.js",
     "pill": "./dist/tools/pill/index.js",
+    "split-exec": "./dist/tools/split-exec/index.js",
     "split-plan": "./dist/tools/split-plan/index.js",
     "story": "./dist/tools/story/index.js"
   },
   "scripts": {
-    "build": "tsc",
-    "build:bun": "bunx tsc",
+    "typecheck": "tsc",
+    "typecheck:noemit": "tsc --noEmit",
     "start": "node dist/tools/prr/index.js",
     "start:bun": "bun dist/tools/prr/index.js",
     "dev": "bun --watch tools/prr/index.ts",
     "test": "vitest",
     "test:elizacloud": "echo 'No test-elizacloud script; set ELIZACLOUD_API_KEY and run pill or prr'",
-    "typecheck": "tsc --noEmit",
-    "typecheck:bun": "bunx tsc --noEmit",
     "lint:workflows": "actionlint .github/workflows/"
   },
   "keywords": [
