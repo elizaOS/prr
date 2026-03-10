@@ -973,13 +973,13 @@ export class GitHubAPI {
   ): Promise<Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>> {
     debug('Fetching branch commit history', { owner, repo, branch, maxCommits });
     const commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }> = [];
-    for await (const response of this.octokit.paginate.iterator(this.octokit.repos.listCommits, {
+    for await (const { data: commitsPage } of this.octokit.paginate.iterator(this.octokit.repos.listCommits, {
       owner,
       repo,
       sha: branch,
       per_page: 100,
     })) {
-      for (const c of response.data) {
+      for (const c of commitsPage) {
         commits.push({
           sha: c.sha,
           message: c.commit.message,
