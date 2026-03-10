@@ -84,12 +84,33 @@ export interface MergeBaseResult {
   error?: string;
 }
 
+/**
+ * Ensure git user.name and user.email are set in the repo so merge/commit don't fail with
+ * "Committer identity unknown". In CI (GITHUB_ACTIONS) use the standard bot identity;
+ * otherwise use a safe local default so PRR works without global git config.
+ */
+export async function ensureGitIdentity(git: SimpleGit): Promise<void> {
+  try {
+    const name = await git.raw(['config', '--get', 'user.name']).then(s => s?.trim());
+    if (name && name.length > 0) return;
+  } catch {
+    // user.name not set
+  }
+  const inCI = process.env.GITHUB_ACTIONS === 'true';
+  const userName = inCI ? 'github-actions[bot]' : 'PRR';
+  const userEmail = inCI ? '41898282+github-actions[bot]@users.noreply.github.com' : 'prr@local';
+  await git.raw(['config', 'user.name', userName]);
+  await git.raw(['config', 'user.email', userEmail]);
+  debug('Set git identity for merge/commit', { userName, userEmail });
+}
+
 export async function mergeBaseBranch(
   git: SimpleGit, 
   baseBranch: string
 ): Promise<MergeBaseResult> {
   debug('Merging base branch into PR branch', { baseBranch });
-  
+  await ensureGitIdentity(git);
+
   try {
     // Fetch all refs including the base branch
     debug('Fetching origin with all refs');

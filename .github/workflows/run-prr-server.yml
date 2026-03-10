@@ -91,6 +91,11 @@ jobs:
           npm ci
           npm run build
 
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       # WHY GITHUB_TOKEN: PRR expects GITHUB_TOKEN in env; we pass through the caller's token.
       # PRR_SUBMIT_REVIEW: only set true by client when run is workflow_dispatch (manual); avoids posting on CLI or label/review_requested.
       - name: Run PRR
