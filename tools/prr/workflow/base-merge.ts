@@ -85,8 +85,11 @@ export async function checkAndMergeBaseBranch(
     await git.fetch('origin', prInfo.baseBranch);
     await git.fetch('origin', prInfo.branch);
 
-    // When GitHub says the PR branch is "behind" the base, always run the merge and use --no-ff so we create a merge commit (never fast-forward). That way we always have a commit to push and GitHub stops showing "out of date with base branch".
-    const forceMerge = prInfo.mergeableState === 'behind';
+    // When the PR branch is behind the base (locally or per GitHub), merge with --no-ff and push so the branch is up to date. Use local state after fetch so we don't rely only on GitHub's mergeableState (which can be stale or missing). WHY: User expects PRR to "update the branch, pull target into source, and push" so the PR is not "out of date with base branch".
+    const baseSha = (await git.revparse([`origin/${prInfo.baseBranch}`])).trim();
+    const mergeBaseSha = (await git.raw(['merge-base', 'HEAD', `origin/${prInfo.baseBranch}`])).trim();
+    const isBehindLocally = baseSha !== mergeBaseSha;
+    const forceMerge = isBehindLocally || prInfo.mergeableState?.toLowerCase() === 'behind';
     const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge, noFastForward: forceMerge });
 
     if (!mergeResult.success) {
@@ -177,8 +180,12 @@ export async function checkAndMergeBaseBranch(
               spinner.succeed('Pushed merge commit');
             } else {
               spinner.fail('Failed to push merge commit');
-              console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local.`));
+              console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local; PR will stay "out of date with base".`));
+              console.log(chalk.gray(`  To update the PR, push from the workdir: git push origin ${prInfo.branch}`));
             }
+          } else {
+            console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit). PR will stay "out of date with base" until you push:'));
+            console.log(chalk.gray(`     git push origin ${prInfo.branch}`));
           }
           await restoreStash();
           endTimer('Merge base branch');
@@ -204,10 +211,12 @@ export async function checkAndMergeBaseBranch(
           }
         } else {
           spinner.fail('Failed to push merge commit');
-          console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local.`));
+          console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local; PR will stay "out of date with base".`));
+          console.log(chalk.gray(`  To update the PR, push from the workdir: git push origin ${prInfo.branch}`));
         }
       } else {
-        console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit is set).'));
+        console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit). PR will stay "out of date with base" until you push:'));
+        console.log(chalk.gray(`     git push origin ${prInfo.branch}`));
       }
       await restoreStash();
     }

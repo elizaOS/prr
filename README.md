@@ -158,8 +158,11 @@ node dist/tools/prr/index.js <pr-url>
 
 The **story** tool builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a PR or branch. Three modes: **PR** (title/body + commits + files), **single branch** (commit history only, no comparison), **two branches** (`--compare <branch>`; order auto-detected, story is about the branch you passed first). See **[tools/story/README.md](tools/story/README.md)** for full documentation and WHYs.
 
-```bash
+### Pill: Program Improvement Log Looker
 
+**pill** audits a project using its output.log and prompts.log (from prr, story, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. When prr or story run with pill enabled, `closeOutputLog()` runs pill on the closed logs and prints the pitch and file paths to the real console. See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
+
+```bash
 # Or link globally (prr, pill, and story available)
 npm link
 prr --version   # See the cat!

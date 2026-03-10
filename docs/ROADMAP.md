@@ -4,6 +4,12 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## Recently completed
 
+**Pill integration and audit fixes (2026-03)**
+- **pill** (Program Improvement Log Looker) runs as an analysis-only tool: it audits a project using output.log and prompts.log, then appends an improvement plan to pill-output.md and pill-summary.md. No fix/verify/commit.
+- **Integrated with prr and story:** When the shared logger is initialized with `enablePill: true`, `closeOutputLog()` runs pill on the closed logs and prints the pitch and file paths to the real console (using original console refs). Works on normal exit and on Ctrl+C.
+- **WHY analysis-only:** Fix/verify/commit in pill would duplicate prr’s loop and add state; analysis-only keeps pill simple and lets the user (or another process) decide what to do with the plan.
+- **Audit fixes:** Circular import removed (orchestrator uses `toLocaleString()` instead of logger’s `formatNumber`); runPillAnalysis no longer swallows errors (CLI sees failures, hook stays try/catch); dead VERIFY_SYSTEM_PROMPT removed; initOutputLog guards against double-init overwriting real console refs; pillAnalysisEnabled reset at start of hook block so hook runs at most once. See [CHANGELOG](../CHANGELOG.md) "Fixed (2026-03) — Pill integration".
+
 **Hedged visibility + weak-identifier stale retargeting (2026-03)**
 - Batch verifier now treats hedged "truncated snippet/excerpt suggests" (or "appears to") as missing-code visibility, so those verdicts keep the issue open. **WHY**: Low-confidence STALE/NO from "suggests" reasoning is uncertainty, not proof the issue is fixed or obsolete.
 - Solvability line-drift logic now ignores weak built-in/type identifiers (`BigInt`, `bigint`, `symbol`, etc.); when those are the only extracted anchors and the line is out of range, the issue stays solvable instead of being dismissed as stale. **WHY**: Using "identifier not found" for generic type names produced false stale dismissals. See [CHANGELOG](../CHANGELOG.md) "Added (2026-03) — Hedged visibility patterns and weak-identifier stale retargeting".

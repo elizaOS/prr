@@ -540,6 +540,8 @@ const ELIZACLOUD_SKIP_MODELS = new Set<string>([
   'openai/gpt-4.1',
   'anthropic/claude-sonnet-4.5',
   'openai/gpt-5.1-codex-max',
+  'anthropic/claude-3.7-sonnet',
+  'openai/gpt-4o',
 ]);
 
 /**

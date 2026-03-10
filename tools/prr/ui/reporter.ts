@@ -227,15 +227,16 @@ export function printFinalSummary(
   const allDismissed = Dismissed.getDismissedIssues(stateContext);
   const allDismissedIds = new Set(allDismissed.map(d => d.commentId));
   const dismissedIssues = allDismissed.filter(d => d.category !== 'exhausted' && d.category !== 'remaining');
-  
+  // Do not count dismissed-as-already-fixed as "fixed and verified" (pill-output.md #2; AUDIT-CYCLES 33/34).
+  const alreadyFixedDismissedIds = new Set(
+    allDismissed.filter(d => d.category === 'already-fixed').map(d => d.commentId)
+  );
   // Bound verifiedFixed against the current comment IDs; exclude any dismissed (including exhausted/remaining).
-  // WHY: verifiedFixed accumulates IDs across sessions and HEAD revisions.
-  // Stale IDs (from force-pushed commits, deleted comments) inflate the count.
-  // Without this filter, "60 issues fixed" can appear when there are only 48 comments.
   const currentIds = stateContext.currentCommentIds;
-  const relevantVerified = currentIds
+  const relevantVerified = (currentIds
     ? verifiedFixed.filter(id => currentIds.has(id) && !allDismissedIds.has(id))
-    : verifiedFixed.filter(id => !allDismissedIds.has(id));
+    : verifiedFixed.filter(id => !allDismissedIds.has(id))
+  ).filter(id => !alreadyFixedDismissedIds.has(id));
   const toolFixedCount = relevantVerified.length;
   
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
@@ -328,10 +329,14 @@ export function buildReviewSummaryMarkdown(
   const allDismissed = Dismissed.getDismissedIssues(stateContext);
   const allDismissedIds = new Set(allDismissed.map(d => d.commentId));
   const dismissedIssues = allDismissed.filter(d => d.category !== 'exhausted' && d.category !== 'remaining');
+  const alreadyFixedDismissedIds = new Set(
+    allDismissed.filter(d => d.category === 'already-fixed').map(d => d.commentId)
+  );
   const currentIds = stateContext.currentCommentIds;
-  const relevantVerified = currentIds
+  const relevantVerified = (currentIds
     ? verifiedFixed.filter(id => currentIds.has(id) && !allDismissedIds.has(id))
-    : verifiedFixed.filter(id => !allDismissedIds.has(id));
+    : verifiedFixed.filter(id => !allDismissedIds.has(id))
+  ).filter(id => !alreadyFixedDismissedIds.has(id));
   const toolFixedCount = relevantVerified.length;
   const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
 

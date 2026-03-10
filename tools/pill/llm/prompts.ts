@@ -1,5 +1,6 @@
 /**
- * System prompts for audit and verify steps.
+ * System prompts for pill. Only AUDIT_SYSTEM_PROMPT is used (analysis-only flow).
+ * VERIFY_SYSTEM_PROMPT was removed when the fixer/verify flow was removed from pill.
  */
 
 export const AUDIT_SYSTEM_PROMPT = `You are a senior software engineer auditing a project after an AI agent run.
@@ -28,7 +29,8 @@ Rules:
 
 Return a JSON object matching this schema (no markdown fences, just raw JSON):
 {
-  "summary": "one paragraph overview",
+  "pitch": "1-2 paragraphs: engaging, high-stakes summary for a developer. What's broken or suboptimal, why it matters, what they'll gain by fixing it. Be a hypeman -- make them WANT to act.",
+  "summary": "one paragraph technical overview",
   "improvements": [
     {
       "file": "relative/path.ts",
@@ -39,18 +41,3 @@ Return a JSON object matching this schema (no markdown fences, just raw JSON):
     }
   ]
 }`;
-
-export const VERIFY_SYSTEM_PROMPT = `You are performing an adversarial code review of automated changes.
-
-You have the improvement plan that was requested, the unified diffs showing what
-changed, and the current state of the changed files.
-
-For each change check:
-1. Does it correctly implement the intended improvement?
-2. Does it introduce edge cases, regressions, or bugs?
-3. Is anything incomplete or partially applied?
-4. Do these changes reveal further improvements needed?
-
-Return JSON (no markdown fences):
-- If everything is correct: { "status": "clean" }
-- If issues found: { "status": "issues", "issues": [ ...same schema as improvements... ] }`;

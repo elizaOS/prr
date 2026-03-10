@@ -69,6 +69,8 @@ Quick checks each audit. Drill into the category that matches what you changed.
 
 **Log vs reality (output.log / prompts.log)**
 - [ ] For runs that report "already verified" or "fixed": spot-check at least one such issue by reading the file at the cited path in the workdir (path from log: `Reusing existing workdir:` / `Workdir preserved:`). Confirm the bug pattern is actually gone. If the log says fixed but the file still has the bug, treat as a finding (stale verification, head change).
+- [ ] RESULTS SUMMARY "N issue(s) fixed and verified" counts only verifiedFixed/verifiedComments; it must not include issues dismissed as already-fixed (pill-output.md #2; cycles 33/34).
+- [ ] Base-merge push: when log says "Merged latest X into Y" followed by "Everything up-to-date", the merge was a no-op (already merged). Verify `mergeBaseBranch` returns `alreadyUpToDate: true` so the caller doesn't attempt a pointless push.
 
 **Prompt quality**
 - [ ] Queue line shows to-fix vs already-verified when relevant.

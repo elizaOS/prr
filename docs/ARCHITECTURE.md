@@ -382,14 +382,16 @@ Comment body cleanup before LLM ingestion:
 
 WHY: Bot review comments embed massive base64-encoded JWTs (500+ chars per link) and HTML metadata that wastes tokens and pollutes LLM context. A typical CodeRabbit comment shrinks by 30-60% after sanitization, improving both cost and LLM comprehension.
 
-### 10. Logging (`src/logger.ts`)
+### 10. Logging (`shared/logger.ts`)
 
 Three-tier logging system:
-- **`output.log`**: All console output, ANSI-stripped. Truncated per run. Patches `console.log/warn/error` directly (excludes spinner noise).
-- **`prompts.log`**: Full LLM prompts and responses. Each entry tagged with a searchable slug (e.g., `#0007/llm-anthropic`) that also appears as a one-liner in `output.log`.
+- **`output.log`** (or `{prefix}-output.log`): All console output, ANSI-stripped. Truncated per run. Patches `console.log/warn/error` directly (excludes spinner noise).
+- **`prompts.log`** (or `{prefix}-prompts.log`): Full LLM prompts and responses. Each entry tagged with a searchable slug (e.g., `#0007/llm-anthropic`) that also appears as a one-liner in `output.log`.
 - **Standalone debug files**: Individual prompt/response files in `~/.prr/debug/<timestamp>/` (when `PRR_DEBUG_PROMPTS=1`).
 
-WHY dual logging: Inlining 5-50K prompts in `output.log` would drown the operational log. The slug system enables cross-file navigation: see something suspicious in `output.log`, Cmd+F the slug in `prompts.log` to jump to the full prompt.
+**WHY dual logging:** Inlining 5-50K prompts in `output.log` would drown the operational log. The slug system enables cross-file navigation: see something suspicious in `output.log`, Cmd+F the slug in `prompts.log` to jump to the full prompt.
+
+**Pill integration:** When `initOutputLog({ enablePill: true })` is used (prr, story), `closeOutputLog()` dynamically imports the pill orchestrator and runs pill on the closed logs, then prints the pitch and file paths to the **original** console (refs captured before patching). WHY dynamic import: the orchestrator must not import from logger or a circular dependency results. WHY original refs: the patched console tees to the log file; pill’s output should go to the user’s terminal. WHY double-init guard: if `initOutputLog` is called twice, we only capture the real console on first init so the pill hook never gets a patched ref. See [tools/pill/README.md](../tools/pill/README.md).
 
 ---
 

@@ -63,16 +63,18 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 ## Key Files
 
+Paths below are relative to the repo root. PRR-specific code lives under `tools/prr/`; shared modules (logger, git) under `shared/` (pill-output.md #8).
+
 ### Core
 
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | CLI entry point, signal handlers |
-| `src/cli.ts` | Argument parsing, validation |
-| `src/config.ts` | Environment/config loading |
-| `src/resolver.ts` | Main orchestration (delegates to workflow/) |
-| `src/logger.ts` | Logging, timing, token tracking |
+| `tools/prr/index.ts` | CLI entry point, signal handlers |
+| `tools/prr/cli.ts` | Argument parsing, validation |
+| `shared/config.ts` | Environment/config loading |
+| `tools/prr/resolver.ts` | Main orchestration (delegates to workflow/) |
+| `shared/logger.ts` | Logging, timing, token tracking |
 
 
 ### GitHub Integration
@@ -80,8 +82,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/github/api.ts` | Octokit wrapper, GraphQL queries |
-| `src/github/types.ts` | PRInfo, ReviewComment, etc. |
+| `tools/prr/github/api.ts` | Octokit wrapper, GraphQL queries |
+| `tools/prr/github/types.ts` | PRInfo, ReviewComment, etc. |
 
 
 ### Git Operations
@@ -89,9 +91,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
-| `src/git/commit.ts` | Squash commit, push with retry, token injection |
-| `src/git/workdir.ts` | Hash-based workdir management |
+| `shared/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
+| `shared/git/commit.ts` | Squash commit, push with retry, token injection |
+| `shared/git/workdir.ts` | Hash-based workdir management |
 
 
 ### Fixer Tool Runners
@@ -99,14 +101,14 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/runners/index.ts` | Auto-detection, rotation |
-| `src/runners/cursor.ts` | Cursor Agent CLI |
-| `src/runners/claude-code.ts` | Claude Code CLI |
-| `src/runners/aider.ts` | Aider CLI |
-| `src/runners/opencode.ts` | OpenCode CLI |
-| `src/runners/codex.ts` | OpenAI Codex CLI |
-| `src/runners/gemini.ts` | Google Gemini CLI |
-| `src/runners/llm-api.ts` | Direct API (fallback) |
+| `shared/runners/detect.ts` | Auto-detection, rotation |
+| `shared/runners/cursor.ts` | Cursor Agent CLI |
+| `shared/runners/claude-code.ts` | Claude Code CLI |
+| `shared/runners/aider.ts` | Aider CLI |
+| `shared/runners/opencode.ts` | OpenCode CLI |
+| `shared/runners/codex.ts` | OpenAI Codex CLI |
+| `shared/runners/gemini.ts` | Google Gemini CLI |
+| `shared/runners/llm-api.ts` | Direct API (fallback) |
 
 
 ### LLM Verification
@@ -114,7 +116,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/llm/client.ts` | Anthropic/OpenAI for verification |
+| `tools/prr/llm/client.ts` | Anthropic/OpenAI for verification |
 
 
 ### State Persistence
@@ -122,10 +124,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
-// Review: clearly distinguishes per-workdir state from persistent lessons for clarity.
-| `src/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
-| `src/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
+| `tools/prr/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
+| `tools/prr/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
+| `tools/prr/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 
 
 ### Prompt Building
@@ -133,8 +134,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/analyzer/prompt-builder.ts` | Build fix prompts with context |
-| `src/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
+| `tools/prr/analyzer/prompt-builder.ts` | Build fix prompts with context |
+| `tools/prr/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
 
 ## Key Design Decisions
 

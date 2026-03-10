@@ -16,7 +16,7 @@ import { createCLI, parseArgs, type StoryParsedArgs } from './cli.js';
 import { runStory, writeOutput } from './run.js';
 
 try {
-  initOutputLog({ prefix: 'story' });
+  initOutputLog({ prefix: 'story', enablePill: true });
 } catch (err) {
   console.warn('Warning: Could not initialize output log:', err);
 }

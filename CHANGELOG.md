@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-03) — Pill integration: circular import, error handling, double-init, dead code
+
+**Circular import removed**
+- `tools/pill/orchestrator.ts` no longer imports `formatNumber` from `shared/logger.js`. It uses `n.toLocaleString()` for user-facing counts (e.g. improvement counts in the summary entry).
+- **WHY**: `shared/logger.ts` dynamically imports the pill orchestrator in `closeOutputLog()` to run the pill hook. The orchestrator previously imported from logger, creating a cycle (logger → orchestrator → logger). Breaking the dependency in the orchestrator keeps the hook safe and allows the main process to load without pulling in pill.
+
+**runPillAnalysis no longer swallows errors**
+- The top-level `try { ... } catch { return null }` was removed from `runPillAnalysis`. LLM, parse, and file-write errors now propagate to the caller.
+- **WHY**: When pill is run from the CLI, users need to see real failures (e.g. missing API key, network error). The shared logger’s `closeOutputLog()` still wraps the call in try/catch so the hook never throws and shutdown always completes; only the CLI path sees thrown errors.
+
+**Dead prompt removed**
+- `VERIFY_SYSTEM_PROMPT` was removed from `tools/pill/llm/prompts.ts`. It was unused after the fixer/verify flow was removed from pill.
+- **WHY**: Dead code adds noise and can confuse future changes; the audit prompt is the only one pill uses.
+
+**Double-init guard in initOutputLog**
+- In `shared/logger.ts`, the original console refs (`origLogRef`, `origWarnRef`, `origErrorRef`) are only set when they are still null. On re-entry we use `origXxxRef ?? console.Xxx.bind(console)` and assign to the refs only if they are null.
+- **WHY**: If `initOutputLog` is called twice, the second time the current `console.log` is the *patched* function from the first init. Overwriting the refs with that would make the pill hook log to a closed or wrong stream. Keeping the first capture preserves the real console for the hook.
+
+**pillAnalysisEnabled reset before await**
+- In `closeOutputLog()`, `pillAnalysisEnabled = false` is set at the start of the `if (pillAnalysisEnabled && outputLogPath)` block, before any dynamic import or await.
+- **WHY**: So the hook runs at most once even if `runPillAnalysis` or a later step throws; the flag is cleared before async work so a subsequent close doesn’t re-run pill.
+
+- Docs: [tools/pill/README.md](tools/pill/README.md) (pill documentation with WHYs).
+
 ### Added (2026-03) — story tool (PR and branch narrative & changelog)
 
 **New CLI: story**
