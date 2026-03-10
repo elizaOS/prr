@@ -281,9 +281,11 @@ export async function trySingleIssueFix(
           // Only revert files that are NEW since the snapshot — preserve prior progress.
           const filesAfterFix = await getChangedFiles(git);
           const filesToRevert = filesAfterFix.filter(f => !filesBeforeFix.has(f));
-          // Also always revert the target file itself
-          if (!filesToRevert.includes(issue.comment.path)) {
-            filesToRevert.push(issue.comment.path);
+          // Also always revert the target file itself. Use the path that appears in the repo (from filesAfterFix) so git pathspec matches; comment.path may be a short/basename path (output.log audit babylon#1213).
+          const norm = (p: string) => p.replace(/\\/g, '/');
+          const targetInRevert = filesToRevert.find(f => norm(f) === norm(issue.comment.path) || norm(f).endsWith('/' + norm(issue.comment.path)));
+          if (!targetInRevert) {
+            filesToRevert.push(issue.resolvedPath ?? issue.comment.path);
           }
           for (const f of filesToRevert) {
             try {

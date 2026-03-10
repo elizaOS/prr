@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-10 · **Recorded cycles:** 30 · **Historical (legacy):** 4
+**Last updated:** 2026-02-11 · **Recorded cycles:** 34 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -303,6 +303,80 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Display only; no behavior change.
 
 **Notes:** Merge still reported nothingToPush (run likely before --no-ff); judge issue_5 STALE (snippet doesn't show line 1120) but issue was fixed in same run via single-issue fixer.
+
+---
+
+### Cycle 33 — 2026-02-11 (output.log BabylonSocial/babylon#1213, 1490 lines)
+
+**Artifacts audited:** output.log (1490 lines). Run: new workdir, conflict resolved via LLM; 16 comments → 10 dismissed (4 stale, 6 not-an-issue) → 5 batch → 4 open; fix loop fixed 3 (run-prr.yml x2, TickerClient.tsx); push failed with "refusing to allow a Personal Access Token to create or update workflow … without `workflow` scope"; one issue ("### Code Quality (Positive)" on daily-topic-service.ts) consumed many iterations (positive-only comment); revert reported "Could not reset daily-topic-service.ts" (pathspec mismatch); second push iteration hit same workflow-scope error; stalemate bail-out, exit Error.
+
+**Findings (improvements not already in code):**
+- **High:** Push fails when token lacks `workflow` scope and PR touches `.github/workflows/`. PRR does not detect this or suggest adding workflow scope (or fixing workflow files manually). Add detection and a clear user-facing message.
+- **Medium:** "### Code Quality (Positive)" (positive/summary section) was treated as fixable and burned iterations. Extend positive-section detection to headings like "… (Positive)" so they are dismissed as not-an-issue.
+- **Medium:** Revert after rejected fix used `issue.comment.path` (e.g. `daily-topic-service.ts`); git reset then failed with "pathspec 'daily-topic-service.ts' did not match any files". Use the path that appears in the changed-files list (full repo path) when adding target to filesToRevert so pathspec matches.
+- **Low:** After a workflow-scope push failure, consider surfacing or handling workflow-file issues differently (e.g. in AAR or next-steps) so we don’t keep fixing workflow files that can’t be pushed with the current token.
+
+**Improvements implemented:**
+- **git-push.ts:** When push fails with stderr containing "refusing to allow" and "workflow" (or "without `workflow` scope"), set a clear error message: token needs `workflow` scope for `.github/workflows` changes; add scope or fix workflow files manually.
+- **solvability.ts:** Extended `isWhatsGoodOrPositiveSummaryComment` to match headings like "### Code Quality (Positive)" and "### … (Positive)" so positive-only sections are dismissed as not-an-issue.
+- **recovery.ts:** When building filesToRevert after a rejected fix, avoid adding a short/basename path when the same file is already in the list under its full path (use path from filesToRevert that matches issue target; only add resolvedPath ?? comment.path if no match).
+
+**Flip-flop check:** N — Additive detection and path logic; no behavior revert.
+
+**Notes:** Recurring theme "Noise in queue" (positive/summary comments) reinforced. Basename/path theme (Cycle 13) related: revert used short path; fix ensures we use the path git knows (from getChangedFiles).
+
+---
+
+### Cycle 34 — 2026-02-11 (prompts.log BabylonSocial/babylon#1213, same run as Cycle 33)
+
+**Artifacts audited:** prompts.log (10,870 lines, 52 entries). Phases: #0001–#0002 merge conflict resolution (predictions-route-fallback.test.ts), #0003–#0006 dedup/grouping, #0007–#0008 batch fix (36k chars, 4 issues), #0009–#0010 batch verifier, then repeated single-issue fix prompts (19k chars × many for daily-topic “Code Quality (Positive)”), verifier, dismissal. Batch fixer correctly returned "ISSUE 4 RESULT: ALREADY_FIXED" for the positive comment; issue stayed in queue and was sent repeatedly. Later prompt (#0035) showed **TARGET FILE(S): `.github/workflows/run-prr.yml`, `.github/workflows/TickerClient.tsx`** — TickerClient.tsx was wrongly placed under .github/workflows/ because getSiblingFilePathsFromComment used dir of primary (run-prr.yml) + basename from body. Fixer also tried apps/docs/content/reference/ticker-embed.md when TARGET listed "ticker-embed.md" (short path).
+
+**Findings (improvements not already in code):**
+- **Medium:** When batch fix returns "ISSUE N RESULT: ALREADY_FIXED" (or CANNOT_FIX) for specific issues, those issues are not marked resolved and remain in the single-issue queue, burning many repeated prompts. Parse per-issue RESULT lines from batch fix output and dismiss/mark resolved for ALREADY_FIXED (and optionally CANNOT_FIX) so they don’t re-enter the fix loop.
+- **Medium:** getSiblingFilePathsFromComment builds path as `dir(primaryPath) + basename`. For a comment that lists multiple files in different trees (e.g. "#### \`.github/workflows/run-prr.yml\`" and "#### \`apps/web/.../TickerClient.tsx\`"), the body contains "TickerClient.tsx"; we then add ".github/workflows/TickerClient.tsx" (wrong). Prefer full path from body when the body contains a path-with-slash that includes that basename (e.g. backtick-wrapped or path-like string).
+- **Low:** TARGET FILE(S) sometimes lists short paths (e.g. "ticker-embed.md"); fixer resolves to a different full path (e.g. apps/docs/content/reference/ticker-embed.md) and hits disallowed-file lesson. Prefer resolved full paths in allowedPaths when available.
+- **Low:** Judge response used "issue_3: YES I1 D1 |" (pipe) instead of colons; prompt says "Use colons between fields. No pipes." Parser may accept it; optional tightening or doc.
+
+**Improvements implemented:**
+- **prompt-builder.ts (getSiblingFilePathsFromComment):** Before adding dir+basename, check if the body contains a path string that includes that basename and has a slash (e.g. \`apps/web/.../TickerClient.tsx\`). If so, use that full path instead of dir+basename so we don’t add wrong paths like .github/workflows/TickerClient.tsx.
+
+**Flip-flop check:** N — Additive path logic; no behavior revert.
+
+**Notes:** Batch ALREADY_FIXED parsing is a follow-up (touches execute-fix-iteration and possibly apply-batch result handling). Positive-comment dismissal (Cycle 33) would have prevented the daily-topic issue from entering the queue; batch ALREADY_FIXED handling would have cleared it after the first batch.
+
+---
+
+### Cycle 31 — 2026-03-11 (output.log BabylonSocial/babylon#1207, 821 lines)
+
+**Artifacts audited:** output.log (821 lines). Run: 140 comments, 56 dismissed upfront, 5 fresh analyses → 2 open; 2 in fix queue (1 to fix, 1 already verified); 1 fix (generate-skills-md.ts) committed/pushed; iter 2 cache reuse, exit all resolved.
+
+**Findings (improvements not already in code):**
+- **Medium:** Comments that "request confirmation about a design decision" (e.g. chain ID default) are dismissed as `stale`; they are not code staleness. Add solvability check and dismiss as `not-an-issue` with reason "Design decision / confirmation request — not a code fix" so table shows correct category.
+- **Low:** Debug table "reason" can say "File no longer exists: X" when comment path is Y (LLM explanation); optionally append "(comment path: Y)" when X ≠ comment.path for clarity.
+- **Low:** "unseen" count (8) has no in-log definition; add one line in table header or docs: "unseen = no decision recorded (e.g. not yet analyzed or merged in dedup)".
+- **Low:** PR metadata requests still use category `stale`; optional dedicated category (e.g. `non-code-change`) so table doesn't imply code obsolescence.
+
+**Improvements implemented:** None this cycle (audit-only).
+
+**Flip-flop check:** N — Audit only; no code change.
+
+**Notes:** Hedged visibility and weak-identifier stale retargeting are already in code; path resolution and create-file handling behaved as intended this run.
+
+---
+
+### Cycle 32 — 2026-03-11 (prompts.log BabylonSocial/babylon#1207, same run as Cycle 31)
+
+**Artifacts audited:** prompts.log (#0001 dedup through #0020 dismissal-comment responses).
+
+**Findings (improvements not already in code):**
+- **Medium:** Dismissal-comment LLM was called for a concern dismissed as "This is requesting confirmation about a design decision (chain ID default change), not a code issue to fix." The model returned a COMMENT that was then post-filtered as "too generic, skipping". Skip the dismissal-comment LLM when reason matches design-decision/confirmation phrasing (same as we skip for "file no longer exists" and metadata).
+- **Low:** Fix prompt lesson listed multiple TARGET FILE(S) from a prior batch while the current issue had a single target file; optional normalization for single-issue prompts. Optional: skip dismissal-comment LLM when reason indicates truncated snippet or line-out-of-range (no code at target to attach Note to).
+
+**Improvements implemented:** None this cycle (audit-only).
+
+**Flip-flop check:** N — Audit only; no code change.
+
+**Notes:** Dedup, batch analysis, model recommendation, fix prompt, and batch verify formats and responses were correct. Create-file NOTE in batch analysis worked; verifier used plain "1: YES: ..." format.
 
 ---
 

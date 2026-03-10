@@ -269,9 +269,28 @@ export function getPathsToDeleteFromComment(issue: UnresolvedIssue): string[] {
 }
 
 /**
+ * Find a path string in body that contains a slash and ends with the given basename.
+ * WHY: prompts.log audit babylon#1213 — body had "#### `apps/web/.../TickerClient.tsx`" but we used
+ * dir(primary) + basename → ".github/workflows/TickerClient.tsx" (wrong). Prefer explicit full path.
+ */
+function findFullPathInBodyForBasename(body: string, basename: string): string | null {
+  const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Path-like: contains slash, ends with basename (backtick-wrapped or word boundary)
+  const re = new RegExp(`[\`'"]([a-zA-Z0-9_/.()-]+/${escaped})[\`'"]|\\b([a-zA-Z0-9_/.()-]+/${escaped})\\b`, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const path = (m[1] ?? m[2])?.trim();
+    if (path && path.includes('/') && path.endsWith(basename)) return path;
+  }
+  return null;
+}
+
+/**
  * When the comment body mentions sibling files by name (e.g. "entity.store.ts and task.store.ts"),
  * return repo-relative paths in the same directory as the issue file so we can add them to
  * allowedPaths. Enables fixer to edit the files that actually contain the issue.
+ * When the body contains a full path that includes the basename (e.g. `apps/web/.../TickerClient.tsx`),
+ * use that path instead of dir+basename so we don't produce wrong paths like .github/workflows/TickerClient.tsx.
  */
 export function getSiblingFilePathsFromComment(issue: UnresolvedIssue): string[] {
   const primaryPath = issue.resolvedPath ?? issue.comment.path ?? '';
@@ -286,7 +305,8 @@ export function getSiblingFilePathsFromComment(issue: UnresolvedIssue): string[]
     const basename = m[1];
     if (/^(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(basename)) continue;
     if (basename === primaryBasename) continue;
-    const full = dir ? `${dir}/${basename}` : basename;
+    const fullFromBody = findFullPathInBodyForBasename(body, basename);
+    const full = fullFromBody ?? (dir ? `${dir}/${basename}` : basename);
     if (seen.has(full)) continue;
     seen.add(full);
     if (isPathAllowedForFix(full)) out.push(full);

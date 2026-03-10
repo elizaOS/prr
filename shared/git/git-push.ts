@@ -202,10 +202,13 @@ export async function push(git: SimpleGit, branch: string, force = false, github
             error: 'Push rejected: remote has newer commits. Need to pull first.',
           });
         } else {
-          settle({ 
-            success: false,
-            error: `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactUrlCredentials(stderr)}`,
-          });
+          // WHY: output.log audit babylon#1213 — push failed with "refusing to allow a Personal Access Token to create or update workflow … without `workflow` scope". Surface a clear hint.
+          const workflowScopeDenied = /refusing to allow.*(?:create or update workflow|workflow.*without.*workflow.*scope)/i.test(stderr) || /without\s*[`']workflow[`']\s*scope/i.test(stderr);
+          const baseError = `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactUrlCredentials(stderr)}`;
+          const error = workflowScopeDenied
+            ? `${baseError}\n\nHint: GitHub rejected the push because your token does not have the 'workflow' scope. To modify .github/workflows files, add the workflow scope to your Personal Access Token, or fix workflow files manually.`
+            : baseError;
+          settle({ success: false, error });
         }
       }
     });

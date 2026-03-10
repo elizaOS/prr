@@ -766,6 +766,8 @@ function isWhatsGoodOrPositiveSummaryComment(commentBody: string): boolean {
   if (/^#+\s*✅\s*What'?s Good\b/im.test(head)) return true;
   if (/^#+\s*What'?s Good\s*$/im.test(head)) return true;
   if (/^#+\s*Strengths\b/im.test(head) && !/\b(fix|change|add|remove|update)\b.*\b(line|here)\b/i.test(head)) return true;
+  // WHY: output.log audit babylon#1213 — "### Code Quality (Positive)" entered fix loop; treat (Positive) section headers as praise-only.
+  if (/^#+\s*[^#\n]+\(Positive\)\s*$/im.test(head)) return true;
   return false;
 }
 
