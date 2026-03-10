@@ -723,6 +723,8 @@ For each group of true duplicates, pick the most detailed comment as canonical.
 Valid comment indices in this prompt are 1 through ${items.length} only. Never reference an index outside that range.
 The canonical index MUST be one of the indices listed in its GROUP line.
 
+Before replying: For each GROUP line you write, verify that every index in that GROUP has the same (line N) in the comment text above. If any two indices have different line numbers, do NOT put them in the same GROUP.
+
 Reply ONLY with lines like (one per group, no other text):
 GROUP: 1,2 → canonical 2
 GROUP: 1,3 → canonical 3

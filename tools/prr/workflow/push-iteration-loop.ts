@@ -645,7 +645,7 @@ export async function executePushIteration(
     const noChangesDetails =
       stillNeedAttention > 0
         ? `No changes to commit (fixer made no modifications); ${formatNumber(stillNeedAttention)} issue${stillNeedAttention === 1 ? '' : 's'} still ${stillNeedAttention === 1 ? 'needs' : 'need'} attention`
-        : 'No changes to commit (fixer made no modifications)';
+        : 'All issues were already resolved (fixed or dismissed); nothing new to commit or push.';
     return {
       shouldBreak: true,
       exitReason: preserveExitReason ? exitReason : 'no_changes',

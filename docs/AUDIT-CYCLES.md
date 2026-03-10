@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-10 · **Recorded cycles:** 23 · **Historical (legacy):** 4
+**Last updated:** 2026-03-10 · **Recorded cycles:** 25 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -175,6 +175,45 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Same push path as fix loop; no behavior change for local/dev.
 
 **Notes:** Run downloaded via `gh run download 22882523900 --repo elizaOS/prr --name prr-logs-5`. Optional: when "add tests for X" resolves to a test path that doesn't exist, ensure allowedPaths and verifier diff include the to-be-created path so newfile isn't treated as "empty change".
+
+---
+
+### Cycle 24 — 2026-03-10 (output.log elizaOS/eliza#6562, 737 lines)
+
+**Artifacts audited:** output.log (same PR as Cycle 21; exit "All issues resolved", 34 fixed from prior runs, 95 dismissed, 0 remaining; 1 fix this session then no_changes)
+
+**Findings:**
+- **Low:** When exit is no_changes and 0 issues still need attention, exit details said "No changes to commit (fixer made no modifications)" — correct but could clarify that all issues were already resolved (nothing new to push). Optional from Cycle 21.
+- **Low:** Dedup again returned mixed line numbers (2531, 2507); re-split → 0 groups. STALE→YES overrides applied for truncated-snippet reasons. Queue showed "(1 to fix, 8 already verified)" then "(all 9 already verified — will skip fixer)". Behavior correct.
+- **Positive:** Single fix (message-service.test.ts voiceMessage rename) applied, verified, pushed; iteration 2 skipped fixer and exited cleanly; dismissal comments deduped (added: 0, skipped: 11).
+
+**Improvements implemented:**
+- When no changes to commit and 0 issues still need attention, exit details now: "All issues were already resolved (fixed or dismissed); nothing new to commit or push." (push-iteration-loop noChangesDetails)
+
+**Flip-flop check:** N — Clarifier only; same exit reason.
+
+**Notes:** No code bugs; run completed as intended.
+
+---
+
+### Cycle 25 — 2026-03-10 (prompts.log elizaOS/eliza#6562, same run as Cycle 24)
+
+**Artifacts audited:** prompts.log (~3.3k lines, 10 entries). Phases: #0001 dedup (3 comments, runtime.ts), #0002 response, #0003 judge (63k chars, 20 issues), #0004 response, #0005 fixer (46k chars, 1 issue), #0006 response, #0007 verifier (voiceMessage fix), #0008 response, #0009 dismissal-comment (roles.ts), #0010 response.
+
+**Findings:**
+- **Low:** Dedup #0001: model returned `GROUP: 1,3 → canonical 3` for comments on lines 2531 and 2507 (different lines). Re-split logic correctly produced no cross-line merge; behavior was correct. Optional: add an explicit verification step in the dedup prompt so the model self-checks (line N) before replying.
+- **Low:** Judge #0004: several STALE due to truncation (issue_8, issue_10, issue_13) with clear explanations; issue_1 NO cited lines 2511–2512; format and citations were good.
+- **Positive:** Fixer #0005 addressed only the allowed issue (voiceMessage → message in message-service.test.ts), used RESULT: FIXED; verifier #0007 returned 1: YES with citation; dismissal #0009/#0010 returned EXISTING for roles.ts (comment already present). Slug correlation: prompts.log uses consecutive slugs per call (#0001 PROMPT, #0002 RESPONSE, …); correlation is an eliza logger concern (issue_3 in this run), not PRR.
+
+**Improvements implemented:**
+- Dedup prompt: added explicit verification step so the model checks (line N) for each index in each GROUP before replying; reduces wrong same-GROUP when lines differ.
+
+**Optional follow-ups:**
+- None from this audit.
+
+**Flip-flop check:** N — Prompt clarification only; re-split already enforces same-line.
+
+**Notes:** Run matched output.log (Cycle 24): one fix applied and verified; exit clean. Prompts.log audit confirms judge/fixer/verifier/dismissal prompts and responses were coherent and produced correct outcomes.
 
 ---
 
