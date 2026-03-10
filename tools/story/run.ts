@@ -1,5 +1,9 @@
 /**
- * PR/branch story runner: fetch PR or branch comparison data, call LLM to build narrative + changelog.
+ * Story runner: fetch PR or branch data, build prompt, call LLM, return narrative + changelog.
+ *
+ * Three flows: PR (getPRInfo + getPRCommits + getPRFiles), single branch (getBranchCommitHistory only),
+ * two branches (getBranchComparisonEitherDirection). WHY single-branch has no files: branch may be behind
+ * default; we use List Commits so we always have a story without picking a base.
  */
 import chalk from 'chalk';
 import ora from 'ora';
@@ -11,6 +15,7 @@ import { parsePRUrl, parseBranchSpec, normalizeCompareBranch } from '../prr/gith
 import { LLMClient } from '../prr/llm/client.js';
 import { debug, formatNumber } from '../../shared/logger.js';
 
+/** WHY 500: Long multi-line commit messages blow prompt size; first line plus date is enough for narrative. */
 const MAX_COMMIT_MESSAGE_LENGTH = 500;
 
 function truncateMessage(msg: string): string {
@@ -20,9 +25,10 @@ function truncateMessage(msg: string): string {
 }
 
 /**
- * Build a text summary of commits for the LLM: first N, optional "… and X more …", last M.
- * When total <= maxCommits, show all commits (no overlap). Otherwise use non-overlapping
- * first/last halves so we never duplicate lines.
+ * Build commit summary for the LLM: first N, "… X more …", last M.
+ * WHEN total <= maxCommits: show all (no first/last split). WHEN total > maxCommits: half = min(maxCommits/2, total/2)
+ * so first and last don't overlap. WHY: Previously half = maxCommits/2 with total < maxCommits produced overlapping
+ * first/last and duplicated ~50 commits in the prompt.
  */
 function buildCommitSummary(
   commits: Array<{ message: string; authoredDate: Date }>,
@@ -43,7 +49,8 @@ function buildCommitSummary(
 }
 
 /**
- * Build file list summary: paths + stats, optionally truncated.
+ * Build file list summary for the LLM: path, status, +/- lines; omit after maxFiles with "... and N more files".
+ * WHY formatNumber for counts: Per workspace rule, user-visible numbers use locale formatting (e.g. 1,234).
  */
 function buildFileSummary(
   files: Array<{ filename: string; status: string; additions: number; deletions: number }>,
@@ -153,6 +160,7 @@ A proper changelog in this format:
 
 Infer what was added/changed/fixed/removed from commit messages and file paths. Be concise and user-facing.`;
 
+/** WHY try PR first: PR URL and branch spec can both be valid; PR takes precedence so owner/repo#123 is a PR. */
 function isPRInput(input: string): boolean {
   try {
     parsePRUrl(input);
@@ -227,6 +235,7 @@ Output your response with the exact headings: ## Narrative, ## Features / change
     const secondBranch = secondBranchRaw
       ? normalizeCompareBranch(secondBranchRaw, owner, repo)
       : undefined;
+    /* WHY normalize: --compare may be a tree URL; API expects branch name (e.g. v1-develop) or 404. */
 
     if (secondBranch) {
       spinner.start(`Comparing ${branch} and ${secondBranch}...`);

@@ -114,10 +114,11 @@ export function parsePRUrl(url: string): { owner: string; repo: string; number: 
 /**
  * Parse a branch spec (repo + branch). Returns null if input does not match.
  * Supports: owner/repo@branch, owner/repo:branch, https://github.com/owner/repo/tree/branch
+ * WHY tree URL: Users paste browser URLs; accepting tree URL avoids "invalid input" and we pass only branch name to the API.
+ * WHY strip query/fragment and trailing slash: Clean branch name; GitHub API expects ref name without URL cruft.
  */
 export function parseBranchSpec(input: string): { owner: string; repo: string; branch: string } | null {
   const trimmed = input.trim();
-  // owner/repo@branch or owner/repo:branch (repo may contain / for org/repo with slashes - no, repo is single segment usually)
   const shorthandAt = trimmed.match(/^([^\/]+)\/([^@:]+)@([^@]+)$/);
   if (shorthandAt) {
     return { owner: shorthandAt[1], repo: shorthandAt[2], branch: shorthandAt[3] };
@@ -126,7 +127,6 @@ export function parseBranchSpec(input: string): { owner: string; repo: string; b
   if (shorthandColon) {
     return { owner: shorthandColon[1], repo: shorthandColon[2], branch: shorthandColon[3] };
   }
-  // https://github.com/owner/repo/tree/branch (branch can contain /; strip query/fragment and trailing slash)
   const treeMatch = trimmed.match(/(?:https?:\/\/)?github\.com\/([^\/]+)\/([^\/]+)\/tree\/(.+?)(?:[?#]|$)/);
   if (treeMatch) {
     const branch = treeMatch[3].replace(/\/+$/, '').trim();
@@ -138,9 +138,10 @@ export function parseBranchSpec(input: string): { owner: string; repo: string; b
 }
 
 /**
- * Normalize a --compare value to a branch name for the API.
- * Accepts: branch name (e.g. v1-develop), owner/repo@branch, or tree URL.
- * When owner/repo are provided (e.g. from first branch), they must match; otherwise the branch name is returned as-is.
+ * Normalize a --compare value to a branch name for the GitHub API.
+ * Accepts: plain branch name (e.g. v1-develop), owner/repo@branch, or tree URL.
+ * When currentOwner/currentRepo are set, parsed repo must match (same-repo comparison only).
+ * WHY: Compare API expects ref names; passing a tree URL as ref causes 404. We parse and pass only the branch name.
  */
 export function normalizeCompareBranch(
   value: string,

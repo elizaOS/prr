@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 /**
- * story - PR history → narrative, feature catalog, and changelog.
+ * story — PR and branch narrative & changelog.
  *
- * Usage: story <pr-url> [--output file] [--verbose]
- * Fetches PR metadata, commits, and files; uses an LLM to build a coherent
- * story and a proper changelog (Added/Changed/Fixed).
+ * Fetches PR or branch data (commits, optional files, optional PR body), then uses an LLM
+ * to produce a narrative, feature list, and changelog (Added/Changed/Fixed/Removed).
+ * Modes: PR, single branch (commit history only), two branches (--compare).
+ *
+ * WHY initOutputLog({ prefix: 'story' }): Writes story-output.log and story-prompts.log
+ * so story and prr don't overwrite each other when run from the same dir (same idea as pill-*).
  */
 import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
@@ -34,6 +37,7 @@ async function main(): Promise<void> {
   if (parsed.options.verbose) {
     process.env.DEBUG = process.env.DEBUG || 'prr:*';
   }
+  /* WHY setVerbose before run: Enables debug() and debugLogDir so prompt/response files are written under ~/.prr/debug/<timestamp>. */
 
   let config;
   try {

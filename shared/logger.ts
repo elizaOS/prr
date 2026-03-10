@@ -39,8 +39,10 @@ function stripAnsi(str: string): string {
 }
 
 /**
- * Options for initOutputLog. When prefix is set (e.g. 'story'), log files are
- * named {prefix}-output.log and {prefix}-prompts.log so multiple tools don't overwrite.
+ * Options for initOutputLog.
+ * WHY prefix: When multiple tools (prr, story, pill) run from the same directory, each can use a prefix
+ * (e.g. story → story-output.log, story-prompts.log) so they don't overwrite each other. Pill uses its own
+ * logger with hardcoded pill-* names; story uses shared logger with prefix 'story'; prr uses no prefix.
  */
 export interface InitOutputLogOptions {
   prefix?: string;

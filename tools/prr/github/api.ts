@@ -917,7 +917,8 @@ export class GitHubAPI {
   }
 
   /**
-   * Get list of files changed in a PR (with status: added, removed, modified).
+   * Get list of files changed in a PR (filename, status, additions, deletions).
+   * WHY: Story and other tools need the file list for changelog context; paginates so large PRs are fully listed.
    */
   async getPRFiles(owner: string, repo: string, prNumber: number): Promise<Array<{
     filename: string;
@@ -939,8 +940,9 @@ export class GitHubAPI {
   }
 
   /**
-   * Get commit history for a branch (or ref). Returns commits in chronological order
-   * (oldest first) for storytelling. Paginates up to maxCommits.
+   * Get commit history for a branch (or ref). Returns commits in chronological order (oldest first).
+   * WHY oldest first: Narrative and changelog are easier when the model sees "then this, then that";
+   * List Commits API returns newest first so we reverse after slicing to maxCommits.
    */
   async getBranchCommitHistory(
     owner: string,
@@ -1011,11 +1013,10 @@ export class GitHubAPI {
   }
 
   /**
-   * Compare two branches in both directions; return commits and files from
-   * older → newer (chronological). Prefers the direction where primaryBranch is
-   * the "newer" ref (the story is about what happened on the primary branch).
-   * When only one direction has commits, uses that; when both have commits
-   * (diverged), uses the one where primaryBranch is newer.
+   * Compare two branches in both directions; return commits and files from older → newer (chronological).
+   * Prefers the direction where primaryBranch is the "newer" ref so the story is about the primary branch.
+   * WHY prefer primary: The first argument is the branch the user cares about; when branches have diverged,
+   * we tell the story of that branch (commits in primary not in other), not the other way around.
    */
   async getBranchComparisonEitherDirection(
     owner: string,
@@ -1055,10 +1056,9 @@ export class GitHubAPI {
   }
 
   /**
-   * Compare a branch to the default branch; if that yields 0 commits (e.g. branch
-   * equals default or is behind), try comparing to "main" then "master" so we get
-   * a non-empty diff when the repo uses a different primary branch.
-   * Returns the first comparison with commits, or the default comparison plus baseRef used.
+   * Compare branch to default; if 0 commits (branch equals or is behind default), try base "main" then "master".
+   * WHY: Repos may use "develop" as default while the branch of interest diverged from "main"; fallback gives a non-empty diff.
+   * Story's single-branch mode now uses getBranchCommitHistory instead; this remains for potential future compare-to-default use.
    */
   async getBranchComparisonWithFallback(
     owner: string,

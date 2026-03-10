@@ -1,5 +1,6 @@
 /**
- * CLI for the PR story tool: parse PR URL and options.
+ * CLI for the story tool: parse PR or branch input and options.
+ * WHY Commander: Same as prr/pill; consistent option parsing and --compare as optional string.
  */
 import { Command } from 'commander';
 import chalk from 'chalk';
@@ -7,11 +8,11 @@ import chalk from 'chalk';
 export interface StoryOptions {
   output?: string;
   verbose: boolean;
-  /** Max commit messages to send to LLM (first + last); rest summarized. */
+  /** Max commit messages to include in context (first + last when truncated). WHY: Keeps prompt bounded for huge PRs/branches. */
   maxCommits: number;
-  /** Max file paths to send; rest summarized. */
+  /** Max file paths to include; rest summarized as "... and N more files". WHY: Avoids blowing context on thousands of files. */
   maxFiles: number;
-  /** When set (branch mode only), compare two branches and tell the story from older to newer. */
+  /** When set (branch mode only), second branch for compare; order auto-detected, story from oldest to newest. */
   compareBranch?: string;
 }
 

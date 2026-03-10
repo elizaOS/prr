@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — story tool (PR and branch narrative & changelog)
+
+**New CLI: story**
+- `story <pr-or-branch> [--compare <branch>] [--output <file>]` builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a GitHub PR or branch. Modes: PR (title/body + commits + files), single branch (commit history only via List Commits API), two branches (`--compare`; compare API, primary branch preferred as “newer” when diverged).
+- **WHY single-branch uses commit history only:** A branch may be behind default (e.g. v2-develop behind develop); comparing to default would yield 0 commits. Listing the branch’s commits always gives a story without requiring a base ref.
+- **WHY prefer primary branch in two-branch mode:** The first argument is the branch the user cares about. When both directions have commits (diverged), we use the direction where that branch is the “newer” ref so the narrative describes what happened on it.
+- **WHY story-output.log / story-prompts.log prefix:** Shared logger supports `initOutputLog({ prefix: 'story' })` so story and prr don’t overwrite each other’s logs when run from the same directory (same pattern as pill’s pill-output.log).
+- **WHY normalize --compare to branch name:** The GitHub compare API expects ref names; passing a tree URL causes 404. We parse tree URL or owner/repo@branch and pass only the branch name; same-repo check when owner/repo provided.
+- **WHY buildCommitSummary avoids overlap:** When total commits ≤ maxCommits we show all; when total > maxCommits we use non-overlapping first/last halves (`half = min(maxCommits/2, total/2)`). Previously first+last could overlap and duplicate ~50 commits in the prompt.
+- **Changelog prompts** include optional “### Removed” section so the model can document removals (e.g. pnpm, legacy characters) without inventing a new heading.
+- Docs: [tools/story/README.md](tools/story/README.md). GitHub API additions: getPRFiles, getDefaultBranch, getBranchComparison, getBranchCommitHistory, getBranchComparisonEitherDirection, getBranchComparisonWithFallback; types: parseBranchSpec, normalizeCompareBranch.
+
 ### Added (2026-03) — GitHub Actions caller token and null-safe review path handling
 
 **GitHub Actions: use caller's token and avoid reserved secret name**
