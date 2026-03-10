@@ -18,7 +18,8 @@
     "test": "vitest",
     "test:elizacloud": "echo 'No test-elizacloud script; set ELIZACLOUD_API_KEY and run pill or prr'",
     "typecheck": "tsc --noEmit",
-    "typecheck:bun": "bunx tsc --noEmit"
+    "typecheck:bun": "bunx tsc --noEmit",
+    "lint:workflows": "actionlint .github/workflows/"
   },
   "keywords": [
     "github",

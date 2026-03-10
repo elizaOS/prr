@@ -4,8 +4,8 @@
 #   1. Actions → Run PRR (client) → Run workflow → enter PR number.
 #   2. On the PR: add the "run-prr" label.
 #   3. Request PRR as a reviewer: add a bot user (or GitHub App bot) as a collaborator,
-#      set PRR_REVIEWER_LOGIN to that bot's login (e.g. prr-bot or my-app[bot]), then
-#      when someone requests that reviewer on the PR, this workflow runs.
+#      set repository variable PRR_REVIEWER_LOGIN (Settings → Variables) to that bot's
+#      login (e.g. prr-bot or my-app[bot]); when that reviewer is requested, this workflow runs.
 #
 # Inlined from run-prr-server.yml so validators that require runs-on accept this file.
 # Other repos can still call run-prr-server.yml directly (workflow_call).
@@ -28,19 +28,18 @@ concurrency:
 jobs:
   prr:
     name: Run PRR
-    # Run when: manual, or label "run-prr", or requested reviewer matches PRR_REVIEWER_LOGIN.
+    # Run when: manual, or label "run-prr", or requested reviewer matches vars.PRR_REVIEWER_LOGIN.
+    # (env is not available in job-level if; use repository variable instead.)
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && (
         (github.event.action == 'labeled' && github.event.label.name == 'run-prr') ||
-        (github.event.action == 'review_requested' && env.PRR_REVIEWER_LOGIN != '' && github.event.requested_reviewer.login == env.PRR_REVIEWER_LOGIN)
+        (github.event.action == 'review_requested' && vars.PRR_REVIEWER_LOGIN != '' && github.event.requested_reviewer.login == vars.PRR_REVIEWER_LOGIN)
       ))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: read
-    env:
-      PRR_REVIEWER_LOGIN: ''
     steps:
       - name: Checkout PRR
         uses: actions/checkout@v4
