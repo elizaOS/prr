@@ -77,19 +77,21 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Using fallback workdir', { workdir, method: (git as any)._baseDir ? '_baseDir' : 'cwd' });
   }
   
-  // Check if remote URL has token, prepare auth URL for one-shot push if needed
-  // WHY: Token may be stripped or repo cloned without it
-  // NOTE: We use auth URL directly in push command instead of modifying .git/config
-  // to avoid persisting tokens on disk (security: SIGKILL could leave token exposed)
+  // Prefer one-shot auth URL when we have a token so push never prompts in CI.
+  // WHY: Even when origin URL contains @ (hasTokenInUrl), git can still prompt "could not read Password"
+  // in CI (e.g. stored URL is https://git@github.com/... or token expired). Using the token we have
+  // for this run avoids that; one-shot URL is not persisted to .git/config.
   let authPushUrl: string | null = null;
   try {
     const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
-    
-    if (!hasTokenInUrl && githubToken && remoteUrl.startsWith('https://')) {
-      // Prepare auth URL for one-shot push (not persisted to .git/config)
-      authPushUrl = remoteUrl.replace('https://', `https://${githubToken}@`);
-      debug('Prepared auth URL for single push');
+    // Strip any existing credentials so we inject the current token (CI may pass a fresh GITHUB_TOKEN).
+    const baseHttpsUrl = remoteUrl.startsWith('https://') && hasTokenInUrl
+      ? 'https://' + remoteUrl.replace(/^https:\/\/[^@]+@/, '')
+      : remoteUrl;
+    if (githubToken && baseHttpsUrl.startsWith('https://')) {
+      authPushUrl = baseHttpsUrl.replace('https://', `https://${githubToken}@`);
+      debug('Pre-push check', { hasTokenInUrl, usingAuthUrl: true });
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
     } else {

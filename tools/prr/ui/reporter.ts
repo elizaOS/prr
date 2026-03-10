@@ -203,6 +203,11 @@ export function getExitReasonDisplay(exitReason: string | null): {
   }
 }
 
+/** Exit reasons that indicate run failure (process should exit with code 1). */
+export function isFailureExitReason(exitReason: string | null): boolean {
+  return exitReason === 'error' || exitReason === 'init_failed' || exitReason === 'merge_conflicts' || exitReason === 'sync_failed';
+}
+
 /**
  * Print final results summary
  * WHY: Profiling info pushes important results off screen. This ensures

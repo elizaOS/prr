@@ -218,6 +218,10 @@ export class PRResolver {
     this.finalComments = result.finalComments;
   }
 
+  getExitReason(): string {
+    return this.exitReason;
+  }
+
   private async setupRunner(): Promise<Runner> { const result = await Rotation.setupRunner(this.options, this.config); this.runners = result.all; return result.primary; }
   private buildConflictResolutionPrompt(conflictedFiles: string[], baseBranch: string): string { return GitOps.buildConflictResolutionPrompt(conflictedFiles, baseBranch); }
 

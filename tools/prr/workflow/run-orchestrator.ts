@@ -172,6 +172,9 @@ export async function executeRun(
       debug('Setup requested early exit', { exitReason: setupResult.exitReason, exitDetails: setupResult.exitDetails });
       if (setupResult.exitReason) state.exitReason = setupResult.exitReason;
       if (setupResult.exitDetails) state.exitDetails = setupResult.exitDetails;
+      // Sync resolver so printFinalSummary shows correct exit reason; run error cleanup so user sees "Exit: Error" and details (not "successfully ran").
+      if (callbacks.syncResolverState) callbacks.syncResolverState(state);
+      await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, state.finalUnresolvedIssues, state.finalComments, state.stateContext, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
       return state;
     }
     debug('Setup complete, entering push iteration loop', { workdir: setupResult.workdir, hasPrefetchedComments: !!setupResult.prefetchedComments?.length });

@@ -19,6 +19,7 @@ import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from '../../shared/logger.js';
+import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
@@ -163,6 +164,9 @@ async function main(): Promise<void> {
     }
     await closeOutputLog();
 
+    if (isFailureExitReason(resolver.getExitReason())) {
+      process.exit(1);
+    }
   } catch (error) {
     resolver?.abortRun();
     if (error instanceof Error) {
