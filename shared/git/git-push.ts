@@ -90,7 +90,8 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       ? 'https://' + remoteUrl.replace(/^https:\/\/[^@]+@/, '')
       : remoteUrl;
     if (githubToken && baseHttpsUrl.startsWith('https://')) {
-      authPushUrl = baseHttpsUrl.replace('https://', `https://${githubToken}@`);
+      // GitHub expects https://x-access-token:TOKEN@host so git uses the token as password (avoids "terminal prompts disabled" in CI).
+      authPushUrl = baseHttpsUrl.replace('https://', `https://x-access-token:${githubToken}@`);
       debug('Pre-push check', { hasTokenInUrl, usingAuthUrl: true });
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
