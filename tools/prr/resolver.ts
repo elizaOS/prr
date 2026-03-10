@@ -185,11 +185,11 @@ export class PRResolver {
       ringBell: (times) => this.ringBell(times), 
       runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n),
     };
-    // Only submit a PR review and comment when explicitly requested (e.g. manual workflow_dispatch); never when run from CLI or on label/review_requested.
+    // Only submit a PR review when explicitly requested (e.g. manual workflow_dispatch); never when run from CLI or on label/review_requested.
+    // Submit as review only (not also as issue comment) to avoid duplicate summary on the PR.
     if (process.env.PRR_SUBMIT_REVIEW === 'true') {
       callbacks.submitReview = async (body, prInfo) => {
         await this.github.submitPullRequestReview(prInfo.owner, prInfo.repo, prInfo.number, 'COMMENT', body);
-        await this.github.postComment(prInfo.owner, prInfo.repo, prInfo.number, body);
       };
     }
     const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
