@@ -152,6 +152,13 @@ npm run build
 
 # Run prr directly
 node dist/tools/prr/index.js <pr-url>
+```
+
+### Story: PR or branch narrative & changelog
+
+The **story** tool builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a PR or branch. Three modes: **PR** (title/body + commits + files), **single branch** (commit history only, no comparison), **two branches** (`--compare <branch>`; order auto-detected, story is about the branch you passed first). See **[tools/story/README.md](tools/story/README.md)** for full documentation and WHYs.
+
+```bash
 
 # Or link globally (prr, pill, and story available)
 npm link
@@ -226,12 +233,10 @@ story https://github.com/owner/repo/tree/v2-develop --compare v1-develop
 # Write to file; verbose; tune context size
 story owner/repo#456 --output CHANGELOG.md
 story owner/repo@branch -v --max-commits 200 --max-files 500
+story --help   # PR narrative & changelog
 ```
 
 Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`). Logs: `story-output.log`, `story-prompts.log`.
-
-```bash
-# Keep work directory for inspection
 prr https://github.com/owner/repo/pull/123 --keep-workdir
 
 # Re-verify all issues (ignore verification cache)
