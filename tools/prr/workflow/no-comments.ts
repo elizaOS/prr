@@ -43,7 +43,7 @@ export async function handleNoComments(
     startTimer('Auto-resolve conflicts');
     // Ensure base branch ref is up-to-date before merging
     await git.fetch('origin', prInfo.baseBranch);
-    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch);
+    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge: prInfo.mergeableState === 'behind' });
     
     if (!mergeResult.success) {
       // Need LLM to resolve

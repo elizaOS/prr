@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-10 · **Recorded cycles:** 27 · **Historical (legacy):** 4
+**Last updated:** 2026-03-10 · **Recorded cycles:** 28 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -250,6 +250,24 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Path normalization only; valid paths unchanged; 2F-prefixed segments become correct repo-relative paths.
 
 **Notes:** Recorded cycles = 27. Follow-ups implemented: (1) single-issue inject cap lowered to 60k/120k in recovery.ts; (2) commentNeedsLifecycleContext extended with hasRequestedInState, RECENT_MESSAGES, ACTION_STATE, reply action handler, and getCodeSnippet uses conservative analysis for path ending in reply.ts so judge gets broader snippet.
+
+---
+
+### Cycle 28 — 2026-03-10 (prompts.log BabylonSocial/babylon#1207)
+
+**Artifacts audited:** prompts.log (3,344 lines, 22 entries). Phases: #0001–#0004 dedup (3.6k / 3k chars), #0005–#0006 batch judge (43k chars, 18 issues), #0007–#0008 single verifier, #0009–#0010 batch fix (31k chars), #0011–#0014 batch verifier + single verifier, #0015–#0022 dismissal-comment (4 prompts, 4 responses: SKIP, SKIP, COMMENT, COMMENT, COMMENT).
+
+**Findings:**
+- **Positive:** Judge #0006 returned sensible YES/NO/STALE mix; verifier #0012 gave 1–4 with one NO+lesson (resolve(import.meta.dir, '..') still brittle); dismissal #0016 prompt included "Why it was dismissed: The truncated snippet ... doesn't show line 82-85" and model responded SKIP; no 2F path or ERROR entries.
+- **Low:** Many "truncated — snippet was cut for prompt size" in judge prompt #0005 (43k). Judge still produced usable verdicts; optional: already have wideSnippets when context ≥100k.
+- **Low:** Dismissal-comment prompt could explicitly tell the model to respond SKIP when the dismissal reason states the snippet doesn't show the referenced lines, so behavior is consistent even when surrounding code in the prompt later includes those lines (e.g. re-fetched).
+
+**Improvements implemented:**
+- llm/client.ts generateDismissalComment: added TASK item 3 — "If the dismissal reason above says the snippet does not show the lines referenced in the concern, respond SKIP (you cannot safely add a comment without seeing that code)." Renumbered previous step 3 to 4.
+
+**Flip-flop check:** N — Additive instruction only; EXISTING/SKIP/COMMENT behavior unchanged.
+
+**Notes:** Run was babylon PR #1207 (odi-public → staging); prompt sizes all under 50k; no single-issue 145k prompts in this run.
 
 ---
 

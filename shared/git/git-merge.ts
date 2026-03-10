@@ -104,11 +104,17 @@ export async function ensureGitIdentity(git: SimpleGit): Promise<void> {
   debug('Set git identity for merge/commit', { userName, userEmail });
 }
 
+export interface MergeBaseBranchOptions {
+  /** When true, do not short-circuit with merge-base; always run git merge. Use when GitHub reports mergeableState === 'behind' so the source branch is actually updated with the target. */
+  forceMerge?: boolean;
+}
+
 export async function mergeBaseBranch(
-  git: SimpleGit, 
-  baseBranch: string
+  git: SimpleGit,
+  baseBranch: string,
+  options?: MergeBaseBranchOptions
 ): Promise<MergeBaseResult> {
-  debug('Merging base branch into PR branch', { baseBranch });
+  debug('Merging base branch into PR branch', { baseBranch, forceMerge: options?.forceMerge });
   await ensureGitIdentity(git);
 
   try {
@@ -124,14 +130,15 @@ export async function mergeBaseBranch(
       await git.fetch(['origin', `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
     }
     
-    // Check if we're already up-to-date before trying merge
-    const headSha = await git.revparse(['HEAD']);
-    const baseSha = await git.revparse([`origin/${baseBranch}`]);
-    const mergeBase = await git.raw(['merge-base', 'HEAD', `origin/${baseBranch}`]).then(s => s.trim());
-    
-    if (baseSha.trim() === mergeBase) {
-      debug('Already up-to-date with base branch');
-      return { success: true, alreadyUpToDate: true };
+    // Check if we're already up-to-date before trying merge (skip when forceMerge: GitHub said "behind")
+    if (!options?.forceMerge) {
+      const headSha = await git.revparse(['HEAD']);
+      const baseSha = await git.revparse([`origin/${baseBranch}`]);
+      const mergeBase = await git.raw(['merge-base', 'HEAD', `origin/${baseBranch}`]).then(s => s.trim());
+      if (baseSha.trim() === mergeBase) {
+        debug('Already up-to-date with base branch');
+        return { success: true, alreadyUpToDate: true };
+      }
     }
     
     // Try to merge

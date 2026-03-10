@@ -2555,7 +2555,8 @@ ${reason}
 TASK:
 1. If there is ALREADY a comment near line ${params.line} that addresses the concern, respond: EXISTING
 2. If the code is self-explanatory and no comment adds value, respond: SKIP
-3. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
+3. If the dismissal reason above says the snippet does not show the lines referenced in the concern, respond SKIP (you cannot safely add a comment without seeing that code).
+4. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
 
 RULES:
 - Write as a developer, not a review tool. Explain the design decision, not what changed in a diff.

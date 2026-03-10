@@ -85,7 +85,9 @@ export async function checkAndMergeBaseBranch(
     await git.fetch('origin', prInfo.baseBranch);
     await git.fetch('origin', prInfo.branch);
 
-    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch);
+    // When GitHub says the PR branch is "behind" the base, always run the merge so we update the source branch with the target (don't trust merge-base short-circuit).
+    const forceMerge = prInfo.mergeableState === 'behind';
+    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge });
 
     if (!mergeResult.success) {
       // Merge failed - use LLM tool to resolve conflicts
