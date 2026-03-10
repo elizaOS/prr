@@ -110,3 +110,57 @@ export function parsePRUrl(url: string): { owner: string; repo: string; number: 
 
   throw new Error(`Invalid PR URL format: ${url}. Expected: https://github.com/owner/repo/pull/123 or owner/repo#123`);
 }
+
+/**
+ * Parse a branch spec (repo + branch). Returns null if input does not match.
+ * Supports: owner/repo@branch, owner/repo:branch, https://github.com/owner/repo/tree/branch
+ */
+export function parseBranchSpec(input: string): { owner: string; repo: string; branch: string } | null {
+  const trimmed = input.trim();
+  // owner/repo@branch or owner/repo:branch (repo may contain / for org/repo with slashes - no, repo is single segment usually)
+  const shorthandAt = trimmed.match(/^([^\/]+)\/([^@:]+)@([^@]+)$/);
+  if (shorthandAt) {
+    return { owner: shorthandAt[1], repo: shorthandAt[2], branch: shorthandAt[3] };
+  }
+  const shorthandColon = trimmed.match(/^([^\/]+)\/([^@:]+):([^@:]+)$/);
+  if (shorthandColon) {
+    return { owner: shorthandColon[1], repo: shorthandColon[2], branch: shorthandColon[3] };
+  }
+  // https://github.com/owner/repo/tree/branch (branch can contain /; strip query/fragment and trailing slash)
+  const treeMatch = trimmed.match(/(?:https?:\/\/)?github\.com\/([^\/]+)\/([^\/]+)\/tree\/(.+?)(?:[?#]|$)/);
+  if (treeMatch) {
+    const branch = treeMatch[3].replace(/\/+$/, '').trim();
+    if (branch) {
+      return { owner: treeMatch[1], repo: treeMatch[2], branch };
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalize a --compare value to a branch name for the API.
+ * Accepts: branch name (e.g. v1-develop), owner/repo@branch, or tree URL.
+ * When owner/repo are provided (e.g. from first branch), they must match; otherwise the branch name is returned as-is.
+ */
+export function normalizeCompareBranch(
+  value: string,
+  currentOwner?: string,
+  currentRepo?: string
+): string {
+  const trimmed = value.trim();
+  const parsed = parseBranchSpec(trimmed);
+  if (parsed) {
+    if (currentOwner != null && currentRepo != null && (parsed.owner !== currentOwner || parsed.repo !== currentRepo)) {
+      throw new Error(
+        `--compare repo (${parsed.owner}/${parsed.repo}) does not match branch repo (${currentOwner}/${currentRepo}). Use the same repository.`
+      );
+    }
+    return parsed.branch;
+  }
+  if (!/github\.com|@|^[^\/]+\/[^\/]+:/.test(trimmed)) {
+    return trimmed;
+  }
+  throw new Error(
+    `Invalid --compare value: "${value}". Use a branch name (e.g. v1-develop), owner/repo@branch, or a tree URL.`
+  );
+}

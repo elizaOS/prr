@@ -6,7 +6,8 @@
   "main": "dist/tools/prr/index.js",
   "bin": {
     "prr": "./dist/tools/prr/index.js",
-    "pill": "./dist/tools/pill/index.js"
+    "pill": "./dist/tools/pill/index.js",
+    "story": "./dist/tools/story/index.js"
   },
   "scripts": {
     "build": "tsc",

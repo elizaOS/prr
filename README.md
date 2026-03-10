@@ -144,7 +144,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ## Installation
 
-This repo contains **prr** (PR Resolver) and **pill** (Program Improvement Log Looker). Both use a shared library under `shared/`; tool code lives under `tools/prr/` and `tools/pill/`.
+This repo contains **prr** (PR Resolver), **pill** (Program Improvement Log Looker), and **story** (PR narrative & changelog). All use a shared library under `shared/`; tool code lives under `tools/prr/`, `tools/pill/`, and `tools/story/`.
 
 ```bash
 npm install
@@ -153,10 +153,11 @@ npm run build
 # Run prr directly
 node dist/tools/prr/index.js <pr-url>
 
-# Or link globally (both prr and pill available)
+# Or link globally (prr, pill, and story available)
 npm link
 prr --version   # See the cat!
 pill --help    # Pill CLI
+story --help   # PR narrative & changelog
 ```
 
 ## Configuration
@@ -204,6 +205,28 @@ prr https://github.com/owner/repo/pull/123 --tool claude-code
 
 # Dry run - show issues without fixing
 prr https://github.com/owner/repo/pull/123 --dry-run
+
+### Story: PR or branch narrative & changelog
+
+The **story** tool takes a PR URL or a branch spec, fetches commit history and changed files (and PR body when given a PR), then uses an LLM to produce a short narrative, a feature catalog, and a proper changelog (Added/Changed/Fixed).
+
+```bash
+# PR: print narrative and changelog to stdout
+story https://github.com/owner/repo/pull/123
+story owner/repo#456
+
+# Branch: compare branch to default (main/master), infer from commits + files
+story owner/repo@feature/siwe
+story https://github.com/owner/repo/tree/feature/siwe
+
+# Write to a file
+story owner/repo#456 --output CHANGELOG.md
+
+# Verbose + tune context size for huge PRs/branches
+story owner/repo@branch --verbose --max-commits 200 --max-files 500
+```
+
+Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`).
 
 # Keep work directory for inspection
 prr https://github.com/owner/repo/pull/123 --keep-workdir

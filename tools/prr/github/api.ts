@@ -917,6 +917,181 @@ export class GitHubAPI {
   }
 
   /**
+   * Get list of files changed in a PR (with status: added, removed, modified).
+   */
+  async getPRFiles(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+  }>> {
+    debug('Fetching PR files', { owner, repo, prNumber });
+    const files = await this.octokit.paginate(
+      this.octokit.pulls.listFiles,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    return files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+  }
+
+  /**
+   * Get commit history for a branch (or ref). Returns commits in chronological order
+   * (oldest first) for storytelling. Paginates up to maxCommits.
+   */
+  async getBranchCommitHistory(
+    owner: string,
+    repo: string,
+    branch: string,
+    maxCommits: number = 500
+  ): Promise<Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>> {
+    debug('Fetching branch commit history', { owner, repo, branch, maxCommits });
+    const all = await this.octokit.paginate(this.octokit.repos.listCommits, {
+      owner,
+      repo,
+      sha: branch,
+      per_page: 100,
+    });
+    const commits = all.slice(0, maxCommits).map(c => ({
+      sha: c.sha,
+      message: c.commit.message,
+      authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
+      committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
+    }));
+    return commits.reverse();
+  }
+
+  /**
+   * Get the repository’s default branch (e.g. main, master).
+   */
+  async getDefaultBranch(owner: string, repo: string): Promise<string> {
+    debug('Fetching default branch', { owner, repo });
+    const { data } = await this.octokit.repos.get({ owner, repo });
+    return data.default_branch;
+  }
+
+  /**
+   * Compare a branch (or ref) against a base ref. Returns commits and files changed.
+   * Uses GitHub compare API (BASE...HEAD). Commits are in chronological order.
+   * Note: API returns up to 250 commits per page; very large branch diffs may be truncated.
+   */
+  async getBranchComparison(
+    owner: string,
+    repo: string,
+    baseRef: string,
+    headRef: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+  }> {
+    debug('Comparing branch', { owner, repo, baseRef, headRef });
+    const basehead = `${baseRef}...${headRef}`;
+    const { data } = await this.octokit.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead,
+      per_page: 100,
+    });
+    const commits = (data.commits ?? []).map(c => ({
+      sha: c.sha,
+      message: c.commit.message,
+      authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
+      committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
+    }));
+    const files = (data.files ?? []).map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+    return { commits, files };
+  }
+
+  /**
+   * Compare two branches in both directions; return commits and files from
+   * older → newer (chronological). Prefers the direction where primaryBranch is
+   * the "newer" ref (the story is about what happened on the primary branch).
+   * When only one direction has commits, uses that; when both have commits
+   * (diverged), uses the one where primaryBranch is newer.
+   */
+  async getBranchComparisonEitherDirection(
+    owner: string,
+    repo: string,
+    primaryBranch: string,
+    otherBranch: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+    olderRef: string;
+    newerRef: string;
+  }> {
+    const [primaryToOther, otherToPrimary] = await Promise.all([
+      this.getBranchComparison(owner, repo, primaryBranch, otherBranch),
+      this.getBranchComparison(owner, repo, otherBranch, primaryBranch),
+    ]);
+    const withPrimaryAsNewer = {
+      ...otherToPrimary,
+      olderRef: otherBranch,
+      newerRef: primaryBranch,
+    };
+    const withPrimaryAsOlder = {
+      ...primaryToOther,
+      olderRef: primaryBranch,
+      newerRef: otherBranch,
+    };
+    if (otherToPrimary.commits.length > 0 && primaryToOther.commits.length === 0) {
+      return withPrimaryAsNewer;
+    }
+    if (primaryToOther.commits.length > 0 && otherToPrimary.commits.length === 0) {
+      return withPrimaryAsOlder;
+    }
+    if (otherToPrimary.commits.length > 0) {
+      return withPrimaryAsNewer;
+    }
+    return withPrimaryAsOlder;
+  }
+
+  /**
+   * Compare a branch to the default branch; if that yields 0 commits (e.g. branch
+   * equals default or is behind), try comparing to "main" then "master" so we get
+   * a non-empty diff when the repo uses a different primary branch.
+   * Returns the first comparison with commits, or the default comparison plus baseRef used.
+   */
+  async getBranchComparisonWithFallback(
+    owner: string,
+    repo: string,
+    defaultBase: string,
+    headRef: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+    baseRef: string;
+  }> {
+    const tryBase = async (base: string) => {
+      const out = await this.getBranchComparison(owner, repo, base, headRef);
+      return { ...out, baseRef: base };
+    };
+    let result = await tryBase(defaultBase);
+    if (result.commits.length > 0) return result;
+    for (const fallback of ['main', 'master']) {
+      if (fallback === defaultBase) continue;
+      try {
+        const next = await tryBase(fallback);
+        if (next.commits.length > 0) {
+          debug('Branch compare: 0 commits vs default; using base', { base: fallback });
+          return next;
+        }
+      } catch {
+        // base ref may not exist (404)
+      }
+    }
+    return result;
+  }
+
+  /**
    * Analyze bot response timing on a PR.
    * 
    * WHY: Understanding how long bots take to respond helps us know:
@@ -1375,9 +1550,9 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
         continue;
       }
 
-      // WHY fallback: fileMatch[1] can be undefined if the regex capture is empty in edge cases; guarantee string so callers never see null (avoids TypeError in join/replace downstream).
-      const path = (bareFileMatch?.path ?? fileMatch![1]) ?? '(PR comment)';
-      const line = bareFileMatch?.line ?? (fileMatch![2] ? parseInt(fileMatch![2], 10) : null);
+      // WHY optional chaining: when bareFileMatch is set, fileMatch can be null; accessing fileMatch[2] would throw. Fallbacks guarantee string path and null-safe line.
+      const path = (bareFileMatch?.path ?? fileMatch?.[1]) ?? '(PR comment)';
+      const line = bareFileMatch?.line ?? (fileMatch?.[2] ? parseInt(fileMatch[2], 10) : null);
       issues.push({ body, path, line });
     }
   }

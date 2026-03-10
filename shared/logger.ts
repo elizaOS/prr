@@ -39,10 +39,18 @@ function stripAnsi(str: string): string {
 }
 
 /**
+ * Options for initOutputLog. When prefix is set (e.g. 'story'), log files are
+ * named {prefix}-output.log and {prefix}-prompts.log so multiple tools don't overwrite.
+ */
+export interface InitOutputLogOptions {
+  prefix?: string;
+}
+
+/**
  * Initialize the output log tee.
  *
- * Creates/truncates ~/.prr/output.log and patches console.log/warn/error
- * to mirror all formatted output (ANSI-stripped) to the file.
+ * Creates/truncates output.log (or {prefix}-output.log when options.prefix is set)
+ * and patches console.log/warn/error to mirror all formatted output (ANSI-stripped) to the file.
  *
  * Spinner output (ora etc.) goes through process.stdout.write — NOT console.log —
  * and is intentionally excluded.  It's pure UI noise with no analytical value.
@@ -53,10 +61,13 @@ function stripAnsi(str: string): string {
  * overwriting output.log/prompts.log in the project root when you want to
  * preserve them for pill or inspection).
  */
-export function initOutputLog(): void {
+export function initOutputLog(options?: InitOutputLogOptions): void {
   const logDir = process.env.PRR_LOG_DIR ? join(process.cwd(), process.env.PRR_LOG_DIR) : process.cwd();
+  const prefix = options?.prefix;
+  const outputFileName = prefix ? `${prefix}-output.log` : 'output.log';
+  const promptFileName = prefix ? `${prefix}-prompts.log` : 'prompts.log';
 
-  outputLogPath = join(logDir, 'output.log');
+  outputLogPath = join(logDir, outputFileName);
 
   try {
     mkdirSync(logDir, { recursive: true });
@@ -69,7 +80,7 @@ export function initOutputLog(): void {
 
   // Companion log for full prompts & responses — search by slug (e.g. "#0009")
   // to jump from output.log to the exact prompt/response in prompts.log.
-  const promptLogPath = join(logDir, 'prompts.log');
+  const promptLogPath = join(logDir, promptFileName);
   writeFileSync(promptLogPath, '', 'utf-8');
   promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
 
