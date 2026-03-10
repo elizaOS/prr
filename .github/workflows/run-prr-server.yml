@@ -68,7 +68,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write   # read for checkout; write required for PRR to push fix commits
+      contents: write      # checkout + PRR push
+      pull-requests: write # submit PR review
     steps:
       # WHY token: Checking out another repo (inputs.prr_repo) requires a token; caller's token is passed in.
       - name: Checkout PRR

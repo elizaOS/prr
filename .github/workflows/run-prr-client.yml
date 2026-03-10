@@ -1,7 +1,7 @@
 # CLIENT: Run PRR only when requested — manual, label, or "request PRR as a reviewer".
 #
 # Trigger options:
-#   1. Actions → Run PRR (client) → Run workflow → enter PR number.
+#   1. Actions → Run PRR (client) → Run workflow → enter PR number, or branch to use the open PR for that branch.
 #   2. On the PR: add the "run-prr" label.
 #   3. Request PRR as a reviewer: add a bot user (or GitHub App bot) as a collaborator,
 #      set repository variable PRR_REVIEWER_LOGIN (Settings → Variables) to that bot's
@@ -15,9 +15,13 @@ on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to run PRR on'
-        required: true
+        description: 'PR number (optional if branch is set)'
+        required: false
         type: number
+      branch:
+        description: 'Branch (optional). Same-repo: branch name (e.g. odi-dev). Fork PRs: owner:branch (e.g. contributor:feature).'
+        required: false
+        type: string
   pull_request:
     types: [labeled, review_requested]
 
@@ -39,10 +43,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write   # read for checkout; write required for PRR to push fix commits
+      contents: write      # checkout + PRR push
+      pull-requests: write # submit PR review (Create a review for a pull request)
     steps:
       - name: Checkout PRR
         uses: actions/checkout@v4
+
+      # Resolve PR from branch: use REST API so head=owner:branch works for both same-repo and fork PRs (gh pr list --head does not support owner:branch).
+      - name: Resolve PR number
+        if: github.event_name == 'workflow_dispatch'
+        id: resolve-pr
+        run: |
+          if [ -n "${{ inputs.pr_number }}" ] && [ "${{ inputs.pr_number }}" != "0" ]; then
+            echo "pr_number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+          elif [ -n "${{ inputs.branch }}" ]; then
+            # head param must be owner:branch (same-repo: repo owner; fork: fork owner). See https://docs.github.com/en/rest/pulls/pulls#list-pull-requests
+            if echo "${{ inputs.branch }}" | grep -q ':'; then
+              HEAD="${{ inputs.branch }}"
+            else
+              REPO_OWNER="${GITHUB_REPOSITORY%/*}"
+              HEAD="${REPO_OWNER}:${{ inputs.branch }}"
+            fi
+            PR=$(gh api "repos/${{ github.repository }}/pulls?head=${HEAD}&state=open" --jq '.[0].number')
+            if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+              echo "::error::No open PR found for branch ${{ inputs.branch }} (head=${HEAD}). For fork PRs use owner:branch."
+              exit 1
+            fi
+            echo "pr_number=$PR" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Provide either PR number or branch name"
+            exit 1
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -65,12 +96,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRR_SUBMIT_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
+          PRR_PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.resolve-pr.outputs.pr_number }}
           ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           node dist/tools/prr/index.js \
-            "https://github.com/${{ github.repository }}/pull/${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}" \
+            "https://github.com/${{ github.repository }}/pull/${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.resolve-pr.outputs.pr_number }}" \
             --tool llm-api \
             --no-wait-bot
 
@@ -79,7 +111,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: prr-logs-${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+          name: prr-logs-${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.resolve-pr.outputs.pr_number }}
           path: |
             output.log
             prompts.log

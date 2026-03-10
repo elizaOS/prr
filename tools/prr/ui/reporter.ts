@@ -302,8 +302,10 @@ export function printFinalSummary(
   if (process.env.GITHUB_ACTIONS === 'true') {
     const runId = process.env.GITHUB_RUN_ID;
     const repo = process.env.GITHUB_REPOSITORY;
+    const prNumber = process.env.PRR_PR_NUMBER;
     if (runId && repo) {
-      console.log(chalk.gray(`\n  Tip: To share logs with an agent, download the run artifact: gh run download ${runId} --repo ${repo} --name prr-logs-<PR>`));
+      const artifactName = prNumber ? `prr-logs-${prNumber}` : 'prr-logs-<PR>';
+      console.log(chalk.gray(`\n  Tip: To share logs with an agent, download the run artifact: gh run download ${runId} --repo ${repo} --name ${artifactName}`));
     } else {
       console.log(chalk.gray(`\n  Tip: To share logs with an agent, download the workflow artifact (output.log, prompts.log) and point the agent at the files.`));
     }
