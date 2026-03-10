@@ -169,7 +169,15 @@ export interface PillAnalysisResult {
 /** Reason when runPillAnalysis returns no improvements (so callers can log the specific cause). */
 export type PillNoImprovementsReason =
   | 'no_logs'
+  | 'no_api_key'
+  | 'api_call_failed'
   | 'zero_improvements_from_llm';
+
+export interface PillNoImprovementsResult {
+  result: null;
+  reason: PillNoImprovementsReason;
+  errorMessage?: string;
+}
 
 /**
  * Run the audit LLM and append to pill-output.md / pill-summary.md (or return paths in dry-run).
@@ -179,12 +187,26 @@ export type PillNoImprovementsReason =
  */
 export async function runPillAnalysis(config: PillConfig): Promise<
   | { result: PillAnalysisResult; reason?: never }
-  | { result: null; reason: PillNoImprovementsReason }
+  | PillNoImprovementsResult
 > {
   const spinner = config.verbose ? null : ora();
   const update = (text: string) => {
     if (spinner) spinner.text = text;
   };
+
+  // No API key — avoid confusing "no logs" when LLM was never called (pill-output.md #3)
+  if (config.llmProvider === 'elizacloud' && !config.elizacloudApiKey?.trim()) {
+    if (spinner) spinner.info('No improvements to record (no API key)');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'openai' && !config.openaiApiKey?.trim()) {
+    if (spinner) spinner.info('No improvements to record (no API key)');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'anthropic' && !config.anthropicApiKey?.trim()) {
+    if (spinner) spinner.info('No improvements to record (no API key)');
+    return { result: null, reason: 'no_api_key' };
+  }
 
   try {
     if (config.verbose) {
@@ -259,8 +281,10 @@ export async function runPillAnalysis(config: PillConfig): Promise<
       },
     };
   } catch (err) {
-    if (spinner) spinner.fail(err instanceof Error ? err.message : String(err));
-    throw err;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (spinner) spinner.fail(msg);
+    // Return instead of throw so callers can log reason (pill-output.md #3)
+    return { result: null, reason: 'api_call_failed', errorMessage: msg };
   } finally {
     if (spinner && spinner.isSpinning) spinner.stop();
   }

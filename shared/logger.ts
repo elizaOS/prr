@@ -174,10 +174,14 @@ export async function closeOutputLog(): Promise<void> {
             origLogRef(`  Summary log:  ${out.result.summaryPath}`);
           }
         } else {
-          appendFileSync(outputLogPath, `[Pill] No improvements to record (reason: ${out.reason}).\n`, 'utf-8');
+          const reasonLine =
+            out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
+              ? `[Pill] No improvements to record (reason: ${out.reason}: ${(out as { errorMessage?: string }).errorMessage}).\n`
+              : `[Pill] No improvements to record (reason: ${out.reason}).\n`;
+          appendFileSync(outputLogPath, reasonLine, 'utf-8');
         }
       } else {
-        appendFileSync(outputLogPath, '[Pill] Skipped (no config in target dir).\n', 'utf-8');
+        appendFileSync(outputLogPath, '[Pill] Skipped (no API key or no config in target dir).\n', 'utf-8');
       }
     } catch (err) {
       // Log to real console so operators see pill failures (pill-output.md #6); still complete shutdown.

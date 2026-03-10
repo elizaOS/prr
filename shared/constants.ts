@@ -213,6 +213,22 @@ export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
 export const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
 
 /**
+ * Model IDs to skip when using ElizaCloud (known timeout/504 or 0% fix rate in audits).
+ * WHY: Audits showed these models 500/timeout repeatedly or had 0% fix rate; including them
+ * wastes rotation slots. Add new IDs here when audits show repeated errors or zero success.
+ * Single source of truth; rotation.ts builds a Set from this for fast lookup.
+ */
+export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
+  'openai/gpt-5.2-codex',
+  'anthropic/claude-3-opus',
+  'openai/gpt-4.1',
+  'anthropic/claude-sonnet-4.5',
+  'openai/gpt-5.1-codex-max',
+  'anthropic/claude-3.7-sonnet',
+  'openai/gpt-4o',
+];
+
+/**
  * Max concurrent requests to ElizaCloud API.
  * WHY: ElizaCloud returns 429 when too many in flight. 1 = one request at a time.
  */

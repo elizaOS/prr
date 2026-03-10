@@ -141,7 +141,23 @@ export function resolveTrackedPathDetailed(workdir: string, rawPath: string, com
   const exact = repoFiles.find((f) => f === rawPath);
   if (exact) return { kind: 'exact', path: exact };
   const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + rawPath) || f === rawPath);
-  if (suffixMatches.length === 0) return { kind: 'missing' };
+  if (suffixMatches.length === 0) {
+    // Extension typo: review path .ts but file is .tsx (common bot mistake); pill-output.md #4
+    if (rawPath.endsWith('.ts') && !rawPath.endsWith('.tsx')) {
+      const altPath = rawPath.slice(0, -3) + 'tsx';
+      const altExact = repoFiles.find((f) => f === altPath);
+      if (altExact) {
+        debug('Review path .ts not found; resolved to .tsx (extension typo)', { rawPath, resolved: altExact });
+        return { kind: 'suffix', path: altExact };
+      }
+      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
+      if (altSuffix.length === 1) {
+        debug('Review path .ts not found; resolved to .tsx (extension typo)', { rawPath, resolved: altSuffix[0] });
+        return { kind: 'suffix', path: altSuffix[0] };
+      }
+    }
+    return { kind: 'missing' };
+  }
   if (suffixMatches.length === 1) return { kind: 'suffix', path: suffixMatches[0] };
 
   const pathHints = extractPathHintsFromBody(commentBody);
@@ -553,9 +569,17 @@ export function assessSolvability(
   }
 
   // All checks passed - issue is solvable
+  const extensionTypoHint =
+    effectivePath !== comment.path &&
+    effectivePath.endsWith('.tsx') &&
+    comment.path.endsWith('.ts') &&
+    !comment.path.endsWith('.tsx')
+      ? ['Review path had .ts; resolved to .tsx (extension typo).']
+      : undefined;
   return {
     solvable: true,
     resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
+    contextHints: extensionTypoHint,
   };
 }
 

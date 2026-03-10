@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-02-11 · **Recorded cycles:** 34 · **Historical (legacy):** 4
+**Last updated:** 2026-02-11 · **Recorded cycles:** 35 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -353,6 +353,30 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Additive path logic; no behavior revert.
 
 **Notes:** Batch ALREADY_FIXED parsing is a follow-up (touches execute-fix-iteration and possibly apply-batch result handling). Positive-comment dismissal (Cycle 33) would have prevented the daily-topic issue from entering the queue; batch ALREADY_FIXED handling would have cleared it after the first batch.
+
+---
+
+### Cycle 35 — 2026-03-10 (output.log BabylonSocial/babylon#1213, 26 comments, 0 fixes this session)
+
+**Artifacts audited:** output.log (477 lines). Run: 26 review comments, all dismissed or verified from prior runs; 0 fixes this session; merge-base "already up-to-date"; pill produced no output (generic "No improvements to record" with no diagnostic).
+
+**Findings:**
+- **Medium:** Configured default model (e.g. anthropic/claude-3.7-sonnet) was in ElizaCloud skip list; only debug line logged "skipping (known timeout)". Operators in CI don't see why their configured model was never used.
+- **Medium:** RESULTS SUMMARY showed "1 issue fixed and verified (from previous runs)" but no "0 new this session" — easy to misread as this run having fixed something.
+- **Medium:** Pill zero-improvements path gave same message for no logs, no API key, API failure, and LLM returned zero; impossible to debug pill integration (e.g. empty pill-prompts.log likely = missing API key in subprocess).
+- **Low:** Review path `TickerClient.ts` (no x) dismissed as missing-file while `TickerClient.tsx` exists; common bot typo; extension-fuzzy match would recover.
+
+**Improvements implemented (pill-output.md):**
+- rotation.ts: When configured default is in skip list, log user-visible warning with replacement model.
+- reporter.ts: RESULTS SUMMARY when session verified = 0: "(all from previous runs; 0 new this session)".
+- pill orchestrator: Distinct reasons no_logs, no_api_key, api_call_failed, zero_improvements_from_llm; callers log why.
+- solvability.ts: .ts → .tsx extension typo: resolve to .tsx when exact/suffix match for alt path; debug + context hint.
+- constants.ts: ELIZACLOUD_SKIP_MODEL_IDS with WHY (single source of truth); rotation.ts imports it.
+- README.md: Model examples table — illustrative disclaimer and real example IDs (gpt-4o, claude-sonnet-4-5-20250929).
+
+**Flip-flop check:** N — Additive logging, constants, and path resolution; no behavior revert.
+
+**Notes:** Patterns align with watchlist: stale verification/head change (33/34), basename/path (13). New: silent model substitution.
 
 ---
 

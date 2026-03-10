@@ -93,7 +93,11 @@ async function main(): Promise<void> {
       const reasonMsg =
         out.reason === 'no_logs'
           ? 'No logs to analyze.'
-          : 'LLM returned zero improvements.';
+          : out.reason === 'no_api_key'
+            ? 'No API key configured.'
+            : out.reason === 'api_call_failed'
+              ? `API call failed${(out as { errorMessage?: string }).errorMessage ? `: ${(out as { errorMessage?: string }).errorMessage}` : ''}.`
+              : 'LLM returned zero improvements.';
       console.log(chalk.gray('\nNo improvements to record: ' + reasonMsg));
     }
     const outPath = getOutputLogPath();

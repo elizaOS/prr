@@ -285,8 +285,8 @@ export function printFinalSummary(
       // Cycle 13 L1: Clarify that the total includes fixes from previous runs.
       sessionNote = ` (of which ${formatNumber(fixedThisSession)} this session)`;
     } else if (fixedThisSession === 0) {
-      // Nothing verified this run — count is from state (e.g. resumed run that never reached fix loop)
-      sessionNote = ' (from previous runs)';
+      // Nothing verified this run — count is from state only (pill-output.md #2; AUDIT-CYCLES 33/34).
+      sessionNote = ' (all from previous runs; 0 new this session)';
     }
     console.log(chalk.green(`\n  ✓ ${formatNumber(toolFixedCount)} issue${toolFixedCount === 1 ? '' : 's'} fixed and verified${sessionNote}`));
   }
@@ -364,7 +364,7 @@ export function buildReviewSummaryMarkdown(
   if (toolFixedCount > 0) {
     let note = '';
     if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) note = ` (${formatNumber(fixedThisSession)} this run)`;
-    else if (fixedThisSession === 0) note = ' (from previous runs)';
+    else if (fixedThisSession === 0) note = ' (all from previous runs; 0 new this session)';
     lines.push(`- ✓ ${formatNumber(toolFixedCount)} issue(s) fixed and verified${note}`);
   }
   if (dismissedIssues.length > 0) {

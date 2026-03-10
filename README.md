@@ -743,22 +743,21 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **example** models; actual availability depends on your Cursor account/plan:
+Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **illustrative examples** (actual IDs depend on Cursor and provider APIs):
 
 | Model | Notes |
 |-------|-------|
 | `auto` | Let Cursor pick |
-| `claude-4-opus-thinking` | Claude Opus (thinking) |
-| `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
-| `o3` | OpenAI reasoning |
-| `gpt-5` | GPT-5 |
+| `claude-sonnet-4-5-20250929` | Claude Sonnet (example) |
+| `gpt-4o` | OpenAI (example) |
+| `o3` | OpenAI reasoning (when available) |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 
 ```text
-Round 1: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
-Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
+Round 1: claude-sonnet-4-5 (Claude) → gpt-4o (GPT) → o3 (OpenAI)
+Round 2: next in rotation ...
 ... then next tool ...
 // Review: interleaving models enhances diversity in responses, reducing similar failure patterns.
 ```
@@ -768,7 +767,7 @@ Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
 
 ```bash
 # Example: override model (bypasses rotation)
-prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
+prr https://github.com/owner/repo/pull/123 --model claude-sonnet-4-5-20250929
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123
