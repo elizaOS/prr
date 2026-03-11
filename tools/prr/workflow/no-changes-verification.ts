@@ -22,7 +22,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
 import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from './utils.js';
-import { getTestPathForSourceFileIssue, reviewSuggestsFixInTest } from '../analyzer/prompt-builder.js';
+import { getMentionedTestFilePaths, getTestPathForSourceFileIssue, reviewSuggestsFixInTest, reviewTargetsMentionedTestFile } from '../analyzer/prompt-builder.js';
 import * as Dismissed from '../state/state-dismissed.js';
 
 /**
@@ -56,6 +56,37 @@ function guessPackageJsonPath(filePath: string): string | null {
   }
   const dir = filePath.includes('/') ? filePath.replace(/\/[^/]+$/, '') : '.';
   return dir ? `${dir}/package.json` : 'package.json';
+}
+
+function detailSuggestsMissingTargetFile(detail: string): boolean {
+  return /\btest file\b/i.test(detail) &&
+    /\b(?:not provided|not shown|not in the current file|do not have access|don't have access|cannot fix here|not provided in the current context|not in the current context)\b/i.test(detail);
+}
+
+function persistInferredTestTargets(
+  issue: UnresolvedIssue,
+  detail: string,
+  workdir: string | undefined,
+  stateContext: StateContext
+): string[] {
+  if (!workdir || !stateContext.state) return [];
+  if (!reviewTargetsMentionedTestFile(issue.comment.body ?? '') && !detailSuggestsMissingTargetFile(detail)) return [];
+  const pathExists = (p: string) => existsSync(join(workdir, p));
+  const inferredTargets = getMentionedTestFilePaths(issue, { pathExists });
+  const state = stateContext.state;
+  if (inferredTargets.length > 0) {
+    if (!state.wrongFileAllowedPathsByCommentId) state.wrongFileAllowedPathsByCommentId = {};
+    const existing = state.wrongFileAllowedPathsByCommentId[issue.comment.id] ?? [];
+    const merged = [...new Set([...existing, ...inferredTargets])];
+    state.wrongFileAllowedPathsByCommentId[issue.comment.id] = merged;
+    if (state.missingTargetFileCountByCommentId) delete state.missingTargetFileCountByCommentId[issue.comment.id];
+    debug('Allow inferred hidden test target on retry', { commentId: issue.comment.id, targets: inferredTargets });
+    return inferredTargets;
+  }
+  if (!state.missingTargetFileCountByCommentId) state.missingTargetFileCountByCommentId = {};
+  state.missingTargetFileCountByCommentId[issue.comment.id] = (state.missingTargetFileCountByCommentId[issue.comment.id] ?? 0) + 1;
+  debug('Missing target file count', { commentId: issue.comment.id, count: state.missingTargetFileCountByCommentId[issue.comment.id] });
+  return [];
 }
 
 /**
@@ -222,6 +253,28 @@ export async function handleNoChangesWithVerification(
                   debug('Allow other file on retry (CANNOT_FIX)', { commentId: firstIssue0.comment.id, otherFile });
                 }
               }
+              const inferredTargets = persistInferredTestTargets(firstIssue0, detail, workdir, stateContext);
+              const missingTargetCount = stateContext.state?.missingTargetFileCountByCommentId?.[firstIssue0.comment.id] ?? 0;
+              if (inferredTargets.length === 0 && missingTargetCount >= 2) {
+                Dismissed.dismissIssue(
+                  stateContext,
+                  firstIssue0.comment.id,
+                  `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                  'remaining',
+                  getIssuePrimaryPath(firstIssue0),
+                  firstIssue0.comment.line,
+                  firstIssue0.comment.body ?? '',
+                  undefined
+                );
+                Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+                return {
+                  shouldBreak: false,
+                  shouldContinue: false,
+                  verifiedCount: 0,
+                  updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue0.comment.id),
+                  progressMade: 0,
+                };
+              }
             }
             // Prompts.log audit: UNCLEAR often "target is implementation file but review asks for tests in test file". Persist test path so next attempt has test file in TARGET FILE(S).
             if (structuredResult.resultCode === 'UNCLEAR' && /test|coverage|\.test\.(ts|js)/i.test(detail) && /target|allowed|not in my|cannot add|not permitted/i.test(detail)) {
@@ -239,6 +292,28 @@ export async function handleNoChangesWithVerification(
                   debug('Allow test file on retry (UNCLEAR)', { commentId: firstIssue0.comment.id, testPath });
                 }
               }
+            }
+            const inferredTargets = persistInferredTestTargets(firstIssue0, detail, workdir, stateContext);
+            const missingTargetCount = stateContext.state?.missingTargetFileCountByCommentId?.[firstIssue0.comment.id] ?? 0;
+            if (inferredTargets.length === 0 && missingTargetCount >= 2) {
+              Dismissed.dismissIssue(
+                stateContext,
+                firstIssue0.comment.id,
+                `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                'remaining',
+                getIssuePrimaryPath(firstIssue0),
+                firstIssue0.comment.line,
+                firstIssue0.comment.body ?? '',
+                undefined
+              );
+              Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+              return {
+                shouldBreak: false,
+                shouldContinue: false,
+                verifiedCount: 0,
+                updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue0.comment.id),
+                progressMade: 0,
+              };
             }
             // Loop breaker: count WRONG_LOCATION/UNCLEAR per issue; track consecutive same detail; solvability dismisses when threshold reached.
             if (structuredResult.resultCode === 'UNCLEAR') {
@@ -285,6 +360,28 @@ export async function handleNoChangesWithVerification(
                 state.wrongFileAllowedPathsByCommentId[firstIssue1.comment.id] = [...existing, otherFile];
                 debug('Allow other file on retry (WRONG_LOCATION)', { commentId: firstIssue1.comment.id, otherFile });
               }
+            }
+            const inferredTargets = persistInferredTestTargets(firstIssue1, detail, workdir, stateContext);
+            const missingTargetCount = state.missingTargetFileCountByCommentId?.[firstIssue1.comment.id] ?? 0;
+            if (inferredTargets.length === 0 && missingTargetCount >= 2) {
+              Dismissed.dismissIssue(
+                stateContext,
+                firstIssue1.comment.id,
+                `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                'remaining',
+                getIssuePrimaryPath(firstIssue1),
+                firstIssue1.comment.line,
+                firstIssue1.comment.body ?? '',
+                undefined
+              );
+              Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+              return {
+                shouldBreak: false,
+                shouldContinue: false,
+                verifiedCount: 0,
+                updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue1.comment.id),
+                progressMade: 0,
+              };
             }
             // When fixer says snippet/code not visible or truncated, request wider snippet on next single-issue attempt (prompts.log audit M1).
             const snippetNotVisible = /not visible|truncated|not (in |shown)|doesn't exist|code (was |is )not (in|visible)|not in the provided|segment (is |containing )not visible/i.test(detail);

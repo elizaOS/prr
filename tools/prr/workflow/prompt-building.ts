@@ -15,7 +15,7 @@
  */
 
 import chalk from 'chalk';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { PRInfo } from '../github/types.js';
 import type { ReviewComment } from '../github/types.js';
@@ -74,13 +74,23 @@ export function buildAndDisplayFixPrompt(
   const lessonsBeforeFix = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
   
   // Get lessons for all files being fixed
-  const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];
-  // Build per-file map first so we can prefer file-specific lessons and cap global
+  const affectedFiles = [...new Set(unresolvedIssues.map((i) => getIssuePrimaryPath(i)))];
+  // Build per-issue lessons first so unrelated same-file failures do not contaminate other issues.
+  const perIssueLessons = new Map<string, string[]>();
   const perFileLessons = new Map<string, string[]>();
-  for (const filePath of affectedFiles) {
-    const fileLessons = LessonsAPI.Retrieve.getLessonsForFile(lessonsContext, filePath);
-    if (fileLessons.length > 0) {
-      perFileLessons.set(filePath, fileLessons);
+  for (const issue of unresolvedIssues) {
+    const primaryPath = getIssuePrimaryPath(issue);
+    const issueLessons = LessonsAPI.Retrieve.getLessonsForIssue(
+      lessonsContext,
+      primaryPath,
+      issue.comment.body,
+      issue.allowedPaths
+    );
+    if (issueLessons.length > 0) {
+      perIssueLessons.set(issue.comment.id, issueLessons);
+      if (!perFileLessons.has(primaryPath)) perFileLessons.set(primaryPath, []);
+      const merged = [...(perFileLessons.get(primaryPath) ?? []), ...issueLessons];
+      perFileLessons.set(primaryPath, [...new Set(merged)]);
     }
   }
   // Prefer file-specific lessons; cap global and filter by path relevance (prompts.log audit: cross-domain lessons bloat prompt).
@@ -98,7 +108,7 @@ export function buildAndDisplayFixPrompt(
     return roots.has(firstSeg);
   };
   const pathRelevantGlobal = globalFiltered.filter(pathRelevant);
-  const fileOnlyListRaw = affectedFiles.flatMap(f => perFileLessons.get(f) ?? []);
+  const fileOnlyListRaw = [...perIssueLessons.values()].flat();
   const fileOnlyList = fileOnlyListRaw.filter(pathRelevant);
   const maxGlobal = unresolvedIssues.length <= 2 ? 1 : 3;
   const maxTotalLessons = 15;
@@ -147,7 +157,7 @@ export function buildAndDisplayFixPrompt(
     const result = buildPrompt(
       sortedIssues,
       lessons,
-      { maxIssues: currentMax, perFileLessons, prInfo, diffStat, botRiskByFile, pathExists }
+      { maxIssues: currentMax, perFileLessons, perIssueLessons, prInfo, diffStat, botRiskByFile, pathExists }
     );
     if (result.prompt.length <= effectiveCap || currentMax <= MIN_ISSUES_PER_PROMPT) {
       prompt = result.prompt;

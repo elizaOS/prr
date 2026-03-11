@@ -115,6 +115,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `tests/fix-verification.test.ts` to cover lifecycle-comment detection and lifecycle-aware snippet extraction.
 - **WHY**: This behavior is easy to regress during future prompt/snippet tuning. Tests keep the conservative verification bias intentional and visible.
 
+### Added (2026-03) — Output.log + prompts.log follow-up: hidden test-target inference and issue-scoped lessons
+
+**Infer hidden test-file targets from import-path review comments**
+- `prompt-builder.ts` now detects comments like "test file has invalid imports" / "actual file is at ..." and infers likely test-file targets such as `scripts/__tests__/generate-skills-md.test.ts`.
+- Issue creation, batch prompts, single-issue prompts, recovery, and disallowed-file retry learning all now include those inferred test targets in allowed paths when the review clearly says the bug is in a test file attached to the implementation file.
+- **WHY**: This run kept sending a test-import issue to `scripts/generate-skills-md.ts` alone, while the fixer repeatedly tried `scripts/__tests__/generate-skills-md.test.ts` and got blocked as disallowed. Inferring the hidden test target converts that stalemate into an editable path.
+
+**Stop retry loops when the real target file is still hidden**
+- `no-changes-verification.ts` now persists inferred hidden test targets after `WRONG_LOCATION`, `UNCLEAR`, or `CANNOT_FIX`, and it tracks repeated "bug is in a hidden test file but no concrete target can be inferred" failures.
+- After repeated misses with no inferable target, the issue is dismissed for human follow-up instead of burning more model rotations on the same wrong file.
+- **WHY**: Output.log showed the same issue cycling through `WRONG_LOCATION`, `ALREADY_FIXED`, and `CANNOT_FIX` responses that all said the current file was not the place to fix. Once the workflow knows that but still cannot identify the actual file, continued retries are pure token waste.
+
+**Scope lessons to the specific issue, not just the file**
+- `lessons-retrieve.ts` now exposes `getLessonsForIssue(...)`, which filters lessons by the issue's comment text and current target paths.
+- Batch and single-issue prompt builders now prefer per-issue lessons so unrelated same-file failures (for example YAML indentation or duplicate op mapping) do not pollute a test-import issue on the same file.
+- **WHY**: Prompts.log was still presenting unrelated `scripts/generate-skills-md.ts` lessons as if they applied directly to the import-path issue. That distracts the fixer and can outweigh the actual actionable guidance.
+
 ### Added (2026-03) — Output.log + prompts.log follow-up: finish canonical paths, commit gating, rename targets
 
 **Canonical paths now reach cleanup / refresh / verification / commit flows**

@@ -128,6 +128,97 @@ export function reviewSuggestsFixInTest(body: string): boolean {
   );
 }
 
+/** True when the review says the bug lives in a test file (for example an invalid import in the test). */
+export function reviewTargetsMentionedTestFile(body: string): boolean {
+  const b = body ?? '';
+  return (
+    /\btest file\b/i.test(b) &&
+    (
+      /\b(?:invalid|incorrect|wrong)\s+import/i.test(b) ||
+      /\btries?\s+to\s+import\b/i.test(b) ||
+      /\bactual\s+file\s+is\s+at\b/i.test(b) ||
+      /\bthis\s+test\s+will\s+fail\b/i.test(b) ||
+      /\bimport\s+path\b/i.test(b)
+    )
+  );
+}
+
+function isTestLikePath(path: string): boolean {
+  return /(?:^|\/)__tests__\/|(?:^|\/)[^/]+\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(path);
+}
+
+function getPathStem(path: string): string {
+  return path
+    .replace(/^.*\//, '')
+    .replace(/\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i, '')
+    .replace(/\.(?:ts|tsx|js|jsx)$/i, '')
+    .toLowerCase();
+}
+
+function isPlausibleMentionedTestPath(candidatePath: string, primaryPath: string): boolean {
+  if (!isTestLikePath(candidatePath)) return false;
+  const primaryFirst = primaryPath.split('/')[0] ?? '';
+  const candidateFirst = candidatePath.split('/')[0] ?? '';
+  if (primaryFirst && candidateFirst && primaryFirst !== candidateFirst) return false;
+  return getPathStem(candidatePath) === getPathStem(primaryPath);
+}
+
+/**
+ * Infer likely test-file targets when the review says the bug is in a test file
+ * but the comment is attached to the implementation file.
+ */
+export function getMentionedTestFilePaths(
+  issue: UnresolvedIssue,
+  options?: {
+    pathExists?: (path: string) => boolean;
+    changedFiles?: string[];
+    attemptedPaths?: string[];
+  }
+): string[] {
+  const primaryPath = issue.resolvedPath ?? issue.comment.path ?? '';
+  if (!primaryPath || !reviewTargetsMentionedTestFile(issue.comment.body ?? '')) return [];
+
+  const extMatch = primaryPath.match(/\.(ts|tsx|js|jsx)$/i);
+  if (!extMatch) return [];
+  const ext = `.${extMatch[1]}`;
+  const dir = primaryPath.includes('/') ? primaryPath.replace(/\/[^/]+$/, '') : '';
+  const stem = primaryPath.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/i, '');
+
+  const ranked: string[] = [];
+  const seen = new Set<string>();
+  const push = (candidate: string | null | undefined) => {
+    if (!candidate) return;
+    if (!isPlausibleMentionedTestPath(candidate, primaryPath)) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    ranked.push(candidate);
+  };
+
+  for (const candidate of options?.attemptedPaths ?? []) push(candidate);
+  for (const candidate of options?.changedFiles ?? []) push(candidate);
+
+  const dirParts = dir ? dir.split('/') : [];
+  const ancestorDirs: string[] = [];
+  for (let i = dirParts.length; i >= Math.max(1, dirParts.length - 2); i--) {
+    const ancestor = dirParts.slice(0, i).join('/');
+    if (ancestor) ancestorDirs.push(ancestor);
+  }
+  if (dir && !ancestorDirs.includes(dir)) ancestorDirs.unshift(dir);
+
+  for (const ancestor of ancestorDirs) {
+    push(`${ancestor}/__tests__/${stem}.test${ext}`);
+    push(`${ancestor}/__tests__/${stem}.spec${ext}`);
+  }
+  if (dir) {
+    push(`${dir}/${stem}.test${ext}`);
+    push(`${dir}/${stem}.spec${ext}`);
+  }
+
+  const existing = options?.pathExists ? ranked.filter((p) => options.pathExists!(p)) : [];
+  if (existing.length > 0) return existing;
+  return ranked.slice(0, 2);
+}
+
 /** If the issue is on a test file and mentions lesson-normalize impl, return the impl path so the fixer may edit it. Audit: test-file issues (e.g. normalize-lesson-text.test.ts) need impl changes in tools/prr/state/lessons-normalize.ts. Exported for single-issue prompt. */
 export function getImplPathForTestFileIssue(issue: UnresolvedIssue, fileLessons: string[] | undefined): string | null {
   if (!/\.test\.(ts|js)$/.test(issue.comment.path)) return null;
@@ -379,6 +470,8 @@ export function buildFixPrompt(
      * sees them in immediate context.
      */
     perFileLessons?: Map<string, string[]>;
+    /** Per-issue lesson lookup; more precise than per-file when the same file has unrelated comments. */
+    perIssueLessons?: Map<string, string[]>;
     /**
      * PR metadata injected into the prompt so the fixer understands what the
      * PR is trying to accomplish, not just individual review comments.
@@ -631,7 +724,9 @@ export function buildFixPrompt(
     for (const p of getPathsToDeleteFromComment(issue)) {
       if (!basePaths.includes(p)) basePaths = [...basePaths, p];
     }
-    const fileLessons = options?.perFileLessons?.get(primaryPath) ?? options?.perFileLessons?.get(issue.comment.path);
+    const fileLessons = options?.perIssueLessons?.get(issue.comment.id)
+      ?? options?.perFileLessons?.get(primaryPath)
+      ?? options?.perFileLessons?.get(issue.comment.path);
     const implPath = getImplPathForTestFileIssue(issue, fileLessons);
     let allowedPaths = implPath && isPathAllowedForFix(implPath) && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
     const testPath = getTestPathForSourceFileIssue(issue, {
@@ -639,6 +734,9 @@ export function buildFixPrompt(
       forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
     });
     if (testPath && isPathAllowedForFix(testPath) && !allowedPaths.includes(testPath)) allowedPaths = [...allowedPaths, testPath];
+    for (const hiddenTestPath of getMentionedTestFilePaths(issue, { pathExists: options?.pathExists })) {
+      if (isPathAllowedForFix(hiddenTestPath) && !allowedPaths.includes(hiddenTestPath)) allowedPaths = [...allowedPaths, hiddenTestPath];
+    }
     allowedPaths = filterAllowedPathsForFix(allowedPaths);
     parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
     // When TARGET FILE(S) has multiple files and the review mentions callers, nudge to update implementation and every call site.
