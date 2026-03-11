@@ -6,7 +6,7 @@ This file helps AI assistants (Cursor, Claude Code, Aider, etc.) work effectivel
 
 These are created by tools and should not be committed: `.split-plan.md`, `.split-exec-workdir/` (clone workdir for split-exec), `split-exec-output.log`, `split-exec-prompts.log`, `split-plan-output.log`, `split-plan-prompts.log`, `pill-output.md`, `pill-summary.md`, `output.log`, `prompts.log`. See `.gitignore`.
 
-**Pill hook:** When the shared logger is initialized with `enablePill: true`, `closeOutputLog()` runs pill analysis on the closed logs (and writes pill-output.md / pill-summary.md). That happens for **prr**, **split-exec**, and **story** when they use `initOutputLog({ enablePill: true })`. Pill only runs when the prompts log contains at least one LLM entry (PROMPT/RESPONSE/ERROR), so tools that make no LLM calls (e.g. split-exec with no prompts) do not trigger pill.
+**Pill hook:** Pill runs on close only when the user passes **`--pill`** on the command line. **prr**, **split-exec**, **story**, and **split-plan** accept `--pill`; after parsing, they call `setPillEnabled(true)`. Then `closeOutputLog()` runs pill on the closed logs (and writes pill-output.md / pill-summary.md). When `--pill` is not passed, pill does not run. **WHY opt-in:** Default runs stay fast; tools like split-exec have no LLM calls, so pill would often have nothing to analyze. When `--pill` is set, pill runs if the output log has content or the prompts log has PROMPT/RESPONSE/ERROR entries.
 
 ## Repo layout
 

@@ -16,7 +16,7 @@ import { pushWithRetry } from '../../shared/git/git-push.js';
 import type { SimpleGit } from 'simple-git';
 import { debug, formatNumber } from '../../shared/logger.js';
 
-/** True when the error is GitHub auth failure (invalid/expired token or password auth). */
+/** True when the error is GitHub auth failure (invalid/expired token or password auth). WHY: so we can fail fast and not run remaining splits with the same error. */
 function isAuthError(error: Error): boolean {
   const msg = error.message.toLowerCase();
   return (

@@ -35,7 +35,7 @@ let outputLogExitHandlerRegistered = false;
 /** When true, closeOutputLog() runs pill analysis on the logs we just closed. Set at init or via setPillEnabled() when --pill is passed. */
 let pillAnalysisEnabled = false;
 
-/** Enable or disable pill analysis on close. Call after parse when user passes --pill. */
+/** Enable or disable pill analysis on close. Call after parse when user passes --pill. WHY opt-in: default runs stay fast; tools like split-exec have no LLM calls so pill would often have nothing to analyze unless the user explicitly requests it. */
 export function setPillEnabled(enabled: boolean): void {
   pillAnalysisEnabled = enabled;
 }
@@ -193,8 +193,8 @@ export async function closeOutputLog(): Promise<void> {
     }
   }
 
-  // Run pill when there is output (or prompts) to analyze. Tools like split-exec have no LLM calls but we still
-  // want pill to analyze the output log for operational improvements.
+  // WHY run when output has content OR prompts have entries: split-exec has no prompts log; prr/story do. So we
+  // run pill when either the output log has content (operational improvements) or the prompts log has PROMPT/RESPONSE/ERROR.
   const outputLogHasContent =
     outputLogPath && existsSync(outputLogPath) && readFileSync(outputLogPath, 'utf-8').trim().length > 0;
   const hasPromptsToAnalyze =

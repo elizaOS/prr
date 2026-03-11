@@ -164,7 +164,7 @@ The **split-plan** tool analyzes a large PR (diffs, commits, dependencies), disc
 
 ### Pill: Program Improvement Log Looker
 
-**pill** audits a project using its output.log and prompts.log (from prr, story, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. When prr or story run with pill enabled, `closeOutputLog()` runs pill on the closed logs and prints the pitch and file paths to the real console. See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
+**pill** audits a project using its output.log and prompts.log (from prr, story, split-exec, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. Pill runs on close only when you pass **`--pill`** (prr, story, split-exec, split-plan). See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
 
 ```bash
 # Or link globally (prr, pill, split-plan, split-exec, and story available)

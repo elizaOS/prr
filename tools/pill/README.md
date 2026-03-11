@@ -48,10 +48,11 @@ pill <directory> [options]
 
 Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/.env` (target overrides home). Same env vars as prr/story (e.g. `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`).
 
-### Integrated (prr / story)
+### Integrated (prr / story / split-exec / split-plan) — opt-in with --pill
 
-When you run **prr** or **story**, the shared logger can be initialized with **enablePill: true**. On normal exit (or Ctrl+C), `closeOutputLog()` runs pill on the logs that were just closed and prints the pitch and file paths to the real console (using the original console refs captured before patching).
+When you run **prr**, **story**, **split-exec**, or **split-plan** with the **`--pill`** flag, the shared logger enables pill for that run. On normal exit (or Ctrl+C), `closeOutputLog()` runs pill on the logs that were just closed and prints the pitch and file paths to the real console (using the original console refs captured before patching). When `--pill` is not passed, pill does not run.
 
+- **WHY opt-in:** Running pill on every run (especially for tools like split-exec that make no LLM calls) added cost and often produced empty or low-value output. Making pill explicit keeps default runs fast and lets users request analysis when they want it.
 - **WHY run on close:** The logs are only complete and flushed after the tee streams are closed. Running pill before close would read incomplete or buffered content.
 - **WHY orig refs:** The process console is patched to tee to the log file. Pill’s output (pitch, paths) should go to the user’s terminal, not into the log. We capture `console.log`/warn/error before patching and use those in the hook so the user sees pill’s message in the real console.
 - **WHY reset pillAnalysisEnabled at start of block:** So the hook runs at most once even if something throws later; we set `pillAnalysisEnabled = false` before any await.

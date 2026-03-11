@@ -29,6 +29,12 @@ split-exec .split-plan.md --workdir /tmp/split-work
 # Dry run: parse plan and print what would be done; no clone/push
 split-exec .split-plan.md --dry-run
 
+# Force-push when remote has diverged (overwrite remote branches)
+split-exec .split-plan.md --force-push
+
+# Run pill analysis on the output log when the run finishes
+split-exec .split-plan.md --pill
+
 # Verbose
 split-exec .split-plan.md -v
 ```
@@ -41,6 +47,8 @@ split-exec .split-plan.md -v
 | `-n, --dry-run` | off | Parse the plan and print each split (commits, route-to or new-PR); do not clone, cherry-pick, or push. |
 | `-y, --yes` | off | Reserved for future per-split confirmation; currently unused. |
 | `-v, --verbose` | off | Verbose logging. |
+| `--force-push` | off | On push rejection (remote has newer commits), force-push to overwrite the remote branch. **WHY:** Use when re-running a plan and your local split branches are the source of truth (e.g. after fixing commits). |
+| `--pill` | off | When the run finishes, run pill analysis on the output log and append to pill-output.md / pill-summary.md. **WHY:** Split-exec has no LLM calls; passing `--pill` lets you still get operational improvement suggestions from the log. |
 
 ## Exit codes (for CI / automation)
 
@@ -63,6 +71,15 @@ If any cherry-pick fails (e.g. conflict), the tool aborts the cherry-pick, print
 ## Configuration
 
 Requires **GITHUB_TOKEN** with repo scope (clone, push, create PR). Same as prr; see root [README](../../README.md) and [.env.example](../../.env.example). No LLM is used.
+
+**Token check:** Before cloning, split-exec verifies the token by calling the GitHub API (`getDefaultBranch`). If the token is invalid or the account has no access to the repo, you get a clear error and no splits run. **WHY:** Failing early avoids clone + first-push failure with a raw "Authentication failed" from git.
+
+**Push auth:** Push uses the same URL format as the initial `git ls-remote` check (`https://${token}@...`) so clone and push behave consistently. If push still fails with "Invalid username or token", create a new token at https://github.com/settings/tokens with **repo** scope and set `GITHUB_TOKEN` in `.env`.
+
+## Output and PR URLs
+
+- Each split prints a one-line status (`[n] Pushed` or `[n] Already up-to-date`) and, when a PR exists, the PR URL on the next line (in cyan).
+- The final summary repeats all PR URLs in one line: **Open PRs:** (when all splits were already up-to-date) or **PRs:** (when some were pushed). **WHY:** So you can copy links from one place even when skimming the log.
 
 ## Log files
 

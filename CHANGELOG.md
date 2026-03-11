@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Pill opt-in (--pill) and split-exec improvements
+
+**Pill runs only when --pill is passed**
+- **prr**, **split-exec**, **story**, and **split-plan** now accept an optional **`--pill`** flag. When set, `closeOutputLog()` runs pill analysis on the closed output (and prompts) log and appends to pill-output.md / pill-summary.md. When not set, pill does not run.
+- **WHY opt-in:** Running pill on every run (especially split-exec, which has no LLM calls) added startup cost and produced empty or low-value pill output. Making pill explicit keeps default runs fast and lets users request analysis when they want it.
+- **Logger:** `setPillEnabled(enabled)` lets tools enable pill after parsing CLI args. Pill still runs only when there is content to analyze (output log has content or prompts log has PROMPT/RESPONSE/ERROR).
+- **WHY run on output-only:** Tools like split-exec have no prompts log entries; we still want pill to analyze the output log for operational improvements when the user passes `--pill`.
+
+**split-exec: auth, token check, exit codes, PR URLs**
+- **Exit code 2** when all executed splits are already up-to-date (nothing pushed). **WHY:** CI/scripts can distinguish "no work done" from "changes pushed" without parsing human-readable output.
+- **Pre-check `isBranchAlreadyUpToDate`** before push: if remote already has our commits, skip the push and report "already up-to-date" without attempting push. **WHY:** Avoids reject → rebase → second push when re-running on branches that were already pushed (e.g. previous run).
+- **`findExistingPR`** uses a single `getOpenPRs(owner, repo)` call (no base filter) and finds by head branch. **WHY:** One API call; finds the PR even if it was retargeted to a different base than the plan's target_branch.
+- **PR URLs** are collected and printed in the final summary ("Open PRs: url1 url2" or "PRs: url1 url2"). **WHY:** So the user sees links in one place even when skimming the log.
+- **Auth fail-fast:** If a split fails with an auth error (invalid token, password auth not supported), split-exec throws immediately with a clear message and does not run remaining splits. **WHY:** Same error would repeat for every split; failing once saves time and noise.
+- **--force-push hint** is shown only when all failures were push rejections (non-fast-forward), not when the failure was authentication. **WHY:** Suggesting --force-push for auth failures is misleading and unhelpful.
+- **Upfront token check:** Before cloning, split-exec calls `github.getDefaultBranch(owner, repo)`. If the API returns 401/403/404, we throw with a clear message (invalid/expired token, no access, or repo not found). **WHY:** Fail before clone so the user fixes GITHUB_TOKEN without waiting for the first push to fail.
+- **Push auth URL:** Git push now uses `https://${token}@...` (same format as the working `git ls-remote` in split-exec) instead of `x-access-token:${token}@...`. **WHY:** Consistency with ensureTargetBranchExistsOnRemote; some tokens or environments work with one format and not the other.
+- **Log and debug:** "Pushing &lt;branch&gt;..." is written to the output log (spinner text is not tee'd). getOpenPRs debug logs `baseBranch: '(all)'` when no base filter is used.
+
+- Docs: [tools/split-exec/README.md](tools/split-exec/README.md) (options, exit codes, troubleshooting).
+
 ### Added (2026-03) — split-plan tool (PR decomposition planner)
 
 **New CLI: split-plan**

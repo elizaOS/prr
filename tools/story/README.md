@@ -58,6 +58,7 @@ story owner/repo@branch --max-commits 200 --max-files 500
 | `--max-commits <n>` | 150 | Max commit lines sent to the LLM. For single-branch, if total ≤ this we send all; otherwise first/last halves with “… N more …” in between. **Why:** Keeps prompt size bounded for very long histories. |
 | `--max-files <n>` | 400 | Max file paths sent to the LLM; rest summarized as “… and N more files”. **Why:** Avoids blowing context on repos with thousands of changed files. |
 | `--compare <branch>` | — | (Branch mode only.) Second branch: name (`v1-develop`), `owner/repo@branch`, or tree URL. Same repo required. Order is auto-detected; narrative is from older → newer, preferring the primary branch as “newer” when diverged. |
+| `--pill` | off | When the run finishes, run pill analysis on the output/prompts logs and append to pill-output.md / pill-summary.md. **Why:** Opt-in keeps default runs fast; use when you want improvement suggestions from the run. |
 
 ## Log files
 
