@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-10 · **Recorded cycles:** 36 · **Historical (legacy):** 4
+**Last updated:** 2026-03-11 · **Recorded cycles:** 36 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -35,6 +35,7 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **Stale verification / head change** | 33, 34 | Log says "already verified" or "fixed" but the workdir file still has the bug (e.g. PR head changed, state not cleared). Guard: when PR head SHA changes, clear verified state so fixes are re-checked; auditor must verify at least one "fixed" issue against workdir file content. |
 | **Fix-in-test vs production** | 15 | Review says "fix mocks in tests" / "root cause in tests" but TARGET FILE(S) only lists production file → fixer edits production (no-op or workaround) or tries test file and is blocked. Guard: when review body indicates fix-in-test, add co-located test file to allowed paths so fixer can edit it. |
 | **Canonical path propagation / rename targets** | 19, 20 | Early phases resolve basename/truncated review paths, but later cleanup/commit/reporting paths still use raw fragments or extension words like `test.ts` → successful fixes crash on `git add`/hashing or the real rename target is blocked as disallowed. Guard: use canonical primary path everywhere after issue creation; infer explicit rename destinations for filename-review issues. |
+| **Hidden target file / lesson contamination** | 21 | Review comment is attached to implementation file, but the actual bug is in a test/import caller file that is not directly named in TARGET FILE(S). The fixer says "wrong file" repeatedly, while unrelated same-file lessons muddy the prompt. Guard: infer likely hidden test targets from the review text and scope lessons to the issue, not merely the file. |
 
 ---
 
@@ -60,6 +61,7 @@ Improvements should reinforce these, not reverse.
 | **Multi-file / call sites** | When TARGET FILE(S) has multiple files and review mentions callers (await, file:line), nudge: update implementation and every call site so signatures match. |
 | **Fix-in-test allowed path** | When review says to fix root cause in tests / update mocks (e.g. "fix logger mocks in tests" rather than workaround in production), add co-located test file to allowed paths so fixer can edit it (optional follow-up from Cycle 15). |
 | **Canonical paths / iteration commit scope** | Use canonical primary path (`resolvedPath ?? comment.path`) in cleanup, snippet refresh, verification, dismissal, and commit/reporting. Do not commit/push when the worktree is dirty but the current push iteration produced no newly verified fixes. For rename/file-naming issues, add the destination path (e.g. `foo.test.ts`) to TARGET FILE(S) instead of treating `.test.ts` as a sibling file named `test.ts`. |
+| **Hidden target inference / issue-scoped lessons** | When a review says the bug is in a test file importing the implementation, infer likely test targets (for example `dir/__tests__/foo.test.ts`) and persist them on retry. If the target still cannot be inferred after repeated `WRONG_LOCATION` / `CANNOT_FIX`, stop retrying automatically. Filter lessons by issue text + current target paths so unrelated same-file failures do not dominate the prompt. |
 
 ---
 
@@ -112,6 +114,9 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] Canonical path propagation: cleanup/hash/commit/snippet-refresh/verification-failure flows use `resolvedPath ?? comment.path`, not raw truncated review paths (Cycle 20).
 - [ ] Commit gate: if a push iteration verified no new fixes, do not create/push a commit from leftover dirty files in the worktree (Cycle 20).
 - [ ] Rename target inference: review comments about missing `.test.ts` / `.spec.ts` naming add the renamed destination to TARGET FILE(S), and sibling extraction does not hallucinate bare `test.ts` from extension prose (Cycle 20).
+- [ ] Hidden test target inference: comments like "test file has invalid imports" add likely test targets to allowed paths at issue creation and retry time; repeated disallowed attempts to those paths should be learned (Cycle 21).
+- [ ] Missing-target escape hatch: if repeated `WRONG_LOCATION` / `CANNOT_FIX` says the real bug is in a hidden test file and no concrete target can be inferred, stop automatic retries and surface it for human follow-up (Cycle 21).
+- [ ] Lesson scoping: per-issue prompt lessons should exclude unrelated same-file failures when their symbols/target paths do not match the current comment (Cycle 21).
 
 **Output / UX / conflict**
 - [ ] Pluralize for "N file(s)" / "N fix(es)" in verification, iteration, repository, llm-api.
@@ -456,6 +461,24 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Additive prompt clarity; no behavior revert.
 
 **Notes:** Optional follow-ups: verifier prompt BAD example for "## Fix N" format; final summary line when 0 remaining and no commit; optional dedup fallback "within N lines" when re-split yields 0 (low priority).
+
+### Cycle 21 (stashed) — 2026-03-05 (output.log + prompts.log follow-up on hidden test-file targets)
+
+**Artifacts audited:** output.log + prompts.log for the `generate-skills-md` run, especially repeated `WRONG_LOCATION` / disallowed-file attempts and polluted lesson sections
+
+**Findings:**
+- **High:** PRR still knew the review was about a test file import bug but kept building TARGET FILE(S) around `scripts/generate-skills-md.ts` only, so the fixer repeatedly tried plausible test files and got blocked as disallowed.
+- **Medium:** Repeated `WRONG_LOCATION` / `CANNOT_FIX` answers that all said "the real bug is in a hidden test file" still went through normal retry loops when no concrete target could be inferred.
+- **Medium:** File-scoped lessons for `scripts/generate-skills-md.ts` leaked unrelated failures (YAML indentation, duplicate op mapping) into the import-path issue prompt.
+
+**Improvements implemented:**
+- Added hidden test-target inference for review comments describing bugs in a test file attached to an implementation file; use it during issue creation, prompt building, retry allowlist expansion, and recovery.
+- Persist inferred hidden test targets after `WRONG_LOCATION` / `UNCLEAR` / `CANNOT_FIX`, and dismiss after repeated misses when no concrete target can be inferred.
+- Added `getLessonsForIssue(...)` so prompts use issue-scoped lessons instead of every lesson ever recorded for the same file.
+
+**Flip-flop check:** N — This continues the same direction as earlier cycles: make TARGET FILE(S) more accurate, reduce repeated wrong-file retries, and cut prompt noise instead of broadening prompts indiscriminately.
+
+**Notes:** The hidden-target inference is intentionally conservative: it only triggers when the review explicitly says the bug is in a test file/import path, and it prefers existing conventional test paths before offering guessed ones.
 
 ---
 
