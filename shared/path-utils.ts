@@ -68,6 +68,8 @@ export function isPathAllowedForFix(path: string): boolean {
  * never show artifacts like "packages/.../2Fmessage-service.test.ts".
  */
 export function filterAllowedPathsForFix(paths: string[]): string[] {
-  const normalized = paths.map(normalizePathSegmentEncoding);
+  const normalized = paths
+    .map(normalizePathSegmentEncoding)
+    .map(normalizePathForAllow);
   return [...new Set(normalized)].filter(isPathAllowedForFix);
 }

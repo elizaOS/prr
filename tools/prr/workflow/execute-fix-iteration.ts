@@ -408,6 +408,14 @@ export async function executeFixIteration(
     const forceTestPath = reviewSuggestsFixInTest(i.comment.body ?? '');
     const testPath = getTestPathForSourceFileIssue(i, { pathExists, forceTestPath });
     if (testPath && !base.includes(testPath)) base.push(testPath);
+    if (issueRequestsTests(i) || forceTestPath) {
+      const srcPath = i.resolvedPath ?? i.comment.path ?? '';
+      if (/\.(?:ts|tsx|js|jsx)$/.test(srcPath)) {
+        const testBase = srcPath.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/, '.test.$1');
+        const testsRootPath = `__tests__/${testBase}`;
+        if (!base.includes(testsRootPath)) base.push(testsRootPath);
+      }
+    }
     for (const hiddenTestPath of getMentionedTestFilePaths(i, { pathExists })) {
       if (!base.includes(hiddenTestPath)) base.push(hiddenTestPath);
     }
@@ -477,6 +485,10 @@ export async function executeFixIteration(
     if (result.skippedDisallowedFiles?.length) {
       addDisallowedFilesLessonsAndState(result.skippedDisallowedFiles, issuesForPrompt, allowedPathsForBatch, lessonsContext, stateContext);
     }
+    if (result.skippedNewfilePathExists?.length) {
+      const pathList = result.skippedNewfilePathExists.join(', ');
+      LessonsAPI.Add.addGlobalLesson(lessonsContext, `File(s) already exist: ${pathList}. Use <change path="..."> to edit, not <newfile> (overwriting would destroy existing content).`);
+    }
     const errorResult = ResolverProc.handleFixerError(result, runner, fixerTime, rapidFailureCount, lastFailureTime, stateContext, getCurrentModel);
     
     if (errorResult.shouldExit) {
@@ -540,6 +552,10 @@ export async function executeFixIteration(
   // Strict allowlist: fixer also attempted disallowed files — add file-scoped lesson and state.
   if (result.skippedDisallowedFiles?.length) {
     addDisallowedFilesLessonsAndState(result.skippedDisallowedFiles, issuesForPrompt, allowedPathsForBatch, lessonsContext, stateContext);
+  }
+  if (result.skippedNewfilePathExists?.length) {
+    const pathList = result.skippedNewfilePathExists.join(', ');
+    LessonsAPI.Add.addGlobalLesson(lessonsContext, `File(s) already exist: ${pathList}. Use <change path="..."> to edit, not <newfile> (overwriting would destroy existing content).`);
   }
 
   // Placeholder test content (e.g. expect(true).toBe(true)): add lesson and treat as non-fix so we rotate without counting as success.

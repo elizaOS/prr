@@ -11,6 +11,8 @@ export interface SplitExecOptions {
   yes: boolean;
   verbose: boolean;
   forcePush: boolean;
+  /** Run pill analysis on output log when the run finishes. */
+  pill: boolean;
 }
 
 export interface SplitExecParsedArgs {
@@ -31,7 +33,8 @@ export function createCLI(): Command {
     .option('-n, --dry-run', 'Only parse plan and print what would be done; do not clone, cherry-pick, or push', false)
     .option('-y, --yes', 'Skip confirmation prompts (not used yet; for future per-split confirm)', false)
     .option('-v, --verbose', 'Verbose logging', false)
-    .option('--force-push', 'On push rejection (remote has newer commits), force-push to overwrite (use when re-running a plan)', false);
+    .option('--force-push', 'On push rejection (remote has newer commits), force-push to overwrite (use when re-running a plan)', false)
+    .option('--pill', 'Run pill analysis on the output log when the run finishes', false);
 
   return program;
 }
@@ -53,6 +56,7 @@ export function parseArgs(program: Command): SplitExecParsedArgs {
       yes: opts.yes ?? false,
       verbose: opts.verbose ?? false,
       forcePush: opts.forcePush ?? false,
+      pill: opts.pill ?? false,
     },
   };
 }

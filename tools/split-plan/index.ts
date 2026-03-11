@@ -13,12 +13,12 @@
 import { writeFileSync } from 'fs';
 import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
-import { initOutputLog, closeOutputLog, setVerbose, getOutputLogPath, getDebugLogDir } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, setVerbose, setPillEnabled, getOutputLogPath, getDebugLogDir } from '../../shared/logger.js';
 import { createCLI, parseArgs, type SplitPlanParsedArgs } from './cli.js';
 import { runSplitPlan } from './run.js';
 
 try {
-  initOutputLog({ prefix: 'split-plan', enablePill: true });
+  initOutputLog({ prefix: 'split-plan' });
 } catch (err) {
   console.warn('Warning: Could not initialize output log:', err);
 }
@@ -36,6 +36,7 @@ async function main(): Promise<void> {
   }
 
   setVerbose(parsed.options.verbose);
+  setPillEnabled(parsed.options.pill);
   if (parsed.options.verbose) {
     process.env.DEBUG = process.env.DEBUG || 'prr:*';
   }

@@ -11,6 +11,8 @@ export interface SplitPlanOptions {
   verbose: boolean;
   /** Budget for total patch content in the prompt (chars). WHY: Prevents context overflow on large PRs. */
   maxPatchChars: number;
+  /** Run pill analysis on the output log when the run finishes. */
+  pill: boolean;
 }
 
 export interface SplitPlanParsedArgs {
@@ -35,7 +37,8 @@ export function createCLI(): Command {
       '--max-patch-chars <n>',
       'Max total patch content in prompt (chars). Default 120000.',
       '120000'
-    );
+    )
+    .option('--pill', 'Run pill analysis on the output log when the run finishes', false);
 
   return program;
 }
@@ -61,6 +64,7 @@ export function parseArgs(program: Command): SplitPlanParsedArgs {
       output: output && output.length > 0 ? output : undefined,
       verbose: opts.verbose ?? false,
       maxPatchChars,
+      pill: opts.pill ?? false,
     },
   };
 }

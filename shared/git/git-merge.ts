@@ -312,17 +312,3 @@ export async function completeMerge(git: SimpleGit, message: string): Promise<{ 
     return { success: false, error: errorMessage };
   }
 }
-
-// Lock files that can be safely deleted and regenerated
-export const LOCK_FILES: Record<string, { deletePattern: string; regenerateCmd: string }> = {
-  'bun.lock': { deletePattern: 'bun.lock', regenerateCmd: 'bun install' },
-  'bun.lockb': { deletePattern: 'bun.lockb', regenerateCmd: 'bun install' },
-  'package-lock.json': { deletePattern: 'package-lock.json', regenerateCmd: 'npm install' },
-  'yarn.lock': { deletePattern: 'yarn.lock', regenerateCmd: 'yarn install' },
-  'pnpm-lock.yaml': { deletePattern: 'pnpm-lock.yaml', regenerateCmd: 'pnpm install' },
-  'Cargo.lock': { deletePattern: 'Cargo.lock', regenerateCmd: 'cargo generate-lockfile' },
-  'Gemfile.lock': { deletePattern: 'Gemfile.lock', regenerateCmd: 'bundle install' },
-  'poetry.lock': { deletePattern: 'poetry.lock', regenerateCmd: 'poetry lock' },
-  'composer.lock': { deletePattern: 'composer.lock', regenerateCmd: 'composer install' },
-};
-

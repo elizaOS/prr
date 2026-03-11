@@ -67,6 +67,13 @@ function parseFrontmatter(yaml: string): Record<string, string> {
   return out;
 }
 
+/** Commit SHA format (short 7 or full 40 hex chars). Used to fail fast on typos in the plan. */
+const COMMIT_SHA_REGEX = /^[0-9a-f]{7,40}$/i;
+
+function isValidCommitSha(sha: string): boolean {
+  return COMMIT_SHA_REGEX.test(sha);
+}
+
 /**
  * Extract commit SHAs from a "**Commits:** abc1234, def5678" line.
  * WHY flexible: Plan may use short (7) or full SHAs; we accept comma- or space-separated.
@@ -75,6 +82,17 @@ function parseCommitsLine(text: string): string[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
   return trimmed.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+}
+
+/** Validate all commit SHAs in parsed splits; throw with clear message on first invalid SHA. */
+function validateCommitShas(splits: ParsedSplit[]): void {
+  for (const split of splits) {
+    for (const sha of split.commits) {
+      if (!isValidCommitSha(sha)) {
+        throw new Error(`Invalid plan: commit "${sha}" in split ${split.index} ("${split.title}") is not a valid SHA (expected 7–40 hex chars).`);
+      }
+    }
+  }
 }
 
 /**
@@ -115,6 +133,7 @@ export function parsePlanFile(planPath: string): ParsedPlan {
   const secondFront = body.match(SECOND_FRONTMATTER_REGEX);
   if (secondFront) body = body.slice(secondFront[0].length);
   const splits = parseSplits(body);
+  validateCommitShas(splits);
 
   return {
     sourcePrUrl,

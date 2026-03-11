@@ -32,8 +32,13 @@ let promptLogStream: WriteStream | null = null;
 let promptLogPath: string | null = null;
 let outputLogExitHandlerRegistered = false;
 
-/** When true, closeOutputLog() runs pill analysis on the logs we just closed. */
+/** When true, closeOutputLog() runs pill analysis on the logs we just closed. Set at init or via setPillEnabled() when --pill is passed. */
 let pillAnalysisEnabled = false;
+
+/** Enable or disable pill analysis on close. Call after parse when user passes --pill. */
+export function setPillEnabled(enabled: boolean): void {
+  pillAnalysisEnabled = enabled;
+}
 /** Log prefix from initOutputLog (e.g. 'story') so pill knows which log files to read. */
 let currentLogPrefix: string | undefined;
 /** Original console methods, captured before patching, for pill hook to print to real console. */
@@ -188,13 +193,16 @@ export async function closeOutputLog(): Promise<void> {
     }
   }
 
-  // Only run pill when there are actual prompts to analyze (avoids empty pill runs for split-exec/story with no LLM calls).
+  // Run pill when there is output (or prompts) to analyze. Tools like split-exec have no LLM calls but we still
+  // want pill to analyze the output log for operational improvements.
+  const outputLogHasContent =
+    outputLogPath && existsSync(outputLogPath) && readFileSync(outputLogPath, 'utf-8').trim().length > 0;
   const hasPromptsToAnalyze =
     promptLogPath &&
     existsSync(promptLogPath) &&
     / (PROMPT|RESPONSE|ERROR): /m.test(readFileSync(promptLogPath, 'utf-8'));
 
-  if (pillAnalysisEnabled && outputLogPath && hasPromptsToAnalyze) {
+  if (pillAnalysisEnabled && outputLogPath && (outputLogHasContent || hasPromptsToAnalyze)) {
     // WHY reset first: so we run at most once even if runPillAnalysis or a later step throws.
     pillAnalysisEnabled = false;
     try {

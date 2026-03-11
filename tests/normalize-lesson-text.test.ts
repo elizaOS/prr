@@ -1,3 +1,8 @@
+/**
+ * Tests for normalizeLessonText from tools/prr/state/lessons-normalize.ts.
+ * Assertions match current implementation behavior (fence/header/code-line removal,
+ * "Fix for" handling, trailing colon/dash stripping, made-no-changes normalization).
+ */
 import { describe, it, expect } from 'vitest';
 import { normalizeLessonText } from '../tools/prr/state/lessons-normalize.js';
 

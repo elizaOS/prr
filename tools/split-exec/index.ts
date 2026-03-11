@@ -11,12 +11,12 @@
  */
 import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
-import { initOutputLog, closeOutputLog, setVerbose } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, setVerbose, setPillEnabled } from '../../shared/logger.js';
 import { createCLI, parseArgs, type SplitExecParsedArgs } from './cli.js';
 import { runSplitExec } from './run.js';
 
 try {
-  initOutputLog({ prefix: 'split-exec', enablePill: true });
+  initOutputLog({ prefix: 'split-exec' });
 } catch (err) {
   console.warn('Warning: Could not initialize output log:', err);
 }
@@ -34,6 +34,7 @@ async function main(): Promise<void> {
   }
 
   setVerbose(parsed.options.verbose);
+  setPillEnabled(parsed.options.pill);
 
   let config;
   try {

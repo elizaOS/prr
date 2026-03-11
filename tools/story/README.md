@@ -13,7 +13,7 @@ Build a human-readable narrative, feature catalog, and changelog (Added / Change
 | Mode | Input | What is fetched | Output |
 |------|--------|------------------|--------|
 | **PR** | PR URL (`owner/repo#123` or full URL) | PR title/body, commits, files | Narrative + features + changelog from PR + commits + files |
-| **Single branch** | Branch spec (e.g. `owner/repo@branch`, tree URL) | Commit history on that branch (oldest → newest, up to 500) | Narrative + features + changelog from commits only (no file list) |
+| **Single branch** | Branch spec (e.g. `owner/repo@branch`, tree URL) or **repo URL** (`https://github.com/owner/repo` or `owner/repo`) | Commit history on that branch (default branch if repo URL); up to 500 | Narrative + features + changelog from commits only (no file list) |
 | **Two branches** | Branch spec + `--compare <branch>` | Compare API: commits and files from older ref to newer ref; primary branch (URL) is preferred as “newer” when both have commits | Narrative + features + changelog from commits + files |
 
 **Why single-branch has no file list:** A branch may be behind the default (e.g. `v2-develop` behind `develop`). Comparing to default would yield 0 commits. Listing the branch’s commit history (via List Commits API) always gives a story; file-diff would require picking another base and is optional.
@@ -30,6 +30,10 @@ story owner/repo#456
 # Single branch (commit history only)
 story owner/repo@v2-develop
 story https://github.com/owner/repo/tree/v2-develop
+
+# Repo default branch (e.g. main, master, staging)
+story https://github.com/BabylonSocial/babylon
+story owner/repo
 
 # Two branches (primary branch = first arg; order auto-detected, story = primary’s story)
 story https://github.com/owner/repo/tree/v2-develop --compare v1-develop
@@ -69,6 +73,7 @@ Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY
 
 - **PR:** `https://github.com/owner/repo/pull/123`, `owner/repo#123`
 - **Branch:** `owner/repo@branch`, `owner/repo:branch`, `https://github.com/owner/repo/tree/branch` (branch may contain `/`; query/fragment stripped)
+- **Repo (default branch):** `https://github.com/owner/repo`, `https://github.com/owner/repo.git`, `owner/repo` — uses the repo’s default branch (e.g. main, staging)
 
 **Why support tree URL for branch:** Users often paste the browser URL for a branch; accepting it avoids “invalid input” and we normalize to branch name before calling the GitHub API.
 

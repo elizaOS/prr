@@ -16,6 +16,8 @@ export interface StoryOptions {
   maxFetchCommits?: number;
   /** When set (branch mode only), second branch for compare; order auto-detected, story from oldest to newest. */
   compareBranch?: string;
+  /** Run pill analysis on the output log when the run finishes. */
+  pill: boolean;
 }
 
 export interface StoryParsedArgs {
@@ -42,7 +44,8 @@ export function createCLI(): Command {
     .option(
       '--compare <branch>',
       'Second branch (branch mode only): name (e.g. v1-develop), owner/repo@branch, or tree URL. Order is auto-detected; story is oldest → newest.'
-    );
+    )
+    .option('--pill', 'Run pill analysis on the output log when the run finishes', false);
 
   return program;
 }
@@ -84,6 +87,7 @@ export function parseArgs(program: Command): StoryParsedArgs {
       maxFiles,
       maxFetchCommits,
       compareBranch: compareBranch && compareBranch.length > 0 ? compareBranch : undefined,
+      pill: opts.pill ?? false,
     },
   };
 }

@@ -31,6 +31,8 @@ split-exec-output.log
 split-exec-prompts.log
 split-plan-output.log
 split-plan-prompts.log
+story-output.log
+story-prompts.log
 
 # Pill / audit artifacts
 pill-output.md

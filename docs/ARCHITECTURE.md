@@ -554,8 +554,8 @@ Key configuration:
 ### Adding a New Runner
 
 1. Implement `Runner` interface in `shared/runners/your-runner.ts`
-2. Export from `shared/runners/index.ts`
-3. Add detection logic in `detectAvailableRunners()`
+2. Add to `ALL_RUNNERS` in `shared/runners/detect.ts`
+3. `detectAvailableRunners()` will pick it up automatically
 4. Add to CLI help text
 
 ### Adding a New LLM Provider

@@ -19,12 +19,12 @@ import { ELIZACLOUD_SKIP_MODEL_IDS } from '../../shared/constants.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
-import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled } from '../../shared/logger.js';
 import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
-  initOutputLog({ enablePill: true });
+  initOutputLog({});
   // WHY print at startup: Logs are written to process.cwd(); if the user ran prr from elsewhere they need to see where to find them.
   const outPath = getOutputLogPath();
   const promptPath = getPromptLogPath();
@@ -90,6 +90,7 @@ async function main(): Promise<void> {
     // Parse CLI arguments
     const program = createCLI();
     const { prUrl, options } = parseArgs(program);
+    setPillEnabled(options.pill);
 
     // Handle --check-tools mode (exit after showing status)
     if (options.checkTools) {

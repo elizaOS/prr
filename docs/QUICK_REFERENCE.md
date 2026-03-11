@@ -544,7 +544,7 @@ PRR tracks and reports:
 ## 💡 Quick Tips
 
 1. **First time setup**: Run `prr --help` to see options; ensure your fixer (Cursor/Claude Code/etc.) and API keys are configured (see README Configuration).
-2. **Clean lessons**: Run `prr --tidy-lessons` to deduplicate and normalize. If the repo moved paths (e.g. `src/` → `tools/prr/`), section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
+2. **Clean lessons**: Run `prr --tidy-lessons` to deduplicate and normalize. If the repo moved paths (e.g. from legacy `src/` to `tools/prr/` and `shared/`), section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
 3. **Check output log**: `~/.prr/output.log` has everything
 4. **Debug mode**: Use `--verbose` to see LLM prompts and responses
 

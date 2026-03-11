@@ -461,7 +461,7 @@ Working directory: ${workdir}`;
 
       // Parse and apply file changes (pass escalated files so <file> blocks are applied even when S/R ran)
       const applyResult = await this.applyFileChanges(workdir, response, rewriteFiles, options?.allowedPathsForBatch);
-      const { filesWritten, noMeaningfulChanges, skippedDisallowedFiles, placeholderTestContent } = applyResult;
+      const { filesWritten, noMeaningfulChanges, skippedDisallowedFiles, skippedDisallowedAttemptedSummary, skippedNewfilePathExists, placeholderTestContent } = applyResult;
 
       if (filesWritten.length === 0) {
         // All change blocks were no-ops (search === replace): signal so workflow skips verification. WHY: Verifier on unchanged code wastes latency; go straight to rotation.
@@ -476,12 +476,13 @@ Working directory: ${workdir}`;
         }
         // Strict allowlist: fixer tried to edit only disallowed files — treat as failure so workflow adds lesson and rotates.
         if (skippedDisallowedFiles?.length) {
-          console.log(`  ⚠ Fixer attempted disallowed file(s) (not in TARGET FILE(S)): ${skippedDisallowedFiles.slice(0, 5).join(', ')}${skippedDisallowedFiles.length > 5 ? ` +${skippedDisallowedFiles.length - 5} more` : ''}`);
+          const attemptedMsg = skippedDisallowedAttemptedSummary ?? skippedDisallowedFiles.join(', ');
+          console.log(`  ⚠ Fixer attempted disallowed file(s) (not in TARGET FILE(S)): ${attemptedMsg}`);
           this.consecutive504Count = 0;
           return {
             success: false,
             output: response,
-            error: `All change blocks targeted disallowed files. Edit only the file(s) listed in TARGET FILE(S). Attempted: ${skippedDisallowedFiles.join(', ')}`,
+            error: `All change blocks targeted disallowed files. Edit only the file(s) listed in TARGET FILE(S). Attempted: ${attemptedMsg}`,
             skippedDisallowedFiles,
           };
         }
@@ -522,6 +523,7 @@ Working directory: ${workdir}`;
         usedFullFileRewrite: rewriteFiles.length > 0,
         placeholderTestContent: placeholderTestContent || undefined,
         skippedDisallowedFiles,
+        skippedNewfilePathExists: skippedNewfilePathExists?.length ? skippedNewfilePathExists : undefined,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1022,9 +1024,12 @@ Working directory: ${workdir}`;
     return false;
   }
 
-  private async applyFileChanges(workdir: string, response: string, escalatedFiles: string[] = [], allowedPathsForBatch?: string[]): Promise<{ filesWritten: string[]; noMeaningfulChanges?: boolean; skippedDisallowedFiles?: string[]; placeholderTestContent?: boolean }> {
+  private async applyFileChanges(workdir: string, response: string, escalatedFiles: string[] = [], allowedPathsForBatch?: string[]): Promise<{ filesWritten: string[]; noMeaningfulChanges?: boolean; skippedDisallowedFiles?: string[]; skippedDisallowedAttemptedSummary?: string; skippedNewfilePathExists?: string[]; placeholderTestContent?: boolean }> {
     const filesModified = new Set<string>();
     const skippedDisallowed = new Set<string>();
+    const skippedNewfilePathExists: string[] = [];
+    /** Per-skip: what the fixer attempted (path + block type) for error messages */
+    const skippedDisallowedDetails: { path: string; blockType: string }[] = [];
     let attemptedChanges = 0;
     let noOpSkips = 0;
     let failedSearchReplace = 0;
@@ -1043,6 +1048,7 @@ Working directory: ${workdir}`;
       if (!filePath) continue;
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'deletefile' });
         debug('Skipping deletefile — not in TARGET FILE(S)', { filePath });
         continue;
       }
@@ -1104,6 +1110,7 @@ Working directory: ${workdir}`;
 
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'change' });
         debug('Skipping change to disallowed file (not in TARGET FILE(S) for any issue)', { filePath });
         continue;
       }
@@ -1211,6 +1218,7 @@ Working directory: ${workdir}`;
       }
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'newfile' });
         debug('Skipping newfile to disallowed path (not in TARGET FILE(S))', { filePath });
         continue;
       }
@@ -1222,6 +1230,7 @@ Working directory: ${workdir}`;
       }
 
       if (existsSync(fullPath)) {
+        skippedNewfilePathExists.push(filePath);
         debug('Skipping newfile — path already exists (overwriting would destroy existing content); use <change> to edit', { filePath });
         continue;
       }
@@ -1256,6 +1265,7 @@ Working directory: ${workdir}`;
 
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'file' });
         debug('Skipping file block to disallowed path (not in TARGET FILE(S))', { filePath });
         continue;
       }
@@ -1273,6 +1283,7 @@ Working directory: ${workdir}`;
       if (!existsSync(fullPath)) {
         if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
           skippedDisallowed.add(filePath);
+          skippedDisallowedDetails.push({ path: filePath, blockType: 'file (new)' });
           debug('Skipping legacy <file> new file — not in TARGET FILE(S)', { filePath });
           continue;
         }
@@ -1352,7 +1363,10 @@ Working directory: ${workdir}`;
     // WHY: When every change block was a no-op (search === replace), we signal so the workflow skips verification and treats as "no changes" for rotation.
     const noMeaningfulChanges = attemptedChanges > 0 && noOpSkips === attemptedChanges && filesWritten.length === 0;
     const skippedDisallowedFiles = skippedDisallowed.size > 0 ? Array.from(skippedDisallowed) : undefined;
-    return { filesWritten, noMeaningfulChanges: noMeaningfulChanges ? true : undefined, skippedDisallowedFiles, placeholderTestContent: placeholderTestContent || undefined };
+    const attemptedSummary = skippedDisallowedDetails.length > 0
+      ? skippedDisallowedDetails.map(d => `${d.path} (${d.blockType})`).join('; ')
+      : undefined;
+    return { filesWritten, noMeaningfulChanges: noMeaningfulChanges ? true : undefined, skippedDisallowedFiles, skippedDisallowedAttemptedSummary: attemptedSummary, skippedNewfilePathExists: skippedNewfilePathExists.length ? skippedNewfilePathExists : undefined, placeholderTestContent: placeholderTestContent || undefined };
   }
 }
 

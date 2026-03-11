@@ -1,5 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { parseBranchSpec, normalizeCompareBranch } from './types.js';
+import { parseBranchSpec, parseRepoUrl, normalizeCompareBranch } from './types.js';
+
+describe('parseRepoUrl', () => {
+  it('parses https://github.com/owner/repo', () => {
+    expect(parseRepoUrl('https://github.com/BabylonSocial/babylon')).toEqual({
+      owner: 'BabylonSocial',
+      repo: 'babylon',
+    });
+  });
+
+  it('parses GitHub URL with trailing slash or .git', () => {
+    expect(parseRepoUrl('https://github.com/owner/repo/')).toEqual({ owner: 'owner', repo: 'repo' });
+    expect(parseRepoUrl('https://github.com/owner/repo.git')).toEqual({ owner: 'owner', repo: 'repo' });
+  });
+
+  it('parses owner/repo shorthand', () => {
+    expect(parseRepoUrl('owner/repo')).toEqual({ owner: 'owner', repo: 'repo' });
+    expect(parseRepoUrl('BabylonSocial/babylon')).toEqual({ owner: 'BabylonSocial', repo: 'babylon' });
+  });
+
+  it('returns null for PR or branch URLs', () => {
+    expect(parseRepoUrl('https://github.com/owner/repo/pull/123')).toBeNull();
+    expect(parseRepoUrl('owner/repo#456')).toBeNull();
+    expect(parseRepoUrl('owner/repo@main')).toBeNull();
+    expect(parseRepoUrl('https://github.com/owner/repo/tree/main')).toBeNull();
+  });
+
+  it('returns null for invalid input', () => {
+    expect(parseRepoUrl('invalid')).toBeNull();
+    expect(parseRepoUrl('owner/repo/extra')).toBeNull();
+  });
+});
 
 describe('parseBranchSpec', () => {
   it('parses owner/repo@branch format', () => {
@@ -80,8 +111,11 @@ describe('normalizeCompareBranch', () => {
     );
   });
 
-  it('throws on invalid formats', () => {
+  it('throws on bare repo URL (ambiguous)', () => {
     expect(() => normalizeCompareBranch('https://github.com/owner/repo')).toThrow('Invalid --compare value');
-    expect(() => normalizeCompareBranch('owner/repo')).toThrow('Invalid --compare value');
+  });
+
+  it('treats owner/repo as plain branch name when no @ or :', () => {
+    expect(normalizeCompareBranch('owner/repo')).toBe('owner/repo');
   });
 });

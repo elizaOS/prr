@@ -11,12 +11,12 @@
  */
 import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
-import { initOutputLog, closeOutputLog, setVerbose, getOutputLogPath, getDebugLogDir } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, setVerbose, setPillEnabled, getOutputLogPath, getDebugLogDir } from '../../shared/logger.js';
 import { createCLI, parseArgs, type StoryParsedArgs } from './cli.js';
 import { runStory, writeOutput } from './run.js';
 
 try {
-  initOutputLog({ prefix: 'story', enablePill: true });
+  initOutputLog({ prefix: 'story' });
 } catch (err) {
   console.warn('Warning: Could not initialize output log:', err);
 }
@@ -34,6 +34,7 @@ async function main(): Promise<void> {
   }
 
   setVerbose(parsed.options.verbose);
+  setPillEnabled(parsed.options.pill);
   if (parsed.options.verbose) {
     process.env.DEBUG = process.env.DEBUG || 'prr:*';
   }

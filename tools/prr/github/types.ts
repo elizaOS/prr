@@ -112,6 +112,23 @@ export function parsePRUrl(url: string): { owner: string; repo: string; number: 
 }
 
 /**
+ * Parse a bare repo URL (no PR number, no branch). Returns null if input does not match.
+ * Supports: https://github.com/owner/repo, https://github.com/owner/repo.git, owner/repo
+ * WHY: Story and other tools can use the repo's default branch when user passes only the repo URL.
+ */
+export function parseRepoUrl(input: string): { owner: string; repo: string } | null {
+  const trimmed = input.trim();
+  const fullUrl = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?(?:\/)?(?:\?.*)?(?:#.*)?$/i);
+  if (fullUrl && !/\/pull\/|\/tree\//.test(trimmed)) {
+    const repo = fullUrl[2].replace(/\.git$/i, '');
+    if (repo) return { owner: fullUrl[1], repo };
+  }
+  const shorthand = trimmed.match(/^([^\/]+)\/([^\/#@]+)$/);
+  if (shorthand) return { owner: shorthand[1], repo: shorthand[2] };
+  return null;
+}
+
+/**
  * Parse a branch spec (repo + branch). Returns null if input does not match.
  * Supports: owner/repo@branch, owner/repo:branch, https://github.com/owner/repo/tree/branch
  * WHY tree URL: Users paste browser URLs; accepting tree URL avoids "invalid input" and we pass only branch name to the API.
