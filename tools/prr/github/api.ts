@@ -1031,7 +1031,7 @@ export class GitHubAPI {
     baseBranch: string;
     author: string;
   }>> {
-    debug('Listing open PRs', { owner, repo, baseBranch, excludePRNumber });
+    debug('Listing open PRs', { owner, repo, baseBranch: baseBranch ?? '(all)', excludePRNumber });
     const params: { owner: string; repo: string; state: 'open'; base?: string; per_page: number } = {
       owner,
       repo,

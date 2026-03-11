@@ -16,6 +16,17 @@ import { pushWithRetry } from '../../shared/git/git-push.js';
 import type { SimpleGit } from 'simple-git';
 import { debug, formatNumber } from '../../shared/logger.js';
 
+/** True when the error is GitHub auth failure (invalid/expired token or password auth). */
+function isAuthError(error: Error): boolean {
+  const msg = error.message.toLowerCase();
+  return (
+    /authentication failed/i.test(msg) ||
+    /invalid username or token/i.test(msg) ||
+    /password authentication is not supported/i.test(msg) ||
+    /bad credentials/i.test(msg)
+  );
+}
+
 /** Fail fast if target branch does not exist on remote (pill-output #1). */
 function ensureTargetBranchExistsOnRemote(
   cloneUrl: string,
@@ -58,6 +69,38 @@ export async function runSplitExec(
 
   const cloneUrl = `https://github.com/${plan.owner}/${plan.repo}.git`;
   const workdir = options.workdir ?? join(process.cwd(), '.split-exec-workdir');
+  const github = new GitHubAPI(config.githubToken);
+
+  if (!options.dryRun && config.githubToken) {
+    spinner.start('Checking GitHub token...');
+    try {
+      await github.getDefaultBranch(plan.owner, plan.repo);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = err && typeof err === 'object' && 'status' in err ? (err as { status: number }).status : undefined;
+      if (status === 401 || /bad credentials|invalid.*token|authentication failed/i.test(msg)) {
+        throw new Error(
+          `GITHUB_TOKEN rejected by GitHub (${status ?? 'auth error'}): ${msg}. ` +
+            'Create a token at https://github.com/settings/tokens with "repo" scope and set GITHUB_TOKEN in .env. ' +
+            'Ensure the token is not expired and the account has access to this repo.'
+        );
+      }
+      if (status === 403 || /forbidden|resource not accessible/i.test(msg)) {
+        throw new Error(
+          `GITHUB_TOKEN lacks permission for ${plan.owner}/${plan.repo}: ${msg}. ` +
+            'Token needs "repo" scope and the account must have access to this repository.'
+        );
+      }
+      if (status === 404 || /not found/i.test(msg)) {
+        throw new Error(
+          `Repository ${plan.owner}/${plan.repo} not found or not accessible: ${msg}. ` +
+            'Check the repo exists and your token has access.'
+        );
+      }
+      throw err;
+    }
+    spinner.succeed('Token valid');
+  }
 
   spinner.start('Checking target branch on remote...');
   ensureTargetBranchExistsOnRemote(cloneUrl, plan.targetBranch, config.githubToken);
@@ -70,8 +113,6 @@ export async function runSplitExec(
   });
   spinner.succeed(`Workdir: ${workdir}`);
 
-  const github = new GitHubAPI(config.githubToken);
-
   // Fail fast if target branch is missing in workdir (e.g. additionalBranches fetch warned but continued).
   if (!options.dryRun) {
     await ensureTargetRefOrFetch(git, plan.targetBranch, workdir);
@@ -81,6 +122,7 @@ export async function runSplitExec(
   let prsCreated = 0;
   let prsReused = 0;
   let skippedNothingToPush = 0;
+  const prUrls: string[] = [];
   const failedSplits: { split: ParsedSplit; index: number; error: Error }[] = [];
   for (let i = 0; i < plan.splits.length; i++) {
     const split = plan.splits[i];
@@ -127,11 +169,18 @@ export async function runSplitExec(
         }
         if (outcome.prUrl) {
           console.log(chalk.cyan(`      ${outcome.prUrl}`));
+          prUrls.push(outcome.prUrl);
         }
       }
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       spinner.fail(`Failed: ${error.message}`);
+      if (isAuthError(error)) {
+        throw new Error(
+          'GitHub authentication failed. Set GITHUB_TOKEN in .env (create a token at https://github.com/settings/tokens with "repo" scope). ' +
+            'GitHub does not support password auth for Git operations.\n' + error.message
+        );
+      }
       failedSplits.push({ split, index: n, error });
       // Return to source branch so next split can create its branch from origin/target.
       await git.checkout(plan.sourceBranch).catch(() => {});
@@ -155,7 +204,8 @@ export async function runSplitExec(
       });
     }
     const allPushFailures = failedSplits.every(({ error }) => /Push to .+ failed/i.test(error.message));
-    if (allPushFailures && failedSplits.length > 0) {
+    const anyAuthFailure = failedSplits.some(({ error }) => isAuthError(error));
+    if (allPushFailures && failedSplits.length > 0 && !anyAuthFailure) {
       console.log(chalk.yellow('\n  Re-run with --force-push to overwrite remote branches, or resolve conflicts in the workdir and push manually.'));
     }
     throw new Error(
@@ -176,6 +226,11 @@ export async function runSplitExec(
     console.log(chalk.yellow(
       '  All splits were already up-to-date (remote likely had these commits from a previous run). If you expected new changes, check that the source branch has commits not yet on the split branches.'
     ));
+    if (prUrls.length > 0) {
+      console.log(chalk.cyan(`  Open PRs: ${prUrls.join('  ')}`));
+    }
+  } else if (prUrls.length > 0) {
+    console.log(chalk.cyan(`  PRs: ${prUrls.join('  ')}`));
   }
 
   // Machine-readable exit: CI can distinguish "all up-to-date" from "pushed new changes".
@@ -348,6 +403,7 @@ async function executeSplit(
     }
   }
 
+  console.log(chalk.gray(`  Pushing ${branchToPush}...`));
   spinner.start(`Pushing ${branchToPush}...`);
   let nothingToPush = false;
   let nothingToPushAfterRebase = false;
@@ -450,31 +506,22 @@ async function executeSplit(
 }
 
 /**
- * Find an open PR from `head` into `base`. Returns the PR number and URL if one exists,
- * so we can skip creating a duplicate. The push already updated the branch, so the
- * existing PR automatically picks up the new commits.
- *
- * Falls back to searching without base filter when no match is found, because the PR
- * may target a different base than the plan's target_branch (e.g. retargeted after creation).
+ * Find an open PR whose head branch is `head`. Returns the PR number and URL if one exists.
+ * Uses a single getOpenPRs(owner, repo) call (no base filter) so we find the PR even if
+ * it was retargeted to a different base than the plan's target_branch.
  */
 async function findExistingPR(
   github: GitHubAPI,
   owner: string,
   repo: string,
   head: string,
-  base: string
+  _base: string
 ): Promise<{ number: number; url: string } | null> {
   try {
-    const openPRs = await github.getOpenPRs(owner, repo, base);
+    const openPRs = await github.getOpenPRs(owner, repo);
     const match = openPRs.find(pr => pr.branch === head);
     if (match) {
       return { number: match.number, url: `https://github.com/${owner}/${repo}/pull/${match.number}` };
-    }
-    // Fallback: PR may target a different base (e.g. retargeted after creation).
-    const allOpenPRs = await github.getOpenPRs(owner, repo);
-    const fallback = allOpenPRs.find(pr => pr.branch === head);
-    if (fallback) {
-      return { number: fallback.number, url: `https://github.com/${owner}/${repo}/pull/${fallback.number}` };
     }
     return null;
   } catch (err) {

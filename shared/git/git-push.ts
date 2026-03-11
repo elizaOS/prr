@@ -88,8 +88,9 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       ? 'https://' + remoteUrl.replace(/^https:\/\/[^@]+@/, '')
       : remoteUrl;
     if (githubToken && baseHttpsUrl.startsWith('https://')) {
-      // GitHub expects https://x-access-token:TOKEN@host so git uses the token as password (avoids "terminal prompts disabled" in CI).
-      authPushUrl = baseHttpsUrl.replace('https://', `https://x-access-token:${githubToken}@`);
+      // Use same format as split-exec ls-remote (https://TOKEN@) so auth behavior is consistent.
+      // GitHub accepts token as username with empty password for HTTPS Git operations.
+      authPushUrl = baseHttpsUrl.replace('https://', `https://${githubToken}@`);
       debug('Pre-push check', { hasTokenInUrl, usingAuthUrl: true });
     } else if (githubToken && !baseHttpsUrl.startsWith('https://')) {
       debug('Remote URL is SSH — token injection skipped; push will use SSH credentials.');
