@@ -238,6 +238,15 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
         try {
           if (typeof stagedContent === 'string') {
             JSON.parse(stagedContent);
+            // Valid JSON can still contain tool markup (e.g. in a string value); check and unstage.
+            if (TOOL_MARKUP_PATTERN.test(stagedContent)) {
+              debug(`Tool markup detected in staged JSON: ${file}`);
+              if (status.created.includes(file)) {
+                filesToRemove.push(file);
+              } else {
+                filesToRevert.push(file);
+              }
+            }
           }
         } catch {
           debug(`Invalid JSON detected in staged file: ${file}`);
@@ -247,7 +256,6 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
             filesToRevert.push(file);
           }
         }
-        // Review: skips invalid files without misclassifying git errors as JSON issues
         continue;
       }
     }

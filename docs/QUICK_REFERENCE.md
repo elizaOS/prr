@@ -537,14 +537,14 @@ PRR tracks and reports:
 - **Architecture Guide**: `docs/ARCHITECTURE.md`
 - **Development Guide**: `DEVELOPMENT.md`
 - **Changelog**: `CHANGELOG.md`
-- **Split-plan / split-exec**: `tools/split-plan/README.md`, `tools/split-exec/README.md`. For split-exec, ensure the target branch (e.g. `staging`) exists on the remote; the tool fetches it after clone and retries once if the ref is missing. On failure the error message includes the workdir path and the exact command, e.g. `cd <workdir> && git fetch origin <target-branch>`.
+- **Split-plan / split-exec**: `tools/split-plan/README.md`, `tools/split-exec/README.md`. For split-exec: (1) ensure the target branch (e.g. `staging`) exists on the remote (checked before clone); (2) the tool pre-fetches target and split branch refs during clone so rebase-and-retry can resolve `origin/<branch>` (required for `--single-branch` clones); (3) if push is rejected, the tool fetches, rebases, and retries (up to 2 retries). If that still fails, re-run with `--force-push` to overwrite, or resolve manually in the workdir. On clone/ref failure the error includes the workdir and command, e.g. `cd <workdir> && git fetch origin <target-branch>`.
 
 ---
 
 ## 💡 Quick Tips
 
 1. **First time setup**: Run `prr --help` to see options; ensure your fixer (Cursor/Claude Code/etc.) and API keys are configured (see README Configuration).
-2. **Clean lessons**: Run `prr --tidy-lessons` to deduplicate and normalize
+2. **Clean lessons**: Run `prr --tidy-lessons` to deduplicate and normalize. If the repo moved paths (e.g. `src/` → `tools/prr/`), section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
 3. **Check output log**: `~/.prr/output.log` has everything
 4. **Debug mode**: Use `--verbose` to see LLM prompts and responses
 

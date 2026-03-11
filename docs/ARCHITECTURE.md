@@ -2,7 +2,7 @@
 
 This document explains the high-level architecture of PRR (PR Resolver), a system for automatically resolving GitHub PR review comments using AI coding assistants.
 
-**Path note:** Code lives under `tools/prr/` (PRR) and `shared/` (shared modules). Some diagrams or section headers below still use the legacy `src/` prefix; read them as `tools/prr/` for PRR code and `shared/` for logger, config, git, runners.
+**Path note:** Code lives under `tools/prr/` (PRR) and `shared/` (shared modules).
 
 ## Core Philosophy
 
@@ -485,10 +485,10 @@ Lessons are stored in `.prr/lessons.md` (markdown format) and `.prr/lessons.json
 ```json
 {
   "global": [
-    "Fix for src/foo.ts:42 rejected: Always check null before accessing properties"
+    "Fix for tools/prr/foo.ts:42 rejected: Always check null before accessing properties"
   ],
   "files": {
-    "src/foo.ts": [
+    "tools/prr/foo.ts": [
       "Use ?? instead of || for nullish coalescing in TypeScript"
     ]
   }

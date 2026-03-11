@@ -10,6 +10,7 @@ export interface SplitExecOptions {
   dryRun: boolean;
   yes: boolean;
   verbose: boolean;
+  forcePush: boolean;
 }
 
 export interface SplitExecParsedArgs {
@@ -29,7 +30,8 @@ export function createCLI(): Command {
     .option('-w, --workdir <dir>', 'Git workdir for clone and cherry-picks (default: .split-exec-workdir in cwd)')
     .option('-n, --dry-run', 'Only parse plan and print what would be done; do not clone, cherry-pick, or push', false)
     .option('-y, --yes', 'Skip confirmation prompts (not used yet; for future per-split confirm)', false)
-    .option('-v, --verbose', 'Verbose logging', false);
+    .option('-v, --verbose', 'Verbose logging', false)
+    .option('--force-push', 'On push rejection (remote has newer commits), force-push to overwrite (use when re-running a plan)', false);
 
   return program;
 }
@@ -50,6 +52,7 @@ export function parseArgs(program: Command): SplitExecParsedArgs {
       dryRun: opts.dryRun ?? false,
       yes: opts.yes ?? false,
       verbose: opts.verbose ?? false,
+      forcePush: opts.forcePush ?? false,
     },
   };
 }

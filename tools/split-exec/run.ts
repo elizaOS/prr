@@ -12,7 +12,7 @@ import type { SplitExecOptions } from './cli.js';
 import { parsePlanFile, type ParsedPlan, type ParsedSplit } from './parse-plan.js';
 import { GitHubAPI } from '../prr/github/api.js';
 import { cloneOrUpdate } from '../../shared/git/git-clone-index.js';
-import { push } from '../../shared/git/git-push.js';
+import { pushWithRetry } from '../../shared/git/git-push.js';
 import type { SimpleGit } from 'simple-git';
 import { debug, formatNumber } from '../../shared/logger.js';
 
@@ -63,9 +63,10 @@ export async function runSplitExec(
   ensureTargetBranchExistsOnRemote(cloneUrl, plan.targetBranch, config.githubToken);
   spinner.succeed(`Target branch ${plan.targetBranch} exists`);
 
+  const splitBranches = [...new Set([plan.targetBranch, ...plan.splits.map(s => s.newBranch).filter((b): b is string => b != null)])];
   spinner.start('Cloning repository (source branch)...');
   const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
-    additionalBranches: [plan.targetBranch],
+    additionalBranches: splitBranches,
   });
   spinner.succeed(`Workdir: ${workdir}`);
 
@@ -77,6 +78,8 @@ export async function runSplitExec(
   }
 
   let executedCount = 0;
+  let prsCreated = 0;
+  let skippedNothingToPush = 0;
   const failedSplits: { split: ParsedSplit; index: number; error: Error }[] = [];
   for (let i = 0; i < plan.splits.length; i++) {
     const split = plan.splits[i];
@@ -103,8 +106,10 @@ export async function runSplitExec(
       continue;
     }
     try {
-      await executeSplit(git, plan, split, github, config.githubToken, workdir, spinner);
+      const outcome = await executeSplit(git, plan, split, github, config.githubToken, workdir, spinner, options.forcePush);
       executedCount++;
+      if (outcome?.prCreated) prsCreated++;
+      if (outcome?.nothingToPush) skippedNothingToPush++;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       spinner.fail(`Failed: ${error.message}`);
@@ -130,11 +135,22 @@ export async function runSplitExec(
         console.log(chalk.red(`  [${index}] ${split.title}: ${error.message}`));
       });
     }
+    const allPushFailures = failedSplits.every(({ error }) => /Push to .+ failed/i.test(error.message));
+    if (allPushFailures && failedSplits.length > 0) {
+      console.log(chalk.yellow('\n  Re-run with --force-push to overwrite remote branches, or resolve conflicts in the workdir and push manually.'));
+    }
     throw new Error(
       `${formatNumber(failedSplits.length)} of ${plan.splits.length} split(s) failed. Fix errors above and re-run, or edit the plan.`
     );
   }
   console.log(chalk.green('\nDone.'));
+  const summaryParts: string[] = [];
+  if (executedCount > 0) {
+    summaryParts.push(`${formatNumber(executedCount)}/${plan.splits.length} splits completed`);
+    if (prsCreated > 0) summaryParts.push(`${formatNumber(prsCreated)} PR(s) created`);
+    if (skippedNothingToPush > 0) summaryParts.push(`${formatNumber(skippedNothingToPush)} skipped (nothing to push)`);
+    if (summaryParts.length > 1) console.log(chalk.gray('  ' + summaryParts.join('. ')));
+  }
 }
 
 /** Ensure origin/<targetBranch> exists; if not, add refspec and fetch. Throw with workdir hint if still missing. */
@@ -161,6 +177,9 @@ async function ensureTargetRefOrFetch(
   }
 }
 
+/** Outcome of a completed split (undefined when split was skipped without attempting push). */
+type SplitOutcome = { prCreated: boolean; nothingToPush: boolean } | undefined;
+
 /** Execute one split: checkout target branch, cherry-pick commits, push, create PR if new. */
 async function executeSplit(
   git: SimpleGit,
@@ -169,8 +188,9 @@ async function executeSplit(
   github: GitHubAPI,
   githubToken: string,
   workdir: string,
-  spinner: Ora
-): Promise<void> {
+  spinner: Ora,
+  forcePush: boolean
+): Promise<SplitOutcome> {
   let branchToPush: string;
 
   if (split.routeToPrNumber != null) {
@@ -201,7 +221,7 @@ async function executeSplit(
     spinner.succeed(`Branch ${branchToPush} created`);
   } else {
     console.log(chalk.yellow('  Split has neither Route to nor New PR — skipping'));
-    return;
+    return undefined;
   }
 
   if (split.files.length > 0) {
@@ -215,7 +235,7 @@ async function executeSplit(
       const staged = status.staged.length;
       if (staged === 0) {
         spinner.warn('No changes (files match target); nothing to commit');
-        return;
+        return { prCreated: false, nothingToPush: false };
       }
       const commitTitle = split.prTitle ?? split.title;
       await git.commit(commitTitle);
@@ -244,18 +264,41 @@ async function executeSplit(
   }
 
   spinner.start(`Pushing ${branchToPush}...`);
-  const pushResult = await push(git, branchToPush, false, githubToken);
-  if (!pushResult.success) {
-    spinner.fail(`Push failed: ${pushResult.error ?? 'unknown'}`);
-    throw new Error(`Push to ${branchToPush} failed. Fix in ${workdir} and push manually if needed.`);
-  }
-  if (pushResult.nothingToPush) {
-    spinner.info('Nothing to push (already up to date)');
-  } else {
-    spinner.succeed(`Pushed ${branchToPush}`);
+  let nothingToPush = false;
+  try {
+    const pushResult = await pushWithRetry(git, branchToPush, {
+      force: forcePush,
+      githubToken,
+      maxRetries: 2,
+      onPullNeeded: () => { spinner.text = `Push rejected (remote has newer commits); rebasing on origin/${branchToPush} and retrying...`; },
+      onConflict: async (conflictedFiles: string[]) => {
+        const workflowFiles = conflictedFiles.filter(f => f.startsWith('.github/workflows/'));
+        if (workflowFiles.length !== conflictedFiles.length) return false;
+        spinner.text = 'Resolving workflow file conflicts (checkout --theirs)...';
+        for (const file of workflowFiles) {
+          await git.raw(['checkout', '--theirs', '--', file]);
+          await git.add(file);
+        }
+        return true;
+      },
+    });
+    nothingToPush = pushResult.nothingToPush === true;
+    if (nothingToPush) {
+      spinner.info('Nothing to push — remote already has these commits; skipping PR creation');
+    } else {
+      spinner.succeed(`Pushed ${branchToPush}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    spinner.fail(`Push failed: ${msg}`);
+    const isRejected = /rejected|newer commits|non-fast-forward|Push failed after \d+ attempts/i.test(msg);
+    const hint = isRejected
+      ? `Push rejected because remote branch has newer commits. Re-run with --force-push to overwrite, or pull and resolve manually in ${workdir}.`
+      : `Fix in ${workdir} and push manually if needed.`;
+    throw new Error(`Push to ${branchToPush} failed. ${hint}\n${msg}`);
   }
 
-  if (split.newBranch != null) {
+  if (split.newBranch != null && !nothingToPush) {
     spinner.start('Creating pull request...');
     const prTitle = split.prTitle ?? split.title;
     try {
@@ -268,10 +311,12 @@ async function executeSplit(
         `Split from plan (${plan.sourcePrUrl}).\n\n${prTitle}`
       );
       spinner.succeed(`PR #${number}: ${url}`);
+      return { prCreated: true, nothingToPush: false };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       spinner.fail(`PR creation failed: ${msg}`);
       throw new Error(`PR creation failed for "${split.title}": ${msg}. Branch ${branchToPush} was pushed; create the PR manually or fix and re-run.`);
     }
   }
+  return { prCreated: false, nothingToPush };
 }

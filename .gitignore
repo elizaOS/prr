@@ -38,3 +38,6 @@ pill-summary.md
 
 # Repo-specific split plans (often from another repo)
 .split-plan.md
+
+# split-exec clone and cherry-pick workdir
+.split-exec-workdir/

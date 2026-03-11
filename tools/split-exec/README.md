@@ -69,3 +69,11 @@ The target branch is checked **once upfront** (before cloning). If it's missing,
 1. **Create the branch on the remote:** e.g. push an initial commit to `staging` from another clone, or create it in the GitHub UI.
 2. **Change the plan:** Edit `.split-plan.md` frontmatter and set `target_branch` to an existing branch (e.g. `main`).
 3. **Manual fetch (if the branch exists but ls-remote failed):** From the workdir printed in the error, run: `cd <workdir> && git fetch origin <target-branch>`.
+
+### "Push rejected and rebase has conflicts in: ..."
+
+This happens when the remote branch was modified after the plan was generated (e.g. someone pushed to the same branch). The tool fetches and rebases; if there are conflicts it tries to resolve them (e.g. `.github/workflows/` files via `checkout --theirs`). If resolution fails or conflicts are in other files:
+
+1. **Re-run with `--force-push`** to overwrite the remote branch (use when your split is the source of truth).
+2. **Resolve manually:** The error message includes the workdir and a `git add ... && git rebase --continue` command. Resolve the conflicted files in that workdir, then run the command and push (or re-run split-exec).
+3. **Re-generate the plan** if the remote branch has diverged enough that merging no longer makes sense.
