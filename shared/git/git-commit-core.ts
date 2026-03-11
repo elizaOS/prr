@@ -231,8 +231,8 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
         let stagedContent: string;
         try {
           stagedContent = await git.raw(['show', ':0:' + file]);
-        } catch {
-          debug(`Could not read staged content for: ${file}`);
+        } catch (readErr) {
+          debug(`Could not read staged content for ${file} (binary, missing, or conflicted); skip`, { err: String(readErr) });
           continue;
         }
         try {
@@ -312,8 +312,8 @@ async function unstageEmptyTestFiles(git: SimpleGit): Promise<void> {
       let stagedContent: string;
       try {
         stagedContent = await git.raw(['show', ':0:' + file]);
-      } catch {
-        debug(`Could not read staged content for: ${file} (e.g. binary or missing; skip)`);
+      } catch (readErr) {
+        debug(`Could not read staged content for ${file} (e.g. binary or missing; skip)`, { err: String(readErr) });
         continue;
       }
       if (typeof stagedContent !== 'string') continue;

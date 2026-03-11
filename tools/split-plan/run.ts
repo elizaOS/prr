@@ -98,8 +98,18 @@ export async function runSplitPlan(
     ...p,
     body: p.body.slice(0, 500) + (p.body.length > 500 ? '…' : ''),
   }));
-  // WHY formatNumber: Workspace rule — user-visible counts use locale formatting (e.g. 1,234).
   spinner.succeed(`${formatNumber(openPRs.length)} open PRs on ${prInfo.baseBranch}`);
+
+  // Fetch recent PR titles to infer repo title style so the plan suggests **PR title:** in that vibe.
+  spinner.start('Fetching recent PR titles (for style)...');
+  const recentTitles = await github.getRecentPRTitles(owner, repo, 30);
+  let titleStyleSummary: string | null = null;
+  const llm = new LLMClient(config);
+  if (recentTitles.length > 0) {
+    titleStyleSummary = await inferPRTitleStyle(recentTitles, llm, config);
+  }
+  if (titleStyleSummary) spinner.succeed('PR title style inferred');
+  else spinner.succeed(recentTitles.length > 0 ? 'Skipped style (no summary)' : 'No recent PRs for style');
 
   // WHY separate code vs low-signal: Code files get patch budget; low-signal files still appear in the prompt as metadata (omitted list) so the LLM knows they changed but we don't spend patch budget on them.
   const codeFiles = filesWithPatches.filter(f => !isLowSignalFile(f.filename));
@@ -121,9 +131,30 @@ export async function runSplitPlan(
     });
   }
 
-  const llm = new LLMClient(config);
-  const planContent = await buildPlanContent(prInfo, commits, filesWithBudget, prFileList, openPRs, llm, config);
+  const planContent = await buildPlanContent(prInfo, commits, filesWithBudget, prFileList, openPRs, llm, config, titleStyleSummary);
   return planContent;
+}
+
+/**
+ * Ask the LLM to summarize PR title style from a list of recent titles.
+ * WHY: So the main plan prompt can say "match this style" and the model outputs **PR title:** in repo vibe.
+ */
+async function inferPRTitleStyle(
+  titles: string[],
+  llm: LLMClient,
+  config: Config
+): Promise<string | null> {
+  const list = titles.slice(0, 25).map(t => `- ${t}`).join('\n');
+  const userPrompt = `These are recent PR titles from the repo:\n\n${list}\n\nIn 2-4 short sentences, describe the style: e.g. conventional commits (type/scope), length, ticket numbers, tone. Prose only, no bullet list.`;
+  const systemPrompt = 'You are a technical writer. Be concise. Describe only the observable style.';
+  try {
+    const response = await llm.complete(userPrompt, systemPrompt, { model: config.llmModel });
+    const summary = response.content.trim();
+    return summary.length > 10 ? summary : null;
+  } catch (err) {
+    debug('split-plan: PR title style inference failed', { err: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
 }
 
 async function buildPlanContent(
@@ -133,10 +164,11 @@ async function buildPlanContent(
   prFileList: string[],
   openPRs: Array<{ number: number; title: string; body: string; branch: string; author: string }>,
   llm: LLMClient,
-  config: Config
+  config: Config,
+  titleStyleSummary: string | null
 ): Promise<string> {
   const userPrompt = buildUserPrompt(prInfo, commits, filesWithBudget, openPRs);
-  const systemPrompt = getSystemPrompt();
+  const systemPrompt = getSystemPrompt(titleStyleSummary);
 
   const spinner = ora();
   spinner.start('Building split plan...');
@@ -149,9 +181,13 @@ async function buildPlanContent(
 }
 
 /** WHY two-phase in system prompt: If we only ask "split this PR," the model groups by file proximity and ignores dependencies. Forcing Phase 1 (dependencies) before Phase 2 (grouping) makes dependency order a hard constraint. */
-function getSystemPrompt(): string {
-  return `You are a senior engineer decomposing a large pull request into smaller, focused PRs. You will perform TWO phases of analysis:
+function getSystemPrompt(titleStyleSummary: string | null): string {
+  const titleStyleBlock = titleStyleSummary
+    ? `\nPR TITLE STYLE (match this repo's vibe):\n${titleStyleSummary}\n\nFor each split you must include a line **PR title:** \`<title in that style>\` so the created PRs match the repo. Use the same style for the ### N. heading if you like, but **PR title:** is what will be used as the GitHub PR title and commit message.\n`
+    : '';
 
+  return `You are a senior engineer decomposing a large pull request into smaller, focused PRs. You will perform TWO phases of analysis:
+${titleStyleBlock}
 PHASE 1 — DEPENDENCY ANALYSIS
 Before proposing any split, identify which changes depend on which other changes. A depends on B if:
 - B introduces a function/type/variable that A calls/uses
@@ -172,6 +208,7 @@ Group changes into PRs where each PR is a complete working unit. Rules:
 - Don't split to reduce size. Split to reduce cognitive load.
 - If an existing open PR covers the same concern, route changes there
 - Record source and target branches for each proposed split
+- Include **PR title:** for each split (in the repo's style) so split-exec creates PRs that match the repo
 
 Output the plan in the EXACT markdown format shown below (with YAML frontmatter). The human will edit this file, so make it clear and readable.
 
@@ -194,16 +231,20 @@ generated_at: <ISO8601>
 ## Split
 
 ### 1. <Short title>
-- **Route to:** PR #N (title) — rationale
-  OR **New PR:** \`branch-name\`
+- **New PR:** \`branch-name\`
+- **PR title:** \`<title in repo style, e.g. conventional commit or short imperative>\`
 - **Source branch:** ...
 - **Target branch:** ...
 - **Depends on:** ... or nothing
 - **Files:**
-  - path/to/file1
-  - path/to/file2
-- **Commits:** sha1, sha2
+  - \`path/to/file1\`
+  - \`path/to/file2\`
+- **Commits:**
+  - \`sha1\` (optional note)
+  - \`sha2\`
 - **Why one unit:** ...
+
+(Alternatively **Route to:** PR #N instead of New PR when routing to an existing open PR.)
 
 ### 2. ...
 

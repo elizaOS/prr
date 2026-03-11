@@ -18,11 +18,15 @@ export interface ParsedPlan {
 export interface ParsedSplit {
   index: number;
   title: string;
+  /** Optional PR/commit title that matches repo style (e.g. conventional commit). Used for commit message and GitHub PR title. */
+  prTitle: string | null;
   /** When set, route commits to this existing PR number. */
   routeToPrNumber: number | null;
   /** When set, create a new branch and open a new PR with this branch name. */
   newBranch: string | null;
-  /** Commit SHAs (short or full) to cherry-pick in order. */
+  /** File paths for this split. When non-empty, we apply these files from source branch (new commit) instead of cherry-picking. */
+  files: string[];
+  /** Commit SHAs (short or full); used only when files is empty (cherry-pick mode). */
   commits: string[];
   /** Raw lines for the commits section (for diagnostics when commits.length === 0). */
   rawCommitLines: string[];
@@ -34,10 +38,21 @@ const SECOND_FRONTMATTER_REGEX = /^\s*\n?---\s*\n[\s\S]*?\n---\s*\n/;
 const SPLIT_HEADER_REGEX = /^###\s+(\d+)\.\s+(.+)$/;
 const ROUTE_TO_REGEX = /\*\*Route to:\*\*\s*PR\s*#(\d+)/i;
 const NEW_PR_REGEX = /\*\*New PR:\*\*\s*`([^`]+)`/i;
+/** **PR title:** `feat: add workflow` or **Title:** chore: add workflow — use for commit and PR title to match repo style */
+const PR_TITLE_REGEX = /\*\*(?:PR title|Title):\*\*\s*(?:`([^`]+)`|(.+?))$/i;
 /** Inline: **Commits:** sha1, sha2 */
 const COMMITS_LINE_REGEX = /\*\*Commits:\*\*\s*(.+?)(?:\n|$)/i;
 /** Bullet line with backtick-wrapped SHA: - `12d870a` (optional note) or * `90eeab4` */
 const COMMIT_BULLET_REGEX = /^\s*[-*]\s+`([a-fA-F0-9]{7,40})`/;
+/** **Files:** section header */
+const FILES_LINE_REGEX = /\*\*Files:\*\*/i;
+/** Bullet with backtick-wrapped path; we only treat as file if it looks like a path (has / or .ext), not a commit SHA. */
+const FILE_BULLET_REGEX = /^\s*[-*]\s+`([^`]+)`/;
+function looksLikePath(s: string): boolean {
+  const t = s.trim();
+  if (/^[a-fA-F0-9]{7,40}$/.test(t)) return false;
+  return t.includes('/') || t.startsWith('.') || /\.(yml|yaml|tsx?|jsx?|md|json|ts|js|mjs|cjs|css|html)$/.test(t);
+}
 
 /**
  * Parse YAML-like frontmatter for the four keys we need.
@@ -127,19 +142,32 @@ function parseSplits(body: string): ParsedSplit[] {
     }
     const index = parseInt(headerMatch[1], 10);
     const title = headerMatch[2].trim();
+    let prTitle: string | null = null;
     let routeToPrNumber: number | null = null;
     let newBranch: string | null = null;
+    let files: string[] = [];
     let commits: string[] = [];
     const rawCommitLines: string[] = [];
+    let inFilesSection = false;
     i++;
     while (i < lines.length && !lines[i].match(/^###\s+\d+\./) && !lines[i].startsWith('## ')) {
       const line = lines[i];
+      if (line.match(/\*\*\w+:\*\*/)) {
+        if (line.match(FILES_LINE_REGEX)) inFilesSection = true;
+        else inFilesSection = false;
+      } else if (inFilesSection) {
+        const fileMatch = line.match(FILE_BULLET_REGEX);
+        if (fileMatch && looksLikePath(fileMatch[1])) files.push(fileMatch[1].trim());
+      }
+      const prTitleMatch = line.match(PR_TITLE_REGEX);
+      if (prTitleMatch) prTitle = (prTitleMatch[1] ?? prTitleMatch[2] ?? '').trim() || null;
       const routeMatch = line.match(ROUTE_TO_REGEX);
       if (routeMatch) routeToPrNumber = parseInt(routeMatch[1], 10);
       const newMatch = line.match(NEW_PR_REGEX);
       if (newMatch) newBranch = newMatch[1].trim();
       const commitsMatch = line.match(COMMITS_LINE_REGEX);
       if (commitsMatch) {
+        inFilesSection = false;
         const inline = parseCommitsLine(commitsMatch[1]);
         if (inline.length > 0) commits.push(...inline);
         rawCommitLines.push(line);
@@ -158,8 +186,10 @@ function parseSplits(body: string): ParsedSplit[] {
     splits.push({
       index,
       title,
+      prTitle,
       routeToPrNumber: routeToPrNumber ?? null,
       newBranch: newBranch ?? null,
+      files,
       commits,
       rawCommitLines,
     });

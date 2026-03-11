@@ -38,6 +38,10 @@ split-plan owner/repo#123 --max-patch-chars 80000
 | `-v, --verbose` | off | Enable debug logs and prompt/response files under `~/.prr/debug/<timestamp>`. |
 | `--max-patch-chars <n>` | 120000 | Max total patch content (chars) included in the LLM prompt. Files are sorted by change size; patches are included until the budget is exceeded. **WHY:** Full diffs for 50+ files can exceed 200k chars and blow context or cause timeouts; capping keeps prompts bounded while still prioritizing the largest changes. |
 
+## PR title style (repo vibe)
+
+split-plan fetches **recent closed/merged PR titles** from the repo and asks the LLM to summarize the style (e.g. conventional commits, length, ticket refs). That summary is injected into the plan-generation prompt so the model outputs **PR title:** per split in the repo's vibe. split-exec then uses that for the GitHub PR title and commit message. If there are no recent PRs or the style call fails, the plan still works; splits just won't have **PR title:** and will use the section heading instead.
+
 ## Why we cap open PRs and patch size
 
 - **Open PRs:** We fetch only open PRs targeting the same base branch, then cap at 20 and truncate each PR body to 500 chars. **WHY:** A busy repo can have 100+ open PRs; including them all would blow the context window. Twenty buckets and a short description are enough for "route to this existing PR" decisions. The prompt states "showing up to 20" so the model knows the list may be truncated.

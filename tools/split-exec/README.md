@@ -15,7 +15,7 @@ Reads a `.split-plan.md` file (from **split-plan**), clones the repository at th
 
 ## Input
 
-- **Plan file:** Path to a `.split-plan.md` produced by split-plan (or edited by hand). The file must have YAML frontmatter with `source_pr`, `source_branch`, `target_branch`, and a **## Split** section with `### N. Title`, **Route to:** or **New PR:**, and **Commits:** for each split.
+- **Plan file:** Path to a `.split-plan.md` produced by split-plan (or edited by hand). The file must have YAML frontmatter with `source_pr`, `source_branch`, `target_branch`, and a **## Split** section with `### N. Title`, **New PR:** `branch-name`, optional **PR title:** or **Title:** (used for commit message and GitHub PR title — use repo-style e.g. `feat: add PRR workflow`), **Files:** (recommended) or **Commits:** for each split.
 
 ## Usage
 
@@ -44,8 +44,11 @@ split-exec .split-plan.md -v
 
 ## Flow (per split)
 
-1. **New PR:** Create a new branch from `origin/target_branch`, cherry-pick each listed commit, push the new branch, then call the GitHub API to create a pull request (head = new branch, base = target branch, title from the split title).
-2. **Route to PR #N:** **Disabled.** Will error with a message to use "New PR" instead. Close the old PR manually after the new one is merged.
+1. **New PR (file-based, recommended):** If the split lists **Files:**, the tool copies only those files from the source branch into the new branch and creates **one new commit** (split title). No cherry-pick — so each PR contains only the intended changes (e.g. workflow-only or ticker-only).
+2. **New PR (cherry-pick):** If the split lists only **Commits:**, the tool cherry-picks those commits in order. Note: cherry-pick is all-or-nothing per commit; a commit that touches multiple areas will bring all changes into that PR.
+3. **Route to PR #N:** **Disabled.** Use "New PR" and close the old PR after merge.
+
+**PR titles:** The GitHub PR title (and the file-based commit message) use **PR title:** or **Title:** from the plan when present; otherwise the split heading (e.g. `### 1. PRR Workflow Infrastructure`). To match the repo's style (e.g. conventional commits like `chore: add PRR workflow`), add a line such as `- **PR title:** \`chore: add PRR workflow\`` to each split.
 
 If any cherry-pick fails (e.g. conflict), the tool aborts the cherry-pick, prints the workdir path, and exits. You can resolve conflicts in the workdir, then re-run (the tool will re-clone or you can skip that split by editing the plan).
 

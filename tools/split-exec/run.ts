@@ -82,18 +82,22 @@ export async function runSplitExec(
     const split = plan.splits[i];
     const n = i + 1;
     console.log(chalk.cyan(`\n[${n}/${plan.splits.length}] ${split.title}`));
-    if (split.commits.length === 0) {
-      console.log(chalk.yellow('  No commits listed — skipping'));
+    if (split.files.length === 0 && split.commits.length === 0) {
+      console.log(chalk.yellow('  No **Files:** nor **Commits:** listed — skipping'));
       if (split.rawCommitLines.length > 0) {
         console.log(chalk.gray('  Parser saw commit section:'));
         split.rawCommitLines.forEach((l) => console.log(chalk.gray('    ' + l)));
       } else {
-        console.log(chalk.gray('  Parser found no **Commits:** line nor bullet lines with `sha` in this split.'));
+        console.log(chalk.gray('  Add **Files:** (recommended) or **Commits:** for this split.'));
       }
       continue;
     }
     if (options.dryRun) {
-      console.log(chalk.gray(`  Dry run: would cherry-pick ${formatNumber(split.commits.length)} commits`));
+      if (split.files.length > 0) {
+        console.log(chalk.gray(`  Dry run: would apply ${formatNumber(split.files.length)} file(s) from source (new commit)`));
+      } else {
+        console.log(chalk.gray(`  Dry run: would cherry-pick ${formatNumber(split.commits.length)} commits`));
+      }
       if (split.routeToPrNumber != null) console.log(chalk.gray(`  Route to PR #${split.routeToPrNumber}`));
       if (split.newBranch != null) console.log(chalk.gray(`  New PR branch: ${split.newBranch}`));
       continue;
@@ -200,18 +204,42 @@ async function executeSplit(
     return;
   }
 
-  for (let c = 0; c < split.commits.length; c++) {
-    const sha = split.commits[c];
-    spinner.start(`Cherry-picking ${sha.slice(0, 7)} (${c + 1}/${split.commits.length})...`);
+  if (split.files.length > 0) {
+    // File-based: copy only these files from source branch and make one new commit.
+    // WHY: Cherry-pick is all-or-nothing per commit; a commit that touches both workflow and ticker
+    // would pollute a "workflow-only" PR. Applying by file gives one clean commit per split.
+    spinner.start(`Applying ${formatNumber(split.files.length)} file(s) from ${plan.sourceBranch}...`);
     try {
-      await git.raw(['cherry-pick', sha]);
-      spinner.succeed(`Cherry-picked ${sha.slice(0, 7)}`);
+      await git.raw(['checkout', plan.sourceBranch, '--', ...split.files]);
+      const status = await git.status();
+      const staged = status.staged.length;
+      if (staged === 0) {
+        spinner.warn('No changes (files match target); nothing to commit');
+        return;
+      }
+      const commitTitle = split.prTitle ?? split.title;
+      await git.commit(commitTitle);
+      spinner.succeed(`Committed ${formatNumber(staged)} file(s): ${commitTitle}`);
     } catch (err) {
-      spinner.fail(`Cherry-pick failed for ${sha}`);
-      await git.raw(['cherry-pick', '--abort']).catch(() => {});
+      spinner.fail(`Apply failed`);
       throw new Error(
-        `Conflict or error cherry-picking ${sha}. Resolve in ${workdir} and run again, or edit the plan and skip this commit.`
+        `Could not apply files from ${plan.sourceBranch}. Check paths exist and resolve in ${workdir}. ${err instanceof Error ? err.message : String(err)}`
       );
+    }
+  } else {
+    for (let c = 0; c < split.commits.length; c++) {
+      const sha = split.commits[c];
+      spinner.start(`Cherry-picking ${sha.slice(0, 7)} (${c + 1}/${split.commits.length})...`);
+      try {
+        await git.raw(['cherry-pick', sha]);
+        spinner.succeed(`Cherry-picked ${sha.slice(0, 7)}`);
+      } catch (err) {
+        spinner.fail(`Cherry-pick failed for ${sha}`);
+        await git.raw(['cherry-pick', '--abort']).catch(() => {});
+        throw new Error(
+          `Conflict or error cherry-picking ${sha}. Resolve in ${workdir} and run again, or edit the plan and skip this commit.`
+        );
+      }
     }
   }
 
@@ -229,14 +257,21 @@ async function executeSplit(
 
   if (split.newBranch != null) {
     spinner.start('Creating pull request...');
-    const { number, url } = await github.createPullRequest(
-      plan.owner,
-      plan.repo,
-      branchToPush,
-      plan.targetBranch,
-      split.title,
-      `Split from plan (${plan.sourcePrUrl}).\n\n${split.title}`
-    );
-    spinner.succeed(`PR #${number}: ${url}`);
+    const prTitle = split.prTitle ?? split.title;
+    try {
+      const { number, url } = await github.createPullRequest(
+        plan.owner,
+        plan.repo,
+        branchToPush,
+        plan.targetBranch,
+        prTitle,
+        `Split from plan (${plan.sourcePrUrl}).\n\n${prTitle}`
+      );
+      spinner.succeed(`PR #${number}: ${url}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      spinner.fail(`PR creation failed: ${msg}`);
+      throw new Error(`PR creation failed for "${split.title}": ${msg}. Branch ${branchToPush} was pushed; create the PR manually or fix and re-run.`);
+    }
   }
 }

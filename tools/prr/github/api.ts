@@ -1055,6 +1055,23 @@ export class GitHubAPI {
   }
 
   /**
+   * List titles of recently updated (merged/closed) PRs. Used by split-plan to infer repo PR title style.
+   * WHY state closed: Merged and closed PRs reflect the repo's accepted style; open PRs may be WIP.
+   */
+  async getRecentPRTitles(owner: string, repo: string, limit: number = 30): Promise<string[]> {
+    debug('Fetching recent PR titles for style', { owner, repo, limit });
+    const { data } = await this.octokit.pulls.list({
+      owner,
+      repo,
+      state: 'closed',
+      sort: 'updated',
+      direction: 'desc',
+      per_page: Math.min(limit, 100),
+    });
+    return data.map(pr => pr.title).filter(Boolean);
+  }
+
+  /**
    * Create a pull request. head = branch with changes, base = branch to merge into.
    * WHY: split-exec creates new branches and opens PRs for each "New PR" split in the plan.
    */
