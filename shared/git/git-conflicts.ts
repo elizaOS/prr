@@ -10,6 +10,8 @@
  */
 import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { debug } from '../logger.js';
 import { redactUrlCredentials } from './redact-url.js';
 
@@ -37,12 +39,23 @@ export async function fetchOriginBranch(
     workdir = (git as { _baseDir?: string })._baseDir || process.cwd();
     debug('Fetch using fallback workdir', { workdir });
   }
+  const gitDir = join(workdir, '.git');
+  if (!existsSync(gitDir)) {
+    throw new Error(
+      `Resolved workdir "${workdir}" is not a git repository (no .git directory). ` +
+        'Fetch would run in the wrong directory. Check that the git instance is bound to a valid repo.'
+    );
+  }
+
+  // Ref names must not contain space, ~, ^, :, ?, *, [, \, or control chars (git check-ref-format).
+  // When using refspec we inject branch into refs/heads/...; invalid chars would produce a bad refspec.
+  const safeForRefspec = branch.length > 0 && !/[\s\\~^:?*[\x00-\x1f\x7f]/.test(branch) && !branch.includes('..');
 
   let args: string[];
   try {
     const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
-    if (!hasTokenInUrl && options?.githubToken && remoteUrl.startsWith('https://')) {
+    if (safeForRefspec && !hasTokenInUrl && options?.githubToken && remoteUrl.startsWith('https://')) {
       const authUrl = remoteUrl.replace('https://', `https://${options.githubToken}@`);
       // WHY refspec: fetch <url> <refspec> updates refs/remotes/origin/branch so git.status() behind/ahead is correct.
       args = ['fetch', authUrl, `refs/heads/${branch}:refs/remotes/origin/${branch}`];

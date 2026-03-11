@@ -4,7 +4,9 @@ This file helps AI assistants (Cursor, Claude Code, Aider, etc.) work effectivel
 
 ## Generated artifacts (not committed)
 
-These are created by tools and should not be committed: `.split-plan.md`, `.split-exec-workdir/`, `split-exec-output.log`, `split-exec-prompts.log`, `split-plan-output.log`, `split-plan-prompts.log`, `pill-output.md`, `pill-summary.md`, `output.log`, `prompts.log`. See `.gitignore`.
+These are created by tools and should not be committed: `.split-plan.md`, `.split-exec-workdir/` (clone workdir for split-exec), `split-exec-output.log`, `split-exec-prompts.log`, `split-plan-output.log`, `split-plan-prompts.log`, `pill-output.md`, `pill-summary.md`, `output.log`, `prompts.log`. See `.gitignore`.
+
+**Pill hook:** When the shared logger is initialized with `enablePill: true`, `closeOutputLog()` runs pill analysis on the closed logs (and writes pill-output.md / pill-summary.md). That happens for **prr**, **split-exec**, and **story** when they use `initOutputLog({ enablePill: true })`. Pill only runs when the prompts log contains at least one LLM entry (PROMPT/RESPONSE/ERROR), so tools that make no LLM calls (e.g. split-exec with no prompts) do not trigger pill.
 
 ## Repo layout
 
@@ -28,7 +30,7 @@ Entry points: `tools/<tool>/index.ts` (e.g. `tools/prr/index.js` after build). B
 
 - **Imports:** Use `.js` extensions in import paths (ES modules), e.g. `from './foo.js'`.
 - **User-facing numbers:** Use `formatNumber(n)` from `shared/logger.js` or `n.toLocaleString()` so counts show with comma thousands separators (see `.cursor/rules/number-formatting.mdc`).
-- **Paths:** PRR code lives under `tools/prr/` and `shared/`; docs may still say `src/` in places — treat as `tools/prr/` for code. After path migrations, run `prr --tidy-lessons`; section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
+- **Paths:** PRR code lives under `tools/prr/` and `shared/`; docs may still say `src/` in places — treat as `tools/prr/` for code. DEVELOPMENT.md’s Architecture Overview diagram uses canonical paths (tools/prr/, shared/); the Key Files table there matches. After path migrations, run `prr --tidy-lessons`; section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
 
 ## Docs and rules
 

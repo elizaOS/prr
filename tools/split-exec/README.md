@@ -42,6 +42,14 @@ split-exec .split-plan.md -v
 | `-y, --yes` | off | Reserved for future per-split confirmation; currently unused. |
 | `-v, --verbose` | off | Verbose logging. |
 
+## Exit codes (for CI / automation)
+
+| Code | Meaning |
+|------|--------|
+| `0` | Success: one or more splits were pushed (or dry-run completed). |
+| `2` | All executed splits were already up-to-date (remote had the commits; nothing pushed). Use this to distinguish "no work done" from "changes pushed". |
+| non-zero | One or more splits failed (e.g. cherry-pick conflict, push failed). |
+
 ## Flow (per split)
 
 1. **New PR (file-based, recommended):** If the split lists **Files:**, the tool copies only those files from the source branch into the new branch and creates **one new commit** (split title). No cherry-pick — so each PR contains only the intended changes (e.g. workflow-only or ticker-only).

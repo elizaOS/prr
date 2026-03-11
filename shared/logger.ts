@@ -10,7 +10,7 @@
  * keeps the log free of progress-bar artifacts.
  */
 import chalk from 'chalk';
-import { writeFileSync, mkdirSync, createWriteStream, appendFileSync } from 'fs';
+import { writeFileSync, readFileSync, mkdirSync, createWriteStream, appendFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { format } from 'node:util';
@@ -30,6 +30,7 @@ let outputLogStream: WriteStream | null = null;
 let outputLogPath: string | null = null;
 let promptLogStream: WriteStream | null = null;
 let promptLogPath: string | null = null;
+let outputLogExitHandlerRegistered = false;
 
 /** When true, closeOutputLog() runs pill analysis on the logs we just closed. */
 let pillAnalysisEnabled = false;
@@ -93,12 +94,30 @@ export function initOutputLog(options?: InitOutputLogOptions): void {
   writeFileSync(outputLogPath, '', 'utf-8');
   // Review: ensures logging to a single stream, preventing double initialization issues.
   outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
+  outputLogStream.on('error', (err) => {
+    if (origErrorRef) origErrorRef('Output log stream error:', err);
+    try {
+      outputLogStream?.end();
+    } catch {
+      // ignore
+    }
+    outputLogStream = null;
+  });
 
   // Companion log for full prompts & responses — search by slug (e.g. "#0009")
   // to jump from output.log to the exact prompt/response in prompts.log.
   promptLogPath = join(logDir, promptFileName);
   writeFileSync(promptLogPath, '', 'utf-8');
   promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
+  promptLogStream.on('error', (err) => {
+    if (origErrorRef) origErrorRef('Prompts log stream error:', err);
+    try {
+      promptLogStream?.end();
+    } catch {
+      // ignore
+    }
+    promptLogStream = null;
+  });
 
   // WHY guard: on second init, console.log is already the patched function from first init.
   // Overwriting origLogRef with that would make the pill hook log to a closed/wrong stream. Only capture when refs are null.
@@ -108,6 +127,22 @@ export function initOutputLog(options?: InitOutputLogOptions): void {
   if (origLogRef === null) origLogRef = origLog;
   if (origWarnRef === null) origWarnRef = origWarn;
   if (origErrorRef === null) origErrorRef = origError;
+
+  if (!outputLogExitHandlerRegistered) {
+    outputLogExitHandlerRegistered = true;
+    process.on('exit', () => {
+      try {
+        outputLogStream?.end();
+      } catch {
+        // ignore
+      }
+      try {
+        promptLogStream?.end();
+      } catch {
+        // ignore
+      }
+    });
+  }
 
   function logToStream(...args: unknown[]): void {
     if (!outputLogStream) return;
@@ -153,7 +188,13 @@ export async function closeOutputLog(): Promise<void> {
     }
   }
 
-  if (pillAnalysisEnabled && outputLogPath) {
+  // Only run pill when there are actual prompts to analyze (avoids empty pill runs for split-exec/story with no LLM calls).
+  const hasPromptsToAnalyze =
+    promptLogPath &&
+    existsSync(promptLogPath) &&
+    / (PROMPT|RESPONSE|ERROR): /m.test(readFileSync(promptLogPath, 'utf-8'));
+
+  if (pillAnalysisEnabled && outputLogPath && hasPromptsToAnalyze) {
     // WHY reset first: so we run at most once even if runPillAnalysis or a later step throws.
     pillAnalysisEnabled = false;
     try {

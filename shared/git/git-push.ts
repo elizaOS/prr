@@ -91,6 +91,8 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       // GitHub expects https://x-access-token:TOKEN@host so git uses the token as password (avoids "terminal prompts disabled" in CI).
       authPushUrl = baseHttpsUrl.replace('https://', `https://x-access-token:${githubToken}@`);
       debug('Pre-push check', { hasTokenInUrl, usingAuthUrl: true });
+    } else if (githubToken && !baseHttpsUrl.startsWith('https://')) {
+      debug('Remote URL is SSH — token injection skipped; push will use SSH credentials.');
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
     } else {
@@ -167,6 +169,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     
     // Handle Ctrl+C - kill the git process and settle so callers don't hang
     const sigintHandler = () => {
+      if (killed) return;
       killed = true;
       gitProcess.kill('SIGKILL');
       clearTimeout(timeout);
@@ -231,6 +234,8 @@ export interface PushWithRetryResult {
   conflictedFiles?: string[];  // Files with conflicts if rebase failed
   /** True when remote already had our commits (nothing to push). Skip bot wait. */
   nothingToPush?: boolean;
+  /** True when nothingToPush occurred after a rebase (e.g. remote already had commits from a previous run). Callers can show a more specific message. */
+  nothingToPushAfterRebase?: boolean;
 }
 
 /**
@@ -295,7 +300,11 @@ export async function pushWithRetry(
       if (result.nothingToPush && attempts > 1) {
         debug('Push after rebase resulted in nothing-to-push — remote already has these commits (likely from a previous run)');
       }
-      return { success: true, nothingToPush: result.nothingToPush };
+      return {
+        success: true,
+        nothingToPush: result.nothingToPush,
+        nothingToPushAfterRebase: result.nothingToPush && attempts > 1,
+      };
     }
     
     if (!result.rejected) {
@@ -318,8 +327,15 @@ export async function pushWithRetry(
       // Ref may be missing when repo was cloned with --single-branch (refspec doesn't include this branch).
       // Add refspec and fetch so rebase has a valid upstream (same pattern as git-clone-core additionalBranches).
       debug('Rebase target missing locally, adding refspec and fetching', { ref });
-      await git.raw(['remote', 'set-branches', '--add', 'origin', branch]);
-      await git.fetch('origin', branch);
+      try {
+        await git.raw(['remote', 'set-branches', '--add', 'origin', branch]);
+        await git.fetch('origin', branch);
+      } catch (fetchErr) {
+        const msg = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        throw new Error(
+          `Branch ${branch} does not exist on remote (fetch failed). If using a single-branch clone, create the branch on the remote first. ${msg}`
+        );
+      }
     }
 
     // Fetch and rebase to handle divergent branches

@@ -55,17 +55,16 @@ export async function cloneOrUpdate(
     
     if (options?.preserveChanges) {
       // Preserve existing changes - just make sure we're on the right branch
-      console.log('Existing workdir found, preserving local changes...');
+      console.log(`Existing workdir found at ${workdir}, preserving local changes...`);
       
       // Abort any stuck rebase/merge/cherry-pick from a previous failed run.
       // Without this, a prior crash mid-rebase leaves the workdir in an
       // unusable state and every subsequent run fails at the same point.
-      const { existsSync: fsExists } = await import('fs');
       const rebaseMerge = join(workdir, '.git', 'rebase-merge');
       const rebaseApply = join(workdir, '.git', 'rebase-apply');
       const mergeHead = join(workdir, '.git', 'MERGE_HEAD');
       const cherryPickHead = join(workdir, '.git', 'CHERRY_PICK_HEAD');
-      if (fsExists(rebaseMerge) || fsExists(rebaseApply) || fsExists(mergeHead) || fsExists(cherryPickHead)) {
+      if (existsSync(rebaseMerge) || existsSync(rebaseApply) || existsSync(mergeHead) || existsSync(cherryPickHead)) {
         console.log('  ⚠ Detected stuck rebase/merge from previous run, aborting...');
         try { await git.rebase(['--abort']); } catch { /* no rebase */ }
         try { await git.merge(['--abort']); } catch { /* no merge */ }
@@ -86,11 +85,13 @@ export async function cloneOrUpdate(
       }
     } else {
       // Clean start - reset everything
-      console.log('Existing workdir found, cleaning up and fetching latest...');
+      console.log(`Existing workdir found at ${workdir}, cleaning up and fetching latest...`);
       
       // Clean up any leftover merge/rebase state from previous runs (includes git clean -fd)
       await cleanupGitState(git);
-      
+      // Ensure we're on a branch before reset (e.g. previous run left detached HEAD mid-rebase).
+      await git.checkout(branch).catch(() => {});
+
       await git.fetch('origin', branch);
       await git.checkout(branch);
       await git.reset(['--hard', `origin/${branch}`]);
