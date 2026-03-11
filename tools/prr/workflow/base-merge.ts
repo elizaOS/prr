@@ -8,6 +8,7 @@ import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
+import type { GitHubAPI } from '../github/api.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber } from '../../../shared/logger.js';
 import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../../../shared/git/git-clone-index.js';
 import { push } from '../../../shared/git/git-push.js';
@@ -23,7 +24,8 @@ export async function checkAndMergeBaseBranch(
   options: CLIOptions,
   spinner: Ora,
   resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
-  githubToken?: string
+  githubToken?: string,
+  github?: GitHubAPI
 ): Promise<{
   success: boolean;
   exitReason?: string;
@@ -85,9 +87,22 @@ export async function checkAndMergeBaseBranch(
     await git.fetch('origin', prInfo.baseBranch);
     await git.fetch('origin', prInfo.branch);
 
-    // When GitHub says the PR branch is "behind" the base, always run the merge and use --no-ff so we create a merge commit (never fast-forward). That way we always have a commit to push and GitHub stops showing "out of date with base branch".
-    const forceMerge = prInfo.mergeableState === 'behind';
+    // When the PR branch is behind the base (locally or per GitHub), merge with --no-ff and push so the branch is up to date. Use local state after fetch so we don't rely only on GitHub's mergeableState (which can be stale or missing). WHY: User expects PRR to "update the branch, pull target into source, and push" so the PR is not "out of date with base branch".
+    const headSha = (await git.revparse(['HEAD'])).trim();
+    const baseSha = (await git.revparse([`origin/${prInfo.baseBranch}`])).trim();
+    const mergeBaseSha = (await git.raw(['merge-base', 'HEAD', `origin/${prInfo.baseBranch}`])).trim();
+    const isBehindLocally = baseSha !== mergeBaseSha;
+    const forceMerge = isBehindLocally || prInfo.mergeableState?.toLowerCase() === 'behind';
+    debug('Base merge decision', {
+      headSha: headSha.slice(0, 10),
+      baseSha: baseSha.slice(0, 10),
+      mergeBaseSha: mergeBaseSha.slice(0, 10),
+      isBehindLocally,
+      githubMergeableState: prInfo.mergeableState,
+      forceMerge,
+    });
     const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge, noFastForward: forceMerge });
+    debug('Base merge result', { success: mergeResult.success, alreadyUpToDate: mergeResult.alreadyUpToDate, error: mergeResult.error });
 
     if (!mergeResult.success) {
       // Merge failed - use LLM tool to resolve conflicts
@@ -177,8 +192,12 @@ export async function checkAndMergeBaseBranch(
               spinner.succeed('Pushed merge commit');
             } else {
               spinner.fail('Failed to push merge commit');
-              console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local.`));
+              console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local; PR will stay "out of date with base".`));
+              console.log(chalk.gray(`  To update the PR, push from the workdir: git push origin ${prInfo.branch}`));
             }
+          } else {
+            console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit). PR will stay "out of date with base" until you push:'));
+            console.log(chalk.gray(`     git push origin ${prInfo.branch}`));
           }
           await restoreStash();
           endTimer('Merge base branch');
@@ -187,8 +206,47 @@ export async function checkAndMergeBaseBranch(
       }
     }
     
+    const githubSaysBehind = prInfo.mergeableState?.toLowerCase() === 'behind';
+
+    const tryApiUpdateBranch = async (): Promise<void> => {
+      if (!github || !githubSaysBehind || options.noPush || options.noCommit) return;
+      debug('Local merge was no-op but GitHub says behind — falling back to GitHub API updateBranch', {
+        mergeableState: prInfo.mergeableState,
+      });
+      spinner.start(`Updating ${prInfo.branch} via GitHub API...`);
+      const ok = await github.updatePRBranch(prInfo.owner, prInfo.repo, prInfo.number);
+      if (ok) {
+        spinner.succeed(`Branch update accepted by GitHub API — fetching updated branch`);
+        await git.fetch('origin', prInfo.branch);
+        const newHead = (await git.revparse([`origin/${prInfo.branch}`])).trim();
+        await git.reset(['--hard', `origin/${prInfo.branch}`]);
+        debug('Local branch reset to API-updated remote', { newHead: newHead.slice(0, 10) });
+      } else {
+        spinner.warn('GitHub API branch update failed — branch may already be current or token lacks permission');
+      }
+    };
+
     if (mergeResult.alreadyUpToDate) {
       console.log(chalk.green(`✓ Already up-to-date with ${prInfo.baseBranch}`));
+      if (githubSaysBehind) {
+        console.log(chalk.gray(`  (GitHub says "behind" but git merge-base confirms all ${prInfo.baseBranch} commits are in ${prInfo.branch} — GitHub state may be stale)`));
+      }
+      if (!options.noPush && !options.noCommit) {
+        const status = await git.status();
+        if (status.ahead > 0) {
+          debug('Local branch is ahead after merge (unpushed commits from previous run)', { ahead: status.ahead });
+          spinner.start(`Pushing ${status.ahead} unpushed commit(s)...`);
+          const pushResult = await push(git, prInfo.branch, false, githubToken);
+          if (pushResult.success && !pushResult.nothingToPush) {
+            spinner.succeed(`Pushed ${status.ahead} unpushed commit(s)`);
+          } else if (pushResult.success) {
+            spinner.info('Push reports nothing to push (remote already has these commits)');
+          } else {
+            spinner.warn(`Push of unpushed commits failed: ${pushResult.error ?? 'Unknown'}`);
+          }
+        }
+      }
+      await tryApiUpdateBranch();
       await restoreStash();
     } else if (mergeResult.success) {
       console.log(chalk.green(`✓ Merged latest ${prInfo.baseBranch} into ${prInfo.branch}`));
@@ -198,16 +256,18 @@ export async function checkAndMergeBaseBranch(
         if (pushResult.success) {
           if (pushResult.nothingToPush) {
             spinner.succeed('Branch already up-to-date with remote (merge brought in no new commits to push)');
-            console.log(chalk.gray('  If GitHub still shows "out of date with base", the base may have new commits since this run — re-run prr to merge again.'));
+            await tryApiUpdateBranch();
           } else {
             spinner.succeed('Pushed merge commit');
           }
         } else {
           spinner.fail('Failed to push merge commit');
-          console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local.`));
+          console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local; PR will stay "out of date with base".`));
+          console.log(chalk.gray(`  To update the PR, push from the workdir: git push origin ${prInfo.branch}`));
         }
       } else {
-        console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit is set).'));
+        console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit). PR will stay "out of date with base" until you push:'));
+        console.log(chalk.gray(`     git push origin ${prInfo.branch}`));
       }
       await restoreStash();
     }

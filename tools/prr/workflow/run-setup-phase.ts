@@ -159,7 +159,7 @@ export async function executeSetupPhase(
   }
 
   // Check and merge base branch (pass githubToken so merge-commit push uses same auth as fix push)
-  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup, config.githubToken);
+  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup, config.githubToken, github);
   if (!mergeResult.success) {
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,

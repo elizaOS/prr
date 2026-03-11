@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-11 · **Recorded cycles:** 34 · **Historical (legacy):** 4
+**Last updated:** 2026-03-11 · **Recorded cycles:** 36 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -9,8 +9,12 @@ Single audit log for output.log, prompts.log, and code changes. Use it to spot r
 ## How to use this doc
 
 1. **Before an audit:** Skim "Recurring patterns" and "Regression watchlist" so you know what to watch for.
-2. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
-3. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
+2. **During an audit (output.log / prompts.log):** Do not trust the logs alone for "fixed" or "already verified". **Verify against the workdir** when possible:
+   - Find the workdir path in the log (e.g. `Reusing existing workdir: /root/.prr/work/…` or `Workdir preserved: …`).
+   - For at least one issue that the log says is "already verified", "fixed", or "dismissed (already-fixed)", open the **actual file** at the cited path (and line range) in that workdir and confirm the fix is present (e.g. the bug pattern is gone). If the log says "skip fixer — all already verified" but the file still contains the bug, that is a finding (stale verification, head change, etc.).
+   - This catches mismatches where state says "fixed" but the branch was rebased/reverted or verification was wrong.
+3. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
+4. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
 
 ---
 
@@ -28,6 +32,7 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **Mid-loop bypass** | 12 | Thresholds (couldNotInject) or filters (solvability) only run at push-iteration start; new comments or in-loop state bypass them and burn iterations. Guard: apply same dismissal/threshold checks at start of each fix iteration; run assessSolvability on new comments before adding to queue. |
 | **STALE vs YES (snippet)** | 12 | Verifier returns STALE when explanation is "can't evaluate", "doesn't show", "only shows" (incomplete snippet) — judge instructions say use YES. Guard: STALE→YES override for these phrasings; avoid false positives on legitimate STALE ("only shows re-export"). |
 | **Basename / fragment path** | 13 | Short or fragment paths (e.g. `10/route.ts`, `modelcontextprotocol/.../auto-top-up.ts`) resolved by basename to a *different* file with same basename → wrong content injected, S/R fails or wrong file edited. Guard: prefer basename candidate that shares path prefix with requested path; skip substitution when fragment looks like repo-root and no exact match. |
+| **Stale verification / head change** | 33, 34 | Log says "already verified" or "fixed" but the workdir file still has the bug (e.g. PR head changed, state not cleared). Guard: when PR head SHA changes, clear verified state so fixes are re-checked; auditor must verify at least one "fixed" issue against workdir file content. |
 | **Fix-in-test vs production** | 15 | Review says "fix mocks in tests" / "root cause in tests" but TARGET FILE(S) only lists production file → fixer edits production (no-op or workaround) or tries test file and is blocked. Guard: when review body indicates fix-in-test, add co-located test file to allowed paths so fixer can edit it. |
 | **Canonical path propagation / rename targets** | 19, 20 | Early phases resolve basename/truncated review paths, but later cleanup/commit/reporting paths still use raw fragments or extension words like `test.ts` → successful fixes crash on `git add`/hashing or the real rename target is blocked as disallowed. Guard: use canonical primary path everywhere after issue creation; infer explicit rename destinations for filename-review issues. |
 | **Hidden target file / lesson contamination** | 21 | Review comment is attached to implementation file, but the actual bug is in a test/import caller file that is not directly named in TARGET FILE(S). The fixer says "wrong file" repeatedly, while unrelated same-file lessons muddy the prompt. Guard: infer likely hidden test targets from the review text and scope lessons to the issue, not merely the file. |
@@ -63,6 +68,11 @@ Improvements should reinforce these, not reverse.
 ## Regression watchlist
 
 Quick checks each audit. Drill into the category that matches what you changed.
+
+**Log vs reality (output.log / prompts.log)**
+- [ ] For runs that report "already verified" or "fixed": spot-check at least one such issue by reading the file at the cited path in the workdir (path from log: `Reusing existing workdir:` / `Workdir preserved:`). Confirm the bug pattern is actually gone. If the log says fixed but the file still has the bug, treat as a finding (stale verification, head change).
+- [ ] RESULTS SUMMARY "N issue(s) fixed and verified" counts only verifiedFixed/verifiedComments; it must not include issues dismissed as already-fixed (pill-output.md #2; cycles 33/34).
+- [ ] Base-merge push: when log says "Merged latest X into Y" followed by "Everything up-to-date", the merge was a no-op (already merged). Verify `mergeBaseBranch` returns `alreadyUpToDate: true` so the caller doesn't attempt a pointless push.
 
 **Prompt quality**
 - [ ] Queue line shows to-fix vs already-verified when relevant.
@@ -138,12 +148,37 @@ Copy the block below for each new cycle.
 
 **Flip-flop check:** Y / N — (one line: any revert or conflicting change?)
 
-**Notes:** (optional)
+**Notes:** (optional). If you verified a "fixed" issue against the workdir, note it (e.g. "Spot-checked path:line — fix present" or "Spot-checked — bug still present, finding").
 ```
 
 ---
 
 ## Recorded cycles
+
+### Cycle 36 — 2026-03-10 (split-exec + pill hook, .split-plan.md)
+
+**Artifacts audited:** split-exec-output.log (2 splits, 0 commits cherry-picked), .split-plan.md, pill-output.md improvements #1–#7.
+
+**Findings:**
+- **High:** split-exec commit parser only read inline `**Commits:** sha1, sha2`; plan listed commits as bullet lines (`- \`12d870a\` (partial — …)`), so parser found 0 commits and every split was skipped (tool no-op).
+- **Medium:** .split-plan.md contained duplicate YAML frontmatter (two `---` blocks); second block could confuse body offset.
+- **Medium:** Pill zero-improvements path still gave one generic message from the hook; Cycle 35 had flagged distinct reasons but console output from closeOutputLog() didn’t surface them.
+- **Low:** When split-exec skipped a split (0 commits), log said only "No commits listed — skipping" with no hint of what the parser saw.
+- **Low:** package-lock.json bin section lacked split-exec/split-plan (npm link wouldn’t expose them).
+
+**Improvements implemented:**
+- parse-plan.ts: Extract SHAs from bullet lines matching `- \`sha\` (note)` in addition to inline **Commits:**; strip optional second frontmatter from body; add rawCommitLines per split for diagnostics.
+- .split-plan.md: Removed duplicate frontmatter block.
+- pill orchestrator: Distinct spinner messages per reason (no API key, no logs, zero improvements, API failed); same reasons already returned for callers.
+- shared/logger.ts: When pill hook gets no result, print actionable console message per reason (no logs, no API key, zero improvements, audit failed).
+- split-exec/run.ts: When 0 commits for a split, log rawCommitLines or hint that **Commits:**/bullets were missing.
+- AUDIT-CYCLES.md: This cycle; header bumped to 36.
+
+**Flip-flop check:** N — Parser and pill messages additive; no behavior revert.
+
+**Notes:** package-lock.json bins: run `npm install` to refresh lockfile so bin includes split-exec/split-plan.
+
+---
 
 ### Cycle 22 — 2026-03-10 (prompts.log elizaOS/eliza#6562)
 
@@ -348,6 +383,30 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Additive path logic; no behavior revert.
 
 **Notes:** Batch ALREADY_FIXED parsing is a follow-up (touches execute-fix-iteration and possibly apply-batch result handling). Positive-comment dismissal (Cycle 33) would have prevented the daily-topic issue from entering the queue; batch ALREADY_FIXED handling would have cleared it after the first batch.
+
+---
+
+### Cycle 35 — 2026-03-10 (output.log BabylonSocial/babylon#1213, 26 comments, 0 fixes this session)
+
+**Artifacts audited:** output.log (477 lines). Run: 26 review comments, all dismissed or verified from prior runs; 0 fixes this session; merge-base "already up-to-date"; pill produced no output (generic "No improvements to record" with no diagnostic).
+
+**Findings:**
+- **Medium:** Configured default model (e.g. anthropic/claude-3.7-sonnet) was in ElizaCloud skip list; only debug line logged "skipping (known timeout)". Operators in CI don't see why their configured model was never used.
+- **Medium:** RESULTS SUMMARY showed "1 issue fixed and verified (from previous runs)" but no "0 new this session" — easy to misread as this run having fixed something.
+- **Medium:** Pill zero-improvements path gave same message for no logs, no API key, API failure, and LLM returned zero; impossible to debug pill integration (e.g. empty pill-prompts.log likely = missing API key in subprocess).
+- **Low:** Review path `TickerClient.ts` (no x) dismissed as missing-file while `TickerClient.tsx` exists; common bot typo; extension-fuzzy match would recover.
+
+**Improvements implemented (pill-output.md):**
+- rotation.ts: When configured default is in skip list, log user-visible warning with replacement model.
+- reporter.ts: RESULTS SUMMARY when session verified = 0: "(all from previous runs; 0 new this session)".
+- pill orchestrator: Distinct reasons no_logs, no_api_key, api_call_failed, zero_improvements_from_llm; callers log why.
+- solvability.ts: .ts → .tsx extension typo: resolve to .tsx when exact/suffix match for alt path; debug + context hint.
+- constants.ts: ELIZACLOUD_SKIP_MODEL_IDS with WHY (single source of truth); rotation.ts imports it.
+- README.md: Model examples table — illustrative disclaimer and real example IDs (gpt-4o, claude-sonnet-4-5-20250929).
+
+**Flip-flop check:** N — Additive logging, constants, and path resolution; no behavior revert.
+
+**Notes:** Patterns align with watchlist: stale verification/head change (33/34), basename/path (13). New: silent model substitution.
 
 ---
 

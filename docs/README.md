@@ -40,6 +40,20 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ---
 
+### 💊 Pill (Program Improvement Log Looker)
+
+**Best for**: Auditing a project from its output.log and prompts.log, integrated with prr/story
+
+**Contains**:
+- What pill does (analysis-only, no fix/verify/commit) and why
+- How prr/story run pill on close (`enablePill`, orig console refs, double-init guard)
+- Log file names and prefix (prr vs story vs pill), CLI options, output files
+- Architecture (cli, config, context, orchestrator, prompts)
+
+**Read this if**: You run pill standalone or use pill integration from prr/story. Full doc: **[tools/pill/README.md](../tools/pill/README.md)**.
+
+---
+
 ### 📉 Audit Improvements
 Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANGELOG](../CHANGELOG.md) under "Audit improvements" and "Output.log audit" headings.
 
@@ -405,6 +419,7 @@ PRR maintains state across interruptions:
 | Configure PRR | [Quick Reference](QUICK_REFERENCE.md) | Configuration Tips |
 | Read success metrics | [Quick Reference](QUICK_REFERENCE.md) | Success Metrics |
 | Choose or add LLM models / context limits | [Models Reference](MODELS.md) | Claude & OpenAI IDs, context, PRR usage |
+| Use or integrate pill (log audit) | [tools/pill/README.md](../tools/pill/README.md) | Why analysis-only, hook, CLI, output files |
 
 ---
 
@@ -516,7 +531,8 @@ If you find errors or want to improve documentation:
 │   ├── 📁 analyzer/              ← Issue analysis & prompt building
 │   └── ...
 │
-├── 📁 tools/pill/                ← Pill tool source code
+├── 📁 tools/pill/                ← Pill tool (Program Improvement Log Looker)
+│   └── 📄 README.md               ← Pill docs: analysis-only, WHYs, hook, CLI
 │
 ├── 📁 types/                     ← Shared type definitions
 │
@@ -530,7 +546,7 @@ If you find errors or want to improve documentation:
 1. **New to PRR?**
    - Read [main README](../README.md)
    - Try [Quick Reference](QUICK_REFERENCE.md)
-   - Run: `prr --check-tools`
+   - Run: `prr --help` to see options and ensure tools/API keys are configured
 
 2. **Want to understand the flow?**
    - Study [Flowcharts](flowchart.md)

@@ -18,12 +18,17 @@ import { validateElizaCloudKey, fetchAvailableElizaCloudModels, validateOpenAIKe
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
-import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug } from '../../shared/logger.js';
 import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
-  initOutputLog();
+  initOutputLog({ enablePill: true });
+  // WHY print at startup: Logs are written to process.cwd(); if the user ran prr from elsewhere they need to see where to find them.
+  const outPath = getOutputLogPath();
+  const promptPath = getPromptLogPath();
+  if (outPath) console.log(chalk.gray(`  Output log:  ${outPath}`));
+  if (promptPath) console.log(chalk.gray(`  Prompts log: ${promptPath} (populated with --verbose)`));
 } catch (err) {
   // Non-fatal: log tee unavailable (e.g., read-only CWD), continue without it
   console.warn('Warning: Could not initialize output log:', err);

@@ -21,6 +21,7 @@
 import type { StateContext } from './state-context.js';
 import { getState } from './state-context.js';
 import type { VerifiedComment } from './types.js';
+import { debug } from '../../../shared/logger.js';
 
 export type VerificationRecord = VerifiedComment;
 
@@ -50,6 +51,7 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
     if (autoVerifiedFrom !== undefined) {
       existing.autoVerifiedFrom = autoVerifiedFrom;
     }
+    debug('markVerified (update)', { commentId, iteration: currentIteration, autoVerifiedFrom });
   } else {
     state.verifiedComments.push({
       commentId,
@@ -61,6 +63,7 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
     if (!(state.verifiedFixed ??= []).includes(commentId)) {
       state.verifiedFixed.push(commentId);
     }
+    debug('markVerified (new)', { commentId, iteration: currentIteration, autoVerifiedFrom, totalVerified: state.verifiedFixed.length });
   }
   
   // Sync commentStatuses: if this comment had an "open" analysis status,
@@ -107,6 +110,7 @@ export function unmarkVerified(ctx: StateContext, commentId: string): void {
   if (state.commentStatuses?.[commentId]) {
     delete state.commentStatuses[commentId];
   }
+  debug('unmarkVerified', { commentId, remainingVerified: (state.verifiedFixed ?? []).length });
 }
 
 /**
@@ -212,7 +216,9 @@ export function clearAllVerifications(ctx: StateContext): void {
   const state = ctx.state;
   if (!state) return;
   
+  const previousCount = (state.verifiedFixed ?? []).length;
   state.verifiedFixed = [];
   state.verifiedComments = [];
   state.commentStatuses = {};
+  debug('clearAllVerifications', { previousCount });
 }

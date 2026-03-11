@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — split-plan tool (PR decomposition planner)
+
+**New CLI: split-plan**
+- `split-plan <pr-url> [-o <file>] [--max-patch-chars <n>]` analyzes a large PR and writes a human-editable `.split-plan.md` with dependency analysis and a proposed split into smaller, reviewable PRs. Open PRs on the same base branch are shown as "buckets" to route changes to; the plan is intended for human review and for a future `split-exec` tool.
+- **WHY PR URL only (no branch spec):** Decomposition only makes sense for an existing PR; we need PR metadata, commits, and file list from the GitHub PR API. Branch-only analysis is out of scope.
+- **WHY default output is a file (`.split-plan.md`):** The plan is meant to be edited by the user before execution; writing to a file is the primary workflow. Stdout would require redirect and doesn’t match the “edit then run split-exec” flow.
+- **WHY prefix `split-plan` for logs:** `initOutputLog({ prefix: 'split-plan' })` produces split-plan-output.log and split-plan-prompts.log so runs from the same directory don’t overwrite prr/story/pill logs (same pattern as story and pill).
+- **WHY branch topology filter:** Only open PRs targeting the same base branch as the target PR are fetched. A PR into `v2-develop` must not suggest routing changes to a PR into `v3`; they are different worlds. `getOpenPRs(owner, repo, baseBranch, excludePRNumber)` uses the GitHub API `base` parameter for server-side filtering.
+- **WHY cap open PRs at 20 and truncate body to 500 chars:** Including every open PR and full descriptions can blow the LLM context. Twenty buckets and a short description per PR are enough for “route to existing PR” decisions; the prompt states “showing up to 20” so the model knows the list may be truncated.
+- **WHY patch budget (--max-patch-chars):** Full diffs for 50+ files can exceed 200k chars. We sort files by change size (additions+deletions), include patches until the budget is exhausted, and list omitted files with “[patch omitted — budget exceeded]” so the model knows what it didn’t see. Low-signal files (lockfiles, *.min.js) are listed with metadata only (no patch) so the model still sees they changed.
+- **WHY two-phase prompt (dependencies then split):** If we only ask “split this PR,” the model tends to group by file proximity and ignore cross-file dependencies. Forcing Phase 1 (identify A depends on B) before Phase 2 (group into PRs) makes dependency order a hard constraint so dependent changes stay together or merge in order.
+- **WHY validate/repair frontmatter:** The LLM may output invalid YAML (unescaped colons, wrong structure). We parse with a simple parser; on failure we discard the model’s frontmatter and inject safe values from `prInfo` and `new Date().toISOString()`. We always set `generated_at` in code so the plan file has a reliable timestamp.
+- **WHY file validation (paths not in PR):** The model can hallucinate file paths. We extract paths from the plan body under “**Files:**” sections, compare to the PR file list, and append a “## Validation” warning for unknown paths. We don’t strip them so human-added paths aren’t removed.
+- **GitHub API:** `getOpenPRs(owner, repo, baseBranch?, excludePRNumber?)` — paginated list of open PRs, optional base filter, exclude target PR. `getPRFilesWithPatches(owner, repo, prNumber)` — same as getPRFiles but includes the `patch` field (unified diff) per file; patch is optional for binary/large/rename-only files. Warning when file count >= 3000 (GitHub cap).
+- Docs: [tools/split-plan/README.md](tools/split-plan/README.md).
+
+### Added (2026-03) — split-exec tool (execute split plan)
+
+**New CLI: split-exec**
+- `split-exec <plan-file> [-w <workdir>] [--dry-run]` reads a `.split-plan.md` from split-plan, clones the repo at the source branch, then executes each split in order: checkout target branch (existing PR or new branch from base), cherry-pick listed commits, push, and create a new PR when the plan says "New PR".
+- **WHY iterative (one split at a time):** So the user can fix conflicts or stop between splits; batch execution would leave the repo in a hard-to-recover state on the first conflict.
+- **WHY default workdir `.split-exec-workdir`:** So the user can inspect or fix the repo between runs; re-run uses the same dir (cloneOrUpdate updates existing clone).
+- **Route to existing PR:** For "Route to: PR #N", split-exec checks out that PR's branch, cherry-picks the listed commits, and pushes so the existing PR gets the new commits. **New PR:** For "New PR: \`branch-name\`", creates that branch from the plan's target_branch, cherry-picks, pushes, and calls GitHub API to open a pull request.
+- **GitHub API:** `createPullRequest(owner, repo, head, base, title, body?)` for opening new PRs. Plan parser extracts frontmatter and ## Split sections (Route to, New PR, Commits) with a forgiving regex-based parser.
+- Docs: [tools/split-exec/README.md](tools/split-exec/README.md).
+
+### Fixed (2026-03) — Pill integration: circular import, error handling, double-init, dead code
+
+**Circular import removed**
+- `tools/pill/orchestrator.ts` no longer imports `formatNumber` from `shared/logger.js`. It uses `n.toLocaleString()` for user-facing counts (e.g. improvement counts in the summary entry).
+- **WHY**: `shared/logger.ts` dynamically imports the pill orchestrator in `closeOutputLog()` to run the pill hook. The orchestrator previously imported from logger, creating a cycle (logger → orchestrator → logger). Breaking the dependency in the orchestrator keeps the hook safe and allows the main process to load without pulling in pill.
+
+**runPillAnalysis no longer swallows errors**
+- The top-level `try { ... } catch { return null }` was removed from `runPillAnalysis`. LLM, parse, and file-write errors now propagate to the caller.
+- **WHY**: When pill is run from the CLI, users need to see real failures (e.g. missing API key, network error). The shared logger’s `closeOutputLog()` still wraps the call in try/catch so the hook never throws and shutdown always completes; only the CLI path sees thrown errors.
+
+**Dead prompt removed**
+- `VERIFY_SYSTEM_PROMPT` was removed from `tools/pill/llm/prompts.ts`. It was unused after the fixer/verify flow was removed from pill.
+- **WHY**: Dead code adds noise and can confuse future changes; the audit prompt is the only one pill uses.
+
+**Double-init guard in initOutputLog**
+- In `shared/logger.ts`, the original console refs (`origLogRef`, `origWarnRef`, `origErrorRef`) are only set when they are still null. On re-entry we use `origXxxRef ?? console.Xxx.bind(console)` and assign to the refs only if they are null.
+- **WHY**: If `initOutputLog` is called twice, the second time the current `console.log` is the *patched* function from the first init. Overwriting the refs with that would make the pill hook log to a closed or wrong stream. Keeping the first capture preserves the real console for the hook.
+
+**pillAnalysisEnabled reset before await**
+- In `closeOutputLog()`, `pillAnalysisEnabled = false` is set at the start of the `if (pillAnalysisEnabled && outputLogPath)` block, before any dynamic import or await.
+- **WHY**: So the hook runs at most once even if `runPillAnalysis` or a later step throws; the flag is cleared before async work so a subsequent close doesn’t re-run pill.
+
+- Docs: [tools/pill/README.md](tools/pill/README.md) (pill documentation with WHYs).
+
 ### Added (2026-03) — story tool (PR and branch narrative & changelog)
 
 **New CLI: story**

@@ -35,8 +35,12 @@ export async function assembleContext(
   const sourceFiles = readSourceFiles(targetDir, SOURCE_TOKEN_BUDGET);
   const directoryTree = readDirectoryTree(targetDir);
 
+  const prefix = config.logPrefix;
+  const outputLogName = prefix ? `${prefix}-output.log` : 'output.log';
+  const promptsLogName = prefix ? `${prefix}-prompts.log` : 'prompts.log';
+  const outputLogPath = join(targetDir, outputLogName);
+
   let outputLog = '';
-  const outputLogPath = join(targetDir, 'output.log');
   if (existsSync(outputLogPath)) {
     try {
       const raw = readFileSync(outputLogPath, 'utf-8');
@@ -52,7 +56,7 @@ export async function assembleContext(
   }
 
   let promptsDigest: string | undefined;
-  const promptsPath = join(targetDir, 'prompts.log');
+  const promptsPath = join(targetDir, promptsLogName);
   if (existsSync(promptsPath)) {
     let rawPrompts: string;
     try {
@@ -70,6 +74,32 @@ export async function assembleContext(
       } else {
         promptsDigest = formatPromptsRaw(entries);
       }
+    }
+  }
+
+  // Pill-on-itself: if primary logs are not pill's own, also include pill-output.log when present.
+  const pillOutputName = 'pill-output.log';
+  const pillPromptsName = 'pill-prompts.log';
+  if (outputLogName !== pillOutputName) {
+    const pillOutputPath = join(targetDir, pillOutputName);
+    if (existsSync(pillOutputPath)) {
+      try {
+        const pillRaw = readFileSync(pillOutputPath, 'utf-8');
+        if (pillRaw.trim()) {
+          outputLog += '\n\n[PILL SELF-LOG]\n' + pillRaw;
+        }
+      } catch { /* ignore */ }
+    }
+    const pillPromptsPath = join(targetDir, pillPromptsName);
+    if (existsSync(pillPromptsPath) && (!promptsDigest || promptsPath !== pillPromptsPath)) {
+      try {
+        const pillPromptsRaw = readFileSync(pillPromptsPath, 'utf-8');
+        if (pillPromptsRaw.trim()) {
+          const entries = parsePromptsLog(pillPromptsRaw);
+          const formatted = formatPromptsRaw(entries);
+          promptsDigest = (promptsDigest ?? '') + (promptsDigest ? '\n\n[PILL SELF PROMPTS]\n' : '') + formatted;
+        }
+      } catch { /* ignore */ }
     }
   }
 

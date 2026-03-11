@@ -115,6 +115,28 @@ export class GitHubAPI {
     }
   }
 
+  /**
+   * Update a PR branch with the base branch using GitHub's API (equivalent to the "Update branch" button).
+   * Returns true on success (202), false on failure. The API responds asynchronously — the merge
+   * commit may not be immediately visible; callers should fetch the remote branch after.
+   */
+  async updatePRBranch(owner: string, repo: string, prNumber: number): Promise<boolean> {
+    debug('Updating PR branch via GitHub API', { owner, repo, prNumber });
+    try {
+      const { data } = await this.octokit.pulls.updateBranch({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+      debug('PR branch update accepted', { message: data?.message, url: data?.url });
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('PR branch update via API failed', { error: msg });
+      return false;
+    }
+  }
+
   async getPRStatus(owner: string, repo: string, prNumber: number, ref: string): Promise<PRStatus> {
     debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
 
@@ -958,6 +980,119 @@ export class GitHubAPI {
       additions: f.additions,
       deletions: f.deletions,
     }));
+  }
+
+  /**
+   * Get list of files changed in a PR including unified diff patches.
+   * WHY: split-plan needs actual diff content to reason about concerns; getPRFiles omits patch and other callers don't need it. We add a new method instead of changing getPRFiles to avoid breaking story and other consumers.
+   * WHY patch optional: Binary files, files exceeding GitHub's diff size limit (~1MB), and rename-only files have no patch in the API response; always treat as optional.
+   * WHY warn at 3000 files: GitHub caps pulls.listFiles at 3000; user should know the list may be truncated when analyzing mega-PRs.
+   */
+  async getPRFilesWithPatches(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    patch: string | undefined;
+  }>> {
+    debug('Fetching PR files with patches', { owner, repo, prNumber });
+    const files = await this.octokit.paginate(
+      this.octokit.pulls.listFiles,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    if (files.length >= 3000) {
+      console.warn(`Warning: PR files list may be truncated (GitHub caps at 3,000; got ${files.length.toLocaleString()})`);
+    }
+    return files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+      patch: (f as { patch?: string }).patch,
+    }));
+  }
+
+  /**
+   * List open PRs in the repo, optionally filtered by base branch.
+   * WHY: split-plan needs "buckets" (existing open PRs) to route changes to; filtering by base ensures we only show PRs in the same branch world (e.g. v2-develop vs v3-develop). Caller caps count and truncates body to avoid context overflow.
+   * WHY base is branch name: GitHub API expects the branch ref name (e.g. "main"), not refs/heads/main; invalid base returns empty results instead of erroring.
+   * WHY paginate: Busy repos can have 100+ open PRs; single list() would miss many. excludePRNumber is applied after fetch so the target PR is not offered as a bucket.
+   */
+  async getOpenPRs(
+    owner: string,
+    repo: string,
+    baseBranch?: string,
+    excludePRNumber?: number
+  ): Promise<Array<{
+    number: number;
+    title: string;
+    body: string;
+    branch: string;
+    baseBranch: string;
+    author: string;
+  }>> {
+    debug('Fetching open PRs', { owner, repo, baseBranch, excludePRNumber });
+    const params: { owner: string; repo: string; state: 'open'; base?: string; per_page: number } = {
+      owner,
+      repo,
+      state: 'open',
+      per_page: 100,
+    };
+    if (baseBranch) params.base = baseBranch;
+    const list = await this.octokit.paginate(this.octokit.pulls.list, params);
+    let result = list.map(pr => ({
+      number: pr.number,
+      title: pr.title,
+      body: pr.body ?? '',
+      branch: pr.head.ref,
+      baseBranch: pr.base.ref,
+      author: pr.user?.login ?? 'unknown',
+    }));
+    if (excludePRNumber != null) {
+      result = result.filter(pr => pr.number !== excludePRNumber);
+    }
+    return result;
+  }
+
+  /**
+   * List titles of recently updated (merged/closed) PRs. Used by split-plan to infer repo PR title style.
+   * WHY state closed: Merged and closed PRs reflect the repo's accepted style; open PRs may be WIP.
+   */
+  async getRecentPRTitles(owner: string, repo: string, limit: number = 30): Promise<string[]> {
+    debug('Fetching recent PR titles for style', { owner, repo, limit });
+    const { data } = await this.octokit.pulls.list({
+      owner,
+      repo,
+      state: 'closed',
+      sort: 'updated',
+      direction: 'desc',
+      per_page: Math.min(limit, 100),
+    });
+    return data.map(pr => pr.title).filter(Boolean);
+  }
+
+  /**
+   * Create a pull request. head = branch with changes, base = branch to merge into.
+   * WHY: split-exec creates new branches and opens PRs for each "New PR" split in the plan.
+   */
+  async createPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+    base: string,
+    title: string,
+    body?: string
+  ): Promise<{ number: number; url: string }> {
+    debug('Creating pull request', { owner, repo, head, base, title: title.slice(0, 50) });
+    const { data } = await this.octokit.pulls.create({
+      owner,
+      repo,
+      head,
+      base,
+      title,
+      body: body ?? '',
+    });
+    return { number: data.number, url: data.html_url ?? '' };
   }
 
   /**

@@ -60,7 +60,7 @@ jobs:
       - name: Install and build PRR
         run: |
           npm ci
-          npm run build
+          npm run typecheck
 
       - name: Configure Git
         run: |

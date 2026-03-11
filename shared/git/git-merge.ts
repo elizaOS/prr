@@ -146,13 +146,23 @@ export async function mergeBaseBranch(
     // Try to merge (--no-ff when requested so we always create a merge commit and have something to push)
     const mergeArgs: string[] = [`origin/${baseBranch}`, '--no-edit'];
     if (options?.noFastForward) mergeArgs.push('--no-ff');
-    debug('Attempting merge', { noFastForward: options?.noFastForward });
+    const headBefore = (await git.revparse(['HEAD'])).trim();
+    debug('Attempting merge', { noFastForward: options?.noFastForward, headBefore: headBefore.slice(0, 10) });
     const result = await git.merge(mergeArgs);
+    const headAfter = (await git.revparse(['HEAD'])).trim();
+    debug('Merge completed', { headBefore: headBefore.slice(0, 10), headAfter: headAfter.slice(0, 10), headMoved: headBefore !== headAfter });
     
-    // Check if merge result indicates already up-to-date
+    // Detect "Already up to date": simple-git's MergeResult (PullResult & MergeDetail)
+    // does not store the "Already up to date" text in any parsed field — the line parsers
+    // don't match it, so all fields stay at defaults (result: "success", files: [], etc.).
+    // JSON.stringify therefore never contains "Already up to date", making the old string
+    // check silently fail. Instead, compare HEAD before/after: if HEAD didn't move, the
+    // merge was a no-op regardless of what simple-git reports.
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-    if (resultStr.includes('Already up to date') || resultStr.includes('Already up-to-date')) {
-      debug('Merge says already up-to-date');
+    const textSaysUpToDate = resultStr.includes('Already up to date') || resultStr.includes('Already up-to-date');
+    const headDidNotMove = headBefore === headAfter;
+    if (textSaysUpToDate || headDidNotMove) {
+      debug('Merge says already up-to-date', { textSaysUpToDate, headDidNotMove });
       return { success: true, alreadyUpToDate: true };
     }
     

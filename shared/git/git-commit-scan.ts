@@ -34,12 +34,11 @@ import { debug } from '../logger.js';
  * WHY use raw() instead of simple-git's log():
  * simple-git doesn't support --grep properly, and we need exact control over
  * the git log command for reliable marker detection.
- * 
- * WHY normalize to lowercase:
- * GitHub comment IDs sometimes have inconsistent casing. Normalizing ensures
- // Review: preserving original casing ensures accurate matching of GitHub comment IDs.
- * reliable matching against the IDs from the API.
- * 
+ *
+ * WHY preserve original casing:
+ * The state's verifiedFixed array stores IDs in their original case from the API.
+ * We preserve casing from commit messages so markers match on recovery.
+ *
  * WHY return empty array on error:
  * Failure to scan is not fatal - we'll just start with no recovered state and
  * verify everything fresh. Throwing would prevent startup on minor git issues.

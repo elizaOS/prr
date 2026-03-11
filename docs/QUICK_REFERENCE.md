@@ -10,7 +10,7 @@
 
 ```bash
 # Install
-bun install && bun run build
+bun install && bun run typecheck
 
 # Run on a PR
 prr https://github.com/owner/repo/pull/123
@@ -270,19 +270,21 @@ Fix attempt 3: Tries Z → Success!
 
 ## 📂 Key Files
 
+Paths use the monorepo layout: PRR under `tools/prr/`, shared code under `shared/`.
+
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | Entry point, signal handling |
-| `src/cli.ts` | CLI argument parsing |
-| `src/resolver.ts` | Main orchestrator class |
-| `src/workflow/run-orchestrator.ts` | Outer loop (push iterations) |
-| `src/workflow/push-iteration-loop.ts` | Inner loop (fix iterations) |
-| `src/workflow/execute-fix-iteration.ts` | Single fix attempt |
-| `src/state/manager.ts` | State persistence |
-| `src/state/lessons-*.ts` | Lessons learned system |
-| `src/runners/index.ts` | AI tool registry |
-| `src/llm/client.ts` | LLM API client |
-| `src/github/api.ts` | GitHub integration |
+| `tools/prr/index.ts` | Entry point, signal handling |
+| `tools/prr/cli.ts` | CLI argument parsing |
+| `tools/prr/resolver.ts` | Main orchestrator class |
+| `tools/prr/workflow/run-orchestrator.ts` | Outer loop (push iterations) |
+| `tools/prr/workflow/push-iteration-loop.ts` | Inner loop (fix iterations) |
+| `tools/prr/workflow/execute-fix-iteration.ts` | Single fix attempt |
+| `tools/prr/state/manager.ts` | State persistence |
+| `tools/prr/state/lessons-*.ts` | Lessons learned system |
+| `shared/runners/index.ts` | AI tool registry |
+| `tools/prr/llm/client.ts` | LLM API client |
+| `tools/prr/github/api.ts` | GitHub integration |
 
 ---
 
@@ -535,16 +537,16 @@ PRR tracks and reports:
 - **Architecture Guide**: `docs/ARCHITECTURE.md`
 - **Development Guide**: `DEVELOPMENT.md`
 - **Changelog**: `CHANGELOG.md`
+- **Split-plan / split-exec**: `tools/split-plan/README.md`, `tools/split-exec/README.md`. For split-exec: (1) ensure the target branch (e.g. `staging`) exists on the remote (checked before clone); (2) the tool pre-fetches target and split branch refs during clone so rebase-and-retry can resolve `origin/<branch>` (required for `--single-branch` clones); (3) if push is rejected, the tool fetches, rebases, and retries (up to 2 retries). If that still fails, re-run with `--force-push` to overwrite, or resolve manually in the workdir. On clone/ref failure the error includes the workdir and command, e.g. `cd <workdir> && git fetch origin <target-branch>`.
 
 ---
 
 ## 💡 Quick Tips
 
-1. **First time setup**: Run `prr --check-tools` to see what's installed
-2. **Update tools**: Run `prr --update-tools` to get latest versions
-3. **Clean lessons**: Run `prr --tidy-lessons` to deduplicate and normalize
-4. **Check output log**: `~/.prr/output.log` has everything
-5. **Debug mode**: Use `--verbose` to see LLM prompts and responses
+1. **First time setup**: Run `prr --help` to see options; ensure your fixer (Cursor/Claude Code/etc.) and API keys are configured (see README Configuration).
+2. **Clean lessons**: Run `prr --tidy-lessons` to deduplicate and normalize. If the repo moved paths (e.g. `src/` → `tools/prr/`), section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
+3. **Check output log**: `~/.prr/output.log` has everything
+4. **Debug mode**: Use `--verbose` to see LLM prompts and responses
 
 ---
 

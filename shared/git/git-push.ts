@@ -26,13 +26,11 @@
  */
 import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
+import { existsSync, rmSync } from 'fs';
+import { join } from 'path';
 import { debug } from '../logger.js';
 import { cleanupGitState, continueRebase } from './git-merge.js';
-
-/** Redact credentials from URLs in error messages before logging. WHY: Git errors can contain remote URLs with tokens. */
-function redactUrlCredentials(text: string): string {
-  return text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
-}
+import { redactUrlCredentials } from './redact-url.js';
 
 /**
  * Result of a git push operation.
@@ -112,7 +110,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   const pushArgs = authPushUrl ? ['-c', 'credential.helper=', ...args] : args;
 
   const fullCommand = `git ${pushArgs.join(' ')}`;
-  debug('Starting git push', { command: fullCommand, workdir });
+  debug('Starting git push', { command: redactUrlCredentials(fullCommand), workdir });
 
   const spawnEnv = { ...process.env };
   if (authPushUrl) {
@@ -156,7 +154,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       gitProcess.kill('SIGKILL');
       const errMsg = [
         `Push timed out after 30 seconds.`,
-        `Command: ${fullCommand}`,
+        `Command: ${redactUrlCredentials(fullCommand)}`,
         `Workdir: ${workdir}`,
         `This usually means:`,
         `  - Network issue (check connectivity)`,
@@ -204,7 +202,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
         } else {
           // WHY: output.log audit babylon#1213 — push failed with "refusing to allow a Personal Access Token to create or update workflow … without `workflow` scope". Surface a clear hint.
           const workflowScopeDenied = /refusing to allow.*(?:create or update workflow|workflow.*without.*workflow.*scope)/i.test(stderr) || /without\s*[`']workflow[`']\s*scope/i.test(stderr);
-          const baseError = `Git push failed with code ${code}\nCommand: ${fullCommand}\nWorkdir: ${workdir}\nstderr: ${redactUrlCredentials(stderr)}`;
+          const baseError = `Git push failed with code ${code}\nCommand: ${redactUrlCredentials(fullCommand)}\nWorkdir: ${workdir}\nstderr: ${redactUrlCredentials(stderr)}`;
           const error = workflowScopeDenied
             ? `${baseError}\n\nHint: GitHub rejected the push because your token does not have the 'workflow' scope. To modify .github/workflows files, add the workflow scope to your Personal Access Token, or fix workflow files manually.`
             : baseError;
@@ -218,7 +216,7 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       process.removeListener('SIGINT', sigintHandler);
       settle({ 
         success: false,
-        error: `Git push failed: ${err.message}\nCommand: ${fullCommand}\nWorkdir: ${workdir}`,
+        error: `Git push failed: ${err.message}\nCommand: ${redactUrlCredentials(fullCommand)}\nWorkdir: ${workdir}`,
       });
     });
   });
@@ -248,10 +246,26 @@ export interface PushWithRetryResult {
  * If provided and conflicts occur, calls callback. If callback returns true (resolved),
  * continues the rebase and retries push.
  *
- * On rebase failure we try rebase --abort first, then cleanupGitState only if abort fails.
+ * On rebase failure we run rebase --abort only (no cleanupGitState, to preserve caller's commits).
  * WHY: Abort preserves commits; full cleanup is for stale/corrupt state so the next run
  * doesn't hit "rebase-merge directory already exists".
  */
+async function removeStuckRebaseDirs(git: SimpleGit): Promise<void> {
+  try {
+    const wd = (await git.revparse(['--show-toplevel'])).trim();
+    const gitDir = join(wd, '.git');
+    for (const name of ['rebase-merge', 'rebase-apply']) {
+      const p = join(gitDir, name);
+      if (existsSync(p)) {
+        rmSync(p, { recursive: true });
+        debug('Removed stuck rebase dir so next run can proceed', { path: name });
+      }
+    }
+  } catch {
+    // best-effort
+  }
+}
+
 export async function pushWithRetry(
   git: SimpleGit, 
   branch: string, 
@@ -264,9 +278,12 @@ export async function pushWithRetry(
   }
 ): Promise<PushWithRetryResult> {
   const requestedRetries = options?.maxRetries ?? 3;
-  const maxRetries = Number.isInteger(requestedRetries) && requestedRetries >= 0
+  const maxRetries = (Number.isInteger(requestedRetries) && requestedRetries >= 0)
     ? requestedRetries
-    : 3;
+    : 0;
+  if (maxRetries !== requestedRetries) {
+    debug('pushWithRetry: invalid maxRetries, using 0 (one attempt)', { requestedRetries });
+  }
   const maxAttempts = maxRetries + 1;
   let attempts = 0;
 
@@ -289,15 +306,29 @@ export async function pushWithRetry(
     // Push was rejected - remote has newer commits
     debug(`Push rejected (attempt ${attempts}/${maxAttempts}), attempting fetch + rebase + retry`);
     options?.onPullNeeded?.();
-    
+
+    const ref = `origin/${branch}`;
+    try {
+      await git.raw(['rev-parse', '--verify', ref]);
+      debug('Rebase target verified', { ref });
+    } catch {
+      // Ref may be missing when repo was cloned with --single-branch (refspec doesn't include this branch).
+      // Add refspec and fetch so rebase has a valid upstream (same pattern as git-clone-core additionalBranches).
+      debug('Rebase target missing locally, adding refspec and fetching', { ref });
+      await git.raw(['remote', 'set-branches', '--add', 'origin', branch]);
+      await git.fetch('origin', branch);
+    }
+
     // Fetch and rebase to handle divergent branches
     try {
-      // First fetch
       await git.fetch('origin', branch);
       debug('Fetch successful');
-      
+
+      await git.raw(['rev-parse', '--verify', ref]);
+      debug('Rebase target verified before rebase', { ref });
+
       // Then rebase our commits on top of remote
-      await git.rebase([`origin/${branch}`]);
+      await git.rebase([ref]);
       debug('Rebase successful, retrying push');
       // Loop continues to retry push
     } catch (syncError) {
@@ -344,24 +375,40 @@ export async function pushWithRetry(
           }
         }
         
-        // WHY try abort first: rebase --abort restores pre-rebase state with all commits intact.
-        // cleanupGitState does reset --hard + clean -fd (correct for stuck state but destructive).
-        // If abort fails (e.g. stale/corrupt rebase-merge dir), full cleanup unblocks the next run.
+        // WHY only abort, not cleanupGitState: cleanupGitState does reset --hard + clean -fd and
+        // destroys the caller's commits (e.g. split-exec's cherry-picks). Abort preserves commits.
         try {
           await git.rebase(['--abort']);
-        } catch {
-          await cleanupGitState(git);
+        } catch (abortErr) {
+          debug('rebase --abort failed (rebase state may be stale); not running cleanup to preserve local commits', { err: String(abortErr) });
+          await removeStuckRebaseDirs(git);
         }
-        throw new Error(`Push rejected and rebase has conflicts in: ${conflictedFiles.join(', ')}. Manual resolution needed.\nOriginal: ${result.error}`);
+        let workdirMsg = '';
+        try {
+          const workdir = (await git.revparse(['--show-toplevel'])).trim();
+          const fileList = conflictedFiles.join(' ');
+          const allWorkflow = conflictedFiles.every((f) => f.startsWith('.github/workflows/'));
+          const resolveCmd = allWorkflow
+            ? `git checkout --theirs -- ${fileList} && git add ${fileList} && git rebase --continue`
+            : `git add ${fileList} && git rebase --continue`;
+          workdirMsg = `\nWorkdir: ${workdir}\nResolve then continue: cd ${workdir} && ${resolveCmd}`;
+        } catch {
+          // best-effort
+        }
+        throw new Error(`Push rejected and rebase has conflicts in: ${conflictedFiles.join(', ')}. Manual resolution needed.${workdirMsg}\nOriginal: ${result.error}`);
       }
 
-      // Same as above: abort first so commits are preserved; full cleanup only when abort fails.
+      // Non-conflict rebase failure (e.g. invalid upstream when ref wasn't fetched). Abort only; do not cleanup.
       try {
         await git.rebase(['--abort']);
-      } catch {
-        await cleanupGitState(git);
+      } catch (abortErr) {
+        debug('rebase --abort failed; not running cleanup to preserve local commits', { err: String(abortErr) });
+        await removeStuckRebaseDirs(git);
       }
-      throw new Error(`Push rejected and sync failed: ${syncMsg}\nOriginal: ${result.error}`);
+      const refHint = /invalid upstream|ref.*not found/i.test(syncMsg)
+        ? ' If using a --single-branch clone, ensure the branch ref was fetched (e.g. additionalBranches or git remote set-branches --add origin <branch>).'
+        : '';
+      throw new Error(`Push rejected and sync failed: ${syncMsg}${refHint}\nOriginal: ${result.error}`);
     }
   }
   
