@@ -6,6 +6,13 @@
 /** Segments that indicate an internal path not under the repo (e.g. .cursor plans, .prr state). */
 const INTERNAL_PATH_SEGMENTS = ['.cursor', '.prr', 'root'];
 
+/** Top-level dirs that are typical repo source (not node_modules or external package refs from comments). */
+const REPO_TOP_LEVEL = new Set([
+  'src', 'lib', 'app', 'apps', 'packages', 'scripts', 'test', 'tests', 'docs', 'build', 'tools', 'shared',
+  '.github', 'config', 'public', 'components', 'db', 'migrations', 'api', 'server', 'client', 'examples',
+  'types', 'typings',
+]);
+
 /**
  * Normalize a path to forward slashes and trim (no leading ./ strip).
  * Use when comparing or splitting paths (e.g. segment count, prefix match).
@@ -49,6 +56,9 @@ export function isPathAllowedForFix(path: string): boolean {
   for (const seg of INTERNAL_PATH_SEGMENTS) {
     if (normalized.includes(`/${seg}/`) || normalized.startsWith(`${seg}/`)) return false;
   }
+  if (normalized.includes('node_modules') || normalized.startsWith('dist/')) return false;
+  const first = normalized.split('/')[0];
+  if (first && !REPO_TOP_LEVEL.has(first) && /^[a-z@][a-z0-9.-]*$/.test(first)) return false;
   return true;
 }
 

@@ -1688,30 +1688,47 @@ ${codeSnippet}
     }
 
     const ISSUE_HEADER_APPROX = 180; // "[N] path:line — comment preview" without code
+    const COMMENT_PREVIEW_MAX = 500;
     const batches: Array<{ groups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> }> = [];
     let currentGroups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> = [];
     let currentSize = 0;
 
     for (const [filePath, fileIssues] of byFile) {
-      // Collect all unique snippets for this file (each issue may point to a different region)
       const snippets = new Map<string, string>();
-      let totalSnippetSize = 0;
       for (const issue of fileIssues) {
-        if (!snippets.has(issue.id)) {
-          snippets.set(issue.id, issue.codeSnippet);
-          totalSnippetSize += issue.codeSnippet.length;
+        if (!snippets.has(issue.id)) snippets.set(issue.id, issue.codeSnippet);
+      }
+      // Split this file's issues into chunks that fit within availableForIssues (avoids 306k+ prompts → 0-parsed / 504)
+      const issueList = [...fileIssues];
+      let chunkStart = 0;
+      while (chunkStart < issueList.length) {
+        let chunkSize = 0;
+        let chunkEnd = chunkStart;
+        while (chunkEnd < issueList.length) {
+          const issue = issueList[chunkEnd]!;
+          const add = (snippets.get(issue.id) ?? '').length + ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX;
+          if (chunkSize + add > availableForIssues && chunkEnd > chunkStart) break;
+          chunkSize += add;
+          chunkEnd++;
         }
-      }
-      // Review: calculates group size by including total snippet size and header for each issue
-      const groupSize = totalSnippetSize + fileIssues.length * ISSUE_HEADER_APPROX;
+        if (chunkEnd === chunkStart) chunkEnd = chunkStart + 1;
+        const chunkIssues = issueList.slice(chunkStart, chunkEnd);
+        const chunkSnippets = new Map<string, string>();
+        for (const issue of chunkIssues) {
+          const s = snippets.get(issue.id);
+          if (s) chunkSnippets.set(issue.id, s);
+        }
+        const groupSize = chunkSize;
 
-      if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
-        batches.push({ groups: currentGroups });
-        currentGroups = [];
-        currentSize = 0;
+        if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
+          batches.push({ groups: currentGroups });
+          currentGroups = [];
+          currentSize = 0;
+        }
+        currentGroups.push({ filePath, snippets: chunkSnippets, issues: chunkIssues });
+        currentSize += groupSize;
+        chunkStart = chunkEnd;
       }
-      currentGroups.push({ filePath, snippets, issues: fileIssues });
-      currentSize += groupSize;
     }
     if (currentGroups.length > 0) {
       batches.push({ groups: currentGroups });
@@ -1725,6 +1742,7 @@ ${codeSnippet}
     });
 
     const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
+    let lastAuditResponseContent: string | null = null;
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
       const { groups } = batches[batchIdx];
@@ -1752,7 +1770,16 @@ ${codeSnippet}
       promptParts.push('---');
       promptParts.push(`Respond with exactly ${batchIssues.length} lines, one per issue [1] through [${batchIssues.length}]:`);
 
-      const response = await this.complete(promptParts.join('\n'));
+      const promptText = promptParts.join('\n');
+      if (promptText.length > 280_000) {
+        debug('Final audit batch prompt very large (risk of 0-parsed or 504)', {
+          batchIndex: batchIdx + 1,
+          promptChars: promptText.length,
+          issueCount: batchIssues.length,
+        });
+      }
+      const response = await this.complete(promptText);
+      lastAuditResponseContent = response.content;
 
       // Parse responses - match [N] FIXED/UNFIXED pattern
       const lines = response.content.split('\n');
@@ -1795,6 +1822,10 @@ ${codeSnippet}
       debug('WARNING: Some audit responses could not be parsed - marked as needing review', {
         unparsed: issues.length - parsed,
       });
+    }
+    if (parsed === 0 && lastAuditResponseContent) {
+      const preview = lastAuditResponseContent.slice(0, 600).replace(/\n/g, ' ');
+      debug('Final audit parse failed (0 parsed) — response preview for debugging', { preview });
     }
 
     return allResults;
