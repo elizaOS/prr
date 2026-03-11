@@ -11,7 +11,7 @@ import { writeFileSync } from 'fs';
 import type { Config } from '../../shared/config.js';
 import type { StoryOptions } from './cli.js';
 import { GitHubAPI } from '../prr/github/api.js';
-import { parsePRUrl, parseBranchSpec, normalizeCompareBranch } from '../prr/github/types.js';
+import { parsePRUrl, parseBranchSpec, parseRepoUrl, normalizeCompareBranch } from '../prr/github/types.js';
 import { LLMClient } from '../prr/llm/client.js';
 import { debug, formatNumber } from '../../shared/logger.js';
 
@@ -224,13 +224,27 @@ ${fileSummary.text}
 
 Output your response with the exact headings: ## Narrative, ## Features / changes, ## Changelog.`;
   } else {
-    const branchSpec = parseBranchSpec(input);
-    if (!branchSpec) {
-      throw new Error(
-        `Invalid input: "${input}". Use a PR URL (e.g. https://github.com/owner/repo/pull/123 or owner/repo#123) or a branch spec (e.g. owner/repo@branch or https://github.com/owner/repo/tree/branch).`
-      );
+    let branchSpec = parseBranchSpec(input);
+    let owner: string;
+    let repo: string;
+    let branch: string;
+    if (branchSpec) {
+      owner = branchSpec.owner;
+      repo = branchSpec.repo;
+      branch = branchSpec.branch;
+    } else {
+      const repoSpec = parseRepoUrl(input);
+      if (!repoSpec) {
+        throw new Error(
+          `Invalid input: "${input}". Use a PR URL (e.g. https://github.com/owner/repo/pull/123 or owner/repo#123), a branch spec (e.g. owner/repo@branch or https://github.com/owner/repo/tree/branch), or a repo URL (e.g. https://github.com/owner/repo or owner/repo for default branch).`
+        );
+      }
+      owner = repoSpec.owner;
+      repo = repoSpec.repo;
+      spinner.start('Fetching default branch...');
+      branch = await github.getDefaultBranch(owner, repo);
+      spinner.succeed(`Default branch: ${branch}`);
     }
-    const { owner, repo, branch } = branchSpec;
     const secondBranchRaw = options.compareBranch?.trim();
     const secondBranch = secondBranchRaw
       ? normalizeCompareBranch(secondBranchRaw, owner, repo)
@@ -271,7 +285,12 @@ ${fileSummary.text}
 Output your response with the exact headings: ## Narrative, ## Features / changes, ## Changelog.`;
     } else {
       spinner.start(`Fetching commit history for ${branch}...`);
-      const commits = await github.getBranchCommitHistory(owner, repo, branch);
+      const commits = await github.getBranchCommitHistory(
+        owner,
+        repo,
+        branch,
+        options.maxFetchCommits ?? 0
+      );
       spinner.succeed(`${formatNumber(commits.length)} commits`);
 
       commitSummary = buildCommitSummary(

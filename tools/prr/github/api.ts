@@ -1031,7 +1031,7 @@ export class GitHubAPI {
     baseBranch: string;
     author: string;
   }>> {
-    debug('Fetching open PRs', { owner, repo, baseBranch, excludePRNumber });
+    debug('Listing open PRs', { owner, repo, baseBranch, excludePRNumber });
     const params: { owner: string; repo: string; state: 'open'; base?: string; per_page: number } = {
       owner,
       repo,
@@ -1096,24 +1096,40 @@ export class GitHubAPI {
   }
 
   /**
+   * Delay between pagination pages when fetching branch commit history.
+   * WHY: Keeps us under GitHub's rate limits (5000 req/h authenticated) when fetching full history; avoids hammering the API.
+   */
+  private static readonly COMMIT_FETCH_PAGE_DELAY_MS = 400;
+
+  /**
    * Get commit history for a branch (or ref). Returns commits in chronological order (oldest first).
    * WHY oldest first: Narrative and changelog are easier when the model sees "then this, then that";
    * List Commits API returns newest first so we reverse after slicing to maxCommits.
+   * Pages are rate-limited (COMMIT_FETCH_PAGE_DELAY_MS between pages) to avoid hitting GitHub limits.
+   * @param maxCommits - Cap on number of commits to fetch; 0 or omitted = no cap (fetch entire branch history).
    */
   async getBranchCommitHistory(
     owner: string,
     repo: string,
     branch: string,
-    maxCommits: number = 500
+    maxCommits: number = 0
   ): Promise<Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>> {
-    debug('Fetching branch commit history', { owner, repo, branch, maxCommits });
+    const cap = maxCommits > 0 ? maxCommits : undefined;
+    debug('Fetching branch commit history', { owner, repo, branch, maxCommits: cap ?? 'no cap' });
     const commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }> = [];
+    let pageCount = 0;
     for await (const { data: commitsPage } of this.octokit.paginate.iterator(this.octokit.repos.listCommits, {
       owner,
       repo,
       sha: branch,
       per_page: 100,
     })) {
+      if (pageCount > 0) {
+        await new Promise(resolve =>
+          setTimeout(resolve, GitHubAPI.COMMIT_FETCH_PAGE_DELAY_MS)
+        );
+      }
+      pageCount += 1;
       for (const c of commitsPage) {
         commits.push({
           sha: c.sha,
@@ -1121,9 +1137,9 @@ export class GitHubAPI {
           authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
           committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
         });
-        if (commits.length >= maxCommits) break;
+        if (cap !== undefined && commits.length >= cap) break;
       }
-      if (commits.length >= maxCommits) break;
+      if (cap !== undefined && commits.length >= cap) break;
     }
     return commits.reverse();
   }
