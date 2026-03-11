@@ -83,8 +83,15 @@ export async function checkAndMergeBaseBranch(
     };
 
     try {
-    // Fetch latest base branch and PR branch first
-    await git.fetch('origin', prInfo.baseBranch);
+    // Fetch latest base branch and PR branch.
+    // On --single-branch clones the base branch refspec may be missing; add it first.
+    try {
+      await git.fetch('origin', prInfo.baseBranch);
+    } catch {
+      debug('Base branch fetch failed (likely --single-branch clone), adding refspec and retrying', { baseBranch: prInfo.baseBranch });
+      await git.raw(['remote', 'set-branches', '--add', 'origin', prInfo.baseBranch]);
+      await git.fetch('origin', prInfo.baseBranch);
+    }
     await git.fetch('origin', prInfo.branch);
 
     // When the PR branch is behind the base (locally or per GitHub), merge with --no-ff and push so the branch is up to date. Use local state after fetch so we don't rely only on GitHub's mergeableState (which can be stale or missing). WHY: User expects PRR to "update the branch, pull target into source, and push" so the PR is not "out of date with base branch".

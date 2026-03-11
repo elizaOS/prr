@@ -79,6 +79,7 @@ export async function runSplitExec(
 
   let executedCount = 0;
   let prsCreated = 0;
+  let prsReused = 0;
   let skippedNothingToPush = 0;
   const failedSplits: { split: ParsedSplit; index: number; error: Error }[] = [];
   for (let i = 0; i < plan.splits.length; i++) {
@@ -109,6 +110,7 @@ export async function runSplitExec(
       const outcome = await executeSplit(git, plan, split, github, config.githubToken, workdir, spinner, options.forcePush);
       executedCount++;
       if (outcome?.prCreated) prsCreated++;
+      if (outcome?.prReused) prsReused++;
       if (outcome?.nothingToPush) skippedNothingToPush++;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -144,12 +146,17 @@ export async function runSplitExec(
     );
   }
   console.log(chalk.green('\nDone.'));
+  const pushed = executedCount - skippedNothingToPush;
   const summaryParts: string[] = [];
   if (executedCount > 0) {
-    summaryParts.push(`${formatNumber(executedCount)}/${plan.splits.length} splits completed`);
+    if (pushed > 0) summaryParts.push(`${formatNumber(pushed)} pushed`);
     if (prsCreated > 0) summaryParts.push(`${formatNumber(prsCreated)} PR(s) created`);
-    if (skippedNothingToPush > 0) summaryParts.push(`${formatNumber(skippedNothingToPush)} skipped (nothing to push)`);
-    if (summaryParts.length > 1) console.log(chalk.gray('  ' + summaryParts.join('. ')));
+    if (prsReused > 0) summaryParts.push(`${formatNumber(prsReused)} existing PR(s) updated`);
+    if (skippedNothingToPush > 0) summaryParts.push(`${formatNumber(skippedNothingToPush)} already up-to-date`);
+    console.log(chalk.gray(`  ${formatNumber(executedCount)}/${plan.splits.length} splits — ${summaryParts.join(', ')}`));
+  }
+  if (skippedNothingToPush > 0 && skippedNothingToPush === executedCount) {
+    console.log(chalk.yellow('  All splits were already up-to-date. If you expected changes, check that the source branch has new commits not yet on the split branches.'));
   }
 }
 
@@ -178,7 +185,7 @@ async function ensureTargetRefOrFetch(
 }
 
 /** Outcome of a completed split (undefined when split was skipped without attempting push). */
-type SplitOutcome = { prCreated: boolean; nothingToPush: boolean } | undefined;
+type SplitOutcome = { prCreated: boolean; nothingToPush: boolean; prReused?: boolean } | undefined;
 
 /** Execute one split: checkout target branch, cherry-pick commits, push, create PR if new. */
 async function executeSplit(
@@ -284,7 +291,12 @@ async function executeSplit(
     });
     nothingToPush = pushResult.nothingToPush === true;
     if (nothingToPush) {
-      spinner.info('Nothing to push — remote already has these commits; skipping PR creation');
+      const existingPR = await findExistingPR(github, plan.owner, plan.repo, branchToPush, plan.targetBranch);
+      if (existingPR) {
+        spinner.info(`Nothing to push (already up to date) — PR #${existingPR.number} is open: ${existingPR.url}`);
+      } else {
+        spinner.info('Nothing to push — remote already has these commits; skipping PR creation');
+      }
     } else {
       spinner.succeed(`Pushed ${branchToPush}`);
     }
@@ -299,8 +311,17 @@ async function executeSplit(
   }
 
   if (split.newBranch != null && !nothingToPush) {
-    spinner.start('Creating pull request...');
     const prTitle = split.prTitle ?? split.title;
+
+    // Check for an existing open PR from this branch before creating a new one.
+    spinner.start('Checking for existing PR...');
+    const existingPR = await findExistingPR(github, plan.owner, plan.repo, branchToPush, plan.targetBranch);
+    if (existingPR) {
+      spinner.succeed(`Existing PR #${existingPR.number} updated: ${existingPR.url}`);
+      return { prCreated: false, nothingToPush: false, prReused: true };
+    }
+
+    spinner.start('Creating pull request...');
     try {
       const { number, url } = await github.createPullRequest(
         plan.owner,
@@ -319,4 +340,29 @@ async function executeSplit(
     }
   }
   return { prCreated: false, nothingToPush };
+}
+
+/**
+ * Find an open PR from `head` into `base`. Returns the PR number and URL if one exists,
+ * so we can skip creating a duplicate. The push already updated the branch, so the
+ * existing PR automatically picks up the new commits.
+ */
+async function findExistingPR(
+  github: GitHubAPI,
+  owner: string,
+  repo: string,
+  head: string,
+  base: string
+): Promise<{ number: number; url: string } | null> {
+  try {
+    const openPRs = await github.getOpenPRs(owner, repo, base);
+    const match = openPRs.find(pr => pr.branch === head);
+    if (match) {
+      return { number: match.number, url: `https://github.com/${owner}/${repo}/pull/${match.number}` };
+    }
+    return null;
+  } catch (err) {
+    debug('Failed to check for existing PR, will create new', { err: String(err) });
+    return null;
+  }
 }

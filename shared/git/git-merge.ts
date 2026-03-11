@@ -124,12 +124,13 @@ export async function mergeBaseBranch(
     debug('Fetching origin with all refs');
     await git.fetch(['origin', '--prune']);
     
-    // Verify the ref exists
+    // Verify the ref exists; if missing (--single-branch clone), add refspec and fetch.
     try {
       await git.raw(['rev-parse', '--verify', `origin/${baseBranch}`]);
     } catch {
-      debug('Base branch ref not found, trying explicit fetch');
-      await git.fetch(['origin', `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+      debug('Base branch ref not found, adding refspec and fetching', { baseBranch });
+      await git.raw(['remote', 'set-branches', '--add', 'origin', baseBranch]);
+      await git.fetch('origin', baseBranch);
     }
     
     // Check if we're already up-to-date before trying merge (skip when forceMerge: GitHub said "behind")

@@ -292,6 +292,9 @@ export async function pushWithRetry(
     const result = await push(git, branch, options?.force, options?.githubToken);
 
     if (result.success) {
+      if (result.nothingToPush && attempts > 1) {
+        debug('Push after rebase resulted in nothing-to-push — remote already has these commits (likely from a previous run)');
+      }
       return { success: true, nothingToPush: result.nothingToPush };
     }
     

@@ -86,12 +86,15 @@ export async function cloneOrUpdateRepository(
     }
   }
   spinner.start('Setting up repository...');
+  const additionalBranches = prInfo.baseBranch && prInfo.baseBranch !== prInfo.branch
+    ? [prInfo.baseBranch]
+    : undefined;
   const { git } = await cloneOrUpdate(
     prInfo.cloneUrl,
     prInfo.branch,
     workdir,
     githubToken,
-    { preserveChanges: hasVerifiedFixes }
+    { preserveChanges: hasVerifiedFixes, additionalBranches }
   );
   spinner.succeed('Repository ready');
   debug('Repository cloned/updated at', workdir);

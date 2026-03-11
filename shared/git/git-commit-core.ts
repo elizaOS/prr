@@ -54,7 +54,7 @@ const TOOL_MARKER_FILES = [
  * WHY .prr/: Lessons and state live there. Fixer edits would corrupt the
  * learning system or state and get auto-reverted, wasting a fix iteration.
  */
-export const PROTECTED_DIRS = ['.prr/'];
+export const PROTECTED_DIRS = ['.prr/', '.split-exec-workdir/'];
 
 /**
  * Matches common test file names so we can reject empty/placeholder test files.

@@ -222,7 +222,7 @@ export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-5.2-codex',
   'anthropic/claude-3-opus',
   'openai/gpt-4.1',
-  'anthropic/claude-sonnet-4.5',
+  'anthropic/claude-sonnet-4.5',       // alias (dot notation) — same family as DEFAULT_ELIZACLOUD_MODEL but different ID
   'openai/gpt-5.1-codex-max',
   'anthropic/claude-3.7-sonnet',
   'openai/gpt-4o',
