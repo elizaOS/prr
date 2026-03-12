@@ -21,10 +21,10 @@
 #         pr_number:
 #           description: 'PR number to run PRR on'
 #           required: true
-#           type: number
+#           type: string
 #   jobs:
 #     prr:
-#       uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+#       uses: OWNER/prr/.github/workflows/run-prr-server.yml@babylon
 #       with:
 #         pr_number: ${{ inputs.pr_number }}
 #         prr_repo: 'OWNER/prr'
@@ -41,7 +41,7 @@ on:
       pr_number:
         description: 'PR number to run PRR on'
         required: true
-        type: number
+        type: string
       prr_repo:
         description: 'Repo containing the PRR tool (e.g. owner/prr)'
         required: true

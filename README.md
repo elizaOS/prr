@@ -330,7 +330,7 @@ concurrency:
 jobs:
   prr:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-prr'
-    uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+    uses: OWNER/prr/.github/workflows/run-prr-server.yml@babylon
     with:
       pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: 'OWNER/prr'
