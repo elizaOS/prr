@@ -18,7 +18,7 @@ Would require: PR changed-file list (`git diff base...HEAD --name-only`), a depe
 
 ## Audit-derived follow-ups (optional)
 
-From [AUDIT-CYCLES.md](AUDIT-CYCLES.md) consolidated findings; not committed, low priority.
+From [tools/prr/AUDIT-CYCLES.md](../tools/prr/AUDIT-CYCLES.md) consolidated findings; not committed, low priority.
 
 - **getConsolidateDuplicateTargetPath:** Iterate all path matches in comment body and return the first that is not `comment.path` and not `lib/utils/db-errors.(ts|js)` (today we use first match only, so if db-errors is mentioned first we return null). **WHY:** When the canonical duplicate file is listed after db-errors, fixer could get allowed path for the right file.
 - **pathExists for single-issue prompt:** `buildSingleIssuePrompt` in `workflow/utils.ts` calls `getTestPathForSourceFileIssue(issue)` without `pathExists`; batch prompt and recovery already pass it. **WHY:** Single-issue focus mode can resolve to a colocated test path that does not exist when the real file is in __tests__/integration/; passing pathExists would align behavior and reduce wrong-file attempts.

@@ -35,7 +35,7 @@ Entry points: `tools/<tool>/index.ts` (e.g. `tools/prr/index.js` after build). B
 ## Docs and rules
 
 - **`.cursor/rules/`** — Cursor rules (e.g. number formatting, audit-cycle template, canonical paths).
-- **`docs/AUDIT-CYCLES.md`** — Audit log; when adding a cycle, use the template, bump "Recorded cycles", and add the new cycle under "Recorded cycles" (newest first).
+- **`tools/prr/AUDIT-CYCLES.md`** — PRR audit log; when adding a cycle, use the template, bump "Recorded cycles", and add the new cycle under "Recorded cycles" (newest first).
 - **`DEVELOPMENT.md`** — Developer guide, key files, run locally (`bun dist/tools/prr/index.js …`).
 
 ## Quick file map

@@ -642,7 +642,7 @@ This shows:
 
 ## Further Reading
 
-- **Flowcharts**: `docs/flowchart.md`
-- [Runners Documentation](./RUNNERS.md) - Deep dive into fixer tools
-- [Development Guide](../DEVELOPMENT.md) - Design decisions, WHYs, troubleshooting
-- **Changelog**: `CHANGELOG.md`
+- **Flowcharts**: [flowchart.md](flowchart.md)
+- [Runners Documentation](RUNNERS.md) - Deep dive into fixer tools
+- [Development Guide](../../DEVELOPMENT.md) - Design decisions, WHYs, troubleshooting
+- **Changelog**: [CHANGELOG.md](../../CHANGELOG.md)

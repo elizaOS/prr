@@ -59,6 +59,24 @@ Prefer a capable model (e.g. Sonnet-level or equivalent). Dependency analysis an
 
 Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`. Optional: `PRR_LLM_PROVIDER`, `PRR_LLM_MODEL`. See root [README](../../README.md) and [.env.example](../../.env.example).
 
+**SPLIT_PLAN_LLM_MODEL:** When set, split-plan uses this model for both phases. When unset, split-plan uses the provider's **fast/cheap model** (e.g. gpt-4o-mini, claude-haiku) by default to reduce gateway 504 timeouts on large PRs. Set `SPLIT_PLAN_LLM_MODEL` if you want a stronger model and accept longer runs or use a smaller `--max-patch-chars`.
+
+## Two-phase LLM flow
+
+split-plan uses **two LLM calls** to avoid 504 timeouts on large PRs:
+1. **Phase 1 — Dependencies:** Full PR (commits, file list with patches) → model outputs only the `## Dependencies` section. Response is small.
+2. **Phase 2 — Split plan:** Dependencies text + file list **without patches** + open PRs → model outputs the full plan (frontmatter, Dependencies, Split, Merge order). No patches in this prompt keeps it smaller.
+
+By default the **fast/cheap model** is used (see SPLIT_PLAN_LLM_MODEL above). You can override with a stronger model if needed.
+
+## Troubleshooting
+
+**504 / "An error occurred with your deployment"** — The LLM gateway timed out. Try:
+1. **Re-run** — Often transient.
+2. **Reduce prompt size:** `--max-patch-chars 60000` (or `80000`) so Phase 1 sends less patch content.
+3. By default split-plan uses the fast model and two-phase flow; if you set `SPLIT_PLAN_LLM_MODEL` to a heavy model, consider unsetting it or using a smaller `--max-patch-chars`.
+4. The client retries 504 up to 4 times with backoff before failing.
+
 ## Log files
 
 - **split-plan-output.log** — Console output tee (same directory as run, or `PRR_LOG_DIR`). **WHY prefix:** So split-plan and prr/story/pill don't overwrite each other's logs when run from the same directory (see shared logger `prefix`).
@@ -71,4 +89,8 @@ The plan is markdown with YAML frontmatter. **WHY markdown not JSON:** Humans wi
 
 ## Validation section
 
-If the LLM references file paths in the plan that are not in the PR's file list, we append a **## Validation** section: "Warning: these paths were not in the PR: …". We don't strip those paths so human-added or intentional references aren't removed; we only warn.
+If the LLM references file paths in the plan that are not in the PR's file list, we append a **## Validation** section: "Warning: these paths were not in the PR: …". If any PR file is not in any split's **Files:** list, we add "These files were in the PR but not assigned to any split: …". We don't strip paths so human-added references aren't removed; we only warn.
+
+## Audit cycles
+
+Audits of split-plan runs (output log, prompts log, plan quality) are recorded in **AUDIT-CYCLES.md** (this folder). Use it to spot recurring patterns and regression checks, same as PRR's [tools/prr/AUDIT-CYCLES.md](../prr/AUDIT-CYCLES.md).

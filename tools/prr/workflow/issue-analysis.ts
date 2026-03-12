@@ -34,7 +34,7 @@ import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getMentionedTestFilePaths, getPathsToDeleteFromCommentBody, getRenameTargetPath, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { commentAsksForAccessibility, getMentionedTestFilePaths, getPathsToDeleteFromCommentBody, getRenameTargetPath, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
@@ -1948,7 +1948,8 @@ export async function findUnresolvedIssues(
       freshToAnalyze.map(async (item, index) => {
         let codeSnippet = item.codeSnippet;
         const primaryPath = item.resolvedPath ?? item.comment.path;
-        if (isSnippetTooShort(codeSnippet)) {
+        // WHY wider snippet for a11y: Review asks for aria-label/accessible name; fixer needs full component context to add a meaningful label, not just role="img" or aria-hidden (audit: PR #1229).
+        if (isSnippetTooShort(codeSnippet) || commentAsksForAccessibility(item.comment.body)) {
           codeSnippet = await getWiderSnippetForAnalysis(workdir, primaryPath, item.comment.line, item.comment.body);
         }
         // When file was not in workdir, try reading from repo (e.g. git show HEAD:path) so verifier has context.
@@ -2127,6 +2128,8 @@ export async function findUnresolvedIssues(
     // Process results
     for (let i = 0; i < freshToAnalyze.length; i++) {
       const { comment, codeSnippet, contextHints, resolvedPath } = freshToAnalyze[i];
+      // Use widened snippet from batch input when we expanded for a11y or short snippet (fixer gets same context as analyzer).
+      const snippetForFix = batchInput[i]?.codeSnippet ?? codeSnippet;
       const issueId = batchInput[i].id.toLowerCase();
       const result = results.get(issueId);
 
@@ -2151,12 +2154,12 @@ export async function findUnresolvedIssues(
 
         unresolved.push({
           comment,
-          codeSnippet,
+          codeSnippet: snippetForFix,
           stillExists: true,
           explanation: 'Unable to determine status',
           triage: { importance: 3, ease: 3 },  // Default: fallback path
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, undefined),
           resolvedPath,
         });
         continue;
@@ -2221,12 +2224,12 @@ export async function findUnresolvedIssues(
 
           unresolved.push({
             comment,
-            codeSnippet,
+            codeSnippet: snippetForFix,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
         }
@@ -2246,12 +2249,12 @@ export async function findUnresolvedIssues(
 
         unresolved.push({
           comment,
-          codeSnippet,
+          codeSnippet: snippetForFix,
           stillExists: true,
           explanation: effectiveResult.explanation,
           triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
           resolvedPath,
         });
       } else {
@@ -2287,12 +2290,12 @@ export async function findUnresolvedIssues(
 
           unresolved.push({
             comment,
-            codeSnippet,
+            codeSnippet: snippetForFix,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
         }

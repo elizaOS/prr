@@ -429,14 +429,17 @@ function writeToPromptLog(
  * and responses in a single file — critical for diagnosing "the LLM got
  * confused at step 5" type issues where you need to see the conversation flow.
  *
- * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
- * Standalone files are written to ~/.prr/debug/<timestamp>/
+ * prompts.log is written whenever initOutputLog was used (e.g. split-plan-prompts.log).
+ * Standalone files and output.log one-liner only when PRR_DEBUG_PROMPTS + verbose (debugLogDir set).
  */
 export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
-  if (!debugLogDir) return;
-
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
+
+  // Full content in prompts.log (always when stream exists, so split-plan etc. get a non-empty log)
+  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
+
+  if (!debugLogDir) return;
 
   // Standalone file (still useful for sharing/diffing individual prompts)
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-prompt.txt`;
@@ -453,22 +456,20 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
 
   // Searchable one-liner in output.log
   debug(`PROMPT ${slug}`, { chars: prompt.length });
-
-  // Full content in prompts.log
-  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
 }
 
 /**
  * Log a response to the prompts.log companion file and (optionally) a standalone
- * debug file. A one-liner with a searchable slug is written to output.log.
- *
- * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
+ * debug file. A one-liner with a searchable slug is written to output.log when debugLogDir is set.
  */
 export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
-  if (!debugLogDir) return;
-
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
+
+  // Full content in prompts.log (always when stream exists)
+  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
+
+  if (!debugLogDir) return;
 
   // Standalone file
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-response.txt`;
@@ -485,9 +486,6 @@ export function debugResponse(label: string, response: string, metadata?: Record
 
   // Searchable one-liner in output.log
   debug(`RESPONSE ${slug}`, { chars: response.length });
-
-  // Full content in prompts.log
-  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
 }
 
 /**
@@ -500,11 +498,13 @@ export function debugPromptError(
   errorMessage: string,
   metadata?: Record<string, unknown>,
 ): void {
-  if (!promptLogStream || !debugLogDir) return;
+  if (!promptLogStream) return;
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
-  debug(`ERROR ${slug}`, { error: errorMessage.slice(0, 80) });
   writeToPromptLog(slug, 'ERROR', label, errorMessage, metadata);
+  if (debugLogDir) {
+    debug(`ERROR ${slug}`, { error: errorMessage.slice(0, 80) });
+  }
 }
 
 /**

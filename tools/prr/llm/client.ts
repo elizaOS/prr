@@ -481,6 +481,11 @@ const CHEAP_MODELS: Record<string, string> = {
   elizacloud: 'openai/gpt-4o-mini',               // ElizaCloud uses owner/model IDs
 };
 
+/** Return the fast/cheap model for the provider (for split-plan, dedup, etc.). WHY exported: split-plan uses it when SPLIT_PLAN_LLM_MODEL is unset to avoid 504 timeouts. */
+export function getCheapModelForProvider(provider: string): string | undefined {
+  return CHEAP_MODELS[provider];
+}
+
 /**
  * Filter attempt history to only lines for issues in the current batch.
  * WHY: Audit showed full history (all issues) sent to every verify batch; only the current batch is relevant.
@@ -1667,6 +1672,7 @@ ${codeSnippet}
       '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
       '3. Partial fixes do NOT count - the full issue must be resolved',
       '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
+      '5. For ACCESSIBILITY (aria-label, accessible name, screen reader, unlabelled SVG): mark FIXED only if the code adds a meaningful accessible name (aria-label or title with the conveyed value). If the only change is aria-hidden or role="img" with no label, mark UNFIXED.',
       '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
@@ -2144,6 +2150,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'If "Code before fix" is empty or shows only formatting/line-number artifacts (e.g. backticks and "N | " lines), base your verdict on Current Code and the diff only.',
       'If the concern is fully addressed in another file or by a different function (e.g. this code now delegates to a function that implements the fix), answer YES and cite where the fix is implemented.',
       'For lifecycle/cache/leak issues (Map/Set/cache cleanup, pruning, TTL, stale entries), answer YES only if the code shown demonstrates safe cleanup across the relevant creation/replacement/cleanup paths. A declaration-only tweak is not enough if stale entries can still survive on early returns or thrown errors.',
+      '',
+      'For ACCESSIBILITY issues (review asks for aria-label, accessible name, screen reader, unlabelled SVG): answer YES only if the code adds a MEANINGFUL accessible name (e.g. aria-label or title with the conveyed value, such as the percentage or state). If the only change is aria-hidden="true" or role="img" with no label, or a generic/empty label, the concern is NOT addressed — answer NO and in LESSON suggest adding aria-label or title with the actual value (e.g. "X% yes").',
       '',
       'For "duplicate" / "extract to shared utility" issues: The fix is usually to remove the duplicate from THIS file and import from the shared module (often lib/utils/...). The review may mention another file as where the duplicate already exists — that is a reference only; the canonical shared source is typically a dedicated util (e.g. lib/utils/db-errors.ts), not that reference file. In LESSON lines, do not suggest "use from [reference file]" as the shared source when a lib/utils/... module is the intended canonical location.',
       '',

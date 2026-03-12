@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-11 · **Recorded cycles:** 36 · **Historical (legacy):** 4
+**Last updated:** 2026-03-11 · **Recorded cycles:** 37 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -177,6 +177,29 @@ Copy the block below for each new cycle.
 **Flip-flop check:** N — Parser and pill messages additive; no behavior revert.
 
 **Notes:** package-lock.json bins: run `npm install` to refresh lockfile so bin includes split-exec/split-plan.
+
+---
+
+### Cycle 37 — 2026-03-11 (output.log BabylonSocial/babylon#1229, aria/accessibility)
+
+**Artifacts audited:** output.log from prr run on [BabylonSocial/babylon#1229](https://github.com/BabylonSocial/babylon/pull/1229) (Ticker Enhancement; ~4m 25s, 2 issues fixed and verified, 3 dismissed).
+
+**Findings:**
+- **Medium:** SVG accessibility issue (Copilot: "PredictionArcMeter renders an unlabelled SVG — add aria-label/title") was queued, fixed, and verified, but the PR may still lack a meaningful accessible name. Root cause: (1) truncated snippet in analysis/fix so fixer saw incomplete context and may have added only `role="img"` or `aria-hidden`; (2) verifier had no rule that accessibility fixes must add a meaningful accessible name (aria-label/title with conveyed value), so any attribute change was accepted as "fixed".
+- **Low:** Unresolved issues built from batch analysis used original `freshToAnalyze[i].codeSnippet` instead of the widened snippet from `batchInput[i]` when we had expanded for short or a11y — fixer prompt could still get the narrow snippet.
+
+**What went well:** Dismissals correct (3 PR-level/Vercel/no target file). STALE→YES override worked: analyzer returned STALE ("SVG section truncated") and we correctly kept the issue in queue. Both issues sent to fixer; 2 edits applied and pushed.
+
+**Improvements implemented:**
+- prompt-builder.ts: `commentAsksForAccessibility(body)` to detect aria-label, screen reader, accessible name, unlabelled SVG, etc. Exported for issue-analysis.
+- issue-analysis.ts: When building batch input, use wider snippet when `isSnippetTooShort(codeSnippet) || commentAsksForAccessibility(item.comment.body)` so analyzer and fixer get full component context. When building unresolved issues from batch results, use `batchInput[i].codeSnippet` (widened) as the issue's codeSnippet so fix prompt gets same context.
+- client.ts (batch verify): Rule for ACCESSIBILITY — answer YES only if code adds a meaningful accessible name (aria-label/title with value); if only aria-hidden or role="img" with no label, answer NO and suggest adding aria-label/title with actual value.
+- client.ts (final audit): AUDIT RULES rule 5 — same a11y rule for FIXED vs UNFIXED.
+- prompt-builder.ts (fix instructions): New instruction 6 — for ACCESSIBILITY issues, add a meaningful accessible name; do not add only aria-hidden or role="img" without a label.
+
+**Flip-flop check:** N — Additive (wider snippet for a11y, verifier/fix rules); no revert.
+
+**Notes:** Re-run prr on #1229 with `--reverify` or after these changes to get proper aria-label (e.g. "X% yes") on the SVG.
 
 ---
 

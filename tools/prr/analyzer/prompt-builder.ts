@@ -257,6 +257,16 @@ export function isSnippetTooShort(snippet: string): boolean {
   return meaningful.length <= 1;
 }
 
+/** True when the review comment asks for accessibility (aria-label, screen reader, accessible name, unlabelled SVG, etc.). WHY: Use a wider snippet for a11y issues so the fixer sees the full component and adds a meaningful accessible name, not just role="img" or aria-hidden. */
+export function commentAsksForAccessibility(body: string | undefined): boolean {
+  if (!body || body.length < 20) return false;
+  const lower = body.toLowerCase();
+  return (
+    /\b(aria-label|aria-label\s*=|accessible\s+name|screen\s+reader|unlabelled\s+svg|unlabeled\s+svg|without\s+(an?\s+)?(accessible\s+)?name|add\s+(an?\s+)?accessible\s+name|accessible\s+to\s+screen\s+readers?)\b/.test(lower) ||
+    /\b(role\s*=\s*["']img["']\s+aria-label|title\s+for\s+accessibility|conveys?\s+information\s+visually)\b/.test(lower)
+  );
+}
+
 /** When the issue is about consolidating a duplicate (extract to shared / remove duplication) and the comment names another file that contains the duplicate, return that path so we can add it to allowedPaths. Enables fixer to remove the duplicate from both files. */
 export function getConsolidateDuplicateTargetPath(issue: UnresolvedIssue): string | null {
   if (!issueRequiresRefactor(issue)) return null;
@@ -882,11 +892,12 @@ export function buildFixPrompt(
   parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes (except when an issue explicitly requires refactoring as above)');
   parts.push('4. Do NOT change working code that is not mentioned in the review');
   parts.push('5. Preserve existing code structure, variable names, and formatting');
-  parts.push('6. If an issue is unclear, use RESULT: UNCLEAR to explain what is ambiguous instead of guessing.');
-  parts.push('7. When using search/replace, copy the search text EXACTLY from the actual file content — the code snippet in the review comment may be stale');
-  parts.push('8. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, import, etc.)');
-  parts.push('9. Do not output <change> blocks where <search> and <replace> are identical (no-op); they are skipped and waste verification.');
-  parts.push('10. For new files use <file path="path/to/file.ts">content</file>; do not use <newfile>.');
+  parts.push('6. For ACCESSIBILITY issues (aria-label, screen reader, unlabelled SVG): add a meaningful accessible name (e.g. aria-label or title with the conveyed value, such as the percentage or state). Do not add only aria-hidden or role="img" without a label — that does not address the concern.');
+  parts.push('7. If an issue is unclear, use RESULT: UNCLEAR to explain what is ambiguous instead of guessing.');
+  parts.push('8. When using search/replace, copy the search text EXACTLY from the actual file content — the code snippet in the review comment may be stale');
+  parts.push('9. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, import, etc.)');
+  parts.push('10. Do not output <change> blocks where <search> and <replace> are identical (no-op); they are skipped and waste verification.');
+  parts.push('11. For new files use <file path="path/to/file.ts">content</file>; do not use <newfile>.');
   parts.push('');
   parts.push('## Reporting Your Outcome\n');
   parts.push('After addressing the issues, include a RESULT line for each issue (or one overall):');

@@ -532,12 +532,12 @@ PRR tracks and reports:
 
 ## 📚 Further Reading
 
-- **Full README**: `README.md`
-- **Detailed Flowcharts**: `docs/flowchart.md`
-- **Architecture Guide**: `docs/ARCHITECTURE.md`
-- **Development Guide**: `DEVELOPMENT.md`
-- **Changelog**: `CHANGELOG.md`
-- **Split-plan / split-exec**: `tools/split-plan/README.md`, `tools/split-exec/README.md`. For split-exec: (1) ensure the target branch (e.g. `staging`) exists on the remote (checked before clone); (2) the tool pre-fetches target and split branch refs during clone so rebase-and-retry can resolve `origin/<branch>` (required for `--single-branch` clones); (3) if push is rejected, the tool fetches, rebases, and retries (up to 2 retries). If that still fails, re-run with `--force-push` to overwrite, or resolve manually in the workdir. On clone/ref failure the error includes the workdir and command, e.g. `cd <workdir> && git fetch origin <target-branch>`.
+- **Full README**: [../../README.md](../../README.md)
+- **Detailed Flowcharts**: [flowchart.md](flowchart.md)
+- **Architecture Guide**: [ARCHITECTURE.md](ARCHITECTURE.md)
+- **Development Guide**: [../../DEVELOPMENT.md](../../DEVELOPMENT.md)
+- **Changelog**: [../../CHANGELOG.md](../../CHANGELOG.md)
+- **Split-plan / split-exec**: [../split-plan/README.md](../split-plan/README.md), [../split-exec/README.md](../split-exec/README.md). For split-exec: (1) ensure the target branch (e.g. `staging`) exists on the remote (checked before clone); (2) the tool pre-fetches target and split branch refs during clone so rebase-and-retry can resolve `origin/<branch>` (required for `--single-branch` clones); (3) if push is rejected, the tool fetches, rebases, and retries (up to 2 retries). If that still fails, re-run with `--force-push` to overwrite, or resolve manually in the workdir. On clone/ref failure the error includes the workdir and command, e.g. `cd <workdir> && git fetch origin <target-branch>`.
 
 ---
 

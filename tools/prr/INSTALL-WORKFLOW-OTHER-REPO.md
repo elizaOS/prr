@@ -21,7 +21,10 @@ on:
 
 jobs:
   prr:
-    uses: elizaOS/prr/.github/workflows/run-prr-server.yml@main
+    permissions:
+      contents: write      # required by reusable workflow (checkout + PRR push)
+      pull-requests: write # required by reusable workflow (submit PR review)
+    uses: elizaOS/prr/.github/workflows/run-prr-server.yml@babylon
     with:
       pr_number: ${{ inputs.pr_number }}
       prr_repo: 'elizaOS/prr'
@@ -48,18 +51,21 @@ on:
     types: [labeled, review_requested]
 
 concurrency:
-  group: prr-${{ github.event.pull_request.number || github.run_id }}
+  group: prr-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   prr:
+    permissions:
+      contents: write      # required by reusable workflow (checkout + PRR push)
+      pull-requests: write # required by reusable workflow (submit PR review)
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && (
         (github.event.action == 'labeled' && github.event.label.name == 'run-prr') ||
-        (github.event.action == 'review_requested' && vars.PRR_REVIEWER_LOGIN != '' && github.event.requested_reviewer.login == vars.PRR_REVIEWER_LOGIN)
+        (github.event.action == 'review_requested' && vars.PRR_REVIEWER_LOGIN && github.event.requested_reviewer && github.event.requested_reviewer.login == vars.PRR_REVIEWER_LOGIN)
       ))
-    uses: elizaOS/prr/.github/workflows/run-prr-server.yml@main
+    uses: elizaOS/prr/.github/workflows/run-prr-server.yml@babylon
     with:
       pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: 'elizaOS/prr'
@@ -88,12 +94,12 @@ In your repo: **Settings → Secrets and variables → Actions**.
 
 ## 4. Pin to a branch or tag (optional)
 
-The example uses `@main`. To pin to a tag or another branch:
+The example uses `@babylon`. To pin to a tag or another branch:
 
 ```yaml
 uses: elizaOS/prr/.github/workflows/run-prr-server.yml@v1.0.0
 # or
-uses: elizaOS/prr/.github/workflows/run-prr-server.yml@odi-dev
+uses: elizaOS/prr/.github/workflows/run-prr-server.yml@main
 ```
 
 Replace `elizaOS/prr` with the actual owner/repo if PRR is hosted elsewhere.

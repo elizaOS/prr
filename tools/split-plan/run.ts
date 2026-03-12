@@ -8,7 +8,7 @@ import type { SplitPlanOptions } from './cli.js';
 import type { PRInfo } from '../prr/github/types.js';
 import { GitHubAPI } from '../prr/github/api.js';
 import { parsePRUrl } from '../prr/github/types.js';
-import { LLMClient } from '../prr/llm/client.js';
+import { getCheapModelForProvider, LLMClient } from '../prr/llm/client.js';
 import { debug, formatNumber } from '../../shared/logger.js';
 
 /**
@@ -157,6 +157,7 @@ async function inferPRTitleStyle(
   }
 }
 
+/** WHY two-phase LLM: Single large prompt often hits gateway 504. Phase 1 (dependencies only) and Phase 2 (full plan from deps + file list without patches) keep each request smaller and faster. */
 async function buildPlanContent(
   prInfo: PRInfo,
   commits: Array<{ sha: string; message: string; authoredDate: Date }>,
@@ -167,17 +168,49 @@ async function buildPlanContent(
   config: Config,
   titleStyleSummary: string | null
 ): Promise<string> {
-  const userPrompt = buildUserPrompt(prInfo, commits, filesWithBudget, openPRs);
-  const systemPrompt = getSystemPrompt(titleStyleSummary);
-
+  // Use fast/cheap model by default to reduce 504; override with SPLIT_PLAN_LLM_MODEL when set.
+  const model = config.splitPlanModel ?? getCheapModelForProvider(config.llmProvider) ?? config.llmModel;
   const spinner = ora();
-  spinner.start('Building split plan...');
-  const response = await llm.complete(userPrompt, systemPrompt, { model: config.llmModel });
+
+  // Phase 1: Dependencies only (full prompt with patches; output is small).
+  spinner.start('Phase 1: Dependencies...');
+  const userPrompt1 = buildUserPrompt(prInfo, commits, filesWithBudget, openPRs, true);
+  const systemPrompt1 = getDependenciesOnlySystemPrompt();
+  const response1 = await llm.complete(userPrompt1, systemPrompt1, {
+    model,
+    max504Retries: 3,
+  });
+  spinner.succeed('Phase 1: Dependencies done');
+  const depsText = extractDependenciesFromResponse(response1.content.trim());
+
+  // Phase 2: Full plan from dependencies + file list (no patches) so prompt stays small.
+  spinner.start('Phase 2: Split plan...');
+  const userPrompt2 = buildUserPromptPhase2(prInfo, commits, filesWithBudget, openPRs, depsText);
+  const systemPrompt2 = getSystemPrompt(titleStyleSummary);
+  const response2 = await llm.complete(userPrompt2, systemPrompt2, {
+    model,
+    max504Retries: 3,
+  });
   spinner.succeed('Done');
 
-  const raw = response.content.trim();
-  // WHY postProcessPlan: LLM may output bad frontmatter or hallucinate file paths; we validate/repair and append a Validation section for unknown paths.
+  const raw = response2.content.trim();
   return postProcessPlan(raw, prInfo, prFileList);
+}
+
+/** Extract the ## Dependencies section from Phase 1 response for use in Phase 2. */
+function extractDependenciesFromResponse(content: string): string {
+  const match = content.match(/#+\s*Dependencies\s*\n([\s\S]*?)(?=\n#+\s|\n---\s*$|$)/i);
+  if (match) return match[1].trim();
+  return content.trim();
+}
+
+function getDependenciesOnlySystemPrompt(): string {
+  return `You are a senior engineer analyzing dependencies in a large pull request.
+Output ONLY the "## Dependencies" section: a bullet list of dependencies in the form:
+- \`fileA\` (brief change) <- \`fileB\` (why it depends)
+Notation: A <- B means "A depends on B" (B provides something A needs; B should merge first or be in the same PR).
+or "No cross-file dependencies identified."
+Do NOT output YAML frontmatter, ## Split, ## Merge order, or any other section.`;
 }
 
 /** WHY two-phase in system prompt: If we only ask "split this PR," the model groups by file proximity and ignores dependencies. Forcing Phase 1 (dependencies) before Phase 2 (grouping) makes dependency order a hard constraint. */
@@ -203,6 +236,8 @@ PHASE 2 — SPLIT PLAN
 Group changes into PRs where each PR is a complete working unit. Rules:
 - Each PR does ONE thing (one concern, not one file)
 - Tests belong WITH the feature they test, not in a separate "tests" PR
+- Do NOT create a split whose **Files:** list contains only documentation (e.g. only CHANGELOG.md, DESIGN.md, README.md, ROADMAP.md, docs/*). Put each doc file in the split that implements the feature it documents (e.g. DESIGN section on logging → logging split). Never output a "chore: Update documentation" or "feat: Document..." split that has only doc files.
+- **Depends on:** Only list another split's branch name if that split provides code or types that this split's files actually import or call. Do not list a dependency based on thematic similarity or "same area"; only real import/call edges.
 - Pure refactors that enable a feature = separate PR, merge first
 - Config/infra that multiple features need = separate foundational PR
 - Don't split to reduce size. Split to reduce cognitive load.
@@ -212,13 +247,11 @@ Group changes into PRs where each PR is a complete working unit. Rules:
 
 Output the plan in the EXACT markdown format shown below (with YAML frontmatter). The human will edit this file, so make it clear and readable.
 
-Use this structure:
+Use this structure (source_pr will be filled automatically; you may omit it or use a placeholder):
 
 ---
-source_pr: <url of the PR>
 source_branch: <head branch name>
 target_branch: <base branch name>
-generated_at: <ISO8601>
 ---
 
 # Split Plan for PR #<number>: <title>
@@ -259,7 +292,8 @@ function buildUserPrompt(
   prInfo: PRInfo,
   commits: Array<{ sha: string; message: string; authoredDate: Date }>,
   filesWithBudget: PatchBudgetResult,
-  openPRs: Array<{ number: number; title: string; body: string; branch: string; author: string }>
+  openPRs: Array<{ number: number; title: string; body: string; branch: string; author: string }>,
+  phase1Only: boolean
 ): string {
   // WHY 500: Long multi-line commit messages blow prompt size; first line plus date is enough for the LLM to infer intent (same as story).
   const MAX_COMMIT_MSG = 500;
@@ -291,7 +325,63 @@ function buildUserPrompt(
     fileLines.push(`  ${f.status.padEnd(8)} ${f.filename} (+${f.additions}/-${f.deletions}) [patch omitted — ${reason}]`);
   }
 
-  // WHY (none) when empty: So the LLM explicitly sees there are no buckets to route to, instead of a blank section.
+  const openPRLines = openPRs.length > 0
+    ? openPRs.map(p =>
+      `  #${p.number}: "${p.title}" (branch: ${p.branch}, by @${p.author})\n    Description: ${p.body}`
+    ).join('\n\n')
+    : '  (none)';
+
+  const patchNote = phase1Only
+    ? `Files changed (${totalFiles} total; +${totalAdditions}/-${totalDeletions}). Patches included for dependency analysis.`
+    : `Files changed (${totalFiles} total; +${totalAdditions}/-${totalDeletions}). Patches included for ${filesWithBudget.included.filter(f => f.patchIncluded).length} files; ${filesWithBudget.omitted.length} omitted (budget exceeded).`;
+
+  const ending = phase1Only
+    ? 'Produce ONLY the ## Dependencies section now (bullet list; no other sections).'
+    : 'Produce the split plan now. Phase 1 (dependencies) first, then Phase 2 (split plan).';
+
+  return `Target PR: #${prInfo.number} "${prInfo.title}"
+Branch: ${prInfo.branch} -> ${prInfo.baseBranch}
+Description:
+${prInfo.body || '(no description)'}
+
+Commits (${commits.length} total, chronological):
+${commitLines.join('\n')}
+
+${patchNote}
+${fileLines.join('\n')}
+
+Open PRs targeting ${prInfo.baseBranch} (available buckets; showing up to 20):
+${openPRLines}
+
+${ending}`;
+}
+
+/** Phase 2 user prompt: same metadata + dependencies text + file list WITHOUT patches to keep prompt small and avoid 504. */
+function buildUserPromptPhase2(
+  prInfo: PRInfo,
+  commits: Array<{ sha: string; message: string; authoredDate: Date }>,
+  filesWithBudget: PatchBudgetResult,
+  openPRs: Array<{ number: number; title: string; body: string; branch: string; author: string }>,
+  depsText: string
+): string {
+  const MAX_COMMIT_MSG = 500;
+  const commitLines = commits.map(c => {
+    const firstLine = c.message.split('\n')[0] ?? '';
+    const msg = firstLine.length <= MAX_COMMIT_MSG ? firstLine : firstLine.slice(0, MAX_COMMIT_MSG) + '…';
+    return `- ${c.sha.slice(0, 7)} (${c.authoredDate.toISOString().slice(0, 10)}): ${msg}`;
+  });
+  const totalAdditions = filesWithBudget.included.reduce((s, f) => s + f.additions, 0) +
+    filesWithBudget.omitted.reduce((s, f) => s + f.additions, 0);
+  const totalDeletions = filesWithBudget.included.reduce((s, f) => s + f.deletions, 0) +
+    filesWithBudget.omitted.reduce((s, f) => s + f.deletions, 0);
+  const totalFiles = filesWithBudget.included.length + filesWithBudget.omitted.length;
+  const fileLines = [
+    ...filesWithBudget.included.map(f => `  ${f.status.padEnd(8)} ${f.filename} (+${f.additions}/-${f.deletions})`),
+    ...filesWithBudget.omitted.map(f => {
+      const reason = isLowSignalFile(f.filename) ? 'lockfile/generated' : 'budget exceeded';
+      return `  ${f.status.padEnd(8)} ${f.filename} (+${f.additions}/-${f.deletions}) [omitted — ${reason}]`;
+    }),
+  ];
   const openPRLines = openPRs.length > 0
     ? openPRs.map(p =>
       `  #${p.number}: "${p.title}" (branch: ${p.branch}, by @${p.author})\n    Description: ${p.body}`
@@ -306,13 +396,17 @@ ${prInfo.body || '(no description)'}
 Commits (${commits.length} total, chronological):
 ${commitLines.join('\n')}
 
-Files changed (${totalFiles} total; +${totalAdditions}/-${totalDeletions}). Patches included for ${filesWithBudget.included.filter(f => f.patchIncluded).length} files; ${filesWithBudget.omitted.length} omitted (budget exceeded).
+## Dependencies (from Phase 1 — use these to constrain the split)
+${depsText}
+
+Files changed (${totalFiles} total; +${totalAdditions}/-${totalDeletions}). No patches in this phase; use dependencies and file names to group.
 ${fileLines.join('\n')}
 
 Open PRs targeting ${prInfo.baseBranch} (available buckets; showing up to 20):
 ${openPRLines}
 
-Produce the split plan now. Phase 1 (dependencies) first, then Phase 2 (split plan).`;
+Produce the full split plan now: YAML frontmatter (source_branch, target_branch), ## Dependencies (copy from above), ## Split, ## Merge order.
+There are exactly ${totalFiles} files in this PR. You MUST assign every file to exactly one split's **Files:** list — no file may be omitted. Do not create a docs-only split; attach each doc file to the split that implements the feature it documents.`;
 }
 
 /**
@@ -347,12 +441,23 @@ function postProcessPlan(
     debug('split-plan: no valid --- delimiters, using safe frontmatter');
   }
 
+  // WHY strip trailing fence: LLM sometimes ends the markdown with a stray ```; remove so the file is valid.
+  body = body.replace(/\n*```\s*$/, '').trimEnd();
+
   // WHY validate paths: LLM can hallucinate file names; we warn but don't strip so human-added paths aren't removed.
   const extractedPaths = extractFilePathsFromPlanBody(body);
+  const planPathSet = new Set(extractedPaths);
   const unknownPaths = extractedPaths.filter(p => !prFileSet.has(p));
+  const unassignedFiles = prFileList.filter(p => !planPathSet.has(p));
   let validationSection = '';
   if (unknownPaths.length > 0) {
-    validationSection = `\n## Validation\n\nWarning: these paths were not in the PR: ${unknownPaths.join(', ')}\n`;
+    validationSection += `\nWarning: these paths were not in the PR: ${unknownPaths.join(', ')}`;
+  }
+  if (unassignedFiles.length > 0) {
+    validationSection += `${validationSection ? '\n\n' : '\n'}These files were in the PR but not assigned to any split: ${unassignedFiles.join(', ')}`;
+  }
+  if (validationSection) {
+    validationSection = `\n## Validation\n\n${validationSection.trim()}\n`;
   }
 
   return `${frontmatter}\n\n${body}${validationSection}`;
@@ -368,9 +473,9 @@ function parseSimpleFrontmatter(yaml: string): Record<string, string> {
   return out;
 }
 
-/** WHY fallback to prInfo: When parsed is null (parse failed or no delimiters) we use known-good values so the plan file is always valid. */
+/** WHY always source_pr from prInfo: LLM often outputs placeholders (e.g. your_repo); we never trust it for the PR URL. */
 function buildFrontmatter(prInfo: PRInfo, generatedAt: string, parsed: Record<string, string> | null): string {
-  const sourcePr = parsed?.source_pr ?? `https://github.com/${prInfo.owner}/${prInfo.repo}/pull/${prInfo.number}`;
+  const sourcePr = `https://github.com/${prInfo.owner}/${prInfo.repo}/pull/${prInfo.number}`;
   const sourceBranch = parsed?.source_branch ?? prInfo.branch;
   const targetBranch = parsed?.target_branch ?? prInfo.baseBranch;
   return `---
@@ -385,11 +490,12 @@ generated_at: ${generatedAt}
  * Extract file paths from the plan body under "**Files:**" sections.
  * WHY broad regex: LLM output may reference files with any extension or no extension
  * (Dockerfile, .gitignore, Makefile, etc.). We match any line that looks like a
- * bullet-pointed path (contains a slash or a dot) without spaces in the path portion.
+ * bullet-pointed path (contains a slash or a dot). Paths may be wrapped in backticks.
  */
 function extractFilePathsFromPlanBody(body: string): string[] {
   const paths: string[] = [];
-  const pathLine = /^\s*-\s+([a-zA-Z0-9_.@/-][a-zA-Z0-9_.@/-]*(?:\/[a-zA-Z0-9_.@/-]+)*)/;
+  // Optional backticks: LLM often outputs "  - `path/to/file`"; without `?` the regex never matches.
+  const pathLine = /^\s*-\s+`?([a-zA-Z0-9_.@/-][a-zA-Z0-9_.@/-]*(?:\/[a-zA-Z0-9_.@/-]+)*)`?/;
   let inFiles = false;
   for (const line of body.split('\n')) {
     if (/\*\*Files:\*\*/.test(line)) {
@@ -399,7 +505,8 @@ function extractFilePathsFromPlanBody(body: string): string[] {
     if (inFiles) {
       const m = line.match(pathLine);
       if (m) {
-        const candidate = m[1].replace(/\s*\(.*$/, '').trim();
+        let candidate = m[1].replace(/\s*\(.*$/, '').trim();
+        if (candidate.endsWith('`')) candidate = candidate.slice(0, -1);
         if (candidate.includes('/') || candidate.includes('.')) {
           paths.push(candidate);
         }
