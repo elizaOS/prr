@@ -15,14 +15,21 @@ import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { validateElizaCloudKey, fetchAvailableElizaCloudModels, validateOpenAIKey } from './llm/client.js';
+import { ELIZACLOUD_SKIP_MODEL_IDS } from '../../shared/constants.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
-import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled } from '../../shared/logger.js';
+import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
-  initOutputLog();
+  initOutputLog({});
+  // WHY print at startup: Logs are written to process.cwd(); if the user ran prr from elsewhere they need to see where to find them.
+  const outPath = getOutputLogPath();
+  const promptPath = getPromptLogPath();
+  if (outPath) console.log(chalk.gray(`  Output log:  ${outPath}`));
+  if (promptPath) console.log(chalk.gray(`  Prompts log: ${promptPath} (populated with --verbose)`));
 } catch (err) {
   // Non-fatal: log tee unavailable (e.g., read-only CWD), continue without it
   console.warn('Warning: Could not initialize output log:', err);
@@ -83,6 +90,7 @@ async function main(): Promise<void> {
     // Parse CLI arguments
     const program = createCLI();
     const { prUrl, options } = parseArgs(program);
+    setPillEnabled(options.pill);
 
     // Handle --check-tools mode (exit after showing status)
     if (options.checkTools) {
@@ -126,16 +134,17 @@ async function main(): Promise<void> {
       await validateElizaCloudKey(config.elizacloudApiKey);
       const available = await fetchAvailableElizaCloudModels(config.elizacloudApiKey);
       if (available.size > 0 && !available.has(config.llmModel)) {
+        const skipSet = new Set<string>(ELIZACLOUD_SKIP_MODEL_IDS);
         const PREFERRED_ELIZACLOUD_MODELS = [
           'anthropic/claude-sonnet-4-5-20250929',
-          'anthropic/claude-3.7-sonnet',
           'anthropic/claude-3.5-sonnet',
           // Short names for gateways that don't use owner/ prefix
           'claude-sonnet-4-5-20250929',
           'claude-3-5-sonnet-20241022',
           'claude-3-5-haiku-20241022',
         ];
-        const chosen = PREFERRED_ELIZACLOUD_MODELS.find(m => available.has(m))
+        const chosen = PREFERRED_ELIZACLOUD_MODELS.find(m => available.has(m) && !skipSet.has(m))
+          ?? Array.from(available).filter(m => !skipSet.has(m)).sort()[0]
           ?? Array.from(available).sort()[0];
         config.llmModel = chosen;
         if (PREFERRED_ELIZACLOUD_MODELS.some(m => available.has(m))) {
@@ -163,6 +172,9 @@ async function main(): Promise<void> {
     }
     await closeOutputLog();
 
+    if (isFailureExitReason(resolver.getExitReason())) {
+      process.exit(1);
+    }
   } catch (error) {
     resolver?.abortRun();
     if (error instanceof Error) {

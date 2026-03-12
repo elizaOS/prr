@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-05 · **Recorded cycles:** 20 · **Historical (legacy):** 4
+**Last updated:** 2026-03-11 · **Recorded cycles:** 37 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -9,8 +9,12 @@ Single audit log for output.log, prompts.log, and code changes. Use it to spot r
 ## How to use this doc
 
 1. **Before an audit:** Skim "Recurring patterns" and "Regression watchlist" so you know what to watch for.
-2. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
-3. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
+2. **During an audit (output.log / prompts.log):** Do not trust the logs alone for "fixed" or "already verified". **Verify against the workdir** when possible:
+   - Find the workdir path in the log (e.g. `Reusing existing workdir: /root/.prr/work/…` or `Workdir preserved: …`).
+   - For at least one issue that the log says is "already verified", "fixed", or "dismissed (already-fixed)", open the **actual file** at the cited path (and line range) in that workdir and confirm the fix is present (e.g. the bug pattern is gone). If the log says "skip fixer — all already verified" but the file still contains the bug, that is a finding (stale verification, head change, etc.).
+   - This catches mismatches where state says "fixed" but the branch was rebased/reverted or verification was wrong.
+3. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
+4. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
 
 ---
 
@@ -28,8 +32,10 @@ These themes have appeared in multiple cycles. When auditing, check whether they
 | **Mid-loop bypass** | 12 | Thresholds (couldNotInject) or filters (solvability) only run at push-iteration start; new comments or in-loop state bypass them and burn iterations. Guard: apply same dismissal/threshold checks at start of each fix iteration; run assessSolvability on new comments before adding to queue. |
 | **STALE vs YES (snippet)** | 12 | Verifier returns STALE when explanation is "can't evaluate", "doesn't show", "only shows" (incomplete snippet) — judge instructions say use YES. Guard: STALE→YES override for these phrasings; avoid false positives on legitimate STALE ("only shows re-export"). |
 | **Basename / fragment path** | 13 | Short or fragment paths (e.g. `10/route.ts`, `modelcontextprotocol/.../auto-top-up.ts`) resolved by basename to a *different* file with same basename → wrong content injected, S/R fails or wrong file edited. Guard: prefer basename candidate that shares path prefix with requested path; skip substitution when fragment looks like repo-root and no exact match. |
+| **Stale verification / head change** | 33, 34 | Log says "already verified" or "fixed" but the workdir file still has the bug (e.g. PR head changed, state not cleared). Guard: when PR head SHA changes, clear verified state so fixes are re-checked; auditor must verify at least one "fixed" issue against workdir file content. |
 | **Fix-in-test vs production** | 15 | Review says "fix mocks in tests" / "root cause in tests" but TARGET FILE(S) only lists production file → fixer edits production (no-op or workaround) or tries test file and is blocked. Guard: when review body indicates fix-in-test, add co-located test file to allowed paths so fixer can edit it. |
 | **Canonical path propagation / rename targets** | 19, 20 | Early phases resolve basename/truncated review paths, but later cleanup/commit/reporting paths still use raw fragments or extension words like `test.ts` → successful fixes crash on `git add`/hashing or the real rename target is blocked as disallowed. Guard: use canonical primary path everywhere after issue creation; infer explicit rename destinations for filename-review issues. |
+| **Hidden target file / lesson contamination** | 21 | Review comment is attached to implementation file, but the actual bug is in a test/import caller file that is not directly named in TARGET FILE(S). The fixer says "wrong file" repeatedly, while unrelated same-file lessons muddy the prompt. Guard: infer likely hidden test targets from the review text and scope lessons to the issue, not merely the file. |
 
 ---
 
@@ -55,12 +61,18 @@ Improvements should reinforce these, not reverse.
 | **Multi-file / call sites** | When TARGET FILE(S) has multiple files and review mentions callers (await, file:line), nudge: update implementation and every call site so signatures match. |
 | **Fix-in-test allowed path** | When review says to fix root cause in tests / update mocks (e.g. "fix logger mocks in tests" rather than workaround in production), add co-located test file to allowed paths so fixer can edit it (optional follow-up from Cycle 15). |
 | **Canonical paths / iteration commit scope** | Use canonical primary path (`resolvedPath ?? comment.path`) in cleanup, snippet refresh, verification, dismissal, and commit/reporting. Do not commit/push when the worktree is dirty but the current push iteration produced no newly verified fixes. For rename/file-naming issues, add the destination path (e.g. `foo.test.ts`) to TARGET FILE(S) instead of treating `.test.ts` as a sibling file named `test.ts`. |
+| **Hidden target inference / issue-scoped lessons** | When a review says the bug is in a test file importing the implementation, infer likely test targets (for example `dir/__tests__/foo.test.ts`) and persist them on retry. If the target still cannot be inferred after repeated `WRONG_LOCATION` / `CANNOT_FIX`, stop retrying automatically. Filter lessons by issue text + current target paths so unrelated same-file failures do not dominate the prompt. |
 
 ---
 
 ## Regression watchlist
 
 Quick checks each audit. Drill into the category that matches what you changed.
+
+**Log vs reality (output.log / prompts.log)**
+- [ ] For runs that report "already verified" or "fixed": spot-check at least one such issue by reading the file at the cited path in the workdir (path from log: `Reusing existing workdir:` / `Workdir preserved:`). Confirm the bug pattern is actually gone. If the log says fixed but the file still has the bug, treat as a finding (stale verification, head change).
+- [ ] RESULTS SUMMARY "N issue(s) fixed and verified" counts only verifiedFixed/verifiedComments; it must not include issues dismissed as already-fixed (pill-output.md #2; cycles 33/34).
+- [ ] Base-merge push: when log says "Merged latest X into Y" followed by "Everything up-to-date", the merge was a no-op (already merged). Verify `mergeBaseBranch` returns `alreadyUpToDate: true` so the caller doesn't attempt a pointless push.
 
 **Prompt quality**
 - [ ] Queue line shows to-fix vs already-verified when relevant.
@@ -102,6 +114,9 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] Canonical path propagation: cleanup/hash/commit/snippet-refresh/verification-failure flows use `resolvedPath ?? comment.path`, not raw truncated review paths (Cycle 20).
 - [ ] Commit gate: if a push iteration verified no new fixes, do not create/push a commit from leftover dirty files in the worktree (Cycle 20).
 - [ ] Rename target inference: review comments about missing `.test.ts` / `.spec.ts` naming add the renamed destination to TARGET FILE(S), and sibling extraction does not hallucinate bare `test.ts` from extension prose (Cycle 20).
+- [ ] Hidden test target inference: comments like "test file has invalid imports" add likely test targets to allowed paths at issue creation and retry time; repeated disallowed attempts to those paths should be learned (Cycle 21).
+- [ ] Missing-target escape hatch: if repeated `WRONG_LOCATION` / `CANNOT_FIX` says the real bug is in a hidden test file and no concrete target can be inferred, stop automatic retries and surface it for human follow-up (Cycle 21).
+- [ ] Lesson scoping: per-issue prompt lessons should exclude unrelated same-file failures when their symbols/target paths do not match the current comment (Cycle 21).
 
 **Output / UX / conflict**
 - [ ] Pluralize for "N file(s)" / "N fix(es)" in verification, iteration, repository, llm-api.
@@ -133,12 +148,362 @@ Copy the block below for each new cycle.
 
 **Flip-flop check:** Y / N — (one line: any revert or conflicting change?)
 
-**Notes:** (optional)
+**Notes:** (optional). If you verified a "fixed" issue against the workdir, note it (e.g. "Spot-checked path:line — fix present" or "Spot-checked — bug still present, finding").
 ```
 
 ---
 
 ## Recorded cycles
+
+### Cycle 36 — 2026-03-10 (split-exec + pill hook, .split-plan.md)
+
+**Artifacts audited:** split-exec-output.log (2 splits, 0 commits cherry-picked), .split-plan.md, pill-output.md improvements #1–#7.
+
+**Findings:**
+- **High:** split-exec commit parser only read inline `**Commits:** sha1, sha2`; plan listed commits as bullet lines (`- \`12d870a\` (partial — …)`), so parser found 0 commits and every split was skipped (tool no-op).
+- **Medium:** .split-plan.md contained duplicate YAML frontmatter (two `---` blocks); second block could confuse body offset.
+- **Medium:** Pill zero-improvements path still gave one generic message from the hook; Cycle 35 had flagged distinct reasons but console output from closeOutputLog() didn’t surface them.
+- **Low:** When split-exec skipped a split (0 commits), log said only "No commits listed — skipping" with no hint of what the parser saw.
+- **Low:** package-lock.json bin section lacked split-exec/split-plan (npm link wouldn’t expose them).
+
+**Improvements implemented:**
+- parse-plan.ts: Extract SHAs from bullet lines matching `- \`sha\` (note)` in addition to inline **Commits:**; strip optional second frontmatter from body; add rawCommitLines per split for diagnostics.
+- .split-plan.md: Removed duplicate frontmatter block.
+- pill orchestrator: Distinct spinner messages per reason (no API key, no logs, zero improvements, API failed); same reasons already returned for callers.
+- shared/logger.ts: When pill hook gets no result, print actionable console message per reason (no logs, no API key, zero improvements, audit failed).
+- split-exec/run.ts: When 0 commits for a split, log rawCommitLines or hint that **Commits:**/bullets were missing.
+- AUDIT-CYCLES.md: This cycle; header bumped to 36.
+
+**Flip-flop check:** N — Parser and pill messages additive; no behavior revert.
+
+**Notes:** package-lock.json bins: run `npm install` to refresh lockfile so bin includes split-exec/split-plan.
+
+---
+
+### Cycle 37 — 2026-03-11 (output.log BabylonSocial/babylon#1229, aria/accessibility)
+
+**Artifacts audited:** output.log from prr run on [BabylonSocial/babylon#1229](https://github.com/BabylonSocial/babylon/pull/1229) (Ticker Enhancement; ~4m 25s, 2 issues fixed and verified, 3 dismissed).
+
+**Findings:**
+- **Medium:** SVG accessibility issue (Copilot: "PredictionArcMeter renders an unlabelled SVG — add aria-label/title") was queued, fixed, and verified, but the PR may still lack a meaningful accessible name. Root cause: (1) truncated snippet in analysis/fix so fixer saw incomplete context and may have added only `role="img"` or `aria-hidden`; (2) verifier had no rule that accessibility fixes must add a meaningful accessible name (aria-label/title with conveyed value), so any attribute change was accepted as "fixed".
+- **Low:** Unresolved issues built from batch analysis used original `freshToAnalyze[i].codeSnippet` instead of the widened snippet from `batchInput[i]` when we had expanded for short or a11y — fixer prompt could still get the narrow snippet.
+
+**What went well:** Dismissals correct (3 PR-level/Vercel/no target file). STALE→YES override worked: analyzer returned STALE ("SVG section truncated") and we correctly kept the issue in queue. Both issues sent to fixer; 2 edits applied and pushed.
+
+**Improvements implemented:**
+- prompt-builder.ts: `commentAsksForAccessibility(body)` to detect aria-label, screen reader, accessible name, unlabelled SVG, etc. Exported for issue-analysis.
+- issue-analysis.ts: When building batch input, use wider snippet when `isSnippetTooShort(codeSnippet) || commentAsksForAccessibility(item.comment.body)` so analyzer and fixer get full component context. When building unresolved issues from batch results, use `batchInput[i].codeSnippet` (widened) as the issue's codeSnippet so fix prompt gets same context.
+- client.ts (batch verify): Rule for ACCESSIBILITY — answer YES only if code adds a meaningful accessible name (aria-label/title with value); if only aria-hidden or role="img" with no label, answer NO and suggest adding aria-label/title with actual value.
+- client.ts (final audit): AUDIT RULES rule 5 — same a11y rule for FIXED vs UNFIXED.
+- prompt-builder.ts (fix instructions): New instruction 6 — for ACCESSIBILITY issues, add a meaningful accessible name; do not add only aria-hidden or role="img" without a label.
+
+**Flip-flop check:** N — Additive (wider snippet for a11y, verifier/fix rules); no revert.
+
+**Notes:** Re-run prr on #1229 with `--reverify` or after these changes to get proper aria-label (e.g. "X% yes") on the SVG.
+
+---
+
+### Cycle 22 — 2026-03-10 (prompts.log elizaOS/eliza#6562)
+
+**Artifacts audited:** prompts.log (#0001–#0048: dedup, fix, batch verify, analysis prompts and responses)
+
+**Findings:**
+- **Medium:** Batch verifier responded with "## Fix 1: YES: ..." / "## Fix 2: NO: ..." (markdown headings) instead of "1: YES: ..." / "2: NO: ...", causing parse shortfall (parsed: 0, expected: 2); retry with stronger model parsed correctly. Prompt uses "## Fix N" as section headers, so model echoed that format.
+- **Low:** Dedup prompt (#0001): model returned "GROUP: 1,3,4,5 → canonical 3" for comments on lines 2493, 2530, 2531, 2507 — violated "CRITICAL: Only group comments that have the SAME line number." Re-split logic correctly rejected; prompt could reinforce same-line check before replying.
+- **Low:** Fix prompt structure (TARGET FILE(S), PR context, diff summary) is clear; single-file explicit path (Cycle 21) should reduce wrong-path attempts.
+
+**Improvements implemented:**
+- Batch verify prompt: added BAD example "Do NOT use headings: ## Fix 1: YES: ... is invalid; use 1: YES: ..." and instruction that parser expects plain lines starting with fix number.
+- Batch verify parser: extended regex to accept "## Fix N: YES|NO: ..." so responses in that format are parsed (resilience when model still uses headings).
+
+**Flip-flop check:** N — Additive prompt + defensive parser; no behavior revert.
+
+**Notes:** Optional: dedup prompt could add "Before replying, verify every index in a GROUP has the same (line N); if any two differ, do NOT group them."
+
+---
+
+### Cycle 23 — 2026-03-10 (prr-logs-5 elizaOS/prr#5)
+
+**Artifacts audited:** output.log + prompts.log from Actions run 22882523900 (gh run download); PR #5, 4 comments, 3 fixed, 1 dismissed, push failed
+
+**Findings:**
+- **High:** Push after base-branch merge used `git.push('origin', branch)` (simple-git) instead of shared `push()` from git-push.ts. In CI this led to "could not read Password for 'https://...@github.com': No such device or address" (merge push) then 403 on fix push — token was in URL but credential helper/TTY prompt still triggered; fix push already used shared push with auth URL.
+- **High:** Fix push 403 "Permission to elizaOS/prr.git denied to github-actions[bot]" — workflow had `contents: read` only (fixed in earlier change: `contents: write`).
+- **Medium:** types.ts:167 "add tests for parseBranchSpec/normalizeCompareBranch" — fixer created `tools/prr/github/github-api-parser.test.ts`; allowed path was different (`tests/github-api-parser.test.ts` or similar). Lesson "Fixer attempted disallowed file(s): tests/github-branch-parser.test.ts"; then "Skipping newfile — path already exists" for tests/github-api-parser.test.ts; verifier saw "code change is empty" (new file not in diff shown?). Issue dismissed as file-unchanged after single-issue attempts. Aligns with Cycle 21/22: single-file explicit path and test-path resolution for "add tests" issues.
+
+**Improvements implemented:**
+- base-merge: After merging base branch, use shared `push()` from git-push.ts with `githubToken` instead of `git.push('origin', branch)`. Ensures merge-commit push uses same one-shot auth URL and credential.helper= / GIT_TERMINAL_PROMPT=0 as fix push (avoids "could not read Password" in CI).
+- run-setup-phase: Pass `config.githubToken` into `checkAndMergeBaseBranch`.
+
+**Flip-flop check:** N — Same push path as fix loop; no behavior change for local/dev.
+
+**Notes:** Run downloaded via `gh run download 22882523900 --repo elizaOS/prr --name prr-logs-5`. Optional: when "add tests for X" resolves to a test path that doesn't exist, ensure allowedPaths and verifier diff include the to-be-created path so newfile isn't treated as "empty change".
+
+---
+
+### Cycle 24 — 2026-03-10 (output.log elizaOS/eliza#6562, 737 lines)
+
+**Artifacts audited:** output.log (same PR as Cycle 21; exit "All issues resolved", 34 fixed from prior runs, 95 dismissed, 0 remaining; 1 fix this session then no_changes)
+
+**Findings:**
+- **Low:** When exit is no_changes and 0 issues still need attention, exit details said "No changes to commit (fixer made no modifications)" — correct but could clarify that all issues were already resolved (nothing new to push). Optional from Cycle 21.
+- **Low:** Dedup again returned mixed line numbers (2531, 2507); re-split → 0 groups. STALE→YES overrides applied for truncated-snippet reasons. Queue showed "(1 to fix, 8 already verified)" then "(all 9 already verified — will skip fixer)". Behavior correct.
+- **Positive:** Single fix (message-service.test.ts voiceMessage rename) applied, verified, pushed; iteration 2 skipped fixer and exited cleanly; dismissal comments deduped (added: 0, skipped: 11).
+
+**Improvements implemented:**
+- When no changes to commit and 0 issues still need attention, exit details now: "All issues were already resolved (fixed or dismissed); nothing new to commit or push." (push-iteration-loop noChangesDetails)
+
+**Flip-flop check:** N — Clarifier only; same exit reason.
+
+**Notes:** No code bugs; run completed as intended.
+
+---
+
+### Cycle 25 — 2026-03-10 (prompts.log elizaOS/eliza#6562, same run as Cycle 24)
+
+**Artifacts audited:** prompts.log (~3.3k lines, 10 entries). Phases: #0001 dedup (3 comments, runtime.ts), #0002 response, #0003 judge (63k chars, 20 issues), #0004 response, #0005 fixer (46k chars, 1 issue), #0006 response, #0007 verifier (voiceMessage fix), #0008 response, #0009 dismissal-comment (roles.ts), #0010 response.
+
+**Findings:**
+- **Low:** Dedup #0001: model returned `GROUP: 1,3 → canonical 3` for comments on lines 2531 and 2507 (different lines). Re-split logic correctly produced no cross-line merge; behavior was correct. Optional: add an explicit verification step in the dedup prompt so the model self-checks (line N) before replying.
+- **Low:** Judge #0004: several STALE due to truncation (issue_8, issue_10, issue_13) with clear explanations; issue_1 NO cited lines 2511–2512; format and citations were good.
+- **Positive:** Fixer #0005 addressed only the allowed issue (voiceMessage → message in message-service.test.ts), used RESULT: FIXED; verifier #0007 returned 1: YES with citation; dismissal #0009/#0010 returned EXISTING for roles.ts (comment already present). Slug correlation: prompts.log uses consecutive slugs per call (#0001 PROMPT, #0002 RESPONSE, …); correlation is an eliza logger concern (issue_3 in this run), not PRR.
+
+**Improvements implemented:**
+- Dedup prompt: added explicit verification step so the model checks (line N) for each index in each GROUP before replying; reduces wrong same-GROUP when lines differ.
+
+**Optional follow-ups:**
+- None from this audit.
+
+**Flip-flop check:** N — Prompt clarification only; re-split already enforces same-line.
+
+**Notes:** Run matched output.log (Cycle 24): one fix applied and verified; exit clean. Prompts.log audit confirms judge/fixer/verifier/dismissal prompts and responses were coherent and produced correct outcomes.
+
+---
+
+### Cycle 26 — 2026-03-10 (output.log elizaOS/eliza#6562, full run complete)
+
+**Artifacts audited:** output.log (2,011 lines). Exit: All issues resolved; 36 fixed and verified (from previous runs), 105 dismissed, 0 remaining. No new commits this run (all already resolved); dismissal comments added: 1, skipped: 11.
+
+**Findings:**
+- **Low:** RESULTS SUMMARY and GitHub review markdown showed raw numbers for dismissed breakdown (e.g. "24 stale, 38 not-an-issue") and for fixed/dismissed counts in buildReviewSummaryMarkdown. Workspace rule requires formatNumber for user-visible numbers.
+- **Positive:** Exit message correct ("All issues were already resolved (fixed or dismissed); nothing new to commit or push."). Queue and final state consistent (no remaining). Timing, token summary, model performance, and debug issue table all present. Single duplicate summary post fixed in prior commit (review only, no issue comment).
+
+**Improvements implemented:**
+- reporter.ts: use formatNumber for category counts in printFinalSummary dismissed line (24 → formatNumber(count) in categoryParts).
+- reporter.ts: use formatNumber in buildReviewSummaryMarkdown for fixed count, dismissed total, per-category counts, remaining count, and "this run" note so GitHub comment matches locale formatting.
+
+**Flip-flop check:** N — Number formatting only; no behavior change.
+
+**Notes:** Run completed as intended; 106 LLM calls, ~$2.34 estimated cost; 36 verified from state, 105 dismissed (stale/not-an-issue/file-unchanged/already-fixed/path-unresolved).
+
+---
+
+### Cycle 27 — 2026-03-10 (prompts.log full run, elizaOS/eliza#6562)
+
+**Artifacts audited:** prompts.log (~24k lines). Judge prompts ~49–82k chars; fix prompts #0005 ~85k, #0067 ~145,336 chars, #0077 ~145,178 chars (single-issue with full file injection). One TARGET FILE(S) line showed **`2Fmessage-service.test.ts`** (path segment from URL-encoding). Judge response #0050: issue_6 STALE (“truncated code doesn’t show enough of the reply action handler”).
+
+**Findings:**
+- **Medium:** Single-issue prompts (#0067, #0077) reached ~145k chars (MAX_INJECT_CHARS_TOTAL = 160k; two files at 80k each + template). Acceptable but costly; optional: lower effective cap or inject line window (±N lines) for very large files to keep prompts under ~120k.
+- **Low:** Judge returned STALE for reply optimization (issue_6) because truncated reply action snippet didn’t show enough context. Optional: expand snippet for `bootstrap/actions/reply.ts` (or when comment mentions hasRequestedInState / RECENT_MESSAGES / ACTION_STATE) so judge can return YES/NO instead of STALE.
+- **Low:** Path `packages/typescript/src/__tests__/2Fmessage-service.test.ts` in TARGET FILE(S) — URL-encoding artifact (“%2F” with % stripped). Paths extracted from comment body (e.g. GitHub links) can contain 2F at start of segment.
+
+**Improvements implemented:**
+- shared/path-utils.ts: added `normalizePathSegmentEncoding(path)` to strip leading "2F"/"2f" from path segments (hex for '/'); `filterAllowedPathsForFix` now normalizes then dedupes then filters so TARGET FILE(S) never show `2Fmessage-service.test.ts`.
+
+**Flip-flop check:** N — Path normalization only; valid paths unchanged; 2F-prefixed segments become correct repo-relative paths.
+
+**Notes:** Recorded cycles = 27. Follow-ups implemented: (1) single-issue inject cap lowered to 60k/120k in recovery.ts; (2) commentNeedsLifecycleContext extended with hasRequestedInState, RECENT_MESSAGES, ACTION_STATE, reply action handler, and getCodeSnippet uses conservative analysis for path ending in reply.ts so judge gets broader snippet.
+
+---
+
+### Cycle 28 — 2026-03-10 (prompts.log BabylonSocial/babylon#1207)
+
+**Artifacts audited:** prompts.log (3,344 lines, 22 entries). Phases: #0001–#0004 dedup (3.6k / 3k chars), #0005–#0006 batch judge (43k chars, 18 issues), #0007–#0008 single verifier, #0009–#0010 batch fix (31k chars), #0011–#0014 batch verifier + single verifier, #0015–#0022 dismissal-comment (4 prompts, 4 responses: SKIP, SKIP, COMMENT, COMMENT, COMMENT).
+
+**Findings:**
+- **Positive:** Judge #0006 returned sensible YES/NO/STALE mix; verifier #0012 gave 1–4 with one NO+lesson (resolve(import.meta.dir, '..') still brittle); dismissal #0016 prompt included "Why it was dismissed: The truncated snippet ... doesn't show line 82-85" and model responded SKIP; no 2F path or ERROR entries.
+- **Low:** Many "truncated — snippet was cut for prompt size" in judge prompt #0005 (43k). Judge still produced usable verdicts; optional: already have wideSnippets when context ≥100k.
+- **Low:** Dismissal-comment prompt could explicitly tell the model to respond SKIP when the dismissal reason states the snippet doesn't show the referenced lines, so behavior is consistent even when surrounding code in the prompt later includes those lines (e.g. re-fetched).
+
+**Improvements implemented:**
+- llm/client.ts generateDismissalComment: added TASK item 3 — "If the dismissal reason above says the snippet does not show the lines referenced in the concern, respond SKIP (you cannot safely add a comment without seeing that code)." Renumbered previous step 3 to 4.
+
+**Flip-flop check:** N — Additive instruction only; EXISTING/SKIP/COMMENT behavior unchanged.
+
+**Notes:** Run was babylon PR #1207 (odi-public → staging); prompt sizes all under 50k; no single-issue 145k prompts in this run.
+
+---
+
+### Cycle 29 — 2026-03-10 (output.log + prompts.log BabylonSocial/babylon#1207, same run as Cycle 28)
+
+**Artifacts audited:** output.log (784 lines), prompts.log (3,451 lines, 16 entries). Run: merge staging (forceMerge, push nothingToPush), 122 comments → 4 in queue (all verified), 3 fixes committed and pushed; iteration 2 skip fixer (prompt length 0); 1 dismissal comment added; exit all resolved.
+
+**Findings:**
+- **Positive:** RESULTS SUMMARY and dismissed breakdown use formatNumber (Cycle 26). Debug issue table Counts use formatNumber. Model performance line uses formatNumber. Merge ran with forceMerge; push reported nothingToPush (branch already up-to-date with remote). Queue line clear: "4 issue(s) entering fix loop (all 4 already verified — will skip fixer)". Fix prompt #0007 69,775 chars (under 80k cap). Judge/verifier/dismissal prompts and responses as expected.
+- **Low:** When fixer is skipped because all issues in queue are already verified, debug logged "Fix prompt length → 0" and "Empty prompt or no issues - skipping fixer" — slightly ambiguous; clearer to state "all issues in queue already verified (prompt empty)" when that is the reason.
+- **Optional:** Many dismissals "File no longer exists: test-unit-isolated.ts" (or generate-skills-md.ts, format.test.ts) while the file exists at scripts/test-unit-isolated.ts etc. Path resolution for "file no longer exists" could resolve fragment/basename to repo path before checking; low priority.
+
+**Improvements implemented:**
+- prompt-building.ts: when skipping fixer because prompt is empty but unresolvedIssues.length > 0, debug now "Skipping fixer: all issues in queue already verified (prompt empty)"; when no issues in queue, "Skipping fixer: no issues in queue".
+
+**Flip-flop check:** N — Debug message wording only; no behavior change.
+
+**Notes:** Same babylon #1207 run as Cycle 28; this audit focused on output.log flow and prompts.log sizes/phase consistency.
+
+---
+
+### Cycle 30 — 2026-03-10 (output.log + prompts.log BabylonSocial/babylon#1207)
+
+**Artifacts audited:** output.log (800 lines), prompts.log (1,694 lines, 18 entries). Run: merge staging (forceMerge, nothingToPush); 136 comments → 2 in queue (1 to fix, 1 already verified); 1 fix (config/index.ts chain ID) committed and pushed; iteration 2 skip fixer (all verified); exit all resolved.
+
+**Findings:**
+- **Positive:** Queue line clear ("2 issue(s) entering fix loop (1 to fix, 1 already verified)"); single-issue fix prompt 18k chars; verifier YES for chain ID fix; RESULTS SUMMARY and dismissed counts use formatNumber; debug "Skipping fixer: no issues in queue" (Cycle 29: when all verified we now log "all issues in queue already verified (prompt empty)").
+- **Low:** Iteration summary showed "Fixed: 1 issues" and "Failed: 0 issues" — workspace rule: pluralize so "1 issue" / "0 issues" (not "1 issues").
+
+**Improvements implemented:**
+- iteration-cleanup.ts: use pluralize(verifiedCount, 'issue') and pluralize(failedCount, 'issue') for iteration summary "Fixed" and "Failed" lines so output is "1 issue" / "2 issues" not "1 issues".
+
+**Flip-flop check:** N — Display only; no behavior change.
+
+**Notes:** Merge still reported nothingToPush (run likely before --no-ff); judge issue_5 STALE (snippet doesn't show line 1120) but issue was fixed in same run via single-issue fixer.
+
+---
+
+### Cycle 33 — 2026-02-11 (output.log BabylonSocial/babylon#1213, 1490 lines)
+
+**Artifacts audited:** output.log (1490 lines). Run: new workdir, conflict resolved via LLM; 16 comments → 10 dismissed (4 stale, 6 not-an-issue) → 5 batch → 4 open; fix loop fixed 3 (run-prr.yml x2, TickerClient.tsx); push failed with "refusing to allow a Personal Access Token to create or update workflow … without `workflow` scope"; one issue ("### Code Quality (Positive)" on daily-topic-service.ts) consumed many iterations (positive-only comment); revert reported "Could not reset daily-topic-service.ts" (pathspec mismatch); second push iteration hit same workflow-scope error; stalemate bail-out, exit Error.
+
+**Findings (improvements not already in code):**
+- **High:** Push fails when token lacks `workflow` scope and PR touches `.github/workflows/`. PRR does not detect this or suggest adding workflow scope (or fixing workflow files manually). Add detection and a clear user-facing message.
+- **Medium:** "### Code Quality (Positive)" (positive/summary section) was treated as fixable and burned iterations. Extend positive-section detection to headings like "… (Positive)" so they are dismissed as not-an-issue.
+- **Medium:** Revert after rejected fix used `issue.comment.path` (e.g. `daily-topic-service.ts`); git reset then failed with "pathspec 'daily-topic-service.ts' did not match any files". Use the path that appears in the changed-files list (full repo path) when adding target to filesToRevert so pathspec matches.
+- **Low:** After a workflow-scope push failure, consider surfacing or handling workflow-file issues differently (e.g. in AAR or next-steps) so we don’t keep fixing workflow files that can’t be pushed with the current token.
+
+**Improvements implemented:**
+- **git-push.ts:** When push fails with stderr containing "refusing to allow" and "workflow" (or "without `workflow` scope"), set a clear error message: token needs `workflow` scope for `.github/workflows` changes; add scope or fix workflow files manually.
+- **solvability.ts:** Extended `isWhatsGoodOrPositiveSummaryComment` to match headings like "### Code Quality (Positive)" and "### … (Positive)" so positive-only sections are dismissed as not-an-issue.
+- **recovery.ts:** When building filesToRevert after a rejected fix, avoid adding a short/basename path when the same file is already in the list under its full path (use path from filesToRevert that matches issue target; only add resolvedPath ?? comment.path if no match).
+
+**Flip-flop check:** N — Additive detection and path logic; no behavior revert.
+
+**Notes:** Recurring theme "Noise in queue" (positive/summary comments) reinforced. Basename/path theme (Cycle 13) related: revert used short path; fix ensures we use the path git knows (from getChangedFiles).
+
+---
+
+### Cycle 34 — 2026-02-11 (prompts.log BabylonSocial/babylon#1213, same run as Cycle 33)
+
+**Artifacts audited:** prompts.log (10,870 lines, 52 entries). Phases: #0001–#0002 merge conflict resolution (predictions-route-fallback.test.ts), #0003–#0006 dedup/grouping, #0007–#0008 batch fix (36k chars, 4 issues), #0009–#0010 batch verifier, then repeated single-issue fix prompts (19k chars × many for daily-topic “Code Quality (Positive)”), verifier, dismissal. Batch fixer correctly returned "ISSUE 4 RESULT: ALREADY_FIXED" for the positive comment; issue stayed in queue and was sent repeatedly. Later prompt (#0035) showed **TARGET FILE(S): `.github/workflows/run-prr.yml`, `.github/workflows/TickerClient.tsx`** — TickerClient.tsx was wrongly placed under .github/workflows/ because getSiblingFilePathsFromComment used dir of primary (run-prr.yml) + basename from body. Fixer also tried apps/docs/content/reference/ticker-embed.md when TARGET listed "ticker-embed.md" (short path).
+
+**Findings (improvements not already in code):**
+- **Medium:** When batch fix returns "ISSUE N RESULT: ALREADY_FIXED" (or CANNOT_FIX) for specific issues, those issues are not marked resolved and remain in the single-issue queue, burning many repeated prompts. Parse per-issue RESULT lines from batch fix output and dismiss/mark resolved for ALREADY_FIXED (and optionally CANNOT_FIX) so they don’t re-enter the fix loop.
+- **Medium:** getSiblingFilePathsFromComment builds path as `dir(primaryPath) + basename`. For a comment that lists multiple files in different trees (e.g. "#### \`.github/workflows/run-prr.yml\`" and "#### \`apps/web/.../TickerClient.tsx\`"), the body contains "TickerClient.tsx"; we then add ".github/workflows/TickerClient.tsx" (wrong). Prefer full path from body when the body contains a path-with-slash that includes that basename (e.g. backtick-wrapped or path-like string).
+- **Low:** TARGET FILE(S) sometimes lists short paths (e.g. "ticker-embed.md"); fixer resolves to a different full path (e.g. apps/docs/content/reference/ticker-embed.md) and hits disallowed-file lesson. Prefer resolved full paths in allowedPaths when available.
+- **Low:** Judge response used "issue_3: YES I1 D1 |" (pipe) instead of colons; prompt says "Use colons between fields. No pipes." Parser may accept it; optional tightening or doc.
+
+**Improvements implemented:**
+- **prompt-builder.ts (getSiblingFilePathsFromComment):** Before adding dir+basename, check if the body contains a path string that includes that basename and has a slash (e.g. \`apps/web/.../TickerClient.tsx\`). If so, use that full path instead of dir+basename so we don’t add wrong paths like .github/workflows/TickerClient.tsx.
+
+**Flip-flop check:** N — Additive path logic; no behavior revert.
+
+**Notes:** Batch ALREADY_FIXED parsing is a follow-up (touches execute-fix-iteration and possibly apply-batch result handling). Positive-comment dismissal (Cycle 33) would have prevented the daily-topic issue from entering the queue; batch ALREADY_FIXED handling would have cleared it after the first batch.
+
+---
+
+### Cycle 35 — 2026-03-10 (output.log BabylonSocial/babylon#1213, 26 comments, 0 fixes this session)
+
+**Artifacts audited:** output.log (477 lines). Run: 26 review comments, all dismissed or verified from prior runs; 0 fixes this session; merge-base "already up-to-date"; pill produced no output (generic "No improvements to record" with no diagnostic).
+
+**Findings:**
+- **Medium:** Configured default model (e.g. anthropic/claude-3.7-sonnet) was in ElizaCloud skip list; only debug line logged "skipping (known timeout)". Operators in CI don't see why their configured model was never used.
+- **Medium:** RESULTS SUMMARY showed "1 issue fixed and verified (from previous runs)" but no "0 new this session" — easy to misread as this run having fixed something.
+- **Medium:** Pill zero-improvements path gave same message for no logs, no API key, API failure, and LLM returned zero; impossible to debug pill integration (e.g. empty pill-prompts.log likely = missing API key in subprocess).
+- **Low:** Review path `TickerClient.ts` (no x) dismissed as missing-file while `TickerClient.tsx` exists; common bot typo; extension-fuzzy match would recover.
+
+**Improvements implemented (pill-output.md):**
+- rotation.ts: When configured default is in skip list, log user-visible warning with replacement model.
+- reporter.ts: RESULTS SUMMARY when session verified = 0: "(all from previous runs; 0 new this session)".
+- pill orchestrator: Distinct reasons no_logs, no_api_key, api_call_failed, zero_improvements_from_llm; callers log why.
+- solvability.ts: .ts → .tsx extension typo: resolve to .tsx when exact/suffix match for alt path; debug + context hint.
+- constants.ts: ELIZACLOUD_SKIP_MODEL_IDS with WHY (single source of truth); rotation.ts imports it.
+- README.md: Model examples table — illustrative disclaimer and real example IDs (gpt-4o, claude-sonnet-4-5-20250929).
+
+**Flip-flop check:** N — Additive logging, constants, and path resolution; no behavior revert.
+
+**Notes:** Patterns align with watchlist: stale verification/head change (33/34), basename/path (13). New: silent model substitution.
+
+---
+
+### Cycle 31 — 2026-03-11 (output.log BabylonSocial/babylon#1207, 821 lines)
+
+**Artifacts audited:** output.log (821 lines). Run: 140 comments, 56 dismissed upfront, 5 fresh analyses → 2 open; 2 in fix queue (1 to fix, 1 already verified); 1 fix (generate-skills-md.ts) committed/pushed; iter 2 cache reuse, exit all resolved.
+
+**Findings (improvements not already in code):**
+- **Medium:** Comments that "request confirmation about a design decision" (e.g. chain ID default) are dismissed as `stale`; they are not code staleness. Add solvability check and dismiss as `not-an-issue` with reason "Design decision / confirmation request — not a code fix" so table shows correct category.
+- **Low:** Debug table "reason" can say "File no longer exists: X" when comment path is Y (LLM explanation); optionally append "(comment path: Y)" when X ≠ comment.path for clarity.
+- **Low:** "unseen" count (8) has no in-log definition; add one line in table header or docs: "unseen = no decision recorded (e.g. not yet analyzed or merged in dedup)".
+- **Low:** PR metadata requests still use category `stale`; optional dedicated category (e.g. `non-code-change`) so table doesn't imply code obsolescence.
+
+**Improvements implemented:** None this cycle (audit-only).
+
+**Flip-flop check:** N — Audit only; no code change.
+
+**Notes:** Hedged visibility and weak-identifier stale retargeting are already in code; path resolution and create-file handling behaved as intended this run.
+
+---
+
+### Cycle 32 — 2026-03-11 (prompts.log BabylonSocial/babylon#1207, same run as Cycle 31)
+
+**Artifacts audited:** prompts.log (#0001 dedup through #0020 dismissal-comment responses).
+
+**Findings (improvements not already in code):**
+- **Medium:** Dismissal-comment LLM was called for a concern dismissed as "This is requesting confirmation about a design decision (chain ID default change), not a code issue to fix." The model returned a COMMENT that was then post-filtered as "too generic, skipping". Skip the dismissal-comment LLM when reason matches design-decision/confirmation phrasing (same as we skip for "file no longer exists" and metadata).
+- **Low:** Fix prompt lesson listed multiple TARGET FILE(S) from a prior batch while the current issue had a single target file; optional normalization for single-issue prompts. Optional: skip dismissal-comment LLM when reason indicates truncated snippet or line-out-of-range (no code at target to attach Note to).
+
+**Improvements implemented:** None this cycle (audit-only).
+
+**Flip-flop check:** N — Audit only; no code change.
+
+**Notes:** Dedup, batch analysis, model recommendation, fix prompt, and batch verify formats and responses were correct. Create-file NOTE in batch analysis worked; verifier used plain "1: YES: ..." format.
+
+---
+
+### Cycle 21 — 2026-03-10 (output.log elizaOS/eliza#6562)
+
+**Artifacts audited:** output.log (exit "All issues resolved", 34 fixed from prior runs, 90 dismissed, 0 remaining; ~78 LLM calls)
+
+**Findings:**
+- **Medium:** "Add tests for banner.ts" — TARGET FILE(S) was single path `banner.test.ts` (resolved to `packages/.../__tests__/banner.test.ts`), but fixer repeatedly created `plugins/plugin-discord/.../banner.test.ts`; disallowed-file lesson existed but model still inferred colocated path.
+- **Low:** Dedup re-split: GROUP had mixed line numbers (2493, 2530, 2531, 2507) → re-split correctly yielded 0 same-line groups; no change needed.
+- **Low:** Verifier sometimes responded "## Fix 1: YES..." instead of `issue_1: YES: ...` → parse shortfall; stronger model retry parsed correctly.
+- **Low:** Exit when nothing to commit: "No changes to commit" could add "All remaining issues were already fixed or dismissed; nothing new to commit or push."
+- **Low:** Number formatting: reminder to use `formatNumber` for user-visible counts (workspace rule).
+
+**Improvements implemented:**
+- Single-issue prompt: when `allowedPaths.length === 1`, add explicit line "The ONLY file you may create or edit for this issue is: `<full path>`. Do not create or edit files in any other directory (e.g. plugins/ or a colocated path)." (utils.ts `buildSingleIssuePrompt`)
+
+**Flip-flop check:** N — Additive prompt clarity; no behavior revert.
+
+**Notes:** Optional follow-ups: verifier prompt BAD example for "## Fix N" format; final summary line when 0 remaining and no commit; optional dedup fallback "within N lines" when re-split yields 0 (low priority).
+
+### Cycle 21 (stashed) — 2026-03-05 (output.log + prompts.log follow-up on hidden test-file targets)
+
+**Artifacts audited:** output.log + prompts.log for the `generate-skills-md` run, especially repeated `WRONG_LOCATION` / disallowed-file attempts and polluted lesson sections
+
+**Findings:**
+- **High:** PRR still knew the review was about a test file import bug but kept building TARGET FILE(S) around `scripts/generate-skills-md.ts` only, so the fixer repeatedly tried plausible test files and got blocked as disallowed.
+- **Medium:** Repeated `WRONG_LOCATION` / `CANNOT_FIX` answers that all said "the real bug is in a hidden test file" still went through normal retry loops when no concrete target could be inferred.
+- **Medium:** File-scoped lessons for `scripts/generate-skills-md.ts` leaked unrelated failures (YAML indentation, duplicate op mapping) into the import-path issue prompt.
+
+**Improvements implemented:**
+- Added hidden test-target inference for review comments describing bugs in a test file attached to an implementation file; use it during issue creation, prompt building, retry allowlist expansion, and recovery.
+- Persist inferred hidden test targets after `WRONG_LOCATION` / `UNCLEAR` / `CANNOT_FIX`, and dismiss after repeated misses when no concrete target can be inferred.
+- Added `getLessonsForIssue(...)` so prompts use issue-scoped lessons instead of every lesson ever recorded for the same file.
+
+**Flip-flop check:** N — This continues the same direction as earlier cycles: make TARGET FILE(S) more accurate, reduce repeated wrong-file retries, and cut prompt noise instead of broadening prompts indiscriminately.
+
+**Notes:** The hidden-target inference is intentionally conservative: it only triggers when the review explicitly says the bug is in a test file/import path, and it prefers existing conventional test paths before offering guessed ones.
+
+---
 
 ### Cycle 20 — 2026-03-05 (output.log + prompts.log follow-up on pathspec crashes and partial batches)
 

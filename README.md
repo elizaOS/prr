@@ -144,19 +144,36 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ## Installation
 
-This repo contains **prr** (PR Resolver) and **pill** (Program Improvement Log Looker). Both use a shared library under `shared/`; tool code lives under `tools/prr/` and `tools/pill/`.
+This repo contains **prr** (PR Resolver), **pill** (Program Improvement Log Looker), **split-plan** (PR decomposition planner), **split-exec** (execute split plan), and **story** (PR narrative & changelog). All use a shared library under `shared/`; tool code lives under `tools/prr/`, `tools/pill/`, `tools/split-plan/`, `tools/split-exec/`, and `tools/story/`.
 
 ```bash
 npm install
-npm run build
+npm run typecheck
 
 # Run prr directly
 node dist/tools/prr/index.js <pr-url>
+```
 
-# Or link globally (both prr and pill available)
+### Story: PR or branch narrative & changelog
+
+The **story** tool builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a PR or branch. Three modes: **PR** (title/body + commits + files), **single branch** (commit history only, no comparison), **two branches** (`--compare <branch>`; order auto-detected, story is about the branch you passed first). See **[tools/story/README.md](tools/story/README.md)** for full documentation and WHYs.
+
+### Split-plan: PR decomposition planner
+
+The **split-plan** tool analyzes a large PR (diffs, commits, dependencies), discovers open PRs on the same base branch as “buckets,” and writes a human-editable `.split-plan.md` with a dependency analysis and a proposed split into smaller, reviewable PRs. *Why*: LLM agents often produce PRs that mix refactors, features, and fixes; splitting by concern keeps reviews human-sized. **split-exec** reads that plan and iteratively cherry-picks commits into existing or new PR branches and opens new PRs. See **[tools/split-plan/README.md](tools/split-plan/README.md)** and **[tools/split-exec/README.md](tools/split-exec/README.md)** for full documentation and WHYs.
+
+### Pill: Program Improvement Log Looker
+
+**pill** audits a project using its output.log and prompts.log (from prr, story, split-exec, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. Pill runs on close only when you pass **`--pill`** (prr, story, split-exec, split-plan). See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
+
+```bash
+# Or link globally (prr, pill, split-plan, split-exec, and story available)
 npm link
-prr --version   # See the cat!
-pill --help    # Pill CLI
+prr --version     # See the cat!
+pill --help       # Pill CLI
+split-plan --help  # PR decomposition planner
+split-exec --help  # Execute split plan (cherry-pick, push, create PRs)
+story --help      # PR narrative & changelog
 ```
 
 ## Configuration
@@ -174,7 +191,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 
 # Or use OpenAI
 # PRR_LLM_PROVIDER=openai
-# PRR_LLM_MODEL=gpt-5.2
+# PRR_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-xxxx
 
 # Default fixer tool (rotates automatically when stuck)
@@ -204,8 +221,31 @@ prr https://github.com/owner/repo/pull/123 --tool claude-code
 
 # Dry run - show issues without fixing
 prr https://github.com/owner/repo/pull/123 --dry-run
+```
 
-# Keep work directory for inspection
+### Story (examples)
+
+```bash
+# PR
+story https://github.com/owner/repo/pull/123
+story owner/repo#456
+
+# Single branch (commit history only)
+story owner/repo@feature/siwe
+story https://github.com/owner/repo/tree/feature/siwe
+
+# Two branches (story from older → newer; primary branch = first arg)
+story https://github.com/owner/repo/tree/v2-develop --compare v1-develop
+
+# Write to file; verbose; tune context size
+story owner/repo#456 --output CHANGELOG.md
+story owner/repo@branch -v --max-commits 200 --max-files 500
+story --help   # PR narrative & changelog
+```
+
+Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`). Logs: `story-output.log`, `story-prompts.log`.
+
+```bash
 prr https://github.com/owner/repo/pull/123 --keep-workdir
 
 # Re-verify all issues (ignore verification cache)
@@ -250,6 +290,7 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-batch` | off | Disable batched LLM calls |
 | `--verbose` | on | Debug output |
 
+Defaults marked **on** (e.g. `--auto-push`, `--keep-workdir`) are true by default; use `--no-auto-push` or `--no-keep-workdir` to disable them.
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 
@@ -289,7 +330,7 @@ concurrency:
 jobs:
   prr:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-prr'
-    uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+    uses: OWNER/prr/.github/workflows/run-prr-server.yml@babylon
     with:
       pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: 'OWNER/prr'
@@ -709,22 +750,21 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **example** models; actual availability depends on your Cursor account/plan:
+Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **illustrative examples** (actual IDs depend on Cursor and provider APIs):
 
 | Model | Notes |
 |-------|-------|
 | `auto` | Let Cursor pick |
-| `claude-4-opus-thinking` | Claude Opus (thinking) |
-| `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
-| `o3` | OpenAI reasoning |
-| `gpt-5` | GPT-5 |
+| `claude-sonnet-4-5-20250929` | Claude Sonnet (example) |
+| `gpt-4o` | OpenAI (example) |
+| `o3` | OpenAI reasoning (when available) |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 
 ```text
-Round 1: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
-Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
+Round 1: claude-sonnet-4-5 (Claude) → gpt-4o (GPT) → o3 (OpenAI)
+Round 2: next in rotation ...
 ... then next tool ...
 // Review: interleaving models enhances diversity in responses, reducing similar failure patterns.
 ```
@@ -734,7 +774,7 @@ Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
 
 ```bash
 # Example: override model (bypasses rotation)
-prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
+prr https://github.com/owner/repo/pull/123 --model claude-sonnet-4-5-20250929
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123

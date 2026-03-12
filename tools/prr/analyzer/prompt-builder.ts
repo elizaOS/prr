@@ -128,6 +128,97 @@ export function reviewSuggestsFixInTest(body: string): boolean {
   );
 }
 
+/** True when the review says the bug lives in a test file (for example an invalid import in the test). */
+export function reviewTargetsMentionedTestFile(body: string): boolean {
+  const b = body ?? '';
+  return (
+    /\btest file\b/i.test(b) &&
+    (
+      /\b(?:invalid|incorrect|wrong)\s+import/i.test(b) ||
+      /\btries?\s+to\s+import\b/i.test(b) ||
+      /\bactual\s+file\s+is\s+at\b/i.test(b) ||
+      /\bthis\s+test\s+will\s+fail\b/i.test(b) ||
+      /\bimport\s+path\b/i.test(b)
+    )
+  );
+}
+
+function isTestLikePath(path: string): boolean {
+  return /(?:^|\/)__tests__\/|(?:^|\/)[^/]+\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(path);
+}
+
+function getPathStem(path: string): string {
+  return path
+    .replace(/^.*\//, '')
+    .replace(/\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i, '')
+    .replace(/\.(?:ts|tsx|js|jsx)$/i, '')
+    .toLowerCase();
+}
+
+function isPlausibleMentionedTestPath(candidatePath: string, primaryPath: string): boolean {
+  if (!isTestLikePath(candidatePath)) return false;
+  const primaryFirst = primaryPath.split('/')[0] ?? '';
+  const candidateFirst = candidatePath.split('/')[0] ?? '';
+  if (primaryFirst && candidateFirst && primaryFirst !== candidateFirst) return false;
+  return getPathStem(candidatePath) === getPathStem(primaryPath);
+}
+
+/**
+ * Infer likely test-file targets when the review says the bug is in a test file
+ * but the comment is attached to the implementation file.
+ */
+export function getMentionedTestFilePaths(
+  issue: UnresolvedIssue,
+  options?: {
+    pathExists?: (path: string) => boolean;
+    changedFiles?: string[];
+    attemptedPaths?: string[];
+  }
+): string[] {
+  const primaryPath = issue.resolvedPath ?? issue.comment.path ?? '';
+  if (!primaryPath || !reviewTargetsMentionedTestFile(issue.comment.body ?? '')) return [];
+
+  const extMatch = primaryPath.match(/\.(ts|tsx|js|jsx)$/i);
+  if (!extMatch) return [];
+  const ext = `.${extMatch[1]}`;
+  const dir = primaryPath.includes('/') ? primaryPath.replace(/\/[^/]+$/, '') : '';
+  const stem = primaryPath.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/i, '');
+
+  const ranked: string[] = [];
+  const seen = new Set<string>();
+  const push = (candidate: string | null | undefined) => {
+    if (!candidate) return;
+    if (!isPlausibleMentionedTestPath(candidate, primaryPath)) return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    ranked.push(candidate);
+  };
+
+  for (const candidate of options?.attemptedPaths ?? []) push(candidate);
+  for (const candidate of options?.changedFiles ?? []) push(candidate);
+
+  const dirParts = dir ? dir.split('/') : [];
+  const ancestorDirs: string[] = [];
+  for (let i = dirParts.length; i >= Math.max(1, dirParts.length - 2); i--) {
+    const ancestor = dirParts.slice(0, i).join('/');
+    if (ancestor) ancestorDirs.push(ancestor);
+  }
+  if (dir && !ancestorDirs.includes(dir)) ancestorDirs.unshift(dir);
+
+  for (const ancestor of ancestorDirs) {
+    push(`${ancestor}/__tests__/${stem}.test${ext}`);
+    push(`${ancestor}/__tests__/${stem}.spec${ext}`);
+  }
+  if (dir) {
+    push(`${dir}/${stem}.test${ext}`);
+    push(`${dir}/${stem}.spec${ext}`);
+  }
+
+  const existing = options?.pathExists ? ranked.filter((p) => options.pathExists!(p)) : [];
+  if (existing.length > 0) return existing;
+  return ranked.slice(0, 2);
+}
+
 /** If the issue is on a test file and mentions lesson-normalize impl, return the impl path so the fixer may edit it. Audit: test-file issues (e.g. normalize-lesson-text.test.ts) need impl changes in tools/prr/state/lessons-normalize.ts. Exported for single-issue prompt. */
 export function getImplPathForTestFileIssue(issue: UnresolvedIssue, fileLessons: string[] | undefined): string | null {
   if (!/\.test\.(ts|js)$/.test(issue.comment.path)) return null;
@@ -164,6 +255,16 @@ export function isSnippetTooShort(snippet: string): boolean {
   const lines = snippet.split('\n').map((l) => l.replace(/^\s*\d+\s*:\s*/, '').trim());
   const meaningful = lines.filter((l) => l.length > 0 && !/^\.{1,3}\s*$/.test(l));
   return meaningful.length <= 1;
+}
+
+/** True when the review comment asks for accessibility (aria-label, screen reader, accessible name, unlabelled SVG, etc.). WHY: Use a wider snippet for a11y issues so the fixer sees the full component and adds a meaningful accessible name, not just role="img" or aria-hidden. */
+export function commentAsksForAccessibility(body: string | undefined): boolean {
+  if (!body || body.length < 20) return false;
+  const lower = body.toLowerCase();
+  return (
+    /\b(aria-label|aria-label\s*=|accessible\s+name|screen\s+reader|unlabelled\s+svg|unlabeled\s+svg|without\s+(an?\s+)?(accessible\s+)?name|add\s+(an?\s+)?accessible\s+name|accessible\s+to\s+screen\s+readers?)\b/.test(lower) ||
+    /\b(role\s*=\s*["']img["']\s+aria-label|title\s+for\s+accessibility|conveys?\s+information\s+visually)\b/.test(lower)
+  );
 }
 
 /** When the issue is about consolidating a duplicate (extract to shared / remove duplication) and the comment names another file that contains the duplicate, return that path so we can add it to allowedPaths. Enables fixer to remove the duplicate from both files. */
@@ -269,9 +370,28 @@ export function getPathsToDeleteFromComment(issue: UnresolvedIssue): string[] {
 }
 
 /**
+ * Find a path string in body that contains a slash and ends with the given basename.
+ * WHY: prompts.log audit babylon#1213 — body had "#### `apps/web/.../TickerClient.tsx`" but we used
+ * dir(primary) + basename → ".github/workflows/TickerClient.tsx" (wrong). Prefer explicit full path.
+ */
+function findFullPathInBodyForBasename(body: string, basename: string): string | null {
+  const escaped = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Path-like: contains slash, ends with basename (backtick-wrapped or word boundary)
+  const re = new RegExp(`[\`'"]([a-zA-Z0-9_/.()-]+/${escaped})[\`'"]|\\b([a-zA-Z0-9_/.()-]+/${escaped})\\b`, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const path = (m[1] ?? m[2])?.trim();
+    if (path && path.includes('/') && path.endsWith(basename)) return path;
+  }
+  return null;
+}
+
+/**
  * When the comment body mentions sibling files by name (e.g. "entity.store.ts and task.store.ts"),
  * return repo-relative paths in the same directory as the issue file so we can add them to
  * allowedPaths. Enables fixer to edit the files that actually contain the issue.
+ * When the body contains a full path that includes the basename (e.g. `apps/web/.../TickerClient.tsx`),
+ * use that path instead of dir+basename so we don't produce wrong paths like .github/workflows/TickerClient.tsx.
  */
 export function getSiblingFilePathsFromComment(issue: UnresolvedIssue): string[] {
   const primaryPath = issue.resolvedPath ?? issue.comment.path ?? '';
@@ -286,7 +406,8 @@ export function getSiblingFilePathsFromComment(issue: UnresolvedIssue): string[]
     const basename = m[1];
     if (/^(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(basename)) continue;
     if (basename === primaryBasename) continue;
-    const full = dir ? `${dir}/${basename}` : basename;
+    const fullFromBody = findFullPathInBodyForBasename(body, basename);
+    const full = fullFromBody ?? (dir ? `${dir}/${basename}` : basename);
     if (seen.has(full)) continue;
     seen.add(full);
     if (isPathAllowedForFix(full)) out.push(full);
@@ -359,6 +480,8 @@ export function buildFixPrompt(
      * sees them in immediate context.
      */
     perFileLessons?: Map<string, string[]>;
+    /** Per-issue lesson lookup; more precise than per-file when the same file has unrelated comments. */
+    perIssueLessons?: Map<string, string[]>;
     /**
      * PR metadata injected into the prompt so the fixer understands what the
      * PR is trying to accomplish, not just individual review comments.
@@ -611,7 +734,9 @@ export function buildFixPrompt(
     for (const p of getPathsToDeleteFromComment(issue)) {
       if (!basePaths.includes(p)) basePaths = [...basePaths, p];
     }
-    const fileLessons = options?.perFileLessons?.get(primaryPath) ?? options?.perFileLessons?.get(issue.comment.path);
+    const fileLessons = options?.perIssueLessons?.get(issue.comment.id)
+      ?? options?.perFileLessons?.get(primaryPath)
+      ?? options?.perFileLessons?.get(issue.comment.path);
     const implPath = getImplPathForTestFileIssue(issue, fileLessons);
     let allowedPaths = implPath && isPathAllowedForFix(implPath) && !basePaths.includes(implPath) ? [...basePaths, implPath] : basePaths;
     const testPath = getTestPathForSourceFileIssue(issue, {
@@ -619,6 +744,9 @@ export function buildFixPrompt(
       forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
     });
     if (testPath && isPathAllowedForFix(testPath) && !allowedPaths.includes(testPath)) allowedPaths = [...allowedPaths, testPath];
+    for (const hiddenTestPath of getMentionedTestFilePaths(issue, { pathExists: options?.pathExists })) {
+      if (isPathAllowedForFix(hiddenTestPath) && !allowedPaths.includes(hiddenTestPath)) allowedPaths = [...allowedPaths, hiddenTestPath];
+    }
     allowedPaths = filterAllowedPathsForFix(allowedPaths);
     parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
     // When TARGET FILE(S) has multiple files and the review mentions callers, nudge to update implementation and every call site.
@@ -764,11 +892,12 @@ export function buildFixPrompt(
   parts.push('3. Do NOT rewrite files, reorganize code, or make stylistic changes (except when an issue explicitly requires refactoring as above)');
   parts.push('4. Do NOT change working code that is not mentioned in the review');
   parts.push('5. Preserve existing code structure, variable names, and formatting');
-  parts.push('6. If an issue is unclear, use RESULT: UNCLEAR to explain what is ambiguous instead of guessing.');
-  parts.push('7. When using search/replace, copy the search text EXACTLY from the actual file content — the code snippet in the review comment may be stale');
-  parts.push('8. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, import, etc.)');
-  parts.push('9. Do not output <change> blocks where <search> and <replace> are identical (no-op); they are skipped and waste verification.');
-  parts.push('10. For new files use <file path="path/to/file.ts">content</file>; do not use <newfile>.');
+  parts.push('6. For ACCESSIBILITY issues (aria-label, screen reader, unlabelled SVG): add a meaningful accessible name (e.g. aria-label or title with the conveyed value, such as the percentage or state). Do not add only aria-hidden or role="img" without a label — that does not address the concern.');
+  parts.push('7. If an issue is unclear, use RESULT: UNCLEAR to explain what is ambiguous instead of guessing.');
+  parts.push('8. When using search/replace, copy the search text EXACTLY from the actual file content — the code snippet in the review comment may be stale');
+  parts.push('9. Keep search blocks SHORT (3-10 lines) with at least one unique identifier (function name, variable, import, etc.)');
+  parts.push('10. Do not output <change> blocks where <search> and <replace> are identical (no-op); they are skipped and waste verification.');
+  parts.push('11. For new files use <file path="path/to/file.ts">content</file>; do not use <newfile>.');
   parts.push('');
   parts.push('## Reporting Your Outcome\n');
   parts.push('After addressing the issues, include a RESULT line for each issue (or one overall):');

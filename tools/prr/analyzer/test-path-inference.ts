@@ -54,9 +54,10 @@ export function getTestPathForIssueLike(
   if (!forceTestPath && !issueRequestsTestsText(combined)) return null;
 
   const dir = path.includes('/') ? path.replace(/\/[^/]+$/, '') : '';
-  const preferOrFallback = (colocated: string, integration: string | null): string => {
+  const preferOrFallback = (colocated: string, integration: string | null, testsRoot?: string): string => {
     if (pathExists) {
       if (pathExists(colocated)) return colocated;
+      if (testsRoot && pathExists(testsRoot)) return testsRoot;
       if (integration && pathExists(integration)) return integration;
     }
     return colocated;
@@ -94,7 +95,8 @@ export function getTestPathForIssueLike(
   if (dir) {
     const colocated = normalizeRelativePath(`${dir}/${base}`);
     const integration = normalizeRelativePath(`${dir}/../__tests__/integration/${base}`);
-    return preferOrFallback(colocated, integration);
+    const testsRoot = `__tests__/${base}`;
+    return preferOrFallback(colocated, integration, testsRoot);
   }
   return base;
 }

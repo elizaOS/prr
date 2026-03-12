@@ -33,7 +33,7 @@ import * as LessonsAPI from '../state/lessons-index.js';
 import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 import { tryRestoreFromBaseIfRequested } from './restore-from-base.js';
-import { getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests, reviewSuggestsFixInTest } from '../analyzer/prompt-builder.js';
+import { getMentionedTestFilePaths, getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests, reviewSuggestsFixInTest, reviewTargetsMentionedTestFile } from '../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
 import { HALLUCINATION_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 import { existsSync } from 'fs';
@@ -80,10 +80,16 @@ function addDisallowedFilesLessonsAndState(
       return issueStem === attemptedStem;
     }
     for (const issue of issuesForPrompt) {
-      const wantsTestPath = issueRequestsTests(issue) || reviewSuggestsFixInTest(issue.comment.body ?? '');
+      const wantsTestPath = issueRequestsTests(issue) || reviewSuggestsFixInTest(issue.comment.body ?? '') || reviewTargetsMentionedTestFile(issue.comment.body ?? '');
       if (!wantsTestPath) continue;
-      const inferredTestPath = getTestPathForSourceFileIssue(issue, { forceTestPath: wantsTestPath });
-      if (inferredTestPath && allowedPathsForBatch.includes(inferredTestPath)) continue;
+      const inferredTestPaths = [
+        ...getMentionedTestFilePaths(issue, { attemptedPaths: skippedDisallowedFiles }),
+        ...(() => {
+          const testPath = getTestPathForSourceFileIssue(issue, { forceTestPath: wantsTestPath });
+          return testPath ? [testPath] : [];
+        })(),
+      ].filter((p, idx, arr) => Boolean(p) && arr.indexOf(p) === idx);
+      if (inferredTestPaths.some((p) => allowedPathsForBatch.includes(p))) continue;
       const attemptedTestPath = skippedDisallowedFiles.find(
         (p) => testFilePattern.test(p) && isPlausibleTestPathForIssue(p, issue.comment.path)
       );
@@ -402,6 +408,17 @@ export async function executeFixIteration(
     const forceTestPath = reviewSuggestsFixInTest(i.comment.body ?? '');
     const testPath = getTestPathForSourceFileIssue(i, { pathExists, forceTestPath });
     if (testPath && !base.includes(testPath)) base.push(testPath);
+    if (issueRequestsTests(i) || forceTestPath) {
+      const srcPath = i.resolvedPath ?? i.comment.path ?? '';
+      if (/\.(?:ts|tsx|js|jsx)$/.test(srcPath)) {
+        const testBase = srcPath.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/, '.test.$1');
+        const testsRootPath = `__tests__/${testBase}`;
+        if (!base.includes(testsRootPath)) base.push(testsRootPath);
+      }
+    }
+    for (const hiddenTestPath of getMentionedTestFilePaths(i, { pathExists })) {
+      if (!base.includes(hiddenTestPath)) base.push(hiddenTestPath);
+    }
     return base;
   }))));
 
@@ -468,6 +485,10 @@ export async function executeFixIteration(
     if (result.skippedDisallowedFiles?.length) {
       addDisallowedFilesLessonsAndState(result.skippedDisallowedFiles, issuesForPrompt, allowedPathsForBatch, lessonsContext, stateContext);
     }
+    if (result.skippedNewfilePathExists?.length) {
+      const pathList = result.skippedNewfilePathExists.join(', ');
+      LessonsAPI.Add.addGlobalLesson(lessonsContext, `File(s) already exist: ${pathList}. Use <change path="..."> to edit, not <newfile> (overwriting would destroy existing content).`);
+    }
     const errorResult = ResolverProc.handleFixerError(result, runner, fixerTime, rapidFailureCount, lastFailureTime, stateContext, getCurrentModel);
     
     if (errorResult.shouldExit) {
@@ -531,6 +552,10 @@ export async function executeFixIteration(
   // Strict allowlist: fixer also attempted disallowed files — add file-scoped lesson and state.
   if (result.skippedDisallowedFiles?.length) {
     addDisallowedFilesLessonsAndState(result.skippedDisallowedFiles, issuesForPrompt, allowedPathsForBatch, lessonsContext, stateContext);
+  }
+  if (result.skippedNewfilePathExists?.length) {
+    const pathList = result.skippedNewfilePathExists.join(', ');
+    LessonsAPI.Add.addGlobalLesson(lessonsContext, `File(s) already exist: ${pathList}. Use <change path="..."> to edit, not <newfile> (overwriting would destroy existing content).`);
   }
 
   // Placeholder test content (e.g. expect(true).toBe(true)): add lesson and treat as non-fix so we rotate without counting as success.

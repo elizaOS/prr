@@ -481,6 +481,11 @@ const CHEAP_MODELS: Record<string, string> = {
   elizacloud: 'openai/gpt-4o-mini',               // ElizaCloud uses owner/model IDs
 };
 
+/** Return the fast/cheap model for the provider (for split-plan, dedup, etc.). WHY exported: split-plan uses it when SPLIT_PLAN_LLM_MODEL is unset to avoid 504 timeouts. */
+export function getCheapModelForProvider(provider: string): string | undefined {
+  return CHEAP_MODELS[provider];
+}
+
 /**
  * Filter attempt history to only lines for issues in the current batch.
  * WHY: Audit showed full history (all issues) sent to every verify batch; only the current batch is relevant.
@@ -1667,6 +1672,7 @@ ${codeSnippet}
       '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
       '3. Partial fixes do NOT count - the full issue must be resolved',
       '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
+      '5. For ACCESSIBILITY (aria-label, accessible name, screen reader, unlabelled SVG): mark FIXED only if the code adds a meaningful accessible name (aria-label or title with the conveyed value). If the only change is aria-hidden or role="img" with no label, mark UNFIXED.',
       '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
@@ -1688,30 +1694,47 @@ ${codeSnippet}
     }
 
     const ISSUE_HEADER_APPROX = 180; // "[N] path:line — comment preview" without code
+    const COMMENT_PREVIEW_MAX = 500;
     const batches: Array<{ groups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> }> = [];
     let currentGroups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> = [];
     let currentSize = 0;
 
     for (const [filePath, fileIssues] of byFile) {
-      // Collect all unique snippets for this file (each issue may point to a different region)
       const snippets = new Map<string, string>();
-      let totalSnippetSize = 0;
       for (const issue of fileIssues) {
-        if (!snippets.has(issue.id)) {
-          snippets.set(issue.id, issue.codeSnippet);
-          totalSnippetSize += issue.codeSnippet.length;
+        if (!snippets.has(issue.id)) snippets.set(issue.id, issue.codeSnippet);
+      }
+      // Split this file's issues into chunks that fit within availableForIssues (avoids 306k+ prompts → 0-parsed / 504)
+      const issueList = [...fileIssues];
+      let chunkStart = 0;
+      while (chunkStart < issueList.length) {
+        let chunkSize = 0;
+        let chunkEnd = chunkStart;
+        while (chunkEnd < issueList.length) {
+          const issue = issueList[chunkEnd]!;
+          const add = (snippets.get(issue.id) ?? '').length + ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX;
+          if (chunkSize + add > availableForIssues && chunkEnd > chunkStart) break;
+          chunkSize += add;
+          chunkEnd++;
         }
-      }
-      // Review: calculates group size by including total snippet size and header for each issue
-      const groupSize = totalSnippetSize + fileIssues.length * ISSUE_HEADER_APPROX;
+        if (chunkEnd === chunkStart) chunkEnd = chunkStart + 1;
+        const chunkIssues = issueList.slice(chunkStart, chunkEnd);
+        const chunkSnippets = new Map<string, string>();
+        for (const issue of chunkIssues) {
+          const s = snippets.get(issue.id);
+          if (s) chunkSnippets.set(issue.id, s);
+        }
+        const groupSize = chunkSize;
 
-      if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
-        batches.push({ groups: currentGroups });
-        currentGroups = [];
-        currentSize = 0;
+        if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
+          batches.push({ groups: currentGroups });
+          currentGroups = [];
+          currentSize = 0;
+        }
+        currentGroups.push({ filePath, snippets: chunkSnippets, issues: chunkIssues });
+        currentSize += groupSize;
+        chunkStart = chunkEnd;
       }
-      currentGroups.push({ filePath, snippets, issues: fileIssues });
-      currentSize += groupSize;
     }
     if (currentGroups.length > 0) {
       batches.push({ groups: currentGroups });
@@ -1725,6 +1748,7 @@ ${codeSnippet}
     });
 
     const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
+    let lastAuditResponseContent: string | null = null;
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
       const { groups } = batches[batchIdx];
@@ -1752,7 +1776,16 @@ ${codeSnippet}
       promptParts.push('---');
       promptParts.push(`Respond with exactly ${batchIssues.length} lines, one per issue [1] through [${batchIssues.length}]:`);
 
-      const response = await this.complete(promptParts.join('\n'));
+      const promptText = promptParts.join('\n');
+      if (promptText.length > 280_000) {
+        debug('Final audit batch prompt very large (risk of 0-parsed or 504)', {
+          batchIndex: batchIdx + 1,
+          promptChars: promptText.length,
+          issueCount: batchIssues.length,
+        });
+      }
+      const response = await this.complete(promptText);
+      lastAuditResponseContent = response.content;
 
       // Parse responses - match [N] FIXED/UNFIXED pattern
       const lines = response.content.split('\n');
@@ -1795,6 +1828,10 @@ ${codeSnippet}
       debug('WARNING: Some audit responses could not be parsed - marked as needing review', {
         unparsed: issues.length - parsed,
       });
+    }
+    if (parsed === 0 && lastAuditResponseContent) {
+      const preview = lastAuditResponseContent.slice(0, 600).replace(/\n/g, ' ');
+      debug('Final audit parse failed (0 parsed) — response preview for debugging', { preview });
     }
 
     return allResults;
@@ -2114,6 +2151,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'If the concern is fully addressed in another file or by a different function (e.g. this code now delegates to a function that implements the fix), answer YES and cite where the fix is implemented.',
       'For lifecycle/cache/leak issues (Map/Set/cache cleanup, pruning, TTL, stale entries), answer YES only if the code shown demonstrates safe cleanup across the relevant creation/replacement/cleanup paths. A declaration-only tweak is not enough if stale entries can still survive on early returns or thrown errors.',
       '',
+      'For ACCESSIBILITY issues (review asks for aria-label, accessible name, screen reader, unlabelled SVG): answer YES only if the code adds a MEANINGFUL accessible name (e.g. aria-label or title with the conveyed value, such as the percentage or state). If the only change is aria-hidden="true" or role="img" with no label, or a generic/empty label, the concern is NOT addressed — answer NO and in LESSON suggest adding aria-label or title with the actual value (e.g. "X% yes").',
+      '',
       'For "duplicate" / "extract to shared utility" issues: The fix is usually to remove the duplicate from THIS file and import from the shared module (often lib/utils/...). The review may mention another file as where the duplicate already exists — that is a reference only; the canonical shared source is typically a dedicated util (e.g. lib/utils/db-errors.ts), not that reference file. In LESSON lines, do not suggest "use from [reference file]" as the shared source when a lib/utils/... module is the intended canonical location.',
       '',
       'For EACH fix, respond with EXACTLY this format:',
@@ -2129,6 +2168,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'Example: 1: YES: The null check on line 45 matches what the comment requested',
       '2: NO: Added try/catch but the comment asks for input validation before the call',
       'LESSON: Review asks for pre-call validation (line 32), not post-call error handling',
+      '',
+      'CRITICAL FORMAT: Reply with plain lines starting with the fix number (e.g. 1: YES: ... or 2: NO: ...).',
+      'Do NOT use markdown headings in your response. Wrong: ## Fix 1: YES: ... Right: 1: YES: ...',
       '',
       '---',
       '',
@@ -2185,7 +2227,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     parts.push('---');
     parts.push('');
-    parts.push('Now verify each fix. Use the fix number (e.g. "1: YES: ..." or "2: NO: ..."). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
+    parts.push('Now verify each fix. Reply with lines like 1: YES: ... or 2: NO: ... (plain text, no ## Fix headings). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
     return parts.join('\n');
   }
 
@@ -2200,13 +2242,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
-    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..." (no colon after FIX_ID), or "FIX_ID: 1" then "NO: ..." on next line
+    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "## Fix 1: YES: ..." (prompts.log audit), or "FIX_ID: 1" then "NO: ..." on next line
     const lines = content.split('\n');
     let currentOriginalId: string | null = null;
 
     for (const line of lines) {
-      // Match "1: YES: ..." or "fix_2: NO: ..." or "FIX_ID: 1: NO: ..." or "FIX_ID 1: YES: ..." (output.log audit: model used "FIX_ID 1:" with space, no colon)
-      const verifyMatch = line.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
+      // Match "1: YES: ...", "## Fix 1: YES: ...", "fix_2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..."
+      const verifyMatch = line.match(/^(?:##\s*[Ff]ix\s+|fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
       if (verifyMatch) {
         const [, numStr, yesNo, explanation] = verifyMatch;
         const idx = parseInt(numStr, 10);
@@ -2552,7 +2594,8 @@ ${reason}
 TASK:
 1. If there is ALREADY a comment near line ${params.line} that addresses the concern, respond: EXISTING
 2. If the code is self-explanatory and no comment adds value, respond: SKIP
-3. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
+3. If the dismissal reason above says the snippet does not show the lines referenced in the concern, respond SKIP (you cannot safely add a comment without seeing that code).
+4. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
 
 RULES:
 - Write as a developer, not a review tool. Explain the design decision, not what changed in a diff.

@@ -115,24 +115,55 @@ export class GitHubAPI {
     }
   }
 
+  /**
+   * Update a PR branch with the base branch using GitHub's API (equivalent to the "Update branch" button).
+   * Returns true on success (202), false on failure. The API responds asynchronously — the merge
+   * commit may not be immediately visible; callers should fetch the remote branch after.
+   */
+  async updatePRBranch(owner: string, repo: string, prNumber: number): Promise<boolean> {
+    debug('Updating PR branch via GitHub API', { owner, repo, prNumber });
+    try {
+      const { data } = await this.octokit.pulls.updateBranch({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+      debug('PR branch update accepted', { message: data?.message, url: data?.url });
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('PR branch update via API failed', { error: msg });
+      return false;
+    }
+  }
+
   async getPRStatus(owner: string, repo: string, prNumber: number, ref: string): Promise<PRStatus> {
     debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
 
-    // Get all check runs for this ref using pagination
+    // Get all check runs for this ref using pagination.
+    // 422/404 can occur when Checks API is unavailable (e.g. token lacks checks:read, or repo settings).
     const allCheckRuns: Array<{ status: string; name: string }> = [];
-    for await (const response of this.octokit.paginate.iterator(
-      this.octokit.checks.listForRef,
-      {
-        owner,
-        repo,
-        ref,
-        per_page: 100,
+    try {
+      for await (const response of this.octokit.paginate.iterator(
+        this.octokit.checks.listForRef,
+        {
+          owner,
+          repo,
+          ref,
+          per_page: 100,
+        }
+      )) {
+        const runs = (response.data as any).check_runs || response.data;
+        if (Array.isArray(runs)) {
+          allCheckRuns.push(...runs);
+        }
       }
-    )) {
-      // paginate.iterator returns items directly in response.data for this endpoint
-      const runs = (response.data as any).check_runs || response.data;
-      if (Array.isArray(runs)) {
-        allCheckRuns.push(...runs);
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status === 422 || status === 404) {
+        debug('Check runs API unavailable (422/404), assuming no check runs', { owner, repo, ref });
+      } else {
+        throw err;
       }
     }
 
@@ -157,12 +188,24 @@ export class GitHubAPI {
     // Total excludes review-bot checks so CI completion reflects real CI only.
     const totalChecks = inProgressChecks.length + pendingChecks.length + completedChecks;
 
-    // Get combined status
-    const { data: status } = await this.octokit.repos.getCombinedStatusForRef({
-      owner,
-      repo,
-      ref,
-    });
+    // Get combined status (commit statuses; can also 422 if token lacks scope).
+    let status: { state: string };
+    try {
+      const res = await this.octokit.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref,
+      });
+      status = res.data;
+    } catch (err: unknown) {
+      const code = (err as { status?: number })?.status;
+      if (code === 422 || code === 404) {
+        debug('Combined status API unavailable (422/404), assuming success', { owner, repo, ref });
+        status = { state: 'success' };
+      } else {
+        throw err;
+      }
+    }
 
     // Get requested reviewers (pending review requests)
     const { data: pr } = await this.octokit.pulls.get({
@@ -917,6 +960,316 @@ export class GitHubAPI {
   }
 
   /**
+   * Get list of files changed in a PR (filename, status, additions, deletions).
+   * WHY: Story and other tools need the file list for changelog context; paginates so large PRs are fully listed.
+   */
+  async getPRFiles(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+  }>> {
+    debug('Fetching PR files', { owner, repo, prNumber });
+    const files = await this.octokit.paginate(
+      this.octokit.pulls.listFiles,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    return files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+  }
+
+  /**
+   * Get list of files changed in a PR including unified diff patches.
+   * WHY: split-plan needs actual diff content to reason about concerns; getPRFiles omits patch and other callers don't need it. We add a new method instead of changing getPRFiles to avoid breaking story and other consumers.
+   * WHY patch optional: Binary files, files exceeding GitHub's diff size limit (~1MB), and rename-only files have no patch in the API response; always treat as optional.
+   * WHY warn at 3000 files: GitHub caps pulls.listFiles at 3000; user should know the list may be truncated when analyzing mega-PRs.
+   */
+  async getPRFilesWithPatches(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    patch: string | undefined;
+  }>> {
+    debug('Fetching PR files with patches', { owner, repo, prNumber });
+    const files = await this.octokit.paginate(
+      this.octokit.pulls.listFiles,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    if (files.length >= 3000) {
+      console.warn(`Warning: PR files list may be truncated (GitHub caps at 3,000; got ${files.length.toLocaleString()})`);
+    }
+    return files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+      patch: (f as { patch?: string }).patch,
+    }));
+  }
+
+  /**
+   * List open PRs in the repo, optionally filtered by base branch.
+   * WHY: split-plan needs "buckets" (existing open PRs) to route changes to; filtering by base ensures we only show PRs in the same branch world (e.g. v2-develop vs v3-develop). Caller caps count and truncates body to avoid context overflow.
+   * WHY base is branch name: GitHub API expects the branch ref name (e.g. "main"), not refs/heads/main; invalid base returns empty results instead of erroring.
+   * WHY paginate: Busy repos can have 100+ open PRs; single list() would miss many. excludePRNumber is applied after fetch so the target PR is not offered as a bucket.
+   */
+  async getOpenPRs(
+    owner: string,
+    repo: string,
+    baseBranch?: string,
+    excludePRNumber?: number
+  ): Promise<Array<{
+    number: number;
+    title: string;
+    body: string;
+    branch: string;
+    baseBranch: string;
+    author: string;
+  }>> {
+    debug('Listing open PRs', { owner, repo, baseBranch: baseBranch ?? '(all)', excludePRNumber });
+    const params: { owner: string; repo: string; state: 'open'; base?: string; per_page: number } = {
+      owner,
+      repo,
+      state: 'open',
+      per_page: 100,
+    };
+    if (baseBranch) params.base = baseBranch;
+    const list = await this.octokit.paginate(this.octokit.pulls.list, params);
+    let result = list.map(pr => ({
+      number: pr.number,
+      title: pr.title,
+      body: pr.body ?? '',
+      branch: pr.head.ref,
+      baseBranch: pr.base.ref,
+      author: pr.user?.login ?? 'unknown',
+    }));
+    if (excludePRNumber != null) {
+      result = result.filter(pr => pr.number !== excludePRNumber);
+    }
+    return result;
+  }
+
+  /**
+   * List titles of recently updated (merged/closed) PRs. Used by split-plan to infer repo PR title style.
+   * WHY state closed: Merged and closed PRs reflect the repo's accepted style; open PRs may be WIP.
+   */
+  async getRecentPRTitles(owner: string, repo: string, limit: number = 30): Promise<string[]> {
+    debug('Fetching recent PR titles for style', { owner, repo, limit });
+    const { data } = await this.octokit.pulls.list({
+      owner,
+      repo,
+      state: 'closed',
+      sort: 'updated',
+      direction: 'desc',
+      per_page: Math.min(limit, 100),
+    });
+    return data.map(pr => pr.title).filter(Boolean);
+  }
+
+  /**
+   * Create a pull request. head = branch with changes, base = branch to merge into.
+   * WHY: split-exec creates new branches and opens PRs for each "New PR" split in the plan.
+   */
+  async createPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+    base: string,
+    title: string,
+    body?: string
+  ): Promise<{ number: number; url: string }> {
+    debug('Creating pull request', { owner, repo, head, base, title: title.slice(0, 50) });
+    const { data } = await this.octokit.pulls.create({
+      owner,
+      repo,
+      head,
+      base,
+      title,
+      body: body ?? '',
+    });
+    return { number: data.number, url: data.html_url ?? '' };
+  }
+
+  /**
+   * Delay between pagination pages when fetching branch commit history.
+   * WHY: Keeps us under GitHub's rate limits (5000 req/h authenticated) when fetching full history; avoids hammering the API.
+   */
+  private static readonly COMMIT_FETCH_PAGE_DELAY_MS = 400;
+
+  /**
+   * Get commit history for a branch (or ref). Returns commits in chronological order (oldest first).
+   * WHY oldest first: Narrative and changelog are easier when the model sees "then this, then that";
+   * List Commits API returns newest first so we reverse after slicing to maxCommits.
+   * Pages are rate-limited (COMMIT_FETCH_PAGE_DELAY_MS between pages) to avoid hitting GitHub limits.
+   * @param maxCommits - Cap on number of commits to fetch; 0 or omitted = no cap (fetch entire branch history).
+   */
+  async getBranchCommitHistory(
+    owner: string,
+    repo: string,
+    branch: string,
+    maxCommits: number = 0
+  ): Promise<Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>> {
+    const cap = maxCommits > 0 ? maxCommits : undefined;
+    debug('Fetching branch commit history', { owner, repo, branch, maxCommits: cap ?? 'no cap' });
+    const commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }> = [];
+    let pageCount = 0;
+    for await (const { data: commitsPage } of this.octokit.paginate.iterator(this.octokit.repos.listCommits, {
+      owner,
+      repo,
+      sha: branch,
+      per_page: 100,
+    })) {
+      if (pageCount > 0) {
+        await new Promise(resolve =>
+          setTimeout(resolve, GitHubAPI.COMMIT_FETCH_PAGE_DELAY_MS)
+        );
+      }
+      pageCount += 1;
+      for (const c of commitsPage) {
+        commits.push({
+          sha: c.sha,
+          message: c.commit.message,
+          authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
+          committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
+        });
+        if (cap !== undefined && commits.length >= cap) break;
+      }
+      if (cap !== undefined && commits.length >= cap) break;
+    }
+    return commits.reverse();
+  }
+
+  /**
+   * Get the repository’s default branch (e.g. main, master).
+   */
+  async getDefaultBranch(owner: string, repo: string): Promise<string> {
+    debug('Fetching default branch', { owner, repo });
+    const { data } = await this.octokit.repos.get({ owner, repo });
+    return data.default_branch;
+  }
+
+  /**
+   * Compare a branch (or ref) against a base ref. Returns commits and files changed.
+   * Uses GitHub compare API (BASE...HEAD). Commits are in chronological order.
+   * Note: API returns up to 250 commits per page; very large branch diffs may be truncated.
+   */
+  async getBranchComparison(
+    owner: string,
+    repo: string,
+    baseRef: string,
+    headRef: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+  }> {
+    debug('Comparing branch', { owner, repo, baseRef, headRef });
+    const basehead = `${baseRef}...${headRef}`;
+    const { data } = await this.octokit.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead,
+      per_page: 100,
+    });
+    const commits = (data.commits ?? []).map(c => ({
+      sha: c.sha,
+      message: c.commit.message,
+      authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
+      committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
+    }));
+    const files = (data.files ?? []).map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+    return { commits, files };
+  }
+
+  /**
+   * Compare two branches in both directions; return commits and files from older → newer (chronological).
+   * Prefers the direction where primaryBranch is the "newer" ref so the story is about the primary branch.
+   * WHY prefer primary: The first argument is the branch the user cares about; when branches have diverged,
+   * we tell the story of that branch (commits in primary not in other), not the other way around.
+   */
+  async getBranchComparisonEitherDirection(
+    owner: string,
+    repo: string,
+    primaryBranch: string,
+    otherBranch: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+    olderRef: string;
+    newerRef: string;
+  }> {
+    const [primaryToOther, otherToPrimary] = await Promise.all([
+      this.getBranchComparison(owner, repo, primaryBranch, otherBranch),
+      this.getBranchComparison(owner, repo, otherBranch, primaryBranch),
+    ]);
+    const withPrimaryAsNewer = {
+      ...otherToPrimary,
+      olderRef: otherBranch,
+      newerRef: primaryBranch,
+    };
+    const withPrimaryAsOlder = {
+      ...primaryToOther,
+      olderRef: primaryBranch,
+      newerRef: otherBranch,
+    };
+    if (otherToPrimary.commits.length > 0 && primaryToOther.commits.length === 0) {
+      return withPrimaryAsNewer;
+    }
+    if (primaryToOther.commits.length > 0 && otherToPrimary.commits.length === 0) {
+      return withPrimaryAsOlder;
+    }
+    if (otherToPrimary.commits.length > 0) {
+      return withPrimaryAsNewer;
+    }
+    return withPrimaryAsOlder;
+  }
+
+  /**
+   * Compare branch to default; if 0 commits (branch equals or is behind default), try base "main" then "master".
+   * WHY: Repos may use "develop" as default while the branch of interest diverged from "main"; fallback gives a non-empty diff.
+   * Story's single-branch mode now uses getBranchCommitHistory instead; this remains for potential future compare-to-default use.
+   */
+  async getBranchComparisonWithFallback(
+    owner: string,
+    repo: string,
+    defaultBase: string,
+    headRef: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+    baseRef: string;
+  }> {
+    const tryBase = async (base: string) => {
+      const out = await this.getBranchComparison(owner, repo, base, headRef);
+      return { ...out, baseRef: base };
+    };
+    let result = await tryBase(defaultBase);
+    if (result.commits.length > 0) return result;
+    for (const fallback of ['main', 'master']) {
+      if (fallback === defaultBase) continue;
+      try {
+        const next = await tryBase(fallback);
+        if (next.commits.length > 0) {
+          debug('Branch compare: 0 commits vs default; using base', { base: fallback });
+          return next;
+        }
+      } catch {
+        // base ref may not exist (404)
+      }
+    }
+    return result;
+  }
+
+  /**
    * Analyze bot response timing on a PR.
    * 
    * WHY: Understanding how long bots take to respond helps us know:
@@ -1375,9 +1728,9 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
         continue;
       }
 
-      // WHY fallback: fileMatch[1] can be undefined if the regex capture is empty in edge cases; guarantee string so callers never see null (avoids TypeError in join/replace downstream).
-      const path = (bareFileMatch?.path ?? fileMatch![1]) ?? '(PR comment)';
-      const line = bareFileMatch?.line ?? (fileMatch![2] ? parseInt(fileMatch![2], 10) : null);
+      // WHY optional chaining: when bareFileMatch is set, fileMatch can be null; accessing fileMatch[2] would throw. Fallbacks guarantee string path and null-safe line.
+      const path = (bareFileMatch?.path ?? fileMatch?.[1]) ?? '(PR comment)';
+      const line = bareFileMatch?.line ?? (fileMatch?.[2] ? parseInt(fileMatch[2], 10) : null);
       issues.push({ body, path, line });
     }
   }

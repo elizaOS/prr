@@ -7,9 +7,8 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { existsSync, statSync } from 'fs';
 import type { PillConfig } from './types.js';
-import type { CLIOptions, ToolOption } from './cli.js';
 
-const DEFAULT_AUDIT_MODEL = 'claude-opus-4-0-20250514';
+const DEFAULT_AUDIT_MODEL = 'claude-opus-4-6';
 const DEFAULT_LLM_MODEL = 'claude-sonnet-4-5-20250929';
 
 function getEnv(key: string): string | undefined {
@@ -37,16 +36,13 @@ function isValidModel(name: string): boolean {
 
 export interface LoadConfigInput {
   targetDir: string;
-  tool: ToolOption;
-  model?: string;
   auditModel: string;
-  maxCycles: number;
   outputOnly: boolean;
   promptsOnly: boolean;
-  commit: boolean;
-  force: boolean;
   dryRun: boolean;
   verbose: boolean;
+  logPrefix?: string;
+  instructionsOut?: string;
 }
 
 /**
@@ -90,16 +86,13 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     llmProvider,
     auditModel,
     llmModel,
-    tool: input.tool,
-    fixerModel: input.model,
-    maxCycles: input.maxCycles,
+    logPrefix: input.logPrefix,
     outputOnly: input.outputOnly,
     promptsOnly: input.promptsOnly,
-    commit: input.commit,
-    force: input.force,
     dryRun: input.dryRun,
     verbose: input.verbose,
   };
+  config.instructionsOut = input.instructionsOut;
 
   if (llmProvider === 'elizacloud') {
     config.elizacloudApiKey = getEnvOrThrow('ELIZACLOUD_API_KEY');
@@ -117,4 +110,27 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
   if (otherOpenai && !config.openaiApiKey) config.openaiApiKey = otherOpenai;
 
   return config;
+}
+
+/**
+ * Load pill config for use from shared logger hook. Returns null on missing API key or invalid dir.
+ * Never throws — allows prr/story to run pill analysis optionally.
+ */
+export function tryLoadPillConfig(input: {
+  targetDir: string;
+  logPrefix?: string;
+}): PillConfig | null {
+  try {
+    return loadConfig({
+      targetDir: input.targetDir,
+      auditModel: 'claude-opus-4-6',
+      outputOnly: false,
+      promptsOnly: false,
+      dryRun: false,
+      verbose: false,
+      logPrefix: input.logPrefix,
+    });
+  } catch {
+    return null;
+  }
 }

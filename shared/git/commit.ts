@@ -1,41 +1,16 @@
 import type { SimpleGit } from 'simple-git';
-import { debug } from '../logger.js';
 
-export interface CommitResult {
-  hash: string;
-  message: string;
-  filesChanged: number;
-  stagedFiles: string[];
-}
+export type { CommitResult } from './git-commit-core.js';
 
 export async function stageAll(git: SimpleGit): Promise<void> {
   await git.add('-A');
 }
 
-export async function squashCommit(
-  git: SimpleGit,
-  message: string,
-  body?: string
-): Promise<CommitResult> {
-  // Stage all changes
-  await stageAll(git);
-
-  const staged = await git.diff(['--cached', '--name-only']);
-  const stagedFiles = staged ? staged.trim().split('\n').filter(Boolean) : [];
-
-  // Build commit message
-  const fullMessage = body ? `${message}\n\n${body}` : message;
-
-  // Commit
-  const result = await git.commit(fullMessage);
-
-  return {
-    hash: result.commit,
-    message,
-    filesChanged: result.summary.changes,
-    stagedFiles,
-  };
-}
+/**
+ * Squash and commit staged changes with pre-commit safety (tool artifacts, empty test files).
+ * Re-exported from git-commit-core so callers that import from commit.ts get the same behavior.
+ */
+export { squashCommit } from './git-commit-core.js';
 
 /**
  * Push logic lives in git-push.ts; we re-export for callers that import from commit.ts.
@@ -75,57 +50,9 @@ export { commitIteration } from './git-commit-iteration.js';
 
 /**
  * Scan git log for prr-fix markers to recover verification state.
- * 
- * WHY: Git commits are durable. On restart, we can recover which fixes were
- * already verified by scanning the commit history for our markers.
- * 
- * Scope to branch commits (Trap 1): Only search commits that are on this branch
- * since it diverged from main, avoiding false positives from merged commits.
+ * Re-exported from git-commit-scan.ts (canonical implementation with raw() and proper casing).
+ * WHY: commit.ts had a duplicate using simple-git's log() with different behavior; single source avoids inconsistent recovery (pill-output.md #4).
  */
-export async function scanCommittedFixes(git: SimpleGit, branch: string): Promise<string[]> {
-  try {
-    // Find the base branch - try common names
-    const baseBranches = ['origin/main', 'origin/master', 'origin/develop'];
-    let baseBranch: string | null = null;
-    
-    for (const candidate of baseBranches) {
-      try {
-        await git.raw(['rev-parse', '--verify', candidate]);
-        baseBranch = candidate;
-        break;
-      } catch {
-        // Branch doesn't exist, try next
-      }
-    }
-    
-    // If no common base branch found, fall back to searching recent history
-    // This is less precise but won't fail
-    const logOptions = baseBranch
-      ? { from: baseBranch, to: branch, format: { body: '%B' }, multiLine: true }
-      : { maxCount: 100, format: { body: '%B' }, multiLine: true };
-    
-    debug('scanCommittedFixes', { baseBranch, branch, logOptions });
-    const log = await git.log(logOptions as any);
-    
-    const commentIds: string[] = [];
-    
-    // Parse all prr-fix:ID markers from commit messages
-    for (const entry of log.all) {
-      const body = (entry as any).body || '';
-      if (!body) continue;
-      const matches = body.matchAll(/prr-fix:(\S+)/gi);
-      for (const match of matches) {
-        commentIds.push(match[1].toLowerCase());
-      }
-    }
-    
-    // Dedupe in case the same fix was committed multiple times
-    return [...new Set(commentIds)];
-  } catch (error) {
-    debug('scanCommittedFixes error', { error: String(error) });
-    return []; // No commits or error - safe to continue
-  }
-// Review: deduplicates commit IDs to ensure unique fixes are processed correctly
-}
+export { scanCommittedFixes } from './git-commit-scan.js';
 
 export { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';

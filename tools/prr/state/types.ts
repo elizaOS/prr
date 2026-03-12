@@ -212,6 +212,8 @@ export interface ResolverState {
   deleteEntirelyVerdictCountByCommentId?: Record<string, number>;
   /** Per-comment count of CANNOT_FIX results citing missing/placeholder file content. WHY: audit showed 10+ retries on placeholder files burning 500K+ tokens. */
   cannotFixMissingContentCountByCommentId?: Record<string, number>;
+  /** Per-comment count of "fix belongs in a hidden test file, but no concrete target could be inferred". Dismiss after repeated misses to stop wrong-file loops. */
+  missingTargetFileCountByCommentId?: Record<string, number>;
   /** Per-comment consecutive CANNOT_FIX count (any reason); when >= CANNOT_FIX_EXHAUST_THRESHOLD, dismiss as not-an-issue. */
   cannotFixConsecutiveByCommentId?: Record<string, number>;
   /**

@@ -21,10 +21,10 @@
 #         pr_number:
 #           description: 'PR number to run PRR on'
 #           required: true
-#           type: number
+#           type: string
 #   jobs:
 #     prr:
-#       uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+#       uses: OWNER/prr/.github/workflows/run-prr-server.yml@babylon
 #       with:
 #         pr_number: ${{ inputs.pr_number }}
 #         prr_repo: 'OWNER/prr'
@@ -41,11 +41,16 @@ on:
       pr_number:
         description: 'PR number to run PRR on'
         required: true
-        type: number
+        type: string
       prr_repo:
         description: 'Repo containing the PRR tool (e.g. owner/prr)'
         required: true
         type: string
+      submit_review:
+        description: 'If true, PRR will submit a PR review and post a comment (only set for manual runs)'
+        required: false
+        default: false
+        type: boolean
     secrets:
       # Caller passes their token here; we use it as GITHUB_TOKEN in the job (checkout + PRR).
       PRR_GITHUB_TOKEN:
@@ -63,7 +68,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: read
+      contents: write      # checkout + PRR push
+      pull-requests: write # submit PR review
     steps:
       # WHY token: Checking out another repo (inputs.prr_repo) requires a token; caller's token is passed in.
       - name: Checkout PRR
@@ -84,12 +90,19 @@ jobs:
         run: |
           cd prr
           npm ci
-          npm run build
+          npm run typecheck
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       # WHY GITHUB_TOKEN: PRR expects GITHUB_TOKEN in env; we pass through the caller's token.
+      # PRR_SUBMIT_REVIEW: only set true by client when run is workflow_dispatch (manual); avoids posting on CLI or label/review_requested.
       - name: Run PRR
         env:
           GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+          PRR_SUBMIT_REVIEW: ${{ inputs.submit_review }}
           ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -100,6 +113,7 @@ jobs:
             --tool llm-api \
             --no-wait-bot
 
+      # output.log + prompts.log are written to CWD (prr/) by PRR; upload as artifacts for debugging.
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

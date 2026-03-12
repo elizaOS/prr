@@ -1,15 +1,20 @@
-// Full implementation in Phase 5A. Until then: Phase 2 = context; Phase 3 = audit; Phase 4 = runners; Phase 5 = fix/verify/commit.
+/**
+ * Pill analysis-only: assemble context from logs, run audit LLM, append to pill-output.md and pill-summary.md.
+ * No runners, fix, verify, or commit.
+ *
+ * WHY no import from shared/logger: closeOutputLog() in shared/logger.ts dynamically imports this module
+ * to run the pill hook. Importing formatNumber (or anything) from logger would create a circular dependency.
+ * User-facing numbers use n.toLocaleString() here (workspace rule allows that when logger is not imported).
+ */
 import chalk from 'chalk';
-import type { PillConfig, ImprovementPlan, Improvement, AuditCycle } from './types.js';
-import { loadAuditCycles, appendCycle, initAuditStore } from './audit-cycles.js';
-import type { Runner } from '../../shared/runners/types.js';
-import { detectAvailableRunners } from '../../shared/runners/detect.js';
+import ora from 'ora';
+import { appendFileSync } from 'fs';
+import { join } from 'path';
+import type { PillConfig, ImprovementPlan, Improvement } from './types.js';
 import { assembleContext, getContextTokenCounts } from './context.js';
 import { LLMClient } from './llm/client.js';
-import { AUDIT_SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT } from './llm/prompts.js';
+import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJson } from './llm/parse-json.js';
-import type { VerifyResult } from './types.js';
-import { snapshotFiles, computeDiffs, changedPaths } from './utils/snapshot.js';
 
 function buildAuditUserMessage(ctx: {
   docs: string;
@@ -29,8 +34,10 @@ function buildAuditUserMessage(ctx: {
 }
 
 function parseImprovementPlan(raw: string): ImprovementPlan {
-  const obj = extractJson<{ summary?: string; improvements?: unknown[] }>(raw);
+  const obj = extractJson<{ pitch?: string; summary?: string; improvements?: unknown[] }>(raw);
   const summary = typeof obj.summary === 'string' ? obj.summary : '';
+  const pitch =
+    typeof obj.pitch === 'string' ? obj.pitch : typeof obj.summary === 'string' ? obj.summary : '';
   const improvements: Improvement[] = [];
   if (Array.isArray(obj.improvements)) {
     for (const item of obj.improvements) {
@@ -46,63 +53,7 @@ function parseImprovementPlan(raw: string): ImprovementPlan {
       }
     }
   }
-  return { summary, improvements };
-}
-
-function buildFixPrompt(plan: ImprovementPlan, targetDir: string): string {
-  const lines: string[] = [
-    `You are working in ${targetDir}. Make the following improvements to the code in this directory.`,
-    '',
-    plan.summary,
-    '',
-    'Improvements to apply:',
-  ];
-  for (const imp of plan.improvements) {
-    lines.push(`- ${imp.file}: [${imp.severity}] ${imp.description}`);
-    lines.push(`  Rationale: ${imp.rationale}`);
-    lines.push('');
-  }
-  return lines.join('\n');
-}
-
-function parseVerifyResult(raw: string): VerifyResult {
-  const obj = extractJson<{ status?: string; issues?: unknown[] }>(raw);
-  const status = obj.status === 'issues' ? 'issues' : 'clean';
-  const issues: Improvement[] = [];
-  if (Array.isArray(obj.issues)) {
-    for (const item of obj.issues) {
-      if (item && typeof item === 'object' && 'file' in item && 'description' in item) {
-        const i = item as Record<string, unknown>;
-        issues.push({
-          file: String(i.file ?? ''),
-          description: String(i.description ?? ''),
-          rationale: String(i.rationale ?? ''),
-          severity: (i.severity as Improvement['severity']) ?? 'minor',
-          category: (i.category as Improvement['category']) ?? 'code',
-        });
-      }
-    }
-  }
-  return status === 'clean' ? { status: 'clean' } : { status: 'issues', issues };
-}
-
-function buildVerifyUserMessage(
-  plan: ImprovementPlan,
-  diffs: string,
-  currentFiles: Map<string, string>,
-  changedPathsSet: Set<string>
-): string {
-  const planSection =
-    '[IMPROVEMENT PLAN]\n' +
-    plan.summary +
-    '\n\n' +
-    plan.improvements.map((i: Improvement) => `- ${i.file}: ${i.description}`).join('\n');
-  const diffSection = '[UNIFIED DIFFS]\n' + (diffs || '(no diffs)');
-  const currentParts: string[] = ['[CURRENT STATE OF CHANGED FILES]'];
-  for (const path of changedPathsSet) {
-    currentParts.push(`\n--- ${path} ---\n${currentFiles.get(path) ?? ''}`);
-  }
-  return [planSection, diffSection, currentParts.join('')].join('\n\n');
+  return { pitch, summary, improvements };
 }
 
 function displayPlan(plan: ImprovementPlan): void {
@@ -123,155 +74,219 @@ function displayPlan(plan: ImprovementPlan): void {
   }
 }
 
-export async function runPill(config: PillConfig): Promise<void> {
-  if (config.verbose) {
-    console.log('Provider:', config.llmProvider);
-    console.log('Audit model:', config.auditModel);
-  }
+/** GitHub-style heading slug: lowercase, alphanumeric/hyphens/spaces only, spaces to single hyphen. */
+function headingSlug(title: string): string {
+  const s = title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return s || 'section';
+}
 
-  // Step 1: Check git status early (if --commit, block on dirty tree unless --force)
-  const { getPreDirtyPaths, commitChanges } = await import('./git.js');
-  const preDirtyPaths = config.commit ? await getPreDirtyPaths(config.targetDir) : new Set<string>();
-  if (config.commit && !config.force && preDirtyPaths.size > 0) {
-    throw new Error(
-      `${preDirtyPaths.size} file(s) already modified in ${config.targetDir}. ` +
-      `Use --force to proceed (only pill-touched files will be committed).`
-    );
-  }
+export interface PillOutputMeta {
+  date: string;
+  source: string;
+}
 
-  // Step 2: Detect runners before audit (avoid wasting API tokens if no runner available)
-  let runner: Runner | null = null;
-  if (!config.dryRun) {
-    const detected = await detectAvailableRunners();
-    if (config.tool === 'auto') {
-      runner = detected.length > 0 ? detected[0].runner : null;
-    } else {
-      runner = detected.find((d) => d.runner.name === config.tool)?.runner ?? null;
-    }
-    if (!runner) {
-      throw new Error('No runner available. Install cursor-agent, claude-code, aider, codex, gemini, or set an API key for llm-api.');
-    }
-    const status = await runner.checkStatus();
-    if (!status.ready) {
-      throw new Error(`Runner ${runner.displayName} is not ready: ${status.error ?? 'unknown'}`);
-    }
-    console.log(chalk.gray(`Using runner: ${runner.displayName}`));
-  }
-
-  // Step 3: Assemble context
-  const llmClient = new LLMClient(config);
-  const ctx = await assembleContext(config, llmClient);
-  const counts = getContextTokenCounts(ctx);
-
-  if (config.verbose) {
-    console.log('Context token counts:');
-    console.log('  docs:', counts.docs);
-    console.log('  sourceFiles:', counts.sourceFiles);
-    console.log('  directoryTree:', counts.directoryTree);
-    console.log('  outputLog:', counts.outputLog);
-    console.log('  promptsDigest:', counts.promptsDigest);
-    const total =
-      counts.docs + counts.sourceFiles + counts.directoryTree + counts.outputLog + counts.promptsDigest;
-    console.log('  total:', total);
-  }
-
-  // Step 4: Audit
-  const userMessage = buildAuditUserMessage(ctx);
-  const response = await llmClient.complete(userMessage, AUDIT_SYSTEM_PROMPT, {
-    model: config.auditModel,
-  });
-  const plan = parseImprovementPlan(response.content);
-  displayPlan(plan);
-  if (response.usage) {
-    console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
-  }
-
-  if (config.dryRun) {
-    return;
-  }
-
-  if (plan.improvements.length === 0) {
-    console.log(chalk.gray('No improvements to apply.'));
-    return;
-  }
-
-  let filesToFix = [...new Set(plan.improvements.map((i: Improvement) => i.file))];
-  const touchedFiles = new Set<string>();
-  let currentPlan = plan;
-
-  if (!runner) {
-    console.log(chalk.red('No runner available; cannot apply fixes.'));
-    return;
-  }
-
-  for (let cycle = 1; cycle <= config.maxCycles; cycle++) {
-    if (currentPlan.improvements.length === 0) break;
-    const before = snapshotFiles(config.targetDir, filesToFix);
-    const fixPrompt = buildFixPrompt(currentPlan, config.targetDir);
-    const result = await runner.run(config.targetDir, fixPrompt, {
-      model: config.fixerModel ?? config.llmModel,
+function formatInstructionsEntry(plan: ImprovementPlan, meta: PillOutputMeta): string {
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const lines: string[] = ['', '---', '', `## ${title}`, '', '### Summary', '', plan.summary, ''];
+  if (plan.improvements.length > 0) {
+    lines.push('### Improvements', '');
+    plan.improvements.forEach((imp, i) => {
+      lines.push(`#### ${i + 1}. \`${imp.file}\` [${imp.severity} / ${imp.category}]`);
+      lines.push('**Description:** ' + imp.description);
+      lines.push('**Rationale:** ' + imp.rationale);
+      lines.push('');
     });
-    if (!result.success) {
-      console.log(chalk.red('Fix step failed:'), result.error ?? 'unknown');
-      break;
+  }
+  lines.push('---');
+  return lines.join('\n');
+}
+
+function formatSummaryEntry(
+  plan: ImprovementPlan,
+  meta: PillOutputMeta,
+  instructionsAnchor: string
+): string {
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const critical = plan.improvements.filter((i) => i.severity === 'critical').length;
+  const important = plan.improvements.filter((i) => i.severity === 'important').length;
+  const minor = plan.improvements.filter((i) => i.severity === 'minor').length;
+  // User-facing counts: use toLocaleString (no logger import — avoids circular dependency with shared/logger).
+  const countLine = `${plan.improvements.length.toLocaleString()} improvement(s) (${critical.toLocaleString()} critical, ${important.toLocaleString()} important, ${minor.toLocaleString()} minor)`;
+  const lines: string[] = [
+    '',
+    '---',
+    '',
+    `## ${title}`,
+    '',
+    `> ${countLine}`,
+    `> Details: [pill-output.md](${instructionsAnchor})`,
+    '',
+    plan.pitch || plan.summary,
+    '',
+    '---',
+  ];
+  return lines.join('\n');
+}
+
+export interface AppendPillOutputResult {
+  instructionsPath: string;
+  summaryPath: string;
+}
+
+function appendPillOutput(
+  targetDir: string,
+  plan: ImprovementPlan,
+  meta: PillOutputMeta,
+  instructionsPathOverride?: string
+): AppendPillOutputResult {
+  const instructionsPath = instructionsPathOverride ?? join(targetDir, 'pill-output.md');
+  const summaryPath = join(targetDir, 'pill-summary.md');
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const slug = headingSlug(title);
+  const instructionsAnchor = `pill-output.md#${slug}`;
+
+  const instructionsEntry = formatInstructionsEntry(plan, meta);
+  const summaryEntry = formatSummaryEntry(plan, meta, instructionsAnchor);
+
+  appendFileSync(instructionsPath, instructionsEntry, 'utf-8');
+  appendFileSync(summaryPath, summaryEntry, 'utf-8');
+
+  return { instructionsPath, summaryPath };
+}
+
+export interface PillAnalysisResult {
+  pitch: string;
+  plan: ImprovementPlan;
+  instructionsPath: string;
+  summaryPath: string;
+}
+
+/** Reason when runPillAnalysis returns no improvements (so callers can log the specific cause). */
+export type PillNoImprovementsReason =
+  | 'no_logs'
+  | 'no_api_key'
+  | 'api_call_failed'
+  | 'zero_improvements_from_llm';
+
+export interface PillNoImprovementsResult {
+  result: null;
+  reason: PillNoImprovementsReason;
+  errorMessage?: string;
+}
+
+/**
+ * Run the audit LLM and append to pill-output.md / pill-summary.md (or return paths in dry-run).
+ * Errors (LLM, parse, write) propagate to the caller. Callers: pill CLI (should see errors) and
+ * shared/logger closeOutputLog() hook (wraps in try/catch so pill remains optional and shutdown completes).
+ * When no improvements are recorded, returns { result: null, reason } so operators can distinguish no logs / no API key / zero improvements (pill-output.md #1).
+ */
+export async function runPillAnalysis(config: PillConfig): Promise<
+  | { result: PillAnalysisResult; reason?: never }
+  | PillNoImprovementsResult
+> {
+  const spinner = config.verbose ? null : ora();
+  const update = (text: string) => {
+    if (spinner) spinner.text = text;
+  };
+
+  // No API key — distinct message so operators know why (pill-output.md #3)
+  if (config.llmProvider === 'elizacloud' && !config.elizacloudApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (elizacloud). Set ELIZACLOUD_API_KEY in .env.');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'openai' && !config.openaiApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (openai). Set OPENAI_API_KEY in .env.');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'anthropic' && !config.anthropicApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (anthropic). Set ANTHROPIC_API_KEY in .env.');
+    return { result: null, reason: 'no_api_key' };
+  }
+
+  try {
+    if (config.verbose) {
+      console.log('Provider:', config.llmProvider);
+      console.log('Audit model:', config.auditModel);
+    } else if (spinner) {
+      spinner.start('Assembling context…');
     }
-    const after = snapshotFiles(config.targetDir, filesToFix);
-    const changed = changedPaths(before, after);
-    if (changed.size === 0) {
-      console.log(chalk.yellow('Runner made no changes; stopping cycle.'));
-      break;
+
+    const llmClient = new LLMClient(config);
+    const ctx = await assembleContext(config, llmClient);
+
+    const hasLogs = ctx.outputLog.trim().length > 0 || (ctx.promptsDigest ?? '').trim().length > 0;
+    if (!hasLogs) {
+      if (spinner) spinner.info('Pill: No logs to analyze (output/prompts log empty or missing for this prefix).');
+      return { result: null, reason: 'no_logs' };
     }
-    for (const p of changed) touchedFiles.add(p);
-    const diffs = computeDiffs(before, after);
-    const verifyMsg = buildVerifyUserMessage(currentPlan, diffs, after, changed);
-    const verifyRes = await llmClient.complete(verifyMsg, VERIFY_SYSTEM_PROMPT, {
+
+    const counts = getContextTokenCounts(ctx);
+    if (config.verbose) {
+      console.log('Context token counts:');
+      console.log('  docs:', counts.docs);
+      console.log('  sourceFiles:', counts.sourceFiles);
+      console.log('  directoryTree:', counts.directoryTree);
+      console.log('  outputLog:', counts.outputLog);
+      console.log('  promptsDigest:', counts.promptsDigest);
+      const total =
+        counts.docs + counts.sourceFiles + counts.directoryTree + counts.outputLog + counts.promptsDigest;
+      console.log('  total:', total);
+    } else {
+      update('Running audit…');
+    }
+
+    const userMessage = buildAuditUserMessage(ctx);
+    const response = await llmClient.complete(userMessage, AUDIT_SYSTEM_PROMPT, {
       model: config.auditModel,
     });
-    const verifyResult = parseVerifyResult(verifyRes.content);
-    if (verifyResult.status === 'clean') {
-      console.log(chalk.green('Verify: clean.'));
-      break;
+    const plan = parseImprovementPlan(response.content);
+
+    if (config.verbose) {
+      displayPlan(plan);
     }
-    const issues = verifyResult.issues ?? [];
-    console.log(chalk.yellow(`Verify: ${issues.length} issue(s) remaining.`));
-    for (const i of issues) filesToFix.push(i.file);
-    filesToFix = [...new Set(filesToFix)];
-    currentPlan = { summary: currentPlan.summary, improvements: issues };
-  }
+    if (response.usage && config.verbose) {
+      console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
+    }
 
-  if (config.commit && touchedFiles.size > 0) {
-    await commitChanges(config.targetDir, plan, touchedFiles, preDirtyPaths);
-  }
+    if (plan.improvements.length === 0) {
+      if (spinner) spinner.succeed('Pill: LLM returned zero improvements (audit ran successfully).');
+      return { result: null, reason: 'zero_improvements_from_llm' };
+    }
 
-  // Record this run in the directory's audit-cycle store (AUDIT-CYCLES.md–like per directory).
-  const today = new Date().toISOString().slice(0, 10);
-  const artifacts =
-    config.outputOnly && config.promptsOnly
-      ? 'pill-output.log, pill-prompts.log'
-      : config.outputOnly
-        ? 'pill-output.log'
-        : config.promptsOnly
-          ? 'pill-prompts.log'
-          : 'pill-output.log, pill-prompts.log';
-  const bySeverity = { high: [] as string[], medium: [] as string[], low: [] as string[] };
-  for (const i of plan.improvements) {
-    const line = `${i.file}: ${i.description}`;
-    if (i.severity === 'critical') bySeverity.high.push(line);
-    else if (i.severity === 'important') bySeverity.medium.push(line);
-    else bySeverity.low.push(line);
-  }
-  const cycle: AuditCycle = {
-    date: today,
-    artifacts,
-    findings: bySeverity,
-    improvementsImplemented: plan.improvements
-      .filter((i) => touchedFiles.has(i.file))
-      .map((i) => `${i.file}: ${i.description}`),
-    flipFlopCheck: 'Y',
-    flipFlopNote: 'No revert or conflicting change detected this run.',
-  };
-  if (loadAuditCycles(config.targetDir) === null) initAuditStore(config.targetDir);
-  appendCycle(config.targetDir, cycle);
+    if (spinner) update('Writing results…');
 
-  console.log(chalk.gray('\nDone.'));
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
+    // Use logPrefix so pill labels split-exec, split-plan, story, etc. correctly; default 'prr' when no prefix (main prr logs).
+    const source = (config.logPrefix?.trim()) ? config.logPrefix : 'prr';
+    const meta: PillOutputMeta = { date: dateStr, source };
+
+    const instructionsPathOverride = config.instructionsOut;
+    const { instructionsPath, summaryPath } = config.dryRun
+      ? { instructionsPath: join(config.targetDir, 'pill-output.md'), summaryPath: join(config.targetDir, 'pill-summary.md') }
+      : appendPillOutput(config.targetDir, plan, meta, instructionsPathOverride);
+
+    if (spinner) spinner.succeed(`${plan.improvements.length.toLocaleString()} improvement(s) recorded`);
+
+    return {
+      result: {
+        pitch: plan.pitch,
+        plan,
+        instructionsPath,
+        summaryPath,
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (spinner) spinner.fail(msg);
+    // Return instead of throw so callers can log reason (pill-output.md #3)
+    return { result: null, reason: 'api_call_failed', errorMessage: msg };
+  } finally {
+    if (spinner && spinner.isSpinning) spinner.stop();
+  }
 }

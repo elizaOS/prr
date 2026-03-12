@@ -34,6 +34,8 @@ export interface Config {
   llmModel: string;
   /** Optional stronger model for verification (e.g. PRR_VERIFIER_MODEL). When set, batch verification uses this instead of llmModel to reduce false negatives. */
   verifierModel?: string;
+  /** Optional model for split-plan (SPLIT_PLAN_LLM_MODEL). When set, split-plan uses this; when unset, split-plan uses the provider's fast/cheap model to reduce 504 timeouts. */
+  splitPlanModel?: string;
   /** ElizaCloud API key (recommended - one key for all models) */
   elizacloudApiKey?: string;
   /** Anthropic API key (required if provider is anthropic) */
@@ -154,11 +156,13 @@ export function loadConfig(): Config {
   }
 
   const verifierModelRaw = process.env.PRR_VERIFIER_MODEL?.trim();
+  const splitPlanModelRaw = process.env.SPLIT_PLAN_LLM_MODEL?.trim();
   const config: Config = {
     githubToken: getEnvOrThrow('GITHUB_TOKEN'),
     llmProvider,
     llmModel: getEnvOrDefault('PRR_LLM_MODEL', defaultModel),
     verifierModel: verifierModelRaw && verifierModelRaw.length > 0 ? verifierModelRaw : undefined,
+    splitPlanModel: splitPlanModelRaw && splitPlanModelRaw.length > 0 ? splitPlanModelRaw : undefined,
     defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'auto')),
     workdirBase: join(homedir(), '.prr', 'work'),
     anthropicThinkingBudget: thinkingBudget,

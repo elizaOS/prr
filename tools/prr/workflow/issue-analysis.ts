@@ -34,7 +34,7 @@ import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getPathsToDeleteFromCommentBody, getRenameTargetPath, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { commentAsksForAccessibility, getMentionedTestFilePaths, getPathsToDeleteFromCommentBody, getRenameTargetPath, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
@@ -711,7 +711,7 @@ You must decide which comments describe the EXACT SAME underlying problem.
 ${summaries}
 
 GROUPING RULES (be conservative — wrong merges cause missed fixes):
-- Only group comments that target the SAME line (or same code location). Comments on different line numbers must NOT be grouped.
+- CRITICAL: Only group comments that have the SAME line number. Each comment shows "(line N)" — every comment in a GROUP must share the same N. Comments on different lines must NOT be in the same GROUP. Before replying, verify: every index you put in one GROUP has the same (line N); if any two have different line numbers, do NOT put them in the same GROUP.
 - Only group comments if they point to the SAME code location AND fix the SAME specific problem.
 - Comments on DIFFERENT lines, DIFFERENT functions, or that require DIFFERENT fixes must NOT be grouped.
 - "Related" or "thematically similar" is NOT enough — they must be describing the same bug/issue.
@@ -722,6 +722,8 @@ For each group of true duplicates, pick the most detailed comment as canonical.
 
 Valid comment indices in this prompt are 1 through ${items.length} only. Never reference an index outside that range.
 The canonical index MUST be one of the indices listed in its GROUP line.
+
+Before replying: For each GROUP line you write, verify that every index in that GROUP has the same (line N) in the comment text above. If any two indices have different line numbers, do NOT put them in the same GROUP.
 
 Reply ONLY with lines like (one per group, no other text):
 GROUP: 1,2 → canonical 2
@@ -745,7 +747,31 @@ If no comments are duplicates, reply: NONE`;
         const allInRange = rawIndices.every((i) => i >= 1 && i <= n);
         if (!allInRange || rawIndices.length < 2) continue;
         if (!rawIndices.includes(canonicalOneBased)) continue;
+        // Audit (prompts.log): model returned "GROUP: 1,2,5 → canonical 2" but [1],[5] were line 2531 and [2] was line 2493 — different lines must not be merged.
         const indices = rawIndices.map((i) => i - 1);
+        const groupLines = indices.map((i) => items[i].comment.line);
+        const sameLine = groupLines.every((l) => l === groupLines[0]);
+        if (!sameLine) {
+          // Re-split by line so we don't lose valid same-line merges (e.g. 1,5 same line; 2 different → keep group 1,5).
+          const byLine = new Map<number | null, number[]>();
+          for (let i = 0; i < indices.length; i++) {
+            const line = items[indices[i]].comment.line;
+            if (!byLine.has(line)) byLine.set(line, []);
+            byLine.get(line)!.push(indices[i]);
+          }
+          let reSplitCount = 0;
+          for (const [, lineIndices] of byLine) {
+            if (lineIndices.length < 2) continue;
+            reSplitCount++;
+            // Pick canonical: longest comment body (same tiebreak as heuristic dedup).
+            const canonicalIdx = lineIndices.reduce((best, i) =>
+              (items[i].comment.body.length > items[best].comment.body.length ? i : best));
+            const dupes = lineIndices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
+            groups.push({ canonical: items[canonicalIdx], dupes });
+          }
+          debug(`Dedup: GROUP ${rawIndices.join(',')} had mixed line numbers (${groupLines.map((l) => l ?? 'file').join(', ')}); re-split → ${reSplitCount} same-line group(s)`);
+          continue;
+        }
         const canonicalIdx = canonicalOneBased - 1;
         const canonical = items[canonicalIdx];
         const dupes = indices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
@@ -1010,8 +1036,9 @@ export async function getCodeSnippet(
       return buildNumberedFullFileSnippet(content, note);
     }
 
-    if (commentBody && commentNeedsConservativeAnalysisContext(commentBody)) {
-      const conservativeSnippet = buildConservativeAnalysisSnippet(content, path, line, commentBody);
+    // Cycle 27: reply.ts gets broader snippet so judge sees enough of reply action handler (avoids STALE).
+    if (path.endsWith('reply.ts') || (commentBody && commentNeedsConservativeAnalysisContext(commentBody))) {
+      const conservativeSnippet = buildConservativeAnalysisSnippet(content, path, line, commentBody ?? '');
       if (conservativeSnippet) return conservativeSnippet;
     }
 
@@ -1298,7 +1325,8 @@ function getAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string,
   const issueLike = { comment: { ...comment, path: primaryPath }, codeSnippet, stillExists: true, explanation: explanation ?? '' };
   const testPath = getTestPathForSourceFileIssue(issueLike, { forceTestPath: reviewSuggestsFixInTest(comment.body ?? '') });
   const renameTarget = getRenameTargetPath(issueLike);
-  const extraPaths = [testPath, renameTarget].filter((p): p is string => Boolean(p));
+  const hiddenTestTargets = getMentionedTestFilePaths(issueLike);
+  const extraPaths = [testPath, renameTarget, ...hiddenTestTargets].filter((p): p is string => Boolean(p));
   if (extraPaths.length === 0) return undefined;
   return filterAllowedPathsForFix([primaryPath, ...extraPaths]);
 }
@@ -1920,7 +1948,8 @@ export async function findUnresolvedIssues(
       freshToAnalyze.map(async (item, index) => {
         let codeSnippet = item.codeSnippet;
         const primaryPath = item.resolvedPath ?? item.comment.path;
-        if (isSnippetTooShort(codeSnippet)) {
+        // WHY wider snippet for a11y: Review asks for aria-label/accessible name; fixer needs full component context to add a meaningful label, not just role="img" or aria-hidden (audit: PR #1229).
+        if (isSnippetTooShort(codeSnippet) || commentAsksForAccessibility(item.comment.body)) {
           codeSnippet = await getWiderSnippetForAnalysis(workdir, primaryPath, item.comment.line, item.comment.body);
         }
         // When file was not in workdir, try reading from repo (e.g. git show HEAD:path) so verifier has context.
@@ -2099,6 +2128,8 @@ export async function findUnresolvedIssues(
     // Process results
     for (let i = 0; i < freshToAnalyze.length; i++) {
       const { comment, codeSnippet, contextHints, resolvedPath } = freshToAnalyze[i];
+      // Use widened snippet from batch input when we expanded for a11y or short snippet (fixer gets same context as analyzer).
+      const snippetForFix = batchInput[i]?.codeSnippet ?? codeSnippet;
       const issueId = batchInput[i].id.toLowerCase();
       const result = results.get(issueId);
 
@@ -2123,12 +2154,12 @@ export async function findUnresolvedIssues(
 
         unresolved.push({
           comment,
-          codeSnippet,
+          codeSnippet: snippetForFix,
           stillExists: true,
           explanation: 'Unable to determine status',
           triage: { importance: 3, ease: 3 },  // Default: fallback path
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, undefined),
           resolvedPath,
         });
         continue;
@@ -2193,12 +2224,12 @@ export async function findUnresolvedIssues(
 
           unresolved.push({
             comment,
-            codeSnippet,
+            codeSnippet: snippetForFix,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
         }
@@ -2218,12 +2249,12 @@ export async function findUnresolvedIssues(
 
         unresolved.push({
           comment,
-          codeSnippet,
+          codeSnippet: snippetForFix,
           stillExists: true,
           explanation: effectiveResult.explanation,
           triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
           resolvedPath,
         });
       } else {
@@ -2259,12 +2290,12 @@ export async function findUnresolvedIssues(
 
           unresolved.push({
             comment,
-            codeSnippet,
+            codeSnippet: snippetForFix,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
         }

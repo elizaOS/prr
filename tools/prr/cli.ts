@@ -77,6 +77,8 @@ export interface CLIOptions {
   predictBots: boolean;
   /** If true, do not wait for bot re-review after push (use --no-wait-bot). Default is false (wait for bots). */
   noWaitBot: boolean;
+  /** Run pill analysis on the output log when the run finishes. */
+  pill: boolean;
 }
 
 export interface ParsedArgs {
@@ -165,7 +167,8 @@ export function createCLI(): Command {
     .option('--update-tools', 'Update all installed AI coding tools to latest versions, then exit')
     .option('--tidy-lessons', 'Clean up lessons: re-normalize, deduplicate, remove garbage entries, then exit')
     .option('--predict-bots', 'Before push, predict likely new bot feedback via LLM (display only)', true)
-    .option('--no-predict-bots', 'Disable bot prediction (skip extra LLM call before push)');
+    .option('--no-predict-bots', 'Disable bot prediction (skip extra LLM call before push)')
+    .option('--pill', 'Run pill analysis on the output log when the run finishes', false);
 
   return program;
 }
@@ -261,6 +264,7 @@ export function parseArgs(program: Command): ParsedArgs {
       predictBots: opts.predictBots ?? true,
       // Default: wait for bot re-review after push; pass --no-wait-bot to exit without waiting
       noWaitBot: opts.noWaitBot === true,
+      pill: opts.pill ?? false,
     },
   };
 }

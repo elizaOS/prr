@@ -8,7 +8,7 @@ import { readFile } from 'fs/promises';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMentionedTestFilePaths, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -419,7 +419,7 @@ export function buildSingleIssuePrompt(
 ): string {
   const primaryPath = issue.resolvedPath ?? issue.comment.path;
   // Get lessons relevant to this issue only (file-scoped + path-relevant global; audit M2).
-  const lessons = LessonsAPI.Retrieve.getLessonsForSingleIssue(lessonsContext, primaryPath)
+  const lessons = LessonsAPI.Retrieve.getLessonsForIssue(lessonsContext, primaryPath, issue.comment.body, issue.allowedPaths)
     .slice(-5); // Last 5 relevant lessons
   
   let prompt = `# SINGLE ISSUE FIX
@@ -464,10 +464,16 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
     forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
   });
   if (testPath && isPathAllowedForFix(testPath) && !allowedPaths.includes(testPath)) allowedPaths = [...allowedPaths, testPath];
+  for (const hiddenTestPath of getMentionedTestFilePaths(issue, { pathExists: options?.pathExists })) {
+    if (isPathAllowedForFix(hiddenTestPath) && !allowedPaths.includes(hiddenTestPath)) {
+      allowedPaths = [...allowedPaths, hiddenTestPath];
+    }
+  }
   allowedPaths = filterAllowedPathsForFix(allowedPaths);
   prompt += `## Issue
 **TARGET FILE(S) (you MAY edit only these files):** ${allowedPaths.join(', ')}${issue.comment.line ? ` (primary: ${primaryPath}:${issue.comment.line})` : ''}
 Any change to a different file will be reverted and will not fix this issue.
+${allowedPaths.length === 1 ? `The ONLY file you may create or edit for this issue is: \`${allowedPaths[0]}\`. Do not create or edit files in any other directory (e.g. plugins/ or a colocated path).\n` : ''}
 If the review mentions another file (e.g. "duplicates … in X" or "existing in X"), that file is only a reference — fix the issue in the TARGET file(s) above (e.g. remove the duplicate here and use the shared one). Do NOT edit the referenced file unless it is listed in TARGET FILE(S).
 ${journalPath ? `Drizzle's migration journal is the JSON file \`db/migrations/meta/_journal.json\`; add an entry there. Do not add SQL (e.g. INSERT INTO __journal) or table-based journal logic.\n` : ''}
 ${allowedPaths.length > 1 ? '\n' + allowedPaths.map(p => `File: ${p}`).join('\n') + '\n' : ''}

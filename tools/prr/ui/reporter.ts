@@ -14,6 +14,7 @@ import type { DismissedIssue } from '../state/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
+import { debug } from '../../../shared/logger.js';
 
 /** Format path:line for display; use "PR-level comment" when path is the synthetic (PR comment). */
 function formatCommentLocation(comment: { path: string; line?: number | null }): string {
@@ -203,6 +204,11 @@ export function getExitReasonDisplay(exitReason: string | null): {
   }
 }
 
+/** Exit reasons that indicate run failure (process should exit with code 1). */
+export function isFailureExitReason(exitReason: string | null): boolean {
+  return exitReason === 'error' || exitReason === 'init_failed' || exitReason === 'merge_conflicts' || exitReason === 'sync_failed';
+}
+
 /**
  * Print final results summary
  * WHY: Profiling info pushes important results off screen. This ensures
@@ -222,17 +228,36 @@ export function printFinalSummary(
   const allDismissed = Dismissed.getDismissedIssues(stateContext);
   const allDismissedIds = new Set(allDismissed.map(d => d.commentId));
   const dismissedIssues = allDismissed.filter(d => d.category !== 'exhausted' && d.category !== 'remaining');
-  
+  // Do not count dismissed-as-already-fixed as "fixed and verified" (pill-output.md #2; AUDIT-CYCLES 33/34).
+  const alreadyFixedDismissedIds = new Set(
+    allDismissed.filter(d => d.category === 'already-fixed').map(d => d.commentId)
+  );
   // Bound verifiedFixed against the current comment IDs; exclude any dismissed (including exhausted/remaining).
-  // WHY: verifiedFixed accumulates IDs across sessions and HEAD revisions.
-  // Stale IDs (from force-pushed commits, deleted comments) inflate the count.
-  // Without this filter, "60 issues fixed" can appear when there are only 48 comments.
   const currentIds = stateContext.currentCommentIds;
-  const relevantVerified = currentIds
+  const relevantVerified = (currentIds
     ? verifiedFixed.filter(id => currentIds.has(id) && !allDismissedIds.has(id))
-    : verifiedFixed.filter(id => !allDismissedIds.has(id));
+    : verifiedFixed.filter(id => !allDismissedIds.has(id))
+  ).filter(id => !alreadyFixedDismissedIds.has(id));
   const toolFixedCount = relevantVerified.length;
   
+  // Overlap detection: IDs in verifiedFixed that are also dismissed (including already-fixed).
+  const overlapIds = verifiedFixed.filter(id => allDismissedIds.has(id));
+  const alreadyFixedOverlap = verifiedFixed.filter(id => alreadyFixedDismissedIds.has(id));
+  debug('RESULTS SUMMARY counts', {
+    rawVerifiedFixed: verifiedFixed.length,
+    allDismissed: allDismissed.length,
+    dismissedExclExhaustedRemaining: dismissedIssues.length,
+    alreadyFixedDismissed: alreadyFixedDismissedIds.size,
+    currentCommentIds: currentIds?.size ?? 'all',
+    overlapVerifiedAndDismissed: overlapIds.length,
+    overlapVerifiedAndAlreadyFixed: alreadyFixedOverlap.length,
+    relevantVerified: relevantVerified.length,
+    toolFixedCount,
+  });
+  if (overlapIds.length > 0) {
+    debug('Overlap IDs (verifiedFixed ∩ dismissed)', overlapIds);
+  }
+
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
   console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
@@ -260,8 +285,8 @@ export function printFinalSummary(
       // Cycle 13 L1: Clarify that the total includes fixes from previous runs.
       sessionNote = ` (of which ${formatNumber(fixedThisSession)} this session)`;
     } else if (fixedThisSession === 0) {
-      // Nothing verified this run — count is from state (e.g. resumed run that never reached fix loop)
-      sessionNote = ' (from previous runs)';
+      // Nothing verified this run — count is from state only (pill-output.md #2; AUDIT-CYCLES 33/34).
+      sessionNote = ' (all from previous runs; 0 new this session)';
     }
     console.log(chalk.green(`\n  ✓ ${formatNumber(toolFixedCount)} issue${toolFixedCount === 1 ? '' : 's'} fixed and verified${sessionNote}`));
   }
@@ -274,7 +299,7 @@ export function printFinalSummary(
     }, {} as Record<string, number>);
     
     const categoryParts = Object.entries(byCategory)
-      .map(([cat, count]) => `${count} ${cat}`)
+      .map(([cat, count]) => `${formatNumber(count)} ${cat}`)
       .join(', ');
     
     console.log(chalk.gray(`  ○ ${formatNumber(dismissedIssues.length)} issue${dismissedIssues.length === 1 ? '' : 's'} dismissed (${categoryParts})`));
@@ -290,6 +315,19 @@ export function printFinalSummary(
       console.log(chalk.green(`\n  ✓ No issues remaining`));
     } else {
       console.log(chalk.yellow(`\n  ○ Remaining: ${formatNumber(remainingCount)} (auto-stopped after repeated failures — resolve by fix or conversation)`));
+    }
+  }
+
+  // When run in GitHub Actions, hint how to get logs to an agent (artifact download via gh CLI)
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const runId = process.env.GITHUB_RUN_ID;
+    const repo = process.env.GITHUB_REPOSITORY;
+    const prNumber = process.env.PRR_PR_NUMBER;
+    if (runId && repo) {
+      const artifactName = prNumber ? `prr-logs-${prNumber}` : 'prr-logs-<PR>';
+      console.log(chalk.gray(`\n  Tip: To share logs with an agent, download the run artifact: gh run download ${runId} --repo ${repo} --name ${artifactName}`));
+    } else {
+      console.log(chalk.gray(`\n  Tip: To share logs with an agent, download the workflow artifact (output.log, prompts.log) and point the agent at the files.`));
     }
   }
 
@@ -310,10 +348,14 @@ export function buildReviewSummaryMarkdown(
   const allDismissed = Dismissed.getDismissedIssues(stateContext);
   const allDismissedIds = new Set(allDismissed.map(d => d.commentId));
   const dismissedIssues = allDismissed.filter(d => d.category !== 'exhausted' && d.category !== 'remaining');
+  const alreadyFixedDismissedIds = new Set(
+    allDismissed.filter(d => d.category === 'already-fixed').map(d => d.commentId)
+  );
   const currentIds = stateContext.currentCommentIds;
-  const relevantVerified = currentIds
+  const relevantVerified = (currentIds
     ? verifiedFixed.filter(id => currentIds.has(id) && !allDismissedIds.has(id))
-    : verifiedFixed.filter(id => !allDismissedIds.has(id));
+    : verifiedFixed.filter(id => !allDismissedIds.has(id))
+  ).filter(id => !alreadyFixedDismissedIds.has(id));
   const toolFixedCount = relevantVerified.length;
   const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
 
@@ -321,20 +363,20 @@ export function buildReviewSummaryMarkdown(
   if (exitDetails) lines.push(`**Exit:** ${exitDetails}`);
   if (toolFixedCount > 0) {
     let note = '';
-    if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) note = ` (${fixedThisSession} this run)`;
-    else if (fixedThisSession === 0) note = ' (from previous runs)';
-    lines.push(`- ✓ ${toolFixedCount} issue(s) fixed and verified${note}`);
+    if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) note = ` (${formatNumber(fixedThisSession)} this run)`;
+    else if (fixedThisSession === 0) note = ' (all from previous runs; 0 new this session)';
+    lines.push(`- ✓ ${formatNumber(toolFixedCount)} issue(s) fixed and verified${note}`);
   }
   if (dismissedIssues.length > 0) {
     const byCategory = dismissedIssues.reduce((acc: Record<string, number>, issue) => {
       acc[issue.category] = (acc[issue.category] || 0) + 1;
       return acc;
     }, {});
-    const catParts = Object.entries(byCategory).map(([c, n]) => `${n} ${c}`).join(', ');
-    lines.push(`- ○ ${dismissedIssues.length} dismissed (${catParts})`);
+    const catParts = Object.entries(byCategory).map(([c, n]) => `${formatNumber(n)} ${c}`).join(', ');
+    lines.push(`- ○ ${formatNumber(dismissedIssues.length)} dismissed (${catParts})`);
   }
   if (remainingCount === 0) lines.push('- ✓ No issues remaining');
-  else lines.push(`- ○ ${remainingCount} remaining (resolve by fix or conversation)`);
+  else lines.push(`- ○ ${formatNumber(remainingCount)} remaining (resolve by fix or conversation)`);
   return lines.join('\n');
 }
 

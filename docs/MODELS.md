@@ -1,6 +1,6 @@
 # LLM Models Reference
 
-This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits (e.g. `src/llm/model-context-limits.ts`).
+This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits (e.g. `tools/prr/llm/model-context-limits.ts` or `shared/llm/model-context-limits.ts`).
 
 **Sources (check for latest):**
 
@@ -90,13 +90,13 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ## Using this in PRR
 
-- **ElizaCloud / context limits:** When adding or changing models in `src/llm/model-context-limits.ts`, use the **input** context (e.g. 200K tokens for Claude, 128K for GPT-4o) and leave headroom for completion (~20%).
+- **ElizaCloud / context limits:** When adding or changing models in `tools/prr/llm/model-context-limits.ts` (or `shared/llm/model-context-limits.ts`), use the **input** context (e.g. 200K tokens for Claude, 128K for GPT-4o) and leave headroom for completion (~20%).
 - **Model IDs:** Prefer stable snapshot IDs (e.g. `claude-sonnet-4-5-20250929`) when you need reproducible behavior; use aliases (e.g. `claude-sonnet-4-6`) for "latest" behavior.
 - **Claude 4.6:** See [Migrating to Claude 4.6](https://platform.claude.com/docs/en/about-claude/models/migration-guide) when moving from older Claude versions.
 
 ### Rotation order and skip list
 
-- **llm-api / elizacloud:** Default rotation in `src/runners/types.ts` is ordered by observed fix success (Claude first, then GPT). Models that 500/timeout or have 0% fix rate in practice are in **ELIZACLOUD_SKIP_MODELS** in `src/models/rotation.ts` and are never selected (e.g. `gpt-4.1`, `claude-sonnet-4.5`, `gpt-5.1-codex-max`, `claude-3-opus`). Add new models there when audits show repeated errors or zero success. **Why:** Audit showed 0%-success and error-prone models wasting rotation slots; leading with best performers and skipping known-bad models improves fix throughput.
+- **llm-api / elizacloud:** Default rotation in `shared/runners/types.ts` is ordered by observed fix success (Claude first, then GPT). Models that 500/timeout or have 0% fix rate in practice are in **ELIZACLOUD_SKIP_MODELS** in `tools/prr/models/rotation.ts` and are never selected (e.g. `gpt-4.1`, `claude-sonnet-4.5`, `gpt-5.1-codex-max`, `claude-3-opus`). Add new models there when audits show repeated errors or zero success. **Why:** Audit showed 0%-success and error-prone models wasting rotation slots; leading with best performers and skipping known-bad models improves fix throughput.
 - **Per-run performance:** Success/failure is recorded in `state-performance`; rotation prefers better-performing models within the same run. Performance is not yet persisted across PRs.
 
 *Last updated from provider docs; verify on the linked pages for current IDs and pricing.*

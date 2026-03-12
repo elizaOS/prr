@@ -53,6 +53,8 @@ export interface RunnerResult {
   noMeaningfulChanges?: boolean;
   /** When allowlist was enforced and the fixer attempted edits to files not in TARGET FILE(S). Surfaces so workflow can add a wrong-file lesson and penalize. */
   skippedDisallowedFiles?: string[];
+  /** When the fixer used <newfile> for a path that already exists (we skipped to avoid overwriting). Workflow can add a lesson: use <change> to edit, not <newfile>. */
+  skippedNewfilePathExists?: string[];
   /** True when the fixer wrote test files that are mostly placeholders (e.g. expect(true).toBe(true)). Workflow adds a lesson and treats as non-fix so we rotate. */
   placeholderTestContent?: boolean;
 }

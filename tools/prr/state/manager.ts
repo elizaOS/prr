@@ -42,10 +42,19 @@ export class StateManager {
           console.warn(`State file is for different PR (${this.state.pr}), creating new state`);
           this.state = createInitialState(pr, branch, headSha);
         } else {
-          // Update headSha if PR has changed
+          // Update headSha if PR has changed. Clear verified state so we re-verify fixes.
+          // WHY: If the branch was rebased, merged, or the fix was reverted, the workdir no longer
+          // matches the state that was verified. We had a run where the log said "already verified"
+          // and skipped the fixer, but the file still had the bug (output.log audit).
           if (this.state.headSha !== headSha) {
-            console.warn(`PR head has changed (${this.state.headSha?.slice(0, 7)} → ${headSha.slice(0, 7)}), some cached state may be stale`);
+            const prevSha = this.state.headSha?.slice(0, 7);
             this.state.headSha = headSha;
+            const hadVerified = (this.state.verifiedFixed?.length ?? 0) + (this.state.verifiedComments?.length ?? 0) > 0;
+            if (hadVerified) {
+              this.state.verifiedFixed = [];
+              this.state.verifiedComments = [];
+              console.warn(`PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code`);
+            }
           }
           
           // Log if resuming from interrupted run; keep flags set for callers

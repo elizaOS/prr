@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Pill opt-in (--pill) and split-exec improvements
+
+**Pill runs only when --pill is passed**
+- **prr**, **split-exec**, **story**, and **split-plan** now accept an optional **`--pill`** flag. When set, `closeOutputLog()` runs pill analysis on the closed output (and prompts) log and appends to pill-output.md / pill-summary.md. When not set, pill does not run.
+- **WHY opt-in:** Running pill on every run (especially split-exec, which has no LLM calls) added startup cost and produced empty or low-value pill output. Making pill explicit keeps default runs fast and lets users request analysis when they want it.
+- **Logger:** `setPillEnabled(enabled)` lets tools enable pill after parsing CLI args. Pill still runs only when there is content to analyze (output log has content or prompts log has PROMPT/RESPONSE/ERROR).
+- **WHY run on output-only:** Tools like split-exec have no prompts log entries; we still want pill to analyze the output log for operational improvements when the user passes `--pill`.
+
+**split-exec: auth, token check, exit codes, PR URLs**
+- **Exit code 2** when all executed splits are already up-to-date (nothing pushed). **WHY:** CI/scripts can distinguish "no work done" from "changes pushed" without parsing human-readable output.
+- **Pre-check `isBranchAlreadyUpToDate`** before push: if remote already has our commits, skip the push and report "already up-to-date" without attempting push. **WHY:** Avoids reject → rebase → second push when re-running on branches that were already pushed (e.g. previous run).
+- **`findExistingPR`** uses a single `getOpenPRs(owner, repo)` call (no base filter) and finds by head branch. **WHY:** One API call; finds the PR even if it was retargeted to a different base than the plan's target_branch.
+- **PR URLs** are collected and printed in the final summary ("Open PRs: url1 url2" or "PRs: url1 url2"). **WHY:** So the user sees links in one place even when skimming the log.
+- **Auth fail-fast:** If a split fails with an auth error (invalid token, password auth not supported), split-exec throws immediately with a clear message and does not run remaining splits. **WHY:** Same error would repeat for every split; failing once saves time and noise.
+- **--force-push hint** is shown only when all failures were push rejections (non-fast-forward), not when the failure was authentication. **WHY:** Suggesting --force-push for auth failures is misleading and unhelpful.
+- **Upfront token check:** Before cloning, split-exec calls `github.getDefaultBranch(owner, repo)`. If the API returns 401/403/404, we throw with a clear message (invalid/expired token, no access, or repo not found). **WHY:** Fail before clone so the user fixes GITHUB_TOKEN without waiting for the first push to fail.
+- **Push auth URL:** Git push now uses `https://${token}@...` (same format as the working `git ls-remote` in split-exec) instead of `x-access-token:${token}@...`. **WHY:** Consistency with ensureTargetBranchExistsOnRemote; some tokens or environments work with one format and not the other.
+- **Log and debug:** "Pushing &lt;branch&gt;..." is written to the output log (spinner text is not tee'd). getOpenPRs debug logs `baseBranch: '(all)'` when no base filter is used.
+
+- Docs: [tools/split-exec/README.md](tools/split-exec/README.md) (options, exit codes, troubleshooting).
+
+### Added (2026-03) — split-plan tool (PR decomposition planner)
+
+**New CLI: split-plan**
+- `split-plan <pr-url> [-o <file>] [--max-patch-chars <n>]` analyzes a large PR and writes a human-editable `.split-plan.md` with dependency analysis and a proposed split into smaller, reviewable PRs. Open PRs on the same base branch are shown as "buckets" to route changes to; the plan is intended for human review and for a future `split-exec` tool.
+- **WHY PR URL only (no branch spec):** Decomposition only makes sense for an existing PR; we need PR metadata, commits, and file list from the GitHub PR API. Branch-only analysis is out of scope.
+- **WHY default output is a file (`.split-plan.md`):** The plan is meant to be edited by the user before execution; writing to a file is the primary workflow. Stdout would require redirect and doesn’t match the “edit then run split-exec” flow.
+- **WHY prefix `split-plan` for logs:** `initOutputLog({ prefix: 'split-plan' })` produces split-plan-output.log and split-plan-prompts.log so runs from the same directory don’t overwrite prr/story/pill logs (same pattern as story and pill).
+- **WHY branch topology filter:** Only open PRs targeting the same base branch as the target PR are fetched. A PR into `v2-develop` must not suggest routing changes to a PR into `v3`; they are different worlds. `getOpenPRs(owner, repo, baseBranch, excludePRNumber)` uses the GitHub API `base` parameter for server-side filtering.
+- **WHY cap open PRs at 20 and truncate body to 500 chars:** Including every open PR and full descriptions can blow the LLM context. Twenty buckets and a short description per PR are enough for “route to existing PR” decisions; the prompt states “showing up to 20” so the model knows the list may be truncated.
+- **WHY patch budget (--max-patch-chars):** Full diffs for 50+ files can exceed 200k chars. We sort files by change size (additions+deletions), include patches until the budget is exhausted, and list omitted files with “[patch omitted — budget exceeded]” so the model knows what it didn’t see. Low-signal files (lockfiles, *.min.js) are listed with metadata only (no patch) so the model still sees they changed.
+- **WHY two-phase prompt (dependencies then split):** If we only ask “split this PR,” the model tends to group by file proximity and ignore cross-file dependencies. Forcing Phase 1 (identify A depends on B) before Phase 2 (group into PRs) makes dependency order a hard constraint so dependent changes stay together or merge in order.
+- **WHY validate/repair frontmatter:** The LLM may output invalid YAML (unescaped colons, wrong structure). We parse with a simple parser; on failure we discard the model’s frontmatter and inject safe values from `prInfo` and `new Date().toISOString()`. We always set `generated_at` in code so the plan file has a reliable timestamp.
+- **WHY file validation (paths not in PR):** The model can hallucinate file paths. We extract paths from the plan body under “**Files:**” sections, compare to the PR file list, and append a “## Validation” warning for unknown paths. We don’t strip them so human-added paths aren’t removed.
+- **GitHub API:** `getOpenPRs(owner, repo, baseBranch?, excludePRNumber?)` — paginated list of open PRs, optional base filter, exclude target PR. `getPRFilesWithPatches(owner, repo, prNumber)` — same as getPRFiles but includes the `patch` field (unified diff) per file; patch is optional for binary/large/rename-only files. Warning when file count >= 3000 (GitHub cap).
+- Docs: [tools/split-plan/README.md](tools/split-plan/README.md).
+
+### Added (2026-03) — split-exec tool (execute split plan)
+
+**New CLI: split-exec**
+- `split-exec <plan-file> [-w <workdir>] [--dry-run]` reads a `.split-plan.md` from split-plan, clones the repo at the source branch, then executes each split in order: checkout target branch (existing PR or new branch from base), cherry-pick listed commits, push, and create a new PR when the plan says "New PR".
+- **WHY iterative (one split at a time):** So the user can fix conflicts or stop between splits; batch execution would leave the repo in a hard-to-recover state on the first conflict.
+- **WHY default workdir `.split-exec-workdir`:** So the user can inspect or fix the repo between runs; re-run uses the same dir (cloneOrUpdate updates existing clone).
+- **Route to existing PR:** For "Route to: PR #N", split-exec checks out that PR's branch, cherry-picks the listed commits, and pushes so the existing PR gets the new commits. **New PR:** For "New PR: \`branch-name\`", creates that branch from the plan's target_branch, cherry-picks, pushes, and calls GitHub API to open a pull request.
+- **GitHub API:** `createPullRequest(owner, repo, head, base, title, body?)` for opening new PRs. Plan parser extracts frontmatter and ## Split sections (Route to, New PR, Commits) with a forgiving regex-based parser.
+- Docs: [tools/split-exec/README.md](tools/split-exec/README.md).
+
+### Fixed (2026-03) — Pill integration: circular import, error handling, double-init, dead code
+
+**Circular import removed**
+- `tools/pill/orchestrator.ts` no longer imports `formatNumber` from `shared/logger.js`. It uses `n.toLocaleString()` for user-facing counts (e.g. improvement counts in the summary entry).
+- **WHY**: `shared/logger.ts` dynamically imports the pill orchestrator in `closeOutputLog()` to run the pill hook. The orchestrator previously imported from logger, creating a cycle (logger → orchestrator → logger). Breaking the dependency in the orchestrator keeps the hook safe and allows the main process to load without pulling in pill.
+
+**runPillAnalysis no longer swallows errors**
+- The top-level `try { ... } catch { return null }` was removed from `runPillAnalysis`. LLM, parse, and file-write errors now propagate to the caller.
+- **WHY**: When pill is run from the CLI, users need to see real failures (e.g. missing API key, network error). The shared logger’s `closeOutputLog()` still wraps the call in try/catch so the hook never throws and shutdown always completes; only the CLI path sees thrown errors.
+
+**Dead prompt removed**
+- `VERIFY_SYSTEM_PROMPT` was removed from `tools/pill/llm/prompts.ts`. It was unused after the fixer/verify flow was removed from pill.
+- **WHY**: Dead code adds noise and can confuse future changes; the audit prompt is the only one pill uses.
+
+**Double-init guard in initOutputLog**
+- In `shared/logger.ts`, the original console refs (`origLogRef`, `origWarnRef`, `origErrorRef`) are only set when they are still null. On re-entry we use `origXxxRef ?? console.Xxx.bind(console)` and assign to the refs only if they are null.
+- **WHY**: If `initOutputLog` is called twice, the second time the current `console.log` is the *patched* function from the first init. Overwriting the refs with that would make the pill hook log to a closed or wrong stream. Keeping the first capture preserves the real console for the hook.
+
+**pillAnalysisEnabled reset before await**
+- In `closeOutputLog()`, `pillAnalysisEnabled = false` is set at the start of the `if (pillAnalysisEnabled && outputLogPath)` block, before any dynamic import or await.
+- **WHY**: So the hook runs at most once even if `runPillAnalysis` or a later step throws; the flag is cleared before async work so a subsequent close doesn’t re-run pill.
+
+- Docs: [tools/pill/README.md](tools/pill/README.md) (pill documentation with WHYs).
+
+### Added (2026-03) — story tool (PR and branch narrative & changelog)
+
+**New CLI: story**
+- `story <pr-or-branch> [--compare <branch>] [--output <file>]` builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a GitHub PR or branch. Modes: PR (title/body + commits + files), single branch (commit history only via List Commits API), two branches (`--compare`; compare API, primary branch preferred as “newer” when diverged).
+- **WHY single-branch uses commit history only:** A branch may be behind default (e.g. v2-develop behind develop); comparing to default would yield 0 commits. Listing the branch’s commits always gives a story without requiring a base ref.
+- **WHY prefer primary branch in two-branch mode:** The first argument is the branch the user cares about. When both directions have commits (diverged), we use the direction where that branch is the “newer” ref so the narrative describes what happened on it.
+- **WHY story-output.log / story-prompts.log prefix:** Shared logger supports `initOutputLog({ prefix: 'story' })` so story and prr don’t overwrite each other’s logs when run from the same directory (same pattern as pill’s pill-output.log).
+- **WHY normalize --compare to branch name:** The GitHub compare API expects ref names; passing a tree URL causes 404. We parse tree URL or owner/repo@branch and pass only the branch name; same-repo check when owner/repo provided.
+- **WHY buildCommitSummary avoids overlap:** When total commits ≤ maxCommits we show all; when total > maxCommits we use non-overlapping first/last halves (`half = min(maxCommits/2, total/2)`). Previously first+last could overlap and duplicate ~50 commits in the prompt.
+- **Changelog prompts** include optional “### Removed” section so the model can document removals (e.g. pnpm, legacy characters) without inventing a new heading.
+- Docs: [tools/story/README.md](tools/story/README.md). GitHub API additions: getPRFiles, getDefaultBranch, getBranchComparison, getBranchCommitHistory, getBranchComparisonEitherDirection, getBranchComparisonWithFallback; types: parseBranchSpec, normalizeCompareBranch.
+
 ### Added (2026-03) — GitHub Actions caller token and null-safe review path handling
 
 **GitHub Actions: use caller's token and avoid reserved secret name**
@@ -102,6 +185,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Targeted verifier tests**
 - Added `tests/fix-verification.test.ts` to cover lifecycle-comment detection and lifecycle-aware snippet extraction.
 - **WHY**: This behavior is easy to regress during future prompt/snippet tuning. Tests keep the conservative verification bias intentional and visible.
+
+### Added (2026-03) — Output.log + prompts.log follow-up: hidden test-target inference and issue-scoped lessons
+
+**Infer hidden test-file targets from import-path review comments**
+- `prompt-builder.ts` now detects comments like "test file has invalid imports" / "actual file is at ..." and infers likely test-file targets such as `scripts/__tests__/generate-skills-md.test.ts`.
+- Issue creation, batch prompts, single-issue prompts, recovery, and disallowed-file retry learning all now include those inferred test targets in allowed paths when the review clearly says the bug is in a test file attached to the implementation file.
+- **WHY**: This run kept sending a test-import issue to `scripts/generate-skills-md.ts` alone, while the fixer repeatedly tried `scripts/__tests__/generate-skills-md.test.ts` and got blocked as disallowed. Inferring the hidden test target converts that stalemate into an editable path.
+
+**Stop retry loops when the real target file is still hidden**
+- `no-changes-verification.ts` now persists inferred hidden test targets after `WRONG_LOCATION`, `UNCLEAR`, or `CANNOT_FIX`, and it tracks repeated "bug is in a hidden test file but no concrete target can be inferred" failures.
+- After repeated misses with no inferable target, the issue is dismissed for human follow-up instead of burning more model rotations on the same wrong file.
+- **WHY**: Output.log showed the same issue cycling through `WRONG_LOCATION`, `ALREADY_FIXED`, and `CANNOT_FIX` responses that all said the current file was not the place to fix. Once the workflow knows that but still cannot identify the actual file, continued retries are pure token waste.
+
+**Scope lessons to the specific issue, not just the file**
+- `lessons-retrieve.ts` now exposes `getLessonsForIssue(...)`, which filters lessons by the issue's comment text and current target paths.
+- Batch and single-issue prompt builders now prefer per-issue lessons so unrelated same-file failures (for example YAML indentation or duplicate op mapping) do not pollute a test-import issue on the same file.
+- **WHY**: Prompts.log was still presenting unrelated `scripts/generate-skills-md.ts` lessons as if they applied directly to the import-path issue. That distracts the fixer and can outweigh the actual actionable guidance.
 
 ### Added (2026-03) — Output.log + prompts.log follow-up: finish canonical paths, commit gating, rename targets
 

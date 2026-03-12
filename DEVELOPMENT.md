@@ -25,13 +25,13 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                           CLI (index.ts)                        │
+│                    CLI (tools/prr/index.ts)                     │
 │  - Entry point, signal handling, graceful shutdown              │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                       PRResolver (resolver.ts)                  │
+│            PRResolver (tools/prr/resolver.ts)                   │
 │  - Main orchestration logic                                     │
 │  - Fix loop: analyze → fix → verify → commit                    │
 │  - Tool rotation and escalation strategies                      │
@@ -41,8 +41,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
         ▼                       ▼                       ▼
 ┌───────────────┐    ┌───────────────────┐    ┌───────────────────┐
 │  GitHub API   │    │   Fixer Runners   │    │    LLM Client     │
-│  (github/)    │    │   (runners/)      │    │   (llm/client.ts) │
-│               │    │                   │    │                   │
+│(tools/prr/    │    │ (shared/runners/) │    │(tools/prr/llm/    │
+│  github/)     │    │                   │    │  client.ts)       │
 │ - PR info     │    │ - CursorRunner    │    │ - Verification    │
 │ - Comments    │    │ - ClaudeCodeRunner│    │ - Issue detection │
 │ - Status      │    │ - AiderRunner     │    │ - Conflict res.   │
@@ -55,24 +55,25 @@ This contrasts with fully autonomous agents that create PRs without human involv
         └───────────────────────┼───────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        State Management                         │
-│  - StateManager (state/manager.ts) - workdir state              │
-│  - LessonsManager (state/lessons.ts) - branch-permanent lessons │
+│                     State Management                            │
+│  (tools/prr/state/manager.ts, state/lessons.ts)                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Key Files
+
+Paths below are relative to the repo root. PRR-specific code lives under `tools/prr/`; shared modules (logger, git) under `shared/` (pill-output.md #8).
 
 ### Core
 
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | CLI entry point, signal handlers |
-| `src/cli.ts` | Argument parsing, validation |
-| `src/config.ts` | Environment/config loading |
-| `src/resolver.ts` | Main orchestration (delegates to workflow/) |
-| `src/logger.ts` | Logging, timing, token tracking |
+| `tools/prr/index.ts` | CLI entry point, signal handlers |
+| `tools/prr/cli.ts` | Argument parsing, validation |
+| `shared/config.ts` | Environment/config loading |
+| `tools/prr/resolver.ts` | Main orchestration (delegates to workflow/) |
+| `shared/logger.ts` | Logging, timing, token tracking |
 
 
 ### GitHub Integration
@@ -80,8 +81,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/github/api.ts` | Octokit wrapper, GraphQL queries |
-| `src/github/types.ts` | PRInfo, ReviewComment, etc. |
+| `tools/prr/github/api.ts` | Octokit wrapper, GraphQL queries |
+| `tools/prr/github/types.ts` | PRInfo, ReviewComment, etc. |
 
 
 ### Git Operations
@@ -89,9 +90,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
-| `src/git/commit.ts` | Squash commit, push with retry, token injection |
-| `src/git/workdir.ts` | Hash-based workdir management |
+| `shared/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
+| `shared/git/commit.ts` | Squash commit, push with retry, token injection |
+| `shared/git/workdir.ts` | Hash-based workdir management |
 
 
 ### Fixer Tool Runners
@@ -99,14 +100,14 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/runners/index.ts` | Auto-detection, rotation |
-| `src/runners/cursor.ts` | Cursor Agent CLI |
-| `src/runners/claude-code.ts` | Claude Code CLI |
-| `src/runners/aider.ts` | Aider CLI |
-| `src/runners/opencode.ts` | OpenCode CLI |
-| `src/runners/codex.ts` | OpenAI Codex CLI |
-| `src/runners/gemini.ts` | Google Gemini CLI |
-| `src/runners/llm-api.ts` | Direct API (fallback) |
+| `shared/runners/detect.ts` | Auto-detection, rotation |
+| `shared/runners/cursor.ts` | Cursor Agent CLI |
+| `shared/runners/claude-code.ts` | Claude Code CLI |
+| `shared/runners/aider.ts` | Aider CLI |
+| `shared/runners/opencode.ts` | OpenCode CLI |
+| `shared/runners/codex.ts` | OpenAI Codex CLI |
+| `shared/runners/gemini.ts` | Google Gemini CLI |
+| `shared/runners/llm-api.ts` | Direct API (fallback) |
 
 
 ### LLM Verification
@@ -114,7 +115,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/llm/client.ts` | Anthropic/OpenAI for verification |
+| `tools/prr/llm/client.ts` | Anthropic/OpenAI for verification |
 
 
 ### State Persistence
@@ -122,10 +123,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
-// Review: clearly distinguishes per-workdir state from persistent lessons for clarity.
-| `src/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
-| `src/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
+| `tools/prr/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
+| `tools/prr/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
+| `tools/prr/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 
 
 ### Prompt Building
@@ -133,8 +133,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/analyzer/prompt-builder.ts` | Build fix prompts with context |
-| `src/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
+| `tools/prr/analyzer/prompt-builder.ts` | Build fix prompts with context |
+| `tools/prr/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
 
 ## Key Design Decisions
 
@@ -348,7 +348,7 @@ Strategy per failure:
 **Solution**: Halve the batch size after each consecutive zero-fix iteration:
 
 ```typescript
-// src/analyzer/prompt-builder.ts
+// tools/prr/analyzer/prompt-builder.ts
 export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number): number {
   if (consecutiveZeroFixIterations <= 0) return MAX_ISSUES_PER_PROMPT;  // 50
   const reduced = Math.floor(MAX_ISSUES_PER_PROMPT / Math.pow(2, consecutiveZeroFixIterations));
@@ -377,7 +377,7 @@ export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number):
 **Solution**: LLM-based importance and difficulty assessment during the existing analysis phase:
 
 ```typescript
-// src/llm/client.ts - Extended response format
+// tools/prr/llm/client.ts - Extended response format
 // OLD: ISSUE_ID: YES|NO|STALE: explanation
 // NEW: ISSUE_ID: YES|NO|STALE: I<1-5>: D<1-5>: explanation
 
@@ -415,7 +415,7 @@ if (match) {
 **Data flow** (11 construction sites):
 
 ```typescript
-// src/analyzer/types.ts
+// tools/prr/analyzer/types.ts
 export interface IssueTriage {
   importance: number;  // 1-5
   ease: number;        // 1-5
@@ -446,7 +446,7 @@ export interface UnresolvedIssue {
 
 **NOT** `llm/client.ts` audit site (~line 942): That constructs audit result objects `{ stillExists, explanation }`, NOT `UnresolvedIssue` — different type.
 
-**Sorting** (`src/analyzer/severity.ts`):
+**Sorting** (`tools/prr/analyzer/severity.ts`):
 
 ```typescript
 export type PriorityOrder =
@@ -479,7 +479,7 @@ export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder):
 
 If we mutated, single-issue randomization and priority sort would fight each other on alternate iterations. Returning a new array means each consumer gets its own ordering.
 
-**Where sorting happens** (`src/workflow/prompt-building.ts`):
+**Where sorting happens** (`tools/prr/workflow/prompt-building.ts`):
 
 ```typescript
 // WHY sort here, not in issue-analysis:
@@ -490,7 +490,7 @@ const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
 const { prompt, detailedSummary } = buildPrompt(sortedIssues, lessons, { maxIssues: effectiveMax });
 ```
 
-**Triage labels in prompts** (`src/analyzer/prompt-builder.ts`):
+**Triage labels in prompts** (`tools/prr/analyzer/prompt-builder.ts`):
 
 ```typescript
 // WHY tell the fixer: The model should know which issues are critical
@@ -501,7 +501,7 @@ const triageLabel = issue.triage
 parts.push(`### Issue ${i + 1}: ${issue.comment.path}${triageLabel}\n`);
 ```
 
-**Console display** (`src/workflow/prompt-building.ts`):
+**Console display** (`tools/prr/workflow/prompt-building.ts`):
 
 ```typescript
 // Console shows breakdown:
@@ -511,7 +511,7 @@ const moderate = triaged.filter(i => i.triage!.importance === 3).length;
 const minor = triaged.filter(i => i.triage!.importance >= 4).length;
 ```
 
-**Per-batch debug logging** (`src/llm/client.ts`):
+**Per-batch debug logging** (`tools/prr/llm/client.ts`):
 
 ```typescript
 // Added to existing per-batch summary:
@@ -701,18 +701,18 @@ if (existsSync('.cursor/rules/')) {
 **Solution layers**:
 
 ```text
-Layer 1: Clean runner output (src/runners/cursor.ts)
+Layer 1: Clean runner output (shared/runners/cursor.ts)
   └─ Extract only text content from JSON stream
   └─ WHY: Prevents downstream pattern matching against protocol metadata
 
-Layer 2: Regurgitation detection (src/workflow/utils.ts)
+Layer 2: Regurgitation detection (tools/prr/workflow/utils.ts)
   └─ PROMPT_REGURGITATION_MARKERS = known instruction fragments
   └─ If output matches known template text → reject as invalid
   └─ WHY: When overwhelmed, models echo "Issue 1 is already fixed -
      Line 45 has null check" verbatim from the instruction template.
      This looks like a valid explanation but isn't.
 
-Layer 3: Strict "already fixed" patterns (src/workflow/no-changes-verification.ts)
+Layer 3: Strict "already fixed" patterns (tools/prr/workflow/no-changes-verification.ts)
   └─ Replaced .includes('has') with /\balready\s+fixed\b/
   └─ WHY: includes('has') matches "This has not been resolved";
      includes('exists') matches "The file no longer exists".
@@ -1478,7 +1478,7 @@ Both commit paths use this: `squashCommit` (main fix loop) and `commitIteration`
 fix: address review comments
 
 Issues addressed:
-- src/cli.ts: _⚠️ Potential issue_ | _🔴 Critical_
+- tools/prr/cli.ts: _⚠️ Potential issue_ | _🔴 Critical_
 <details><summary>...
 ```
 
@@ -1628,10 +1628,10 @@ noCommit: !opts.commit,  // --no-commit -> opts.commit=false -> noCommit=true
 bun install
 
 # Build
-bun run build
+bun run typecheck
 
 # Run locally
-bun dist/index.js https://github.com/owner/repo/pull/123
+bun dist/tools/prr/index.js https://github.com/owner/repo/pull/123
 
 # Or link globally
 bun link
@@ -1865,7 +1865,7 @@ if (!safe) {
 
 ## Adding a New Runner
 
-1. Create `src/runners/<name>.ts`:
+1. Create `shared/runners/<name>.ts`:
 ```typescript
 export class MyRunner implements Runner {
   name = 'myrunner';
@@ -1877,7 +1877,7 @@ export class MyRunner implements Runner {
 }
 ```
 
-2. Add to `src/runners/index.ts`:
+2. Add to `shared/runners/detect.ts` (runner registry):
 ```typescript
 import { MyRunner } from './myrunner.js';
 export const ALL_RUNNERS: Runner[] = [
@@ -1886,7 +1886,7 @@ export const ALL_RUNNERS: Runner[] = [
 ];
 ```
 
-3. Update `src/config.ts` FixerTool type if needed
+3. Update `shared/config.ts` FixerTool type if needed
 
 **Security Checklist for New Runners**:
 - [ ] Use `spawn(binary, args)` NOT `spawn('sh', ['-c', cmd])`
@@ -1902,7 +1902,7 @@ Tokens are tracked per phase:
 - `Resolve conflicts` - direct LLM conflict resolution
 - `Direct LLM fix` - fallback fixer
 
-**Session vs Overall Stats** (`logger.ts`):
+**Session vs Overall Stats** (`shared/logger.ts`):
 
 ```typescript
 // WHY: Distinguish "what happened this run" from "cumulative history"
@@ -1945,7 +1945,7 @@ Cost estimate uses rough rates:
 **Solution**: Monkey-patch `process.stdout.write` and `process.stderr.write` at startup to mirror all output to `~/.prr/output.log`:
 
 ```typescript
-// src/logger.ts
+// shared/logger.ts
 export function initOutputLog(): void {
   const logPath = path.join(os.homedir(), '.prr', 'output.log');
   // Truncate on each run start — always latest session only
@@ -1968,7 +1968,7 @@ export function initOutputLog(): void {
 **Why truncate on start, not append?** Appending would require the user to figure out where the latest run begins. Truncation means the file always contains exactly one session — the most recent one. If you need historical output, use `--verbose` with dedicated debug log files.
 
 **Lifecycle**:
-1. `initOutputLog()` called at the top of `src/index.ts` (before any output)
+1. `initOutputLog()` called at the top of `tools/prr/index.ts` (before any output)
 2. `closeOutputLog()` called in success path, error handler, and signal handlers
 3. Path printed at end: `Full output log: ~/.prr/output.log`
 

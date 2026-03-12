@@ -10,7 +10,7 @@
  * keeps the log free of progress-bar artifacts.
  */
 import chalk from 'chalk';
-import { writeFileSync, mkdirSync, createWriteStream } from 'fs';
+import { writeFileSync, readFileSync, mkdirSync, createWriteStream, appendFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { format } from 'node:util';
@@ -29,6 +29,22 @@ let debugLogCounter = 0;
 let outputLogStream: WriteStream | null = null;
 let outputLogPath: string | null = null;
 let promptLogStream: WriteStream | null = null;
+let promptLogPath: string | null = null;
+let outputLogExitHandlerRegistered = false;
+
+/** When true, closeOutputLog() runs pill analysis on the logs we just closed. Set at init or via setPillEnabled() when --pill is passed. */
+let pillAnalysisEnabled = false;
+
+/** Enable or disable pill analysis on close. Call after parse when user passes --pill. WHY opt-in: default runs stay fast; tools like split-exec have no LLM calls so pill would often have nothing to analyze unless the user explicitly requests it. */
+export function setPillEnabled(enabled: boolean): void {
+  pillAnalysisEnabled = enabled;
+}
+/** Log prefix from initOutputLog (e.g. 'story') so pill knows which log files to read. */
+let currentLogPrefix: string | undefined;
+/** Original console methods, captured before patching, for pill hook to print to real console. */
+let origLogRef: ((...args: unknown[]) => void) | null = null;
+let origWarnRef: ((...args: unknown[]) => void) | null = null;
+let origErrorRef: ((...args: unknown[]) => void) | null = null;
 
 /**
  * Strip ANSI escape codes from a string for plain-text logging.
@@ -39,10 +55,22 @@ function stripAnsi(str: string): string {
 }
 
 /**
+ * Options for initOutputLog.
+ * WHY prefix: When multiple tools (prr, story, pill) run from the same directory, each can use a prefix
+ * (e.g. story → story-output.log, story-prompts.log) so they don't overwrite each other. Pill uses its own
+ * logger with hardcoded pill-* names; story uses shared logger with prefix 'story'; prr uses no prefix.
+ */
+export interface InitOutputLogOptions {
+  prefix?: string;
+  /** When true, closeOutputLog() runs pill analysis and prints pitch + file paths. */
+  enablePill?: boolean;
+}
+
+/**
  * Initialize the output log tee.
  *
- * Creates/truncates ~/.prr/output.log and patches console.log/warn/error
- * to mirror all formatted output (ANSI-stripped) to the file.
+ * Creates/truncates output.log (or {prefix}-output.log when options.prefix is set)
+ * and patches console.log/warn/error to mirror all formatted output (ANSI-stripped) to the file.
  *
  * Spinner output (ora etc.) goes through process.stdout.write — NOT console.log —
  * and is intentionally excluded.  It's pure UI noise with no analytical value.
@@ -53,10 +81,15 @@ function stripAnsi(str: string): string {
  * overwriting output.log/prompts.log in the project root when you want to
  * preserve them for pill or inspection).
  */
-export function initOutputLog(): void {
+export function initOutputLog(options?: InitOutputLogOptions): void {
   const logDir = process.env.PRR_LOG_DIR ? join(process.cwd(), process.env.PRR_LOG_DIR) : process.cwd();
+  const prefix = options?.prefix;
+  const outputFileName = prefix ? `${prefix}-output.log` : 'output.log';
+  const promptFileName = prefix ? `${prefix}-prompts.log` : 'prompts.log';
 
-  outputLogPath = join(logDir, 'output.log');
+  pillAnalysisEnabled = options?.enablePill ?? false;
+  currentLogPrefix = prefix;
+  outputLogPath = join(logDir, outputFileName);
 
   try {
     mkdirSync(logDir, { recursive: true });
@@ -66,16 +99,55 @@ export function initOutputLog(): void {
   writeFileSync(outputLogPath, '', 'utf-8');
   // Review: ensures logging to a single stream, preventing double initialization issues.
   outputLogStream = createWriteStream(outputLogPath, { flags: 'a', encoding: 'utf-8' });
+  outputLogStream.on('error', (err) => {
+    if (origErrorRef) origErrorRef('Output log stream error:', err);
+    try {
+      outputLogStream?.end();
+    } catch {
+      // ignore
+    }
+    outputLogStream = null;
+  });
 
   // Companion log for full prompts & responses — search by slug (e.g. "#0009")
   // to jump from output.log to the exact prompt/response in prompts.log.
-  const promptLogPath = join(logDir, 'prompts.log');
+  promptLogPath = join(logDir, promptFileName);
   writeFileSync(promptLogPath, '', 'utf-8');
   promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
+  promptLogStream.on('error', (err) => {
+    if (origErrorRef) origErrorRef('Prompts log stream error:', err);
+    try {
+      promptLogStream?.end();
+    } catch {
+      // ignore
+    }
+    promptLogStream = null;
+  });
 
-  const origLog = console.log.bind(console);
-  const origWarn = console.warn.bind(console);
-  const origError = console.error.bind(console);
+  // WHY guard: on second init, console.log is already the patched function from first init.
+  // Overwriting origLogRef with that would make the pill hook log to a closed/wrong stream. Only capture when refs are null.
+  const origLog = origLogRef ?? console.log.bind(console);
+  const origWarn = origWarnRef ?? console.warn.bind(console);
+  const origError = origErrorRef ?? console.error.bind(console);
+  if (origLogRef === null) origLogRef = origLog;
+  if (origWarnRef === null) origWarnRef = origWarn;
+  if (origErrorRef === null) origErrorRef = origError;
+
+  if (!outputLogExitHandlerRegistered) {
+    outputLogExitHandlerRegistered = true;
+    process.on('exit', () => {
+      try {
+        outputLogStream?.end();
+      } catch {
+        // ignore
+      }
+      try {
+        promptLogStream?.end();
+      } catch {
+        // ignore
+      }
+    });
+  }
 
   function logToStream(...args: unknown[]): void {
     if (!outputLogStream) return;
@@ -98,6 +170,7 @@ export function initOutputLog(): void {
  * WHY: Without closing, the last lines may stay buffered and the file may be
  * unreadable or truncated when the user opens it after the process exits.
  * Waits for streams to flush so callers (e.g. before process.exit()) can rely on logs being written.
+ * When enablePill was set, runs pill analysis on the closed logs and prints pitch + file paths to the real console.
  */
 export async function closeOutputLog(): Promise<void> {
   const streams: WriteStream[] = [];
@@ -116,7 +189,71 @@ export async function closeOutputLog(): Promise<void> {
       await finished(stream);
     } catch (err) {
       // Log but don't throw; caller expects shutdown to complete
-      console.error('Log stream close/flush failed:', err);
+      if (origErrorRef) origErrorRef('Log stream close/flush failed:', err);
+    }
+  }
+
+  // WHY run when output has content OR prompts have entries: split-exec has no prompts log; prr/story do. So we
+  // run pill when either the output log has content (operational improvements) or the prompts log has PROMPT/RESPONSE/ERROR.
+  const outputLogHasContent =
+    outputLogPath && existsSync(outputLogPath) && readFileSync(outputLogPath, 'utf-8').trim().length > 0;
+  const hasPromptsToAnalyze =
+    promptLogPath &&
+    existsSync(promptLogPath) &&
+    / (PROMPT|RESPONSE|ERROR): /m.test(readFileSync(promptLogPath, 'utf-8'));
+
+  if (pillAnalysisEnabled && outputLogPath && (outputLogHasContent || hasPromptsToAnalyze)) {
+    // WHY reset first: so we run at most once even if runPillAnalysis or a later step throws.
+    pillAnalysisEnabled = false;
+    try {
+      // WHY dynamic import: avoids circular dependency (orchestrator must not import from logger).
+      const { dirname } = await import('path');
+      const { runPillAnalysis } = await import('../tools/pill/orchestrator.js');
+      const { tryLoadPillConfig } = await import('../tools/pill/config.js');
+      const targetDir = dirname(outputLogPath);
+      const config = tryLoadPillConfig({ targetDir, logPrefix: currentLogPrefix });
+      if (config) {
+        appendFileSync(outputLogPath, '\n[Pill] Running analysis on closed logs…\n', 'utf-8');
+        const out = await runPillAnalysis(config);
+        if (out.result) {
+          appendFileSync(outputLogPath, `[Pill] Done. Instructions: ${out.result.instructionsPath}\n`, 'utf-8');
+          if (origLogRef) {
+            origLogRef('\n' + out.result.pitch);
+            origLogRef(`\n  Instructions: ${out.result.instructionsPath}`);
+            origLogRef(`  Summary log:  ${out.result.summaryPath}`);
+          }
+        } else {
+          const reasonLine =
+            out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
+              ? `[Pill] No improvements to record (reason: ${out.reason}: ${(out as { errorMessage?: string }).errorMessage}).\n`
+              : `[Pill] No improvements to record (reason: ${out.reason}).\n`;
+          appendFileSync(outputLogPath, reasonLine, 'utf-8');
+          // WHY distinct console message: Operators need to know why pill recorded nothing (pill-output.md #3, #7).
+          const consoleMsg =
+            out.reason === 'no_logs'
+              ? 'Pill: No logs to analyze (output/prompts log empty or missing for this prefix).'
+              : out.reason === 'no_api_key'
+                ? 'Pill: No improvements to record (no API key configured). Set API key in .env.'
+                : out.reason === 'zero_improvements_from_llm'
+                  ? 'Pill: LLM returned zero improvements (audit ran successfully).'
+                  : out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
+                    ? `Pill: Audit failed: ${(out as { errorMessage?: string }).errorMessage}`
+                    : `Pill: No improvements to record (reason: ${out.reason}).`;
+          if (origLogRef) origLogRef('\n[Pill] ' + consoleMsg);
+        }
+      } else {
+        appendFileSync(outputLogPath, '[Pill] Skipped (no API key or no config in target dir).\n', 'utf-8');
+        if (origLogRef) origLogRef('\n[Pill] Skipped (no API key or no config in target dir).');
+      }
+    } catch (err) {
+      // Log to real console so operators see pill failures (pill-output.md #6); still complete shutdown.
+      if (origErrorRef) origErrorRef('[Pill] Error:', err);
+      try {
+        if (outputLogPath) {
+          const msg = err instanceof Error ? err.message : String(err);
+          appendFileSync(outputLogPath, `[Pill] Error: ${msg}\n`, 'utf-8');
+        }
+      } catch { /* ignore */ }
     }
   }
 }
@@ -126,6 +263,11 @@ export async function closeOutputLog(): Promise<void> {
  */
 export function getOutputLogPath(): string | null {
   return outputLogPath;
+}
+
+/** Path to the current prompts.log (or {prefix}-prompts.log). Null if initOutputLog was not called or failed. */
+export function getPromptLogPath(): string | null {
+  return promptLogPath;
 }
 
 export function setVerbose(enabled: boolean): void {
@@ -287,14 +429,17 @@ function writeToPromptLog(
  * and responses in a single file — critical for diagnosing "the LLM got
  * confused at step 5" type issues where you need to see the conversation flow.
  *
- * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
- * Standalone files are written to ~/.prr/debug/<timestamp>/
+ * prompts.log is written whenever initOutputLog was used (e.g. split-plan-prompts.log).
+ * Standalone files and output.log one-liner only when PRR_DEBUG_PROMPTS + verbose (debugLogDir set).
  */
 export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
-  if (!debugLogDir) return;
-
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
+
+  // Full content in prompts.log (always when stream exists, so split-plan etc. get a non-empty log)
+  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
+
+  if (!debugLogDir) return;
 
   // Standalone file (still useful for sharing/diffing individual prompts)
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-prompt.txt`;
@@ -311,22 +456,20 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
 
   // Searchable one-liner in output.log
   debug(`PROMPT ${slug}`, { chars: prompt.length });
-
-  // Full content in prompts.log
-  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
 }
 
 /**
  * Log a response to the prompts.log companion file and (optionally) a standalone
- * debug file. A one-liner with a searchable slug is written to output.log.
- *
- * Only active when PRR_DEBUG_PROMPTS=1 and verbose mode is enabled.
+ * debug file. A one-liner with a searchable slug is written to output.log when debugLogDir is set.
  */
 export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
-  if (!debugLogDir) return;
-
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
+
+  // Full content in prompts.log (always when stream exists)
+  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
+
+  if (!debugLogDir) return;
 
   // Standalone file
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-response.txt`;
@@ -343,9 +486,6 @@ export function debugResponse(label: string, response: string, metadata?: Record
 
   // Searchable one-liner in output.log
   debug(`RESPONSE ${slug}`, { chars: response.length });
-
-  // Full content in prompts.log
-  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
 }
 
 /**
@@ -358,11 +498,13 @@ export function debugPromptError(
   errorMessage: string,
   metadata?: Record<string, unknown>,
 ): void {
-  if (!promptLogStream || !debugLogDir) return;
+  if (!promptLogStream) return;
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
-  debug(`ERROR ${slug}`, { error: errorMessage.slice(0, 80) });
   writeToPromptLog(slug, 'ERROR', label, errorMessage, metadata);
+  if (debugLogDir) {
+    debug(`ERROR ${slug}`, { error: errorMessage.slice(0, 80) });
+  }
 }
 
 /**

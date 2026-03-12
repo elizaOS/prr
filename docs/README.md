@@ -6,7 +6,7 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ## 📚 Documentation Structure
 
-### 🎯 [Quick Reference Guide](QUICK_REFERENCE.md)
+### 🎯 [Quick Reference Guide](../tools/prr/QUICK_REFERENCE.md)
 **Best for**: Getting started quickly or looking up common patterns
 
 **Contains**:
@@ -21,7 +21,7 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ---
 
-### 🔄 [Flowchart Documentation](flowchart.md)
+### 🔄 [Flowchart Documentation](../tools/prr/flowchart.md)
 **Best for**: Understanding the detailed workflow and control flow
 
 **Contains**:
@@ -37,6 +37,20 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 - Performance optimizations explained
 
 **Read this if**: You want to understand the step-by-step execution flow and decision points.
+
+---
+
+### 💊 Pill (Program Improvement Log Looker)
+
+**Best for**: Auditing a project from its output.log and prompts.log, integrated with prr/story
+
+**Contains**:
+- What pill does (analysis-only, no fix/verify/commit) and why
+- How prr/story run pill on close (`enablePill`, orig console refs, double-init guard)
+- Log file names and prefix (prr vs story vs pill), CLI options, output files
+- Architecture (cli, config, context, orchestrator, prompts)
+
+**Read this if**: You run pill standalone or use pill integration from prr/story. Full doc: **[tools/pill/README.md](../tools/pill/README.md)**.
 
 ---
 
@@ -135,7 +149,7 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 
 ---
 
-### 🤖 [Models Reference](MODELS.md)
+### 🤖 [Models Reference](MODELS.md) *(shared)*
 **Best for**: Choosing or configuring LLM models, updating context limits
 
 **Contains**:
@@ -147,7 +161,7 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 
 ---
 
-### 🏗️ [Architecture Guide](ARCHITECTURE.md)
+### 🏗️ [Architecture Guide](../tools/prr/ARCHITECTURE.md)
 **Best for**: Contributors, maintainers, or deep technical understanding
 
 **Contains**:
@@ -168,43 +182,34 @@ Token-saving, exit-logic, and fix-loop improvements are documented in the [CHANG
 
 ---
 
+### 🔧 [Runners Reference](../tools/prr/RUNNERS.md)
+**Best for**: Integrating AI coding tools (ElizaCloud, Cursor, Claude Code, etc.)
+
+Credentials, auth, and usage from TypeScript/Node. Used by PRR's fixer lane.
+
+---
+
+### 📥 [Installing the PRR workflow in your repo](../tools/prr/INSTALL-WORKFLOW-OTHER-REPO.md)
+**Best for**: Maintainers who want to run PRR on their repo via GitHub Actions (without hosting the tool).
+
+---
+
 ## 🗺️ Documentation Map
 
 ```text
 docs/
 ├── README.md (this file)           ← Start here
+├── MODELS.md                       ← Shared: Claude & OpenAI models reference
+├── ROADMAP.md                      ← Project roadmap
+├── ELIZACLOUD_API.md               ← Shared: Eliza Cloud API reference
 │
+tools/prr/                          ← PRR tool docs
 ├── QUICK_REFERENCE.md              ← Quick start & common patterns
-│   ├─ One-page workflow
-│   ├─ Visual architecture
-│   ├─ The fix loop (detailed)
-│   ├─ Smart features
-│   ├─ Common use cases
-│   └─ Troubleshooting
-│
 ├── flowchart.md                    ← Detailed flowcharts
-│   ├─ Main system flow
-│   ├─ Orchestrator loop
-│   ├─ Push iteration loop
-│   ├─ Fix iteration details
-│   ├─ Escalation strategy
-│   ├─ State management
-│   ├─ LLM usage points
-│   └─ Error recovery
-│
-├── MODELS.md                       ← Claude & OpenAI models reference
-│   ├─ Latest & legacy Claude
-│   ├─ OpenAI frontier & specialized
-│   └─ PRR context limits usage
-│
-└── ARCHITECTURE.md                 ← Technical deep-dive
-    ├─ System architecture
-    ├─ Directory structure
-    ├─ Design patterns
-    ├─ Data flows
-    ├─ Performance optimizations
-    ├─ Extension points
-    └─ Testing & security
+├── ARCHITECTURE.md                 ← Technical deep-dive
+├── RUNNERS.md                      ← AI coding tools / runner reference
+├── INSTALL-WORKFLOW-OTHER-REPO.md  ← Install PRR workflow in another repo
+└── AUDIT-CYCLES.md                 ← PRR audit log
 ```
 
 ---
@@ -214,15 +219,15 @@ docs/
 ### For End Users
 
 1. **Start**: Read the [main README](../README.md) for what PRR does
-2. **Quick Start**: Use [Quick Reference](QUICK_REFERENCE.md) for common patterns
-3. **Deep Dive**: Check [Flowcharts](flowchart.md) to understand the workflow
+2. **Quick Start**: Use [Quick Reference](../tools/prr/QUICK_REFERENCE.md) for common patterns
+3. **Deep Dive**: Check [Flowcharts](../tools/prr/flowchart.md) to understand the workflow
 4. **Troubleshoot**: Refer back to Quick Reference troubleshooting section
 
 ### For Contributors
 
 1. **Start**: Read the [main README](../README.md)
-2. **Workflow**: Study [Flowcharts](flowchart.md) to understand execution flow
-3. **Architecture**: Read [Architecture Guide](ARCHITECTURE.md) for design patterns
+2. **Workflow**: Study [Flowcharts](../tools/prr/flowchart.md) to understand execution flow
+3. **Architecture**: Read [Architecture Guide](../tools/prr/ARCHITECTURE.md) for design patterns
 4. **Code**: Explore the codebase with architectural context
 5. **Extend**: Use extension points in Architecture Guide
 6. **Test**: Follow testing strategy in Architecture Guide
@@ -352,12 +357,12 @@ PRR maintains state across interruptions:
 
 ### Q: Which document should I read first?
 **A**: Depends on your goal:
-- **Just want to use PRR**: [Quick Reference](QUICK_REFERENCE.md)
-- **Want to understand how it works**: [Flowcharts](flowchart.md)
-- **Want to contribute or extend**: [Architecture](ARCHITECTURE.md)
+- **Just want to use PRR**: [Quick Reference](../tools/prr/QUICK_REFERENCE.md)
+- **Want to understand how it works**: [Flowcharts](../tools/prr/flowchart.md)
+- **Want to contribute or extend**: [Architecture](../tools/prr/ARCHITECTURE.md)
 
 ### Q: How do I visualize the full workflow?
-**A**: [Flowchart documentation](flowchart.md) has Mermaid diagrams showing:
+**A**: [Flowchart documentation](../tools/prr/flowchart.md) has Mermaid diagrams showing:
 - Main system flow
 - Each loop in detail
 - Decision points
@@ -365,20 +370,20 @@ PRR maintains state across interruptions:
 - State changes
 
 ### Q: Where are the key files explained?
-**A**: [Architecture Guide](ARCHITECTURE.md) has:
+**A**: [Architecture Guide](../tools/prr/ARCHITECTURE.md) has:
 - Directory structure with file purposes
 - Detailed description of each module
 - Extension points for adding functionality
 
 ### Q: How do I troubleshoot issues?
-**A**: [Quick Reference](QUICK_REFERENCE.md) has:
+**A**: [Quick Reference](../tools/prr/QUICK_REFERENCE.md) has:
 - Troubleshooting section
 - Common problems & solutions
 - How to read logs
 - Exit reasons explained
 
 ### Q: What are the performance optimizations?
-**A**: Both [Flowcharts](flowchart.md) and [Architecture](ARCHITECTURE.md) explain:
+**A**: Both [Flowcharts](../tools/prr/flowchart.md) and [Architecture](../tools/prr/ARCHITECTURE.md) explain:
 - Comment status caching
 - Prefetched comments
 - Two-phase deduplication
@@ -392,19 +397,20 @@ PRR maintains state across interruptions:
 
 | I want to... | Document | Section |
 |--------------|----------|---------|
-| Understand the full workflow | [Flowcharts](flowchart.md) | All sections |
-| See one-page overview | [Quick Reference](QUICK_REFERENCE.md) | System Overview |
-| Learn common usage patterns | [Quick Reference](QUICK_REFERENCE.md) | Common Use Cases |
-| Understand state management | [Flowcharts](flowchart.md) | State Management |
-| Add a new AI tool | [Architecture](ARCHITECTURE.md) | Extension Points |
-| Troubleshoot an issue | [Quick Reference](QUICK_REFERENCE.md) | Troubleshooting |
-| Understand escalation | [Flowcharts](flowchart.md) | Escalation Strategy |
-| See directory structure | [Architecture](ARCHITECTURE.md) | Directory Structure |
-| Learn design patterns | [Architecture](ARCHITECTURE.md) | Key Design Patterns |
-| Understand caching | [Architecture](ARCHITECTURE.md) | Performance Optimizations |
-| Configure PRR | [Quick Reference](QUICK_REFERENCE.md) | Configuration Tips |
-| Read success metrics | [Quick Reference](QUICK_REFERENCE.md) | Success Metrics |
+| Understand the full workflow | [Flowcharts](../tools/prr/flowchart.md) | All sections |
+| See one-page overview | [Quick Reference](../tools/prr/QUICK_REFERENCE.md) | System Overview |
+| Learn common usage patterns | [Quick Reference](../tools/prr/QUICK_REFERENCE.md) | Common Use Cases |
+| Understand state management | [Flowcharts](../tools/prr/flowchart.md) | State Management |
+| Add a new AI tool | [Architecture](../tools/prr/ARCHITECTURE.md) | Extension Points |
+| Troubleshoot an issue | [Quick Reference](../tools/prr/QUICK_REFERENCE.md) | Troubleshooting |
+| Understand escalation | [Flowcharts](../tools/prr/flowchart.md) | Escalation Strategy |
+| See directory structure | [Architecture](../tools/prr/ARCHITECTURE.md) | Directory Structure |
+| Learn design patterns | [Architecture](../tools/prr/ARCHITECTURE.md) | Key Design Patterns |
+| Understand caching | [Architecture](../tools/prr/ARCHITECTURE.md) | Performance Optimizations |
+| Configure PRR | [Quick Reference](../tools/prr/QUICK_REFERENCE.md) | Configuration Tips |
+| Read success metrics | [Quick Reference](../tools/prr/QUICK_REFERENCE.md) | Success Metrics |
 | Choose or add LLM models / context limits | [Models Reference](MODELS.md) | Claude & OpenAI IDs, context, PRR usage |
+| Use or integrate pill (log audit) | [tools/pill/README.md](../tools/pill/README.md) | Why analysis-only, hook, CLI, output files |
 
 ---
 
@@ -450,9 +456,9 @@ Use a markdown viewer that supports Mermaid:
 npm install -g markdown-pdf
 
 # Convert to PDF
-markdown-pdf docs/flowchart.md
-markdown-pdf docs/ARCHITECTURE.md
-markdown-pdf docs/QUICK_REFERENCE.md
+markdown-pdf tools/prr/flowchart.md
+markdown-pdf tools/prr/ARCHITECTURE.md
+markdown-pdf tools/prr/QUICK_REFERENCE.md
 ```
 
 ### Viewing in Browser
@@ -507,6 +513,13 @@ If you find errors or want to improve documentation:
 │   └── 📄 logger.ts              ← Logging utilities
 │
 ├── 📁 tools/prr/                 ← PRR tool source code
+│   ├── 📄 AUDIT-CYCLES.md        ← PRR audit log (output.log, prompts.log)
+│   ├── 📄 AUDIT-CYCLES.md        ← PRR audit log
+│   ├── 📄 ARCHITECTURE.md        ← Technical deep-dive
+│   ├── 📄 QUICK_REFERENCE.md     ← Quick start & patterns
+│   ├── 📄 flowchart.md           ← Flowcharts
+│   ├── 📄 RUNNERS.md             ← AI tools / runner reference
+│   ├── 📄 INSTALL-WORKFLOW-OTHER-REPO.md
 │   ├── 📄 index.ts               ← Entry point
 │   ├── 📄 resolver.ts            ← Main orchestrator
 │   ├── 📁 workflow/              ← Workflow modules
@@ -516,7 +529,12 @@ If you find errors or want to improve documentation:
 │   ├── 📁 analyzer/              ← Issue analysis & prompt building
 │   └── ...
 │
-├── 📁 tools/pill/                ← Pill tool source code
+├── 📁 tools/split-plan/          ← Split-plan tool
+│   ├── 📄 AUDIT-CYCLES.md        ← Split-plan audit log
+│   └── 📄 README.md
+│
+├── 📁 tools/pill/                ← Pill tool (Program Improvement Log Looker)
+│   └── 📄 README.md               ← Pill docs: analysis-only, WHYs, hook, CLI
 │
 ├── 📁 types/                     ← Shared type definitions
 │
@@ -529,21 +547,21 @@ If you find errors or want to improve documentation:
 
 1. **New to PRR?**
    - Read [main README](../README.md)
-   - Try [Quick Reference](QUICK_REFERENCE.md)
-   - Run: `prr --check-tools`
+   - Try [Quick Reference](../tools/prr/QUICK_REFERENCE.md)
+   - Run: `prr --help` to see options and ensure tools/API keys are configured
 
 2. **Want to understand the flow?**
-   - Study [Flowcharts](flowchart.md)
+   - Study [Flowcharts](../tools/prr/flowchart.md)
    - Trace through one full cycle
    - Run: `prr PR_URL --dry-run --verbose`
 
 3. **Ready to contribute?**
-   - Read [Architecture](ARCHITECTURE.md)
+   - Read [Architecture](../tools/prr/ARCHITECTURE.md)
    - Review [DEVELOPMENT.md](../DEVELOPMENT.md)
    - Explore the codebase with context
 
 4. **Found an issue?**
-   - Check [Quick Reference troubleshooting](QUICK_REFERENCE.md#-troubleshooting)
+   - Check [Quick Reference troubleshooting](../tools/prr/QUICK_REFERENCE.md#-troubleshooting)
    - Review logs: `~/.prr/output.log`
    - Open a GitHub issue with logs
 

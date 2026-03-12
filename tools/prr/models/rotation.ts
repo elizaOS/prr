@@ -11,7 +11,7 @@ import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../../../shared/config.js';
 import { warn, debug, formatNumber } from '../../../shared/logger.js';
-import { MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
+import { DEFAULT_ELIZACLOUD_MODEL, ELIZACLOUD_SKIP_MODEL_IDS, MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
 import * as Performance from '../state/state-performance.js';
 
@@ -528,19 +528,8 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
   // 'gemini' intentionally omitted - uses Google's own model validation
 };
 
-/**
- * Models to skip on ElizaCloud (500/timeout or 0% fix rate in practice).
- * WHY: Audit showed these models either 500'd repeatedly, timed out, or had 0% fix rate;
- * including them in the rotation list wastes slots. Add new IDs here when audits show
- * repeated errors or zero success. See docs/MODELS.md for rotation/skip list docs.
- */
-const ELIZACLOUD_SKIP_MODELS = new Set<string>([
-  'openai/gpt-5.2-codex',
-  'anthropic/claude-3-opus',
-  'openai/gpt-4.1',
-  'anthropic/claude-sonnet-4.5',
-  'openai/gpt-5.1-codex-max',
-]);
+/** Set built from shared constant for fast lookup (single source of truth: shared/constants.ts). */
+const ELIZACLOUD_SKIP_MODELS = new Set<string>(ELIZACLOUD_SKIP_MODEL_IDS);
 
 /**
  * Determine which provider a model belongs to based on its name/prefix.
@@ -627,7 +616,9 @@ export async function validateAndFilterModels(
   runners: Runner[],
   openaiApiKey?: string,
   anthropicApiKey?: string,
-  elizacloudApiKey?: string
+  elizacloudApiKey?: string,
+  /** Resolved configured model (e.g. PRR_LLM_MODEL); warn when this one is skipped (pill-output.md). */
+  configuredModel?: string
 ): Promise<{ removed: Array<{ runner: string; model: string }>}> {
   const removed: Array<{ runner: string; model: string }> = [];
   
@@ -722,6 +713,7 @@ export async function validateAndFilterModels(
     if (!models || models.length === 0) continue;
     
     const validModels: string[] = [];
+    let skippedConfiguredDefault: string | null = null;
     const isLlMApi = runner.name === 'elizacloud' || runner.name === 'llm-api';
     const useElizaCloudForLlMApi = isLlMApi && models.some(m => m.includes('/'));
 
@@ -731,6 +723,9 @@ export async function validateAndFilterModels(
         if (ELIZACLOUD_SKIP_MODELS.has(model)) {
           removed.push({ runner: runner.name, model });
           debug(`ElizaCloud: skipping ${model} (known timeout)`);
+          if (model === DEFAULT_ELIZACLOUD_MODEL || (configuredModel && model === configuredModel)) {
+            skippedConfiguredDefault = model;
+          }
           continue;
         }
         if (elizacloudModels.size === 0) {
@@ -782,7 +777,13 @@ export async function validateAndFilterModels(
         debug(`Model "${model}" not found in available ${provider} models for ${runner.name}`);
       }
     }
-    
+
+    // User-visible warning when configured default was skipped (pill-output.md #1)
+    if (skippedConfiguredDefault) {
+      const replacement = validModels.length > 0 ? validModels[0] : '(none; add other models or remove from skip list)';
+      console.log(chalk.yellow(`  ⚠ Configured default "${skippedConfiguredDefault}" skipped (known timeout/504). Using: ${replacement}`));
+    }
+
     // Update the rotation list in-place (where it came from)
     if (validModels.length > 0 && validModels.length < models.length) {
       if (runner.supportedModels) {
@@ -861,7 +862,7 @@ export async function setupRunner(
   // WHY: Remove models the user doesn't have access to BEFORE any fixer runs,
   // instead of discovering them one-by-one through failed retries
   const allDetectedRunners = detected.map(d => d.runner);
-  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey);
+  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey, config.llmModel);
 
   // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
   let primaryRunner: Runner;

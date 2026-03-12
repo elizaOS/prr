@@ -1,0 +1,19 @@
+# Validate workflow syntax and expressions before they run.
+# Catches: unrecognized context (e.g. env in job if), invalid expressions, bad refs.
+# Run locally: npm run lint:workflows (requires actionlint in PATH, e.g. brew install actionlint).
+name: Lint workflows
+
+on:
+  push:
+    paths: ['.github/workflows/**']
+  pull_request:
+    paths: ['.github/workflows/**']
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        uses: rhysd/actionlint@v1.7.11
