@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Conflict resolution: 3-way merge, sub-chunking, validation
+
+**Three-way merge (base + ours + theirs)**
+- Every LLM conflict resolution now receives **base** (Git stage 1), **ours** (stage 2), and **theirs** (stage 3). The prompt labels them and asks the model to merge both changes relative to the common ancestor.
+- **WHY:** Two-way (ours vs theirs only) forces the model to guess how to combine; proper merge semantics require the common ancestor so the model can reason about what each side changed from base and produce a correct merge.
+
+**Base in the loop**
+- `readConflictStage(git, filePath, 1)` reads the base version; on error (e.g. new-file-in-both) we return `''` so the 3-way format still has BASE/OURS/THEIRS.
+- Single-chunk resolution uses `getFullFileSides(conflictedContent)` and passes base + full ours + full theirs to the client. Chunked resolution passes per-chunk base segment via `getBaseSegmentForChunk(baseContent, chunk)`.
+- **WHY:** Base segment is derived from chunk start line and content extent (max of ours/theirs line count), not marker line count, so we don't assume base has the same structure as the conflicted file.
+
+**Sub-chunking at semantic boundaries**
+- When a single conflict region exceeds the segment cap (`maxSegmentChars`), we split at **AST boundaries** (TS/JS: TypeScript API statement boundaries; Python: `def`/`class`/blank at indent 0; fallback: blank lines or 150-line cap). Each sub-chunk is resolved with its base segment, then results are concatenated.
+- **WHY:** Splitting mid-statement would send invalid code to the LLM and produce broken output; semantic boundaries keep each segment parseable and mergeable.
+
+**Context limits**
+- Segment cap is derived as `(effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3`, clamped to [4_000, 25_000], so each request is at most base segment + ours segment + theirs segment + overhead. Small-context models get smaller segments automatically.
+- **WHY:** Prevents one giant prompt (e.g. 50k-line conflict) from exceeding the model window and causing 504/timeout or silent truncation.
+
+**Validation before write/stage**
+- After resolution we run `validateResolvedFileContent(content, filePath)` for TS/JS (TypeScript `createProgram` + `getSyntacticDiagnostics`). If invalid, we do not write or stage; we leave the file conflicted and report the parse error.
+- **WHY:** Prevents committing syntactically broken resolution (e.g. truncated or corrupted LLM output).
+
+**Large-file warning only for skipped files**
+- The "Large files skipped (will need manual resolution)" message now lists only files that were actually skipped (e.g. file size > effectiveMaxChars and we didn't use chunked). Files resolved via sub-chunking are not warned.
+- **WHY:** Previously we warned for any file over 50KB; that was noisy for files we successfully resolve with sub-chunking.
+
+- Docs: [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md). Audit: [tools/prr/CONFLICT-RESOLUTION-AUDIT.md](tools/prr/CONFLICT-RESOLUTION-AUDIT.md). Plan: `.cursor/plans/large-file-deconflict-correct.plan.md`.
+
 ### Added (2026-03) — Pill opt-in (--pill) and split-exec improvements
 
 **Pill runs only when --pill is passed**

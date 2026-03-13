@@ -194,6 +194,13 @@ Credentials, auth, and usage from TypeScript/Node. Used by PRR's fixer lane.
 
 ---
 
+### 🔀 [Conflict resolution (3-way merge + sub-chunking)](../tools/prr/CONFLICT-RESOLUTION.md)
+**Best for**: Understanding how PRR resolves merge conflicts during rebase/pull.
+
+**Contains**: Three-way merge (base + ours + theirs), sub-chunking at AST boundaries, validation before write/stage, constants and segment cap, traps/pitfalls (plan reference). **Read this if**: You work on conflict resolution, hit context limits on large conflicts, or need to debug "resolution produced invalid syntax."
+
+---
+
 ## 🗺️ Documentation Map
 
 ```text
@@ -209,6 +216,7 @@ tools/prr/                          ← PRR tool docs
 ├── ARCHITECTURE.md                 ← Technical deep-dive
 ├── RUNNERS.md                      ← AI coding tools / runner reference
 ├── INSTALL-WORKFLOW-OTHER-REPO.md  ← Install PRR workflow in another repo
+├── CONFLICT-RESOLUTION.md          ← 3-way merge, sub-chunking, validation
 └── AUDIT-CYCLES.md                 ← PRR audit log
 ```
 

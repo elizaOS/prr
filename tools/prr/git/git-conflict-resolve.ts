@@ -22,6 +22,8 @@ import {
   MAX_CONFLICT_RESOLUTION_FILE_SIZE,
   CONFLICT_USE_CHUNKED_FIRST_CHARS,
   CONFLICT_USE_CHUNKED_FIRST_CHUNKS,
+  CONFLICT_PROMPT_OVERHEAD_CHARS,
+  MAX_SINGLE_CHUNK_CHARS,
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   DEFAULT_ELIZACLOUD_MODEL,
@@ -33,6 +35,7 @@ import {
   tryHeuristicResolution,
   extractConflictSides,
   extractConflictChunks,
+  getFullFileSides,
   isGeneratedArtifactFile,
   tryResolveGeneratedArtifactSides,
   hasAsymmetricConflict,
@@ -83,11 +86,19 @@ function isExplicitMarkerlessPolicyFile(filePath: string): boolean {
     || basename.toUpperCase() === 'LICENSE';
 }
 
-async function readConflictStage(git: SimpleGit, filePath: string, stage: 2 | 3): Promise<string | null> {
+/**
+ * Read one side of a conflicted file from the index (Git stages).
+ * WHY stage 1: Proper merge resolution requires the common ancestor (base) so the LLM can merge both
+ * changes relative to base; without it we'd do 2-way merge and the model would guess.
+ * WHY return '' for stage 1 on error: New-file-in-both has no base; we still want BASE/OURS/THEIRS in
+ * the prompt so the format is consistent and the model sees "empty base".
+ */
+async function readConflictStage(git: SimpleGit, filePath: string, stage: 1 | 2 | 3): Promise<string | null> {
   try {
-    return await git.raw(['show', `:${stage}:${filePath}`]);
+    const out = await git.raw(['show', `:${stage}:${filePath}`]);
+    return out ?? (stage === 1 ? '' : null);
   } catch {
-    return null;
+    return stage === 1 ? '' : null;
   }
 }
 
@@ -163,6 +174,48 @@ function resolveKeepOurs(content: string): { resolved: boolean; content: string;
   };
 }
 
+
+/**
+ * Validate that resolved TS/JS content parses. Reject before write/stage if invalid.
+ * WHY: LLMs can truncate or corrupt output; committing invalid syntax would push broken code. We parse
+ * with TypeScript's getSyntacticDiagnostics so only syntactically valid resolutions get written/staged.
+ */
+async function validateResolvedFileContent(
+  content: string,
+  filePath: string
+): Promise<{ valid: boolean; error?: string }> {
+  const ext = filePath.replace(/^.*\./, '').toLowerCase();
+  if (!['ts', 'tsx', 'js', 'jsx'].includes(ext)) {
+    return { valid: true };
+  }
+  try {
+    const ts = await import('typescript').then(m => (m as { default?: unknown }).default ?? m) as typeof import('typescript');
+    const sf = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true);
+    const host: import('typescript').CompilerHost = {
+      getSourceFile: (name: string) => (name === filePath || name.endsWith(filePath) ? sf : undefined),
+      getDefaultLibFileName: () => 'lib.d.ts',
+      writeFile: () => {},
+      getCurrentDirectory: () => '/root',
+      getDirectories: () => [],
+      fileExists: () => true,
+      readFile: () => undefined,
+      getCanonicalFileName: (n: string) => n,
+      useCaseSensitiveFileNames: () => true,
+      getNewLine: () => '\n',
+    };
+    const program = ts.createProgram([filePath], { noLib: true, skipLibCheck: true }, host);
+    const diags = program.getSyntacticDiagnostics(sf);
+    const err = diags.find(d => d.category === ts.DiagnosticCategory.Error);
+    if (err) {
+      const msg = typeof err.messageText === 'string' ? err.messageText : err.messageText.messageText;
+      return { valid: false, error: String(msg) };
+    }
+    return { valid: true };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { valid: false, error: message };
+  }
+}
 
 /**
  * Validate that resolved content is sane before writing to disk.
@@ -348,34 +401,16 @@ export async function resolveConflictsWithLLM(
     const effectiveMaxChars = (llmProvider && effectiveModel)
       ? getMaxFixPromptCharsForModel(llmProvider, effectiveModel)
       : modelMaxChars;
-    debug('Attempt 2 model selection', { rotationModel, conflictModel, effectiveModel, llmClientDefault: llmModel });
+    // WHY derive segment cap: Each request sends base + ours + theirs (3× segment) + overhead. Small-context
+    // models need smaller segments; a fixed 25k would overflow a 40k-context model. Clamp [4k, 25k] for sanity.
+    const maxSegmentChars = Math.max(
+      4_000,
+      Math.min(25_000, Math.floor((effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3))
+    );
+    debug('Attempt 2 model selection', { rotationModel, conflictModel, effectiveModel, llmClientDefault: llmModel, maxSegmentChars });
     console.log(chalk.cyan(`\n  Attempt 2: Using direct ${config.llmProvider} API${conflictModel ? ` (${conflictModel})` : ''} to resolve ${remainingConflicts.length} remaining conflicts...`));
     
     const fs = await import('fs');
-    const MAX_FILE_SIZE = MAX_CONFLICT_RESOLUTION_FILE_SIZE;
-    
-    // Pre-check file sizes to warn about large files
-    const largeFiles: string[] = [];
-    for (const file of remainingConflicts) {
-      if (isLockFile(file)) continue;
-      const fullPath = join(workdir, file);
-      try {
-        const stats = fs.statSync(fullPath);
-        if (stats.size > MAX_FILE_SIZE) {
-          largeFiles.push(`${file} (${Math.round(stats.size / 1024)}KB)`);
-        }
-      } catch {
-        // Ignore stat errors
-      }
-    }
-    
-    if (largeFiles.length > 0) {
-      console.log(chalk.yellow('  ⚠ Large files detected (will need manual resolution):'));
-      for (const file of largeFiles) {
-        console.log(chalk.yellow(`    - ${file}`));
-      }
-    }
-    
     const CONFLICT_HEARTBEAT_INTERVAL_MS = 30_000;
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     const stopHeartbeat = (): void => {
@@ -397,6 +432,10 @@ export async function resolveConflictsWithLLM(
       const msg = e instanceof Error ? e.message : String(e);
       return /504|timeout|gateway|deployment.*error|error occurred with your deployment/i.test(msg);
     }
+
+    // WHY track skipped only: We only warn for files we actually skipped (e.g. > effectiveMaxChars). Files
+    // resolved via chunked/sub-chunking should not appear in "large files need manual resolution."
+    const skippedLargeFiles: string[] = [];
 
     for (const conflictFile of remainingConflicts) {
       // Skip lock files in case they slipped through
@@ -420,6 +459,8 @@ export async function resolveConflictsWithLLM(
         console.log(chalk.cyan(`    Resolving: ${conflictFile}`));
         const fileSize = Math.round(conflictedContent.length / 1024);
         const conflictChunkCount = extractConflictChunks(conflictedContent, 0).length;
+        // WHY read base here: Every LLM resolution path (chunked and single-chunk) needs base for 3-way merge.
+        const baseContent = (await readConflictStage(git, conflictFile, 1)) ?? '';
 
         let result = tryHeuristicResolution(conflictFile, conflictedContent);
 
@@ -429,6 +470,7 @@ export async function resolveConflictsWithLLM(
           console.log(chalk.blue(`    → Using deterministic merge (keep ours) for ${conflictFile}`));
           result = resolveKeepOurs(conflictedContent);
         } else if (conflictedContent.length > effectiveMaxChars) {
+          skippedLargeFiles.push(`${conflictFile} (${fileSize}KB)`);
           console.log(chalk.yellow(`    → Skipping LLM resolution: file (${fileSize}KB) exceeds model context (${Math.round(effectiveMaxChars / 1024)}KB chars for ${effectiveModel || 'unknown'})`));
           result = {
             resolved: false,
@@ -467,7 +509,9 @@ export async function resolveConflictsWithLLM(
               conflictFile,
               conflictedContent,
               mergingBranch,
-              conflictModel
+              conflictModel,
+              baseContent,
+              maxSegmentChars
             );
           } finally {
             stopHeartbeat();
@@ -475,11 +519,12 @@ export async function resolveConflictsWithLLM(
         } else {
           startHeartbeat();
           try {
+            const { ours: oursContent, theirs: theirsContent } = getFullFileSides(conflictedContent);
             result = await llm.resolveConflict(
               conflictFile,
               conflictedContent,
               mergingBranch,
-              conflictModel ? { model: conflictModel } : undefined
+              { ...(conflictModel ? { model: conflictModel } : {}), baseContent, oursContent, theirsContent }
             );
           } catch (e) {
             if (is504OrTimeout(e)) {
@@ -489,7 +534,9 @@ export async function resolveConflictsWithLLM(
                 conflictFile,
                 conflictedContent,
                 mergingBranch,
-                conflictModel
+                conflictModel,
+                baseContent,
+                maxSegmentChars
               );
             } else {
               const msg = e instanceof Error ? e.message : String(e);
@@ -513,9 +560,19 @@ export async function resolveConflictsWithLLM(
               content: conflictedContent,
               explanation: `Resolution rejected: ${validation.reason}`,
             };
+          } else {
+            const parseValidation = await validateResolvedFileContent(result.content, conflictFile);
+            if (!parseValidation.valid) {
+              debug('Resolution rejected by parse validation', { file: conflictFile, error: parseValidation.error });
+              result = {
+                resolved: false,
+                content: conflictedContent,
+                explanation: `Resolution produced invalid syntax: ${parseValidation.error ?? 'parse error'}`,
+              };
+            }
           }
         }
-        
+
         if (result.resolved) {
           // Write the validated resolved content
           fs.writeFileSync(fullPath, result.content, 'utf-8');
@@ -540,13 +597,20 @@ export async function resolveConflictsWithLLM(
       }
     }
 
+    if (skippedLargeFiles.length > 0) {
+      console.log(chalk.yellow('  ⚠ Large files skipped (will need manual resolution):'));
+      for (const file of skippedLargeFiles) {
+        console.log(chalk.yellow(`    - ${file}`));
+      }
+    }
+
     // Check again - both git status and file contents
     statusAfter = await git.status();
     gitConflicts = statusAfter.conflicted || [];
     markerConflicts = await findFilesWithConflictMarkers(workdir, codeFiles);
     remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
   }
-  
+
   return {
     success: remainingConflicts.length === 0,
     remainingConflicts

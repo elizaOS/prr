@@ -5,7 +5,13 @@ import { join } from 'path';
 import type { LLMClient } from '../tools/prr/llm/client.js';
 import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../shared/constants.js';
 import { buildConflictResolutionPromptWithContent } from '../tools/prr/git/git-conflict-prompts.js';
-import { extractConflictChunks, resolveConflictChunk } from '../tools/prr/git/git-conflict-chunked.js';
+import {
+  extractConflictChunks,
+  extractConflictSides,
+  findConflictChunkEdges,
+  getBaseSegmentForChunk,
+  resolveConflictChunk,
+} from '../tools/prr/git/git-conflict-chunked.js';
 
 const tempDirs: string[] = [];
 
@@ -89,10 +95,56 @@ const merged = true;
 >>>>>>> main
 suffix`)[0];
 
-    const result = await resolveConflictChunk(llm, 'demo.ts', chunk, 'main');
+    const result = await resolveConflictChunk(llm, 'demo.ts', chunk, 'main', undefined, 'const merged = false;');
 
     expect(result.resolved).toBe(true);
     expect(result.resolvedLines).toEqual(['const merged = true;']);
     expect(result.explanation).toBe('Resolved');
+  });
+});
+
+describe('findConflictChunkEdges', () => {
+  it('returns edges at statement boundaries for TS', async () => {
+    const lines = [
+      'const a = 1;',
+      'const b = 2;',
+      'function f() { return 3; }',
+      'export {};',
+    ];
+    const edges = await findConflictChunkEdges(lines, 'file.ts', 1000);
+    expect(edges[0]).toBe(0);
+    expect(edges).toContain(lines.length);
+    expect(edges.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('fallback forces split when no blank lines and segment too large', async () => {
+    const lines = Array.from({ length: 200 }, (_, i) => `line${i}`);
+    const edges = await findConflictChunkEdges(lines, 'file.txt', 500);
+    expect(edges[0]).toBe(0);
+    expect(edges).toContain(lines.length);
+    expect(edges.length).toBeGreaterThan(2);
+  });
+});
+
+describe('getBaseSegmentForChunk', () => {
+  it('slices base by chunk start and content extent', () => {
+    const baseContent = 'line0\nline1\nline2\nline3';
+    const chunk = extractConflictChunks(
+      'pre\n<<<<<<<\nours1\nours2\n=======\ntheirs1\n>>>>>>>\npost'
+    )[0]!;
+    const segment = getBaseSegmentForChunk(baseContent, chunk);
+    const baseLines = baseContent.split('\n');
+    const { ours } = extractConflictSides(chunk.conflictLines);
+    expect(ours.length).toBe(2);
+    expect(segment).toBe(baseLines.slice(chunk.startLine, chunk.startLine + 2).join('\n'));
+  });
+
+  it('returns truncated segment when base has fewer lines than chunk extent', () => {
+    const baseContent = 'only';
+    const chunk = extractConflictChunks(
+      'pre\n<<<<<<<\nours1\nours2\n=======\ntheirs1\n>>>>>>>\npost'
+    )[0]!;
+    const segment = getBaseSegmentForChunk(baseContent, chunk);
+    expect(segment).toBe('');
   });
 });

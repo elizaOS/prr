@@ -22,6 +22,7 @@ import { acquireElizacloud, releaseElizacloud } from '../../../shared/llm/rate-l
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
+import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
 
 /** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
 function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
@@ -2331,7 +2332,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     filePath: string,
     conflictedContent: string,
     baseBranch: string,
-    options?: { model?: string }
+    options?: { model?: string; baseContent?: string; oursContent?: string; theirsContent?: string }
   ): Promise<{ resolved: boolean; content: string; explanation: string }> {
     // Check if file is too large for reliable conflict resolution
     // WHY: Files >50KB cause token limit issues and response truncation
@@ -2348,7 +2349,16 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         explanation: `File too large (${Math.round(conflictedContent.length / 1024)}KB) for automatic resolution. Please resolve manually.`,
       };
     }
-    const prompt = `You are resolving a Git merge conflict.
+    const useThreeWay = options?.baseContent != null && options?.oursContent != null && options?.theirsContent != null;
+    const prompt = useThreeWay
+      ? buildConflictResolutionPromptThreeWay(
+          options.baseContent!,
+          options.oursContent!,
+          options.theirsContent!,
+          baseBranch,
+          filePath
+        ) + `\n\nOutput the COMPLETE resolved file. ${getConflictFileTypeRules(filePath)}`
+      : `You are resolving a Git merge conflict.
 
 FILE: ${filePath}
 MERGING: ${baseBranch} into current branch

@@ -12,6 +12,7 @@ import {
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   ASYMMETRIC_CONFLICT_SIDE_RATIO,
+  MAX_SINGLE_CHUNK_CHARS,
 } from '../../../shared/constants.js';
 
 /**
@@ -30,6 +31,94 @@ export interface ConflictChunk {
   contextAfter: string[];
   /** All lines as single string for LLM */
   fullContent: string;
+}
+
+/**
+ * Reconstruct the full file as "ours" (each conflict region replaced by our side) and "theirs".
+ * WHY: For single-chunk (whole-file) resolution the LLM client needs base + full ours + full theirs,
+ * not the raw conflicted content with markers; this gives the model three complete file versions.
+ */
+export function getFullFileSides(content: string): { ours: string; theirs: string } {
+  const lines = content.split('\n');
+  const chunks = extractConflictChunks(content, 0);
+  if (chunks.length === 0) return { ours: content, theirs: content };
+  const oursLines: string[] = [];
+  const theirsLines: string[] = [];
+  let i = 0;
+  for (const chunk of chunks.sort((a, b) => a.startLine - b.startLine)) {
+    while (i < chunk.startLine) {
+      const line = lines[i]!;
+      oursLines.push(line);
+      theirsLines.push(line);
+      i++;
+    }
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    oursLines.push(...ours);
+    theirsLines.push(...theirs);
+    i = chunk.endLine + 1;
+  }
+  while (i < lines.length) {
+    const line = lines[i]!;
+    oursLines.push(line);
+    theirsLines.push(line);
+    i++;
+  }
+  return { ours: oursLines.join('\n'), theirs: theirsLines.join('\n') };
+}
+
+/**
+ * Derive the base file segment corresponding to a conflict chunk.
+ * WHY content extent: We use max(ours.length, theirs.length) so we don't rely on marker line count; the
+ * conflicted file has extra lines (<<<<<<<, =======, >>>>>>>) so base line range is content-based.
+ * WHY chunk.startLine: In the base file the same logical region starts at the same line index when
+ * pre-conflict lines are unchanged; when base is shorter we slice up to baseLines.length.
+ */
+export function getBaseSegmentForChunk(baseContent: string, chunk: ConflictChunk): string {
+  const baseLines = baseContent.split('\n');
+  if (baseLines.length === 0) return '';
+  const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+  const extent = Math.max(ours.length, theirs.length);
+  const start = chunk.startLine;
+  const end = Math.min(start + extent, baseLines.length);
+  if (start >= baseLines.length) return '';
+  return baseLines.slice(start, end).join('\n');
+}
+
+/**
+ * Build a 3-way merge resolution prompt: BASE + OURS + THEIRS.
+ * WHY: Correct merge resolution requires the common ancestor so the LLM can merge both changes relative to base.
+ */
+export function buildConflictResolutionPromptThreeWay(
+  baseSegment: string,
+  oursSegment: string,
+  theirsSegment: string,
+  baseBranch: string,
+  filePath?: string
+): string {
+  const fileHint = filePath ? `FILE: ${filePath}\n` : '';
+  return `${fileHint}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).
+
+BASE (common ancestor):
+\`\`\`
+${baseSegment || '(empty)'}
+\`\`\`
+
+OURS (HEAD):
+\`\`\`
+${oursSegment}
+\`\`\`
+
+THEIRS (${baseBranch}):
+\`\`\`
+${theirsSegment}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<resolved lines only>
+\`\`\`
+EXPLANATION: <one sentence>`;
 }
 
 /**
@@ -113,46 +202,30 @@ export function extractConflictChunks(
 }
 
 /**
- * Resolve a single conflict chunk using LLM
+ * Resolve a single conflict chunk using LLM (3-way: base + ours + theirs).
+ * WHY baseSegment: The model must see the common-ancestor slice for this chunk so it can merge both
+ * sides relative to base; caller passes the result of getBaseSegmentForChunk(baseContent, chunk).
  */
 export async function resolveConflictChunk(
   llm: LLMClient,
   filePath: string,
   chunk: ConflictChunk,
   baseBranch: string,
-  model?: string
+  model?: string,
+  baseSegment?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
-  const prompt = `Resolve this single Git merge conflict region in ${filePath}.
+  const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+  const oursSegment = ours.join('\n');
+  const theirsSegment = theirs.join('\n');
+  const base = baseSegment ?? '';
 
-MERGING: ${baseBranch}
-
-Context before:
-\`\`\`
-${chunk.contextBefore.join('\n')}
-\`\`\`
-
-Conflict:
-\`\`\`
-${chunk.conflictLines.join('\n')}
-\`\`\`
-
-Context after:
-\`\`\`
-${chunk.contextAfter.join('\n')}
-\`\`\`
-
-Return exactly:
-RESOLVED:
-\`\`\`
-<resolved lines only for this region>
-\`\`\`
-EXPLANATION: <one sentence describing what you kept or merged>
-
-Rules:
-- Remove all conflict markers.
-- Output only the resolved lines for this region, not the whole file.
-- Preserve valid syntax and indentation.
-- Do not use placeholder text in the explanation.`;
+  const prompt = buildConflictResolutionPromptThreeWay(
+    base,
+    oursSegment,
+    theirsSegment,
+    baseBranch,
+    filePath
+  );
 
   try {
     const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
@@ -241,18 +314,240 @@ Rules:
   }
 }
 
+/** Max lines per forced segment when no blank-line boundary in fallback. */
+const FALLBACK_MAX_LINES_PER_SEGMENT = 150;
+
 /**
- * Resolve all conflicts in a large file using chunked strategy
- *
- * WHY: This is the main entry point for large file resolution.
- * It orchestrates extraction, resolution, and reconstruction.
+ * Find safe chunk boundaries (AST or fallback) so each segment is <= maxSegmentChars.
+ * Returns [0, e1, e2, ..., lines.length] with each lines.slice(edges[i], edges[i+1]) ≤ maxSegmentChars.
+ * WHY AST for TS/JS: Splitting mid-statement would send invalid code and produce broken merges; statement
+ * boundaries keep each segment parseable. WHY fallback: When parse fails or language has no parser we use
+ * blank lines or a line cap so we still bound segment size and avoid one giant prompt.
  */
+export async function findConflictChunkEdges(
+  lines: string[],
+  filePath: string,
+  maxSegmentChars: number
+): Promise<number[]> {
+  const content = lines.join('\n');
+  const ext = filePath.replace(/^.*\./, '').toLowerCase();
+
+  // TypeScript/JavaScript: use AST statement boundaries
+  if (['ts', 'tsx', 'js', 'jsx'].includes(ext)) {
+    try {
+      const ts = await import('typescript').then(m => (m as { default?: unknown }).default ?? m) as typeof import('typescript');
+      const sf = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true);
+      if (content.trim().length > 0 && sf.statements.length === 0) {
+        debug('AST produced no statements (parse error?), using fallback edges', { filePath });
+        return findConflictChunkEdgesFallback(lines, maxSegmentChars);
+      }
+      const lineStarts = getLineStarts(content);
+      const statementStarts: number[] = [];
+      for (const stmt of sf.statements) {
+        const lineIdx = offsetToLineIndex(stmt.getStart(sf), lineStarts);
+        if (lineIdx >= 0 && lineIdx <= lines.length && !statementStarts.includes(lineIdx)) {
+          statementStarts.push(lineIdx);
+        }
+      }
+      statementStarts.sort((a, b) => a - b);
+      if (statementStarts.length === 0) statementStarts.push(0);
+      if (statementStarts[statementStarts.length - 1] !== lines.length) {
+        statementStarts.push(lines.length);
+      }
+      return coalesceEdgesBySize(lines, statementStarts, maxSegmentChars);
+    } catch (e) {
+      debug('TypeScript parse failed, using fallback edges', { filePath, error: e });
+      return findConflictChunkEdgesFallback(lines, maxSegmentChars);
+    }
+  }
+
+  // Python: boundaries at def/class/async def or blank line at indent 0
+  if (ext === 'py') {
+    const boundaries: number[] = [0];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      const trimmed = line.trimStart();
+      const indent = line.length - trimmed.length;
+      if (indent === 0 && (trimmed === '' || /^(def |class |async def )/.test(trimmed))) {
+        boundaries.push(i);
+      }
+    }
+    boundaries.push(lines.length);
+    const merged = [...new Set(boundaries)].sort((a, b) => a - b);
+    return coalesceEdgesBySize(lines, merged, maxSegmentChars);
+  }
+
+  return findConflictChunkEdgesFallback(lines, maxSegmentChars);
+}
+
+function getLineStarts(content: string): number[] {
+  const out: number[] = [0];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\n') out.push(i + 1);
+  }
+  return out;
+}
+
+function offsetToLineIndex(offset: number, lineStarts: number[]): number {
+  for (let i = lineStarts.length - 1; i >= 0; i--) {
+    if (lineStarts[i]! <= offset) return i;
+  }
+  return 0;
+}
+
+function coalesceEdgesBySize(lines: string[], boundaries: number[], maxSegmentChars: number): number[] {
+  const edges: number[] = [boundaries[0]!];
+
+  for (let i = 1; i < boundaries.length; i++) {
+    const boundary = boundaries[i]!;
+    const lastEdge = edges[edges.length - 1]!;
+    let segmentChars = 0;
+    for (let j = lastEdge; j < boundary; j++) {
+      segmentChars += (lines[j]?.length ?? 0) + 1;
+    }
+    if (segmentChars > maxSegmentChars && lastEdge !== boundaries[i - 1]) {
+      edges.push(boundaries[i - 1]!);
+    }
+  }
+  if (edges[edges.length - 1] !== lines.length) edges.push(lines.length);
+  return [...new Set(edges)].sort((a, b) => a - b);
+}
+
+function findConflictChunkEdgesFallback(lines: string[], maxSegmentChars: number): number[] {
+  const boundaries: number[] = [0];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]?.trim() === '') boundaries.push(i);
+  }
+  boundaries.push(lines.length);
+  const merged = [...new Set(boundaries)].sort((a, b) => a - b);
+  const edges = coalesceEdgesBySize(lines, merged, maxSegmentChars);
+  // If any segment still too large (no blank line), force split every N lines
+  const result: number[] = [0];
+  for (let i = 1; i < edges.length; i++) {
+    const start = edges[i - 1]!;
+    const end = edges[i]!;
+    const segmentLines = lines.slice(start, end);
+    const segmentChars = segmentLines.join('\n').length;
+    if (segmentChars > maxSegmentChars) {
+      for (let j = start + FALLBACK_MAX_LINES_PER_SEGMENT; j < end; j += FALLBACK_MAX_LINES_PER_SEGMENT) {
+        result.push(j);
+      }
+    }
+    result.push(end);
+  }
+  return [...new Set(result)].sort((a, b) => a - b);
+}
+
+/**
+ * Resolve one sub-chunk with 3-way prompt (base + ours + theirs segment).
+ * WHY 3-way per segment: Each sub-chunk is a slice of the conflict; the model still needs the
+ * corresponding base slice so it can merge both sides relative to base, not guess.
+ */
+async function resolveOneSubChunk(
+  llm: LLMClient,
+  filePath: string,
+  baseSegment: string,
+  oursSegment: string,
+  theirsSegment: string,
+  baseBranch: string,
+  model?: string
+): Promise<{ resolved: boolean; resolvedLines: string[] }> {
+  const prompt = buildConflictResolutionPromptThreeWay(
+    baseSegment,
+    oursSegment,
+    theirsSegment,
+    baseBranch,
+    filePath
+  );
+  try {
+    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
+    const content = response?.content ?? '';
+    const codeMatch = content.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+    if (!codeMatch) {
+      return { resolved: false, resolvedLines: [] };
+    }
+    const resolvedCode = codeMatch[1].trim();
+    if (/^(<{7}|={7}|>{7})/m.test(resolvedCode)) {
+      return { resolved: false, resolvedLines: [] };
+    }
+    return { resolved: true, resolvedLines: resolvedCode.split('\n') };
+  } catch {
+    return { resolved: false, resolvedLines: [] };
+  }
+}
+
+/**
+ * Resolve an oversized conflict by sub-chunking at AST/fallback edges and merging with base.
+ */
+async function resolveOversizedChunk(
+  llm: LLMClient,
+  filePath: string,
+  chunk: ConflictChunk,
+  baseBranch: string,
+  model: string | undefined,
+  baseContent: string,
+  maxSegmentChars: number
+): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
+  const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+  // WHY conflict's base segment: Edges are indices within the conflict (0..linesForEdges.length). We must
+  // slice the conflict's base segment by those indices, not the full file, or we'd send wrong lines for
+  // multi-conflict files or when the conflict doesn't start at line 0.
+  const baseSegmentForChunk = getBaseSegmentForChunk(baseContent, chunk);
+  const baseSegmentLines = baseSegmentForChunk.split('\n');
+  const linesForEdges = ours.length >= theirs.length ? ours : theirs;
+  const edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
+
+  if (edges.length <= 2) {
+    return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk);
+  }
+
+  const segmentCount = edges.length - 1;
+  if (segmentCount > 20) {
+    debug('Many sub-chunks for oversized conflict', { filePath, segmentCount });
+  }
+
+  const resolvedSegments: string[] = [];
+  for (let i = 0; i < edges.length - 1; i++) {
+    const start = edges[i]!;
+    const end = edges[i + 1]!;
+    const oursSeg = ours.slice(start, end).join('\n');
+    const theirsSeg = theirs.slice(start, end).join('\n');
+    const baseSeg = baseSegmentLines.slice(start, Math.min(end, baseSegmentLines.length)).join('\n');
+
+    const result = await resolveOneSubChunk(
+      llm,
+      filePath,
+      baseSeg,
+      oursSeg,
+      theirsSeg,
+      baseBranch,
+      model
+    );
+    if (!result.resolved) {
+      return {
+        resolved: false,
+        resolvedLines: chunk.conflictLines,
+        explanation: `Sub-chunk ${i + 1}/${segmentCount} failed to resolve`,
+      };
+    }
+    resolvedSegments.push(...result.resolvedLines);
+  }
+
+  return {
+    resolved: true,
+    resolvedLines: resolvedSegments,
+    explanation: `Resolved oversized conflict in ${segmentCount} sub-chunk(s)`,
+  };
+}
+
 export async function resolveConflictsChunked(
   llm: LLMClient,
   filePath: string,
   content: string,
   baseBranch: string,
-  model?: string
+  model?: string,
+  baseContent?: string,
+  maxSegmentChars?: number
 ): Promise<{ resolved: boolean; content: string; explanation: string }> {
   const wholeFileGeneratedResolution = tryResolveWholeFileGeneratedConflict(filePath, content);
   if (wholeFileGeneratedResolution) {
@@ -280,9 +575,22 @@ export async function resolveConflictsChunked(
   const explanations: string[] = [];
   let allResolved = true;
 
-  // Resolve each chunk (pass model so we use same as attempt 1, not weak default)
+  const baseContentNorm = baseContent ?? '';
+  const segmentCap = maxSegmentChars ?? MAX_SINGLE_CHUNK_CHARS;
+
+  // WHY check oversized per chunk: A single conflict region can be 50k+ lines; sending it in one prompt
+  // would exceed context and cause 504/truncation. We sub-chunk at AST boundaries and resolve each segment.
   for (const chunk of chunks) {
-    const result = await resolveConflictChunk(llm, filePath, chunk, baseBranch, model);
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const largerSideChars = Math.max(ours.join('\n').length, theirs.join('\n').length);
+    const isOversized = largerSideChars > segmentCap;
+
+    const result = isOversized
+      ? await resolveOversizedChunk(llm, filePath, chunk, baseBranch, model, baseContentNorm, segmentCap)
+      : await (async () => {
+          const baseSegment = getBaseSegmentForChunk(baseContentNorm, chunk);
+          return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegment);
+        })();
 
     if (result.resolved) {
       resolutions.set(chunk.startLine, result.resolvedLines);

@@ -130,6 +130,27 @@ export const CONFLICT_USE_CHUNKED_FIRST_CHARS = 22_000;
 export const CONFLICT_USE_CHUNKED_FIRST_CHUNKS = 5;
 
 /**
+ * Reserve for 3-way conflict prompt: system/instructions + model response.
+ * WHY: Each request sends base + ours + theirs (3× segment) + this overhead. We derive segment cap as
+ * (effectiveMaxChars - this) / 3 so input + output stays within the model's context window.
+ */
+export const CONFLICT_PROMPT_OVERHEAD_CHARS = 12_000;
+
+/**
+ * Default max chars per segment when model context is unknown.
+ * WHY override in resolve path: When we know the model we use (effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3
+ * so small-context models get smaller segments; this default is used only when model is not available.
+ */
+export const MAX_EDGE_SEGMENT_CHARS_DEFAULT = 12_000;
+
+/**
+ * Conflict region above this size triggers sub-chunking at AST/fallback edges.
+ * WHY same as segment default: We sub-chunk when the region would exceed one segment cap, so we never
+ * send a single request with more than one segment's worth of content (keeps context bounded).
+ */
+export const MAX_SINGLE_CHUNK_CHARS = 12_000;
+
+/**
  * Minimum ratio of resolved content lines to the larger conflict side's lines.
  * If a resolution is smaller than this fraction, reject it as likely corrupted.
  *
