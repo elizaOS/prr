@@ -463,6 +463,8 @@ export async function resolveConflictsWithLLM(
         const baseContent = (await readConflictStage(git, conflictFile, 1)) ?? '';
 
         let result = tryHeuristicResolution(conflictFile, conflictedContent);
+        /** Used to retry resolution once with a parse-error hint when TS/JS parse validation fails. */
+        let resolutionPath: 'chunked' | 'single' | null = null;
 
         if (result.resolved) {
           console.log(chalk.blue(`    → Using heuristic strategy for ${conflictFile}`));
@@ -498,6 +500,7 @@ export async function resolveConflictsWithLLM(
           conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS ||
           conflictChunkCount >= CONFLICT_USE_CHUNKED_FIRST_CHUNKS
         ) {
+          resolutionPath = 'chunked';
           const reason = conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS
             ? `${fileSize}KB file`
             : `${conflictChunkCount} conflict chunks`;
@@ -517,6 +520,7 @@ export async function resolveConflictsWithLLM(
             stopHeartbeat();
           }
         } else {
+          resolutionPath = 'single';
           startHeartbeat();
           try {
             const { ours: oursContent, theirs: theirsContent } = getFullFileSides(conflictedContent);
@@ -529,6 +533,7 @@ export async function resolveConflictsWithLLM(
           } catch (e) {
             if (is504OrTimeout(e)) {
               console.log(chalk.blue(`    → Retrying with chunked strategy after 504/timeout`));
+              resolutionPath = 'chunked';
               result = await resolveConflictsChunked(
                 llm,
                 conflictFile,
@@ -561,7 +566,50 @@ export async function resolveConflictsWithLLM(
               explanation: `Resolution rejected: ${validation.reason}`,
             };
           } else {
-            const parseValidation = await validateResolvedFileContent(result.content, conflictFile);
+            let parseValidation = await validateResolvedFileContent(result.content, conflictFile);
+            if (!parseValidation.valid && (resolutionPath === 'chunked' || resolutionPath === 'single')) {
+              // Retry resolution once with parse-error hint so the model can fix e.g. unclosed comments.
+              const previousParseError = parseValidation.error ?? 'parse error';
+              console.log(chalk.blue(`    → Retrying resolution (parse error: ${previousParseError})`));
+              startHeartbeat();
+              try {
+                const sides = getFullFileSides(conflictedContent);
+                const retryResult = resolutionPath === 'chunked'
+                  ? await resolveConflictsChunked(
+                      llm,
+                      conflictFile,
+                      conflictedContent,
+                      mergingBranch,
+                      conflictModel,
+                      baseContent,
+                      maxSegmentChars,
+                      previousParseError
+                    )
+                  : await llm.resolveConflict(
+                      conflictFile,
+                      conflictedContent,
+                      mergingBranch,
+                      {
+                        ...(conflictModel ? { model: conflictModel } : {}),
+                        baseContent,
+                        oursContent: sides.ours,
+                        theirsContent: sides.theirs,
+                        previousParseError,
+                      }
+                    );
+                if (retryResult.resolved) {
+                  const retryValidation = validateResolvedContent(conflictFile, conflictedContent, retryResult.content);
+                  if (retryValidation.valid) {
+                    parseValidation = await validateResolvedFileContent(retryResult.content, conflictFile);
+                    if (parseValidation.valid) {
+                      result = retryResult;
+                    }
+                  }
+                }
+              } finally {
+                stopHeartbeat();
+              }
+            }
             if (!parseValidation.valid) {
               debug('Resolution rejected by parse validation', { file: conflictFile, error: parseValidation.error });
               result = {

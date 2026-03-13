@@ -2332,7 +2332,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     filePath: string,
     conflictedContent: string,
     baseBranch: string,
-    options?: { model?: string; baseContent?: string; oursContent?: string; theirsContent?: string }
+    options?: { model?: string; baseContent?: string; oursContent?: string; theirsContent?: string; previousParseError?: string }
   ): Promise<{ resolved: boolean; content: string; explanation: string }> {
     // Check if file is too large for reliable conflict resolution
     // WHY: Files >50KB cause token limit issues and response truncation
@@ -2356,7 +2356,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
           options.oursContent!,
           options.theirsContent!,
           baseBranch,
-          filePath
+          filePath,
+          options.previousParseError
         ) + `\n\nOutput the COMPLETE resolved file. ${getConflictFileTypeRules(filePath)}`
       : `You are resolving a Git merge conflict.
 
@@ -2377,6 +2378,7 @@ INSTRUCTIONS:
 3. Remove ALL conflict markers (<<<<<<<, =======, >>>>>>>)
 4. Ensure the result is valid, working code
 5. CRITICAL: Output the COMPLETE file - do not truncate or omit any sections
+${options?.previousParseError ? `\nIMPORTANT: A previous attempt had a syntax/parse error: "${options.previousParseError}". Ensure the resolved file is valid code (e.g. close all block comments with */, no missing commas).\n` : ''}
 ${getConflictFileTypeRules(filePath)}
 
 Respond in this EXACT format (no other text before or after):

@@ -93,10 +93,14 @@ export function buildConflictResolutionPromptThreeWay(
   oursSegment: string,
   theirsSegment: string,
   baseBranch: string,
-  filePath?: string
+  filePath?: string,
+  previousParseError?: string
 ): string {
   const fileHint = filePath ? `FILE: ${filePath}\n` : '';
-  return `${fileHint}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).
+  const parseHint = previousParseError
+    ? `\n\nIMPORTANT: A previous resolution attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is complete, valid code (e.g. close all block comments with */, no missing commas or brackets).\n`
+    : '';
+  return `${fileHint}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}
 
 BASE (common ancestor):
 \`\`\`
@@ -212,7 +216,8 @@ export async function resolveConflictChunk(
   chunk: ConflictChunk,
   baseBranch: string,
   model?: string,
-  baseSegment?: string
+  baseSegment?: string,
+  previousParseError?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
   const { ours, theirs } = extractConflictSides(chunk.conflictLines);
   const oursSegment = ours.join('\n');
@@ -224,7 +229,8 @@ export async function resolveConflictChunk(
     oursSegment,
     theirsSegment,
     baseBranch,
-    filePath
+    filePath,
+    previousParseError
   );
 
   try {
@@ -450,14 +456,16 @@ async function resolveOneSubChunk(
   oursSegment: string,
   theirsSegment: string,
   baseBranch: string,
-  model?: string
+  model?: string,
+  previousParseError?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[] }> {
   const prompt = buildConflictResolutionPromptThreeWay(
     baseSegment,
     oursSegment,
     theirsSegment,
     baseBranch,
-    filePath
+    filePath,
+    previousParseError
   );
   try {
     const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
@@ -486,7 +494,8 @@ async function resolveOversizedChunk(
   baseBranch: string,
   model: string | undefined,
   baseContent: string,
-  maxSegmentChars: number
+  maxSegmentChars: number,
+  previousParseError?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
   const { ours, theirs } = extractConflictSides(chunk.conflictLines);
   // WHY conflict's base segment: Edges are indices within the conflict (0..linesForEdges.length). We must
@@ -498,7 +507,7 @@ async function resolveOversizedChunk(
   const edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
 
   if (edges.length <= 2) {
-    return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk);
+    return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk, previousParseError);
   }
 
   const segmentCount = edges.length - 1;
@@ -521,7 +530,8 @@ async function resolveOversizedChunk(
       oursSeg,
       theirsSeg,
       baseBranch,
-      model
+      model,
+      previousParseError
     );
     if (!result.resolved) {
       return {
@@ -547,7 +557,8 @@ export async function resolveConflictsChunked(
   baseBranch: string,
   model?: string,
   baseContent?: string,
-  maxSegmentChars?: number
+  maxSegmentChars?: number,
+  previousParseError?: string
 ): Promise<{ resolved: boolean; content: string; explanation: string }> {
   const wholeFileGeneratedResolution = tryResolveWholeFileGeneratedConflict(filePath, content);
   if (wholeFileGeneratedResolution) {
@@ -586,10 +597,10 @@ export async function resolveConflictsChunked(
     const isOversized = largerSideChars > segmentCap;
 
     const result = isOversized
-      ? await resolveOversizedChunk(llm, filePath, chunk, baseBranch, model, baseContentNorm, segmentCap)
+      ? await resolveOversizedChunk(llm, filePath, chunk, baseBranch, model, baseContentNorm, segmentCap, previousParseError)
       : await (async () => {
           const baseSegment = getBaseSegmentForChunk(baseContentNorm, chunk);
-          return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegment);
+          return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegment, previousParseError);
         })();
 
     if (result.resolved) {
