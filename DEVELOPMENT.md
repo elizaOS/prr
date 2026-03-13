@@ -81,8 +81,10 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 
 | File | Purpose |
 |------|---------|
-| `tools/prr/github/api.ts` | Octokit wrapper, GraphQL queries |
-| `tools/prr/github/types.ts` | PRInfo, ReviewComment, etc. |
+| `tools/prr/github/api.ts` | Octokit wrapper, GraphQL queries, replyToReviewThread, resolveReviewThread, getThreadComments |
+| `tools/prr/github/types.ts` | PRInfo, ReviewComment (with databaseId), etc. |
+
+**Thread replies:** When `--reply-to-threads` is set, PRR posts a short reply on each review thread when it fixes or dismisses. **WHY:** Gives reviewers visible feedback in the PR; one reply per thread keeps noise low. Orchestration: `tools/prr/workflow/thread-replies.ts` (postThreadReplies); called from iteration-cleanup (after push), commit-and-push-loop (squash push), and final-cleanup (dismissed). See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
 
 
 ### Git Operations

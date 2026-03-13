@@ -36,6 +36,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Docs: [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md). Audit: [tools/prr/CONFLICT-RESOLUTION-AUDIT.md](tools/prr/CONFLICT-RESOLUTION-AUDIT.md). Plan: `.cursor/plans/large-file-deconflict-correct.plan.md`.
 
+### Added (2026-03) — PRR thread replies (GitHub feedback)
+
+**Thread reply feature**
+- With **`--reply-to-threads`** (or **`PRR_REPLY_TO_THREADS=true`**), PRR posts a short reply on each GitHub review thread when it fixes or dismisses an issue: e.g. "Fixed in \`abc1234\`." or "No changes needed — already addressed before this run." Optional **`--resolve-threads`** resolves (collapses) replied threads. **WHY:** Reviewers see visible feedback in the PR conversation instead of only in PRR's exit summary; one reply per thread keeps noise low and leaves room for human follow-up.
+- **WHY opt-in:** Default runs stay unchanged; posting to GitHub is a conscious choice so read-only or analysis-only runs do not write comments.
+- **Reply timing:** Fixed issues get a reply right after each successful push (iteration or squash); dismissed issues get replies once at end of run. **WHY:** We know "fixed" as soon as we push; we only know the full set of dismissals after audit/bail-out, so dismissed replies are sent in final cleanup.
+- **Reply-eligible dismissals:** Only `already-fixed`, `stale`, `not-an-issue`, `false-positive` get a reply. `exhausted`, `remaining`, `chronic-failure` do not. **WHY:** The former are clear conclusions that help the reviewer; the latter mean "we gave up" or "needs human" and a bot reply adds little and can feel like noise.
+- **In-run idempotency:** A single `repliedThreadIds` set is shared across iteration cleanup, commit-and-push, and final cleanup so we never post twice to the same thread in one run.
+- **Cross-run idempotency:** When **`PRR_BOT_LOGIN`** is set (GitHub login of the bot that posts), we fetch each candidate thread's comments and skip posting if that login already commented. **WHY:** Re-runs would otherwise post duplicate replies; checking by bot login keeps re-runs safe.
+- **Batch idempotency check:** We collect all candidate thread IDs and call `getThreadComments` in parallel (`Promise.all`). **WHY:** Sequential per-thread requests would make latency grow with thread count; parallelizing keeps wall-clock time low.
+- **API:** `replyToReviewThread` (REST `pulls.createReplyForReviewComment`, uses numeric `databaseId`), `resolveReviewThread` (GraphQL mutation), `getThreadComments` (GraphQL for thread authors). GraphQL review-threads query and types now include `databaseId` so we can reply without a second lookup. **WHY:** REST expects databaseId; storing it at fetch time keeps reply flow reliable.
+- **Tests:** Unit tests in `tests/thread-replies.test.ts` for opt-in, fixed/dismissed bodies, idempotency, resolve, and category filtering.
+- Docs: [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
+
 ### Added (2026-03) — Pill opt-in (--pill) and split-exec improvements
 
 **Pill runs only when --pill is passed**

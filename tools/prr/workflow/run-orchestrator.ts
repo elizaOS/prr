@@ -215,7 +215,8 @@ export async function executeRun(
     // Pass prefetched comments from setup phase to avoid redundant fetch on first iteration.
     // The push iteration loop clears this after consuming it once.
     const lastAnalysisCacheRef = { current: null as { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
-    const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments, codeRabbitMode: setupResult.codeRabbitMode, lastAnalysisCacheRef };
+    const repliedThreadIds = new Set<string>();
+    const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments, codeRabbitMode: setupResult.codeRabbitMode, lastAnalysisCacheRef, repliedThreadIds };
     while (pushIteration < maxPushIterations) {
       pushIteration++;
       // Reset so adaptive batch sizing is fresh per push iteration (re-analysis gives new issue set).
@@ -363,7 +364,7 @@ export async function executeRun(
     
     await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsContext, state.stateContext, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell,
-      state.prInfo, callbacks.submitReview);
+      state.prInfo, callbacks.submitReview, repliedThreadIds, github);
   } catch (error) {
     // Set exit reason so final summary shows the real error instead of "Interrupted or exited early".
     callbacks.syncResolverState?.({

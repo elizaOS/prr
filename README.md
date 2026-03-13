@@ -87,6 +87,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication; fetch and pull also use the token when the remote has no credentials (one-shot auth URL), so "Checking for conflicts" and pull never hang on a password prompt. **Why:** Repos cloned without token in the URL would otherwise block during fetch with no visible output; timeout + token fix it (see CHANGELOG).
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
+- **Thread replies (GitHub feedback)**: With `--reply-to-threads`, PRR posts a short reply on each review thread when it fixes or dismisses an issue (e.g. "Fixed in \`abc1234\`." or "No changes needed — already addressed before this run."). Optional `--resolve-threads` collapses replied threads. **WHY:** Reviewers see visible feedback in the PR conversation instead of only in PRR's exit summary; one reply per thread keeps noise low and leaves room for human follow-up. See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
 
 ### Token & cost optimizations
 - **Fix iterations default**: `--max-fix-iterations` defaults to `0` meaning *unlimited* — the fix loop runs until all issues are resolved or another exit (e.g. stalemate). *Why*: Previously 0 was used literally so the loop ran zero times; we now map 0 to "no cap" so the default behaves as documented.
@@ -288,7 +289,10 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-bell` | off | Disable terminal bell on completion |
 | `--keep-workdir` | on | Keep work directory after completion |
 | `--no-batch` | off | Disable batched LLM calls |
-| `--verbose` | on | Debug output |
+| `--verbose` | on | Debug output; when on, prompts.log (in CWD or PRR_LOG_DIR) is populated with full prompt/response text for each LLM call. Subprocess runners (e.g. llm-api) may write only to output.log; set `PRR_DEBUG_PROMPTS=1` for per-prompt files under `~/.prr/debug/`. |
+| `--reply-to-threads` | off | Post a short reply on each review thread when PRR fixes or dismisses an issue. Use `PRR_REPLY_TO_THREADS=true` to enable via env. **WHY:** Gives reviewers visible feedback in the PR; opt-in so default runs stay unchanged. |
+| `--no-reply-to-threads` | (default) | Do not post replies on review threads. |
+| `--resolve-threads` | off | When replying, also resolve the review thread (collapse with checkmark). **WHY:** Optional; some teams prefer to resolve threads only after human review. |
 
 Defaults marked **on** (e.g. `--auto-push`, `--keep-workdir`) are true by default; use `--no-auto-push` or `--no-keep-workdir` to disable them.
 
@@ -751,12 +755,13 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **illustrative examples** (actual IDs depend on Cursor and provider APIs):
+Model names change over time — see `docs/MODELS.md` for latest (e.g. Claude 4.6, GPT-5). Use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **illustrative examples**:
 
 | Model | Notes |
 |-------|-------|
 | `auto` | Let Cursor pick |
-| `claude-sonnet-4-5-20250929` | Claude Sonnet (example) |
+| `claude-sonnet-4-6` | Claude Sonnet 4.6 (see docs/MODELS.md) |
+| `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 (example) |
 | `gpt-4o` | OpenAI (example) |
 | `o3` | OpenAI reasoning (when available) |
 

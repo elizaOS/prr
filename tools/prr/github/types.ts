@@ -59,6 +59,8 @@ export interface ThreadComment {
   diffSide: 'LEFT' | 'RIGHT' | null;
   createdAt: string;
   isResolved: boolean;
+  /** Numeric ID for REST API (e.g. pulls.createReplyForReviewComment). Null for synthetic issue comments. */
+  databaseId?: number | null;
 }
 
 export interface ReviewThread {
@@ -82,6 +84,8 @@ export interface ReviewComment {
   createdAt: string;
   /** True when GitHub marks this thread as outdated (line no longer in current diff). Such comments are not shown as unaddressed. */
   outdated?: boolean;
+  /** Numeric ID for REST API (e.g. pulls.createReplyForReviewComment). Null for synthetic issue comments. */
+  databaseId?: number | null;
 }
 
 export function parsePRUrl(url: string): { owner: string; repo: string; number: number } {

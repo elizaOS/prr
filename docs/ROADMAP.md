@@ -4,6 +4,18 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 **Completed work belongs in [CHANGELOG](../CHANGELOG.md), not here.** When an item is done, add it to CHANGELOG and remove it from this file. See `.cursor/rules/roadmap-vs-changelog.mdc`.
 
+## Thread replies: single batch GraphQL for idempotency (optional)
+
+**Idea:** Today we call `getThreadComments` once per candidate thread in parallel (`Promise.all`). A possible optimization is one batched GraphQL request (e.g. multiple `node(id: $id)` aliases in a single query) to fetch all thread comment authors in one round-trip.
+
+**WHY:** Would reduce API round-trips when many threads are reply candidates; current parallel approach is already fast, so this is low priority unless we see latency issues on very large PRs.
+
+## Single-issue focus: allowedPaths must include issue target
+
+**Idea:** Ensure single-issue focus mode always includes the issue's own target file (`comment.path` / `resolvedPath`) in the allowed set passed to the runner. When `allowedPaths` is empty or filtered to empty (e.g. path under a top-level not in `REPO_TOP_LEVEL`), the runner rejects every change and wrong-file counter can fire falsely, leading to premature dismissal.
+
+**WHY:** Pill audit (output.log) showed `expectedPaths: []` for single-issue fixes; the fixer correctly edited the target file but the runner rejected edits. We now add `plugins` and `benchmarks` to `REPO_TOP_LEVEL`, fallback to `[primaryPath]` when filter yields empty in recovery, and do not count edits to the issue's target as wrong-file. Tracked here so the fix stays thorough and tested across runners.
+
 ## Blast radius and focus masking
 
 **Idea:** Use the PR diff to compute a "blast radius" (changed files plus their upstream dependencies and downstream dependents), then focus the fix loop on that set and effectively ignore or deprioritize the rest.
@@ -15,6 +27,15 @@ Items here are potential directions to explore, not committed plans. Each idea i
 **WHY:** Audits show waste when the fix loop processes comments on files outside the PR's logical scope or when the prompt is diluted by many unrelated files. Focusing on blast radius reduces prompt size, improves fix accuracy, and avoids cross-file confusion (e.g. wrong-file exhaust). Tradeoff: some valid cross-file fixes might be deprioritized; depth limit and "changed files only" fallback keep scope reasonable.
 
 Would require: PR changed-file list (`git diff base...HEAD --name-only`), a dependency graph (e.g. TS/JS import/require parsing), radius computation (depth limit), and integration into issue filtering and prompt building. Start with TS/JS; fallback to "changed files only" when no graph is available.
+
+## Final audit: deleted files and outdated threads
+
+**Idea:** Improve final-audit handling when the issue's file was deleted by the fixer or the GitHub thread is marked "outdated". Today the audit may return UNFIXED (no file content to check); L1 (trust existing verification) overrides that, but the audit prompt should explicitly handle these cases so we don't depend on the override.
+
+- **Deleted file:** When the snippet is "(file not found or unreadable)" or the file was removed in a fix, the audit should mark FIXED with explanation "File deleted; issue was resolved by removal" (or similar) instead of UNFIXED.
+- **Outdated thread:** When GitHub marks the thread outdated (diff hunk moved), the audit should still have context (e.g. "thread outdated" in the prompt) so it can mark FIXED when the fix is present in current code.
+
+**WHY:** pill-output.md (eliza run) showed final audit returning UNFIXED for all 3 issues (two on a deleted file), overridden only by L1. Without the override, the run would re-enter the fix loop incorrectly. Teaching the audit about deletions and staleness reduces reliance on L1 and makes behavior auditable.
 
 ## Audit-derived follow-ups (optional)
 

@@ -40,6 +40,19 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ---
 
+### 💬 [Thread replies (GitHub feedback)](THREAD-REPLIES.md)
+**Best for**: Enabling and understanding PRR’s replies on GitHub review threads
+
+**Contains**:
+- What thread replies do (fixed vs dismissed, reply-eligible categories) and why they are opt-in
+- Why one reply per thread, why fixed vs dismissed timing, why only some dismissal categories get a reply
+- In-run and cross-run idempotency, batch idempotency check, use of databaseId and skip of ic-* threads
+- Configuration: `--reply-to-threads`, `--resolve-threads`, `PRR_BOT_LOGIN`
+
+**Read this if**: You use or maintain `--reply-to-threads` or need the WHYs for design/audit.
+
+---
+
 ### 💊 Pill (Program Improvement Log Looker)
 
 **Best for**: Auditing a project from its output.log and prompts.log, integrated with prr/story

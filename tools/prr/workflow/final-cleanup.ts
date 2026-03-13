@@ -29,9 +29,11 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import type { PRInfo } from '../github/types.js';
-import { endTimer, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
+import { debug, endTimer, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
 import { buildReviewSummaryMarkdown } from '../ui/reporter.js';
 import { printDebugIssueTable } from './debug-issue-table.js';
+import { postThreadReplies } from './thread-replies.js';
+import type { GitHubAPI } from '../github/api.js';
 
 /** Dedupe by (filePath, line) so remaining count matches AAR (same location = one remaining). */
 function dedupeDismissedByLocation(issues: DismissedIssue[]): DismissedIssue[] {
@@ -80,7 +82,10 @@ export async function executeFinalCleanup(
   printFinalSummary: (remainingCount?: number) => void,
   ringBell: (times: number) => void,
   prInfo?: PRInfo | null,
-  submitReview?: (body: string, prInfo: PRInfo) => Promise<void>
+  submitReview?: (body: string, prInfo: PRInfo) => Promise<void>,
+  /** When set and options.replyToThreads, post replies for dismissed issues at end of run */
+  repliedThreadIds?: Set<string>,
+  github?: GitHubAPI
 ): Promise<void> {
   // Final lessons export (catches any lessons from last iteration not yet committed)
   // WHY: Lessons are also exported before each commit, but this catches edge cases
@@ -151,6 +156,31 @@ export async function executeFinalCleanup(
     } catch (err) {
       // Non-fatal: review submission is a nice-to-have; don't fail the run
       console.log(chalk.gray(`\nCould not submit PR review: ${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
+
+  // Reply on review threads for dismissed issues (already-fixed, stale, not-an-issue, false-positive).
+  if (!options.dryRun && options.replyToThreads && prInfo && repliedThreadIds != null && github && dismissedIssues.length > 0) {
+    try {
+      let commitSha: string;
+      try {
+        commitSha = await git.revparse(['HEAD']);
+      } catch {
+        commitSha = prInfo.headSha;
+      }
+      await postThreadReplies({
+        comments: finalComments,
+        verifiedCommentIds: new Set(),
+        dismissedIssues,
+        commitSha,
+        repliedThreadIds,
+        github,
+        prInfo,
+        replyToThreads: true,
+        resolveThreads: options.resolveThreads,
+      });
+    } catch (err) {
+      debug('Thread replies for dismissed (non-fatal)', { error: String(err) });
     }
   }
 

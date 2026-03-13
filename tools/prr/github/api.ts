@@ -349,6 +349,7 @@ export class GitHubAPI {
                 comments(first: 20) {
                   nodes {
                     id
+                    databaseId
                     author {
                       login
                     }
@@ -381,6 +382,7 @@ export class GitHubAPI {
               comments: {
                 nodes: Array<{
                   id: string;
+                  databaseId?: number;
                   author: { login: string } | null;
                   body: string;
                   createdAt: string;
@@ -435,6 +437,7 @@ export class GitHubAPI {
             diffSide: thread.diffSide,
             createdAt: comment.createdAt,
             isResolved: thread.isResolved,
+            databaseId: comment.databaseId ?? null,
           })),
         });
       }
@@ -466,6 +469,7 @@ export class GitHubAPI {
           line: thread.line,
           createdAt: firstComment.createdAt,
           outdated: thread.isOutdated === true,
+          databaseId: firstComment.databaseId ?? null,
         });
       }
     }
@@ -737,6 +741,92 @@ export class GitHubAPI {
       body,
     });
     debug('Comment posted successfully');
+  }
+
+  /**
+   * Reply to an inline review comment (creates a new comment in the same thread).
+   * Uses the numeric databaseId of the comment to reply to, not the GraphQL node ID.
+   * WHY databaseId: REST pulls.createReplyForReviewComment expects comment_id (numeric); GraphQL returns node IDs, so we store databaseId at fetch time and use it here.
+   * On 404 (comment deleted), logs and returns without throwing so callers can continue.
+   * WHY swallow 404: Comment may have been deleted by user or another tool; one missing reply should not fail the whole run.
+   */
+  async replyToReviewThread(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commentDatabaseId: number,
+    body: string
+  ): Promise<void> {
+    debug('Replying to review thread', { owner, repo, prNumber, commentDatabaseId, bodyLength: body.length });
+    try {
+      await this.octokit.pulls.createReplyForReviewComment({
+        owner,
+        repo,
+        pull_number: prNumber,
+        comment_id: commentDatabaseId,
+        body,
+      });
+      debug('Review thread reply posted');
+    } catch (err: unknown) {
+      const status = err && typeof err === 'object' && 'status' in err ? (err as { status: number }).status : undefined;
+      if (status === 404) {
+        debug('Review comment not found (404), skipping reply', { commentDatabaseId });
+        return;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Get comment authors in a review thread (for cross-run idempotency: skip if we already replied).
+   * WHY: When PRR_BOT_LOGIN is set, callers check whether this thread already has a comment from that login; if so, we skip posting to avoid duplicate replies on re-runs.
+   * owner/repo/prNumber are unused (GraphQL node(id) only needs threadId) but kept for API consistency and future use.
+   */
+  async getThreadComments(
+    _owner: string,
+    _repo: string,
+    _prNumber: number,
+    threadId: string
+  ): Promise<Array<{ author: string }>> {
+    const query = `
+      query($threadId: ID!) {
+        node(id: $threadId) {
+          ... on PullRequestReviewThread {
+            comments(first: 25) {
+              nodes {
+                author { login }
+              }
+            }
+          }
+        }
+      }
+    `;
+    interface Res {
+      node: {
+        comments?: { nodes: Array<{ author: { login: string } | null }> };
+      } | null;
+    }
+    const res = await this.graphqlWithAuth<Res>(query, { threadId });
+    const comments = res?.node?.comments?.nodes ?? [];
+    return comments.map((c) => ({ author: c.author?.login ?? 'unknown' }));
+  }
+
+  /**
+   * Resolve a review thread (collapse it with a checkmark).
+   * threadId is the GraphQL node ID (e.g. PRRT_kwDO...). WHY GraphQL: Resolve is a mutation; REST has no direct "resolve thread" endpoint, GraphQL resolveReviewThread does.
+   * owner/repo are used only for debug logging; the mutation only needs threadId.
+   */
+  async resolveReviewThread(owner: string, repo: string, threadId: string): Promise<void> {
+    debug('Resolving review thread', { owner, repo, threadId: threadId.slice(0, 20) });
+    const mutation = `
+      mutation($threadId: ID!) {
+        resolveReviewThread(input: { threadId: $threadId }) {
+          thread { isResolved }
+        }
+      }
+    `;
+    await this.graphqlWithAuth<{ resolveReviewThread: { thread: { isResolved: boolean } } }>(mutation, { threadId });
+    debug('Review thread resolved');
   }
 
   /**

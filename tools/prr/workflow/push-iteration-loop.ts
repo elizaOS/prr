@@ -83,6 +83,8 @@ export interface PushIterationContexts {
    * When comment count and head SHA unchanged, reuse to skip expensive findUnresolvedIssues.
    */
   lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
+  /** Thread IDs we have already replied to this run (one reply per thread). */
+  repliedThreadIds: Set<string>;
 }
 
 /** Callback functions used during push iteration */
@@ -241,6 +243,7 @@ export async function executePushIteration(
   let exitReason = '';
   let exitDetails = '';
   let committedThisIteration = false;
+  const filesModifiedThisRun = new Set<string>();
 
   // This is the primary fix iteration loop - runs until we've fixed all issues or hit max iterations
   while (fixIteration < effectiveMaxFixIterations && !allFixed) {
@@ -391,7 +394,7 @@ export async function executePushIteration(
     }
 
     // Verify fixes
-    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir, getCurrentModel, getRunner);
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir, getCurrentModel, getRunner, filesModifiedThisRun);
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
 
@@ -402,6 +405,7 @@ export async function executePushIteration(
     // iteration's findUnresolvedIssues will re-analyze only these comments
     // instead of the entire set.
     if (changedFiles.length > 0) {
+      for (const f of changedFiles) filesModifiedThisRun.add(f);
       const invalidated = CommentStatusAPI.invalidateForFiles(stateContext, changedFiles);
       if (invalidated > 0) {
         debug(`Invalidated ${invalidated} comment status(es) for ${changedFiles.length} changed file(s)`);
@@ -436,8 +440,11 @@ export async function executePushIteration(
     }
     
     // Handle iteration cleanup
+    const threadReplyContext = options.replyToThreads
+      ? { comments, prInfo, github: gitCtx.github, repliedThreadIds: contexts.repliedThreadIds }
+      : undefined;
     const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, getRunner(), currentModel,
-      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, workdir, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime, progressThisCycle);
+      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, workdir, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime, progressThisCycle, threadReplyContext);
     
     progressThisCycle += cleanupResult.progressMade;
     if (cleanupResult.expectedBotResponseTime !== undefined) expectedBotResponseTimeRef.current = cleanupResult.expectedBotResponseTime;
@@ -578,7 +585,7 @@ export async function executePushIteration(
     const isBailOut = exitReason === 'bail_out';
     const skipBotWait = isBailOut || (options.noWaitBot ?? false);
     const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, services.llm, pushIteration, maxPushIterations,
-      resolveConflictsWithLLM, waitForBotReviews, allFixed, skipBotWait, contexts.codeRabbitMode);
+      resolveConflictsWithLLM, waitForBotReviews, allFixed, skipBotWait, contexts.codeRabbitMode, options.replyToThreads ? contexts.repliedThreadIds : undefined);
     if (commitResult.shouldBreak) {
       // Ensure AAR has remaining issues when we exit (e.g. bail-out with no committable changes)
       if (unresolvedIssues.length > 0) {
