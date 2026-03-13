@@ -28,6 +28,7 @@
 #       with:
 #         pr_number: ${{ inputs.pr_number }}
 #         prr_repo: 'OWNER/prr'
+#         prr_ref: 'babylon'
 #       secrets:
 #         PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # caller's token, no PAT needed
 #         ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
@@ -51,6 +52,11 @@ on:
         required: false
         default: false
         type: boolean
+      prr_ref:
+        description: 'Branch, tag, or SHA to checkout (default: repo default branch). Set to the same ref as the workflow (e.g. babylon) so package-lock.json matches.'
+        required: false
+        default: ''
+        type: string
     secrets:
       # Caller passes their token here; we use it as GITHUB_TOKEN in the job (checkout + PRR).
       PRR_GITHUB_TOKEN:
@@ -74,10 +80,12 @@ jobs:
       pull-requests: write # submit PR review
     steps:
       # WHY token: Checking out another repo (inputs.prr_repo) requires a token; caller's token is passed in.
+      # WHY ref: When using a non-default ref (e.g. @babylon), pass prr_ref so checkout matches and npm ci sees in-sync lock file.
       - name: Checkout PRR
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.prr_repo }}
+          ref: ${{ inputs.prr_ref }}
           path: prr
           token: ${{ secrets.PRR_GITHUB_TOKEN }}
 

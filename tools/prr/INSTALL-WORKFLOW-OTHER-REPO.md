@@ -28,6 +28,7 @@ jobs:
     with:
       pr_number: ${{ inputs.pr_number }}
       prr_repo: 'elizaOS/prr'
+      prr_ref: 'babylon'
       submit_review: true   # so PRR can post a review/comment when run manually
     secrets:
       PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -69,6 +70,7 @@ jobs:
     with:
       pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: 'elizaOS/prr'
+      prr_ref: 'babylon'
       submit_review: ${{ github.event_name == 'workflow_dispatch' }}
     secrets:
       PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

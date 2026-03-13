@@ -334,6 +334,7 @@ jobs:
     with:
       pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: 'OWNER/prr'
+      prr_ref: 'babylon'
     secrets:
       PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
