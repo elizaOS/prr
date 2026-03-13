@@ -4,5 +4,8 @@
  * so we never log tokens (https://token@... or https://x-access-token:TOKEN@...).
  */
 export function redactUrlCredentials(text: string): string {
-  return text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
+  let out = text.replace(/https:\/\/[^@\s]+@/g, 'https://***@');
+  // Redact Git extraheader auth (AUTHORIZATION: basic <base64>) so we never log token-derived base64.
+  out = out.replace(/AUTHORIZATION:\s*basic\s+[A-Za-z0-9+/=]+/g, 'AUTHORIZATION: basic ***');
+  return out;
 }

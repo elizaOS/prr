@@ -75,23 +75,25 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Using fallback workdir', { workdir, method: (git as any)._baseDir ? '_baseDir' : 'cwd' });
   }
   
-  // Prefer one-shot auth URL when we have a token so push never prompts in CI.
-  // WHY: Even when origin URL contains @ (hasTokenInUrl), git can still prompt "could not read Password"
-  // in CI (e.g. stored URL is https://git@github.com/... or token expired). Using the token we have
-  // for this run avoids that; one-shot URL is not persisted to .git/config.
-  let authPushUrl: string | null = null;
+  // Prefer Authorization header (like actions/checkout) so push never prompts in CI.
+  // WHY: Embedding token in URL (https://TOKEN@...) can fail in CI with "could not read Password"
+  // when the token contains special characters or git uses a credential helper that ignores URL auth.
+  // Using http.https://github.com/.extraheader with Basic auth is reliable and matches GitHub Actions.
+  let authConfigArgs: string[] = [];
   try {
     const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
-    // Strip any existing credentials so we inject the current token (CI may pass a fresh GITHUB_TOKEN).
     const baseHttpsUrl = remoteUrl.startsWith('https://') && hasTokenInUrl
       ? 'https://' + remoteUrl.replace(/^https:\/\/[^@]+@/, '')
       : remoteUrl;
     if (githubToken && baseHttpsUrl.startsWith('https://')) {
-      // Use same format as split-exec ls-remote (https://TOKEN@) so auth behavior is consistent.
-      // GitHub accepts token as username with empty password for HTTPS Git operations.
-      authPushUrl = baseHttpsUrl.replace('https://', `https://${githubToken}@`);
-      debug('Pre-push check', { hasTokenInUrl, usingAuthUrl: true });
+      // AUTHORIZATION: basic base64(token:) — GitHub accepts token as username, empty password.
+      const basicAuth = Buffer.from(`${githubToken}:`, 'utf8').toString('base64');
+      authConfigArgs = [
+        'credential.helper=',
+        `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth}`,
+      ];
+      debug('Pre-push check', { hasTokenInUrl, usingAuthHeader: true });
     } else if (githubToken && !baseHttpsUrl.startsWith('https://')) {
       debug('Remote URL is SSH — token injection skipped; push will use SSH credentials.');
     } else if (!hasTokenInUrl && !githubToken) {
@@ -102,21 +104,19 @@ export async function push(git: SimpleGit, branch: string, force = false, github
   } catch (e) {
     debug('Could not check remote URL', { error: redactUrlCredentials(String(e)) });
   }
-  
-  // Build push args: use one-shot auth URL if available, otherwise push to origin
-  // WHY one-shot auth URL: Token is passed directly in command, never written to .git/config
-  const args = authPushUrl
-    ? ['push', authPushUrl, `HEAD:${branch}`]
-    : ['push', 'origin', branch];
+
+  // Push to origin; when we have a token, -c options supply auth for this command only.
+  const args = ['push', 'origin', `HEAD:${branch}`];
   if (force) args.push('--force');
-  // When using auth URL, disable credential helper so git uses URL credentials only (avoids "could not read Password" in CI).
-  const pushArgs = authPushUrl ? ['-c', 'credential.helper=', ...args] : args;
+  const pushArgs = authConfigArgs.length > 0
+    ? [...authConfigArgs.flatMap((v) => ['-c', v]), ...args]
+    : args;
 
   const fullCommand = `git ${pushArgs.join(' ')}`;
   debug('Starting git push', { command: redactUrlCredentials(fullCommand), workdir });
 
   const spawnEnv = { ...process.env };
-  if (authPushUrl) {
+  if (authConfigArgs.length > 0) {
     spawnEnv.GIT_TERMINAL_PROMPT = '0';  // Never prompt for credentials (CI has no TTY)
   }
 
