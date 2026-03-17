@@ -63,7 +63,7 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 - Log file names and prefix (prr vs story vs pill), CLI options, output files
 - Architecture (cli, config, context, orchestrator, prompts)
 
-**Read this if**: You run pill standalone or use pill integration from prr/story. Full doc: **[tools/pill/README.md](../tools/pill/README.md)**.
+**Read this if**: You run pill standalone or use pill integration from prr/story. Full doc: **[tools/pill/README.md](../tools/pill/README.md)**. Context assembly (large logs, 504 avoidance, PILL_OUTPUT_LOG_MAX_CHARS) and shared story-read: **[shared/README.md](../shared/README.md)**.
 
 ---
 
@@ -221,6 +221,7 @@ docs/
 ├── README.md (this file)           ← Start here
 ├── MODELS.md                       ← Shared: Claude & OpenAI models reference
 ├── ROADMAP.md                      ← Project roadmap
+├── THREAD-REPLIES.md               ← Thread replies (GitHub feedback)
 ├── ELIZACLOUD_API.md               ← Shared: Eliza Cloud API reference
 │
 tools/prr/                          ← PRR tool docs
@@ -432,6 +433,7 @@ PRR maintains state across interruptions:
 | Read success metrics | [Quick Reference](../tools/prr/QUICK_REFERENCE.md) | Success Metrics |
 | Choose or add LLM models / context limits | [Models Reference](MODELS.md) | Claude & OpenAI IDs, context, PRR usage |
 | Use or integrate pill (log audit) | [tools/pill/README.md](../tools/pill/README.md) | Why analysis-only, hook, CLI, output files |
+| Understand shared tokens & story-read | [shared/README.md](../shared/README.md) | Token estimation, truncation, chapter summarization, WHYs |
 
 ---
 
@@ -522,10 +524,11 @@ If you find errors or want to improve documentation:
 │
 ├── 📁 docs/                      ← **You are here**
 │   ├── 📄 README.md              ← This index file
-│   ├── 📄 QUICK_REFERENCE.md     ← Quick start & patterns
-│   ├── 📄 flowchart.md           ← Detailed flowcharts
 │   ├── 📄 MODELS.md              ← Claude & OpenAI models reference
-│   └── 📄 ARCHITECTURE.md        ← Technical deep-dive
+│   ├── 📄 ROADMAP.md             ← Project roadmap
+│   ├── 📄 THREAD-REPLIES.md      ← Thread replies (GitHub feedback)
+│   ├── 📄 ELIZACLOUD_API.md      ← Eliza Cloud API reference
+│   └── (PRR guides linked above live under tools/prr/)
 │
 ├── 📁 shared/                    ← Shared library (constants, runners, git, logger)
 │   ├── 📄 constants.ts           ← Global thresholds and limits
@@ -535,7 +538,6 @@ If you find errors or want to improve documentation:
 │
 ├── 📁 tools/prr/                 ← PRR tool source code
 │   ├── 📄 AUDIT-CYCLES.md        ← PRR audit log (output.log, prompts.log)
-│   ├── 📄 AUDIT-CYCLES.md        ← PRR audit log
 │   ├── 📄 ARCHITECTURE.md        ← Technical deep-dive
 │   ├── 📄 QUICK_REFERENCE.md     ← Quick start & patterns
 │   ├── 📄 flowchart.md           ← Flowcharts

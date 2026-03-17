@@ -67,7 +67,8 @@ export const REWRITE_ESCALATION_RESERVE_CHARS = 2_000;
  * keeps total request under gateway limits (e.g. 500 on 690k). Audit: 449k base
  * + injection → 638k → some models 500.
  */
-export const MAX_FIX_PROMPT_CHARS = 200_000;
+/** Cap fix prompt size to reduce gateway timeouts (prompts.log audit: 194k chars caused risk). First attempt uses FIRST_ATTEMPT_MAX_PROMPT_CHARS. */
+export const MAX_FIX_PROMPT_CHARS = 100_000;
 
 /**
  * Conservative cap for the first fix attempt to avoid gateway timeouts (90s).
@@ -228,6 +229,12 @@ export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
 
 /**
+ * Fallback model when DEFAULT_ELIZACLOUD_MODEL is unavailable (e.g. timeout/skip list).
+ * Single source of truth for the default fallback; index.ts and rotation use this when needed.
+ */
+export const ELIZACLOUD_FALLBACK_MODEL = 'anthropic/claude-3.5-sonnet';
+
+/**
  * ElizaCloud API base URL (OpenAI-compatible).
  */
 // Note: API base URL aligns with Eliza Cloud's design for consistency in requests.
@@ -237,7 +244,11 @@ export const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
  * Model IDs to skip when using ElizaCloud (known timeout/504 or 0% fix rate in audits).
  * WHY: Audits showed these models 500/timeout repeatedly or had 0% fix rate; including them
  * wastes rotation slots. Add new IDs here when audits show repeated errors or zero success.
- * Single source of truth; rotation.ts builds a Set from this for fast lookup.
+ *
+ * Operators can re-enable a skipped model for their environment (e.g. if timeouts were
+ * gateway-specific) by setting PRR_ELIZACLOUD_INCLUDE_MODELS to a comma-separated list of
+ * model IDs to include anyway (e.g. "openai/gpt-4o-mini,anthropic/claude-3.7-sonnet").
+ * Use getEffectiveElizacloudSkipModelIds() for the runtime list.
  */
 export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-5.2-codex',
@@ -245,12 +256,26 @@ export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-4.1',
   'anthropic/claude-sonnet-4.5',       // alias (dot notation) — same family as DEFAULT_ELIZACLOUD_MODEL but different ID
   'openai/gpt-5.1-codex-max',
-  'anthropic/claude-3.7-sonnet',
-  'openai/gpt-4o',
+  'anthropic/claude-3.7-sonnet',       // output.log audit: known timeout on gateway; skip to avoid wasted slots
+  'openai/gpt-4o',                     // output.log audit: known timeout on gateway; skip to avoid wasted slots
+  'openai/gpt-4o-mini',                // output.log audit: 0% fix rate in run; known timeout on gateway
 ];
 
 /**
- * Max concurrent requests to ElizaCloud API.
+ * Effective skip list for ElizaCloud: ELIZACLOUD_SKIP_MODEL_IDS minus any model in
+ * PRR_ELIZACLOUD_INCLUDE_MODELS (comma-separated). WHY: Lets operators re-enable a skipped
+ * model when timeouts were transient or environment-specific (see output.log audit §9).
+ */
+export function getEffectiveElizacloudSkipModelIds(): string[] {
+  const raw = process.env.PRR_ELIZACLOUD_INCLUDE_MODELS?.trim();
+  if (!raw) return [...ELIZACLOUD_SKIP_MODEL_IDS];
+  const include = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  const match = (id: string) => include.has(id) || include.has(id.replace(/^(openai|anthropic|google)\//, ''));
+  return ELIZACLOUD_SKIP_MODEL_IDS.filter(id => !match(id));
+}
+
+/**
+ * Max concurrent requests to ElizaCloud API (legacy; use getEffectiveMaxConcurrentLLM()).
  * WHY: ElizaCloud returns 429 when too many in flight. 1 = one request at a time.
  */
 export const ELIZACLOUD_MAX_CONCURRENT_REQUESTS = 1;
@@ -258,8 +283,56 @@ export const ELIZACLOUD_MAX_CONCURRENT_REQUESTS = 1;
 /**
  * Min ms between starting successive ElizaCloud requests (per slot).
  * WHY: 6s spacing keeps request rate under ElizaCloud limit of 10 req/min; avoids 429 bursts.
+ * Overridable via PRR_LLM_MIN_DELAY_MS; use getEffectiveMinDelayMs() for runtime value.
  */
 export const ELIZACLOUD_MIN_DELAY_MS = 6000;
+
+const MIN_CONCURRENT = 1;
+const MAX_CONCURRENT = 32;
+
+function parseEnvConcurrent(): number {
+  const raw = process.env.PRR_MAX_CONCURRENT_LLM;
+  if (raw === undefined || raw === '') return MIN_CONCURRENT;
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < MIN_CONCURRENT || n > MAX_CONCURRENT) return MIN_CONCURRENT;
+  return n;
+}
+
+function parseEnvMinDelayMs(): number | null {
+  const raw = process.env.PRR_LLM_MIN_DELAY_MS;
+  if (raw === undefined || raw === '') return null;
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
+let effectiveMaxConcurrentLLM: number | undefined;
+let effectiveMinDelayMs: number | undefined;
+
+/**
+ * Effective max concurrent LLM requests (single source of truth for all parallelism caps).
+ * WHY: PRR_MAX_CONCURRENT_LLM lets operators tune without code change; default 1 keeps deployments safe.
+ * Range [1, 32]; invalid or unset => 1.
+ */
+export function getEffectiveMaxConcurrentLLM(): number {
+  if (effectiveMaxConcurrentLLM === undefined) {
+    effectiveMaxConcurrentLLM = parseEnvConcurrent();
+  }
+  return effectiveMaxConcurrentLLM;
+}
+
+/**
+ * Effective min delay (ms) between starting successive requests per slot.
+ * Uses PRR_LLM_MIN_DELAY_MS if set and non-negative; else ELIZACLOUD_MIN_DELAY_MS.
+ * WHY override: Operators can tune for a specific gateway without code change.
+ */
+export function getEffectiveMinDelayMs(): number {
+  if (effectiveMinDelayMs === undefined) {
+    const env = parseEnvMinDelayMs();
+    effectiveMinDelayMs = env !== null ? env : ELIZACLOUD_MIN_DELAY_MS;
+  }
+  return effectiveMinDelayMs;
+}
 
 /**
  * Max concurrent LLM dedup calls (per-file).
@@ -307,6 +380,9 @@ export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && proce
  * WHY: When the fix requires a different file than the comment's path (e.g. duplicate interface in commit.ts
  * but comment is on git-push.ts), the fixer correctly refuses to change the wrong file and we burn through
  * all models. Exhausting after 2 wrong-file lessons defers to human and saves ~5 min of LLM calls.
+ * Pill audit: when allowedPaths was empty, every edit was falsely reported as wrong-file; we now ensure
+ * single-issue mode always includes the issue's path and do not count edits to the issue's target as wrong.
+ * If false positives persist, consider raising to 3.
  */
 export const WRONG_FILE_EXHAUST_THRESHOLD = 2;
 
@@ -316,6 +392,19 @@ export const WRONG_FILE_EXHAUST_THRESHOLD = 2;
  * 2 is enough to confirm the issue is about another file or stale context — defers to human and saves tokens.
  */
 export const WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD = 2;
+
+/**
+ * Apply failures (search/replace did not match) before dismissing as chronic-failure.
+ * WHY: output.log audit — earlier dismissal with "output did not match file after N attempts" so the loop
+ * doesn't burn many iterations; handoff note makes it clear for human review.
+ */
+export const APPLY_FAILURE_DISMISS_THRESHOLD = 2;
+
+/**
+ * Consecutive no-changes (same issue set) before dismissing as remaining and continuing with others.
+ * WHY: output.log audit §3 — earlier bail-out (2 instead of 3) so we don't burn iterations on the same set.
+ */
+export const NO_PROGRESS_DISMISS_THRESHOLD = 2;
 
 /**
  * Number of consecutive ALREADY_FIXED results (same explanation) before we dismiss as not-an-issue.
@@ -354,6 +443,20 @@ export const CANNOT_FIX_MISSING_CONTENT_THRESHOLD = 2;
 export const COULD_NOT_INJECT_DISMISS_THRESHOLD = 3;
 
 /**
+ * Lower threshold for "create this file" issues (e.g. missing test file).
+ * WHY: output.log audit §4 — couldNotInject on create-file paths retried 2–3 times with no file created; dismiss after 1 failure.
+ */
+export const COULD_NOT_INJECT_CREATE_FILE_THRESHOLD = 1;
+
+/**
+ * Consecutive "file not modified" count before dismissing as file-unchanged.
+ * WHY: output.log audit — fix iter 1 dismissed 6 issues (file not modified); fix iter 2 then
+ * modified those files and fixed them. Defer dismissal until 2nd occurrence so one fix iteration
+ * can touch multiple files and we don't dismiss too early.
+ */
+export const FILE_UNCHANGED_DISMISS_THRESHOLD = 2;
+
+/**
  * Verifier verdicts saying "delete entirely" / "remove from repo" before we dismiss (Cycle 13 M2).
  * Gives the model 2 chances to output <deletefile> before deferring to handoff.
  */
@@ -361,9 +464,9 @@ export const DELETE_ENTIRELY_DISMISS_THRESHOLD = 2;
 
 /**
  * Per-file search/replace (or hallucinated-stub) failure count before dismissing issues targeting that file as remaining.
- * WHY: output.log audit H3 — wallet-auth.ts had 26 failures and was still retried; dismiss so we stop burning tokens.
+ * WHY: output.log audit H3 — wallet-auth.ts had 26 failures and was still retried. Lowered from 5 to 3 for earlier dismissal (output.log audit §2).
  */
-export const HALLUCINATION_DISMISS_THRESHOLD = 5;
+export const HALLUCINATION_DISMISS_THRESHOLD = 3;
 
 /**
  * Number of consecutive CANNOT_FIX results (any reason) before we dismiss as not-an-issue.

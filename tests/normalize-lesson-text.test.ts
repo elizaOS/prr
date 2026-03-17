@@ -292,6 +292,14 @@ describe('normalizeLessonText', () => {
     });
   });
 
+  describe('wrong-file empty allowed list (Pill)', () => {
+    it('rejects lessons with "need to modify one of: ." or empty target list', () => {
+      expect(normalize('Fix for benchmarks/bfcl/reporting.py:42 - tool modified wrong files (reporting.py), need to modify one of: . Do NOT edit benchmarks/bfcl/reporting.py')).toBeNull();
+      expect(normalize('Fix for path - tool modified wrong files (X), need to modify one of: .')).toBeNull();
+      expect(normalize('need to modify one of: . Do NOT edit foo.ts')).toBeNull();
+    });
+  });
+
   describe('combined edge cases', () => {
     it('handles multiple transformations in sequence', () => {
       const input = 'Fix for src/file.ts with // comment (inferred)';

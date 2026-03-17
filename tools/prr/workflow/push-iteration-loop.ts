@@ -29,12 +29,13 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import { formatNumber, debugStep, startTimer, endTimer, debug } from '../../../shared/logger.js';
-import { COULD_NOT_INJECT_DISMISS_THRESHOLD, DELETE_ENTIRELY_DISMISS_THRESHOLD } from '../../../shared/constants.js';
+import { COULD_NOT_INJECT_CREATE_FILE_THRESHOLD, COULD_NOT_INJECT_DISMISS_THRESHOLD, DELETE_ENTIRELY_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { assessSolvability, recheckSolvability } from './helpers/solvability.js';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
+import { looksLikeCreateFileIssue } from './utils.js';
 
 /** Git and GitHub context for a push iteration */
 export interface PushIterationGitContext {
@@ -79,10 +80,10 @@ export interface PushIterationContexts {
   /** CodeRabbit mode from setup so post-push trigger reuses it (avoids manual→unknown flip). */
   codeRabbitMode?: string;
   /**
-   * Cache of last analysis result (comment count + headSha → unresolved, duplicateMap).
-   * When comment count and head SHA unchanged, reuse to skip expensive findUnresolvedIssues.
+   * Cache of last analysis result (comment IDs + headSha + file hashes → unresolved, duplicateMap).
+   * When comment set and file content for comment paths unchanged, reuse to skip expensive findUnresolvedIssues (output.log audit).
    */
-  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
+  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
   /** Thread IDs we have already replied to this run (one reply per thread). */
   repliedThreadIds: Set<string>;
 }
@@ -269,9 +270,11 @@ export async function executePushIteration(
     // WHY: The threshold is also checked in findUnresolvedIssues, but that only runs at the start of
     // a push iteration. Inside the fix loop we keep retrying single-issue focus without re-running
     // analysis, so we must apply the same dismissal here to stop burning tokens (output.log audit).
-    const couldNotInjectDismiss = unresolvedIssues.filter(
-      (i) => (stateContext.state?.couldNotInjectCountByCommentId?.[i.comment.id] ?? 0) >= COULD_NOT_INJECT_DISMISS_THRESHOLD
-    );
+    const couldNotInjectDismiss = unresolvedIssues.filter((i) => {
+      const count = stateContext.state?.couldNotInjectCountByCommentId?.[i.comment.id] ?? 0;
+      const threshold = looksLikeCreateFileIssue(i.comment) ? COULD_NOT_INJECT_CREATE_FILE_THRESHOLD : COULD_NOT_INJECT_DISMISS_THRESHOLD;
+      return count >= threshold;
+    });
     if (couldNotInjectDismiss.length > 0) {
       const reason = 'Target file could not be resolved in the repository (repeated could-not-inject + no-change cycles)';
       const dismissedIds = new Set(couldNotInjectDismiss.map((i) => i.comment.id));
@@ -279,8 +282,12 @@ export async function executePushIteration(
         Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'file-unchanged', getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body, undefined);
       }
       unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
-      console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after ${COULD_NOT_INJECT_DISMISS_THRESHOLD}+ attempts)`));
-      debug('Dismissed issues at couldNotInject threshold (in fix loop)', { count: couldNotInjectDismiss.length, commentIds: [...dismissedIds] });
+      console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after repeated could-not-inject + no-change cycles)`));
+      debug('Dismissed issues at couldNotInject threshold (in fix loop)', {
+        count: couldNotInjectDismiss.length,
+        commentIds: [...dismissedIds],
+        resolvedPaths: couldNotInjectDismiss.map((i) => getIssuePrimaryPath(i)),
+      });
       // WHY: If every remaining issue was couldNotInject, queue is now empty; treat as all fixed and exit instead of running fixer with no issues.
       if (unresolvedIssues.length === 0) {
         allFixed = true;
@@ -393,8 +400,14 @@ export async function executePushIteration(
       continue;
     }
 
-    // Verify fixes
-    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir, getCurrentModel, getRunner, filesModifiedThisRun);
+    // Verify fixes; run git fetch in parallel so refs are warm for the next iteration.
+    // WHY: Verification result is what we need; fetch has no shared mutable state with it.
+    // Best-effort fetch so a network blip does not fail the iteration.
+    const [verifyResult] = await Promise.all([
+      ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir, getCurrentModel, getRunner, filesModifiedThisRun),
+      git.fetch().catch(() => {}),
+    ]);
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = verifyResult;
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
 

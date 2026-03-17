@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseMarkdownReviewIssues, parseBranchSpec, normalizeCompareBranch } from '../tools/prr/github/api.js';
+import { parseMarkdownReviewIssues } from '../tools/prr/github/api.js';
+import { parseBranchSpec, normalizeCompareBranch } from '../tools/prr/github/types.js';
 
 describe('parseBranchSpec', () => {
   it('parses owner/repo@branch shorthand', () => {
@@ -138,7 +139,10 @@ describe('parseMarkdownReviewIssues', () => {
 
     it('throws for invalid formats', () => {
       expect(() => normalizeCompareBranch('https://github.com/owner/repo')).toThrow('Invalid --compare value');
-      expect(() => normalizeCompareBranch('owner/repo')).toThrow('Invalid --compare value');
+    });
+    it('treats owner/repo without @ or : as plain branch name', () => {
+      // Implementation allows plain branch names; owner/repo is returned as-is when it does not match branch spec (no @ or :).
+      expect(normalizeCompareBranch('owner/repo')).toBe('owner/repo');
     });
   });
   it('skips summary/status recap table items', () => {

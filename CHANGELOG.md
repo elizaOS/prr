@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Parallel workflow (config-driven concurrency)
+
+**Config-driven concurrency**
+- **`PRR_MAX_CONCURRENT_LLM`** (env, 1–32, default 1): Single source of truth for all parallelism caps. Rate limiter, batch analysis, and parallel fix groups use `getEffectiveMaxConcurrentLLM()`. **WHY:** Operators can tune without code change; default 1 keeps deployments safe; raising (e.g. to 3) reduces wall-clock when the backend allows.
+- **`PRR_LLM_MIN_DELAY_MS`** (env, optional): Overrides per-slot min delay (default 6000 ms). **WHY:** Lets operators tune spacing for a specific gateway without code change.
+- Startup log prints effective concurrency (e.g. "LLM concurrency: 1 (default)" or "3") so operators see what is active.
+
+**Rate limiter: N slots + 429 backoff**
+- **`shared/llm/rate-limit.ts`** uses `getEffectiveMaxConcurrentLLM()` for max in-flight and `getEffectiveMinDelayMs()` for per-slot delay. **WHY:** One global limiter shared by LLM client and llm-api runner so total in-flight never exceeds N.
+- **`notifyRateLimitHit()`**: On 429 (or rate-limit response), callers invoke this; effective concurrency is halved for 60s. **WHY:** Next run backs off without code change so operators can fix the gateway and re-run safely.
+- Client and llm-api runner both call `notifyRateLimitHit()` on 429; client and runner release the slot in `finally`. **WHY:** No slot leak on throw; single limiter avoids 429s from two code paths each assuming N slots.
+
+**Parallel batch analysis**
+- **`batchCheckIssuesExist`** runs batches with `runWithConcurrencyAllSettled(tasks, getEffectiveMaxConcurrentLLM())`. Results are merged in batch order; partial results on rejection; first batch supplies model recommendation. **WHY:** Analysis phase (e.g. 6 batches) finishes in ~ceil(6/N) waves instead of 6 sequential; preserves order so issue-to-verdict mapping stays correct.
+
+**Parallel fix groups (llm-api only)**
+- When **runner is llm-api** and **`PRR_MAX_CONCURRENT_LLM` ≥ 2** and issues span **≥ 2 files**, issues are partitioned into disjoint file groups (round-robin by file); each group gets its own prompt and `runner.run()`, up to N parallel runs. **WHY:** Subprocess runners (cursor, claude-code, aider) share one workdir and would overwrite each other; llm-api applies edits in-process so disjoint groups can run in parallel. Disjoint files guarantee no two runs touch the same file.
+- Merged result: success only if all runs succeed; output concatenated; token usage summed; on any failure the iteration is treated as failed (error path/rotation). **WHY:** Simpler than partial verification; successful groups’ edits remain on disk for the next run.
+
+**Pipeline verification**
+- **Verification** and **`git.fetch()`** run in parallel (`Promise.all`). Only the verification result is used; fetch is best-effort. **WHY:** Warms refs for the next iteration so the next pull can be faster; no shared mutable state.
+
+**Shared concurrency helper**
+- **`shared/run-with-concurrency.ts`**: `runWithConcurrency(tasks, limit)` and `runWithConcurrencyAllSettled(tasks, limit)` run tasks with a cap and preserve input order. **WHY:** Reusable worker-pool pattern; allSettled allows partial results when some tasks reject.
+
+- Docs: README Configuration (PRR_MAX_CONCURRENT_LLM, PRR_LLM_MIN_DELAY_MS). Audit: `.cursor/plans/parallelize-prr-audit.md`.
+
 ### Added (2026-03) — Conflict resolution: 3-way merge, sub-chunking, validation
 
 **Three-way merge (base + ours + theirs)**
@@ -30,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - After resolution we run `validateResolvedFileContent(content, filePath)` for TS/JS (TypeScript `createProgram` + `getSyntacticDiagnostics`). If invalid, we do not write or stage; we leave the file conflicted and report the parse error.
 - **WHY:** Prevents committing syntactically broken resolution (e.g. truncated or corrupted LLM output).
 
+**Single retry on parse validation failure**
+- When validation fails (e.g. `'*/' expected`), we retry resolution **once** with the previous parse error message injected into the prompt so the model can fix syntax. No change to "one failure = whole merge fails" beyond this single retry.
+- **WHY:** Many parse failures are trivial (unclosed comment, missing brace); one retry with the exact error gives the model a chance to self-correct without opening the door to unbounded retries.
+
 **Large-file warning only for skipped files**
 - The "Large files skipped (will need manual resolution)" message now lists only files that were actually skipped (e.g. file size > effectiveMaxChars and we didn't use chunked). Files resolved via sub-chunking are not warned.
 - **WHY:** Previously we warned for any file over 50KB; that was noisy for files we successfully resolve with sub-chunking.
@@ -49,6 +80,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API:** `replyToReviewThread` (REST `pulls.createReplyForReviewComment`, uses numeric `databaseId`), `resolveReviewThread` (GraphQL mutation), `getThreadComments` (GraphQL for thread authors). GraphQL review-threads query and types now include `databaseId` so we can reply without a second lookup. **WHY:** REST expects databaseId; storing it at fetch time keeps reply flow reliable.
 - **Tests:** Unit tests in `tests/thread-replies.test.ts` for opt-in, fixed/dismissed bodies, idempotency, resolve, and category filtering.
 - Docs: [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
+
+### Added (2026-03) — Thread reply Validation Failed handling and Pill 504 avoidance
+
+**Thread reply: full error logging and retry**
+- On **422 / Validation Failed** when posting a thread reply, we now log the **full error** (status, message, response body) via `getErrorDetails()`. **WHY:** Reviewers don't see a reply for those threads; logging GitHub's reason (e.g. body format, thread state) makes debugging possible.
+- **Retry with shortened message:** If the first post fails with validation, we retry **once** with a fallback body: "Addressed." for fixed replies, "No change needed." for dismissed. **WHY:** Long or special characters in the first message can trigger validation; a short fallback often succeeds so the thread still gets a reply.
+- **Idempotency:** Unchanged; `repliedThreadIds` and `alreadyRepliedByUsMap` already skip posting twice to the same thread this run or from a previous run. **WHY:** Audit suggested "consider idempotency"; we already had it, so no change.
+
+**Pill 504 (FUNCTION_INVOCATION_TIMEOUT) avoidance**
+- **Chunk/summarize earlier:** Output log is considered "large" when **tokens > 30k** or **chars > 100k**. When large, we use head (400 lines) + story-read middle + tail (400 lines) + excerpt instead of sending the full log. **WHY:** A ~183k-char request body caused 504; char threshold guards against token underestimation; lower token threshold (30k vs 40k) triggers summarization sooner.
+- **Hard cap on output log chars:** After assembling context, output log is capped at **50k chars** (default; overridable via **`PILL_OUTPUT_LOG_MAX_CHARS`**). Truncation keeps head (2/3) and tail (1/3). **WHY:** Ensures the audit request never includes an unbounded log; 504 is often request-size or processing-time related.
+- **No-LLM-client fallback:** When the log is large but no story-read client is passed (e.g. dry-run), we no longer send raw; we send head + "[ … middle omitted (no summarization client) … ]" + tail + excerpt. **WHY:** Previously we sent the full raw log in that path, which could still cause 504.
+
+**Shared token and story-read modules (DRY)**
+- **`shared/utils/tokens.ts`:** `estimateTokens(text)` (chars/4), `truncateHeadAndTail(text, maxTokens, marker?)`, `truncateHeadAndTailByChars(text, maxChars, marker?)`, `CHARS_PER_TOKEN`. **WHY:** Same rule and truncation pattern were duplicated in tools/prr and tools/pill; one source avoids drift and keeps context budgeting consistent. **WHY tailChars clamp:** When marker is long, `tailChars` could go negative; we use `Math.max(0, …)` so `slice(-tailChars)` is valid.
+- **`shared/llm/story-read.ts`:** Chapter-by-chapter LLM summarization with carried context: `chunkPlainText(text, budget)`, `storyReadChapters(chapters, client, options)`, `storyReadPlainText(text, client, options)`, `ChapterAnalysis` type, default system prompt for log analysis. **WHY:** Pill's story-read logic (chunk → prior context → digest) is reusable for any tool that must summarize large logs or documents; moving it to shared lets pill and future callers share one implementation. **WHY single-line-over-budget:** If one line exceeds the chapter token budget, we emit it as its own chapter so we don't create one giant chapter that blows the model's context.
+- **Pill** now uses shared tokens (context truncation, char cap) and shared story-read (processor wires prompts.log pairs and output.log plain text to `storyReadChapters` / `storyReadPlainText`). **Pill types:** `ChapterAnalysis` re-exported from shared. **Pill utils/files:** Re-exports `estimateTokens` from shared so existing pill callers unchanged.
+- **PRR** `prompt-builder.ts` uses shared `estimateTokens` instead of a local copy.
+
+- Docs: Pill README (context assembly, PILL_OUTPUT_LOG_MAX_CHARS); shared/README.md (tokens, story-read).
+
+### Added (2026-03) — Output.log audit §2–§6: apply failures, no-changes, couldNotInject, thresholds
+
+**§5 Empty diff / fixer reports changes but diff empty**
+- When the fixer **attempted changes** but **wrote no files** (all no-ops or all search/replace failed to match), the runner now returns **`noMeaningfulChanges: true`** instead of an error, and when S/R failed it also returns **`applyFailureSummary`** (e.g. "Search/replace failed to match in: path/to/file.ts. Use exact content or shorter search block."). **WHY:** Treating "tried but wrote nothing" as no-changes skips the verifier (output.log audit §5); the workflow goes straight to rotation instead of running verification on unchanged code. Returning success + noMeaningfulChanges keeps one code path for "no files modified" so rotation and batch-size logic stay consistent.
+- **`shared/runners/llm-api.ts`:** `applyFileChanges` now sets `noMeaningfulChanges = attemptedChanges > 0 && filesWritten.length === 0` (covers both all-no-ops and all-S/R-failed). When `failedSearchReplace > 0`, the return includes `applyFailureSummary` with the list of failed files. **WHY:** Caller can skip verification and still get a hint to persist for the next fix prompt.
+
+**§2 "Output did not match file" — last apply error in retry, earlier chronic-failure**
+- **Last apply error in retry:** When the runner returns `noMeaningfulChanges` with `applyFailureSummary`, the workflow now **persists** `lastApplyErrorByCommentId` and increments `applyFailureCountByCommentId` for the issues in that batch. The fix prompt already receives "Previous attempt: …" from `lastApplyError`; now the S/R-failed path also feeds that. **WHY:** output.log audit §2 — the model wasn't getting explicit feedback that the apply failed (search/replace mismatch); passing the failure summary into the next attempt lets the model adjust (exact content, shorter search block).
+- **Earlier chronic-failure dismissal:** **`HALLUCINATION_DISMISS_THRESHOLD`** reduced from 5 to 3 (in **`shared/constants.ts`**). **WHY:** Per-file S/R (or hallucinated-stub) failure count now triggers "remaining" dismissal after 3 failures instead of 5, so we stop burning iterations on files that never match (output.log audit §2). `APPLY_FAILURE_DISMISS_THRESHOLD` (2) was already in place for apply-failure dismissals.
+
+**§4 couldNotInject for create-file issues**
+- **`COULD_NOT_INJECT_CREATE_FILE_THRESHOLD`** set from 2 to 1 in **`shared/constants.ts`**. **WHY:** output.log audit §4 — issues that are clearly "create this file" (e.g. missing test file) were retried 2–3 times with couldNotInject and no file created; dismissing after 1 failure saves tokens and defers to human when the path can't be created.
+
+**§3 Consecutive no-changes**
+- **`NO_PROGRESS_DISMISS_THRESHOLD`** reduced from 3 to 2 in **`shared/constants.ts`**. **WHY:** output.log audit §3 — after 2 consecutive no-changes for the same issue set we dismiss as remaining and continue with others, so we don't burn iterations on the same set; one fewer attempt before bail-out.
+
+**Runner result type**
+- **`RunnerResult.applyFailureSummary`** (optional string) added in **`shared/runners/types.ts`**. **WHY:** When the reason for no meaningful changes was S/R failed to match, the workflow can persist this for the next prompt without overloading the runner contract (success + noMeaningfulChanges + applyFailureSummary).
+
+- Audit rationale and pain-point list: DEVELOPMENT.md "Fix loop audits (output.log)". Constants: `shared/constants.ts` (HALLUCINATION_DISMISS_THRESHOLD, NO_PROGRESS_DISMISS_THRESHOLD, COULD_NOT_INJECT_CREATE_FILE_THRESHOLD). Workflow: `tools/prr/workflow/execute-fix-iteration.ts` (noMeaningfulChanges branch). Runner: `shared/runners/llm-api.ts` (applyFileChanges, run result).
 
 ### Added (2026-03) — Pill opt-in (--pill) and split-exec improvements
 

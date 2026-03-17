@@ -159,6 +159,50 @@ function appendPillOutput(
   return { instructionsPath, summaryPath };
 }
 
+/** Append a minimal "run but no improvements" section so pill-output.md / pill-summary.md are not left empty when user passed --pill. */
+function appendNoImprovementsRun(
+  targetDir: string,
+  meta: PillOutputMeta,
+  reason: PillNoImprovementsReason,
+  instructionsPathOverride?: string
+): void {
+  const instructionsPath = instructionsPathOverride ?? join(targetDir, 'pill-output.md');
+  const summaryPath = join(targetDir, 'pill-summary.md');
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const reasonText =
+    reason === 'no_logs'
+      ? 'No logs to analyze (output/prompts log empty or missing).'
+      : reason === 'no_api_key'
+        ? 'No API key configured.'
+        : reason === 'zero_improvements_from_llm'
+          ? 'LLM returned zero improvements.'
+          : 'Audit request failed.';
+  const instructionsEntry = [
+    '',
+    '---',
+    '',
+    `## ${title}`,
+    '',
+    '### Summary',
+    '',
+    `No improvements suggested (${reasonText})`,
+    '',
+    '---',
+  ].join('\n');
+  const summaryEntry = [
+    '',
+    '---',
+    '',
+    `## ${title}`,
+    '',
+    `> No improvements (${reasonText})`,
+    '',
+    '---',
+  ].join('\n');
+  appendFileSync(instructionsPath, instructionsEntry, 'utf-8');
+  appendFileSync(summaryPath, summaryEntry, 'utf-8');
+}
+
 export interface PillAnalysisResult {
   pitch: string;
   plan: ImprovementPlan;
@@ -194,17 +238,28 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     if (spinner) spinner.text = text;
   };
 
+  function recordNoImprovements(reason: PillNoImprovementsReason): void {
+    if (config.dryRun) return;
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
+    const source = (config.logPrefix?.trim()) ? config.logPrefix : 'prr';
+    appendNoImprovementsRun(config.targetDir, { date: dateStr, source }, reason, config.instructionsOut);
+  }
+
   // No API key — distinct message so operators know why (pill-output.md #3)
   if (config.llmProvider === 'elizacloud' && !config.elizacloudApiKey?.trim()) {
     if (spinner) spinner.info('Pill: No API key configured (elizacloud). Set ELIZACLOUD_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
     return { result: null, reason: 'no_api_key' };
   }
   if (config.llmProvider === 'openai' && !config.openaiApiKey?.trim()) {
     if (spinner) spinner.info('Pill: No API key configured (openai). Set OPENAI_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
     return { result: null, reason: 'no_api_key' };
   }
   if (config.llmProvider === 'anthropic' && !config.anthropicApiKey?.trim()) {
     if (spinner) spinner.info('Pill: No API key configured (anthropic). Set ANTHROPIC_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
     return { result: null, reason: 'no_api_key' };
   }
 
@@ -219,9 +274,14 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     const llmClient = new LLMClient(config);
     const ctx = await assembleContext(config, llmClient);
 
+    if (ctx.contextTrimmed && spinner) {
+      spinner.info('Context trimmed to fit 60k token budget (avoids 504/timeout).');
+    }
+
     const hasLogs = ctx.outputLog.trim().length > 0 || (ctx.promptsDigest ?? '').trim().length > 0;
     if (!hasLogs) {
       if (spinner) spinner.info('Pill: No logs to analyze (output/prompts log empty or missing for this prefix).');
+      recordNoImprovements('no_logs');
       return { result: null, reason: 'no_logs' };
     }
 
@@ -255,6 +315,7 @@ export async function runPillAnalysis(config: PillConfig): Promise<
 
     if (plan.improvements.length === 0) {
       if (spinner) spinner.succeed('Pill: LLM returned zero improvements (audit ran successfully).');
+      recordNoImprovements('zero_improvements_from_llm');
       return { result: null, reason: 'zero_improvements_from_llm' };
     }
 
@@ -284,6 +345,7 @@ export async function runPillAnalysis(config: PillConfig): Promise<
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (spinner) spinner.fail(msg);
+    recordNoImprovements('api_call_failed');
     // Return instead of throw so callers can log reason (pill-output.md #3)
     return { result: null, reason: 'api_call_failed', errorMessage: msg };
   } finally {

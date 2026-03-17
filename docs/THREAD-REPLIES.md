@@ -5,7 +5,7 @@ When PRR fixes or dismisses a review comment, it can post a short reply on that 
 ## What it does
 
 - **Opt-in:** `--reply-to-threads` (or `PRR_REPLY_TO_THREADS=true`). Default is off so existing runs are unchanged.
-- **Fixed issues:** After a successful push (per iteration or final squash), PRR posts one reply per thread it verified as fixed: `Fixed in \`abc1234\`.` (short commit SHA).
+- **Fixed issues:** After the commit is **successfully pushed** (in the commit-and-push phase), PRR posts one reply per thread it verified as fixed: `Fixed in \`abc1234\`.` (short commit SHA).
 - **Dismissed issues:** At end of run, for reply-eligible dismissals (see below), PRR posts one reply per thread, e.g. `No changes needed — already addressed before this run.` or `Dismissed: <reason>`.
 - **Resolve threads:** Optional `--resolve-threads` collapses replied threads with a checkmark in the GitHub UI.
 
@@ -17,20 +17,24 @@ Default runs stay fast and unchanged; posting to GitHub is a conscious choice. S
 
 GitHub review threads are one conversation per location. Multiple replies from the bot in the same thread add noise and make it harder for humans to reply in-thread. One short reply per outcome keeps the thread readable and leaves room for human follow-up.
 
-## WHY reply as soon as we know (fixed) vs at end of run (dismissed)
+## WHY fixed replies only after successful push
 
-- **Fixed:** We know the outcome right after we push and verify. Replying immediately gives the “orange outdated” / “addressed in commit X” feeling and avoids delaying feedback until the run finishes.
-- **Dismissed:** We only know the full set of dismissals at end of run (after audit, bail-out, etc.). Posting dismissed replies once at the end keeps logic in one place and avoids replying for issues we might later re-open.
+We post "Fixed in \<sha\>" only when the commit has been **successfully pushed** in the commit-and-push phase (`handleCommitAndPush`). We do not reply after incremental pushes during the fix loop. **WHY:** The right place for the reply is when the code is actually on the remote; replying only after push avoids claiming a fix before it's visible and keeps the single source of truth for fixed replies in one place.
+
+## WHY reply at end of run for dismissed
+
+We only know the full set of dismissals at end of run (after audit, bail-out, etc.). Posting dismissed replies once at the end keeps logic in one place and avoids replying for issues we might later re-open.
+
 
 ## WHY only some dismissal categories get a reply
 
-We reply for: `already-fixed`, `stale`, `not-an-issue`, `false-positive`. We do **not** reply for `exhausted`, `remaining`, `chronic-failure`, etc.
+We reply for: `already-fixed`, `stale`, `not-an-issue`, `false-positive`, `remaining`, `exhausted` (for the last two we post "Could not auto-fix; manual review recommended."). We do **not** reply for `chronic-failure`, etc.
 
 **WHY:** “Already addressed”, “stale”, “not an issue”, “false positive” are clear conclusions that help the reviewer. “Exhausted” or “remaining” mean “we gave up” or “needs human follow-up”; a bot reply there is less useful and can feel like noise. Keeping replies to informative outcomes reduces noise and keeps the thread actionable.
 
 ## WHY in-run and cross-run idempotency
 
-- **In-run:** A single `repliedThreadIds` set is shared across iteration cleanup, commit-and-push, and final cleanup. We never post twice to the same thread in one run.
+- **In-run:** A single `repliedThreadIds` set is shared across commit-and-push (fixed replies) and final cleanup (dismissed replies). We never post twice to the same thread in one run.
 - **Cross-run:** If `PRR_BOT_LOGIN` is set, we fetch each candidate thread’s comments and skip posting when that login already commented. **WHY:** Re-runs (e.g. after manual edits) would otherwise post duplicate “Fixed in …” or “Dismissed: …” for threads we already replied to. Checking by bot login makes re-runs safe and avoids spamming threads.
 
 ## WHY batch idempotency check

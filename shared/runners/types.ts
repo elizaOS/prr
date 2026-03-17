@@ -57,6 +57,11 @@ export interface RunnerResult {
   skippedNewfilePathExists?: string[];
   /** True when the fixer wrote test files that are mostly placeholders (e.g. expect(true).toBe(true)). Workflow adds a lesson and treats as non-fix so we rotate. */
   placeholderTestContent?: boolean;
+  /**
+   * When noMeaningfulChanges and the reason was search/replace failed to match, workflow persists this as lastApplyError for the next fix prompt.
+   * WHY: output.log audit §2 — the model wasn't getting explicit feedback that apply failed; passing e.g. "Search/replace failed to match in: file.ts. Use exact content or shorter search block." into the next attempt lets the model adjust.
+   */
+  applyFailureSummary?: string;
 }
 
 export interface RunnerOptions {

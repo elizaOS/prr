@@ -17,12 +17,13 @@ import OpenAI from 'openai';
 import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../../../shared/config.js';
 import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError } from '../../../shared/logger.js';
-import { ELIZACLOUD_API_BASE_URL } from '../../../shared/constants.js';
-import { acquireElizacloud, releaseElizacloud } from '../../../shared/llm/rate-limit.js';
+import { ELIZACLOUD_API_BASE_URL, getEffectiveMaxConcurrentLLM } from '../../../shared/constants.js';
+import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
 import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
+import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
 
 /** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
 function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
@@ -76,7 +77,7 @@ function getConflictFileTypeRules(filePath: string): string {
 
 /** Re-export for consumers that still import from llm/client. */
 export { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
-export { acquireElizacloud, releaseElizacloud } from '../../../shared/llm/rate-limit.js';
+export { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 
 /** Normalize issue/comment IDs: strip markdown (headings, bold) and standardize to issue_<n> for matching. */
 function normalizeIssueId(raw: string): string {
@@ -127,6 +128,8 @@ interface CompleteOptions {
    * instead of spending ~10 minutes exhausting the global retry ladder first.
    */
   max504Retries?: number;
+  /** Optional phase label for prompts.log metadata (e.g. batch-verify, final-audit). Helps pill and auditors filter by step. */
+  phase?: string;
 }
 
 /**
@@ -578,7 +581,9 @@ export class LLMClient {
     
     // Log full prompt to debug file
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
-    debugPrompt(`llm-${this.provider}`, fullPrompt, { model: chosenModel });
+    const promptMeta: Record<string, unknown> = { model: chosenModel };
+    if (options?.phase != null) promptMeta.phase = options.phase;
+    const promptSlug = debugPrompt(`llm-${this.provider}`, fullPrompt, promptMeta);
     
     const is429 = (e: unknown) => {
       const status = (e as { status?: number })?.status;
@@ -638,10 +643,9 @@ export class LLMClient {
             usage: response.usage,
           });
 
-          debugResponse(`llm-${this.provider}`, response.content, {
-            model: chosenModel,
-            usage: response.usage,
-          });
+          const responseMeta: Record<string, unknown> = { model: chosenModel, usage: response.usage };
+          if (options?.phase != null) responseMeta.phase = options.phase;
+          debugResponse(promptSlug, `llm-${this.provider}`, response.content, responseMeta);
 
           if (response.usage) {
             trackTokens(response.usage.inputTokens, response.usage.outputTokens);
@@ -663,11 +667,14 @@ export class LLMClient {
                 `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
               );
             }
-            if (is429(err) && attempt < max429Retries) {
-              const wait = backoffMs[attempt] ?? 8000;
-              debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
-              await new Promise(r => setTimeout(r, wait));
-              continue;
+            if (is429(err)) {
+              notifyRateLimitHit();
+              if (attempt < max429Retries) {
+                const wait = backoffMs[attempt] ?? 8000;
+                debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
+                await new Promise(r => setTimeout(r, wait));
+                continue;
+              }
             }
           }
           if (this.provider === 'elizacloud') {
@@ -680,7 +687,7 @@ export class LLMClient {
         debug('ElizaCloud error (response context)', getElizaCloudErrorContext(lastErr));
       }
       const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-      debugPromptError(`llm-${this.provider}`, lastMsg, {
+      debugPromptError(promptSlug, `llm-${this.provider}`, lastMsg, {
         model: chosenModel,
         status: (lastErr as { status?: number })?.status,
         is504: lastErr != null && isServerError(lastErr),
@@ -989,7 +996,9 @@ ${codeSnippet}
     }>,
     modelContext?: ModelRecommendationContext,
     maxContextChars?: number,
-    maxIssuesPerBatch?: number
+    maxIssuesPerBatch?: number,
+    /** Optional phase for prompts.log metadata (e.g. 'batch-verify'). */
+    phase?: string
   ): Promise<BatchCheckResult> {
     if (issues.length === 0) {
       return { issues: new Map() };
@@ -1065,6 +1074,7 @@ ${codeSnippet}
       'issue_2: YES: I4: D1: Line 12 uses `var` instead of `const`',
       'issue_3: NO: Line 23 now has `if (input === null) return;` guard',
       'issue_4: STALE: The processUser function no longer exists; module was refactored',
+      'issue_5: NO: Comment approves current state (e.g. "correctly reflects"); no change required',
       '',
       'Example BAD responses (NEVER do this):',
       '**issue_1**: YES: ...',
@@ -1087,7 +1097,7 @@ ${codeSnippet}
     const maxCommentLen = wideSnippets ? 2500 : 2000;
     const maxCodeLen = wideSnippets ? 3000 : 2000;
 
-    const buildIssueText = (issue: typeof issues[0]): string => {
+    const buildIssueText = (issue: typeof issues[0], opts?: { codeSeeAbove?: boolean }): string => {
       // Sanitize HTML noise (base64 JWT links, metadata comments, <picture> tags)
       // THEN truncate. Without sanitizing first, a 600-char JWT blob can consume
       // 30% of the truncation budget, leaving too little actual description.
@@ -1115,17 +1125,28 @@ ${codeSnippet}
         parts.push('');
       }
       
-      parts.push(
-        `## Issue ${issue.id}`,
-        `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
-        `Comment: ${truncatedComment}`,
-        '',
-        'Current code:',
-        '```',
-        hasCode ? truncatedCode : '(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)',
-        '```',
-        '',
-      );
+      if (opts?.codeSeeAbove) {
+        parts.push(
+          `## Issue ${issue.id}`,
+          `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+          `Comment: ${truncatedComment}`,
+          '',
+          `Current code: (see File: ${issue.filePath} above.)`,
+          '',
+        );
+      } else {
+        parts.push(
+          `## Issue ${issue.id}`,
+          `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+          `Comment: ${truncatedComment}`,
+          '',
+          'Current code:',
+          '```',
+          hasCode ? truncatedCode : '(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)',
+          '```',
+          '',
+        );
+      }
 
       return parts.join('\n');
     };
@@ -1147,9 +1168,15 @@ ${codeSnippet}
     let currentBatch: typeof issues = [];
     let currentTexts: string[] = [];
     let currentSize = 0;
+    /** Within current batch: keys "filePath\0snippet" we've already output full code for. Same file + same snippet → "see above" to save tokens (prompts.log audit). */
+    let seenFileSnippetInBatch = new Set<string>();
 
     for (const issue of issues) {
-      const issueText = buildIssueText(issue);
+      const fileSnippetKey = `${issue.filePath}\0${issue.codeSnippet ?? ''}`;
+      const useSeeAbove = seenFileSnippetInBatch.has(fileSnippetKey);
+      const issueText = buildIssueText(issue, useSeeAbove ? { codeSeeAbove: true } : undefined);
+      if (!useSeeAbove) seenFileSnippetInBatch.add(fileSnippetKey);
+
       const issueSize = issueText.length;
 
       // Start a new batch if adding this issue would exceed size OR count limit
@@ -1158,6 +1185,7 @@ ${codeSnippet}
         currentBatch = [];
         currentTexts = [];
         currentSize = 0;
+        seenFileSnippetInBatch = new Set<string>();
       }
 
       currentBatch.push(issue);
@@ -1178,27 +1206,26 @@ ${codeSnippet}
       maxIssuesPerBatch: MAX_ISSUES_PER_BATCH,
     });
 
-    // Process all batches
-    const allResults = new Map<string, {
-      exists: boolean;
-      explanation: string;
-      stale: boolean;
-      importance: number;
-      ease: number;
-    }>();
-    let recommendedModels: string[] | undefined;
-    let modelRecommendationReasoning: string | undefined;
+    // Process all batches (parallel up to getEffectiveMaxConcurrentLLM())
+    type BatchSingleResult = { exists: boolean; explanation: string; stale: boolean; importance: number; ease: number };
+    type BatchBatchResult = {
+      batchResults: Map<string, BatchSingleResult>;
+      recommendedModels?: string[];
+      modelRecommendationReasoning?: string;
+    };
 
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const { issues: batchIssues, issueTexts } = batches[batchIdx];
+    const processOneBatch = async (batchIdx: number, batch: { issues: typeof issues; issueTexts: string[] }): Promise<BatchBatchResult> => {
+      const { issues: batchIssues, issueTexts } = batch;
       const isFirstBatch = batchIdx === 0;
-      
-      debug(`Processing batch ${batchIdx + 1}/${batches.length}`, { 
+      const batchResults = new Map<string, BatchSingleResult>();
+      let recommendedModels: string[] | undefined;
+      let modelRecommendationReasoning: string | undefined;
+
+      debug(`Processing batch ${batchIdx + 1}/${batches.length}`, {
         issueCount: batchIssues.length,
-        chars: issueTexts.join('').length + headerSize + footerSize
+        chars: issueTexts.join('').length + headerSize + footerSize,
       });
 
-      try {
       // Build user message with only dynamic content (static rules are in systemPrompt)
       const parts = [
         ...issueTexts,
@@ -1207,7 +1234,6 @@ ${codeSnippet}
         'Now analyze each issue STRICTLY and respond with one line per issue:',
       ];
 
-      // Only ask for model recommendation in first batch when requested (omitted for verification to save tokens).
       if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         parts.push('');
         parts.push('---');
@@ -1222,8 +1248,6 @@ ${codeSnippet}
         parts.push('- Issue count and diversity: many issues or multi-file changes need capable models');
         parts.push('- Previous attempts: if a model already failed, try a different one');
         parts.push('');
-        
-        // Cap model/attempt history so first batch doesn't exceed gateway limits (was 100k+ and caused 500)
         const MODEL_HISTORY_MAX = 1500;
         const ATTEMPT_HISTORY_MAX = 2500;
         if (modelContext.modelHistory) {
@@ -1234,13 +1258,11 @@ ${codeSnippet}
         }
         if (modelContext.attemptHistory) {
           parts.push('## Previous Attempts on These Issues');
-          // WHY filter to batch: Audit showed full attempt history (all issues) sent to every batch; only current batch is relevant.
           const filtered = filterAttemptHistoryToBatch(modelContext.attemptHistory, batchIssues.map(i => i.id));
           const a = filtered.length <= ATTEMPT_HISTORY_MAX ? filtered : filtered.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)';
           parts.push(a);
           parts.push('');
         }
-        
         parts.push('End your response with this line:');
         parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | explain why these models in this order');
         parts.push('');
@@ -1249,7 +1271,7 @@ ${codeSnippet}
         parts.push('MODEL_RECOMMENDATION: gpt-5-mini, claude-haiku | Simple style/formatting fixes only');
       }
 
-      const response = await this.complete(parts.join('\n'), systemPrompt);
+      const response = await this.complete(parts.join('\n'), systemPrompt, phase ? { phase } : undefined);
       const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
 
       // Parse issue responses with optional triage scores
@@ -1259,7 +1281,7 @@ ${codeSnippet}
       for (const line of lines) {
         const match = line.match(/^([^:]+):\s*(YES|NO|STALE):\s*(.*)$/i);
         if (match) {
-          let [, id, response, rest] = match;
+          let [, id, verdict, rest] = match;
           const resultId = normalizeIssueId(id);
           if (!allowedIds.has(resultId)) {
             debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
@@ -1276,7 +1298,7 @@ ${codeSnippet}
             rest = triageMatch[3];
           }
           
-          const responseUpper = response.toUpperCase();
+          const responseUpper = verdict.toUpperCase();
           const explanation = rest.trim();
           let exists = responseUpper === 'YES';
           let stale = responseUpper === 'STALE';
@@ -1358,7 +1380,7 @@ ${codeSnippet}
             stale = false;
           }
 
-          allResults.set(resultId, {
+          batchResults.set(resultId, {
             exists,
             stale,
             explanation,
@@ -1368,22 +1390,17 @@ ${codeSnippet}
         }
       }
 
-      // Per-batch outcome summary
-      // WHY: Without this, the only signal between batches is the raw LLM response length.
-      // Operators need to see how many issues were parsed and their disposition per batch
-      // to diagnose prompt/model problems early (e.g., batch 2 parsed 0 = response format issue).
       {
         let batchParsed = 0, batchExists = 0, batchFixed = 0, batchStale = 0;
         let sumImportance = 0, sumEase = 0, countTriage = 0;
         for (const issue of batchIssues) {
           const rid = normalizeIssueId(issue.id);
-          const r = allResults.get(rid);
+          const r = batchResults.get(rid);
           if (r) {
             batchParsed++;
             if (r.stale) batchStale++;
             else if (r.exists) batchExists++;
             else batchFixed++;
-            // Accumulate triage scores for avg calculation
             sumImportance += r.importance;
             sumEase += r.ease;
             countTriage++;
@@ -1401,19 +1418,15 @@ ${codeSnippet}
           avgImportance,
           avgEase,
         });
-
-        // When parsing falls short, log enough to diagnose the problem
         if (batchParsed < batchIssues.length) {
           const unparsedIssueIds = batchIssues
-            .filter(issue => !allResults.has(normalizeIssueId(issue.id)))
+            .filter(issue => !batchResults.has(normalizeIssueId(issue.id)))
             .map(issue => issue.id);
-          
           const unmatchedLines = lines
             .map(l => l.trim())
             .filter(l => l.length > 0)
             .filter(l => !l.match(/^([^:]+):\s*(YES|NO|STALE):\s*/i))
             .slice(0, 10);
-
           debug(`Batch ${batchIdx + 1} parse shortfall`, {
             missing: batchIssues.length - batchParsed,
             unparsedIssueIds,
@@ -1423,25 +1436,18 @@ ${codeSnippet}
         }
       }
 
-      // Parse model recommendation only from first batch when we asked for it
       if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
         if (modelMatch) {
           const modelList = modelMatch[1];
           const reasoning = modelMatch[2]?.trim();
-          
           const availableSet = new Set(modelContext.availableModels.map(m => m.toLowerCase()));
           recommendedModels = modelList
             .split(',')
             .map(m => m.trim())
             .filter(m => {
               const lower = m.toLowerCase();
-              // Exact match (case-insensitive)
               if (availableSet.has(lower)) return true;
-              // Prefix match: the recommended model is a prefix of an available model
-              // (e.g., "claude-sonnet" matches "claude-sonnet-4-5-20250929")
-              // But NOT the reverse — we don't want "gpt" to match "gpt-5.3-codex"
-              // because that's too loose and could cross provider boundaries.
               for (const avail of modelContext.availableModels!) {
                 const availLower = avail.toLowerCase();
                 if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
@@ -1455,35 +1461,44 @@ ${codeSnippet}
               for (const avail of modelContext.availableModels!) {
                 const availLower = avail.toLowerCase();
                 if (availLower === lower) return avail;
-                // Normalize to the full available model name
                 if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
                   return avail;
                 }
               }
               return m;
             });
-          
           modelRecommendationReasoning = reasoning || undefined;
-          
           if (recommendedModels.length > 0) {
-            debug('LLM model recommendation', { 
-              recommendedModels, 
-              reasoning: modelRecommendationReasoning,
-            });
+            debug('LLM model recommendation', { recommendedModels, reasoning: modelRecommendationReasoning });
           }
         }
       }
-      } catch (batchErr) {
-        if (allResults.size > 0) {
-          warn(`Batch ${batchIdx + 1}/${batches.length} failed (${batchErr instanceof Error ? batchErr.message : String(batchErr)}), returning ${allResults.size} partial result(s)`);
-          return {
-            issues: allResults,
-            recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
-            modelRecommendationReasoning,
-            partial: true,
-          };
+      return { batchResults, recommendedModels, modelRecommendationReasoning };
+    };
+
+    // WHY runWithConcurrencyAllSettled: Batch analysis has multiple batches; running with concurrency cap cuts wall-clock. AllSettled so one 429/timeout doesn't fail the whole phase — we merge partial results and use first batch for model recommendation.
+    const concurrencyLimit = getEffectiveMaxConcurrentLLM();
+    const batchTasks = batches.map((batch, batchIdx) => () => processOneBatch(batchIdx, batch));
+    const settled = await runWithConcurrencyAllSettled(batchTasks, concurrencyLimit);
+
+    const allResults = new Map<string, BatchSingleResult>();
+    let recommendedModels: string[] | undefined;
+    let modelRecommendationReasoning: string | undefined;
+    let partial = false;
+
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i]!;
+      if (r.status === 'fulfilled') {
+        for (const [id, v] of r.value.batchResults) {
+          allResults.set(id, v);
         }
-        throw batchErr;
+        if (i === 0 && r.value.recommendedModels?.length) {
+          recommendedModels = r.value.recommendedModels;
+          modelRecommendationReasoning = r.value.modelRecommendationReasoning;
+        }
+      } else {
+        partial = true;
+        warn(`Batch ${i + 1}/${batches.length} failed (${r.reason instanceof Error ? r.reason.message : String(r.reason)}), merging partial results`);
       }
     }
 
@@ -1510,6 +1525,7 @@ ${codeSnippet}
       issues: allResults,
       recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
       modelRecommendationReasoning,
+      ...(partial ? { partial: true as const } : {}),
     };
   }
 
@@ -1654,7 +1670,9 @@ ${codeSnippet}
       line: number | null;
       codeSnippet: string;
     }>,
-    maxContextChars: number = 400_000
+    maxContextChars: number = 400_000,
+    /** Optional phase for prompts.log metadata (e.g. 'final-audit'). */
+    phase?: string
   ): Promise<Map<string, { stillExists: boolean; explanation: string }>> {
     if (issues.length === 0) {
       return new Map();
@@ -1674,6 +1692,8 @@ ${codeSnippet}
       '3. Partial fixes do NOT count - the full issue must be resolved',
       '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
       '5. For ACCESSIBILITY (aria-label, accessible name, screen reader, unlabelled SVG): mark FIXED only if the code adds a meaningful accessible name (aria-label or title with the conveyed value). If the only change is aria-hidden or role="img" with no label, mark UNFIXED.',
+      '6. If the issue\'s file was DELETED (snippet shows "file not found" or empty) or the GitHub thread was marked outdated because the file was rewritten, and the issue was already verified fixed in a previous step, mark FIXED with explanation "File deleted or thread outdated; issue was resolved in an earlier fix."',
+      '7. If the snippet shows "(file not found or unreadable)" and the review comment asked to DELETE or REMOVE the file from the repository, mark FIXED (the file no longer exists = the requested fix was applied).',
       '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
@@ -1713,13 +1733,20 @@ ${codeSnippet}
         let chunkEnd = chunkStart;
         while (chunkEnd < issueList.length) {
           const issue = issueList[chunkEnd]!;
-          const add = (snippets.get(issue.id) ?? '').length + ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX;
+          const snip = snippets.get(issue.id) ?? '';
+          const add = snip.length + ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX;
           if (chunkSize + add > availableForIssues && chunkEnd > chunkStart) break;
           chunkSize += add;
           chunkEnd++;
         }
         if (chunkEnd === chunkStart) chunkEnd = chunkStart + 1;
         const chunkIssues = issueList.slice(chunkStart, chunkEnd);
+        const firstSnippet = snippets.get(chunkIssues[0]!.id) ?? '';
+        const allSameContent = chunkIssues.length > 1 && chunkIssues.every(i => (snippets.get(i.id) ?? '') === firstSnippet);
+        // When we dedupe (same file content once per group), actual size = one snippet + (n × (header + comment))
+        if (allSameContent && firstSnippet.length > 0) {
+          chunkSize = firstSnippet.length + chunkIssues.length * (ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX);
+        }
         const chunkSnippets = new Map<string, string>();
         for (const issue of chunkIssues) {
           const s = snippets.get(issue.id);
@@ -1757,17 +1784,28 @@ ${codeSnippet}
 
       const promptParts: string[] = [...headerParts];
       let issueNum = 0;
+      const commentMax = 500;
       for (const group of groups) {
         promptParts.push(`## File: ${group.filePath}`);
-        const commentMax = 500;
+        const snippets = group.issues.map(i => group.snippets.get(i.id) ?? '');
+        const firstSnippet = snippets[0] ?? '';
+        const allSameSnippet = snippets.length > 0 && snippets.every(s => s === firstSnippet);
+        if (allSameSnippet && firstSnippet.length > 0) {
+          // WHY: prompts.log audit — same file was sent twice (21k+ chars) for two issues; send once per file.
+          promptParts.push('```');
+          promptParts.push(firstSnippet);
+          promptParts.push('```');
+          promptParts.push('');
+        }
         for (const issue of group.issues) {
           issueNum++;
-          // Include each issue's specific code snippet so audit has full context
-          const snippet = group.snippets.get(issue.id) ?? '';
           promptParts.push(`### [${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''}`);
-          promptParts.push('```');
-          promptParts.push(snippet);
-          promptParts.push('```');
+          if (!allSameSnippet) {
+            const snippet = group.snippets.get(issue.id) ?? '';
+            promptParts.push('```');
+            promptParts.push(snippet);
+            promptParts.push('```');
+          }
           const preview = sanitizeCommentForPrompt(issue.comment);
           const short = preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
           promptParts.push(`Comment: ${short}`);
@@ -1785,7 +1823,7 @@ ${codeSnippet}
           issueCount: batchIssues.length,
         });
       }
-      const response = await this.complete(promptText);
+      const response = await this.complete(promptText, undefined, phase ? { phase } : undefined);
       lastAuditResponseContent = response.content;
 
       // Parse responses - match [N] FIXED/UNFIXED pattern

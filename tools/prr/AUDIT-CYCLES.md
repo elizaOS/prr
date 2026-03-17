@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-11 · **Recorded cycles:** 37 · **Historical (legacy):** 4
+**Last updated:** 2026-03-16 · **Recorded cycles:** 42 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -9,12 +9,13 @@ Single audit log for output.log, prompts.log, and code changes. Use it to spot r
 ## How to use this doc
 
 1. **Before an audit:** Skim "Recurring patterns" and "Regression watchlist" so you know what to watch for.
-2. **During an audit (output.log / prompts.log):** Do not trust the logs alone for "fixed" or "already verified". **Verify against the workdir** when possible:
+2. **Before implementing audit-driven code changes:** Check "Recurring patterns" and "Regression watchlist" so improvements don't contradict prior cycles (avoid yoyoing). If the change touches stale re-check, verification, recovery-from-git, or loop guards, read the relevant cycle notes (e.g. Cycle 38 unmark-on-still-exists, "Stale verification / head change").
+3. **During an audit (output.log / prompts.log):** Do not trust the logs alone for "fixed" or "already verified". **Verify against the workdir** when possible:
    - Find the workdir path in the log (e.g. `Reusing existing workdir: /root/.prr/work/…` or `Workdir preserved: …`).
    - For at least one issue that the log says is "already verified", "fixed", or "dismissed (already-fixed)", open the **actual file** at the cited path (and line range) in that workdir and confirm the fix is present (e.g. the bug pattern is gone). If the log says "skip fixer — all already verified" but the file still contains the bug, that is a finding (stale verification, head change, etc.).
    - This catches mismatches where state says "fixed" but the branch was rebased/reverted or verification was wrong.
-3. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
-4. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
+4. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
+5. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
 
 ---
 
@@ -100,6 +101,12 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] issuesForPrompt excludes Verification.isVerified and consecutiveAlreadyFixedAnyByCommentId >= 2.
 - [ ] STALE→YES override: phrasings for "can't evaluate", "doesn't show", "only shows" (with not/beginning/start/first/lines), "incomplete"; no false positive on legitimate STALE ("only shows re-export").
 
+**Stale re-check / recovery (Cycle 38, output-log-audit)**
+- [ ] When batch analysis says "still exists" for a verified comment, we call unmarkVerified so the issue re-enters the fix queue (Cycle 38). Do not remove this for non-recovered IDs.
+- [ ] Exception: comment IDs in recoveredFromGitCommentIds (set in recoverVerificationState from scanCommittedFixes) are excluded from stale re-check on first analysis and we skip unmark when batch says "still exists" for them (output-log-audit); cleared on load and after first findUnresolvedIssues.
+- [ ] When findUnresolvedIssuesOptions.changedFiles is provided, only re-check stale verifications whose comment path is in that set (subset by file change).
+- [ ] When PR head SHA changes, state/head handling still allows re-check (see "Stale verification / head change"); we do not carry recoveredFromGitCommentIds across runs.
+
 **File injection / circuit breakers**
 - [ ] Basename fallback: when requestedPath has 2+ segments, only accept a candidate with ≥1 shared prefix segment; return null if best candidate has pathScore 0 (avoids `10/route.ts` → `app/.../route.ts`, `verify/route.ts` → `app/.../nonce/route.ts`). Bare basenames (1 segment) are unrestricted. (Cycle 13)
 - [ ] Placeholder content ("COMPLETE FILE CONTENTS", "[Previous content remains identical]") never injected into fix prompts.
@@ -154,6 +161,133 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 39 — 2026-03-13 (wrong-file/pill/thread-replies code audit)
+
+**Artifacts audited:** Git diff of all changes from this session (wrong-file empty allowedPaths fix, pill-output.md improvements, thread replies only after push).
+
+**Findings:**
+- **Correctness:** All changes are consistent. execute-fix-iteration ensures each issue contributes at least primaryPath to allowedPathsForBatch; per-issue filter fallback prevents empty union. addDisallowedFilesLessonsAndState only increments wrongFileLessonCountByCommentId for issues whose target was in skippedDisallowedFiles. recovery.ts already had issueTargetPaths/trulyWrong; we added allowedForIssue empty fallback and expectedStr fallback. utils.ts and getEffectiveAllowedPathsForNewIssue never leave allowedPaths empty. lessons-normalize rejects "need to modify one of: ." lessons. Thread replies for fixed issues only in commit-and-push-loop after successful push; iteration-cleanup no longer posts after incremental push.
+- **Edge case:** If the only pushes in a run are incremental (iteration-cleanup) and COMMIT PHASE has no changes (hasChanges false), handleCommitAndPush is not called and no fixed replies are posted. Acceptable: the intended "right place" is the commit-and-push phase; doc (THREAD-REPLIES) states this.
+- **Low:** issue-analysis diff includes unrelated isCommentPositiveOnly expansion (correctly reflects, concern, etc.); not reverted.
+
+**Improvements implemented (this session):**
+- execute-fix-iteration: base.length === 0 → [primaryPath]; per-issue filterAllowedPathsForFix with fallback to [primaryPath]; wrong-file count only for issues whose primary/allowed path in skippedDisallowedFiles; allowedStr fallback from issue primary paths when allowedPathsForBatch empty.
+- recovery: allowedForIssue empty fallback after filter; expectedStr = primaryPath when allowedForIssue empty; trulyWrong excludes issue target paths (was already present).
+- utils.ts: allowedPaths empty → [primaryPath] after filter in buildSingleIssuePrompt.
+- issue-analysis: getEffectiveAllowedPathsForNewIssue never returns [] (filter fallback to [primaryPath]).
+- logger: warn when writeToPromptLog body length 0 (PROMPT/RESPONSE) so pill/audit visibility is detectable.
+- llm-api: comment that caller must match TARGET FILE(S); debug when injection paths dropped by allowedPathsForInjection.
+- analysis: L1 override logs auditExplanation (result.explanation slice 300).
+- no-changes-verification: WRONG_LOCATION with "Per the lessons learned" / "not allowed to modify" does not increment wrongLocationUnclearCountByCommentId (lesson-induced refusal).
+- lessons-normalize: return null for lessons matching "need to modify one of: ." (empty allowed list).
+- AGENTS.md: prompts.log troubleshooting (initOutputLog, promptLogStream); WHY fixed replies only after push.
+- README: empty prompts.log = logging bug, see AGENTS.
+- ROADMAP: lesson staleness / conflict detection item.
+- iteration-cleanup: removed postThreadReplies after incremental push; comment that fixed replies only in commit-and-push phase.
+- THREAD-REPLIES.md: fixed replies only after successful push (commit-and-push phase); in-run idempotency wording updated.
+- tests: normalize-lesson-text.test.ts — reject "need to modify one of: ." lessons.
+
+**Flip-flop check:** N — No reverts; thread reply removal from iteration-cleanup is intentional (replies only after push in commit-and-push).
+
+**Notes:** commit-and-push-loop.ts unchanged (already posts after push); verifiedThisSession and repliedThreadIds shared correctly. Typecheck and full test suite pass.
+
+---
+
+### Cycle 40 — 2026-03-16 (output-log-audit: stale re-check vs recovered-from-git)
+
+**Artifacts audited:** output.log (elizaOS/eliza#6562 run, 14,628 lines). Audit pain points and implementation status are integrated into DEVELOPMENT.md "Fix loop audits (output.log)".
+
+**Findings:**
+- **Medium:** Mass unmark at start of push iteration: after recovering 143 fixes from git (scanCommittedFixes), stale re-check unmarked ~35 of them ("still exists") so they were re-verified and re-attempted despite being fixed in prior runs.
+- **Low:** Stale re-check ran over all verified-by-age; when changedFiles is provided we could re-check only issues whose file changed.
+
+**Improvements implemented:**
+- state/types.ts: `recoveredFromGitCommentIds` on state (session-only; cleared on load and after first use).
+- repository.ts: recoverVerificationState sets `recoveredFromGitCommentIds = [...committedFixes]` after markVerified.
+- state-core.ts: loadState clears `recoveredFromGitCommentIds` so we never carry it across runs.
+- issue-analysis.ts: (1) Exclude recoveredFromGitCommentIds from staleVerifications and skip unmark when batch says "still exists" for those IDs on first analysis. (2) When changedFiles is provided, filter staleVerifications to only comments whose path is in changedFiles.
+- AUDIT-CYCLES.md: "Before implementing audit-driven code changes" step; regression watchlist "Stale re-check / recovery"; this cycle.
+
+**Flip-flop check:** N — Refines Cycle 38 (unmark when batch says "still exists") with a narrow exception for just-recovered IDs on first analysis only; unmark for all other verified IDs unchanged. Does not touch "when PR head SHA changes" behavior (Stale verification / head change).
+
+**Notes:** Implemented without reviewing AUDIT-CYCLES first; doc updated so future audit-driven changes check recurring patterns and watchlist to avoid yoyoing.
+
+---
+
+### Cycle 41 — 2026-03-15 (output.log + prompts.log elizaOS/eliza#6576, pill 504, overlap, paths)
+
+**Artifacts audited:** output.log and prompts.log from prr run on elizaOS/eliza#6576 (66 comments, 7 remaining); output-log-audit-improvements.md (why pill missed some findings).
+
+**Findings:**
+- **High:** Pill audit 504 — closeOutputLog invoked pill with context ~673k chars; Vercel FUNCTION_INVOCATION_TIMEOUT. **Done:** Pill enforces 60k token audit context budget and trims sections when over.
+- **Medium:** Overlap verifiedFixed ∩ dismissedIssues (e.g. 11 or 18 IDs) — state had same comment IDs in both sets. **Done:** On state load, remove from dismissedIssues any commentId in verifiedFixed so sets stay mutually exclusive.
+- **Medium:** Wrong test path in TARGET FILE(S) — e.g. `packages/typescript/src/types/database.test.ts` listed but real file is `src/__tests__/database.test.ts`. **Done:** getTestPathForIssueLike adds src-level __tests__ candidate and prefers it when colocated missing.
+- **Medium:** Duplicate 78k fix prompt — same issue sent twice after ALREADY_FIXED. **Done:** Single-issue ALREADY_FIXED dismisses immediately so same prompt not re-sent.
+- **Low:** Wrong-file / path resolution (plugin-personality without plugins/ prefix, tsconfig.js vs .json, .d.ts fragment) — stronger targeting and path tries documented; some in path-utils/REPO_TOP_LEVEL.
+- **Low:** CANNOT_FIX missing caller files — consider including caller files when issue body references them; document limitation.
+- **Low:** Model timeouts / debug vs summary counts — document ElizaCloud timeout and pill 60k budget (AGENTS.md, DEVELOPMENT.md).
+
+**Improvements implemented:**
+- Pill: 60k audit context budget; trim when over; no-improvements written to pill-output/summary on api_call_failed.
+- State: overlap cleanup on load (dismissedIssues minus verifiedFixed).
+- no-changes-verification: single-issue ALREADY_FIXED → immediate dismiss, empty updated queue.
+- test-path-inference: src-level __tests__ candidate; prefer when pathExists and colocated missing.
+- DEVELOPMENT.md: "Pill and log audit limits" (60k budget; output.log summarized when large so pill may miss single-line/table evidence; optional: structured extraction, head+tail of log, audit prompt extension).
+
+**Flip-flop check:** N — All additive or narrowing (overlap cleanup, immediate dismiss, path inference).
+
+**Notes:** Why pill didn't catch some output.log findings: log over 40k tokens is story-read (summarized), so single-line DEBUG and Model Performance table often drop; audit schema is code/docs so state/rotation suggestions may not be emitted. Recommendations (structured extraction, always include head+tail of output.log, extend audit prompt) captured in DEVELOPMENT.md for future pill improvements.
+
+---
+
+### Cycle 42 — 2026-03-16 (prompts.log 287k lines, slug pairing, fix prompt cap)
+
+**Artifacts audited:** prompts.log 287,823 lines, ~695 PROMPT/RESPONSE entries from a large PR run.
+
+**Findings:**
+- **Medium:** Prompt/response slug mismatch — PROMPT #0001 had RESPONSE #0002 because both debugPrompt and debugResponse incremented the counter; responses could correlate wrong when many requests in flight. **Done:** Request-scoped slug: debugPrompt returns slug; debugResponse(slug, …) and debugPromptError(slug, …) take it; all call sites pass slug so prompt and response stay paired.
+- **Medium:** Very large fix prompts (194k, 178k, 174k, 137k chars) — increased timeout risk. **Done:** MAX_FIX_PROMPT_CHARS 200_000 → 100_000 (shared/constants.ts).
+- **Low:** Repeated same-size prompts (18,217 chars); tiny grouping RESPONSEs — optional dedup/skip; no change.
+
+**Improvements implemented:**
+- shared/logger.ts: debugPrompt returns string (slug); debugResponse(slug, label, response, metadata); debugPromptError(slug, label, errorMessage, metadata); slugNumber(slug) for standalone filenames.
+- tools/prr/llm/client.ts and shared/runners (llm-api, opencode, gemini, cursor, codex, claude-code, aider, openhands, junie, goose): capture slug from debugPrompt, pass to debugResponse (and debugPromptError where used).
+- shared/constants.ts: MAX_FIX_PROMPT_CHARS = 100_000.
+
+**Flip-flop check:** N — Slug is additive (callers now pass slug); cap is stricter (fewer oversized prompts).
+
+**Notes:** First-fix cap (FIRST_ATTEMPT_MAX_PROMPT_CHARS 80k) unchanged. getMaxFixPromptCharsForModel can lower cap per model if needed.
+
+---
+
+### Cycle 38 — 2026-03-13 (output.log + prompts.log elizaOS/eliza#6576, pill-output improvements)
+
+**Artifacts audited:** output.log (~1132 lines), prompts.log (~7545 lines, 32 entries) from prr run on elizaOS/eliza#6576; pill-output.md (19:12 run analysis + prompts/output audit notes).
+
+**Findings:**
+- **High:** Single-issue focus: `allowedPathsForBatch` was empty for issues under `plugins/` and `benchmarks/` because those top-level dirs were not in `REPO_TOP_LEVEL`, so every fixer edit was rejected as "disallowed" or "wrong file" and issues were dismissed after WRONG_FILE_EXHAUST_THRESHOLD.
+- **High:** Stale re-check: when batch analysis (e.g. "6 stale verifications - re-checking") returned "still exists" for a comment that remained in `verifiedFixed`, we never unmarked it, so the fix loop saw "All N already verified — skipping fixer" with unresolved count > 0.
+- **Medium:** Final audit: for a deleted file (snippet "(file not found or unreadable)") when the review asked to "delete this file", the model returned UNFIXED; rule 6 only covered "already verified in a previous step", not "requested fix = delete file".
+- **Medium:** File-unchanged dismissal too early: one fix iteration only changed one file; issues whose files were not modified were dismissed as file-unchanged and never retried when a later iteration would have modified those files.
+- **Medium:** Single-issue prompt: when a lesson said "RESULT: ALREADY_FIXED - … line 69 …" and Current Code already showed the fix, the fixer still output a <change> block claiming the fix was missing.
+- **Low:** Prompts.log audit: batch analysis could send the same file snippet twice for two issues on the same file (token saving: one snippet per file).
+
+**Improvements implemented:**
+- shared/path-utils.ts: Added `plugins` and `benchmarks` to `REPO_TOP_LEVEL` so paths under those dirs are no longer filtered out of allowedPaths.
+- tools/prr/workflow/helpers/recovery.ts: After `filterAllowedPathsForFix(allowedForIssue)`, if result is empty, set `allowedForIssue = [primaryPath]` so single-issue always allows the issue's file. When recording "wrong file", do not count edits to the issue's target path (`primaryPath`, `comment.path`, `resolvedPath`) as wrong-file.
+- shared/constants.ts: Comment on WRONG_FILE_EXHAUST_THRESHOLD documenting false-positive risk when allowedPaths was empty and that we now address it.
+- tools/prr/workflow/issue-analysis.ts: When processing batch results, if result is "exists" (still exists) and the comment is currently verified, call `Verification.unmarkVerified(stateContext, comment.id)` so the issue re-enters the fix queue after a stale re-check.
+- tools/prr/llm/client.ts: Final audit rule 7 — if snippet shows "(file not found or unreadable)" and the review asked to DELETE or REMOVE the file, mark FIXED.
+- shared/constants.ts: `FILE_UNCHANGED_DISMISS_THRESHOLD = 2`; tools/prr/state/types.ts: `fileUnchangedConsecutiveCountByCommentId`; fix-verification: only add to unchangedIssues (and dismiss) when consecutive "file not modified" count >= 2; reset count when file is modified.
+- tools/prr/workflow/utils.ts: When building single-issue prompt and any lesson mentions `RESULT: ALREADY_FIXED`, add instruction: if Current Code already shows the fix cited in ALREADY_FIXED, respond RESULT: ALREADY_FIXED and do not output <change> blocks.
+- AGENTS.md, README: prompts.log / PRR_DEBUG_PROMPTS and subprocess runner note. docs/ROADMAP.md: single-issue allowedPaths item. no-changes-verification.ts: comment that full file for ALREADY_FIXED re-check would reduce false "still exists".
+
+**Flip-flop check:** N — All additive (path allowlist, unmark on re-check, final audit rule, file-unchanged deferral, prompt nudge); no behavior revert.
+
+**Notes:** Run matched pill-output 19:12 analysis (expectedPaths: [], wrong-file exhaust). Spot-check: workdir from log; fixes for database.ts and elizaos-core-shim.d.ts were committed and pushed.
+
+---
 
 ### Cycle 36 — 2026-03-10 (split-exec + pill hook, .split-plan.md)
 
@@ -1019,4 +1153,4 @@ Content below is the merged detail from earlier output.log, prompts.log, and cod
 - **Full-file rewrite:** “Use full-file rewrite ONLY for each listed file above.” OK.
 - **Pluralize, timing, AAR, model reasoning:** logger pluralize and printTimingSummary; fix-verification, iteration-cleanup, repository, llm-api use pluralize; reporter getFixedIssueTitle; issue-analysis only show reasoning when real. OK. getFixedIssueTitle fallback when all lines generic — acceptable.
 
-Future work from these audits (optional follow-ups) is in [ROADMAP.md](ROADMAP.md) under "Audit-derived follow-ups".
+Future work from these audits (optional follow-ups) is in [docs/ROADMAP.md](../../docs/ROADMAP.md) under "Audit-derived follow-ups".

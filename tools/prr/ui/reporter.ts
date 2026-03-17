@@ -289,6 +289,9 @@ export function printFinalSummary(
       sessionNote = ' (all from previous runs; 0 new this session)';
     }
     console.log(chalk.green(`\n  ✓ ${formatNumber(toolFixedCount)} issue${toolFixedCount === 1 ? '' : 's'} fixed and verified${sessionNote}`));
+    if (overlapIds.length > 0 && fixedThisSession > 0 && fixedThisSession !== toolFixedCount) {
+      console.log(chalk.gray(`     (${formatNumber(fixedThisSession)} verified this session; ${formatNumber(toolFixedCount)} relevant to current comments; some from earlier iterations were dismissed as file-unchanged or outdated.)`));
+    }
   }
   
   // Dismissed issues by category

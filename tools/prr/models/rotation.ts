@@ -11,7 +11,7 @@ import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../../../shared/config.js';
 import { warn, debug, formatNumber } from '../../../shared/logger.js';
-import { DEFAULT_ELIZACLOUD_MODEL, ELIZACLOUD_SKIP_MODEL_IDS, MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
+import { DEFAULT_ELIZACLOUD_MODEL, getEffectiveElizacloudSkipModelIds, MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
 import * as Performance from '../state/state-performance.js';
 
@@ -528,9 +528,6 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
   // 'gemini' intentionally omitted - uses Google's own model validation
 };
 
-/** Set built from shared constant for fast lookup (single source of truth: shared/constants.ts). */
-const ELIZACLOUD_SKIP_MODELS = new Set<string>(ELIZACLOUD_SKIP_MODEL_IDS);
-
 /**
  * Determine which provider a model belongs to based on its name/prefix.
  * Returns the provider for validation against the corresponding API's model list.
@@ -688,6 +685,8 @@ export async function validateAndFilterModels(
     return { removed };
   }
 
+  const effectiveSkipSet = new Set(getEffectiveElizacloudSkipModelIds());
+
   // Build llm-api rotation from provider model list when native OpenAI/Anthropic (no hardcoded lists)
   for (const runner of runnersToValidate) {
     if ((runner.name !== 'llm-api' && runner.name !== 'elizacloud') || !runner.provider) continue;
@@ -720,9 +719,9 @@ export async function validateAndFilterModels(
     for (const model of models) {
       // Eliza Cloud backend: validate against elizacloud set
       if (isLlMApi && useElizaCloudForLlMApi) {
-        if (ELIZACLOUD_SKIP_MODELS.has(model)) {
+        if (effectiveSkipSet.has(model)) {
           removed.push({ runner: runner.name, model });
-          debug(`ElizaCloud: skipping ${model} (known timeout)`);
+          debug(`ElizaCloud: skipping ${model} (known timeout/0% fix rate)`);
           if (model === DEFAULT_ELIZACLOUD_MODEL || (configuredModel && model === configuredModel)) {
             skippedConfiguredDefault = model;
           }

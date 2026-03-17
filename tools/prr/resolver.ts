@@ -134,7 +134,8 @@ export class PRResolver {
       codeSnippetOverride = await getFullFileContentForSingleIssue(this.workdir, primaryPath) ?? undefined;
     }
     const pathExists = options?.pathExists ?? (this.workdir ? ((p: string) => existsSync(join(this.workdir, p))) : undefined);
-    return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride, { pathExists });
+    const lastApplyError = this.stateContext.state?.lastApplyErrorByCommentId?.[issue.comment.id];
+    return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride, { pathExists, lastApplyError });
   }
   private async tryDirectLLMFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.tryDirectLLMFix(issues, git, this.workdir, this.config.llmProvider, this.llm, this.stateContext, verifiedThisSession, this.lessonsContext); }
   async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateContext, () => this.printModelPerformance(), () => this.printFinalSummary()); }

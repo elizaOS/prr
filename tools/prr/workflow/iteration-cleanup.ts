@@ -24,7 +24,6 @@ import { commitIteration, commitIterationPerFile, pushWithRetry } from '../../..
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import { postThreadReplies } from './thread-replies.js';
 
 /**
  * Handle post-verification iteration cleanup
@@ -52,7 +51,7 @@ export async function handleIterationCleanup(
   calculateExpectedBotResponseTime: (pushTime: Date) => Date | null,
   /** Cumulative fixes in this fix loop before this iteration (for "N total this fix loop" label) */
   fixedThisCycleBefore: number = 0,
-  /** When set and options.replyToThreads, post replies on review threads after push */
+  /** Reserved for future use (replies are posted only after push in commit-and-push phase). */
   threadReplyContext?: { comments: ReviewComment[]; prInfo: PRInfo; github: GitHubAPI; repliedThreadIds: Set<string> }
 ): Promise<{
   progressMade: number;
@@ -186,25 +185,8 @@ export async function handleIterationCleanup(
           await pushWithRetry(git, prBranch, { githubToken: githubToken || undefined });
           const pushTime = endTimer('Push iteration fixes');
           console.log(chalk.green(`  Pushed to origin/${prBranch} (${formatDuration(pushTime)})`));
-
-          if (options.replyToThreads && threadReplyContext && newlyVerified.length > 0) {
-            try {
-              const commitSha = await git.revparse(['HEAD']);
-              await postThreadReplies({
-                comments: threadReplyContext.comments,
-                verifiedCommentIds: verifiedThisSession,
-                dismissedIssues: [],
-                commitSha,
-                repliedThreadIds: threadReplyContext.repliedThreadIds,
-                github: threadReplyContext.github,
-                prInfo: threadReplyContext.prInfo,
-                replyToThreads: true,
-                resolveThreads: options.resolveThreads,
-              });
-            } catch (replyErr) {
-              debug('Thread reply failed (non-fatal)', { error: String(replyErr) });
-            }
-          }
+          // WHY no fixed replies here: We post "Fixed in <sha>" only after the commit is successfully
+          // pushed in the commit-and-push phase (handleCommitAndPush), not after each incremental push.
 
           const pushTime_now = new Date();
           newExpectedBotResponseTime = calculateExpectedBotResponseTime(pushTime_now);

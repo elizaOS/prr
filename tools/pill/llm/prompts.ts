@@ -19,6 +19,18 @@ Look for:
 - Behavioral patterns: repeated failures pointing to code problems, model rotations
   suggesting prompts/logic need improvement, bail-outs indicating architectural issues
 - Documentation gaps: stale README, missing AGENTS.md, undocumented conventions
+- State and config: If the log shows overlap between verified and dismissed comment sets
+  (e.g. overlapVerifiedAndDismissed or "Overlap IDs"), suggest enforcing mutual exclusivity
+  in state (e.g. remove from verified when dismissing, remove from dismissed when verifying).
+- Model performance: If the Model Performance section shows a model with 0% success or
+  repeated failures, suggest adding it to the skip list (e.g. ELIZACLOUD_SKIP_MODEL_IDS)
+  or improving prompts for that model.
+- Path resolution: If dismissal reasons show repeated "Tracked file not found" for paths
+  like tsconfig.js (when tsconfig.json exists) or fragment paths like .d.ts, suggest
+  path normalization or trying common variants (e.g. .js → .json for config filenames).
+  If the same review path (e.g. .d.ts) appears with different dismissal categories
+  (e.g. missing-file vs path-unresolved), suggest normalizing so one path maps to one
+  category, or documenting the rule and migrating legacy state.
 
 Rules:
 - Every suggestion must be actionable and specific

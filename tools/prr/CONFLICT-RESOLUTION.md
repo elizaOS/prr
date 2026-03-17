@@ -23,6 +23,9 @@ When a conflict region is too large for one LLM call, we must split. Splitting m
 **Why validate before write/stage?**  
 LLMs can truncate or corrupt output. Committing invalid syntax would push broken code. We parse the resolved content (TS/JS via TypeScript API); if there are parse errors we reject and leave the file conflicted so the user can fix manually.
 
+**Why one retry on parse failure?**  
+When validation fails (e.g. `'*/' expected`), we retry resolution once with the previous parse error in the prompt so the model can fix syntax. Many parse failures are trivial (unclosed comment, missing brace); one retry gives the model a chance to self-correct without unbounded retries.
+
 **Why derive segment cap from model context?**  
 A fixed cap (e.g. 25k chars) would overflow a 40k-context model (3×25k input). We compute `(effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3` and clamp to [4k, 25k] so small-context models get smaller segments and we never exceed the model’s window.
 

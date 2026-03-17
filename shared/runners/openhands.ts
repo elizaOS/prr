@@ -80,7 +80,7 @@ export class OpenHandsRunner implements Runner {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 
-    debugPrompt('openhands', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('openhands', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // `openhands --headless --always-approve -t "prompt"` for non-interactive execution
@@ -127,7 +127,7 @@ export class OpenHandsRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        debugResponse('openhands', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse(promptSlug, 'openhands', stdout, { exitCode: code, stderrLength: stderr.length });
 
         const combinedOutput = stdout + stderr;
 

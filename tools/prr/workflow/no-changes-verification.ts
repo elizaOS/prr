@@ -139,6 +139,27 @@ export async function handleNoChangesWithVerification(
         if (firstIssueAf && stateContext.state) {
           const state = stateContext.state;
           const detail = (structuredResult.resultDetail ?? 'ALREADY_FIXED').trim().substring(0, 120);
+          // Prompts.log audit: single-issue ALREADY_FIXED with no code blocks was re-sent (duplicate 78k prompt). Dismiss immediately so we don't retry the same prompt.
+          if (unresolvedIssues.length === 1) {
+            Dismissed.dismissIssue(
+              stateContext,
+              firstIssueAf.comment.id,
+              `ALREADY_FIXED — ${detail || 'fixer confirmed no changes needed'}`,
+              'already-fixed',
+              firstIssueAf.comment.path,
+              firstIssueAf.comment.line,
+              firstIssueAf.comment.body,
+              undefined
+            );
+            Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+            return {
+              shouldBreak: false,
+              shouldContinue: false,
+              verifiedCount: 0,
+              updatedUnresolvedIssues: [],
+              progressMade: 0,
+            };
+          }
           if (!state.alreadyFixedLastDetailByCommentId) state.alreadyFixedLastDetailByCommentId = {};
           if (!state.alreadyFixedConsecutiveSameByCommentId) state.alreadyFixedConsecutiveSameByCommentId = {};
           const last = state.alreadyFixedLastDetailByCommentId[firstIssueAf.comment.id];
@@ -393,18 +414,25 @@ export async function handleNoChangesWithVerification(
               state.widerSnippetRequestedByCommentId[firstIssue1.comment.id] = true;
               debug('Request wider snippet on retry (WRONG_LOCATION)', { commentId: firstIssue1.comment.id });
             }
+            // Pill: When fixer refused due to a lesson ("Per the lessons learned", "not allowed to modify"), do NOT
+            // count toward WRONG_LOCATION exhaust — it's a lesson-induced refusal, not a genuine wrong-location.
+            const isLessonInducedRefusal = /per the lessons learned|not allowed to modify/i.test(detail);
             // Loop breaker: count WRONG_LOCATION/UNCLEAR per issue; track consecutive same detail; solvability dismisses when threshold reached.
-            if (!state.wrongLocationUnclearCountByCommentId) state.wrongLocationUnclearCountByCommentId = {};
-            state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] = (state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] ?? 0) + 1;
-            const normalizedDetailW = (structuredResult.resultDetail ?? 'WRONG_LOCATION').trim().substring(0, 120);
-            if (!state.wrongLocationUnclearLastDetailByCommentId) state.wrongLocationUnclearLastDetailByCommentId = {};
-            if (!state.wrongLocationUnclearConsecutiveSameByCommentId) state.wrongLocationUnclearConsecutiveSameByCommentId = {};
-            const lastW = state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id];
-            const consecutiveW = lastW === normalizedDetailW
-              ? (state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] ?? 0) + 1
-              : 1;
-            state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id] = normalizedDetailW;
-            state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] = consecutiveW;
+            if (!isLessonInducedRefusal) {
+              if (!state.wrongLocationUnclearCountByCommentId) state.wrongLocationUnclearCountByCommentId = {};
+              state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] = (state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] ?? 0) + 1;
+              const normalizedDetailW = (structuredResult.resultDetail ?? 'WRONG_LOCATION').trim().substring(0, 120);
+              if (!state.wrongLocationUnclearLastDetailByCommentId) state.wrongLocationUnclearLastDetailByCommentId = {};
+              if (!state.wrongLocationUnclearConsecutiveSameByCommentId) state.wrongLocationUnclearConsecutiveSameByCommentId = {};
+              const lastW = state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id];
+              const consecutiveW = lastW === normalizedDetailW
+                ? (state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] ?? 0) + 1
+                : 1;
+              state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id] = normalizedDetailW;
+              state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] = consecutiveW;
+            } else {
+              debug('WRONG_LOCATION is lesson-induced refusal — not counting toward exhaust', { commentId: firstIssue1.comment.id, detailPreview: detail.slice(0, 80) });
+            }
           }
         } else {
           LessonsAPI.Add.addGlobalLesson(lessonsContext, wrongDetail);
@@ -519,7 +547,8 @@ export async function handleNoChangesWithVerification(
           })),
           undefined,
           80_000,
-          8
+          8,
+          'spot-verify'
         );
         
         let spotFixed = 0;
@@ -663,6 +692,8 @@ async function verifyAllIssues(
   updatedUnresolvedIssues: UnresolvedIssue[];
   progressMade: number;
 } | null> {
+  // Pill audit: truncated codeSnippet can cause judge to return STALE/truncated → false "still exists".
+  // Future: when fixer confirmed ALREADY_FIXED with full file, pass full file here to reduce wasted iterations.
   const verifyResults = await llm.batchCheckIssuesExist(
     unresolvedIssues.map((issue, idx) => ({
       id: `issue_${idx + 1}`,
@@ -673,7 +704,8 @@ async function verifyAllIssues(
     })),
     undefined,
     80_000,
-    8
+    8,
+    'batch-verify'
   );
   
   let verifiedAsFixed = 0;

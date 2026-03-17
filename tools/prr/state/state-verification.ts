@@ -63,6 +63,10 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
     if (!(state.verifiedFixed ??= []).includes(commentId)) {
       state.verifiedFixed.push(commentId);
     }
+    // Pill: Keep verifiedFixed and dismissedIssues mutually exclusive — when we verify, remove from dismissed.
+    if (state.dismissedIssues?.length) {
+      state.dismissedIssues = state.dismissedIssues.filter((d) => d.commentId !== commentId);
+    }
     debug('markVerified (new)', { commentId, iteration: currentIteration, autoVerifiedFrom, totalVerified: state.verifiedFixed.length });
   }
   
@@ -77,6 +81,14 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
       updatedAt: new Date().toISOString(),
       updatedAtIteration: currentIteration,
     };
+  }
+
+  // Clear apply-failure state so a future re-attempt doesn't see stale error or count.
+  if (state.lastApplyErrorByCommentId?.[commentId] !== undefined) {
+    delete state.lastApplyErrorByCommentId[commentId];
+  }
+  if (state.applyFailureCountByCommentId?.[commentId] !== undefined) {
+    delete state.applyFailureCountByCommentId[commentId];
   }
 }
 

@@ -259,7 +259,7 @@ Data flows between subsystems so the next step has the right context. Improving 
 
 - Verifier → Fixer: `fix-verification.ts` (sets `verifierContradiction`), `prompt-builder.ts` and `workflow/utils.ts` (VERIFIER DISAGREES block).
 - Analyzer → Fixer: `issue-analysis.ts` (builds issues with snippets), `fix-loop-utils.ts` / `recheckSolvability` (refresh after verify). When refreshing snippets, `recheckSolvability` preserves `verifierContradiction` via `{ ...issue, codeSnippet }` so the next fix prompt and AAR see it.
-- AAR "Verifier said": `push-iteration-loop.ts` sets `finalUnresolvedIssuesRef.current` from the same issue refs (so `verifierContradiction` is preserved); `final-cleanup.ts` passes them to `printAfterActionReport`. See `docs/audit-run-2026-02-22.md` (Actions executed).
+- AAR "Verifier said": `push-iteration-loop.ts` sets `finalUnresolvedIssuesRef.current` from the same issue refs (so `verifierContradiction` is preserved); `final-cleanup.ts` passes them to `printAfterActionReport`. See tools/prr/AUDIT-CYCLES.md for audit findings; AAR and verifier flow in push-iteration-loop and final-cleanup.
 - Dismissal: `workflow/dismissal-comments.ts` (effectiveLine, surroundingCode), `llm/client.ts` (`generateDismissalComment` prompt).
 
 ### 4. Model & Tool Rotation with Single-Issue Focus
@@ -735,6 +735,33 @@ const SPOT_CHECK_PASS_THRESHOLD = 0.4;  // 40% must pass to justify full check
 ```
 
 **Why 40% threshold?** If the fixer legitimately believes issues are fixed, at least 2/5 sampled issues should verify. Below that, the "already fixed" claim is almost certainly wrong and full verification would be wasted work.
+
+#### Fix loop audits (output.log)
+
+The following pain points and improvements come from auditing real runs (e.g. elizaOS/eliza#6562; run metrics and timing are recorded in `tools/prr/AUDIT-CYCLES.md` when we add a cycle). Constants live in `shared/constants.ts`; behavior in `shared/runners/llm-api.ts`, `tools/prr/workflow/execute-fix-iteration.ts`, and related workflow files.
+
+**Implemented (current behavior):**
+
+- **Empty diff / no meaningful changes:** When the fixer attempted changes but wrote no files (all no-ops or all search/replace failed to match), the runner returns `noMeaningfulChanges: true` and, when S/R failed, `applyFailureSummary` with failed file list. **WHY:** Skip verification (nothing to verify); workflow goes straight to rotation; summary is persisted as `lastApplyError` so the next fix prompt gets "Previous attempt: search/replace failed to match in: …".
+- **Last apply error in retry:** `lastApplyErrorByCommentId` and `applyFailureCountByCommentId` are set when the fixer errors or when `noMeaningfulChanges` + `applyFailureSummary`; the fix prompt receives "Previous attempt: …". **WHY:** The model wasn't getting explicit feedback that apply failed; passing the failure reason into the next attempt lets it adjust (exact content, shorter search block).
+- **Thresholds:** `HALLUCINATION_DISMISS_THRESHOLD = 3` (per-file S/R failure count before dismissing as remaining). `NO_PROGRESS_DISMISS_THRESHOLD = 2` (consecutive no-changes for same issue set). `COULD_NOT_INJECT_CREATE_FILE_THRESHOLD = 1` (dismiss after one couldNotInject for create-file issues). **WHY:** Earlier bail-out stops the loop from burning iterations on unreachable targets; handoff note makes it clear for human review.
+
+**Audit pain points (reference; status below):**
+
+1. **Mass unmark verified at start of push iteration** — **Done:** `recoveredFromGitCommentIds`; first analysis excludes them from stale re-check; when `changedFiles` provided, only re-check stale verifications whose file changed. See AUDIT-CYCLES Cycle 40.
+2. **"Output did not match file"** — **Done:** Last apply error in retry prompt; `applyFailureSummary`; `HALLUCINATION_DISMISS_THRESHOLD = 3`; `APPLY_FAILURE_DISMISS_THRESHOLD = 2`.
+3. **Duplicate prompt skip + many no-changes** — **Done:** `NO_PROGRESS_DISMISS_THRESHOLD = 2`; single-issue / rotation already try different prompt shape after no progress.
+4. **couldNotInject for create-file** — **Done:** `COULD_NOT_INJECT_CREATE_FILE_THRESHOLD = 1`.
+5. **Verifier: "The code diff is empty"** — **Done:** Fixer reports changes but diff empty → `noMeaningfulChanges`, skip verification, rotate; verifier empty-diff already adds lesson and skips escalate (fix-verification.ts, recovery.ts).
+6. **Analyze issues / fetch comments repeated** — **Optional:** Cache analysis by comment IDs + file hashes; reuse when unchanged. Partially: `findUnresolvedIssuesOptions` supports `changedFiles` and analysis cache key; full reuse is a larger change.
+7. **Thread reply Validation Failed** — **Done:** Full error logging; retry with shortened message. See CHANGELOG and docs/THREAD-REPLIES.md.
+8. **Pill 504** — **Done:** Chunk/summarize at 30k tokens or 100k chars; 50k char cap; no-LLM fallback. Audit request uses 60k token context budget so the assembled context stays under limit and avoids FUNCTION_INVOCATION_TIMEOUT. See tools/pill/README.md, CHANGELOG; AUDIT-CYCLES Cycle 41.
+9. **Concurrency and model skip list** — **Done:** Documented why models are skipped; `PRR_ELIZACLOUD_INCLUDE_MODELS` override. See docs/MODELS.md, shared/constants.ts.
+10. **Overlap verified ∩ dismissed** — **Done:** On state load, remove from `dismissedIssues` any commentId in `verifiedFixed` so counts and AAR stay correct. AUDIT-CYCLES Cycle 41.
+11. **Prompts.log prompt/response pairing** — **Done:** `debugPrompt` returns slug; `debugResponse(slug, …)` and `debugPromptError(slug, …)` use it so PROMPT and RESPONSE stay paired when many requests in flight. AUDIT-CYCLES Cycle 42.
+12. **Very large fix prompts** — **Done:** `MAX_FIX_PROMPT_CHARS` 200k → 100k to reduce timeout risk; first attempt still uses `FIRST_ATTEMPT_MAX_PROMPT_CHARS` (80k). AUDIT-CYCLES Cycle 42.
+
+**Pill and log audit limits:** When output.log exceeds the token threshold it is story-read (summarized by chapters), so single-line DEBUG stats and compact tables (e.g. overlap counts, Model Performance) may not survive the digest — pill can miss them. For critical runs, inspect output.log manually for RESULTS SUMMARY and Model Performance, or consider future pill improvements: structured extraction of key lines before story-read, always include head+tail of output.log in full, extend audit prompt to ask explicitly for state overlap and per-model success suggestions. See AUDIT-CYCLES Cycle 41 Notes.
 
 ### 5. Context Size Management
 

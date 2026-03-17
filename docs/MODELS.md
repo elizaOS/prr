@@ -96,7 +96,7 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ### Rotation order and skip list
 
-- **llm-api / elizacloud:** Default rotation in `shared/runners/types.ts` is ordered by observed fix success (Claude first, then GPT). Models that 500/timeout or have 0% fix rate in practice are in **ELIZACLOUD_SKIP_MODELS** in `tools/prr/models/rotation.ts` and are never selected (e.g. `gpt-4.1`, `claude-sonnet-4.5`, `gpt-5.1-codex-max`, `claude-3-opus`). Add new models there when audits show repeated errors or zero success. **Why:** Audit showed 0%-success and error-prone models wasting rotation slots; leading with best performers and skipping known-bad models improves fix throughput.
+- **llm-api / elizacloud:** Default rotation in `shared/runners/types.ts` is ordered by observed fix success (Claude first, then GPT). Models that 500/timeout or have 0% fix rate in practice are in **ELIZACLOUD_SKIP_MODEL_IDS** in `shared/constants.ts` (e.g. `gpt-4.1`, `claude-sonnet-4.5`, `gpt-5.1-codex-max`, `claude-3-opus`, `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.7-sonnet`) and are never selected. **Why:** Audit showed 0%-success and error-prone models wasting rotation slots. **Override:** Set **PRR_ELIZACLOUD_INCLUDE_MODELS** to a comma-separated list of model IDs to include anyway (e.g. if timeouts were gateway-specific). See README Configuration.
 - **Per-run performance:** Success/failure is recorded in `state-performance`; rotation prefers better-performing models within the same run. Performance is not yet persisted across PRs.
 
 *Last updated from provider docs; verify on the linked pages for current IDs and pricing.*

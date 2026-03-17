@@ -1,22 +1,45 @@
 /**
  * Concurrency limiter for ElizaCloud API.
  * WHY: ElizaCloud returns 429 when too many requests are in flight.
- * We cap in-flight requests and space out starts.
+ * We cap in-flight requests and space out starts. All caps use getEffectiveMaxConcurrentLLM()
+ * so operators can tune via PRR_MAX_CONCURRENT_LLM. On 429, notifyRateLimitHit() reduces
+ * effective concurrency temporarily so the next run self-corrects without code change.
  */
-import { ELIZACLOUD_MAX_CONCURRENT_REQUESTS, ELIZACLOUD_MIN_DELAY_MS } from '../constants.js';
+import { getEffectiveMaxConcurrentLLM, getEffectiveMinDelayMs } from '../constants.js';
 
 let elizacloudInFlight = 0;
+/** Time of the most recent slot acquisition (start of a request). Used to stagger starts. */
 let elizacloudLastStartTime = 0;
 const elizacloudQueue: Array<() => void> = [];
 
+/** After a 429, we use halved concurrency for this many ms. */
+const RATE_LIMIT_BACKOFF_MS = 60_000;
+let rateLimitBackoffUntil = 0;
+
+function getMaxInFlight(): number {
+  const cap = getEffectiveMaxConcurrentLLM();
+  if (Date.now() < rateLimitBackoffUntil) {
+    return Math.max(1, Math.floor(cap / 2));
+  }
+  return cap;
+}
+
+/** Call when a 429 (or rate-limit) response is received. Reduces effective concurrency for 60s. */
+export function notifyRateLimitHit(): void {
+  rateLimitBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
+}
+
 /** Acquire ElizaCloud rate-limit slot (used by llm-api runner and LLM client). */
 export async function acquireElizacloud(): Promise<void> {
-  if (elizacloudInFlight < ELIZACLOUD_MAX_CONCURRENT_REQUESTS) {
+  const maxInFlight = getMaxInFlight();
+  const minDelayMs = getEffectiveMinDelayMs();
+
+  if (elizacloudInFlight < maxInFlight) {
     elizacloudInFlight++;
     const now = Date.now();
     const sinceLast = now - elizacloudLastStartTime;
-    if (sinceLast < ELIZACLOUD_MIN_DELAY_MS) {
-      await new Promise(r => setTimeout(r, ELIZACLOUD_MIN_DELAY_MS - sinceLast));
+    if (sinceLast < minDelayMs) {
+      await new Promise(r => setTimeout(r, minDelayMs - sinceLast));
     }
     elizacloudLastStartTime = Date.now();
     return;
@@ -26,11 +49,11 @@ export async function acquireElizacloud(): Promise<void> {
       elizacloudInFlight++;
       const now = Date.now();
       const sinceLast = now - elizacloudLastStartTime;
-      if (sinceLast < ELIZACLOUD_MIN_DELAY_MS) {
+      if (sinceLast < minDelayMs) {
         setTimeout(() => {
           elizacloudLastStartTime = Date.now();
           resolve();
-        }, ELIZACLOUD_MIN_DELAY_MS - sinceLast);
+        }, minDelayMs - sinceLast);
       } else {
         elizacloudLastStartTime = Date.now();
         resolve();

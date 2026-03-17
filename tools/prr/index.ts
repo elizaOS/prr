@@ -15,7 +15,7 @@ import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { validateElizaCloudKey, fetchAvailableElizaCloudModels, validateOpenAIKey } from './llm/client.js';
-import { ELIZACLOUD_SKIP_MODEL_IDS } from '../../shared/constants.js';
+import { ELIZACLOUD_FALLBACK_MODEL, getEffectiveElizacloudSkipModelIds, getEffectiveMaxConcurrentLLM } from '../../shared/constants.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
@@ -134,10 +134,10 @@ async function main(): Promise<void> {
       await validateElizaCloudKey(config.elizacloudApiKey);
       const available = await fetchAvailableElizaCloudModels(config.elizacloudApiKey);
       if (available.size > 0 && !available.has(config.llmModel)) {
-        const skipSet = new Set<string>(ELIZACLOUD_SKIP_MODEL_IDS);
+        const skipSet = new Set<string>(getEffectiveElizacloudSkipModelIds());
         const PREFERRED_ELIZACLOUD_MODELS = [
           'anthropic/claude-sonnet-4-5-20250929',
-          'anthropic/claude-3.5-sonnet',
+          ELIZACLOUD_FALLBACK_MODEL,
           // Short names for gateways that don't use owner/ prefix
           'claude-sonnet-4-5-20250929',
           'claude-3-5-sonnet-20241022',
@@ -147,11 +147,8 @@ async function main(): Promise<void> {
           ?? Array.from(available).filter(m => !skipSet.has(m)).sort()[0]
           ?? Array.from(available).sort()[0];
         config.llmModel = chosen;
-        if (PREFERRED_ELIZACLOUD_MODELS.some(m => available.has(m))) {
-          console.log(chalk.gray(`  Using ElizaCloud model: ${chosen} (configured default unavailable)`));
-        } else {
-          console.warn(chalk.yellow(`  ElizaCloud fallback model: ${chosen} (rotation may use other models). Set PRR_LLM_MODEL to pin.`));
-        }
+        // WHY: Operators should notice when their configured model was replaced (pill-output audit).
+        console.warn(chalk.yellow(`  Configured model unavailable; using: ${chosen}. Set PRR_LLM_MODEL to pin.`));
       }
     }
 
@@ -161,6 +158,9 @@ async function main(): Promise<void> {
     if (!options.tool && config.defaultTool) {
       options.tool = config.defaultTool;
     }
+
+    const maxConcurrent = getEffectiveMaxConcurrentLLM();
+    console.log(chalk.gray(`  LLM concurrency: ${maxConcurrent === 1 ? '1 (default)' : maxConcurrent} — set PRR_MAX_CONCURRENT_LLM to tune`));
 
     // Create and run resolver
     resolver = new PRResolver(config, options);

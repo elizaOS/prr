@@ -12,14 +12,21 @@ import type { GitHubAPI } from '../github/api.js';
 import { debug } from '../../../shared/logger.js';
 
 /**
- * Dismissed categories that get a reply. No reply for remaining, exhausted, chronic-failure.
- * WHY: already-fixed/stale/not-an-issue/false-positive are clear conclusions; exhausted/remaining mean "we gave up" or "needs human" — a bot reply there adds little and can feel like noise.
+ * Dismissed categories that get a reply.
+ * WHY: When --reply-to-threads is used, every considered thread should get a short reply so reviewers see PRR touched it. Previously only a subset got replies (e.g. remaining/exhausted), so runs that dismissed as path-unresolved or missing-file posted nothing.
  */
 const DISMISSED_CATEGORIES_WITH_REPLY = new Set<string>([
   'already-fixed',
   'stale',
   'not-an-issue',
   'false-positive',
+  'remaining',
+  'exhausted',
+  'path-unresolved',  // e.g. .d.ts fragment — reply so thread has visible feedback
+  'missing-file',    // file not found — reply so thread has visible feedback
+  'chronic-failure',
+  'duplicate',
+  'file-unchanged',
 ]);
 
 export interface PostThreadRepliesOptions {
@@ -42,6 +49,61 @@ function shortSha(sha: string): string {
 function oneLine(text: string, maxLen: number = 200): string {
   const one = text.replace(/\s+/g, ' ').trim();
   return one.length <= maxLen ? one : one.slice(0, maxLen - 3) + '...';
+}
+
+/** Extract status and response body from an error (GitHub API often returns 422 Validation Failed with details in response). */
+function getErrorDetails(err: unknown): { status?: number; message: string; body: unknown } {
+  const obj = err && typeof err === 'object' ? (err as Record<string, unknown>) : {};
+  const status = typeof obj.status === 'number' ? obj.status : (obj.response && typeof obj.response === 'object' && 'status' in obj.response ? (obj.response as { status: number }).status : undefined);
+  const message = obj.message != null ? String(obj.message) : String(err);
+  const body = obj.response && typeof obj.response === 'object' && 'data' in obj.response
+    ? (obj.response as { data: unknown }).data
+    : obj.response ?? obj;
+  return { status, message, body };
+}
+
+/**
+ * Post reply; on 422/Validation Failed log full error body and retry once with shortened message.
+ * WHY full error: GitHub's reason (body format, thread state) is in the response; we log it so we can fix.
+ * WHY retry with short fallback: Long or special characters in the first message can trigger validation; "Addressed." / "No change needed." often succeed so the thread still gets a reply.
+ */
+async function postReplyWithRetry(
+  github: GitHubAPI,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  databaseId: number,
+  threadId: string,
+  body: string,
+  fallbackBody: string
+): Promise<boolean> {
+  try {
+    await github.replyToReviewThread(owner, repo, prNumber, databaseId, body);
+    return true;
+  } catch (err) {
+    const { status, message, body: errBody } = getErrorDetails(err);
+    const isValidationFailed = status === 422 || /validation failed/i.test(message);
+    if (isValidationFailed) {
+      debug('Validation Failed posting reply — full error', { threadId, status, message, responseBody: errBody });
+    } else {
+      debug('Failed to post reply', { threadId, error: message });
+    }
+    if (fallbackBody !== body) {
+      try {
+        await github.replyToReviewThread(owner, repo, prNumber, databaseId, fallbackBody);
+        return true;
+      } catch (retryErr) {
+        const retryDetails = getErrorDetails(retryErr);
+        if (retryDetails.status === 422 || /validation failed/i.test(retryDetails.message)) {
+          debug('Validation Failed on retry — full error', { threadId, status: retryDetails.status, responseBody: retryDetails.body });
+        } else {
+          debug('Failed to post reply (retry)', { threadId, error: retryDetails.message });
+        }
+        return false;
+      }
+    }
+    return false;
+  }
 }
 
 /**
@@ -120,13 +182,11 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       continue;
     }
     const body = `Fixed in \`${short}\`.`;
-    try {
-      await github.replyToReviewThread(owner, repo, prNumber, entry.databaseId, body);
+    const ok = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'Addressed.');
+    if (ok) {
       repliedThreadIds.add(entry.threadId);
       threadsRepliedThisCall.push(entry.threadId);
       debug('Posted fixed reply on thread', { threadId: entry.threadId });
-    } catch (err) {
-      debug('Failed to post fixed reply', { threadId: entry.threadId, error: String(err) });
     }
   }
 
@@ -143,16 +203,26 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     let body: string;
     if (d.category === 'already-fixed') {
       body = 'No changes needed — already addressed before this run.';
+    } else if (d.category === 'remaining' || d.category === 'exhausted') {
+      body = 'Could not auto-fix (wrong file or repeated failures); manual review recommended.';
+    } else if (d.category === 'path-unresolved') {
+      body = 'Could not auto-fix (path unresolved); manual review recommended.';
+    } else if (d.category === 'missing-file') {
+      body = 'Could not auto-fix (file not found); manual review recommended.';
+    } else if (d.category === 'chronic-failure') {
+      body = 'Could not auto-fix (repeated failures); manual review recommended.';
+    } else if (d.category === 'duplicate') {
+      body = 'Treated as duplicate of another comment; no separate fix.';
+    } else if (d.category === 'file-unchanged') {
+      body = 'No change in this file this run; manual review if still needed.';
     } else {
       body = `Dismissed: ${oneLine(d.reason)}`;
     }
-    try {
-      await github.replyToReviewThread(owner, repo, prNumber, entry.databaseId, body);
+    const ok = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'No change needed.');
+    if (ok) {
       repliedThreadIds.add(entry.threadId);
       threadsRepliedThisCall.push(entry.threadId);
       debug('Posted dismissed reply on thread', { threadId: entry.threadId, category: d.category });
-    } catch (err) {
-      debug('Failed to post dismissed reply', { threadId: entry.threadId, error: String(err) });
     }
   }
 

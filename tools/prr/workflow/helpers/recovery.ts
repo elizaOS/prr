@@ -11,7 +11,7 @@ import { join, resolve, sep } from 'path';
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
 import type { StateContext } from '../../state/state-context.js';
-import { setPhase, addTokenUsage } from '../../state/state-context.js';
+import { setPhase, addTokenUsage, getState } from '../../state/state-context.js';
 import * as State from '../../state/state-core.js';
 import * as Verification from '../../state/state-verification.js';
 import * as Dismissed from '../../state/state-dismissed.js';
@@ -22,7 +22,7 @@ import type { LLMClient } from '../../llm/client.js';
 import type { Runner } from '../../../../shared/runners/types.js';
 import * as LessonsAPI from '../../state/lessons-index.js';
 import { debug, setTokenPhase, startTimer, endTimer } from '../../../../shared/logger.js';
-import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from '../utils.js';
+import { isEmptyDiffVerdict, parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from '../utils.js';
 import { getChangedFiles, getDiffForFile } from '../../../../shared/git/git-clone-index.js';
 import {
   sanitizeCommentForPrompt,
@@ -83,7 +83,7 @@ export async function trySingleIssueFix(
   lessonsContext: LessonsContext,
   llm: LLMClient,
   verifiedThisSession: Set<string> | undefined,
-  buildSingleIssuePrompt: (issue: UnresolvedIssue, options?: { pathExists?: (path: string) => boolean }) => string | Promise<string>,
+  buildSingleIssuePrompt: (issue: UnresolvedIssue, options?: { pathExists?: (path: string) => boolean; lastApplyError?: string }) => string | Promise<string>,
   getCurrentModel: () => string | null | undefined,
   parseNoChangesExplanation: (output: string) => string | null,
   sanitizeOutputForLog: (output: string | undefined, maxLength: number) => string,
@@ -151,6 +151,11 @@ export async function trySingleIssueFix(
       }
     }
     allowedForIssue = filterAllowedPathsForFix(allowedForIssue);
+    // Pill audit: when filter strips all paths (e.g. issue path was under a top-level not in REPO_TOP_LEVEL),
+    // single-issue mode must still allow the issue's own file so the runner doesn't reject every change.
+    if (allowedForIssue.length === 0) {
+      allowedForIssue = [primaryPath];
+    }
 
     // Clean the target file before each attempt so the fixer doesn't see stale
     // diffs from a prior (reverted-but-incomplete) iteration. Other files'
@@ -171,6 +176,11 @@ export async function trySingleIssueFix(
     // Build a focused prompt for just this one issue (caller may pass async when wider snippet is needed)
     const pathExistsForPrompt = (p: string) => fs.existsSync(join(workdir, p));
     let focusedPrompt = await Promise.resolve(buildSingleIssuePrompt(issue, { pathExists: pathExistsForPrompt }));
+
+    // Clear last apply error now that we've included it in the prompt (output.log audit: show once, then fresh slot for next failure).
+    if (stateContext.state?.lastApplyErrorByCommentId?.[issue.comment.id] !== undefined) {
+      delete stateContext.state.lastApplyErrorByCommentId[issue.comment.id];
+    }
 
     // When files are missing in workdir (e.g. sparse checkout), inject content from git so the fixer can produce valid search/replace.
     // Cycle 27: Lowered from 80k/160k so single-issue prompts stay under ~120k (audit: #0067/#0077 reached ~145k).
@@ -223,6 +233,11 @@ export async function trySingleIssueFix(
         count: state.couldNotInjectCountByCommentId[issue.comment.id],
         paths: couldNotInjectPaths,
       });
+      // output.log audit: add lesson so next attempt gets "create or dismiss"; if still no change, dismiss sooner (lower threshold for create-file).
+      LessonsAPI.Add.addLesson(
+        lessonsContext,
+        `Fix for ${primaryPath}:${issue.comment.line ?? '?'} - File(s) ${couldNotInjectPaths.join(', ')} do not exist in repo; create them or use RESULT: NEEDS_DISCUSSION if not applicable.`
+      );
     }
     if (result.success) {
       const fileToVerify = changedExpected.includes(primaryPath) ? primaryPath : changedExpected[0];
@@ -231,6 +246,15 @@ export async function trySingleIssueFix(
         // Verify this single fix (fixer changed one of the allowed target files)
         setTokenPhase('Verify single fix');
         const diff = await getDiffForFile(git, fileToVerify);
+        // output.log audit: empty diff → skip verifier LLM, add lesson, treat as failed (no-changes / rotate).
+        if (!diff || !diff.trim()) {
+          LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPath}:${issue.comment.line ?? '?'} - fix must produce a non-empty diff; verifier saw no file changes.`);
+          console.log(chalk.yellow(`    ○ No diff: fix produced no file changes`));
+          // Don't mark verified; next iteration will rotate or retry
+          await State.saveState(stateContext);
+          await LessonsAPI.Save.save(lessonsContext);
+          continue;
+        }
         const verification = await llm.verifyFix(
           issue.comment.body,
           fileToVerify,
@@ -259,11 +283,11 @@ export async function trySingleIssueFix(
             issueComment: issue.comment.body.substring(0, 200),
           });
 
-          // Analyze the failure to generate an actionable lesson.
-          // Skip for obvious infrastructure failures (quota, timeouts) —
-          // spending tokens asking "why did this fail?" when it was a rate
-          // limit is pure waste.
-          if (isInfrastructureFailure(verification.explanation)) {
+          // output.log audit: verifier said "diff is empty" → add simple lesson, skip analyzeFailedFix (don't escalate).
+          if (isEmptyDiffVerdict(verification.explanation)) {
+            console.log(chalk.gray(`    📝 Lesson: fix must produce a non-empty diff`));
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line ?? '?'} - fix must produce a non-empty diff; verifier reported no changes.`);
+          } else if (isInfrastructureFailure(verification.explanation)) {
             const shortReason = verification.explanation.substring(0, 120);
             console.log(chalk.gray(`    📝 Lesson (infra): ${shortReason}`));
             LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - infra failure: ${shortReason}`);
@@ -329,18 +353,22 @@ export async function trySingleIssueFix(
         // Only treat as "wrong" files that were modified THIS attempt; changes from prior fixes in this run are not wrong.
         const wrongFiles = changedFiles.filter((f) => !allowedForIssue.includes(f));
         const actuallyNewWrong = wrongFiles.filter((f) => !filesBeforeFix.has(f));
-        if (actuallyNewWrong.length > 0) {
+        // Pill audit: if the only "wrong" file is the issue's target path, do not treat as wrong-file
+        // (e.g. allowedPaths was empty due to filter and fixer correctly edited the target).
+        const issueTargetPaths = [primaryPath, issue.comment.path, issue.resolvedPath].filter(Boolean) as string[];
+        const trulyWrong = actuallyNewWrong.filter((f) => !issueTargetPaths.includes(f));
+        if (trulyWrong.length > 0) {
           console.log(chalk.yellow(`    ○ Changed other files instead: ${changedFiles.slice(0, 3).join(', ')}${changedFiles.length > 3 ? ` (+${changedFiles.length - 3} more)` : ''}`));
           debug('Fixer modified wrong files', {
             expectedPaths: allowedForIssue,
             actualFiles: changedFiles,
-            wrongFiles: actuallyNewWrong,
+            wrongFiles: trulyWrong,
             issueComment: issue.comment.body.substring(0, 200),
             toolOutput: result.output?.substring(0, 500),
           });
           // Add lesson so tool knows to focus on the right file and explicitly not edit the wrong one(s)
-          const expectedStr = allowedForIssue.join(', ');
-          const doNotEditStr = actuallyNewWrong.length ? ` Do NOT edit ${actuallyNewWrong.join(', ')} for this issue.` : '';
+          const expectedStr = allowedForIssue.length > 0 ? allowedForIssue.join(', ') : primaryPath;
+          const doNotEditStr = trulyWrong.length ? ` Do NOT edit ${trulyWrong.join(', ')} for this issue.` : '';
           LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${issue.comment.path}:${issue.comment.line} - tool modified wrong files (${changedFiles.join(', ')}), need to modify one of: ${expectedStr}.${doNotEditStr}`);
           // Track wrong-file count so we can exhaust after WRONG_FILE_EXHAUST_THRESHOLD (cross-file fixes burn all models).
           if (stateContext.state) {
@@ -415,6 +443,14 @@ export async function trySingleIssueFix(
         error: result.error,
         output: result.output?.substring(0, 500),
       });
+      // Persist apply failure for retry prompt and earlier chronic-failure dismissal (output.log audit).
+      if (result.error && /search\/replace operations failed|search text did not match/i.test(result.error)) {
+        const state = getState(stateContext);
+        state.lastApplyErrorByCommentId = state.lastApplyErrorByCommentId ?? {};
+        state.applyFailureCountByCommentId = state.applyFailureCountByCommentId ?? {};
+        state.lastApplyErrorByCommentId[issue.comment.id] = result.error.slice(0, 250);
+        state.applyFailureCountByCommentId[issue.comment.id] = (state.applyFailureCountByCommentId[issue.comment.id] ?? 0) + 1;
+      }
     }
     
     await State.saveState(stateContext);

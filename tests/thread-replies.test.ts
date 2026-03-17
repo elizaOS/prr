@@ -166,11 +166,12 @@ describe('postThreadReplies', () => {
     expect(replyCalls[0].body).toBe('Dismissed: Intentional design.');
   });
 
-  it('does not post reply for exhausted or remaining categories', async () => {
+  it('posts "Could not auto-fix" reply for exhausted or remaining categories', async () => {
     const comments = [
       makeComment('c1', 'thread-1', 100),
       makeComment('c2', 'thread-2', 101),
     ];
+    const expectedBody = 'Could not auto-fix (wrong file or repeated failures); manual review recommended.';
     await run({
       replyToThreads: true,
       comments,
@@ -179,7 +180,9 @@ describe('postThreadReplies', () => {
         makeDismissed('c2', 'remaining', 'Manual follow-up.'),
       ],
     });
-    expect(replyCalls).toHaveLength(0);
+    expect(replyCalls).toHaveLength(2);
+    expect(replyCalls[0].body).toBe(expectedBody);
+    expect(replyCalls[1].body).toBe(expectedBody);
   });
 
   it('calls resolveReviewThread when resolveThreads is true after replying', async () => {

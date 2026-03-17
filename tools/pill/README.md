@@ -15,9 +15,15 @@
 
 ## How it works
 
-1. **Context assembly** — Reads docs, source (with token budget), directory tree, and the target **output.log** and **prompts.log**. Log file names depend on `logPrefix` (see below). Large logs can be summarized by an LLM (story-read) to stay within context.
+1. **Context assembly** — Reads docs, source (with token budget), directory tree, and the target **output.log** and **prompts.log**. Log file names depend on `logPrefix` (see below). Large logs are summarized so the audit request stays within context and avoids 504 / FUNCTION_INVOCATION_TIMEOUT.
 2. **Audit LLM** — Sends context to the configured audit model with a system prompt that asks for: a **pitch** (engaging 1–2 paragraph summary), a **summary** (technical overview), and **improvements** (file, description, rationale, severity, category).
 3. **Output** — Appends one dated section to **pill-output.md** (full plan) and one entry to **pill-summary.md** (pitch + link). Uses `.toLocaleString()` for user-facing counts (no dependency on shared logger; see workspace rule).
+
+**Context assembly (large logs and 504 avoidance):**
+- When **output.log** is small (≤30k tokens and ≤100k chars), it is included in full. When it is large, we use **head** (first 400 lines) + **story-read middle** (chapter-by-chapter LLM summarization from `shared/llm/story-read.ts`) + **tail** (last 400 lines) + **excerpt** (high-signal lines: RESULTS SUMMARY, Model Performance, etc.). **WHY:** A full ~183k-char log caused 504; char and token thresholds trigger summarization earlier; head/tail preserve init and exit state.
+- After assembly, the output log is capped at **50k chars** by default. Override with **`PILL_OUTPUT_LOG_MAX_CHARS`** (env) if you need a different limit. **WHY:** Hard char cap ensures the audit request never includes an unbounded log.
+- When the log is large but no LLM client is available (e.g. dry-run), we send head + "[ … middle omitted (no summarization client) … ]" + tail + excerpt instead of raw. **WHY:** Sending raw in that path would still cause 504.
+- **prompts.log** is included raw when under the same token threshold; otherwise it is summarized via story-read (pair PROMPT+RESPONSE per slug, chunked, then digest). See **shared/README.md** for story-read and **shared/utils/tokens.ts** for truncation.
 
 **WHY logPrefix:** When prr runs, logs are `output.log` / `prompts.log`. When story runs, the shared logger uses `prefix: 'story'` so files are `story-output.log` / `story-prompts.log`. Pill uses its own logger with hardcoded `pill-output.log` / `pill-prompts.log`. The prefix tells pill which log pair to read (prr vs story vs pill-on-pill).
 
@@ -102,7 +108,7 @@ Pill infers the pair from **logPrefix** in config (CLI passes it when invoked fr
 
 - **cli.ts** — Commander; parses &lt;directory&gt; and options; resolves directory to absolute path.
 - **config.ts** — Loads .env, builds PillConfig. **tryLoadPillConfig()** returns null instead of throwing (used by the shared logger hook so missing config doesn’t break shutdown).
-- **context.ts** — Assembles PillContext: docs, source, tree, output log, prompts digest; optional story-read for large logs; pill-on-itself handling.
+- **context.ts** — Assembles PillContext: docs, source, tree, output log, prompts digest; story-read for large logs (head+tail+summarized middle); char cap (PILL_OUTPUT_LOG_MAX_CHARS); pill-on-itself handling. Uses `shared/utils/tokens.ts` and `shared/llm/story-read.ts`.
 - **orchestrator.ts** — `runPillAnalysis(config)`: assemble context, call audit LLM, parse JSON, append to pill-output.md and pill-summary.md (or return paths in dry-run). No try/catch around the whole function so the CLI sees errors; the hook in logger catches and ignores.
 - **llm/prompts.ts** — **AUDIT_SYSTEM_PROMPT** only (verify prompt was removed when the fixer was removed).
 - **types.ts** — PillConfig, ImprovementPlan, Improvement, PillContext, etc.
@@ -113,4 +119,5 @@ Pill infers the pair from **logPrefix** in config (CLI passes it when invoked fr
 
 - Main [README](../../README.md) — prr, story, and pill overview.
 - [docs/README.md](../../docs/README.md) — Documentation index.
+- [shared/README.md](../../shared/README.md) — Shared tokens and story-read (WHYs, context caps).
 - [.cursor/rules/number-formatting.mdc](../../.cursor/rules/number-formatting.mdc) — User-facing numbers use `formatNumber` from logger or `n.toLocaleString()`.

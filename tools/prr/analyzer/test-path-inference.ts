@@ -96,6 +96,15 @@ export function getTestPathForIssueLike(
     const colocated = normalizeRelativePath(`${dir}/${base}`);
     const integration = normalizeRelativePath(`${dir}/../__tests__/integration/${base}`);
     const testsRoot = `__tests__/${base}`;
+    // Same src-level __tests__ (e.g. packages/typescript/src/__tests__/database.test.ts when path is src/types/database.ts). Prompts.log audit: TARGET FILE(S) listed non-existent src/types/database.test.ts.
+    const srcLevelTests = /\/src\//.test(dir) ? normalizeRelativePath(`${dir}/../__tests__/${base}`) : null;
+    if (pathExists && srcLevelTests) {
+      if (pathExists(srcLevelTests)) return srcLevelTests;
+      if (pathExists(colocated)) return colocated;
+      if (pathExists(testsRoot)) return testsRoot;
+      if (integration && pathExists(integration)) return integration;
+      return srcLevelTests;
+    }
     return preferOrFallback(colocated, integration, testsRoot);
   }
   return base;

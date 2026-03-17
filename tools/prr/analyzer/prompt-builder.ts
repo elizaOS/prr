@@ -4,6 +4,7 @@ import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../../../shared/constants.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
 import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
+import { estimateTokens } from '../../../shared/utils/tokens.js';
 import { getTestPathForIssueLike, issueRequestsTestsText } from './test-path-inference.js';
 
 /**
@@ -77,15 +78,6 @@ export function sanitizeCommentForPrompt(body: string): string {
  */
 export function escapeSuggestionBlocksInComment(body: string): string {
   return body.replace(/```suggestion\b([\s\S]*?)```/gi, '~~~suggestion$1~~~');
-}
-
-/**
- * Estimate token count for a string.
- * WHY: Anthropic has 200k token limit. We need to detect when prompts are too large.
- * Rough estimate: 1 token ≈ 4 characters (conservative for English text)
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
 
 /** Refactor/duplication keywords in comment or verifier text → allow broader changes for that issue */
@@ -510,6 +502,15 @@ export function buildFixPrompt(
      * the review says "add tests in component.test.ts" and the test lives in __tests__/.
      */
     pathExists?: (path: string) => boolean;
+    /**
+     * Last apply/validation error (e.g. search text did not match). Included so next attempt can adjust.
+     * output.log audit: include in retry prompt so the fixer can use exact content or shorter anchor.
+     */
+    lastApplyError?: string;
+    /**
+     * When >= 2, add hint that previous attempt(s) made no changes (output.log audit: different prompt shape).
+     */
+    consecutiveNoChanges?: number;
   }
 ): FixPrompt {
   // Guard: Return empty prompt if no issues
@@ -549,6 +550,9 @@ export function buildFixPrompt(
   const parts: string[] = [];
 
   parts.push('# Code Review Issues to Fix\n');
+  if (options?.consecutiveNoChanges != null && options.consecutiveNoChanges >= 2) {
+    parts.push('**Previous attempt(s) made no changes for (some of) these issues; use minimal, targeted edits for each.**\n');
+  }
   if (wasLimited) {
     parts.push(`Processing first ${limitedIssues.length} of ${originalCount} issues (batched to prevent token overflow).\n`);
     parts.push('Please address the following code review issues.\n');
@@ -630,6 +634,13 @@ export function buildFixPrompt(
       parts.push(`- ${formatLessonForDisplay(lesson)}`);
     }
     parts.push('');
+  }
+
+  if (options?.lastApplyError) {
+    parts.push('## Previous attempt failed (adjust your edits)\n');
+    parts.push('The last fix attempt failed when applying changes:\n');
+    parts.push(options.lastApplyError);
+    parts.push('\n\nCopy <search> blocks character-for-character from the file content in the issues below (or use a shorter 3–5 line block that uniquely matches). The file content is the source of truth.\n');
   }
 
   // Add PR context so the fixer knows what the PR is trying to accomplish.

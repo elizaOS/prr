@@ -49,6 +49,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Path-resolution categories instead of blanket stale dismissals**: PRR now distinguishes `missing-file` from `path-unresolved`, and carries canonical resolved paths forward when a review cites a basename or truncated path. *Why*: "File no longer exists" was previously hiding very different root causes such as ambiguous basenames, summary-table leakage, and path fragments that only needed repo-path expansion.
 - **Shared test-path inference**: Prompt building, create-file solvability, and retries now reuse the same test-target inference helper instead of maintaining slightly different regex copies. *Why*: When those phases drift, PRR can decide one test file should be created while another phase allows or explains a different one.
 - Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
+- **Config-driven concurrency**: Optional `PRR_MAX_CONCURRENT_LLM` (default 1) caps in-flight LLM requests; analysis batches, verification, and (with llm-api) parallel fix groups share this cap. On 429, concurrency is halved for 60s. *Why*: Default keeps behavior unchanged; raising (e.g. to 3) can cut wall-clock when the backend supports it. See Configuration.
 - Verifies fixes with LLM to prevent false positives
 - **Debug issue table**: Verbose mode prints a human-readable per-comment table after analysis and again at exit. *Why*: This exposes the exact `open` / `dismissed/<category>` / `verified` decision PRR is using so you can compare it with the PR thread list.
 - **Final audit**: Adversarial re-verification of ALL issues before declaring done
@@ -62,7 +63,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Proportional batch reduce**: When the fix prompt exceeds the context cap, batch size is reduced proportionally (cap/promptLength) instead of halving. *Why*: Halving wasted iterations when only slightly over cap; proportional reduction converges in 1–2 steps.
 - **Rotation reset per push iteration**: At the start of each push cycle (after the first), the model index resets to the first model so each cycle gets a "best model first" attempt instead of continuing from where the previous cycle left off. *Why*: Later push iterations were reusing the last model from the previous cycle (often one that had just 500'd or timed out), wasting time.
 - **ALREADY_FIXED multi-model dismissal**: When 3+ consecutive models return ALREADY_FIXED for the same issue (any explanation), dismiss as already-fixed. Counter resets when the fixer makes changes or the issue is verified. *Why*: The existing same-explanation counter only fired when explanation text matched; a separate any-explanation counter catches the broader pattern where multiple models independently agree the issue is resolved.
-- **couldNotInject in-loop dismissal**: At the start of each fix iteration, issues that have hit the could-not-inject threshold (file not in repo + no-change cycles) are dismissed and removed from the queue; if the queue is empty afterward, the run exits as all fixed. *Why*: The threshold was only checked at push-iteration start; inside the fix loop the same issues were retried 10+ times (output.log audit). Applying the check every iteration stops the loop.
+- **couldNotInject in-loop dismissal**: At the start of each fix iteration, issues that have hit the could-not-inject threshold (file not in repo + no-change cycles) are dismissed and removed from the queue; if the queue is empty afterward, the run exits as all fixed. Create-file issues use a lower threshold (1) so we dismiss after one couldNotInject when the path was clearly "create this file". *Why*: The threshold was only checked at push-iteration start; inside the fix loop the same issues were retried 10+ times (output.log audit). Applying the check every iteration stops the loop; lower create-file threshold avoids retrying when the file is never created.
+- **Apply-failure and no-changes handling**: When the fixer's search/replace fails to match (no files written), we treat it as no meaningful changes, skip verification, and persist a short "Previous attempt: …" for the next fix prompt. Per-file S/R failure count and consecutive no-changes use tuned thresholds (3 and 2) so we dismiss as remaining earlier instead of burning iterations. *Why*: output.log audit — the model wasn't getting explicit apply-failure feedback; passing it into the next attempt and bailing sooner reduces wasted runs. See [DEVELOPMENT.md](DEVELOPMENT.md) "Fix loop audits (output.log)".
 - **Solvability for new comments**: When new bot comments arrive mid-fix-loop, they are run through the same solvability check (e.g. (PR comment), lockfiles) before being added to the queue; unsolvable ones are dismissed and not sent to the fixer. *Why*: New comments were previously added without solvability, so (PR comment) and other unfixable paths entered the queue and burned iterations (prompts.log audit).
 - **Missing test files stay actionable**: If a review asks for a test/spec file that does not exist yet, PRR keeps that issue open as a create-file target instead of dismissing it as stale. *Why*: For missing-test comments, non-existence is often the thing the fixer is supposed to change.
 - **Coverage-only wording on explicit test files stays in create-file flow**: If the review path already points at a missing `*.test.ts` file, PRR preserves that path even when the body says "coverage is missing here" instead of repeating "add tests". *Why*: The path itself is already strong evidence that the requested fix is to create or fill in that test file.
@@ -198,7 +200,23 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 # Default fixer tool (rotates automatically when stuck)
 # If not set, prr will auto-detect which tool is installed
 # PRR_TOOL=cursor
+
+# Optional: max concurrent LLM requests (default 1). Raise to reduce wall-clock time when the backend allows.
+# PRR_MAX_CONCURRENT_LLM=3
+# Optional: min delay in ms between starting successive requests per slot (default 6000). Override if tuning rate limits.
+# PRR_LLM_MIN_DELAY_MS=6000
+# Optional: comma-separated ElizaCloud model IDs to include even if on the skip list (e.g. if timeouts were gateway-specific).
+# PRR_ELIZACLOUD_INCLUDE_MODELS=openai/gpt-4o-mini,anthropic/claude-3.7-sonnet
 ```
+
+**Concurrency (optional)**  
+- **`PRR_MAX_CONCURRENT_LLM`** (integer 1–32, default unset ⇒ 1): Maximum number of LLM requests in flight at once. Analysis batches, verification, and (when using llm-api) parallel fix groups all share this cap. **WHY:** Default 1 keeps behavior unchanged and avoids 429s; raising it (e.g. to 3) lets analysis and fix run in parallel and can cut wall-clock time significantly when the backend (e.g. ElizaCloud) supports it.  
+- **`PRR_LLM_MIN_DELAY_MS`** (integer ≥ 0, default unset ⇒ 6000): Minimum milliseconds between starting successive requests per slot. **WHY:** Spacing requests reduces burst 429s; override only when tuning for a specific gateway.
+
+**ElizaCloud skip-list override (optional)**  
+- **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated model IDs): Models to *include* in rotation even if they are on the default skip list (e.g. `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.7-sonnet`). **WHY:** Those models are skipped by default because audits showed timeouts or 0% fix rate on some gateways; if your environment is different, set this to re-enable them (e.g. `PRR_ELIZACLOUD_INCLUDE_MODELS=openai/gpt-4o-mini`). Full IDs or short names (e.g. `gpt-4o-mini`) both work.
+
+On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves effective concurrency for 60s so the next run backs off without a code change.
 
 ### Why These Defaults?
 
@@ -289,7 +307,7 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-bell` | off | Disable terminal bell on completion |
 | `--keep-workdir` | on | Keep work directory after completion |
 | `--no-batch` | off | Disable batched LLM calls |
-| `--verbose` | on | Debug output; when on, prompts.log (in CWD or PRR_LOG_DIR) is populated with full prompt/response text for each LLM call. Subprocess runners (e.g. llm-api) may write only to output.log; set `PRR_DEBUG_PROMPTS=1` for per-prompt files under `~/.prr/debug/`. |
+| `--verbose` | on | Debug output; when on, prompts.log (in CWD or PRR_LOG_DIR) is populated with full prompt/response text for each LLM call. Empty entries between markers indicate a logging bug (see AGENTS.md prompts.log troubleshooting). Subprocess runners (e.g. llm-api) may write only to output.log; set `PRR_DEBUG_PROMPTS=1` for per-prompt files under `~/.prr/debug/`. |
 | `--reply-to-threads` | off | Post a short reply on each review thread when PRR fixes or dismisses an issue. Use `PRR_REPLY_TO_THREADS=true` to enable via env. **WHY:** Gives reviewers visible feedback in the PR; opt-in so default runs stay unchanged. |
 | `--no-reply-to-threads` | (default) | Do not post replies on review threads. |
 | `--resolve-threads` | off | When replying, also resolve the review thread (collapse with checkmark). **WHY:** Optional; some teams prefer to resolve threads only after human review. |

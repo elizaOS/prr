@@ -1,14 +1,15 @@
-import { strict as assert } from 'node:assert';
+import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LessonsManager } from '../tools/prr/state/lessons.js';
 
-async function run(): Promise<void> {
-  const workdir = await mkdtemp(join(tmpdir(), 'prr-lessons-test-'));
-  await mkdir(join(workdir, '.prr'), { recursive: true });
+describe('LessonsManager load/save and normalizeLessonText', () => {
+  it('sanitizes corrupted lessons on load and save', async () => {
+    const workdir = await mkdtemp(join(tmpdir(), 'prr-lessons-test-'));
+    await mkdir(join(workdir, '.prr'), { recursive: true });
 
-  const corruptedLessons = `# PRR Lessons Learned
+    const corruptedLessons = `# PRR Lessons Learned
 
 ## Global Lessons
 - Fix for src/resolver.ts:null - (inferred) : string;
@@ -25,63 +26,67 @@ async function run(): Promise<void> {
 - Fix for src/llm/client.ts:319 - (inferred) ts:319 - (inferred) The code after \`Updated upstream\` already has the fix.
 `;
 
-  const lessonsPath = join(workdir, '.prr', 'lessons.md');
-  await writeFile(lessonsPath, corruptedLessons, 'utf-8');
+    const lessonsPath = join(workdir, '.prr', 'lessons.md');
+    await writeFile(lessonsPath, corruptedLessons, 'utf-8');
 
-  const manager = new LessonsManager('test-owner', 'test-repo', 'test-branch');
-  manager.setWorkdir(workdir);
-  await manager.load();
-  await manager.saveToRepo();
+    const manager = new LessonsManager('test-owner', 'test-repo', 'test-branch');
+    manager.setWorkdir(workdir);
+    await manager.load();
+    await manager.saveToRepo();
 
-  const saved = await readFile(lessonsPath, 'utf-8');
+    const saved = await readFile(lessonsPath, 'utf-8');
 
-  assert.ok(!saved.includes('private isShuttingDown'));
-  assert.ok(!saved.includes('// Bail-out tracking'));
-  assert.ok(!saved.includes('**Issues'));
-  assert.ok(!saved.includes('claude-code with'));
-  assert.equal(saved.match(/tool made no changes - trying different approach/g)?.length ?? 0, 1);
-  assert.ok(saved.includes('Fix for README.md rejected:'));
-  assert.ok(saved.includes('### src/state/manager.ts'));
-  assert.ok(saved.includes('### src/llm/client.ts'));
+    expect(saved).not.toContain('private isShuttingDown');
+    expect(saved).not.toContain('// Bail-out tracking');
+    expect(saved).not.toContain('**Issues');
+    expect(saved).not.toContain('claude-code with');
+    expect((saved.match(/tool made no changes - trying different approach/g) ?? []).length).toBe(1);
+    expect(saved).toContain('Fix for README.md rejected:');
+    expect(saved).toContain('### src/state/manager.ts');
+    expect(saved).toContain('### src/llm/client.ts');
+  });
 
-  const normalizeLessonText = (input: string) => (manager as any).normalizeLessonText(input) as string | null;
-  assert.equal(
-    normalizeLessonText('```ts\nconst x = 1;\n```\n# Header\n**Bold**\n- Keep this lesson text for later reference'),
-    'Keep this lesson text for later reference'
-  );
-  assert.equal(normalizeLessonText('1. Always verify fixes before commit'), 'Always verify fixes before commit');
-  assert.equal(normalizeLessonText('// comment only'), null);
-  assert.equal(normalizeLessonText('/* block comment */'), null);
-  assert.equal(normalizeLessonText('* leading comment'), null);
-  assert.equal(normalizeLessonText('private isShuttingDown = false;'), null);
-  assert.equal(normalizeLessonText('progressThisCycle = 0;'), null);
-  assert.equal(normalizeLessonText('modelsTriedThisToolRound: number;'), null);
-  assert.equal(normalizeLessonText('public name: string;'), null);
-  assert.equal(normalizeLessonText('const foo = 1;'), null);
-  assert.equal(normalizeLessonText('export type Foo = {}'), null);
-  assert.equal(normalizeLessonText('class Foo {}'), null);
-  assert.equal(normalizeLessonText('interface Foo {}'), null);
-  assert.equal(normalizeLessonText('import foo from "bar"'), null);
-  assert.equal(normalizeLessonText('Fix for src/resolver.ts - : string; tool made no changes - trying different approach tool made no changes  already includes all runners'), null);
-  assert.equal(normalizeLessonText('Fixer made no changes  already includes all runners'), 'fixer made no changes - already includes all runners');
-  assert.equal(normalizeLessonText('use this (inferred) before publishing changes'), 'use this before publishing changes');
-  assert.equal(normalizeLessonText('Always validate user input - ts'), 'Always validate user input');
-  assert.equal(normalizeLessonText('Always validate config files - json'), 'Always validate config files');
-  assert.equal(normalizeLessonText('Always document decisions - a:123'), 'Always document decisions');
-  assert.equal(normalizeLessonText('Always document decisions - a.ts:123'), 'Always document decisions - a.ts:123');
-  assert.equal(
-    normalizeLessonText('claude-code with claude-sonnet-4-5-20250929 made no changes without explanation - trying different approach'),
-    'tool made no changes without explanation - trying different approach'
-  );
-  assert.equal(normalizeLessonText('2-codex with gpt-5-mini made no changes'), 'tool made no changes');
-  assert.equal(normalizeLessonText('tool made no changes, tool made no changes'), 'tool made no changes');
-  assert.equal(normalizeLessonText('chars truncated'), null);
-  assert.equal(normalizeLessonText('Fix for src/file.ts:123'), null);
-  assert.equal(normalizeLessonText('Fix for src/file.ts:null'), null);
-  assert.equal(normalizeLessonText('Fix for src/file.ts:undefined'), null);
-}
+  it('normalizeLessonText strips code blocks and keeps lesson text', () => {
+    const workdir = join(tmpdir(), 'prr-lessons-normalize-' + Date.now());
+    const manager = new LessonsManager('test-owner', 'test-repo', 'test-branch');
+    manager.setWorkdir(workdir);
+    const normalizeLessonText = (input: string) => (manager as any).normalizeLessonText(input) as string | null;
 
-run().catch(error => {
-  console.error(error);
-  process.exit(1);
+    expect(
+      normalizeLessonText('```ts\nconst x = 1;\n```\n# Header\n**Bold**\n- Keep this lesson text for later reference')
+    ).toBe('Keep this lesson text for later reference');
+    expect(normalizeLessonText('1. Always verify fixes before commit')).toBe('Always verify fixes before commit');
+    expect(normalizeLessonText('// comment only')).toBe(null);
+    expect(normalizeLessonText('/* block comment */')).toBe(null);
+    expect(normalizeLessonText('* leading comment')).toBe(null);
+    expect(normalizeLessonText('private isShuttingDown = false;')).toBe(null);
+    expect(normalizeLessonText('progressThisCycle = 0;')).toBe(null);
+    expect(normalizeLessonText('modelsTriedThisToolRound: number;')).toBe(null);
+    expect(normalizeLessonText('public name: string;')).toBe(null);
+    expect(normalizeLessonText('const foo = 1;')).toBe(null);
+    expect(normalizeLessonText('export type Foo = {}')).toBe(null);
+    expect(normalizeLessonText('class Foo {}')).toBe(null);
+    expect(normalizeLessonText('interface Foo {}')).toBe(null);
+    expect(normalizeLessonText('import foo from "bar"')).toBe(null);
+    expect(
+      normalizeLessonText('Fix for src/resolver.ts - : string; tool made no changes - trying different approach tool made no changes  already includes all runners')
+    ).toBe(null);
+    expect(normalizeLessonText('Fixer made no changes  already includes all runners')).toBe(
+      'fixer made no changes - already includes all runners'
+    );
+    expect(normalizeLessonText('use this (inferred) before publishing changes')).toBe('use this before publishing changes');
+    expect(normalizeLessonText('Always validate user input - ts')).toBe('Always validate user input');
+    expect(normalizeLessonText('Always validate config files - json')).toBe('Always validate config files');
+    expect(normalizeLessonText('Always document decisions - a:123')).toBe('Always document decisions');
+    expect(normalizeLessonText('Always document decisions - a.ts:123')).toBe('Always document decisions - a.ts:123');
+    expect(
+      normalizeLessonText('claude-code with claude-sonnet-4-5-20250929 made no changes without explanation - trying different approach')
+    ).toBe('tool made no changes without explanation - trying different approach');
+    expect(normalizeLessonText('2-codex with gpt-5-mini made no changes')).toBe('tool made no changes');
+    expect(normalizeLessonText('tool made no changes, tool made no changes')).toBe('tool made no changes');
+    expect(normalizeLessonText('chars truncated')).toBe(null);
+    expect(normalizeLessonText('Fix for src/file.ts:123')).toBe(null);
+    expect(normalizeLessonText('Fix for src/file.ts:null')).toBe(null);
+    expect(normalizeLessonText('Fix for src/file.ts:undefined')).toBe(null);
+  });
 });

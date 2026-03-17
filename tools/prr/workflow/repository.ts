@@ -8,7 +8,7 @@ import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { StateContext } from '../state/state-context.js';
-import { setPhase } from '../state/state-context.js';
+import { setPhase, getState } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
 import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -118,6 +118,8 @@ export async function recoverVerificationState(
     for (const commentId of committedFixes) {
       Verification.markVerified(stateContext, commentId);
     }
+    // WHY: So the first analysis skips stale re-check and unmark for these IDs (output.log audit).
+    getState(stateContext).recoveredFromGitCommentIds = [...committedFixes];
     await State.saveState(stateContext);
     debug('Recovered verifications from git', { count: committedFixes.length });
   }

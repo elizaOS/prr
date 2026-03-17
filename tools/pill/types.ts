@@ -22,6 +22,8 @@ export interface PillContext {
   directoryTree: string;
   outputLog: string;
   promptsDigest?: string;
+  /** Set when context was trimmed to stay under audit request budget (avoids 504/timeout). */
+  contextTrimmed?: boolean;
 }
 
 export interface ImprovementPlan {
@@ -39,14 +41,6 @@ export interface Improvement {
   category: 'code' | 'docs';
 }
 
-/** Per-chapter output when story-reading logs */
-export interface ChapterAnalysis {
-  observations: string[];
-  answeredQuestions: string[];
-  confirmedPredictions: string[];
-  refutedPredictions: string[];
-  newQuestions: string[];
-  newPredictions: string[];
-  threads: string[];
-}
+/** Per-chapter output when story-reading logs (from shared story-read). */
+export type { ChapterAnalysis } from '../../shared/llm/story-read.js';
 

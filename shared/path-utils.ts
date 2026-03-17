@@ -8,9 +8,9 @@ const INTERNAL_PATH_SEGMENTS = ['.cursor', '.prr', 'root'];
 
 /** Top-level dirs that are typical repo source (not node_modules or external package refs from comments). */
 const REPO_TOP_LEVEL = new Set([
-  'src', 'lib', 'app', 'apps', 'packages', 'scripts', 'test', 'tests', 'docs', 'build', 'tools', 'shared',
+  'src', 'lib', 'app', 'apps', 'packages', 'plugins', 'scripts', 'test', 'tests', 'docs', 'build', 'tools', 'shared',
   '.github', 'config', 'public', 'components', 'db', 'migrations', 'api', 'server', 'client', 'examples',
-  'types', 'typings',
+  'types', 'typings', 'benchmarks',
 ]);
 
 /**

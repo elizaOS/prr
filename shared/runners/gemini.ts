@@ -81,7 +81,7 @@ export class GeminiRunner implements Runner {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 
-    debugPrompt('gemini', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('gemini', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args for non-interactive headless mode
@@ -126,7 +126,7 @@ export class GeminiRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        debugResponse('gemini', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse(promptSlug, 'gemini', stdout, { exitCode: code, stderrLength: stderr.length });
 
         const combinedOutput = stdout + stderr;
 

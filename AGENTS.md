@@ -8,7 +8,15 @@ These are created by tools and should not be committed: `.split-plan.md`, `.spli
 
 **Pill hook:** Pill runs on close only when the user passes **`--pill`** on the command line. **prr**, **split-exec**, **story**, and **split-plan** accept `--pill`; after parsing, they call `setPillEnabled(true)`. Then `closeOutputLog()` runs pill on the closed logs (and writes pill-output.md / pill-summary.md). When `--pill` is not passed, pill does not run. **WHY opt-in:** Default runs stay fast; tools like split-exec have no LLM calls, so pill would often have nothing to analyze. When `--pill` is set, pill runs if the output log has content or the prompts log has PROMPT/RESPONSE/ERROR entries.
 
-**prompts.log:** When output logging is active (e.g. prr with default --verbose), `prompts.log` (or `{prefix}-prompts.log`) is written with full prompt and response text between structural markers (PROMPT #NNNN, RESPONSE #NNNN). Content is written by `shared/logger.ts` (`writeToPromptLog`). Entries with zero content between markers indicate a logging bug and should be reported or investigated; pill and audit cycles rely on this content. When using a **subprocess runner** (e.g. llm-api), that process may not call `initOutputLog`, so its prompts can appear in `output.log` (e.g. `PROMPT #0001 → { chars: N }`) but not in `prompts.log`; set `PRR_DEBUG_PROMPTS=1` to get per-prompt files under `~/.prr/debug/` which may have content even when prompts.log is empty.
+**prompts.log:** When output logging is active (e.g. prr with default --verbose), `prompts.log` (or `{prefix}-prompts.log`) is written with full prompt and response text between structural markers (PROMPT #NNNN, RESPONSE #NNNN). Content is written by `shared/logger.ts` (`writeToPromptLog`). Entries with zero content between markers indicate a logging bug and should be reported or investigated; pill and audit cycles rely on this content.
+
+**Troubleshooting empty prompts.log:** If the **primary LLM path** (e.g. elizacloud, not a subprocess) still produces empty entries, the root cause is likely in `writeToPromptLog` or the stream not receiving the body (e.g. caller passed marker-only). When `--verbose` is on and the primary provider is elizacloud, all entries being empty suggests the LLM response body is not being passed to `writeToPromptLog` after streaming completes — check `shared/llm/elizacloud.ts` (or the active provider) and ensure the full response body is passed. Check that `initOutputLog()` was called before the first LLM call and that `promptLogStream` is non-null when `writeToPromptLog` runs. The logger refuses to write PROMPT/RESPONSE with zero-length body and warns to console. **When llm-api is the sole fixer:** the subprocess may not call `initOutputLog`, so **prompts.log may be empty** even though the fixer ran; use **`PRR_DEBUG_PROMPTS=1`** to get per-prompt files under `~/.prr/debug/`, or inspect `output.log` (e.g. `PROMPT #0001 → { chars: N }`) for evidence of calls.
+
+**Crash / truncation:** Writes are buffered. If the process exits abruptly (crash, kill), the last entry may be missing or truncated. `closeOutputLog()` flushes and closes streams on normal shutdown.
+
+**Pill and large logs:** When output.log (or prompts.log) exceeds the token budget, pill summarizes it and may miss single-line or tabular evidence (e.g. RESULTS SUMMARY counts, Model Performance table, overlap IDs). For critical runs, inspect output.log manually for those sections; pill now also extracts and appends key evidence when the log is summarized.
+
+**Model pinning:** If the log shows "Configured model unavailable; using: …", the requested model was not available and PRR fell back. To pin the model, set **`PRR_LLM_MODEL`** (e.g. `anthropic/claude-3.5-sonnet`).
 
 ## Repo layout
 
@@ -32,7 +40,7 @@ Entry points: `tools/<tool>/index.ts` (e.g. `tools/prr/index.js` after build). B
 
 With **`--reply-to-threads`** (or **`PRR_REPLY_TO_THREADS=true`**), PRR posts a short reply on each GitHub review thread when it fixes or dismisses an issue (e.g. "Fixed in \`abc1234\`." or "No changes needed — already addressed before this run."). Use **`--resolve-threads`** to also resolve (collapse) threads after replying. Optional **`PRR_BOT_LOGIN`** (GitHub login of the bot that posts replies) enables cross-run idempotency: PRR skips posting if that thread already has a comment from that login.
 
-**WHY opt-in:** Default runs stay fast and unchanged; posting to GitHub is a conscious choice. **WHY one reply per thread:** Keeps noise low and leaves room for human follow-up in the same thread. **WHY only some dismissal categories get a reply:** We reply for `already-fixed`, `stale`, `not-an-issue`, `false-positive`; we do not reply for `exhausted`, `remaining`, `chronic-failure` so "gave up" / "needs human" threads stay low-noise. **WHY cross-run idempotency:** Re-runs would otherwise duplicate replies; `PRR_BOT_LOGIN` lets us skip threads we already replied to. Full WHYs: [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
+**WHY opt-in:** Default runs stay fast and unchanged; posting to GitHub is a conscious choice. **WHY one reply per thread:** Keeps noise low and leaves room for human follow-up in the same thread. **WHY fixed replies only after push:** "Fixed in \<sha\>." is posted only when the commit has been successfully pushed (commit-and-push phase), not after incremental pushes. **WHY reply for remaining/exhausted:** We reply for `already-fixed`, `stale`, `not-an-issue`, `false-positive`, and also for `remaining` and `exhausted` with a short "Could not auto-fix; manual review recommended." so threads (e.g. wrong-file exhaust) are not left without any reply. We do not reply for `chronic-failure` and other rare categories. **WHY cross-run idempotency:** Re-runs would otherwise duplicate replies; `PRR_BOT_LOGIN` lets us skip threads we already replied to. Full WHYs: [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
 
 ## Conventions
 
@@ -42,9 +50,10 @@ With **`--reply-to-threads`** (or **`PRR_REPLY_TO_THREADS=true`**), PRR posts a 
 
 ## Docs and rules
 
-- **`.cursor/rules/`** — Cursor rules (e.g. number formatting, audit-cycle template, canonical paths).
+- **`.cursor/rules/`** — Cursor rules (e.g. number formatting, audit-cycle template, canonical paths, **docs-no-new-md**: do not create new `.md` files until you have checked existing docs for an appropriate place; see rule).
 - **`tools/prr/AUDIT-CYCLES.md`** — PRR audit log; when adding a cycle, use the template, bump "Recorded cycles", and add the new cycle under "Recorded cycles" (newest first).
-- **`DEVELOPMENT.md`** — Developer guide, key files, run locally (`bun dist/tools/prr/index.js …`).
+- **`DEVELOPMENT.md`** — Developer guide, key files, run locally (`bun dist/tools/prr/index.js …`). **Fix-loop audit content** (pain points, thresholds, rationale) lives in DEVELOPMENT.md "Fix loop audits (output.log)", not in standalone audit files.
+- **No standalone audit .md:** Integrate audit findings and run context into DEVELOPMENT.md and AUDIT-CYCLES.md; only add a new doc when the content has no proper home (see `.cursor/rules/docs-no-new-md.mdc`).
 
 ## Quick file map
 

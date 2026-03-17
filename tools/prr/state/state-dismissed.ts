@@ -52,6 +52,10 @@ export function dismissIssue(
   }
   
   const currentIteration = state.iterations.length;
+  // Pill: Keep verifiedFixed and dismissedIssues mutually exclusive — when we dismiss, remove from verified.
+  if (state.verifiedFixed?.length) {
+    state.verifiedFixed = state.verifiedFixed.filter((id) => id !== commentId);
+  }
   const existing = state.dismissedIssues.find(d => d.commentId === commentId);
   if (!existing) {
     const entry: DismissedIssue = {

@@ -403,6 +403,17 @@ function writeToPromptLog(
   body: string, metadata?: Record<string, unknown>,
 ): void {
   if (!promptLogStream) return;
+  // WHY warn on empty: Pill/audit cycles need content between markers; empty entries indicate a logging bug
+  // (e.g. subprocess runner not writing to same stream, or caller passed marker-only). See AGENTS.md prompts.log.
+  if (body.length === 0 && kind !== 'ERROR') {
+    try {
+      const w = (typeof console !== 'undefined' && console.warn) ? console.warn : () => {};
+      w('[logger] prompts.log: ' + kind + ' ' + slug + ' has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed.');
+    } catch {
+      // avoid throwing from logger
+    }
+    return;
+  }
   try {
     const sep = '═'.repeat(70);
     const sizeNote = `${body.length} chars`;
@@ -432,14 +443,15 @@ function writeToPromptLog(
  * prompts.log is written whenever initOutputLog was used (e.g. split-plan-prompts.log).
  * Standalone files and output.log one-liner only when PRR_DEBUG_PROMPTS + verbose (debugLogDir set).
  */
-export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
+/** Returns the slug so the caller can pass it to debugResponse/debugPromptError for the same request (safe when requests are in flight). */
+export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): string {
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
 
   // Full content in prompts.log (always when stream exists, so split-plan etc. get a non-empty log)
   writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
 
-  if (!debugLogDir) return;
+  if (!debugLogDir) return slug;
 
   // Standalone file (still useful for sharing/diffing individual prompts)
   const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-prompt.txt`;
@@ -456,23 +468,34 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
 
   // Searchable one-liner in output.log
   debug(`PROMPT ${slug}`, { chars: prompt.length });
+  return slug;
+}
+
+/** Extract numeric part from slug (e.g. "#0001/llm-api" → "0001") for standalone filenames. */
+function slugNumber(slug: string): string {
+  const m = /^#(\d+)\//.exec(slug);
+  return m ? m[1] : String(debugLogCounter).padStart(4, '0');
 }
 
 /**
  * Log a response to the prompts.log companion file and (optionally) a standalone
- * debug file. A one-liner with a searchable slug is written to output.log when debugLogDir is set.
+ * debug file. Caller must pass the slug returned from debugPrompt for this request
+ * so prompt and response are paired even when multiple requests are in flight.
  */
-export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
-  debugLogCounter++;
-  const slug = promptSlug(debugLogCounter, label);
-
+export function debugResponse(
+  slug: string,
+  label: string,
+  response: string,
+  metadata?: Record<string, unknown>
+): void {
   // Full content in prompts.log (always when stream exists)
   writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
 
   if (!debugLogDir) return;
 
   // Standalone file
-  const filename = `${String(debugLogCounter).padStart(4, '0')}-${label.replace(/[^a-z0-9]/gi, '-')}-response.txt`;
+  const num = slugNumber(slug);
+  const filename = `${num}-${label.replace(/[^a-z0-9]/gi, '-')}-response.txt`;
   const filepath = join(debugLogDir, filename);
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
@@ -490,17 +513,15 @@ export function debugResponse(label: string, response: string, metadata?: Record
 
 /**
  * Log a failed LLM request to prompts.log (ERROR entry) so audits can see
- * 504/timeout etc. without relying only on output.log.
- * Uses next slug in sequence; call after a PROMPT was logged and the request threw.
+ * 504/timeout etc. Caller must pass the slug returned from debugPrompt for this request.
  */
 export function debugPromptError(
+  slug: string,
   label: string,
   errorMessage: string,
   metadata?: Record<string, unknown>,
 ): void {
   if (!promptLogStream) return;
-  debugLogCounter++;
-  const slug = promptSlug(debugLogCounter, label);
   writeToPromptLog(slug, 'ERROR', label, errorMessage, metadata);
   if (debugLogDir) {
     debug(`ERROR ${slug}`, { error: errorMessage.slice(0, 80) });

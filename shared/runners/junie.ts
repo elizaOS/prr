@@ -75,7 +75,7 @@ export class JunieRunner implements Runner {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 
-    debugPrompt('junie', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('junie', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Junie uses --project for workdir and prompt as positional arg
@@ -118,7 +118,7 @@ export class JunieRunner implements Runner {
       });
 
       child.on('close', (code: number | null) => {
-        debugResponse('junie', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse(promptSlug, 'junie', stdout, { exitCode: code, stderrLength: stderr.length });
 
         const combinedOutput = stdout + stderr;
 

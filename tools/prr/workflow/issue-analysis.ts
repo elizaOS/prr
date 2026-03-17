@@ -48,6 +48,7 @@ import type { Runner } from '../../../shared/runners/types.js';
 import {
   CODE_SNIPPET_CONTEXT_AFTER,
   CODE_SNIPPET_CONTEXT_BEFORE,
+  COULD_NOT_INJECT_CREATE_FILE_THRESHOLD,
   COULD_NOT_INJECT_DISMISS_THRESHOLD,
   getVerificationExpiryForIterationCount,
   LLM_DEDUP_MAX_CONCURRENT,
@@ -55,7 +56,7 @@ import {
   VERIFICATION_EXPIRY_ITERATIONS,
 } from '../../../shared/constants.js';
 import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
-import { validateDismissalExplanation } from './utils.js';
+import { looksLikeCreateFileIssue, validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
 import { assessSolvability, resolveTrackedPath, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
@@ -305,6 +306,33 @@ interface DedupResult {
     codeSnippet: string;
     contextHints?: string[];
   }>;
+}
+
+/**
+ * Propagate the same comment status to all duplicates of a canonical.
+ * WHY: Duplicates are only analyzed via the canonical; without this they stay "unseen" in the debug table.
+ */
+function propagateStatusToDuplicates(
+  stateContext: StateContext,
+  canonicalId: string,
+  dedupResult: DedupResult,
+  fileHashes: Map<string, string>,
+  status:
+    | { kind: 'resolved'; classification: string; explanation: string }
+    | { kind: 'open'; classification: string; explanation: string; importance: number; ease: number },
+): void {
+  const dupIds = dedupResult.duplicateMap.get(canonicalId) ?? [];
+  for (const dupId of dupIds) {
+    const dupItem = dedupResult.duplicateItems.get(dupId);
+    if (!dupItem) continue;
+    const path = dupItem.comment.path;
+    const fHash = fileHashes.get(path) || '__missing__';
+    if (status.kind === 'resolved') {
+      CommentStatusAPI.markResolved(stateContext, dupId, status.classification as 'stale' | 'fixed', status.explanation, path, fHash);
+    } else {
+      CommentStatusAPI.markOpen(stateContext, dupId, status.classification as 'exists', status.explanation, status.importance, status.ease, path, fHash);
+    }
+  }
 }
 
 /**
@@ -1331,12 +1359,16 @@ function getAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string,
   return filterAllowedPathsForFix([primaryPath, ...extraPaths]);
 }
 
-/** Allowed paths for a new issue: test path when relevant, plus any paths listed in "delete/remove these files" body. */
+/** Allowed paths for a new issue: test path when relevant, plus any paths listed in "delete/remove these files" body. Never returns []. */
 function getEffectiveAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string, codeSnippet: string, explanation: string | undefined): string[] {
   const base = getAllowedPathsForNewIssue(comment, primaryPath, codeSnippet, explanation) ?? [primaryPath];
   const deletePaths = getPathsToDeleteFromCommentBody(comment.body ?? '');
-  if (deletePaths.length === 0) return base;
-  return filterAllowedPathsForFix([...base, ...deletePaths]);
+  if (deletePaths.length === 0) {
+    const filtered = filterAllowedPathsForFix(base);
+    return filtered.length > 0 ? filtered : [primaryPath];
+  }
+  const merged = filterAllowedPathsForFix([...base, ...deletePaths]);
+  return merged.length > 0 ? merged : [primaryPath];
 }
 
 /** When comment.path is a basename (no directory), resolve to full path from diff if present. Prompts.log audit: fixer was sent wrong file (root reporting.py) when issue was about benchmarks/bfcl/reporting.py. */
@@ -1351,8 +1383,8 @@ function resolvePathFromDiff(commentPath: string, changedFiles: string[] | undef
 function isCommentPositiveOnly(body: string): boolean {
   if (!body || body.length > 2000) return false;
   const trimmed = body.trim();
-  if (!/(?:^|\n)#*\s*✅\s*What's Good|Documentation:.*are now accurate|only contains positive feedback|looks clean and follows .*spec|nice work on the frontmatter structure|no hardcoded credentials|doesn'?t expose any sensitive APIs|no security (?:issues|concerns) identified/i.test(trimmed)) return false;
-  if (/\b(?:fix|change|should|incorrect|missing|add|remove|update|⚠️|❌|issue\s+(is|with)|bug|error)\b/i.test(trimmed)) return false;
+  if (!/(?:^|\n)#*\s*✅\s*What's Good|Documentation:.*are now accurate|only contains positive feedback|looks clean and follows .*spec|nice work on the frontmatter structure|no hardcoded credentials|doesn'?t expose any sensitive APIs|no security (?:issues|concerns) identified|correctly reflects|nice attention to detail|(?:docs?|documentation) in sync/i.test(trimmed)) return false;
+  if (/\b(?:fix|change|should|incorrect|missing|add|remove|update|⚠️|❌|issue\s+(is|with)|bug|error|concern)\b/i.test(trimmed)) return false;
   return true;
 }
 
@@ -1404,8 +1436,28 @@ export async function findUnresolvedIssues(
 
   const iterationCount = stateContext.state?.iterations?.length ?? 0;
   const effectiveExpiry = getVerificationExpiryForIterationCount(iterationCount);
-  const staleVerifications = Verification.getStaleVerifications(stateContext, effectiveExpiry);
-  
+  const staleVerificationsRaw = Verification.getStaleVerifications(stateContext, effectiveExpiry);
+  // WHY: output.log audit — don't re-check or unmark comments just recovered from git this run.
+  const recoveredIds = stateContext.state?.recoveredFromGitCommentIds;
+  const recoveredSet = recoveredIds?.length ? new Set(recoveredIds) : undefined;
+  if (recoveredIds?.length) {
+    stateContext.state!.recoveredFromGitCommentIds = undefined;
+  }
+  let staleVerifications = recoveredIds?.length
+    ? staleVerificationsRaw.filter((id) => !recoveredIds.includes(id))
+    : staleVerificationsRaw;
+  const changedFiles = findUnresolvedIssuesOptions?.changedFiles;
+  if (changedFiles?.length) {
+    // Only re-check stale verifications for comments whose file changed (output.log audit).
+    const changedSet = new Set(changedFiles);
+    staleVerifications = staleVerifications.filter((id) => {
+      const c = comments.find((co) => co.id === id);
+      if (!c?.path) return true;
+      if (changedSet.has(c.path)) return true;
+      return [...changedSet].some((f) => f.endsWith('/' + c.path) || c.path.endsWith('/' + f));
+    });
+  }
+
   // First pass: filter out already-verified issues, run solvability checks (sync),
   // then batch-fetch all code snippets concurrently.
   // WHY two-phase: Solvability checks are synchronous (file existence, attempt counts)
@@ -1420,7 +1472,6 @@ export async function findUnresolvedIssues(
   }> = [];
 
   // Phase 1: Sync filtering (verified, solvability)
-  const changedFiles = findUnresolvedIssuesOptions?.changedFiles;
   const needSnippets: Array<{
     comment: ReviewComment;
     snippetLine: number | null;
@@ -1429,11 +1480,8 @@ export async function findUnresolvedIssues(
   }> = [];
 
   for (const comment of comments) {
-    // GitHub marks threads as outdated when the commented line no longer exists in the current diff.
-    // Treat them as not unaddressed so PRR's list matches the PR conversation view.
-    if (comment.outdated) {
-      continue;
-    }
+    // WHY not skip outdated: GitHub "outdated" means the diff hunk moved, not that the issue is fixed
+    // (DEVELOPMENT.md §2). Still run solvability + LLM existence check so we don't miss bugs that remain.
 
     const isStale = staleVerifications.includes(comment.id);
     
@@ -1481,7 +1529,9 @@ export async function findUnresolvedIssues(
       continue;
     }
 
-    if ((stateContext.state?.couldNotInjectCountByCommentId?.[comment.id] ?? 0) >= COULD_NOT_INJECT_DISMISS_THRESHOLD) {
+    const couldNotInjectCount = stateContext.state?.couldNotInjectCountByCommentId?.[comment.id] ?? 0;
+    const couldNotInjectThreshold = looksLikeCreateFileIssue(comment) ? COULD_NOT_INJECT_CREATE_FILE_THRESHOLD : COULD_NOT_INJECT_DISMISS_THRESHOLD;
+    if (couldNotInjectCount >= couldNotInjectThreshold) {
       Dismissed.dismissIssue(
         stateContext,
         comment.id,
@@ -1771,13 +1821,13 @@ export async function findUnresolvedIssues(
   }
 
   if (options.reverify && skippedCache > 0) {
-    console.log(chalk.yellow(`  --reverify: Re-checking ${skippedCache} previously cached as "fixed"`));
+    console.log(chalk.yellow(`  --reverify: Re-checking ${formatNumber(skippedCache)} previously cached as "fixed"`));
   } else if (alreadyResolved > 0) {
-    console.log(chalk.gray(`  ${alreadyResolved} already verified as fixed (cached)`));
+    console.log(chalk.gray(`  ${formatNumber(alreadyResolved)} already verified as fixed (cached)`));
   }
   
   if (staleRecheck > 0) {
-    console.log(chalk.yellow(`  ${staleRecheck} stale verifications (>${effectiveExpiry} iterations old) - re-checking`));
+    console.log(chalk.yellow(`  ${formatNumber(staleRecheck)} stale verifications (>${formatNumber(effectiveExpiry)} iterations old) - re-checking`));
   }
 
   // Report comment status stats
@@ -1827,10 +1877,13 @@ export async function findUnresolvedIssues(
       const fHash = fileHashes.get(comment.path) || '__missing__';
       if (result.stale) {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', result.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: result.explanation });
       } else if (result.exists) {
         CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', result.explanation, 3, 3, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: result.explanation, importance: 3, ease: 3 });
       } else {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', result.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: result.explanation });
       }
 
       if (result.stale) {
@@ -2002,7 +2055,7 @@ export async function findUnresolvedIssues(
       const maxIssuesPerBatch = overrides?.maxIssuesPerBatch;
       for (let attempt = 0; ; attempt++) {
         try {
-          return await llm.batchCheckIssuesExist(input, modelContext, maxContextChars, maxIssuesPerBatch);
+          return await llm.batchCheckIssuesExist(input, modelContext, maxContextChars, maxIssuesPerBatch, 'batch-verify');
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
@@ -2188,10 +2241,13 @@ export async function findUnresolvedIssues(
       const fHash = fileHashes.get(comment.path) || '__missing__';
       if (effectiveResult.stale) {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', effectiveResult.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: effectiveResult.explanation });
       } else if (effectiveResult.exists) {
         CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', effectiveResult.explanation, effectiveResult.importance ?? 3, effectiveResult.ease ?? 3, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: effectiveResult.explanation, importance: effectiveResult.importance ?? 3, ease: effectiveResult.ease ?? 3 });
       } else {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', effectiveResult.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: effectiveResult.explanation });
       }
 
       if (effectiveResult.stale) {
@@ -2234,6 +2290,17 @@ export async function findUnresolvedIssues(
           });
         }
       } else if (effectiveResult.exists) {
+        // Stale re-check: batch said "still exists" — if comment was previously verified, unmark so it re-enters the fix queue.
+        // WHY: output.log audit — push iter 2 had 2 unresolved (reporting.py) but "All 2 already verified — skipping fixer"
+        // because they stayed in verifiedFixed; re-check had correctly said stillExists but we never unmarked.
+        if (Verification.isVerified(stateContext, comment.id)) {
+          if (recoveredSet?.has(comment.id)) {
+            debug('Skipping unmark (recovered from git this run)', { commentId: comment.id, path: comment.path });
+          } else {
+            Verification.unmarkVerified(stateContext, comment.id);
+            debug('Unmarked verified (stale re-check said still exists)', { commentId: comment.id, path: comment.path });
+          }
+        }
         // Check if this is a canonical issue with duplicates
         const duplicates = dedupResult.duplicateMap.get(comment.id);
         const mergedDuplicates = duplicates?.map(dupId => {

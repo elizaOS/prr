@@ -14,7 +14,7 @@ import type { UnresolvedIssue } from '../../analyzer/types.js';
 import { getTestPathForIssueLike, isTestOrSpecPath, issueRequestsTestsText } from '../../analyzer/test-path-inference.js';
 import * as Performance from '../../state/state-performance.js';
 import * as Dismissed from '../../state/state-dismissed.js';
-import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
+import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, APPLY_FAILURE_DISMISS_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
 import { pluralize, debug } from '../../../../shared/logger.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
@@ -28,7 +28,8 @@ type TrackedPathResolution =
   | { kind: 'suffix'; path: string }
   | { kind: 'body-hint'; path: string }
   | { kind: 'ambiguous'; candidates: string[] }
-  | { kind: 'missing' };
+  | { kind: 'missing' }
+  | { kind: 'fragment' };  // e.g. ".d.ts" — not a full file path
 
 /**
  * Cached `git ls-files` output for tracked-path resolution.
@@ -69,6 +70,23 @@ function extractPathHintsFromBody(body: string): string[] {
     hints.push(hint);
   }
   return hints;
+}
+
+/** Bare filenames in body (e.g. TickerClient.tsx) for (PR comment) path inference. */
+function extractBareFilePathHintsFromBody(body: string): string[] {
+  if (!body) return [];
+  const seen = new Set<string>();
+  const bareRe = /\b([A-Za-z0-9_.-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))\b/g;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = bareRe.exec(body)) !== null) {
+    const hint = m[1]!;
+    if (!seen.has(hint)) {
+      seen.add(hint);
+      out.push(hint);
+    }
+  }
+  return out;
 }
 
 function scorePathCandidateAgainstBody(candidate: string, body: string): number {
@@ -135,13 +153,66 @@ function isCreateFileCandidate(comment: ReviewComment, resolution: TrackedPathRe
  * winner both mislead operators. The debug table should say "we could not tell
  * which file this meant" when that is the real problem.
  */
+/** Paths that are fragments (e.g. ".d.ts") or extension-only, not resolvable to a single file. */
+function isPathFragment(rawPath: string): boolean {
+  const t = rawPath.trim();
+  if (!t) return true;
+  if (t.startsWith('.') && !t.includes('/')) return true;  // e.g. ".d.ts"
+  if (/^\.(d\.ts|ts|tsx|js|jsx|mjs|cjs)$/.test(t)) return true;
+  return false;
+}
+
 export function resolveTrackedPathDetailed(workdir: string, rawPath: string, commentBody = ''): TrackedPathResolution {
   const repoFiles = getTrackedRepoFiles(workdir);
   if (!repoFiles) return { kind: 'missing' };
+  if (isPathFragment(rawPath)) return { kind: 'fragment' };
   const exact = repoFiles.find((f) => f === rawPath);
   if (exact) return { kind: 'exact', path: exact };
   const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + rawPath) || f === rawPath);
   if (suffixMatches.length === 0) {
+    // Config extension variant: review path tsconfig.js but file is tsconfig.json (common bot mistake)
+    if (rawPath.endsWith('tsconfig.js') || rawPath === 'tsconfig.js') {
+      const altPath = rawPath.slice(0, -3) + 'json';
+      const altExact = repoFiles.find((f) => f === altPath);
+      if (altExact) {
+        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { rawPath, resolved: altExact });
+        return { kind: 'suffix', path: altExact };
+      }
+      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
+      if (altSuffix.length === 1) {
+        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { rawPath, resolved: altSuffix[0] });
+        return { kind: 'suffix', path: altSuffix[0] };
+      }
+    }
+    if (rawPath.endsWith('jsconfig.js') || rawPath === 'jsconfig.js') {
+      const altPath = rawPath.slice(0, -3) + 'json';
+      const altExact = repoFiles.find((f) => f === altPath);
+      if (altExact) {
+        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { rawPath, resolved: altExact });
+        return { kind: 'suffix', path: altExact };
+      }
+      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
+      if (altSuffix.length === 1) {
+        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { rawPath, resolved: altSuffix[0] });
+        return { kind: 'suffix', path: altSuffix[0] };
+      }
+    }
+    // Prefix variant: review path missing top-level dir (e.g. plugin-personality/... vs plugins/plugin-personality/...)
+    const commonPrefixes = ['plugins/', 'packages/', 'benchmarks/', 'tools/', 'shared/', 'examples/'];
+    for (const prefix of commonPrefixes) {
+      if (rawPath.startsWith(prefix)) continue;
+      const prefixed = prefix + rawPath;
+      const exactPrefixed = repoFiles.find((f) => f === prefixed);
+      if (exactPrefixed) {
+        debug('Review path resolved with prefix', { rawPath, prefix, resolved: exactPrefixed });
+        return { kind: 'suffix', path: exactPrefixed };
+      }
+      const suffixPrefixed = repoFiles.filter((f) => f.endsWith('/' + prefixed) || f === prefixed);
+      if (suffixPrefixed.length === 1) {
+        debug('Review path resolved with prefix', { rawPath, prefix, resolved: suffixPrefixed[0] });
+        return { kind: 'suffix', path: suffixPrefixed[0] };
+      }
+    }
     // Extension typo: review path .ts but file is .tsx (common bot mistake); pill-output.md #4
     if (rawPath.endsWith('.ts') && !rawPath.endsWith('.tsx')) {
       const altPath = rawPath.slice(0, -3) + 'tsx';
@@ -305,9 +376,33 @@ export function assessSolvability(
     };
   }
 
-  // Check 0e: Synthetic path "(PR comment)" — no file path in comment body (inferPathLineFromBody fallback).
-  // WHY: Fixer cannot edit a non-file; every attempt fails and burns iterations; dismiss up front.
+  // Check 0e: Synthetic path "(PR comment)" — try to infer path from body before dismissing.
+  // WHY: output.log audit — comments like "Non-null assertion (line 290)" / "Lines 127-129" reference
+  // a file (e.g. TickerClient.tsx); inferPathLineFromBody may have failed on format, but body path hints can resolve.
   if (normalizedPath === '(PR comment)') {
+    const pathHints = [
+      ...extractPathHintsFromBody(comment.body ?? ''),
+      ...extractBareFilePathHintsFromBody(comment.body ?? ''),
+    ];
+    const resolvedPaths = new Set<string>();
+    for (const hint of pathHints) {
+      const resolution = resolveTrackedPathDetailed(workdir, hint, comment.body ?? '');
+      if ('path' in resolution) resolvedPaths.add(resolution.path);
+    }
+    if (resolvedPaths.size === 1) {
+      const resolvedPath = [...resolvedPaths][0]!;
+      const effectiveFullPath = join(workdir, resolvedPath);
+      if (existsSync(effectiveFullPath)) {
+        const retargetedLine = extractMaxLineRefFromBody(comment.body ?? '') ?? undefined;
+        return {
+          solvable: true,
+          resolvedPath,
+          retargetedLine,
+          contextHints: ['Path inferred from (PR comment) body; fixer target may need verification.'],
+        };
+      }
+    }
+    // No single resolvable path — fixer cannot edit a non-file; dismiss.
     return {
       solvable: false,
       dismissCategory: 'not-an-issue',
@@ -319,6 +414,13 @@ export function assessSolvability(
   // WHY: Without this, comments on `generate-skills-md.ts` or `SKILL.md` were dismissed as stale
   // even though the real repo files existed at `scripts/...` / `skills/babylon/...`.
   const pathResolution = resolveTrackedPathDetailed(workdir, comment.path, comment.body);
+  if (pathResolution.kind === 'fragment') {
+    return {
+      solvable: false,
+      dismissCategory: 'path-unresolved',
+      reason: `Review path "${comment.path}" is a fragment (e.g. .d.ts), not a full file path — cannot resolve to a single file`,
+    };
+  }
   const effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
   const effectiveFullPath = join(workdir, effectivePath);
 
@@ -493,6 +595,17 @@ export function assessSolvability(
     } catch {
       // File read failed after existsSync passed - let it fall through to snippet fetch
     }
+  }
+
+  // Check 3a: Apply failure exhaustion — output did not match file after N attempts (output.log audit: earlier dismissal with clear handoff).
+  const applyFailures = stateContext.state?.applyFailureCountByCommentId?.[comment.id] ?? 0;
+  if (applyFailures >= APPLY_FAILURE_DISMISS_THRESHOLD) {
+    debug('Solvability dismiss: apply-failure chronic', { commentId: comment.id, path: comment.path, applyFailures, threshold: APPLY_FAILURE_DISMISS_THRESHOLD });
+    return {
+      solvable: false,
+      dismissCategory: 'chronic-failure',
+      reason: `Output did not match file after ${applyFailures} attempt(s); manual review recommended.`,
+    };
   }
 
   // Check 3: Chronic failure — total failed attempts for current file version only

@@ -6,7 +6,8 @@ import { existsSync } from 'fs';
 import { dirname } from 'path';
 import type { ResolverState } from './types.js';
 import { createInitialState } from './types.js';
-import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../../../shared/logger.js';
+import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage, formatNumber } from '../../../shared/logger.js';
+import { getEffectiveElizacloudSkipModelIds } from '../../../shared/constants.js';
 import type { StateContext } from './state-context.js';
 
 export async function loadState(ctx: StateContext, pr: string, branch: string, headSha: string): Promise<ResolverState> {
@@ -81,6 +82,57 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
 
         if (!ctx.state.dismissedIssues) {
           ctx.state.dismissedIssues = [];
+        }
+
+        // Normalize legacy .d.ts dismissals: old runs stored "missing-file" for path ".d.ts";
+        // we now treat it as path-unresolved (fragment). Update so debug table and counts are consistent.
+        const fragmentReason = `Review path ".d.ts" is a fragment (e.g. .d.ts), not a full file path — cannot resolve to a single file`;
+        let normalizedFragment = 0;
+        for (const d of ctx.state.dismissedIssues) {
+          if (d.filePath === '.d.ts' && d.reason?.startsWith('Tracked file not found for review path: .d.ts')) {
+            d.category = 'path-unresolved';
+            d.reason = fragmentReason;
+            normalizedFragment++;
+          }
+        }
+        if (normalizedFragment > 0) {
+          console.log(`Normalized ${formatNumber(normalizedFragment)} legacy .d.ts dismissal(s) to path-unresolved`);
+        }
+
+        // Keep verifiedFixed and dismissedIssues mutually exclusive (output.log audit: overlapVerifiedAndDismissed).
+        // Recovery or legacy state can leave the same ID in both; remove from dismissed when it's in verified.
+        const verifiedSet = new Set(ctx.state.verifiedFixed ?? []);
+        if (verifiedSet.size > 0 && ctx.state.dismissedIssues.length > 0) {
+          const before = ctx.state.dismissedIssues.length;
+          ctx.state.dismissedIssues = ctx.state.dismissedIssues.filter((d) => !verifiedSet.has(d.commentId));
+          const removed = before - ctx.state.dismissedIssues.length;
+          if (removed > 0) {
+            console.log(`Cleaned ${formatNumber(removed)} overlap (removed from dismissed; already in verified)`);
+          }
+        }
+
+        // Never carry recoveredFromGitCommentIds across runs — it's only for the first analysis after recovery.
+        if (ctx.state.recoveredFromGitCommentIds !== undefined) {
+          ctx.state.recoveredFromGitCommentIds = undefined;
+        }
+
+        // Zero out model performance for skipped models so stale 0%-success data doesn't persist.
+        if (ctx.state.modelPerformance) {
+          const skipIds = getEffectiveElizacloudSkipModelIds();
+          if (skipIds.length > 0) {
+          const skipSet = new Set(skipIds);
+          let removed = 0;
+          for (const key of Object.keys(ctx.state.modelPerformance)) {
+            const modelId = key.includes('/') ? key.split('/').slice(1).join('/') : key;
+            if (skipSet.has(modelId)) {
+              delete ctx.state.modelPerformance[key];
+              removed++;
+            }
+          }
+          if (removed > 0) {
+            console.log(`Cleared ${formatNumber(removed)} model performance entries for skipped models`);
+          }
+          }
         }
       }
     } catch (error) {

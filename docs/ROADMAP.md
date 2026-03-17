@@ -16,6 +16,18 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 **WHY:** Pill audit (output.log) showed `expectedPaths: []` for single-issue fixes; the fixer correctly edited the target file but the runner rejected edits. We now add `plugins` and `benchmarks` to `REPO_TOP_LEVEL`, fallback to `[primaryPath]` when filter yields empty in recovery, and do not count edits to the issue's target as wrong-file. Tracked here so the fix stays thorough and tested across runners.
 
+## State consistency: verifiedFixed vs dismissedIssues (mutual exclusivity)
+
+**Idea:** Ensure a comment is never in both `verifiedFixed` and `dismissedIssues`. When marking a comment verified, remove it from `dismissedIssues`; when dismissing, remove it from `verifiedFixed`. Transition semantics (e.g. re-dismiss after verify) can be documented and tested.
+
+**WHY:** Pill audit noted overlap can confuse summaries and re-runs. We now keep them mutually exclusive in `markVerified` and `dismissIssue`; this item tracks any further normalization (e.g. migration of existing state files, tests).
+
+## Lesson staleness / conflict detection
+
+**Idea:** Detect when a file-specific lesson contradicts the issue's target file (e.g. "Do NOT edit benchmarks/bfcl/reporting.py" for an issue on that same file) and either clear it, flag it for human review, or normalize it so the fixer is not permanently blocked from editing the correct file.
+
+**WHY:** Pill audit showed wrong-file lessons with an empty "need to modify one of:" list caused the fixer to refuse to edit the target file; we now prevent creating such lessons and normalize/reject them on load. A design-level solution would detect any lesson that forbids editing the issue's primary path and downgrade or remove it so batch mode can succeed without relying only on single-issue injection.
+
 ## Blast radius and focus masking
 
 **Idea:** Use the PR diff to compute a "blast radius" (changed files plus their upstream dependencies and downstream dependents), then focus the fix loop on that set and effectively ignore or deprioritize the rest.

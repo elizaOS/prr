@@ -31,6 +31,8 @@ import type { Config } from '../../../shared/config.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber, formatDuration, setTokenPhase } from '../../../shared/logger.js';
 import * as ResolverProc from '../resolver-proc.js';
 import { computeLineMapFromDiff } from '../../../shared/git/git-diff.js';
+import { hashFileContent } from '../../../shared/utils/file-hash.js';
+import { createHash } from 'crypto';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 
 /**
@@ -75,8 +77,8 @@ export async function processCommentsAndPrepareFixLoop(
    *  WHY: Avoids re-fetching 200+ comments (3 GraphQL pages, ~3s) when
    *  the CodeRabbit check already did the exact same API call. */
   prefetchedComments?: ReviewComment[],
-  /** When set, reuse cached analysis if comment count and prInfo.headSha unchanged. */
-  analysisCacheRef?: { current: { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null }
+  /** When set, reuse cached analysis if comment IDs, headSha, and file hashes for comment paths unchanged (output.log audit). */
+  analysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null }
 ): Promise<{
   comments: ReviewComment[];
   unresolvedIssues: UnresolvedIssue[];
@@ -138,18 +140,34 @@ export async function processCommentsAndPrepareFixLoop(
     }
   }
 
-  // Reuse cached analysis when comment set and HEAD unchanged (saves ~1–4 min of LLM analysis).
+  // Reuse cached analysis when comment set, HEAD, and file content for comment paths unchanged (output.log audit: key by comment IDs + file hashes).
   const headSha = prInfo.headSha ?? '';
   const cache = analysisCacheRef?.current;
+  const currentCommentIds = comments.map((c) => c.id).sort().join(',');
+  const uniquePaths = [...new Set(comments.map((c) => c.path).filter(Boolean))];
+  const pathHashes = await Promise.all(
+    uniquePaths.map(async (p) => ({ path: p, hash: await hashFileContent(workdir, p) }))
+  );
+  const fileHashesKey = pathHashes
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(({ path, hash }) => `${path}:${hash}`)
+    .join('|');
+  const fileHashesKeyDigest = createHash('sha256').update(fileHashesKey).digest('hex').slice(0, 16);
+
   let unresolvedIssues: UnresolvedIssue[];
   let duplicateMap: Map<string, string[]>;
   let analyzeTime: number;
-  if (cache && cache.commentCount === comments.length && cache.headSha === headSha) {
+  const cacheHit =
+    cache &&
+    cache.headSha === headSha &&
+    (cache.commentIds != null ? cache.commentIds === currentCommentIds : cache.commentCount === comments.length) &&
+    (cache.fileHashesKeyDigest != null ? cache.fileHashesKeyDigest === fileHashesKeyDigest : true);
+  if (cacheHit) {
     unresolvedIssues = cache.unresolvedIssues;
     duplicateMap = cache.duplicateMap;
     analyzeTime = 0;
-    console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, same as previous iteration)`));
-    debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7) });
+    console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, same IDs + file hashes)`));
+    debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7), fileHashesDigest: fileHashesKeyDigest });
   } else {
     debugStep('ANALYZING ISSUES');
     setPhase(stateContext, 'analyzing');
@@ -182,7 +200,15 @@ export async function processCommentsAndPrepareFixLoop(
     duplicateMap = analysisResult.duplicateMap;
     analyzeTime = endTimer('Analyze issues');
     if (analysisCacheRef) {
-      analysisCacheRef.current = { commentCount: comments.length, headSha, unresolvedIssues: [...unresolvedIssues], comments: [...comments], duplicateMap: new Map(duplicateMap) };
+      analysisCacheRef.current = {
+        commentCount: comments.length,
+        headSha,
+        commentIds: currentCommentIds,
+        fileHashesKeyDigest,
+        unresolvedIssues: [...unresolvedIssues],
+        comments: [...comments],
+        duplicateMap: new Map(duplicateMap),
+      };
     }
   }
 
