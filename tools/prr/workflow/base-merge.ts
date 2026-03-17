@@ -12,6 +12,7 @@ import type { GitHubAPI } from '../github/api.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber } from '../../../shared/logger.js';
 import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../../../shared/git/git-clone-index.js';
 import { push } from '../../../shared/git/git-push.js';
+import { findFilesWithConflictMarkers } from '../../../shared/git/git-lock-files.js';
 
 /**
  * Check and merge base branch into PR branch
@@ -84,14 +85,12 @@ export async function checkAndMergeBaseBranch(
 
     try {
     // Fetch latest base branch and PR branch.
-    // On --single-branch clones the base branch refspec may be missing; add it first.
-    try {
-      await git.fetch('origin', prInfo.baseBranch);
-    } catch {
-      debug('Base branch fetch failed (likely --single-branch clone), adding refspec and retrying', { baseBranch: prInfo.baseBranch });
-      await git.raw(['remote', 'set-branches', '--add', 'origin', prInfo.baseBranch]);
-      await git.fetch('origin', prInfo.baseBranch);
-    }
+    // WHY explicit refspec: On --single-branch clones the default fetch config only
+    // includes the PR branch. A plain `git fetch origin <baseBranch>` downloads objects
+    // but does NOT update refs/remotes/origin/<baseBranch>, leaving a stale ref so the
+    // merge-base check thinks we're already up-to-date and the PR stays "dirty" on GitHub.
+    await git.raw(['remote', 'set-branches', '--add', 'origin', prInfo.baseBranch]);
+    await git.fetch(['origin', `+refs/heads/${prInfo.baseBranch}:refs/remotes/origin/${prInfo.baseBranch}`]);
     await git.fetch('origin', prInfo.branch);
 
     // When the PR branch is behind the base (locally or per GitHub), merge with --no-ff and push so the branch is up to date. Use local state after fetch so we don't rely only on GitHub's mergeableState (which can be stale or missing). WHY: User expects PRR to "update the branch, pull target into source, and push" so the PR is not "out of date with base branch".
@@ -174,6 +173,26 @@ export async function checkAndMergeBaseBranch(
           // All conflicts resolved - stage files and complete the merge
           const codeFiles = conflictedFiles.filter((f: string) => !isLockFile(f));
           const lockFiles = conflictedFiles.filter((f: string) => isLockFile(f));
+
+          // Verify no conflict markers remain (LLM can sometimes leave <<<<<<< in output)
+          const workdir = (await git.revparse(['--show-toplevel'])).trim();
+          const stillMarked = findFilesWithConflictMarkers(workdir, codeFiles);
+          if (stillMarked.length > 0) {
+            console.log(chalk.red('\n✗ Resolved files still contain conflict markers'));
+            console.log(chalk.red('  Files: ' + stillMarked.join(', ')));
+            console.log(chalk.yellow('\n  Aborting merge. Resolve manually and re-run prr.'));
+            await abortMerge(git);
+            await git.fetch('origin', prInfo.branch);
+            await git.reset(['--hard', 'FETCH_HEAD']);
+            await git.raw(['clean', '-fd']);
+            await restoreStash();
+            endTimer('Merge base branch');
+            return {
+              success: false,
+              exitReason: 'merge_conflicts',
+              exitDetails: `Resolution left conflict markers in ${stillMarked.length} file(s)`
+            };
+          }
 
           // Lock files should be regenerated — accept theirs to unblock the merge
           if (lockFiles.length > 0) {

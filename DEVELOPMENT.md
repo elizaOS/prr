@@ -92,7 +92,7 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 
 | File | Purpose |
 |------|---------|
-| `shared/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
+| `shared/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase. Base branch and additionalBranches use explicit refspecs so tracking refs are updated on --single-branch clones (WHY: see CHANGELOG "Base branch fetch on single-branch clones"). |
 | `shared/git/commit.ts` | Squash commit, push with retry, token injection |
 | `shared/git/workdir.ts` | Hash-based workdir management |
 
@@ -1720,6 +1720,8 @@ If conflicts persist after all attempts:
 1. prr aborts the merge and continues with review fixes
 2. Human must resolve base branch conflicts manually
 3. Check `git status` in workdir for conflict markers
+
+**PR stays "dirty" on GitHub:** PRR fetches the base branch with an explicit refspec so the merge sees the latest base tip (see CHANGELOG "Base branch fetch on single-branch clones" and README Git Integration). If the PR still shows mergeable: false, ensure the base branch exists on the remote.
 
 ### Push Timeout or Rejection
 **Symptoms**: "Push timed out after 30 seconds" or "Push rejected: remote has newer commits"

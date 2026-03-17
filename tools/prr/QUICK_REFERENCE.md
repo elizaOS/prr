@@ -433,6 +433,13 @@ Timing Summary at end shows:
 
 ---
 
+### Problem: Thread replies fail with 422 Validation Failed (--reply-to-threads)
+**Cause**: GitHub returns 422 when posting a reply on a review thread. Common reasons: thread already resolved, review in a state that disallows new comments, repo/branch permissions, or reply body format (length/special characters).
+**What PRR does**: Retries once with a shortened fallback body ("Addressed." / "No change needed."). After 3 consecutive 422s, PRR stops attempting further replies and prints a summary. If most replies failed, you'll see: "Could not post replies on N review thread(s) (GitHub returned Validation Failed)."
+**Solution**: Check repo permissions (write access to pull requests), that threads are not already resolved by someone else, and that the bot token has `pull_requests: write`. For the exact error payload, check the debug log (`PRR_DEBUG=1` or `~/.prr/debug/`) for `responseBody` in "Validation Failed posting reply" entries.
+
+---
+
 ### Problem: State file conflicts in git
 **Solution**: Should be auto-ignored
 ```bash
@@ -547,6 +554,7 @@ PRR tracks and reports:
 2. **Clean lessons**: Run `prr --tidy-lessons` to deduplicate and normalize. If the repo moved paths (e.g. from legacy `src/` to `tools/prr/` and `shared/`), section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
 3. **Check output log**: `~/.prr/output.log` has everything
 4. **Debug mode**: Use `--verbose` to see LLM prompts and responses
+5. **PR stays "dirty" / not mergeable**: PRR fetches the base branch with an explicit refspec so the merge sees the latest base tip (see README "Base branch merge (explicit refspec)" and AGENTS.md "prr base-branch merge"). If the PR still shows conflicts, ensure the base branch exists on the remote; use `--no-merge-base` only to skip the base merge (not recommended).
 
 ---
 

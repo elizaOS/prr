@@ -100,7 +100,9 @@ export async function cloneOrUpdate(
           if (b && b !== branch) {
             try {
               await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
-              await git.fetch('origin', b);
+              // WHY explicit refspec: Plain fetch does not update refs when the refspec is not in
+              // remote.origin.fetch (e.g. after --single-branch clone); explicit refspec forces update.
+              await git.fetch(['origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               debug(`Failed to fetch origin/${b}`, { err: msg });
@@ -130,11 +132,10 @@ export async function cloneOrUpdate(
       for (const b of options.additionalBranches) {
         if (b && b !== branch) {
           try {
-            // --single-branch restricts the fetch refspec to the cloned branch only.
-            // Without adding the refspec, `git fetch origin <b>` downloads objects but
-            // does NOT create the tracking ref `origin/<b>`, so checkout fails later.
+            // WHY explicit refspec: --single-branch leaves only the cloned branch in fetch config;
+            // explicit refspec guarantees origin/<b> is created/updated so base-merge and others see it.
             await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
-            await git.fetch('origin', b);
+            await git.fetch(['origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]);
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             debug(`Failed to fetch origin/${b}`, { err: msg });

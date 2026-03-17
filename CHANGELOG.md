@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-03) — Base branch fetch on single-branch clones (PR stays "dirty")
+
+**Problem:** When the repo was cloned with `--single-branch`, the default fetch config only included the PR branch (e.g. `odi-dev`). Fetching the base branch with `git fetch origin v2.0.0` downloaded objects but **did not update** `refs/remotes/origin/v2.0.0`, because git only updates refs that match the configured refspecs. The tracking ref stayed at whatever SHA it had from the initial clone (or a prior run). The merge-base check then saw `baseSha === mergeBaseSha` and concluded "already up-to-date", so PRR never merged the base branch. The PR remained "mergeable: false / dirty" on GitHub even though the base had moved.
+
+**Fix:** All fetches of the base branch (and of `additionalBranches`) now use an **explicit refspec**: `+refs/heads/<branch>:refs/remotes/origin/<branch>`. This force-updates the tracking ref regardless of the clone's fetch config, so the merge-base check sees the real tip of the base branch and PRR correctly merges (and resolves conflicts) before the fix loop.
+
+**WHY explicit refspec:** On single-branch clones, `git fetch origin <branch>` succeeds (no error) but does not write to `refs/remotes/origin/<branch>` when that ref is not in `remote.origin.fetch`. Using an explicit refspec guarantees the ref is created/updated every time, so re-runs and long-lived workdirs always see the latest base.
+
+**Files:** `tools/prr/workflow/base-merge.ts` (pre-merge fetch), `shared/git/git-merge.ts` (`mergeBaseBranch`, `startMergeForConflictResolution`), `shared/git/git-clone-core.ts` (existing-workdir and fresh-clone `additionalBranches`).
+
 ### Added (2026-03) — Parallel workflow (config-driven concurrency)
 
 **Config-driven concurrency**

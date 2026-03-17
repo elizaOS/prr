@@ -120,18 +120,12 @@ export async function mergeBaseBranch(
   await ensureGitIdentity(git);
 
   try {
-    // Fetch all refs including the base branch
-    debug('Fetching origin with all refs');
-    await git.fetch(['origin', '--prune']);
-    
-    // Verify the ref exists; if missing (--single-branch clone), add refspec and fetch.
-    try {
-      await git.raw(['rev-parse', '--verify', `origin/${baseBranch}`]);
-    } catch {
-      debug('Base branch ref not found, adding refspec and fetching', { baseBranch });
-      await git.raw(['remote', 'set-branches', '--add', 'origin', baseBranch]);
-      await git.fetch('origin', baseBranch);
-    }
+    // WHY explicit refspec: On --single-branch clones the default fetch config only
+    // includes the PR branch; a plain fetch does not update origin/<baseBranch>, so
+    // the ref can be stale and the merge-base check incorrectly reports "already up-to-date".
+    debug('Fetching base branch with explicit refspec', { baseBranch });
+    await git.raw(['remote', 'set-branches', '--add', 'origin', baseBranch]);
+    await git.fetch(['origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
     
     // Check if we're already up-to-date before trying merge (skip when forceMerge: GitHub said "behind")
     if (!options?.forceMerge) {
@@ -202,14 +196,12 @@ export async function startMergeForConflictResolution(
   debug('Starting merge for conflict resolution', { baseBranch });
   
   try {
-    // Fetch all refs
-    await git.fetch(['origin', '--prune']);
-    
-    // Try explicit fetch of base branch
+    // WHY explicit refspec: Same as mergeBaseBranch — ensure origin/<baseBranch> is
+    // up-to-date so the merge we're about to start sees the real remote tip.
     try {
-      await git.fetch(['origin', `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+      await git.fetch(['origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
     } catch {
-      // May already exist, ignore
+      // May fail if branch doesn't exist on remote
     }
     
     // Start the merge (will fail with conflicts, that's expected). Only suppress conflict errors;
