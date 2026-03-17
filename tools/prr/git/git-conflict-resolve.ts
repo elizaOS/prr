@@ -8,7 +8,7 @@
  */
 import chalk from 'chalk';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, writeFileSync } from 'fs';
 import type { SimpleGit } from 'simple-git';
 import { isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../../shared/git/git-clone-index.js';
 import type { LLMClient } from '../llm/client.js';
@@ -74,10 +74,19 @@ const DETERMINISTIC_MERGE_PATTERNS = [
   /^CREDITS/i,
 ];
 
+/** Paths where we prefer the incoming (theirs) version during base-branch merge. WHY: .github/workflows/ often conflict when base updated the same workflow; taking theirs lets the repo's canonical workflow win so PRR doesn't push a broken or outdated workflow. */
+const TAKE_THEIRS_PATTERNS = [
+  /^\.github\/workflows\//i,
+];
+
 function shouldUseDeterministicMerge(filePath: string): boolean {
   const basename = filePath.split('/').pop() || filePath;
   if (DETERMINISTIC_MERGE_FILES.has(basename)) return true;
   return DETERMINISTIC_MERGE_PATTERNS.some(p => p.test(filePath));
+}
+
+function shouldTakeTheirs(filePath: string): boolean {
+  return TAKE_THEIRS_PATTERNS.some(p => p.test(filePath));
 }
 
 function isExplicitMarkerlessPolicyFile(filePath: string): boolean {
@@ -279,6 +288,17 @@ function validateResolvedContent(
   return { valid: true };
 }
 
+/**
+ * Optional callbacks to persist and reuse partial conflict resolutions across runs.
+ * When base-merge resolves some files but not all, we save resolved content here so the next
+ * run can apply it and only run LLM on the remaining files.
+ */
+export interface PartialConflictResolutions {
+  get: () => Record<string, string>;
+  add: (file: string, content: string) => void;
+  remove: (file: string) => void;
+}
+
 export async function resolveConflictsWithLLM(
   git: SimpleGit,
   conflictedFiles: string[],
@@ -287,31 +307,28 @@ export async function resolveConflictsWithLLM(
   config: Config,
   llm: LLMClient,
   runner: Runner | undefined,
-  getCurrentModel: () => string | undefined
+  getCurrentModel: () => string | undefined,
+  partialResolutions?: PartialConflictResolutions
 ): Promise<{ success: boolean; remainingConflicts: string[] }> {
   if (!workdir) {
     return { success: false, remainingConflicts: conflictedFiles };
   }
-  
-  // If runner not available yet (e.g., during setup phase), skip runner-based resolution
-  // and go straight to LLM API resolution
-  const skipRunnerAttempt = !runner;
-  
-  // Separate lock files from regular files
+
+  // Mutable list of code files we still need to resolve (lock/delete handled separately)
+  let codeFiles = conflictedFiles.filter(f => !isLockFile(f));
   const lockFiles = conflictedFiles.filter(f => isLockFile(f));
-  const codeFiles = conflictedFiles.filter(f => !isLockFile(f));
-  
+
   console.log(chalk.cyan(`  Conflicted files (${conflictedFiles.length}):`));
   for (const file of conflictedFiles) {
     const isLock = isLockFile(file);
     console.log(chalk.cyan(`    - ${file}${isLock ? chalk.gray(' (lock file - will regenerate)') : ''}`));
   }
-  
+
   // Handle lock files first - delete and regenerate
   if (lockFiles.length > 0) {
     await handleLockFileConflicts(git, lockFiles, workdir, config);
   }
-  
+
   // Handle delete conflicts (e.g. "deleted by them", "deleted by us")
   // WHY: These have NO conflict markers - one side deleted the file, the other modified it.
   // The standard resolution code only handles files with <<<<<<< markers, so delete
@@ -321,13 +338,36 @@ export async function resolveConflictsWithLLM(
     for (const dc of deleteConflicts) {
       const resolved = await resolveDeleteConflict(git, dc, workdir);
       if (resolved) {
-        // Remove from codeFiles so we don't try to resolve again
         const idx = codeFiles.indexOf(dc.file);
         if (idx !== -1) codeFiles.splice(idx, 1);
       }
     }
   }
-  
+
+  // Apply saved partial resolutions from a previous run; only resolve files that still have markers
+  if (partialResolutions && codeFiles.length > 0) {
+    const saved = partialResolutions.get();
+    const toApply = codeFiles.filter(f => saved[f]);
+    if (toApply.length > 0) {
+      for (const file of toApply) {
+        writeFileSync(join(workdir, file), saved[file], 'utf-8');
+        await git.add(file);
+      }
+      const stillWithMarkers = await findFilesWithConflictMarkers(workdir, codeFiles);
+      for (const f of stillWithMarkers) {
+        partialResolutions.remove(f);
+      }
+      const reusedCount = toApply.filter(f => !stillWithMarkers.includes(f)).length;
+      if (reusedCount > 0) {
+        console.log(chalk.green(`  Reused ${reusedCount} partial resolution(s); ${stillWithMarkers.length} file(s) still need resolution.`));
+      }
+      codeFiles = stillWithMarkers;
+    }
+  }
+
+  // If runner not available yet (e.g., during setup phase), skip runner-based resolution
+  const skipRunnerAttempt = !runner;
+
   // Compute model context limit for conflict resolution prompts.
   // The LLM client uses its default model (e.g., qwen-3-14b on ElizaCloud);
   // we need to respect that model's context window.
@@ -433,9 +473,6 @@ export async function resolveConflictsWithLLM(
       return /504|timeout|gateway|deployment.*error|error occurred with your deployment/i.test(msg);
     }
 
-    // WHY track skipped only: We only warn for files we actually skipped (e.g. > effectiveMaxChars). Files
-    // resolved via chunked/sub-chunking should not appear in "large files need manual resolution."
-    const skippedLargeFiles: string[] = [];
 
     for (const conflictFile of remainingConflicts) {
       // Skip lock files in case they slipped through
@@ -468,21 +505,21 @@ export async function resolveConflictsWithLLM(
 
         if (result.resolved) {
           console.log(chalk.blue(`    → Using heuristic strategy for ${conflictFile}`));
-        } else if (shouldUseDeterministicMerge(conflictFile)) {
+        } else if (shouldTakeTheirs(conflictFile)) {
+          const theirsContent = await readConflictStage(git, conflictFile, 3);
+          if (theirsContent !== null && theirsContent !== '') {
+            console.log(chalk.blue(`    → Using base branch version (take theirs) for ${conflictFile}`));
+            result = { resolved: true, content: theirsContent, explanation: 'Using incoming (base) version for .github/workflows' };
+          }
+        }
+        if (!result.resolved && shouldUseDeterministicMerge(conflictFile)) {
           console.log(chalk.blue(`    → Using deterministic merge (keep ours) for ${conflictFile}`));
           result = resolveKeepOurs(conflictedContent);
-        } else if (conflictedContent.length > effectiveMaxChars) {
-          skippedLargeFiles.push(`${conflictFile} (${fileSize}KB)`);
-          console.log(chalk.yellow(`    → Skipping LLM resolution: file (${fileSize}KB) exceeds model context (${Math.round(effectiveMaxChars / 1024)}KB chars for ${effectiveModel || 'unknown'})`));
-          result = {
-            resolved: false,
-            content: conflictedContent,
-            explanation: `File too large for model context (${fileSize}KB > ${Math.round(effectiveMaxChars / 1024)}KB)`,
-          };
-        } else if (
+        }
+        if (!result.resolved && (
           isGeneratedArtifactFile(conflictFile) &&
           hasAsymmetricConflict(conflictedContent)
-        ) {
+        )) {
           console.log(chalk.blue(`    → Using asymmetric merge for generated file (${fileSize}KB)`));
           startHeartbeat();
           try {
@@ -496,14 +533,19 @@ export async function resolveConflictsWithLLM(
           } finally {
             stopHeartbeat();
           }
-        } else if (
+        }
+        // Use chunked when: file is large, has many conflict regions, or exceeds single-request context
+        if (!result.resolved && (
+          conflictedContent.length > effectiveMaxChars ||
           conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS ||
           conflictChunkCount >= CONFLICT_USE_CHUNKED_FIRST_CHUNKS
-        ) {
+        )) {
           resolutionPath = 'chunked';
-          const reason = conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS
-            ? `${fileSize}KB file`
-            : `${conflictChunkCount} conflict chunks`;
+          const reason = conflictedContent.length > effectiveMaxChars
+            ? `file (${fileSize}KB) exceeds model context — chunking`
+            : conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS
+              ? `${fileSize}KB file`
+              : `${conflictChunkCount} conflict chunks`;
           console.log(chalk.blue(`    → Using chunked strategy (${reason})`));
           startHeartbeat();
           try {
@@ -519,7 +561,8 @@ export async function resolveConflictsWithLLM(
           } finally {
             stopHeartbeat();
           }
-        } else {
+        }
+        if (!result.resolved) {
           resolutionPath = 'single';
           startHeartbeat();
           try {
@@ -625,9 +668,10 @@ export async function resolveConflictsWithLLM(
           // Write the validated resolved content
           fs.writeFileSync(fullPath, result.content, 'utf-8');
           console.log(chalk.green(`    ✓ ${conflictFile}: ${result.explanation}`));
-          
+
           // Stage the file
           await git.add(conflictFile);
+          partialResolutions?.add(conflictFile, result.content);
         } else {
           console.log(chalk.red(`    ✗ ${conflictFile}: ${result.explanation}`));
           
@@ -642,13 +686,6 @@ export async function resolveConflictsWithLLM(
         console.log(chalk.red(`    ✗ ${conflictFile}: Error - ${e}`));
       } finally {
         stopHeartbeat();
-      }
-    }
-
-    if (skippedLargeFiles.length > 0) {
-      console.log(chalk.yellow('  ⚠ Large files skipped (will need manual resolution):'));
-      for (const file of skippedLargeFiles) {
-        console.log(chalk.yellow(`    - ${file}`));
       }
     }
 

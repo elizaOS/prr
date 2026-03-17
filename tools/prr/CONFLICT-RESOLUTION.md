@@ -18,8 +18,9 @@ PRR resolves conflicts in **two separate steps** during setup:
 ## Flow
 
 1. **Three-way merge** — Every LLM resolution sees **base** (Git stage 1), **ours** (stage 2), and **theirs** (stage 3). The model merges both changes relative to the common ancestor.
-2. **Sub-chunking** — When a single conflict region exceeds the model’s segment cap, we split at **semantic boundaries** (TS/JS: AST statement boundaries; Python: `def`/`class`; fallback: blank lines or line cap). Each sub-chunk is resolved with its base segment, then results are concatenated.
-3. **Validation** — Before writing or staging, we validate the resolved file (parse for TS/JS; JSON and size checks for other cases). If invalid, we leave the file conflicted and report.
+2. **File overview (chunked only)** — We do a **full read** of the file in consecutive full-content segments (no cap; we always chunk). Each segment is sent in full; the LLM builds the story across turns. That story is then injected into every chunk-resolution prompt so the model has global context.
+3. **Sub-chunking** — When a single conflict region exceeds the model’s segment cap, we split at **semantic boundaries** (TS/JS: AST statement boundaries; Python: `def`/`class`; fallback: blank lines or line cap). Each sub-chunk is resolved with its base segment, then results are concatenated.
+4. **Validation** — Before writing or staging, we validate the resolved file (parse for TS/JS; JSON and size checks for other cases). If invalid, we leave the file conflicted and report.
 
 ---
 
@@ -40,14 +41,21 @@ When validation fails (e.g. `'*/' expected`), we retry resolution once with the 
 **Why derive segment cap from model context?**  
 A fixed cap (e.g. 25k chars) would overflow a 40k-context model (3×25k input). We compute `(effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3` and clamp to [4k, 25k] so small-context models get smaller segments and we never exceed the model’s window.
 
-**Why warn only for actually skipped files?**  
-Warning for any file over 50KB was noisy when we successfully resolve many of those with sub-chunking. We now list only files that hit “file too large for model context” and were skipped.
+**Why no skip by file size?**  
+We always chunk (story and resolution). No cap; no "file too large, resolve manually."
+
+**Why chunk files that exceed single-request context?**  
+Previously we skipped any file larger than the model's context (e.g. 40KB on a small model). Those files are now resolved via **chunked strategy** (segments under the model's limit). We do not skip by file size; we always chunk.
+
+**Why a full-read file story before chunked resolution?**  
+When resolving many conflict regions in one file, each chunk is sent in isolation. The model can lose the big picture. We have the model do a **full read** of the file in consecutive full-content segments (always chunked; no cap), then tell the story across turns. That story is injected into every chunk prompt so resolutions stay coherent.
 
 ---
 
 ## Constants
 
 - **CONFLICT_PROMPT_OVERHEAD_CHARS** — Reserve for system/instructions and model response. Segment cap leaves room so input + output stays under context.
+- **FILE_OVERVIEW_*** — Full-read story: trigger when `FILE_OVERVIEW_MIN_CHUNKS` (2) or `FILE_OVERVIEW_MIN_FILE_CHARS` (15k). We always chunk the file into full-content segments of `FILE_OVERVIEW_SEGMENT_CHARS` (40k) and build the story across turns (no whole-file cap).
 - **MAX_SINGLE_CHUNK_CHARS** / **MAX_EDGE_SEGMENT_CHARS_DEFAULT** — Default segment size when model is unknown. Overridden in resolve path by the derived cap.
 - Segment cap formula: `(effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3`, clamped to [4_000, 25_000].
 
@@ -59,6 +67,22 @@ See the phased plan in [.cursor/plans/large-file-deconflict-correct.plan.md](../
 
 - **Junior devs:** Git stage indices (1=base, 2=ours, 3=theirs), line indexing (0- vs 1-based), base in every LLM path, empty base, base segment alignment, validation on in-memory content, AST parse failure → fallback, concatenation order.
 - **Low-param models:** Model-aware segment size, reserve for response, chars vs tokens, tight prompts, many sub-chunks warning.
+
+---
+
+## Deterministic strategies (before LLM)
+
+- **Lock files** — Deleted and regenerated (e.g. `package-lock.json`, `bun.lockb`).
+- **`.github/workflows/*`** — **Take theirs** (incoming/base version). When the base branch updated the same workflow file, using the repo's version avoids outdated or broken workflows and matches common CI expectations.
+- **CHANGELOG.md, docs/, CONTRIBUTING, etc.** — **Keep ours** (see `DETERMINISTIC_MERGE_FILES` / `DETERMINISTIC_MERGE_PATTERNS` in `git-conflict-resolve.ts`). LLM is not used for these so large docs don't hit context limits.
+
+## When resolution still fails
+
+- **Exit details** include the list of remaining conflicted files (e.g. in Actions "Show PRR output on failure").
+- Resolve those files manually (edit, remove conflict markers, `git add`), then commit and re-run PRR.
+- To skip base-branch merge for one run: **`--no-merge-base`** (not recommended long-term; the PR will stay "out of date with base" on GitHub).
+
+**Partial resolutions:** If we resolved some files but not all, we **persist** the resolved file contents in state (`.pr-resolver-state.json`). On the next run we apply those first, then run LLM only on files that still have conflict markers, so you don’t redo the same resolutions. When the merge eventually completes and is pushed, we clear this cache.
 
 ---
 

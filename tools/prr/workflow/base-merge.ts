@@ -26,7 +26,8 @@ export async function checkAndMergeBaseBranch(
   spinner: Ora,
   resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
   githubToken?: string,
-  github?: GitHubAPI
+  github?: GitHubAPI,
+  onMergeSuccess?: () => void
 ): Promise<{
   success: boolean;
   exitReason?: string;
@@ -167,7 +168,7 @@ export async function checkAndMergeBaseBranch(
           return {
             success: false,
             exitReason: 'merge_conflicts',
-            exitDetails: `Could not auto-resolve ${resolution.remainingConflicts.length.toLocaleString()} conflict(s) with ${prInfo.baseBranch}`
+            exitDetails: `Could not auto-resolve ${resolution.remainingConflicts.length.toLocaleString()} conflict(s) with ${prInfo.baseBranch}. Files: ${resolution.remainingConflicts.join(', ')}`
           };
         } else {
           // All conflicts resolved - stage files and complete the merge
@@ -225,6 +226,7 @@ export async function checkAndMergeBaseBranch(
             console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit). PR will stay "out of date with base" until you push:'));
             console.log(chalk.gray(`     git push origin ${prInfo.branch}`));
           }
+          onMergeSuccess?.();
           await restoreStash();
           endTimer('Merge base branch');
           return { success: true };

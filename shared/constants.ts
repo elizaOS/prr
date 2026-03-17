@@ -138,6 +138,18 @@ export const CONFLICT_USE_CHUNKED_FIRST_CHUNKS = 5;
 export const CONFLICT_PROMPT_OVERHEAD_CHARS = 12_000;
 
 /**
+ * File-overview ("story") for chunked conflict resolution: we do a full read of the file (no preview/truncation),
+ * in consecutive full-content segments; the LLM tells a story across turns; that story is injected into each
+ * chunk-resolution prompt.
+ */
+/** Size of each full-content segment when we chunk the file for the story read (no cap — we always chunk). */
+export const FILE_OVERVIEW_SEGMENT_CHARS = 40_000;
+/** Trigger overview when file has at least this many conflict regions. */
+export const FILE_OVERVIEW_MIN_CHUNKS = 2;
+/** Trigger overview when file size exceeds this (even with one conflict). */
+export const FILE_OVERVIEW_MIN_FILE_CHARS = 15_000;
+
+/**
  * Default max chars per segment when model context is unknown.
  * WHY override in resolve path: When we know the model we use (effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3
  * so small-context models get smaller segments; this default is used only when model is not available.

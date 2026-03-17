@@ -92,6 +92,9 @@ export async function cloneOrUpdate(
       // Ensure we're on a branch before reset (e.g. previous run left detached HEAD mid-rebase).
       await git.checkout(branch).catch(() => {});
 
+      // WHY: On large repos (e.g. 1.6 GB) fetch can take many minutes with no git output;
+      // without this message the spinner looks stuck and users think PRR is hanging.
+      console.log('  Fetching latest from origin (large repos may take several minutes)...');
       await git.fetch('origin', branch);
       await git.checkout(branch);
       await git.reset(['--hard', `origin/${branch}`]);
@@ -100,6 +103,7 @@ export async function cloneOrUpdate(
           if (b && b !== branch) {
             try {
               await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
+              debug('Fetching additional branch', { branch: b });
               // WHY explicit refspec: Plain fetch does not update refs when the refspec is not in
               // remote.origin.fetch (e.g. after --single-branch clone); explicit refspec forces update.
               await git.fetch(['origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]);

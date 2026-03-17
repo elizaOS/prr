@@ -364,7 +364,7 @@ jobs:
       # or ANTHROPIC_API_KEY / OPENAI_API_KEY
 ```
 
-Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`), and use the branch you want (`@main` or `@v1`).
+Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`), and use the branch you want (`@main` or `@v1`). **Important:** When using a branch in `uses:` (e.g. `@babylon`), pass the same value as `prr_ref` (e.g. `prr_ref: 'babylon'`) so the job checks out that branch; otherwise the default branch is used and the run may fail.
 
 2. **Configure secrets** in that repo:
 
@@ -841,6 +841,12 @@ ls ~/.prr/debug/*/*.txt
 # View most recent
 ls -lt ~/.prr/debug/*/*.txt | head -5
 ```
+
+### Common log messages
+
+- **"Overlap IDs (verifiedFixed ∩ dismissed)"** — A comment ID appeared in both verified and dismissed state (e.g. from an older run or state bug). State load now cleans this automatically; you may see "Cleaned N overlap" once. If it recurs, reset state: delete `.pr-resolver-state.json` in the workdir or run with `--reset-state` (see [State File](#state-file)).
+- **"No model configured; defaulting to: …"** — You didn't set `PRR_LLM_MODEL`; PRR chose a default. Set `PRR_LLM_MODEL` to pin a specific model.
+- **"Configured model unavailable; using: …"** — Your configured model was skipped (e.g. on the skip list) or not available; PRR fell back. Set `PRR_LLM_MODEL` to another model, or `PRR_ELIZACLOUD_INCLUDE_MODELS` to re-enable a skipped model (see AGENTS.md "Model skip list").
 
 ## License
 

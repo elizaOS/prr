@@ -15,7 +15,10 @@ import { join } from 'path';
 import { debug } from '../logger.js';
 import { redactUrlCredentials } from './redact-url.js';
 
-const FETCH_TIMEOUT_MS = 60_000;
+/** Configurable via PRR_FETCH_TIMEOUT_MS (default 60s). Large repos or slow connections may need more. */
+const FETCH_TIMEOUT_MS = typeof process.env.PRR_FETCH_TIMEOUT_MS !== 'undefined' && process.env.PRR_FETCH_TIMEOUT_MS !== ''
+  ? Math.max(5000, parseInt(process.env.PRR_FETCH_TIMEOUT_MS, 10) || 60_000)
+  : 60_000;
 
 export interface FetchOptions {
   /** GitHub token for one-shot auth when remote URL has no credentials. Avoids password prompt. */
@@ -92,7 +95,7 @@ export async function fetchOriginBranch(
       proc.kill('SIGKILL');
       settle(() => {
         const out = [
-          `Fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s. Check network and remote access (origin/${branch}).`,
+          `Fetch timed out after ${FETCH_TIMEOUT_MS / 1000}s. Check network and remote access (origin/${branch}). Set PRR_FETCH_TIMEOUT_MS for slow connections.`,
           '',
           'Output from git fetch:',
           stdout ? `stdout:\n${redactUrlCredentials(stdout)}` : '',

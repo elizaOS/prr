@@ -94,6 +94,8 @@ In your repo: **Settings → Secrets and variables → Actions**.
 - **Label:** Add the label `run-prr` to the PR (if you added the optional triggers).
 - **Reviewer:** Request the user set in `PRR_REVIEWER_LOGIN` as a reviewer (if configured).
 
+**If the job fails with exit code 1:** Ensure you pass `prr_ref` when your `uses:` line pins to a branch (e.g. `@babylon`). Set `prr_ref: 'babylon'` in `with:` so the workflow checks out the same ref; otherwise the default branch is checked out and `npm ci` or PRR may fail. Download the **prr-logs-N** artifact (N = PR number) for full output.log and prompts.log.
+
 ## 4. Pin to a branch or tag (optional)
 
 The example uses `@babylon`. To pin to a tag or another branch:

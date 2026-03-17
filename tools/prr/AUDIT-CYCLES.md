@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-17 · **Recorded cycles:** 46 · **Historical (legacy):** 4
+**Last updated:** 2026-03-17 · **Recorded cycles:** 47 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -161,6 +161,25 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 47 — 2026-03-17 (Actions run: elizaos-plugins/plugin-babylon Run PRR #6)
+
+**Artifacts audited:** [Run PRR #6](https://github.com/elizaos-plugins/plugin-babylon/actions/runs/23218797340/job/67486303608) (exit code 1, ~6m 6s). Client workflow calls `elizaOS/prr/.github/workflows/run-prr-server.yml@babylon` but does not pass `prr_ref`; server workflow input default is empty so checkout uses repo default branch (main), not babylon — can cause npm ci / lockfile or code mismatch and failure.
+
+**Findings:**
+- **Medium:** Client workflow (plugin-babylon) uses `@babylon` in `uses:` but omits `prr_ref` in `with:`. The server checks out PRR with `ref: ${{ inputs.prr_ref }}` (default ''), so the code run is from default branch, not babylon. Mismatch can produce exit code 1 (e.g. typecheck or runtime).
+- **Low:** When the Run PRR step fails, the only way to see why was to download the prr-logs artifact; no tail of output.log in the job log.
+- **Info:** Node.js 20 deprecation warning on the job; server workflow already sets FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 and node-version 24.
+
+**Improvements implemented:**
+- run-prr-server.yml: (1) New step "Show PRR output on failure" — if failure() and prr/output.log exists, run `tail -n 120 prr/output.log` so the error is visible in the Actions log without downloading artifacts. (2) prr_ref input description clarified: "When using @babylon in uses:, pass prr_ref: \"babylon\" so checkout matches and npm ci succeeds."
+- INSTALL-WORKFLOW-OTHER-REPO.md: Troubleshooting — "If the job fails with exit code 1: Ensure you pass prr_ref when your uses: line pins to a branch (e.g. @babylon). Set prr_ref: 'babylon' in with: …". README "In any other repo": note that prr_ref must match the ref in uses:.
+
+**Flip-flop check:** N — Additive (failure step, docs); no behavior revert.
+
+**Notes:** Client-side fix for plugin-babylon: add `prr_ref: 'babylon'` to the `with:` block in `.github/workflows/run-prr.yml`. After the server workflow change, re-runs will show the last 120 lines of output.log in the job log on failure.
+
+---
 
 ### Cycle 46 — 2026-03-17 (prompts.log improvements: crash flush, one snippet per file)
 

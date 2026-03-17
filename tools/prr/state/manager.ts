@@ -50,10 +50,15 @@ export class StateManager {
             const prevSha = this.state.headSha?.slice(0, 7);
             this.state.headSha = headSha;
             const hadVerified = (this.state.verifiedFixed?.length ?? 0) + (this.state.verifiedComments?.length ?? 0) > 0;
+            const hadPartial = Object.keys(this.state.partialConflictResolutions ?? {}).length > 0;
             if (hadVerified) {
               this.state.verifiedFixed = [];
               this.state.verifiedComments = [];
               console.warn(`PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code`);
+            }
+            if (hadPartial) {
+              this.state.partialConflictResolutions = {};
+              console.warn(`PR head changed: cleared partial conflict resolutions so they are re-applied against current merge`);
             }
           }
           

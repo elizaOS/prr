@@ -13,6 +13,9 @@ import {
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   ASYMMETRIC_CONFLICT_SIDE_RATIO,
   MAX_SINGLE_CHUNK_CHARS,
+  FILE_OVERVIEW_SEGMENT_CHARS,
+  FILE_OVERVIEW_MIN_CHUNKS,
+  FILE_OVERVIEW_MIN_FILE_CHARS,
 } from '../../../shared/constants.js';
 
 /**
@@ -87,6 +90,7 @@ export function getBaseSegmentForChunk(baseContent: string, chunk: ConflictChunk
 /**
  * Build a 3-way merge resolution prompt: BASE + OURS + THEIRS.
  * WHY: Correct merge resolution requires the common ancestor so the LLM can merge both changes relative to base.
+ * Optional fileOverview: short "story" of the file and what OURS vs THEIRS change (from shared overview step).
  */
 export function buildConflictResolutionPromptThreeWay(
   baseSegment: string,
@@ -94,13 +98,17 @@ export function buildConflictResolutionPromptThreeWay(
   theirsSegment: string,
   baseBranch: string,
   filePath?: string,
-  previousParseError?: string
+  previousParseError?: string,
+  fileOverview?: string
 ): string {
   const fileHint = filePath ? `FILE: ${filePath}\n` : '';
+  const overviewBlock = fileOverview
+    ? `FILE OVERVIEW (use for context when merging):\n${fileOverview}\n\n`
+    : '';
   const parseHint = previousParseError
     ? `\n\nIMPORTANT: A previous resolution attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is complete, valid code (e.g. close all block comments with */, no missing commas or brackets).\n`
     : '';
-  return `${fileHint}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}
+  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}
 
 BASE (common ancestor):
 \`\`\`
@@ -206,6 +214,97 @@ export function extractConflictChunks(
 }
 
 /**
+ * Split content into consecutive full-content segments (no truncation; split at line boundaries).
+ * Used for "full read" story when the file is too large for one request.
+ */
+function splitFileIntoFullSegments(content: string, maxSegmentChars: number): string[] {
+  const segments: string[] = [];
+  const lines = content.split('\n');
+  let current: string[] = [];
+  let currentChars = 0;
+  for (const line of lines) {
+    const lineLen = line.length + 1;
+    if (currentChars + lineLen > maxSegmentChars && current.length > 0) {
+      segments.push(current.join('\n'));
+      current = [];
+      currentChars = 0;
+    }
+    current.push(line);
+    currentChars += lineLen;
+  }
+  if (current.length > 0) segments.push(current.join('\n'));
+  return segments;
+}
+
+/**
+ * Build the prompt for one "full read" story request: full file content (or one full segment) and instructions
+ * to tell the story of the file and what OURS vs THEIRS are changing. No previews or truncation.
+ */
+function buildFileStoryPrompt(
+  filePath: string,
+  baseBranch: string,
+  segmentContent: string,
+  segmentIndex?: number,
+  totalSegments?: number,
+  previousStory?: string
+): string {
+  const header = `File: ${filePath}\nMerging branch: ${baseBranch}\n`;
+  const segmentHint =
+    totalSegments != null && totalSegments > 1
+      ? `This is segment ${(segmentIndex ?? 0) + 1} of ${totalSegments} of the full file (full read, no truncation).\n\n`
+      : 'Below is the full file content.\n\n';
+  const previousBlock =
+    previousStory != null && previousStory.length > 0
+      ? `Story so far:\n${previousStory}\n\n`
+      : '';
+  const instruction =
+    totalSegments != null && totalSegments > 1 && (segmentIndex ?? 0) > 0
+      ? 'Extend the story to include this part. Keep a single coherent summary (2-4 sentences total) of what this file does and what OURS vs THEIRS are changing. Reply with only that summary, no code.'
+      : 'Read the entire content. In 2-4 sentences, tell the story: what is this file\'s purpose and what are OURS vs THEIRS changing? Reply with only that summary, no code.';
+  return `${header}${segmentHint}${previousBlock}\`\`\`\n${segmentContent}\n\`\`\`\n\n${instruction}`;
+}
+
+/**
+ * Fetch a "file story" by doing a full read of the file in consecutive full-content segments (no cap;
+ * we always chunk). Each segment is sent in full; the story is built across turns. Returns null if
+ * overview is skipped or the LLM calls fail.
+ */
+export async function getFileConflictOverview(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model?: string
+): Promise<string | null> {
+  const chunks = extractConflictChunks(content);
+  if (chunks.length < FILE_OVERVIEW_MIN_CHUNKS && content.length < FILE_OVERVIEW_MIN_FILE_CHARS) {
+    return null;
+  }
+  const opts = model ? { model } : undefined;
+  try {
+    const segments = splitFileIntoFullSegments(content, FILE_OVERVIEW_SEGMENT_CHARS);
+    let story = '';
+    for (let i = 0; i < segments.length; i++) {
+      const prompt = buildFileStoryPrompt(
+        filePath,
+        baseBranch,
+        segments[i]!,
+        i,
+        segments.length,
+        story || undefined
+      );
+      const response = await llm.complete(prompt, undefined, opts);
+      const part = response?.content?.trim();
+      if (!part) return null;
+      story = part.length <= 2000 ? part : part.slice(0, 2000);
+    }
+    return story || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve a single conflict chunk using LLM (3-way: base + ours + theirs).
  * WHY baseSegment: The model must see the common-ancestor slice for this chunk so it can merge both
  * sides relative to base; caller passes the result of getBaseSegmentForChunk(baseContent, chunk).
@@ -217,7 +316,8 @@ export async function resolveConflictChunk(
   baseBranch: string,
   model?: string,
   baseSegment?: string,
-  previousParseError?: string
+  previousParseError?: string,
+  fileOverview?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
   const { ours, theirs } = extractConflictSides(chunk.conflictLines);
   const oursSegment = ours.join('\n');
@@ -230,7 +330,8 @@ export async function resolveConflictChunk(
     theirsSegment,
     baseBranch,
     filePath,
-    previousParseError
+    previousParseError,
+    fileOverview
   );
 
   try {
@@ -457,7 +558,8 @@ async function resolveOneSubChunk(
   theirsSegment: string,
   baseBranch: string,
   model?: string,
-  previousParseError?: string
+  previousParseError?: string,
+  fileOverview?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[] }> {
   const prompt = buildConflictResolutionPromptThreeWay(
     baseSegment,
@@ -465,7 +567,8 @@ async function resolveOneSubChunk(
     theirsSegment,
     baseBranch,
     filePath,
-    previousParseError
+    previousParseError,
+    fileOverview
   );
   try {
     const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
@@ -495,7 +598,8 @@ async function resolveOversizedChunk(
   model: string | undefined,
   baseContent: string,
   maxSegmentChars: number,
-  previousParseError?: string
+  previousParseError?: string,
+  fileOverview?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
   const { ours, theirs } = extractConflictSides(chunk.conflictLines);
   // WHY conflict's base segment: Edges are indices within the conflict (0..linesForEdges.length). We must
@@ -507,7 +611,7 @@ async function resolveOversizedChunk(
   const edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
 
   if (edges.length <= 2) {
-    return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk, previousParseError);
+    return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk, previousParseError, fileOverview);
   }
 
   const segmentCount = edges.length - 1;
@@ -531,7 +635,8 @@ async function resolveOversizedChunk(
       theirsSeg,
       baseBranch,
       model,
-      previousParseError
+      previousParseError,
+      fileOverview
     );
     if (!result.resolved) {
       return {
@@ -581,6 +686,10 @@ export async function resolveConflictsChunked(
     totalLines: content.split('\n').length
   });
 
+  // Build a short "file overview" (story) when multiple conflicts or large file, then inject into each chunk prompt.
+  const fileOverview = await getFileConflictOverview(llm, filePath, content, baseBranch, model);
+  if (fileOverview) debug('File conflict overview', { filePath, overviewLength: fileOverview.length });
+
   const lines = content.split('\n');
   const resolutions = new Map<number, string[]>(); // startLine -> resolved lines
   const explanations: string[] = [];
@@ -596,11 +705,12 @@ export async function resolveConflictsChunked(
     const largerSideChars = Math.max(ours.join('\n').length, theirs.join('\n').length);
     const isOversized = largerSideChars > segmentCap;
 
+    const overview = fileOverview ?? undefined;
     const result = isOversized
-      ? await resolveOversizedChunk(llm, filePath, chunk, baseBranch, model, baseContentNorm, segmentCap, previousParseError)
+      ? await resolveOversizedChunk(llm, filePath, chunk, baseBranch, model, baseContentNorm, segmentCap, previousParseError, overview)
       : await (async () => {
           const baseSegment = getBaseSegmentForChunk(baseContentNorm, chunk);
-          return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegment, previousParseError);
+          return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegment, previousParseError, overview);
         })();
 
     if (result.resolved) {

@@ -202,7 +202,17 @@ export async function closeOutputLog(): Promise<void> {
     existsSync(promptLogPath) &&
     / (PROMPT|RESPONSE|ERROR): /m.test(readFileSync(promptLogPath, 'utf-8'));
 
+  // WHY skip when prompts.log exists but has no entries: After Ctrl+C during clone, output.log has content but
+  // prompts.log is empty; pill would produce no useful output (pill-output audit #7).
   if (pillAnalysisEnabled && outputLogPath && (outputLogHasContent || hasPromptsToAnalyze)) {
+    if (outputLogHasContent && promptLogPath && existsSync(promptLogPath) && !hasPromptsToAnalyze) {
+      pillAnalysisEnabled = false;
+      try {
+        appendFileSync(outputLogPath, '\n[Pill] Skipped: no PROMPT/RESPONSE/ERROR entries in prompts.log.\n', 'utf-8');
+        if (origLogRef) origLogRef('\n[Pill] Skipped (no prompt/response entries in prompts.log).');
+      } catch { /* ignore */ }
+      return;
+    }
     // WHY reset first: so we run at most once even if runPillAnalysis or a later step throws.
     pillAnalysisEnabled = false;
     try {

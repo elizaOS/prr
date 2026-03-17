@@ -53,7 +53,7 @@ on:
         default: false
         type: boolean
       prr_ref:
-        description: 'Branch, tag, or SHA to checkout (default: repo default branch). Set to the same ref as the workflow (e.g. babylon) so package-lock.json matches.'
+        description: 'Branch, tag, or SHA to checkout (default: repo default branch). When using @babylon in uses:, pass prr_ref: "babylon" so checkout matches and npm ci succeeds.'
         required: false
         default: ''
         type: string
@@ -122,6 +122,13 @@ jobs:
             "https://github.com/${{ github.repository }}/pull/${{ inputs.pr_number }}" \
             --tool llm-api \
             --no-wait-bot
+
+      # When Run PRR fails, show tail of output.log in the job log so operators see the error without downloading artifacts.
+      - name: Show PRR output on failure
+        if: failure() && hashFiles('prr/output.log') != ''
+        run: |
+          echo '=== Last 120 lines of prr/output.log ==='
+          tail -n 120 prr/output.log
 
       # output.log + prompts.log are written to CWD (prr/) by PRR; upload as artifacts for debugging.
       - name: Upload logs

@@ -147,8 +147,13 @@ async function main(): Promise<void> {
           ?? Array.from(available).filter(m => !skipSet.has(m)).sort()[0]
           ?? Array.from(available).sort()[0];
         config.llmModel = chosen;
-        // WHY: Operators should notice when their configured model was replaced (pill-output audit).
-        console.warn(chalk.yellow(`  Configured model unavailable; using: ${chosen}. Set PRR_LLM_MODEL to pin.`));
+        // WHY: Distinguish "no model configured" from "configured model unavailable" (pill-output audit).
+        const userSetModel = process.env.PRR_LLM_MODEL?.trim();
+        if (userSetModel) {
+          console.warn(chalk.yellow(`  Configured model unavailable; using: ${chosen}. Set PRR_LLM_MODEL to pin.`));
+        } else {
+          console.warn(chalk.yellow(`  No model configured; defaulting to: ${chosen}. Set PRR_LLM_MODEL to pin.`));
+        }
       }
     }
 

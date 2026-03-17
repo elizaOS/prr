@@ -266,6 +266,12 @@ export interface ResolverState {
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms
   totalTokenUsage?: TokenUsageRecord[];   // token usage per phase
+  /**
+   * Partial conflict resolutions from a previous run that did not resolve all conflicts.
+   * WHY: When base-merge resolves some files but not all, we persist resolved content so the next
+   * run reuses it and only runs LLM on the remaining files. Cleared when merge completes successfully.
+   */
+  partialConflictResolutions?: Record<string, string>;   // file path -> resolved content
 }
 
 export function createInitialState(pr: string, branch: string, headSha: string): ResolverState {

@@ -24,6 +24,7 @@ import type { Runner } from '../../../shared/runners/types.js';
 import { debug, debugStep } from '../../../shared/logger.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import * as ResolverProc from '../resolver-proc.js';
+import * as State from '../state/state-core.js';
 import { resolveConflictsWithLLM as resolveConflictsImpl } from '../git/git-conflict-resolve.js';
 import { LLMClient } from '../llm/client.js';
 
@@ -143,8 +144,24 @@ export async function executeSetupPhase(
   // create a callback that captures the setup phase's workdir and runner
   const resolveConflictsInSetup = async (git: SimpleGit, files: string[], source: string) => {
     const llm = new LLMClient(config);
-    return resolveConflictsImpl(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
-  // Review: captures setup phase context before runner is initialized for conflict resolution.
+    const partialResolutions = stateContext.state
+      ? {
+          get: () => stateContext.state!.partialConflictResolutions ?? {},
+          add: (file: string, content: string) => {
+            if (!stateContext.state) return;
+            stateContext.state.partialConflictResolutions = stateContext.state.partialConflictResolutions ?? {};
+            stateContext.state.partialConflictResolutions[file] = content;
+          },
+          remove: (file: string) => {
+            if (stateContext.state?.partialConflictResolutions) delete stateContext.state.partialConflictResolutions[file];
+          },
+        }
+      : undefined;
+    return resolveConflictsImpl(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel, partialResolutions);
+  };
+
+  const clearPartialResolutionsOnMergeSuccess = (): void => {
+    if (stateContext.state) stateContext.state.partialConflictResolutions = {};
   };
 
   // Check for conflicts and sync with remote (pass token so fetch does not prompt for password)
@@ -159,8 +176,10 @@ export async function executeSetupPhase(
   }
 
   // Check and merge base branch (pass githubToken so merge-commit push uses same auth as fix push)
-  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup, config.githubToken, github);
+  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup, config.githubToken, github, clearPartialResolutionsOnMergeSuccess);
   if (!mergeResult.success) {
+    // Persist state so partial conflict resolutions (if any) are saved for the next run
+    await State.saveState(stateContext);
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
       shouldExit: true,

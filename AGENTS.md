@@ -16,7 +16,9 @@ These are created by tools and should not be committed: `.split-plan.md`, `.spli
 
 **Pill and large logs:** When output.log (or prompts.log) exceeds the token budget, pill summarizes it and may miss single-line or tabular evidence (e.g. RESULTS SUMMARY counts, Model Performance table, overlap IDs). For critical runs, inspect output.log manually for those sections; pill now also extracts and appends key evidence when the log is summarized. **Very large output.log** (e.g. long runs) can cause **504 / FUNCTION_INVOCATION_TIMEOUT** when the full audit request is sent; pill caps output-log size (see `tools/pill/context.ts`). If pill fails with 504, set **`PILL_CONTEXT_BUDGET_TOKENS=20000`** (or lower) for small-context models so the audit request fits; re-run with a smaller log or inspect output.log manually otherwise.
 
-**Model pinning:** If the log shows "Configured model unavailable; using: …", the requested model was not available and PRR fell back. To pin the model, set **`PRR_LLM_MODEL`** (e.g. `anthropic/claude-3.5-sonnet`).
+**Model pinning:** If the log shows "Configured model unavailable; using: …", the requested model was not available and PRR fell back. If it shows "No model configured; defaulting to: …", no model was set and PRR chose a default. To pin the model, set **`PRR_LLM_MODEL`** (e.g. `anthropic/claude-3.5-sonnet`).
+
+**Model skip list (ElizaCloud):** Some models are skipped by default (known timeout/504 or 0% fix rate in audits). The list is in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`). DEBUG logs show "ElizaCloud: skipping &lt;model&gt; (known timeout/0% fix rate)". To re-enable a skipped model (e.g. if timeouts were transient), set **`PRR_ELIZACLOUD_INCLUDE_MODELS`** to a comma-separated list of model IDs (e.g. `openai/gpt-4o,anthropic/claude-3.7-sonnet`). See `getEffectiveElizacloudSkipModelIds()` for the runtime list.
 
 ## Repo layout
 
