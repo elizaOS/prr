@@ -134,7 +134,9 @@ export async function checkAndSyncWithRemote(
   branch: string,
   spinner: Ora,
   resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
-  githubToken?: string
+  githubToken?: string,
+  /** When true, skip pushing after resolving conflicts (e.g. user passed --no-push). */
+  noPush?: boolean
 ): Promise<{success: boolean; error?: string}> {
   // Check for conflicts and sync with remote
   // WHY CHECK EARLY: Conflict markers in files will cause fixer tools to fail confusingly.
@@ -193,6 +195,19 @@ export async function checkAndSyncWithRemote(
     
     console.log(chalk.green('✓ Conflicts resolved and merge completed'));
     endTimer('Resolve remote conflicts');
+    if (!noPush) {
+      spinner.start('Pushing after conflict resolution...');
+      const { push } = await import('../../../shared/git/git-push.js');
+      const pushResult = await push(git, branch, false, githubToken);
+      if (pushResult.success && !pushResult.nothingToPush) {
+        spinner.succeed('Pushed after conflict resolution');
+      } else if (pushResult.success && pushResult.nothingToPush) {
+        spinner.succeed('Already up-to-date');
+      } else {
+        spinner.fail('Push failed after conflict resolution');
+        console.log(chalk.yellow(`  ${pushResult.error ?? 'Unknown'}. Push manually from workdir if needed.`));
+      }
+    }
   }
 
   if (conflictStatus.behindBy > 0) {
@@ -281,6 +296,19 @@ export async function checkAndSyncWithRemote(
         
         if (resolvedRounds > 0) {
           console.log(chalk.green(`✓ Pull conflicts resolved (${resolvedRounds} rebase conflict round${resolvedRounds > 1 ? 's' : ''})`));
+          if (!noPush) {
+            spinner.start('Pushing after rebase conflict resolution...');
+            const { push } = await import('../../../shared/git/git-push.js');
+            const pushResult = await push(git, branch, false, fetchOpts?.githubToken);
+            if (pushResult.success && !pushResult.nothingToPush) {
+              spinner.succeed('Pushed after rebase conflict resolution');
+            } else if (pushResult.success && pushResult.nothingToPush) {
+              spinner.succeed('Already up-to-date');
+            } else {
+              spinner.fail('Push failed after rebase conflict resolution');
+              console.log(chalk.yellow(`  ${pushResult.error ?? 'Unknown'}. Push manually from workdir if needed.`));
+            }
+          }
         } else {
           console.log(chalk.yellow('  No conflicts found to resolve.'));
           await cleanupGitState(git);
@@ -322,7 +350,7 @@ export async function checkAndSyncWithRemote(
     }
   }
   
-  if (conflictStatus.aheadBy > 0) {
+  if (conflictStatus.aheadBy > 0 && !noPush) {
     console.log(chalk.yellow(`  Branch is ${conflictStatus.aheadBy} commits ahead of remote — pushing unpushed commits`));
     const { push } = await import('../../../shared/git/git-push.js');
     const pushResult = await push(git, branch, false, fetchOpts?.githubToken);

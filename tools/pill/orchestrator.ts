@@ -11,10 +11,18 @@ import ora from 'ora';
 import { appendFileSync } from 'fs';
 import { join } from 'path';
 import type { PillConfig, ImprovementPlan, Improvement } from './types.js';
+import { DEFAULT_PILL_CONTEXT_BUDGET_TOKENS } from './config.js';
 import { assembleContext, getContextTokenCounts } from './context.js';
 import { LLMClient } from './llm/client.js';
 import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJson } from './llm/parse-json.js';
+import { truncateHeadAndTailByChars } from '../../shared/utils/tokens.js';
+
+/** Default hard cap on user message length (chars). Scaled down when PILL_CONTEXT_BUDGET_TOKENS is set (e.g. 20k). */
+const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 95_000;
+/** Chars per token for deriving user message cap from context budget; reserve ~20% for system + response. */
+const CHARS_PER_TOKEN = 2.7;
+const USER_MESSAGE_TOKEN_FRACTION = 0.8;
 
 function buildAuditUserMessage(ctx: {
   docs: string;
@@ -274,8 +282,9 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     const llmClient = new LLMClient(config);
     const ctx = await assembleContext(config, llmClient);
 
+    const budgetTokens = config.contextBudgetTokens ?? DEFAULT_PILL_CONTEXT_BUDGET_TOKENS;
     if (ctx.contextTrimmed && spinner) {
-      spinner.info('Context trimmed to fit 60k token budget (avoids 504/timeout).');
+      spinner.info(`Context trimmed to fit ${budgetTokens.toLocaleString()} token budget (avoids 504/timeout).`);
     }
 
     const hasLogs = ctx.outputLog.trim().length > 0 || (ctx.promptsDigest ?? '').trim().length > 0;
@@ -300,7 +309,19 @@ export async function runPillAnalysis(config: PillConfig): Promise<
       update('Running audit…');
     }
 
-    const userMessage = buildAuditUserMessage(ctx);
+    const userMessageMaxChars = Math.min(
+      DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS,
+      Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * CHARS_PER_TOKEN)
+    );
+    let userMessage = buildAuditUserMessage(ctx);
+    if (userMessage.length > userMessageMaxChars) {
+      userMessage = truncateHeadAndTailByChars(
+        userMessage,
+        userMessageMaxChars,
+        '\n\n[ ... truncated for 504 avoidance (user message char cap) ... ]\n\n'
+      );
+      if (spinner) spinner.info(`User message capped at ${userMessageMaxChars.toLocaleString()} chars (avoids 504/timeout).`);
+    }
     const response = await llmClient.complete(userMessage, AUDIT_SYSTEM_PROMPT, {
       model: config.auditModel,
     });

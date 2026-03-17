@@ -10,6 +10,8 @@ export interface PillConfig {
   logPrefix?: string;
   /** Override path for pill-output.md (e.g. from --instructions-out). */
   instructionsOut?: string;
+  /** Max context tokens for the audit request (user + system). Overridable via PILL_CONTEXT_BUDGET_TOKENS. Default 35k; use 20k for small-context models. */
+  contextBudgetTokens?: number;
   outputOnly: boolean;
   promptsOnly: boolean;
   dryRun: boolean;

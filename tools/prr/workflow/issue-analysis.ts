@@ -1996,32 +1996,42 @@ export async function findUnresolvedIssues(
   } else {
     // Batch mode - one LLM call for all comments
     console.log(chalk.gray(`  Batch analyzing ${formatNumber(freshToAnalyze.length)} comments with LLM...`));
-    // Prompts.log audit: when snippet is too short, verifier returns "snippet truncated; cannot verify". Expand once before sending.
-    const batchInput = await Promise.all(
-      freshToAnalyze.map(async (item, index) => {
+    // Prompts.log audit (Cycle 38): one snippet per file so we don't send the same file content twice for multiple issues on the same file (token saving).
+    // When snippet is too short or a11y, expand once per file. When file not in workdir, try getFileContentFromRepo once per file.
+    const pathToFirstIndex = new Map<string, number>();
+    for (let i = 0; i < freshToAnalyze.length; i++) {
+      const p = freshToAnalyze[i]!.resolvedPath ?? freshToAnalyze[i]!.comment.path;
+      if (!pathToFirstIndex.has(p)) pathToFirstIndex.set(p, i);
+    }
+    const snippetByPath = new Map<string, string>();
+    await Promise.all(
+      [...pathToFirstIndex.entries()].map(async ([primaryPath, firstIndex]) => {
+        const item = freshToAnalyze[firstIndex]!;
         let codeSnippet = item.codeSnippet;
-        const primaryPath = item.resolvedPath ?? item.comment.path;
-        // WHY wider snippet for a11y: Review asks for aria-label/accessible name; fixer needs full component context to add a meaningful label, not just role="img" or aria-hidden (audit: PR #1229).
         if (isSnippetTooShort(codeSnippet) || commentAsksForAccessibility(item.comment.body)) {
           codeSnippet = await getWiderSnippetForAnalysis(workdir, primaryPath, item.comment.line, item.comment.body);
         }
-        // When file was not in workdir, try reading from repo (e.g. git show HEAD:path) so verifier has context.
         if (codeSnippet === '(file not found or unreadable)' && findUnresolvedIssuesOptions?.getFileContentFromRepo) {
           const content = await findUnresolvedIssuesOptions.getFileContentFromRepo(primaryPath);
           if (content) {
             codeSnippet = buildSnippetFromRepoContent(content, item.comment.line, item.comment.body, primaryPath);
           }
         }
-        return {
-          id: `issue_${index + 1}`,
-          comment: sanitizeCommentForPrompt(item.comment.body),
-          filePath: primaryPath,
-          line: item.comment.line,
-          codeSnippet,
-          contextHints: item.contextHints,
-        };
+        snippetByPath.set(primaryPath, codeSnippet);
       })
     );
+    const batchInput = freshToAnalyze.map((item, index) => {
+      const primaryPath = item.resolvedPath ?? item.comment.path;
+      const codeSnippet = snippetByPath.get(primaryPath) ?? item.codeSnippet;
+      return {
+        id: `issue_${index + 1}`,
+        comment: sanitizeCommentForPrompt(item.comment.body),
+        filePath: primaryPath,
+        line: item.comment.line,
+        codeSnippet,
+        contextHints: item.contextHints,
+      };
+    });
 
     // Build model context for smart model selection (unless --model-rotation is set)
     let modelContext: ModelRecommendationContext | undefined;

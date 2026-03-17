@@ -10,6 +10,7 @@ import type { PRInfo } from '../github/types.js';
 import type { DismissedIssue } from '../state/types.js';
 import type { GitHubAPI } from '../github/api.js';
 import { debug } from '../../../shared/logger.js';
+import chalk from 'chalk';
 
 /**
  * Dismissed categories that get a reply.
@@ -66,6 +67,7 @@ function getErrorDetails(err: unknown): { status?: number; message: string; body
  * Post reply; on 422/Validation Failed log full error body and retry once with shortened message.
  * WHY full error: GitHub's reason (body format, thread state) is in the response; we log it so we can fix.
  * WHY retry with short fallback: Long or special characters in the first message can trigger validation; "Addressed." / "No change needed." often succeed so the thread still gets a reply.
+ * Returns { ok, is422 } so caller can count consecutive 422s and bail (output.log audit).
  */
 async function postReplyWithRetry(
   github: GitHubAPI,
@@ -76,14 +78,14 @@ async function postReplyWithRetry(
   threadId: string,
   body: string,
   fallbackBody: string
-): Promise<boolean> {
+): Promise<{ ok: boolean; is422?: boolean }> {
   try {
     await github.replyToReviewThread(owner, repo, prNumber, databaseId, body);
-    return true;
+    return { ok: true };
   } catch (err) {
     const { status, message, body: errBody } = getErrorDetails(err);
-    const isValidationFailed = status === 422 || /validation failed/i.test(message);
-    if (isValidationFailed) {
+    const validationFailed = status === 422 || /validation failed/i.test(message);
+    if (validationFailed) {
       debug('Validation Failed posting reply — full error', { threadId, status, message, responseBody: errBody });
     } else {
       debug('Failed to post reply', { threadId, error: message });
@@ -91,7 +93,7 @@ async function postReplyWithRetry(
     if (fallbackBody !== body) {
       try {
         await github.replyToReviewThread(owner, repo, prNumber, databaseId, fallbackBody);
-        return true;
+        return { ok: true };
       } catch (retryErr) {
         const retryDetails = getErrorDetails(retryErr);
         if (retryDetails.status === 422 || /validation failed/i.test(retryDetails.message)) {
@@ -99,19 +101,30 @@ async function postReplyWithRetry(
         } else {
           debug('Failed to post reply (retry)', { threadId, error: retryDetails.message });
         }
-        return false;
+        return { ok: false, is422: validationFailed || (retryDetails.status === 422 || /validation failed/i.test(retryDetails.message)) };
       }
     }
-    return false;
+    return { ok: false, is422: validationFailed };
   }
 }
+
+/** Return type: when replyToThreads is true, returns counts for user-visible summary on high failure rate (output.log audit). */
+export interface PostThreadRepliesResult {
+  attempted: number;
+  replied: number;
+}
+
+/** Consecutive 422s after which we stop attempting further replies (avoids retry storm; output.log audit). */
+const MAX_CONSECUTIVE_422_BEFORE_STOP = 3;
 
 /**
  * Post a reply on each review thread that was verified-fixed or dismissed (with reply).
  * Skips ic-* threads (issue comments); skips threads already in repliedThreadIds.
  * Updates repliedThreadIds in-place after each successful reply.
+ * On 3 consecutive 422 Validation Failed, stops attempting more replies and returns counts.
+ * Caller may print a summary when replied/attempted is very low (e.g. <10%).
  */
-export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise<void> {
+export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise<PostThreadRepliesResult | void> {
   if (!opts.replyToThreads) return;
 
   const {
@@ -140,6 +153,10 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
 
   const threadsRepliedThisCall: string[] = [];
   const botLogin = process.env.PRR_BOT_LOGIN?.trim() || undefined;
+  let attempted = 0;
+  let replied = 0;
+  let consecutive422 = 0;
+  let stopReplyDueTo422 = false;
 
   // Collect candidate thread IDs we might reply to (for batched cross-run idempotency check).
   const candidateThreadIds = new Set<string>();
@@ -174,6 +191,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
 
   // Verified-fixed: reply "Fixed in `abc1234`."
   for (const commentId of verifiedCommentIds) {
+    if (stopReplyDueTo422) break;
     const entry = commentToThread.get(commentId);
     if (!entry) continue;
     if (repliedThreadIds.has(entry.threadId)) continue;
@@ -182,16 +200,30 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       continue;
     }
     const body = `Fixed in \`${short}\`.`;
-    const ok = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'Addressed.');
-    if (ok) {
+    attempted++;
+    const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'Addressed.');
+    if (result.ok) {
+      replied++;
+      consecutive422 = 0;
       repliedThreadIds.add(entry.threadId);
       threadsRepliedThisCall.push(entry.threadId);
       debug('Posted fixed reply on thread', { threadId: entry.threadId });
+    } else {
+      if (result.is422) {
+        consecutive422++;
+        if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
+          console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
+          stopReplyDueTo422 = true;
+        }
+      } else {
+        consecutive422 = 0;
+      }
     }
   }
 
   // Dismissed: reply only for categories that get a reply
   for (const d of dismissedIssues) {
+    if (stopReplyDueTo422) break;
     if (!DISMISSED_CATEGORIES_WITH_REPLY.has(d.category)) continue;
     const entry = commentToThread.get(d.commentId);
     if (!entry) continue;
@@ -218,11 +250,24 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     } else {
       body = `Dismissed: ${oneLine(d.reason)}`;
     }
-    const ok = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'No change needed.');
-    if (ok) {
+    attempted++;
+    const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'No change needed.');
+    if (result.ok) {
+      replied++;
+      consecutive422 = 0;
       repliedThreadIds.add(entry.threadId);
       threadsRepliedThisCall.push(entry.threadId);
       debug('Posted dismissed reply on thread', { threadId: entry.threadId, category: d.category });
+    } else {
+      if (result.is422) {
+        consecutive422++;
+        if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
+          console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
+          stopReplyDueTo422 = true;
+        }
+      } else {
+        consecutive422 = 0;
+      }
     }
   }
 
@@ -237,4 +282,6 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       }
     }
   }
+
+  return { attempted, replied };
 }

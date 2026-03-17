@@ -4,6 +4,17 @@ PRR resolves merge conflicts using a methodical, correct approach aligned with s
 
 ---
 
+## Two conflict contexts
+
+PRR resolves conflicts in **two separate steps** during setup:
+
+1. **Sync with remote (same branch)** — e.g. workdir had a leftover rebase or merge with `origin/<branch>`. We resolve, complete the merge/rebase, and **push**. The message "Pushed after conflict resolution" refers to this.
+2. **Base branch merge** — We merge the PR’s **base branch** (e.g. `main`) into the PR branch so the PR is up to date. If that merge has conflicts (e.g. `CHANGELOG.md`, `ROADMAP.md`, `runtime.ts`), we resolve them and push the **merge commit**. If resolution fails or leaves conflict markers, we abort and do not push.
+
+**If GitHub still shows "This branch has conflicts that must be resolved"** after a run, the push you saw was likely from (1). The conflicts listed by GitHub are with the **base** branch; step (2) either did not run, failed to resolve, or we detected conflict markers left in the resolved files and aborted. Resolve those files manually (or with `--no-merge-base` to skip base merge for this run), then push and re-run.
+
+---
+
 ## Flow
 
 1. **Three-way merge** — Every LLM resolution sees **base** (Git stage 1), **ours** (stage 2), and **theirs** (stage 3). The model merges both changes relative to the common ancestor.

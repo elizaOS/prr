@@ -386,7 +386,8 @@ export async function executePushIteration(
       return { shouldBreak: true, exitReason: iterResult.exitReason || 'bail_out', exitDetails: iterResult.exitDetails || 'Fix iteration requested early exit', updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle, committedThisIteration: false };
     }
     if (iterResult.shouldBreak) {
-      exitReason = iterResult.exitReason || '';
+      // Non-empty reason for analytics (output.log audit: avoid empty exitReason on push iteration).
+      exitReason = iterResult.exitReason || 'no_progress';
       exitDetails = iterResult.exitDetails || '';
       break;
     }

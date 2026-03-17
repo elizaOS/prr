@@ -11,6 +11,9 @@ import type { PillConfig } from './types.js';
 const DEFAULT_AUDIT_MODEL = 'claude-opus-4-6';
 const DEFAULT_LLM_MODEL = 'claude-sonnet-4-5-20250929';
 
+/** Default max context tokens for pill audit. Change this to alter the default (e.g. 20_000 for small-context models). Overridable via PILL_CONTEXT_BUDGET_TOKENS. */
+export const DEFAULT_PILL_CONTEXT_BUDGET_TOKENS = 35_000;
+
 function getEnv(key: string): string | undefined {
   const raw = process.env[key];
   return raw === undefined || raw === null ? undefined : raw.trim();
@@ -81,12 +84,24 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     throw new Error('Invalid model name in config or env. Use only letters, numbers, dots, slashes, hyphens.');
   }
 
+  // WHY configurable: Small-context models (e.g. 20k) need a lower budget to avoid 504/timeout; default 35k suits larger models.
+  const contextBudgetEnv = getEnv('PILL_CONTEXT_BUDGET_TOKENS');
+  const contextBudgetTokens =
+    contextBudgetEnv !== undefined && contextBudgetEnv !== ''
+      ? (() => {
+          const n = parseInt(contextBudgetEnv, 10);
+          if (!Number.isFinite(n) || n < 8_000 || n > 128_000) return undefined;
+          return n;
+        })()
+      : undefined;
+
   const config: PillConfig = {
     targetDir: input.targetDir,
     llmProvider,
     auditModel,
     llmModel,
     logPrefix: input.logPrefix,
+    contextBudgetTokens,
     outputOnly: input.outputOnly,
     promptsOnly: input.promptsOnly,
     dryRun: input.dryRun,

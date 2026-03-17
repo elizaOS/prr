@@ -29,7 +29,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import type { PRInfo } from '../github/types.js';
-import { debug, endTimer, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
+import { debug, endTimer, formatNumber, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
 import { buildReviewSummaryMarkdown } from '../ui/reporter.js';
 import { printDebugIssueTable } from './debug-issue-table.js';
 import { postThreadReplies } from './thread-replies.js';
@@ -168,7 +168,7 @@ export async function executeFinalCleanup(
       } catch {
         commitSha = prInfo.headSha;
       }
-      await postThreadReplies({
+      const replyStats = await postThreadReplies({
         comments: finalComments,
         verifiedCommentIds: new Set(),
         dismissedIssues,
@@ -179,6 +179,11 @@ export async function executeFinalCleanup(
         replyToThreads: true,
         resolveThreads: options.resolveThreads,
       });
+      // User-visible summary when most replies failed (e.g. systemic 422; output.log audit).
+      if (replyStats && replyStats.attempted > 0 && replyStats.replied < replyStats.attempted * 0.1) {
+        const failed = replyStats.attempted - replyStats.replied;
+        console.log(chalk.yellow(`Could not post replies on ${formatNumber(failed)} review thread(s) (GitHub returned Validation Failed). Check repo permissions and thread state.`));
+      }
     } catch (err) {
       debug('Thread replies for dismissed (non-fatal)', { error: String(err) });
     }

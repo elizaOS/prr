@@ -148,7 +148,7 @@ export async function executeSetupPhase(
   };
 
   // Check for conflicts and sync with remote (pass token so fetch does not prompt for password)
-  const syncResult = await ResolverProc.checkAndSyncWithRemote(git, prInfo.branch, spinner, resolveConflictsInSetup, config.githubToken);
+  const syncResult = await ResolverProc.checkAndSyncWithRemote(git, prInfo.branch, spinner, resolveConflictsInSetup, config.githubToken, options.noPush);
   if (!syncResult.success) {
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,

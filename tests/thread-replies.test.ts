@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { postThreadReplies, type PostThreadRepliesOptions } from '../tools/prr/workflow/thread-replies.js';
+import { postThreadReplies, type PostThreadRepliesOptions, type PostThreadRepliesResult } from '../tools/prr/workflow/thread-replies.js';
 import type { GitHubAPI } from '../tools/prr/github/api.js';
 import type { ReviewComment, PRInfo } from '../tools/prr/github/types.js';
 import type { DismissedIssue } from '../tools/prr/state/types.js';
@@ -74,7 +74,7 @@ describe('postThreadReplies', () => {
     vi.unstubAllEnvs();
   });
 
-  function run(opts: Partial<PostThreadRepliesOptions> & { replyToThreads: boolean }): Promise<void> {
+  function run(opts: Partial<PostThreadRepliesOptions> & { replyToThreads: boolean }): Promise<PostThreadRepliesResult | void> {
     return postThreadReplies({
       comments: opts.comments ?? [],
       verifiedCommentIds: opts.verifiedCommentIds ?? new Set(),
@@ -255,5 +255,40 @@ describe('postThreadReplies', () => {
     });
     expect(replyCalls).toHaveLength(1);
     expect(replyCalls[0].body).toMatch(/^Dismissed: .{197}\.\.\.$/);
+  });
+
+  it('returns { attempted, replied } when replyToThreads is true', async () => {
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    const result = await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['c1']),
+    });
+    expect(result).toEqual({ attempted: 1, replied: 1 });
+  });
+
+  it('returns undefined when replyToThreads is false', async () => {
+    const result = await run({ replyToThreads: false });
+    expect(result).toBeUndefined();
+  });
+
+  it('returns attempted > 0 and replied === 0 when all replies fail with 422', async () => {
+    const err422 = Object.assign(new Error('Validation Failed'), { status: 422 });
+    const replyMock = vi.fn(async () => {
+      throw err422;
+    });
+    mockGithub.replyToReviewThread = replyMock;
+    const comments = [
+      makeComment('c1', 'thread-1', 100),
+      makeComment('c2', 'thread-2', 101),
+    ];
+    const result = await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['c1']),
+      dismissedIssues: [makeDismissed('c2', 'already-fixed', 'Done.')],
+    });
+    expect(result).toEqual({ attempted: 2, replied: 0 });
+    expect(replyMock).toHaveBeenCalledTimes(4);
   });
 });

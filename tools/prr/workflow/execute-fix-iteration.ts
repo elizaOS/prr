@@ -592,6 +592,7 @@ export async function executeFixIteration(
     // When search/replace failed to match, add file-specific lessons so next run uses exact content, narrower anchor, or full-file rewrite.
     if (result.error && /search\/replace operations failed|search text did not match/i.test(result.error)) {
       const paths = [...new Set(workingUnresolved.map((i) => i.comment.path))];
+      console.log(chalk.yellow(`  ⚠ Search/replace did not match for this batch (${formatNumber(paths.length)} file(s)) — next attempt will include last-error hint.`));
       for (const path of paths) {
         const one = workingUnresolved.find((i) => i.comment.path === path);
         if (one) {
@@ -678,6 +679,10 @@ export async function executeFixIteration(
   }
   
   console.log(chalk.gray(`\n  Fixer completed in ${formatDuration(fixerTime)}`));
+  // Long fix step often due to gateway retries; surface so operators don't assume slow model only (output.log audit).
+  if (fixerTime > 120_000) {
+    console.log(chalk.gray(`  Fix step took ${formatDuration(fixerTime)} (may include gateway retries).`));
+  }
 
   // Strict allowlist: fixer also attempted disallowed files — add file-scoped lesson and state.
   if (result.skippedDisallowedFiles?.length) {

@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-16 · **Recorded cycles:** 42 · **Historical (legacy):** 4
+**Last updated:** 2026-03-17 · **Recorded cycles:** 46 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -161,6 +161,79 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 46 — 2026-03-17 (prompts.log improvements: crash flush, one snippet per file)
+
+**Artifacts audited:** prompts.log audit (AUDIT-CYCLES Cycles 38, 42); shared/logger.ts writeToPromptLog; tools/prr/workflow/issue-analysis.ts batch analysis snippet building.
+
+**Findings:**
+- **Low:** Writes are buffered; on crash/kill the last entry may be truncated and break the parser (AGENTS.md "Crash / truncation"). **Done:** cork/uncork around each entry so the entry is flushed as a unit.
+- **Low (Cycle 38):** Batch analysis sent the same file snippet multiple times when several issues referred to the same file (token waste). **Done:** One snippet per file; fetch once per path and reuse for all issues on that path.
+
+**Improvements implemented:**
+- shared/logger.ts: writeToPromptLog calls cork() before writing and uncork() after so each PROMPT/RESPONSE/ERROR entry is flushed as a unit; reduces truncated last entry on crash.
+- issue-analysis.ts: In batch mode, group by primaryPath; compute one snippet per path (first issue’s line/body for wider/repo content); build batchInput from snippetByPath so multiple issues on the same file share one snippet.
+
+**Flip-flop check:** N — Additive (flush behavior, token saving); no behavior revert.
+
+**Notes:** Slug pairing (Cycle 42) and zero-content refuse (Cycle 39) already in place. When llm-api is sole fixer, subprocess may not call initOutputLog — prompts.log may be empty; use PRR_DEBUG_PROMPTS=1 (AGENTS.md).
+
+---
+
+### Cycle 45 — 2026-03-17 (output.log audit: evening follow-up run)
+
+**Artifacts audited:** output.log (elizaOS/eliza#6562, 2026-03-17 evening run; PR head 1563b79, 4 push iterations, exit no_progress after 2 consecutive push iters with no verified fixes). Content from root-level output-log-audit-2026-03-17-evening.md; integrated here per docs-no-new-md.
+
+**Findings:**
+- **Positive:** exitReason non-empty (no_progress) on push iters 3–4; 422 early bail and "Stopping thread replies after 3 consecutive 422s" working; "No status checks reported for this ref" when totalChecks === 0 (startup.ts). Dedup/dismissals and fix loop behaved as intended.
+- **Neutral:** Pill 504 on large audit request (~97k chars) — documented in AGENTS.md; short paths (banner.ts, reply.ts) still in dismissal-comment skip logs (full-path normalization deferred).
+
+**Improvements implemented:**
+- None this cycle (confirmation run). Prior improvements (exitReason, 422 bail, CI 0/0 message) confirmed working.
+
+**Flip-flop check:** N — Audit-only; no code change.
+
+**Notes:** Run matched intended behavior after recent improvements. Optional: pill truncation for very large logs.
+
+---
+
+### Cycle 44 — 2026-03-17 (output-log-improvements code audit)
+
+**Artifacts audited:** Git diff of changes implementing recommendations from output-log-audit.md (thread reply 422 handling, S/R message, exitReason, long fix duration, docs). Content from root-level output-log-improvements-audit.md; integrated here per docs-no-new-md.
+
+**Findings:**
+- **Correctness:** thread-replies.ts + final-cleanup: return { ok, is422 }, consecutive 422 bail, attempted/replied counts, summary when replied < 10% attempted. execute-fix-iteration: S/R failure log line, long-duration (>120s) log line. push-iteration-loop: exitReason || 'no_progress'. AGENTS.md and QUICK_REFERENCE 422 subsection accurate.
+- **Low:** Search/replace "N file(s)" can overcount when runner fails on a subset of batch; wording softened to "this batch (N file(s))".
+
+**Improvements implemented:**
+- (Already implemented before this cycle.) This cycle records the code review of those changes; tests for thread-reply return value and 422 bail added in follow-up.
+
+**Flip-flop check:** N — Review only; no revert.
+
+**Notes:** Logic correct; number formatting and thresholds match audit and workspace rules.
+
+---
+
+### Cycle 43 — 2026-03-17 (output.log audit: elizaOS/eliza#6562 run)
+
+**Artifacts audited:** output.log from PRR run on elizaOS/eliza#6562 (8 push iters, exit no_changes; 213 comments, many dismissed; thread reply 422s; pill 504). Content from root-level output-log-audit.md; integrated here per docs-no-new-md.
+
+**Findings:**
+- **Medium:** Thread reply 422s (almost every attempt); empty exitReason on push iter 2; "File no longer exists" skip used short paths (banner.ts, reply.ts, logger.ts).
+- **Low:** S/R failures and "output did not match file" — pass last apply error into fix prompt; optional summary line. Pill 504 on large request — document and consider truncation. Optional long-fix-duration log (>120s). User-facing numbers: formatNumber/toLocaleString spot-check.
+
+**Improvements implemented:**
+- Thread reply: 422 early bail (3 consecutive), user-visible summary when replied < 10% attempted, QUICK_REFERENCE 422 subsection (Cycle 44 code review).
+- exitReason: push-iteration-loop sets exitReason || 'no_progress' (Cycle 44).
+- Last apply error in fix prompt, S/R failure log line, long-duration log line (Cycle 44).
+- Pill: AGENTS.md and pill context budget (Cycle 41); 0/0 CI message in startup.ts.
+- "File no longer exists": dismissal-comments debug messages clarified (this session: skip = no place to insert comment); full-path normalization deferred.
+
+**Flip-flop check:** N — Additive (messages, docs, thresholds); no behavior revert.
+
+**Notes:** Dismissal-comments skip reason clarified so operators don't confuse with "file not found during fix."
+
+---
 
 ### Cycle 39 — 2026-03-13 (wrong-file/pill/thread-replies code audit)
 

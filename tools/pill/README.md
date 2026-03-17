@@ -54,6 +54,9 @@ pill <directory> [options]
 
 Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/.env` (target overrides home). Same env vars as prr/story (e.g. `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`).
 
+- **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the audit request (user + system). Default 35000. Set to **20000** (or lower) for models with a small context window to avoid 504 / FUNCTION_INVOCATION_TIMEOUT. Per-section caps (output log, prompts digest, source, docs, tree) scale with the budget.
+- **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars sent to the audit (default 50000). Override if you need a different limit.
+
 ### Integrated (prr / story / split-exec / split-plan) — opt-in with --pill
 
 When you run **prr**, **story**, **split-exec**, or **split-plan** with the **`--pill`** flag, the shared logger enables pill for that run. On normal exit (or Ctrl+C), `closeOutputLog()` runs pill on the logs that were just closed and prints the pitch and file paths to the real console (using the original console refs captured before patching). When `--pill` is not passed, pill does not run.

@@ -7,6 +7,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { PillConfig, PillContext } from './types.js';
+import { DEFAULT_PILL_CONTEXT_BUDGET_TOKENS } from './config.js';
 import {
   readDocFiles,
   readSourceFiles,
@@ -28,16 +29,14 @@ const LOG_RAW_THRESHOLD_CHARS = 100_000;
 /** When output.log is summarized, keep this many lines from the start and end in full so audit sees init and exit state. */
 const OUTPUT_LOG_HEAD_TAIL_LINES = 400;
 
-/** Max total context tokens for the audit request. Larger requests can hit provider timeouts (e.g. Vercel FUNCTION_INVOCATION_TIMEOUT / 504). */
-const AUDIT_CONTEXT_BUDGET_TOKENS = 60_000;
-/** When trimming, cap each section to stay under budget. Order: outputLog, promptsDigest, sourceFiles, docs. */
-const OUTPUT_LOG_MAX_TOKENS = 22_000;
+/** When trimming, per-section caps are scaled from defaults by (budget / DEFAULT_PILL_CONTEXT_BUDGET_TOKENS). Order: outputLog, promptsDigest, sourceFiles, docs, tree. */
+const OUTPUT_LOG_MAX_TOKENS_DEFAULT = 14_000;
 /** Hard cap on output log chars sent to audit (504 avoidance). Overridable via PILL_OUTPUT_LOG_MAX_CHARS. */
 const DEFAULT_OUTPUT_LOG_MAX_CHARS = 50_000;
-const PROMPTS_DIGEST_MAX_TOKENS = 15_000;
-const SOURCE_MAX_TOKENS_WHEN_TRIMMED = 18_000;
-const DOCS_MAX_TOKENS_WHEN_TRIMMED = 3_000;
-const TREE_MAX_TOKENS_WHEN_TRIMMED = 2_000;
+const PROMPTS_DIGEST_MAX_TOKENS_DEFAULT = 8_000;
+const SOURCE_MAX_TOKENS_WHEN_TRIMMED_DEFAULT = 10_000;
+const DOCS_MAX_TOKENS_WHEN_TRIMMED_DEFAULT = 2_000;
+const TREE_MAX_TOKENS_WHEN_TRIMMED_DEFAULT = 1_000;
 
 const AUDIT_TRUNCATE_MARKER =
   '\n\n[ ... truncated for audit request size (504 timeout avoidance) ... ]\n\n';
@@ -213,6 +212,14 @@ export async function assembleContext(
     outputLog = truncateHeadAndTailByChars(outputLog, maxOutputLogChars, OUTPUT_LOG_CAP_MARKER);
   }
 
+  const auditBudgetTokens = config.contextBudgetTokens ?? DEFAULT_PILL_CONTEXT_BUDGET_TOKENS;
+  const scale = auditBudgetTokens / DEFAULT_PILL_CONTEXT_BUDGET_TOKENS;
+  const OUTPUT_LOG_MAX_TOKENS = Math.max(2_000, Math.round(OUTPUT_LOG_MAX_TOKENS_DEFAULT * scale));
+  const PROMPTS_DIGEST_MAX_TOKENS = Math.max(1_000, Math.round(PROMPTS_DIGEST_MAX_TOKENS_DEFAULT * scale));
+  const SOURCE_MAX_TOKENS_WHEN_TRIMMED = Math.max(1_000, Math.round(SOURCE_MAX_TOKENS_WHEN_TRIMMED_DEFAULT * scale));
+  const DOCS_MAX_TOKENS_WHEN_TRIMMED = Math.max(500, Math.round(DOCS_MAX_TOKENS_WHEN_TRIMMED_DEFAULT * scale));
+  const TREE_MAX_TOKENS_WHEN_TRIMMED = Math.max(200, Math.round(TREE_MAX_TOKENS_WHEN_TRIMMED_DEFAULT * scale));
+
   let contextTrimmed = false;
   let totalTokens =
     estimateTokens(docs) +
@@ -221,8 +228,8 @@ export async function assembleContext(
     estimateTokens(outputLog) +
     (promptsDigest ? estimateTokens(promptsDigest) : 0);
 
-  // WHY trim order: outputLog and promptsDigest are largest; trim them first so we stay under 60k total.
-  if (totalTokens > AUDIT_CONTEXT_BUDGET_TOKENS) {
+  // WHY trim order: outputLog and promptsDigest are largest; trim them first so we stay under budget (504 avoidance).
+  if (totalTokens > auditBudgetTokens) {
     contextTrimmed = true;
     if (estimateTokens(outputLog) > OUTPUT_LOG_MAX_TOKENS) {
       outputLog = truncateHeadAndTail(outputLog, OUTPUT_LOG_MAX_TOKENS, AUDIT_TRUNCATE_MARKER);
@@ -233,7 +240,7 @@ export async function assembleContext(
       estimateTokens(directoryTree) +
       estimateTokens(outputLog) +
       (promptsDigest ? estimateTokens(promptsDigest) : 0);
-    if (totalTokens > AUDIT_CONTEXT_BUDGET_TOKENS && promptsDigest && estimateTokens(promptsDigest) > PROMPTS_DIGEST_MAX_TOKENS) {
+    if (totalTokens > auditBudgetTokens && promptsDigest && estimateTokens(promptsDigest) > PROMPTS_DIGEST_MAX_TOKENS) {
       promptsDigest = truncateHeadAndTail(promptsDigest, PROMPTS_DIGEST_MAX_TOKENS, AUDIT_TRUNCATE_MARKER);
     }
     totalTokens =
@@ -242,7 +249,7 @@ export async function assembleContext(
       estimateTokens(directoryTree) +
       estimateTokens(outputLog) +
       (promptsDigest ? estimateTokens(promptsDigest) : 0);
-    if (totalTokens > AUDIT_CONTEXT_BUDGET_TOKENS && estimateTokens(sourceFiles) > SOURCE_MAX_TOKENS_WHEN_TRIMMED) {
+    if (totalTokens > auditBudgetTokens && estimateTokens(sourceFiles) > SOURCE_MAX_TOKENS_WHEN_TRIMMED) {
       sourceFiles = truncateHeadAndTail(sourceFiles, SOURCE_MAX_TOKENS_WHEN_TRIMMED, AUDIT_TRUNCATE_MARKER);
     }
     totalTokens =
@@ -251,7 +258,7 @@ export async function assembleContext(
       estimateTokens(directoryTree) +
       estimateTokens(outputLog) +
       (promptsDigest ? estimateTokens(promptsDigest) : 0);
-    if (totalTokens > AUDIT_CONTEXT_BUDGET_TOKENS && estimateTokens(directoryTree) > TREE_MAX_TOKENS_WHEN_TRIMMED) {
+    if (totalTokens > auditBudgetTokens && estimateTokens(directoryTree) > TREE_MAX_TOKENS_WHEN_TRIMMED) {
       directoryTree = truncateHeadAndTail(directoryTree, TREE_MAX_TOKENS_WHEN_TRIMMED, AUDIT_TRUNCATE_MARKER);
     }
     totalTokens =
@@ -260,7 +267,7 @@ export async function assembleContext(
       estimateTokens(directoryTree) +
       estimateTokens(outputLog) +
       (promptsDigest ? estimateTokens(promptsDigest) : 0);
-    if (totalTokens > AUDIT_CONTEXT_BUDGET_TOKENS && estimateTokens(docs) > DOCS_MAX_TOKENS_WHEN_TRIMMED) {
+    if (totalTokens > auditBudgetTokens && estimateTokens(docs) > DOCS_MAX_TOKENS_WHEN_TRIMMED) {
       docs = truncateHeadAndTail(docs, DOCS_MAX_TOKENS_WHEN_TRIMMED, AUDIT_TRUNCATE_MARKER);
     }
   }

@@ -415,6 +415,9 @@ function writeToPromptLog(
     return;
   }
   try {
+    // WHY cork/uncork: Flush this entry as a unit so on crash we don't get a truncated entry
+    // that breaks the parser (prompts.log audit). See AGENTS.md "Crash / truncation".
+    if (promptLogStream.cork) promptLogStream.cork();
     const sep = '═'.repeat(70);
     const sizeNote = `${body.length} chars`;
     let header = `${sep}\n ${slug}  ${kind}: ${label} (${sizeNote})\n`;
@@ -424,8 +427,10 @@ function writeToPromptLog(
     promptLogStream.write(header);
     promptLogStream.write(body);
     promptLogStream.write(`\n${sep}\n\n`);
+    if (promptLogStream.uncork) promptLogStream.uncork();
   } catch (err) {
     console.error('Prompt log stream write failed:', err);
+    if (promptLogStream?.uncork) promptLogStream.uncork();
   }
 }
 

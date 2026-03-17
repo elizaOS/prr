@@ -16,7 +16,7 @@ import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import chalk from 'chalk';
-import { warn, info, debug, debugStep, formatDuration } from '../../../shared/logger.js';
+import { warn, info, debug, debugStep, formatDuration, formatNumber } from '../../../shared/logger.js';
 import { getWorkdirInfo, ensureWorkdir } from '../../../shared/git/workdir.js';
 
 /**
@@ -29,8 +29,10 @@ export function displayPRStatus(prStatus: PRStatus): void {
     warn(`CI: ${prStatus.inProgressChecks.length} checks running: ${prStatus.inProgressChecks.join(', ')}`);
   } else if (prStatus.pendingChecks.length > 0) {
     warn(`CI: ${prStatus.pendingChecks.length} checks queued: ${prStatus.pendingChecks.join(', ')}`);
+  } else if (prStatus.totalChecks === 0) {
+    console.log(chalk.green('✓'), `CI: No status checks reported for this ref; status: ${prStatus.ciState}`);
   } else {
-    console.log(chalk.green('✓'), `CI: ${prStatus.completedChecks}/${prStatus.totalChecks} checks run; status: ${prStatus.ciState}`);
+    console.log(chalk.green('✓'), `CI: ${formatNumber(prStatus.completedChecks)}/${formatNumber(prStatus.totalChecks)} checks run; status: ${prStatus.ciState}`);
   }
 
   // Bot review status
