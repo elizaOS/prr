@@ -96,6 +96,18 @@ export class StateManager {
           if (!this.state.dismissedIssues) {
             this.state.dismissedIssues = [];
           }
+
+          // Keep verifiedFixed and dismissedIssues mutually exclusive (pill #3; output.log audit).
+          // Remove from verified any ID that is in dismissed (symmetric to removing from dismissed when in verified).
+          const dismissedIds = new Set((this.state.dismissedIssues ?? []).map((d) => d.commentId));
+          if (dismissedIds.size > 0 && this.state.verifiedFixed?.length) {
+            const before = this.state.verifiedFixed.length;
+            this.state.verifiedFixed = this.state.verifiedFixed.filter((id) => !dismissedIds.has(id));
+            const removed = before - this.state.verifiedFixed.length;
+            if (removed > 0) {
+              console.warn(`State load: removed ${removed} ID(s) from verifiedFixed (already in dismissed — overlap cleaned)`);
+            }
+          }
         }
       } catch (error) {
         console.warn('Failed to load state file, creating new state:', error);

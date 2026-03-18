@@ -228,7 +228,15 @@ export async function executePushIteration(
   // WHY log string: JSON.stringify(Infinity) is null; log "unlimited" so debug output is clear (audit: logs showed effectiveMaxFixIterations: null).
   debug('Fix loop config', { pushIteration, maxFixIterations: options.maxFixIterations, effectiveMaxFixIterations: effectiveMaxFixIterations === Infinity ? 'unlimited' : effectiveMaxFixIterations, unresolvedCount: unresolvedIssues.length });
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
-  let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
+  let { fixIteration, allFixed, verifiedThisSession: initialVerifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
+
+  // Persist verifiedThisSession across push iterations so RESULTS SUMMARY "N this session" is correct.
+  // WHY: initializeFixLoop() creates a new Set each time; without this, fixes verified in push iter N
+  // are lost when push iter N+1 starts, so we'd show "0 new this session" despite fixes this run (output.log audit).
+  const verifiedThisSession = stateContext.verifiedThisSession instanceof Set
+    ? stateContext.verifiedThisSession
+    : initialVerifiedThisSession;
+  stateContext.verifiedThisSession = verifiedThisSession;
 
   // Reset stalemate counter at the start of each push iteration's fix loop.
   // WHY: noProgressCycles persists in state across push iterations. Without this,
@@ -236,10 +244,6 @@ export async function executePushIteration(
   // iteration N+1 bails immediately on its first cycle (even if that cycle was
   // timeout-only and should not count as stalemate).
   Bailout.resetNoProgressCycles(stateContext);
-  
-  // Expose verifiedThisSession on stateContext so reporters can use the actual
-  // session verification count instead of unreliable delta counting.
-  stateContext.verifiedThisSession = verifiedThisSession;
 
   let exitReason = '';
   let exitDetails = '';

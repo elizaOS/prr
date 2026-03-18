@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-17 · **Recorded cycles:** 48 · **Historical (legacy):** 4
+**Last updated:** 2026-03-18 · **Recorded cycles:** 51 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -162,6 +162,47 @@ Copy the block below for each new cycle.
 
 ## Recorded cycles
 
+### Cycle 51 — 2026-03-18 (pill-output improvements: state exclusivity, audit re-queue, path disambiguation, AGENTS.md)
+
+**Artifacts audited:** pill-output.md (2026-03-18 run analysis); code and docs changes driven by pill recommendations and conversation summary (no output.log workdir spot-check this cycle).
+
+**Findings:**
+- **Medium:** Final audit could report UNFIXED for an issue that was previously verified; we trusted prior verification and kept it as verified (audit override). Pill and README "safe over sorry" principle argue for re-queuing when audit says UNFIXED.
+- **Medium:** verifiedFixed and dismissedIssues could overlap (recovery/legacy state); rawVerifiedFixed could grow far beyond relevantVerified (stale IDs across iterations).
+- **Low:** Ambiguous basenames (e.g. context.ts) were dismissed as path-unresolved even when comment body contained path hints (e.g. ../src/providers/context, plugins/.../context.ts).
+- **Low:** AGENTS.md did not document audit re-queue behavior or elizacloud-specific empty prompts.log troubleshooting.
+
+**Improvements implemented:**
+- state/manager.ts, state-core.ts: On load, remove from verifiedFixed any ID in dismissedIssues (symmetric cleanup); warn when overlap cleaned. state-dismissed already removed from verified when dismissing.
+- reporter.ts: When rawVerifiedFixed >= 3× relevantVerified, warn (pill #7) so operators see stale verified set size.
+- workflow/analysis.ts: When final audit says UNFIXED for a previously verified comment, unmarkVerified and re-queue (add to failedAudit) instead of trusting prior verification; AAR still records for visibility. Reporter copy: "re-queued: audit said UNFIXED (were previously verified)".
+- workflow/helpers/solvability.ts: extractPathHintsFromBody now extracts path-like strings without extension (e.g. ../src/providers/context); ambiguous basename resolution matches candidates that contain hint and end with hint+.ts/.tsx (pill #5/#10).
+- AGENTS.md: Document final-audit re-queue (safe over sorry); expand troubleshooting empty prompts.log for llm-elizacloud and stderr warning.
+
+**Flip-flop check:** Y — Final audit now re-queues when it says UNFIXED (previously we kept as verified). Intentional behavior change per "safe over sorry".
+
+**Notes:** No output.log workdir spot-check this cycle (code/docs improvements only). Related: Stale verification / head change (33, 34), Basename / fragment path (13).
+
+---
+
+### Cycle 49 — 2026-03-17 (output.log: eliza#6614, all_fixed exit)
+
+**Artifacts audited:** output.log (elizaOS/eliza#6614, branch fix-all, base v2.0.0; workdir `/root/.prr/work/919b98edcd448b7b`). PR head changed (62e95be → ec2b56b); 104 fixes recovered from git; 1 open issue (server.ts:71 InMemoryDatabaseAdapter); 1 fix applied and verified; pushed; iter 2 all verified; final audit 8 overrides; exit all_fixed. RESULTS: 13 fixed (1 this session), 13 dismissed, 0 remaining.
+
+**Findings:**
+- **Medium:** Workflow uses `state-core.loadState()` (startup/initialization); on PR head change it only updated headSha and warned "some cached state may be stale" and did **not** clear verified state. Only `StateManager.load()` cleared verified; so runs using state-core could keep stale verified IDs and skip re-verifying after rebase/revert.
+- **Low:** Final audit reported 8 issues as UNFIXED but we kept them as verified (audit overrides); one of them was the issue fixed this session (server.ts InMemoryDatabaseAdapter). Audit-override visibility is already implemented (RESULTS SUMMARY yellow line, AAR section).
+- **Info:** Debug table showed outdated=4, verified=9; recovery and markVerified brought total to 116 then 13 fixed in RESULTS (outdated counted in fixed when previously verified).
+
+**Improvements implemented:**
+- state-core.ts: When `ctx.state.headSha !== headSha`, clear `verifiedFixed`, `verifiedComments`, and `partialConflictResolutions` (when non-empty) and log "PR head changed (...): cleared verified state so fixes are re-checked against current code" (and partial clear message) so behavior matches StateManager and the prr-state-head-change rule.
+
+**Flip-flop check:** N — Additive (state-core now clears on head change); aligns with existing manager behavior and audit rules.
+
+**Notes:** Spot-checked `examples/a2a/typescript/server.ts` in workdir — conditional adapter present (useOpenAi ? undefined : new InMemoryDatabaseAdapter()); fix consistent with "don't override SQL plugin when useOpenAi".
+
+---
+
 ### Cycle 48 — 2026-03-17 (output.log: plugin-babylon#2, merge_conflicts exit)
 
 **Artifacts audited:** types/output.log (591 lines). Run: elizaos-plugins/plugin-babylon#2, branch odi-dev, base 1.x; workdir `/home/runner/.prr/work/225e45ff4b48714e`; 145 fixes recovered from git; merge with 1.x had 12 conflicted files; 10/12 auto-resolved, 2 failed (AutonomousCoordinator.ts parse `*/` expected, evm.ts parse `,` expected); exit merge_conflicts.
@@ -200,6 +241,22 @@ Copy the block below for each new cycle.
 
 ---
 
+### Cycle 50 — 2026-03-18 (output.log audit: elizaOS/eliza#6577, verifiedThisSession across push iters)
+
+**Artifacts audited:** output.log (elizaOS/eliza#6577, branch odi-form; workdir `/root/.prr/work/0c9c2571d63f2445`). Conflict resolved (package.json); push iter 1: 6 fixed; bail-out push iter 2 (__tests__/context.test.ts created, verification failed); push iter 3: stale re-check unmarked image.yaml + 2× metrics.py; fix iter 5 re-fixed image.yaml:78 and verified; push iter 4: all resolved, exit no_changes. RESULTS: 1 fixed, 13 dismissed, 4 remaining. Summary showed "1 issue fixed and verified (all from previous runs; 0 new this session)" despite 1 fix verified this run.
+
+**Findings:**
+- **Medium:** RESULTS SUMMARY showed "0 new this session" even though image.yaml:78 was fixed and verified in push iter 3. Cause: `verifiedThisSession` is re-initialized (new Set) at the start of each push iteration in `initializeFixLoop()`, so IDs added in a previous push iter were lost and `fixedThisSession` was 0 at report time.
+- **Low:** __tests__/context.test.ts: fixer created the file but verification failed; bail-out left it uncommitted (commit skipped when no newly verified fixes). Expected; handoff correctly lists remaining issues.
+
+**Improvements implemented:**
+- push-iteration-loop.ts: Reuse `stateContext.verifiedThisSession` across push iterations when it is already a Set (from a previous push iter), instead of always using the new Set from `initializeFixLoop()`. Ensures RESULTS SUMMARY "N this session" counts fixes verified in any push iter this run.
+
+**Flip-flop check:** N — Additive (persist same Set across push iters); no behavior revert.
+
+**Notes:** Spot-checked workdir: `.github/workflows/image.yaml` lines 77–79 — `context: .` and `file: docker/Dockerfile` present (fix for "workflow builds Docker image from repository context"). `plugins/plugin-form/typescript/src/providers/context.ts` line 145 — `hasActiveForm: true` present (dismissed already-fixed). Remaining 4: README (PR title), metrics.py (unit tests, overall_score, relevance_error).
+
+---
 ### Cycle 46 — 2026-03-17 (prompts.log improvements: crash flush, one snippet per file)
 
 **Artifacts audited:** prompts.log audit (AUDIT-CYCLES Cycles 38, 42); shared/logger.ts writeToPromptLog; tools/prr/workflow/issue-analysis.ts batch analysis snippet building.

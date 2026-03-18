@@ -44,7 +44,7 @@ prr owner/repo#123 --auto-push
    ┌──────────────────────────────────────────────────────┐
    │ • Fetch from GitHub (GraphQL API)                    │
    │ • Inline review threads (CodeRabbit, Copilot, etc)   │
-   │ • Issue comments (Claude, Greptile, etc)             │
+   │ • Issue comments (Claude, Greptile, Copilot, Cursor) │
    └──────────────────────────────────────────────────────┘
                            ↓
 3. ANALYZE ISSUES

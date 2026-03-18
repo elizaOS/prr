@@ -194,7 +194,7 @@ export async function closeOutputLog(): Promise<void> {
   }
 
   // WHY run when output has content OR prompts have entries: split-exec has no prompts log; prr/story do. So we
-  // run pill when either the output log has content (operational improvements) or the prompts log has PROMPT/RESPONSE/ERROR.
+  // run pill when either the output log has content (operational improvements, timing, RESULTS SUMMARY, etc.) or the prompts log has PROMPT/RESPONSE/ERROR.
   const outputLogHasContent =
     outputLogPath && existsSync(outputLogPath) && readFileSync(outputLogPath, 'utf-8').trim().length > 0;
   const hasPromptsToAnalyze =
@@ -202,17 +202,8 @@ export async function closeOutputLog(): Promise<void> {
     existsSync(promptLogPath) &&
     / (PROMPT|RESPONSE|ERROR): /m.test(readFileSync(promptLogPath, 'utf-8'));
 
-  // WHY skip when prompts.log exists but has no entries: After Ctrl+C during clone, output.log has content but
-  // prompts.log is empty; pill would produce no useful output (pill-output audit #7).
   if (pillAnalysisEnabled && outputLogPath && (outputLogHasContent || hasPromptsToAnalyze)) {
-    if (outputLogHasContent && promptLogPath && existsSync(promptLogPath) && !hasPromptsToAnalyze) {
-      pillAnalysisEnabled = false;
-      try {
-        appendFileSync(outputLogPath, '\n[Pill] Skipped: no PROMPT/RESPONSE/ERROR entries in prompts.log.\n', 'utf-8');
-        if (origLogRef) origLogRef('\n[Pill] Skipped (no prompt/response entries in prompts.log).');
-      } catch { /* ignore */ }
-      return;
-    }
+    // WHY run even when prompts.log is empty: output.log alone has nuggets (timing, RESULTS SUMMARY, errors, clone/fetch progress). Pill uses [PROMPTS DIGEST](none) and still audits output.log.
     // WHY reset first: so we run at most once even if runPillAnalysis or a later step throws.
     pillAnalysisEnabled = false;
     try {
@@ -417,11 +408,15 @@ function writeToPromptLog(
   const content = typeof body === 'string' ? body : (body != null ? String(body) : '');
   const isEmpty = content.length === 0 || (kind !== 'ERROR' && content.trim().length === 0);
   // WHY warn on empty: Pill/audit cycles need content between markers; empty entries indicate a logging bug
-  // (e.g. subprocess runner not writing to same stream, or caller passed marker-only). See AGENTS.md prompts.log.
+  // (e.g. elizacloud/LLM client not passing accumulated body after stream, or caller passed marker-only). See AGENTS.md prompts.log.
   if (isEmpty && kind !== 'ERROR') {
+    const msg = `[logger] prompts.log: ${kind} ${slug} has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed (e.g. after streaming, pass accumulated content).\n`;
     try {
+      if (typeof process !== 'undefined' && process.stderr?.write) {
+        process.stderr.write(msg);
+      }
       const w = (typeof console !== 'undefined' && console.warn) ? console.warn : () => {};
-      w('[logger] prompts.log: ' + kind + ' ' + slug + ' has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed.');
+      w(msg.trim());
     } catch {
       // avoid throwing from logger
     }

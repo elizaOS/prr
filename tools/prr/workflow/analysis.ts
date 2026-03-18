@@ -332,7 +332,8 @@ export async function runFinalAudit(
     if (result) {
       if (result.stillExists) {
         if (alreadyVerifiedIds.has(comment.id)) {
-          debug('L1: final audit said UNFIXED but comment was already verified — trusting verification', {
+          // Pill #2: safe over sorry — when final audit says UNFIXED, do not trust prior verification; re-queue.
+          debug('L1: final audit said UNFIXED for previously verified comment — unmarking and re-queuing (safe over sorry)', {
             commentId: comment.id,
             path: comment.path,
             auditExplanation: result.explanation?.slice(0, 300) ?? '(none)',
@@ -344,9 +345,10 @@ export async function runFinalAudit(
             explanation: result.explanation?.slice(0, 200),
           });
           console.warn(
-            chalk.yellow(`  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but keeping as verified (trusted prior verification).`)
+            chalk.yellow(`  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} — re-queuing (was verified earlier; safe over sorry).`)
           );
-          Verification.markVerified(stateContext, comment.id);
+          Verification.unmarkVerified(stateContext, comment.id);
+          failedAudit.push({ comment, explanation: result.explanation ?? 'Audit said UNFIXED' });
           continue;
         }
         if (isAuditNoActionNeeded(result.explanation)) {

@@ -257,6 +257,10 @@ export function printFinalSummary(
   if (overlapIds.length > 0) {
     debug('Overlap IDs (verifiedFixed ∩ dismissed)', overlapIds);
   }
+  // Pill #7: warn when verified set has accumulated many stale IDs (raw >> relevant).
+  if (verifiedFixed.length > 0 && relevantVerified.length > 0 && verifiedFixed.length >= 3 * relevantVerified.length) {
+    console.warn(chalk.yellow(`  ⚠ verifiedFixed has ${formatNumber(verifiedFixed.length)} entries but only ${formatNumber(relevantVerified.length)} are relevant to current comments (stale IDs from previous iterations)`));
+  }
 
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
@@ -327,7 +331,7 @@ export function printFinalSummary(
   // Audit overrides: final audit said UNFIXED but we kept as verified (visible decisions over hidden confidence).
   const auditOverrides = stateContext.auditOverridesThisRun ?? [];
   if (auditOverrides.length > 0) {
-    console.log(chalk.yellow(`\n  ⚠ ${formatNumber(auditOverrides.length)} issue${auditOverrides.length === 1 ? '' : 's'} kept as verified despite audit saying UNFIXED (trusted prior verification)`));
+    console.log(chalk.yellow(`\n  ⚠ ${formatNumber(auditOverrides.length)} issue${auditOverrides.length === 1 ? '' : 's'} re-queued: audit said UNFIXED (were previously verified; safe over sorry)`));
   }
 
   // When run in GitHub Actions, hint how to get logs
@@ -553,7 +557,7 @@ export async function printAfterActionReport(
   // --- Audit overrides: kept as verified despite final audit saying UNFIXED ---
   const auditOverrides = stateContext?.auditOverridesThisRun ?? [];
   if (auditOverrides.length > 0) {
-    console.log(chalk.yellow(`\n━━━ Audit overrides (${formatNumber(auditOverrides.length)}) — kept as verified despite audit UNFIXED ━━━`));
+    console.log(chalk.yellow(`\n━━━ Audit re-queued (${formatNumber(auditOverrides.length)}) — audit said UNFIXED (were previously verified) ━━━`));
     for (const o of auditOverrides) {
       console.log(chalk.yellow(`  ⚠ ${o.path}:${o.line ?? '?'}`));
       if (o.explanation) console.log(chalk.gray(`    Audit said: ${o.explanation.slice(0, 120)}${o.explanation.length > 120 ? '…' : ''}`));

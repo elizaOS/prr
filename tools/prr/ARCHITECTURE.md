@@ -94,16 +94,16 @@ Fallback (plain text):
 
 Handles all interactions with GitHub's API:
 - Fetching PR information (title, description, files, comments, status)
-- Extracting bot review comments from issue comments (Claude, Greptile)
+- Extracting bot review comments from issue comments (Claude, Greptile, Copilot, Cursor)
 - Posting verification comments
 - Managing PR metadata
 
 **Bot comment extraction:**
 Two separate paths capture review feedback:
 1. **Inline review threads** (`getReviewThreads()`): GraphQL-based, captures CodeRabbit, Copilot, humans
-2. **Issue comments** (`getReviewBotIssueComments()`): REST-based, captures Claude, Greptile
+2. **Issue comments** (`getReviewBotIssueComments()`): REST-based, captures Claude, Greptile, Copilot, Cursor (see `REVIEW_BOTS_PARSE` in api.ts).
 
-WHY two paths: Some bots (Claude, Greptile) post structured reviews as issue/conversation comments, not inline threads. CodeRabbit is intentionally absent from the issue-comment path — it uses inline threads, and its summary comment would produce duplicate pseudo-issues.
+WHY two paths: Some bots post structured reviews as issue/conversation comments, not inline threads. CodeRabbit is intentionally absent from the issue-comment path — it uses inline threads, and its summary comment would produce duplicate pseudo-issues.
 
 **Bot name normalization:**
 `normalizeBotName()` converts `claude[bot]` → `Claude` for cleaner prompt display. Only used in the issue-comment path. WHY NOT in inline threads: raw logins like `coderabbitai[bot]` serve as identity keys for dedup and verification tracking — normalizing them would break matching.
@@ -404,7 +404,7 @@ Three-tier logging system:
 ```text
 1. Fetch PR comments from GitHub
    ├─ Inline review threads (GraphQL)
-   └─ Bot issue comments (Claude, Greptile)
+   └─ Bot issue comments (Claude, Greptile, Copilot, Cursor)
    ↓
 2. Pre-screen for solvability (skip deleted files, stale refs)
    ↓

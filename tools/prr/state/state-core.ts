@@ -21,10 +21,27 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
         ctx.state = createInitialState(pr, branch, headSha);
       } else {
         if (ctx.state.headSha !== headSha) {
-          console.warn(`PR head has changed (${ctx.state.headSha?.slice(0, 7)} → ${headSha.slice(0, 7)}), some cached state may be stale`);
+          const prevSha = ctx.state.headSha?.slice(0, 7);
           ctx.state.headSha = headSha;
+          const hadVerified =
+            (ctx.state.verifiedFixed?.length ?? 0) + (ctx.state.verifiedComments?.length ?? 0) > 0;
+          const hadPartial =
+            Object.keys(ctx.state.partialConflictResolutions ?? {}).length > 0;
+          if (hadVerified) {
+            ctx.state.verifiedFixed = [];
+            ctx.state.verifiedComments = [];
+            console.warn(
+              `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code`,
+            );
+          }
+          if (hadPartial) {
+            ctx.state.partialConflictResolutions = {};
+            console.warn(
+              `PR head changed: cleared partial conflict resolutions so they are re-applied against current merge`,
+            );
+          }
         }
-        
+
         if (ctx.state.interrupted) {
           console.log(`Resuming from interrupted run (phase: ${ctx.state.interruptPhase || 'unknown'})`);
         }
@@ -99,15 +116,24 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           console.log(`Normalized ${formatNumber(normalizedFragment)} legacy .d.ts dismissal(s) to path-unresolved`);
         }
 
-        // Keep verifiedFixed and dismissedIssues mutually exclusive (output.log audit: overlapVerifiedAndDismissed).
-        // Recovery or legacy state can leave the same ID in both; remove from dismissed when it's in verified.
+        // Keep verifiedFixed and dismissedIssues mutually exclusive (output.log audit: overlapVerifiedAndDismissed; pill #3).
+        // (1) Remove from dismissed when it's in verified. (2) Remove from verified when it's in dismissed.
         const verifiedSet = new Set(ctx.state.verifiedFixed ?? []);
+        const dismissedIds = new Set(ctx.state.dismissedIssues.map((d) => d.commentId));
         if (verifiedSet.size > 0 && ctx.state.dismissedIssues.length > 0) {
-          const before = ctx.state.dismissedIssues.length;
+          const beforeD = ctx.state.dismissedIssues.length;
           ctx.state.dismissedIssues = ctx.state.dismissedIssues.filter((d) => !verifiedSet.has(d.commentId));
-          const removed = before - ctx.state.dismissedIssues.length;
-          if (removed > 0) {
-            console.log(`Cleaned ${formatNumber(removed)} overlap (removed from dismissed; already in verified)`);
+          const removedD = beforeD - ctx.state.dismissedIssues.length;
+          if (removedD > 0) {
+            console.log(`Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified)`);
+          }
+        }
+        if (dismissedIds.size > 0 && ctx.state.verifiedFixed?.length) {
+          const beforeV = ctx.state.verifiedFixed.length;
+          ctx.state.verifiedFixed = ctx.state.verifiedFixed.filter((id) => !dismissedIds.has(id));
+          const removedV = beforeV - ctx.state.verifiedFixed.length;
+          if (removedV > 0) {
+            console.warn(`State load: removed ${formatNumber(removedV)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned)`);
           }
         }
 

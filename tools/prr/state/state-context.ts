@@ -30,7 +30,7 @@ export interface StateContext {
   /** When set, next fix prompt should use a smaller batch (e.g. after large-prompt failure before rotate). Cleared when consumed.
    *  WHY: Prompts >200k chars cause gateway 500s/timeouts. Forcing a smaller batch on the next iteration avoids re-sending the same oversized prompt and burning rotation slots. */
   forceNextBatchSizeReduce?: boolean;
-  /** Comments for which the final audit said UNFIXED but we kept them as verified (trusted prior verification). Used for AAR/visibility. */
+  /** Comments that were previously verified but final audit said UNFIXED — we re-queued them (safe over sorry). Used for AAR/visibility. */
   auditOverridesThisRun?: Array<{ commentId: string; path: string; line?: number | null; explanation?: string }>;
 }
 

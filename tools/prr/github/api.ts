@@ -513,6 +513,8 @@ export class GitHubAPI {
     const lower = login.toLowerCase();
     if (lower.includes('claude')) return 'Claude';
     if (lower.includes('greptile')) return 'Greptile';
+    if (lower.includes('copilot')) return 'Copilot';
+    if (lower.includes('cursor')) return 'Cursor';
     return login.replace(/\[bot\]$/, '');
   }
 
@@ -540,7 +542,17 @@ export class GitHubAPI {
     owner: string, repo: string, prNumber: number
   ): Promise<ReviewComment[]> {
     // Bots that post structured reviews as issue comments (we parse markdown into multiple issues).
-    const REVIEW_BOTS_PARSE: Array<string> = ['claude[bot]', 'greptile[bot]'];
+    // Include all known review bots so we see everything; omit coderabbitai[bot] (inline-only, meta comment filtered).
+    // WHY greptile-apps[bot]: GitHub uses this login for Greptile; greptile[bot] may be legacy or alternate.
+    // WHY copilot-pull-request-reviewer[bot]: GitHub PR review bot; may post summary/table as issue comment.
+    // WHY cursor[bot]: Cursor Bugbot / review bot; may post summary or inline-style as issue comment.
+    const REVIEW_BOTS_PARSE: Array<string> = [
+      'claude[bot]',
+      'greptile[bot]',
+      'greptile-apps[bot]',
+      'copilot-pull-request-reviewer[bot]',
+      'cursor[bot]',
+    ];
 
     const allIssueComments: Array<{
       id: number;
@@ -616,8 +628,8 @@ export class GitHubAPI {
       }
     }
 
-    // WHY include other issue comments: PR conversation comments (from humans or other bots) that
-    // are not from claude/greptile were never fetched, so "no issues" when the user sees feedback.
+    // WHY include "other" comments: PR conversation comments from humans or bots not in
+    // REVIEW_BOTS_PARSE would otherwise be skipped, so "no issues" when the user sees feedback.
     // Include every other issue comment so we don't miss review feedback (e.g. #issuecomment-XXXX).
     const parsedBotLogins = new Set(REVIEW_BOTS_PARSE);
     const otherComments = allIssueComments.filter(
@@ -655,7 +667,7 @@ export class GitHubAPI {
       }
     }
     if (otherComments.length > 0) {
-      debug(`Included ${otherComments.length} other issue comment(s) (non-claude/greptile)`);
+      debug(`Included ${otherComments.length} other issue comment(s) (not from parsed review bots)`);
     }
 
     return results;

@@ -62,11 +62,22 @@ function extractPathHintsFromBody(body: string): string[] {
   if (!body) return [];
   const hints: string[] = [];
   const seen = new Set<string>();
+  // Paths with extension (e.g. plugins/plugin-form/typescript/src/providers/context.ts)
   const pathRe = /`?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))`?/g;
   let match: RegExpExecArray | null;
   while ((match = pathRe.exec(body)) !== null) {
     const hint = match[1]!;
     if (seen.has(hint)) continue;
+    seen.add(hint);
+    hints.push(hint);
+  }
+  // Pill #5/#10: path-like segments without extension (e.g. ../src/providers/context, src/providers/context)
+  const pathLikeRe = /(?:\.\.\/)*(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+/g;
+  while ((match = pathLikeRe.exec(body)) !== null) {
+    const raw = match[0]!;
+    const hint = raw.replace(/^\.\.\//, '').trim();
+    if (hint.length < 4 || seen.has(hint)) continue;
+    if (/\.(ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)$/.test(hint)) continue;
     seen.add(hint);
     hints.push(hint);
   }
@@ -234,7 +245,12 @@ export function resolveTrackedPathDetailed(workdir: string, rawPath: string, com
 
   const pathHints = extractPathHintsFromBody(commentBody);
   for (const hint of pathHints) {
-    const hinted = suffixMatches.find((f) => f === hint || f.endsWith('/' + hint));
+    const hinted = suffixMatches.find((f) => {
+      if (f === hint || f.endsWith('/' + hint)) return true;
+      // Pill #5/#10: hint may be path without extension (e.g. src/providers/context) → match .../context.ts
+      if (f.includes(hint) && (f.endsWith(hint + '.ts') || f.endsWith('/' + hint + '.ts') || f.endsWith(hint + '.tsx') || f.endsWith('/' + hint + '.tsx'))) return true;
+      return false;
+    });
     if (hinted) return { kind: 'body-hint', path: hinted };
   }
 

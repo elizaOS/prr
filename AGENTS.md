@@ -4,13 +4,13 @@ This file helps AI assistants (Cursor, Claude Code, Aider, etc.) work effectivel
 
 ## Generated artifacts (not committed)
 
-These are created by tools and should not be committed: `.split-plan.md`, `.split-exec-workdir/` (clone workdir for split-exec), `split-exec-output.log`, `split-exec-prompts.log`, `split-plan-output.log`, `split-plan-prompts.log`, `pill-output.md`, `pill-summary.md`, `output.log`, `prompts.log`. See `.gitignore`.
+These are created by tools and should not be committed: `.split-plan.md`, `.split-rewrite-plan.yaml` (or `.split-rewrite-plan.md`/`.json` — rewrite plan for split-exec), `.split-exec-workdir/` (clone workdir for split-exec), `.split-rewrite-plan-workdir/` (clone workdir for split-rewrite-plan), `split-exec-output.log`, `split-exec-prompts.log`, `split-plan-output.log`, `split-plan-prompts.log`, `pill-output.md`, `pill-summary.md`, `output.log`, `prompts.log`. See `.gitignore`.
 
 **Pill hook:** Pill runs on close only when the user passes **`--pill`** on the command line. **prr**, **split-exec**, **story**, and **split-plan** accept `--pill`; after parsing, they call `setPillEnabled(true)`. Then `closeOutputLog()` runs pill on the closed logs (and writes pill-output.md / pill-summary.md). When `--pill` is not passed, pill does not run. **WHY opt-in:** Default runs stay fast; tools like split-exec have no LLM calls, so pill would often have nothing to analyze. When `--pill` is set, pill runs if the output log has content or the prompts log has PROMPT/RESPONSE/ERROR entries.
 
 **prompts.log:** When output logging is active (e.g. prr with default --verbose), `prompts.log` (or `{prefix}-prompts.log`) is written with full prompt and response text between structural markers (PROMPT #NNNN, RESPONSE #NNNN). Content is written by `shared/logger.ts` (`writeToPromptLog`). Entries with zero content between markers indicate a logging bug and should be reported or investigated; pill and audit cycles rely on this content.
 
-**Troubleshooting empty prompts.log:** If the **primary LLM path** (in-process, e.g. elizacloud via `tools/prr/llm/client.ts`) produces empty PROMPT/RESPONSE entries, the fix is in that code path: ensure the full prompt string is passed to `debugPrompt()` and the full response body to `debugResponse()` (e.g. after streaming, pass the accumulated content, not a placeholder). `shared/logger.ts`'s `writeToPromptLog` refuses zero-length or whitespace-only body and warns to console. Check that `initOutputLog()` was called before the first LLM call and that `promptLogStream` is non-null. **When llm-api is the sole fixer:** the subprocess may not call `initOutputLog`, so **prompts.log may be empty** even though the fixer ran; use **`PRR_DEBUG_PROMPTS=1`** to get per-prompt files under `~/.prr/debug/`, or inspect `output.log` (e.g. `PROMPT #0001 → { chars: N }`) for evidence of calls.
+**Troubleshooting empty prompts.log:** If the **primary LLM path** (in-process, e.g. elizacloud via `tools/prr/llm/client.ts`) produces empty PROMPT/RESPONSE entries, the fix is in that code path: ensure the full prompt string is passed to `debugPrompt()` and the full response body to `debugResponse()` (e.g. after streaming, pass the accumulated content, not a placeholder). `shared/logger.ts`'s `writeToPromptLog` refuses zero-length or whitespace-only body and **warns to stderr** (and console) with the slug so you can see which caller sent an empty body. If most entries in prompts.log are from **llm-elizacloud** and every body is empty, the streaming path in the elizacloud client may not be passing the accumulated response to the logger — check `shared/llm/elizacloud.ts` (or the code that calls `debugResponse()` after streaming). Check that `initOutputLog()` was called before the first LLM call and that `promptLogStream` is non-null. **When llm-api is the sole fixer:** the subprocess may not call `initOutputLog`, so **prompts.log may be empty** even though the fixer ran; use **`PRR_DEBUG_PROMPTS=1`** to get per-prompt files under `~/.prr/debug/`, or inspect `output.log` (e.g. `PROMPT #0001 → { chars: N }`) for evidence of calls.
 
 **Crash / truncation:** Writes are buffered. If the process exits abruptly (crash, kill), the last entry may be missing or truncated. The logger uses cork/uncork per prompts.log entry so each PROMPT/RESPONSE/ERROR is flushed as a unit, reducing truncated entries. `closeOutputLog()` flushes and closes streams on normal shutdown.
 
@@ -20,14 +20,17 @@ These are created by tools and should not be committed: `.split-plan.md`, `.spli
 
 **Model skip list (ElizaCloud):** Some models are skipped by default. Reasons are separate: **known timeout/504** (transient possible — retry with `PRR_ELIZACLOUD_INCLUDE_MODELS`) vs **0% fix rate** (audit). The list is in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`; reasons in `ELIZACLOUD_SKIP_REASON`). DEBUG logs show which reason per model. To re-enable a skipped model (e.g. timeout was gateway-specific), set **`PRR_ELIZACLOUD_INCLUDE_MODELS`** to a comma-separated list (e.g. `openai/gpt-4o,anthropic/claude-3.7-sonnet`). See `getEffectiveElizacloudSkipModelIds()` and `getElizaCloudSkipReason()`.
 
-**Clone / git output:** During clone and fetch, git's stdout and stderr are forwarded to the terminal so you see progress (e.g. "Receiving objects: 45%") and any prompts. If it appears to hang with no output, the process may be waiting on a git prompt (e.g. SSH host key verification or credentials). For first-time SSH, set **`GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"`** to avoid the host key prompt; for HTTPS, ensure a token is set so git does not prompt for a password. Clone timeout: **`PRR_CLONE_TIMEOUT_MS`** (default 300s).
+**Clone / git output:** During clone and fetch, git's stdout and stderr are forwarded to the terminal so you see progress (e.g. "Receiving objects: 45%") and any prompts. If it appears to hang with no output, the process may be waiting on a git prompt (e.g. SSH host key verification or credentials). For first-time SSH, set **`GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new"`** to avoid the host key prompt; for HTTPS, ensure a token is set so git does not prompt for a password. Clone timeout: **`PRR_CLONE_TIMEOUT_MS`** (default 900s).
+
+**Final audit and verified state:** When the **final audit** reports an issue as UNFIXED, PRR **re-queues** that issue (removes it from verified and re-enters the fix loop) even if a prior iteration had marked it verified. This is **safe over sorry**: we do not trust prior verification over the final audit. The RESULTS SUMMARY and AAR list these as "re-queued: audit said UNFIXED (were previously verified)". See README philosophy ("Safe over sorry verification") and `tools/prr/workflow/analysis.ts` (final audit loop).
 
 ## Repo layout
 
 - **`tools/prr/`** — PR Resolver (main CLI): entry point, workflow, GitHub, LLM, state, runners integration.
 - **`tools/pill/`** — Program Improvement Log Looker: audit logs, append improvement plans.
 - **`tools/split-plan/`** — PR decomposition planner: produces `.split-plan.md`.
-- **`tools/split-exec/`** — Execute split plan: cherry-pick, push, create PRs.
+- **`tools/split-rewrite-plan/`** — Generate rewrite plan from group plan + repo: ordered ops per split (cherry-pick / commit-from-sha) for split-exec. Optional; when present, split-exec uses it instead of one-commit-per-split.
+- **`tools/split-exec/`** — Execute split plan: when a rewrite plan is present, runs its ops and pushes to rebuild branches; when absent, one commit per split from **Files:** (or cherry-picks from **Commits:**). Push, create PRs.
 - **`tools/story/`** — PR/branch narrative and changelog.
 - **`shared/`** — Shared code: logger, config, git helpers, runners (detect, types), constants.
 
@@ -68,8 +71,9 @@ With **`--reply-to-threads`** (or **`PRR_REPLY_TO_THREADS=true`**), PRR posts a 
 | GitHub API         | `tools/prr/github/api.ts` |
 | LLM / rotation     | `tools/prr/llm/`, `tools/prr/models/rotation.ts`, `shared/llm/` (rate-limit, model-context-limits, elizacloud) |
 | State, lessons      | `tools/prr/state/` |
-| Split plan (planner)| `tools/split-plan/` |
-| Split exec (runner) | `tools/split-exec/` (branch/PR logic: `run.ts`) |
+| Split plan (planner)   | `tools/split-plan/` |
+| Split rewrite plan    | `tools/split-rewrite-plan/` (generates `.split-rewrite-plan.yaml` from group plan + clone) |
+| Split exec (runner)   | `tools/split-exec/` (branch/PR logic: `run.ts`; optional rewrite plan → rebuild branches, else one commit per split) |
 | Shared logger      | `shared/logger.ts` |
 | Shared config      | `shared/config.ts` |
 | Shared git         | `shared/git/` |
