@@ -281,7 +281,10 @@ export function printFinalSummary(
 
   if (toolFixedCount > 0) {
     let sessionNote = '';
-    if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) {
+    if (exitReason === 'merge_conflicts') {
+      // Run stopped at base-merge; fixed count is from state/recovery only (no comment analysis this run).
+      sessionNote = ' (from state; run stopped at base-merge)';
+    } else if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) {
       // Cycle 13 L1: Clarify that the total includes fixes from previous runs.
       sessionNote = ` (of which ${formatNumber(fixedThisSession)} this session)`;
     } else if (fixedThisSession === 0) {
@@ -321,7 +324,13 @@ export function printFinalSummary(
     }
   }
 
-  // When run in GitHub Actions, hint how to get logs to an agent (artifact download via gh CLI)
+  // Audit overrides: final audit said UNFIXED but we kept as verified (visible decisions over hidden confidence).
+  const auditOverrides = stateContext.auditOverridesThisRun ?? [];
+  if (auditOverrides.length > 0) {
+    console.log(chalk.yellow(`\n  ⚠ ${formatNumber(auditOverrides.length)} issue${auditOverrides.length === 1 ? '' : 's'} kept as verified despite audit saying UNFIXED (trusted prior verification)`));
+  }
+
+  // When run in GitHub Actions, hint how to get logs
   if (process.env.GITHUB_ACTIONS === 'true') {
     const runId = process.env.GITHUB_RUN_ID;
     const repo = process.env.GITHUB_REPOSITORY;
@@ -538,6 +547,16 @@ export async function printAfterActionReport(
       const truncated = preview.length > 100 ? preview.substring(0, 100) + '...' : preview;
       console.log(chalk.green(`  ✓ ${formatCommentLocation(comment)}`));
       console.log(chalk.gray(`    ${truncated}`));
+    }
+  }
+
+  // --- Audit overrides: kept as verified despite final audit saying UNFIXED ---
+  const auditOverrides = stateContext?.auditOverridesThisRun ?? [];
+  if (auditOverrides.length > 0) {
+    console.log(chalk.yellow(`\n━━━ Audit overrides (${formatNumber(auditOverrides.length)}) — kept as verified despite audit UNFIXED ━━━`));
+    for (const o of auditOverrides) {
+      console.log(chalk.yellow(`  ⚠ ${o.path}:${o.line ?? '?'}`));
+      if (o.explanation) console.log(chalk.gray(`    Audit said: ${o.explanation.slice(0, 120)}${o.explanation.length > 120 ? '…' : ''}`));
     }
   }
 

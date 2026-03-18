@@ -8,6 +8,16 @@
  */
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CLONE / FETCH
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * Clone timeout in ms. Configurable via PRR_CLONE_TIMEOUT_MS (default 300s).
+ * WHY: Large repos (e.g. 1.6GB) can block indefinitely; timeout + progress feedback avoid silent hang (pill-output #1).
+ */
+export const DEFAULT_CLONE_TIMEOUT_MS = 300_000;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // LLM TOKEN LIMITS & PROMPT SIZE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -181,6 +191,26 @@ export const MIN_CONFLICT_RESOLUTION_SIZE_RATIO = 0.1; // 10%
 export const MIN_LINES_FOR_SIZE_REGRESSION_CHECK = 100;
 
 /**
+ * Top+tails fallback: only try when no conflict chunk exceeds this line count (larger side).
+ * WHY: We ask the model to produce the full resolved conflict from partial input (top + tails);
+ * very large conflicts would require the model to invent too much middle content.
+ */
+export const TOP_TAILS_FALLBACK_MAX_CHUNK_LINES = 280;
+
+/** Lines of context before conflict to include in "top" for top+tails fallback. */
+export const TOP_TAILS_CONTEXT_LINES = 15;
+/** First N lines of the conflict block (with markers) to include in "top". */
+export const TOP_TAILS_TOP_CONFLICT_LINES = 80;
+/** Last N lines of OURS/THEIRS (and base) to include as "tail". */
+export const TOP_TAILS_TAIL_LINES = 80;
+
+/**
+ * Above this line count (larger side), use two-pass resolution in top+tails fallback: resolve head, then tail.
+ * Below this, one shot (top + tails → full resolution). Keeps one-shot for small conflicts.
+ */
+export const TOP_TAILS_TWO_PASS_THRESHOLD_LINES = 150;
+
+/**
  * Size ratio threshold for detecting asymmetric conflicts in generated files.
  * If the smaller conflict side is less than this fraction of the larger side,
  * use the large-side-as-base strategy instead of standard LLM resolution.
@@ -252,26 +282,35 @@ export const ELIZACLOUD_FALLBACK_MODEL = 'anthropic/claude-3.5-sonnet';
 // Note: API base URL aligns with Eliza Cloud's design for consistency in requests.
 export const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
 
+/** Skip reason per model: timeout/504 (transient possible) vs zero-fix-rate (audit). Pill #2: separate so timeout-skipped can be retried. */
+export type ElizaCloudSkipReason = 'timeout' | 'zero-fix-rate';
+
 /**
- * Model IDs to skip when using ElizaCloud (known timeout/504 or 0% fix rate in audits).
- * WHY: Audits showed these models 500/timeout repeatedly or had 0% fix rate; including them
- * wastes rotation slots. Add new IDs here when audits show repeated errors or zero success.
- *
- * Operators can re-enable a skipped model for their environment (e.g. if timeouts were
- * gateway-specific) by setting PRR_ELIZACLOUD_INCLUDE_MODELS to a comma-separated list of
- * model IDs to include anyway (e.g. "openai/gpt-4o-mini,anthropic/claude-3.7-sonnet").
- * Use getEffectiveElizacloudSkipModelIds() for the runtime list.
+ * Model IDs to skip when using ElizaCloud, with reason. WHY: Audits showed these models
+ * 500/timeout repeatedly or had 0% fix rate. Timeout-only models may be retried after cooldown
+ * (transient gateway issues); zero-fix-rate are skipped for audit (pill-output #2).
  */
 export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-5.2-codex',
   'anthropic/claude-3-opus',
   'openai/gpt-4.1',
-  'anthropic/claude-sonnet-4.5',       // alias (dot notation) — same family as DEFAULT_ELIZACLOUD_MODEL but different ID
+  'anthropic/claude-sonnet-4.5',
   'openai/gpt-5.1-codex-max',
-  'anthropic/claude-3.7-sonnet',       // output.log audit: known timeout on gateway; skip to avoid wasted slots
-  'openai/gpt-4o',                     // output.log audit: known timeout on gateway; skip to avoid wasted slots
-  'openai/gpt-4o-mini',                // output.log audit: 0% fix rate in run; known timeout on gateway
+  'anthropic/claude-3.7-sonnet',
+  'openai/gpt-4o',
+  'openai/gpt-4o-mini',
 ];
+
+/** Per-model skip reason. Default 'timeout' for models known to 504/timeout; 'zero-fix-rate' for 0% fix rate in audits. */
+export const ELIZACLOUD_SKIP_REASON: Record<string, ElizaCloudSkipReason> = {
+  'anthropic/claude-3.7-sonnet': 'timeout',
+  'openai/gpt-4o': 'timeout',
+  'openai/gpt-4o-mini': 'zero-fix-rate',
+};
+
+export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {
+  return ELIZACLOUD_SKIP_REASON[modelId] ?? 'timeout';
+}
 
 /**
  * Effective skip list for ElizaCloud: ELIZACLOUD_SKIP_MODEL_IDS minus any model in

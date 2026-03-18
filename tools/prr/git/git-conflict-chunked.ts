@@ -16,6 +16,11 @@ import {
   FILE_OVERVIEW_SEGMENT_CHARS,
   FILE_OVERVIEW_MIN_CHUNKS,
   FILE_OVERVIEW_MIN_FILE_CHARS,
+  TOP_TAILS_FALLBACK_MAX_CHUNK_LINES,
+  TOP_TAILS_CONTEXT_LINES,
+  TOP_TAILS_TOP_CONFLICT_LINES,
+  TOP_TAILS_TAIL_LINES,
+  TOP_TAILS_TWO_PASS_THRESHOLD_LINES,
 } from '../../../shared/constants.js';
 
 /**
@@ -280,6 +285,33 @@ export async function getFileConflictOverview(
   if (chunks.length < FILE_OVERVIEW_MIN_CHUNKS && content.length < FILE_OVERVIEW_MIN_FILE_CHARS) {
     return null;
   }
+  return getFileConflictOverviewInternal(llm, filePath, content, baseBranch, model);
+}
+
+/**
+ * Always build file story by chunking the entire file (full read in segments). Used by top+tails fallback
+ * so we "process the entire file" and give every resolution prompt a consistent story.
+ * WHY: When the fallback runs, we want every conflict-resolution prompt to see the same file "map";
+ * getFileConflictOverview() skips small files, but in fallback we always need the story so the model
+ * has context for top+tails resolution.
+ */
+export async function getFileConflictOverviewAlways(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model?: string
+): Promise<string | null> {
+  return getFileConflictOverviewInternal(llm, filePath, content, baseBranch, model);
+}
+
+async function getFileConflictOverviewInternal(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model?: string
+): Promise<string | null> {
   const opts = model ? { model } : undefined;
   try {
     const segments = splitFileIntoFullSegments(content, FILE_OVERVIEW_SEGMENT_CHARS);
@@ -765,6 +797,292 @@ export async function resolveConflictsChunked(
     resolved: true,
     content: resolvedLines.join('\n'),
     explanation: `Resolved ${chunks.length} conflict(s):\n${explanations.join('\n')}`
+  };
+}
+
+/**
+ * Build prompt for top+tails fallback: merge conflict using top of conflict + tail of OURS + tail of THEIRS (and base top/tail).
+ * WHY: When the main strategy (full region or AST sub-chunk) fails, we try this so we don't process the entire file
+ * unless we need to; the model sees how the conflict starts and how each side ends and produces a full resolution.
+ */
+function buildTopTailsConflictPrompt(
+  topConflict: string,
+  tailOurs: string,
+  tailTheirs: string,
+  baseTop: string,
+  baseTail: string,
+  baseBranch: string,
+  filePath: string,
+  fileOverview?: string,
+  previousParseError?: string
+): string {
+  const overviewBlock = fileOverview
+    ? `FILE OVERVIEW (use for context when merging):\n${fileOverview}\n\n`
+    : '';
+  const parseHint = previousParseError
+    ? `\nIMPORTANT: A previous attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is valid (close block comments with */, no missing commas).\n\n`
+    : '';
+  return `FILE: ${filePath}
+${overviewBlock}${parseHint}Merge this conflict using only the TOP (start of conflict) and TAILS (how each side ends). Produce the FULL resolved conflict content (no conflict markers).
+
+TOP OF CONFLICT (context + start):
+\`\`\`
+${topConflict || '(empty)'}
+\`\`\`
+
+BASE (common ancestor) — TOP:
+\`\`\`
+${baseTop || '(empty)'}
+\`\`\`
+
+BASE — TAIL:
+\`\`\`
+${baseTail || '(empty)'}
+\`\`\`
+
+OURS (HEAD) — TAIL (last lines):
+\`\`\`
+${tailOurs || '(empty)'}
+\`\`\`
+
+THEIRS (${baseBranch}) — TAIL (last lines):
+\`\`\`
+${tailTheirs || '(empty)'}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<full resolved conflict lines only, no markers>
+\`\`\`
+EXPLANATION: <one sentence>`;
+}
+
+/**
+ * Two-pass: prompt for resolving the HEAD (first portion) of a conflict from top + base top.
+ * WHY two-pass: For conflicts > 150 lines, one-shot (top + tails → full resolution) would ask the model
+ * to invent the middle; splitting into head then tail keeps each request bounded and avoids hallucinated middle.
+ */
+function buildTopTailsHeadPrompt(
+  topConflict: string,
+  baseTop: string,
+  baseBranch: string,
+  filePath: string,
+  fileOverview?: string,
+  previousParseError?: string
+): string {
+  const overviewBlock = fileOverview ? `FILE OVERVIEW:\n${fileOverview}\n\n` : '';
+  const parseHint = previousParseError ? `\nIMPORTANT: Fix this parse error in your output: "${previousParseError}"\n\n` : '';
+  return `FILE: ${filePath}
+${overviewBlock}${parseHint}Merge the START of this conflict. Produce only the first portion of the resolved conflict (same approximate length as the TOP below). No conflict markers. This will be followed by a second request to merge the ending.
+
+TOP OF CONFLICT (context + start):
+\`\`\`
+${topConflict || '(empty)'}
+\`\`\`
+
+BASE (common ancestor) — TOP:
+\`\`\`
+${baseTop || '(empty)'}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<resolved head lines only>
+\`\`\`
+EXPLANATION: <one sentence>`;
+}
+
+/**
+ * Two-pass: prompt for resolving the TAIL (rest of conflict) given resolved head + tail OURS + tail THEIRS.
+ * WHY: The model sees the already-resolved start and the last lines of both sides; it outputs only the
+ * continuation so we can reassemble head + tail without overlap or gap.
+ */
+function buildTopTailsTailPrompt(
+  resolvedHead: string,
+  tailOurs: string,
+  tailTheirs: string,
+  baseTail: string,
+  baseBranch: string,
+  filePath: string,
+  fileOverview?: string,
+  previousParseError?: string
+): string {
+  const overviewBlock = fileOverview ? `FILE OVERVIEW:\n${fileOverview}\n\n` : '';
+  const parseHint = previousParseError ? `\nIMPORTANT: Fix this parse error in your output: "${previousParseError}"\n\n` : '';
+  return `FILE: ${filePath}
+${overviewBlock}${parseHint}Merge the END of this conflict. You are given the already-resolved START. Produce the REMAINING lines that continue from the start and merge how OURS and THEIRS end. No conflict markers. Output only the continuation (do not repeat the head).
+
+RESOLVED START (already merged):
+\`\`\`
+${resolvedHead || '(empty)'}
+\`\`\`
+
+BASE — TAIL:
+\`\`\`
+${baseTail || '(empty)'}
+\`\`\`
+
+OURS (HEAD) — TAIL (last lines):
+\`\`\`
+${tailOurs || '(empty)'}
+\`\`\`
+
+THEIRS (${baseBranch}) — TAIL (last lines):
+\`\`\`
+${tailTheirs || '(empty)'}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<resolved tail lines only, continuation from head>
+\`\`\`
+EXPLANATION: <one sentence>`;
+}
+
+/**
+ * Fallback: resolve conflicts using top-of-conflict + tail of OURS + tail of THEIRS (and base top/tail).
+ * Only used when the main strategy (chunked or single-shot) has already failed for this file.
+ * WHY: We don't process the entire file with this strategy unless we need to; it's a fallback only.
+ * Complete implementation: always chunk the entire file and build the story; then per conflict use top+tails,
+ * with two-pass (head then tail) when the conflict is large.
+ */
+export async function resolveConflictsWithTopTailsFallback(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model: string | undefined,
+  baseContent: string,
+  fileOverview?: string | null,
+  previousParseError?: string
+): Promise<{ resolved: boolean; content: string; explanation: string }> {
+  const chunks = extractConflictChunks(content);
+  if (chunks.length === 0) {
+    return { resolved: false, content, explanation: 'No conflict markers' };
+  }
+
+  // WHY cap: Asking the model to produce a full resolution from only top+tails works when the conflict
+  // is small enough that the model can infer the middle; above 280 lines we'd get hallucinated or truncated output.
+  for (const chunk of chunks) {
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const maxLines = Math.max(ours.length, theirs.length);
+    if (maxLines > TOP_TAILS_FALLBACK_MAX_CHUNK_LINES) {
+      debug('Top+tails fallback skipped: chunk too large', { filePath, maxLines, limit: TOP_TAILS_FALLBACK_MAX_CHUNK_LINES });
+      return { resolved: false, content, explanation: `Conflict region too large for top+tails fallback (${maxLines} > ${TOP_TAILS_FALLBACK_MAX_CHUNK_LINES} lines)` };
+    }
+  }
+
+  // Always build file story by chunking the entire file (complete implementation: process entire file in fallback).
+  const overview = fileOverview ?? await getFileConflictOverviewAlways(llm, filePath, content, baseBranch, model);
+  if (!overview) debug('Top+tails fallback: file overview (story) unavailable; resolving without it', { filePath });
+
+  const lines = content.split('\n');
+  const resolutions = new Map<number, string[]>();
+  const explanations: string[] = [];
+  const opts = model ? { model } : undefined;
+
+  for (const chunk of chunks) {
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const maxLines = Math.max(ours.length, theirs.length);
+    const baseSegment = getBaseSegmentForChunk(baseContent ?? '', chunk);
+    const baseLines = baseSegment.split('\n');
+
+    const topConflictLines = chunk.conflictLines.slice(0, TOP_TAILS_TOP_CONFLICT_LINES);
+    const topConflict = [...chunk.contextBefore, ...topConflictLines].join('\n');
+    const tailOurs = ours.slice(-TOP_TAILS_TAIL_LINES).join('\n');
+    const tailTheirs = theirs.slice(-TOP_TAILS_TAIL_LINES).join('\n');
+    const baseTop = baseLines.slice(0, TOP_TAILS_TOP_CONFLICT_LINES).join('\n');
+    const baseTail = baseLines.slice(-TOP_TAILS_TAIL_LINES).join('\n');
+
+    // WHY 150-line threshold: Below that, one-shot (top + tails → full) is reliable; above it the model
+    // would invent too much middle from partial input, so we split into head then tail.
+    const useTwoPass = maxLines > TOP_TAILS_TWO_PASS_THRESHOLD_LINES;
+
+    try {
+      let resolvedLines: string[];
+      if (useTwoPass) {
+        const headPrompt = buildTopTailsHeadPrompt(topConflict, baseTop, baseBranch, filePath, overview ?? undefined, previousParseError);
+        const headResponse = await llm.complete(headPrompt, undefined, opts);
+        const headBody = headResponse?.content ?? '';
+        const headMatch = headBody.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+        if (!headMatch) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): LLM did not return RESOLVED block for head' };
+        }
+        const resolvedHead = headMatch[1].trim();
+        if (/^(<{7}|={7}|>{7})/m.test(resolvedHead)) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): head still had conflict markers' };
+        }
+
+        const tailPrompt = buildTopTailsTailPrompt(resolvedHead, tailOurs, tailTheirs, baseTail, baseBranch, filePath, overview ?? undefined, previousParseError);
+        const tailResponse = await llm.complete(tailPrompt, undefined, opts);
+        const tailBody = tailResponse?.content ?? '';
+        const tailMatch = tailBody.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+        if (!tailMatch) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): LLM did not return RESOLVED block for tail' };
+        }
+        const resolvedTail = tailMatch[1].trim();
+        if (/^(<{7}|={7}|>{7})/m.test(resolvedTail)) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): tail still had conflict markers' };
+        }
+
+        resolvedLines = [...resolvedHead.split('\n'), ...resolvedTail.split('\n')];
+        explanations.push(`Lines ${chunk.startLine}-${chunk.endLine}: top+tails (two-pass)`);
+      } else {
+        const prompt = buildTopTailsConflictPrompt(
+          topConflict,
+          tailOurs,
+          tailTheirs,
+          baseTop,
+          baseTail,
+          baseBranch,
+          filePath,
+          overview ?? undefined,
+          previousParseError
+        );
+        const response = await llm.complete(prompt, undefined, opts);
+        const body = response?.content ?? '';
+        const codeMatch = body.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+        if (!codeMatch) {
+          return { resolved: false, content, explanation: 'Top+tails fallback: LLM did not return RESOLVED block' };
+        }
+        const resolvedCode = codeMatch[1].trim();
+        if (/^(<{7}|={7}|>{7})/m.test(resolvedCode)) {
+          return { resolved: false, content, explanation: 'Top+tails fallback: resolution still had conflict markers' };
+        }
+        resolvedLines = resolvedCode.split('\n');
+        explanations.push(`Lines ${chunk.startLine}-${chunk.endLine}: top+tails`);
+      }
+      resolutions.set(chunk.startLine, resolvedLines);
+    } catch (e) {
+      debug('Top+tails fallback LLM error', { filePath, error: e });
+      return { resolved: false, content, explanation: `Top+tails fallback failed: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
+  const resolvedLines: string[] = [];
+  let i = 0;
+  for (const chunk of chunks.sort((a, b) => a.startLine - b.startLine)) {
+    while (i < chunk.startLine) {
+      resolvedLines.push(lines[i]!);
+      i++;
+    }
+    const resolved = resolutions.get(chunk.startLine);
+    if (resolved) resolvedLines.push(...resolved);
+    else resolvedLines.push(...chunk.conflictLines);
+    i = chunk.endLine + 1;
+  }
+  while (i < lines.length) {
+    resolvedLines.push(lines[i]!);
+    i++;
+  }
+
+  return {
+    resolved: true,
+    content: resolvedLines.join('\n'),
+    explanation: `Resolved ${chunks.length} conflict(s) via top+tails fallback:\n${explanations.join('\n')}`
   };
 }
 

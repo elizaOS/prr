@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-17 · **Recorded cycles:** 47 · **Historical (legacy):** 4
+**Last updated:** 2026-03-17 · **Recorded cycles:** 48 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -161,6 +161,25 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 48 — 2026-03-17 (output.log: plugin-babylon#2, merge_conflicts exit)
+
+**Artifacts audited:** types/output.log (591 lines). Run: elizaos-plugins/plugin-babylon#2, branch odi-dev, base 1.x; workdir `/home/runner/.prr/work/225e45ff4b48714e`; 145 fixes recovered from git; merge with 1.x had 12 conflicted files; 10/12 auto-resolved, 2 failed (AutonomousCoordinator.ts parse `*/` expected, evm.ts parse `,` expected); exit merge_conflicts.
+
+**Findings:**
+- **Low:** RESULTS SUMMARY showed "145 issues fixed and verified (all from previous runs; 0 new this session)" and "No issues remaining" with exit merge_conflicts — correct but could be clearer that the run stopped at base-merge (no comment analysis).
+- **Low:** When some conflicts were auto-resolved, manual instructions always say "merge from scratch"; no hint that N of M files were already resolved (we abort and reset workdir, so partial state is lost; a future improvement could leave merge in progress so user fixes only remaining files).
+- **Info:** Conflict resolution: 504 on src/plugin.ts → chunked fallback succeeded; parse validation correctly rejected invalid TS (comment/syntax) on two files.
+
+**Improvements implemented:**
+- reporter.ts: When exitReason is merge_conflicts and toolFixedCount > 0, session note now "(from state; run stopped at base-merge)" so the fixed count is clearly from state/recovery, not this run.
+- base-merge.ts: When some files were auto-resolved, print "(N of M file(s) were auto-resolved; K still need manual resolution.)" before "To resolve manually" so users see partial progress.
+
+**Flip-flop check:** N — Additive (session note, progress line); no behavior revert.
+
+**Notes:** Spot-check skipped: workdir path is on CI runner (/home/runner/.prr/work/…), not available locally. No "already verified" / "fixed" review-comment path to verify against workdir this run (exit before main loop).
+
+---
 
 ### Cycle 47 — 2026-03-17 (Actions run: elizaos-plugins/plugin-babylon Run PRR #6)
 

@@ -5,8 +5,34 @@ import { simpleGit, type SimpleGit } from 'simple-git';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { debug } from '../logger.js';
+import { DEFAULT_CLONE_TIMEOUT_MS } from '../constants.js';
 import { cleanupGitState } from './git-merge.js';
 import type { ConflictStatus } from './git-conflicts.js';
+
+/** Forward git stdout/stderr to the process so the user sees clone/fetch progress and any prompts (e.g. host key, credentials). */
+function forwardGitOutput(
+  _command: string,
+  stdout: NodeJS.ReadableStream,
+  stderr: NodeJS.ReadableStream,
+  _args: string[]
+): void {
+  stdout.pipe(process.stdout);
+  stderr.pipe(process.stderr);
+}
+
+/** Returns a simpleGit instance that streams all git output to the terminal. */
+function gitWithVisibleOutput(cwd?: string): ReturnType<typeof simpleGit> {
+  const base = cwd ? simpleGit(cwd) : simpleGit();
+  return base.outputHandler(forwardGitOutput);
+}
+
+/** Clone timeout in ms. Override with PRR_CLONE_TIMEOUT_MS (default 300s). */
+function getCloneTimeoutMs(): number {
+  const raw = process.env.PRR_CLONE_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_CLONE_TIMEOUT_MS;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 5000 ? n : DEFAULT_CLONE_TIMEOUT_MS;
+}
 
 export interface GitOperations {
   git: SimpleGit;
@@ -39,7 +65,7 @@ export async function cloneOrUpdate(
   let git: SimpleGit;
 
   if (isExistingRepo) {
-    git = simpleGit(workdir);
+    git = gitWithVisibleOutput(workdir);
 
     // WHY set remote to auth URL when we have a token: otherwise every fetch/pull/push prompts for
     // password (bad DX when token is already in .env). Setting origin once here means no prompts
@@ -92,9 +118,9 @@ export async function cloneOrUpdate(
       // Ensure we're on a branch before reset (e.g. previous run left detached HEAD mid-rebase).
       await git.checkout(branch).catch(() => {});
 
-      // WHY: On large repos (e.g. 1.6 GB) fetch can take many minutes with no git output;
-      // without this message the spinner looks stuck and users think PRR is hanging.
-      console.log('  Fetching latest from origin (large repos may take several minutes)...');
+      // WHY: On large repos (e.g. 1.6 GB) fetch can take many minutes; we forward git output
+      // so the user sees progress and any prompts (e.g. host key, credentials).
+      console.log('  Fetching latest from origin (git output will appear below)...');
       await git.fetch('origin', branch);
       await git.checkout(branch);
       await git.reset(['--hard', `origin/${branch}`]);
@@ -124,14 +150,32 @@ export async function cloneOrUpdate(
     }
     
   } else {
-    // Fresh clone
-    git = simpleGit();
-    
+    // Fresh clone (with timeout and progress feedback — pill-output #1)
+    git = gitWithVisibleOutput();
+    const cloneTimeoutMs = getCloneTimeoutMs();
     console.log(`Cloning repository to ${workdir}...`);
-    console.log('  (Large repos may take a few minutes.)');
-    await git.clone(authUrl, workdir, ['--branch', branch, '--single-branch']);
-    
-    git = simpleGit(workdir);
+    console.log(`  (Git output and any prompts will appear below. Timeout: ${Math.round(cloneTimeoutMs / 1000)}s; PRR_CLONE_TIMEOUT_MS for slow connections.)`);
+    const clonePromise = git.clone(authUrl, workdir, ['--branch', branch, '--single-branch']);
+    let timeoutId: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`Clone timed out after ${Math.round(cloneTimeoutMs / 1000)}s. Set PRR_CLONE_TIMEOUT_MS to increase (e.g. 600000 for 10min).`));
+      }, cloneTimeoutMs);
+    });
+    clonePromise.finally(() => clearTimeout(timeoutId!));
+    const progressIntervalMs = 30_000;
+    let progressElapsed = 0;
+    const progressTimer = setInterval(() => {
+      progressElapsed += progressIntervalMs / 1000;
+      console.log(`  Still cloning... (${Math.floor(progressElapsed)}s)`);
+    }, progressIntervalMs);
+    try {
+      await Promise.race([clonePromise, timeoutPromise]);
+    } finally {
+      clearInterval(progressTimer);
+    }
+
+    git = gitWithVisibleOutput(workdir);
     if (options?.additionalBranches?.length) {
       for (const b of options.additionalBranches) {
         if (b && b !== branch) {

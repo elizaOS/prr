@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Conflict resolution: top+tails fallback, parse retries, fetch message, workflow version log
+
+**Top+tails fallback (when main strategy fails)**
+- If the main conflict resolution (chunked or single-shot) fails for a file, PRR tries a **top+tails fallback**: chunk the entire file to build a short "story" (full read in segments), then for each conflict send only the **top** (context + first 80 lines of conflict) and **tails** (last 80 lines of OURS and THEIRS) plus base top/tail; the model produces a full resolution from that.
+- **WHY fallback-only:** We don't process the whole file this way unless we need to; default path stays fast; fallback gives a second chance when the main path has already failed (e.g. parse errors at chunk boundaries).
+- **WHY always build story in fallback:** So every resolution prompt has a consistent "map" of the file; the model sees how the conflict sits in the file and how each side ends.
+- For conflicts whose larger side exceeds 150 lines (but ≤ 280), we use **two-pass**: resolve "head" from top + base top, then resolve "tail" from resolved head + tail OURS + tail THEIRS; reassemble head + tail. **WHY:** One-shot would ask the model to invent too much middle from partial input; two-pass keeps each request bounded.
+- Constants: `TOP_TAILS_FALLBACK_MAX_CHUNK_LINES` (280), `TOP_TAILS_TOP_CONFLICT_LINES` (80), `TOP_TAILS_TAIL_LINES` (80), `TOP_TAILS_TWO_PASS_THRESHOLD_LINES` (150). See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md).
+
+**Parse validation: location + two retries + error-specific hints**
+- When TS/JS parse validation fails, we now return **location** (line/column) from the TypeScript diagnostic and inject it into the retry prompt (e.g. "At line 42: '*/' expected").
+- We retry resolution **up to two times** (was once) with the parse error in the prompt. **WHY:** First retry often fixes trivial syntax; second retry gives the model another chance when the error is at a chunk boundary.
+- **Error-specific hints:** For `'*/' expected` we add "Fix unclosed block comments: ensure every /* has a matching */". For `',' expected` we add "Fix commas: check object/array literals for missing or illegal trailing commas." **WHY:** Output.log showed these two errors as the main parse failures; targeted hints improve retry success.
+
+**Clone/setup UX**
+- Before `git fetch` in the "existing workdir, clean and fetch" path we log: "Fetching latest from origin (large repos may take several minutes)...". **WHY:** On large repos (e.g. 1.6 GB) fetch can take many minutes with no git output; without this message the spinner looks stuck and users think PRR is hanging.
+- Reusable workflow **Run PRR (server)** now has a "Log PRR version" step that prints the PRR ref and commit SHA after checkout. **WHY:** Operators can confirm which PRR code a run used (e.g. after pinning to a SHA in the client workflow).
+
+- Docs: README (fallback and parse retries), [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md) (alternative design, audit, WHYs). Code: `resolveConflictsWithTopTailsFallback`, `getFileConflictOverviewAlways`, `buildParseErrorRetryHint`, `shared/git/git-clone-core.ts`, `.github/workflows/run-prr-server.yml`.
+
 ### Fixed (2026-03) — Base branch fetch on single-branch clones (PR stays "dirty")
 
 **Problem:** When the repo was cloned with `--single-branch`, the default fetch config only included the PR branch (e.g. `odi-dev`). Fetching the base branch with `git fetch origin v2.0.0` downloaded objects but **did not update** `refs/remotes/origin/v2.0.0`, because git only updates refs that match the configured refspecs. The tracking ref stayed at whatever SHA it had from the initial clone (or a prior run). The merge-base check then saw `baseSha === mergeBaseSha` and concluded "already up-to-date", so PRR never merged the base branch. The PR remained "mergeable: false / dirty" on GitHub even though the base had moved.

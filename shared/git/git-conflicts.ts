@@ -66,7 +66,11 @@ export async function fetchOriginBranch(
     } else {
       args = ['fetch', 'origin', branch];
     }
-  } catch {
+  } catch (err) {
+    debug('Fetch URL construction failed, falling back to plain fetch origin branch', {
+      err: err instanceof Error ? err.message : String(err),
+      branch,
+    });
     args = ['fetch', 'origin', branch];
   }
 

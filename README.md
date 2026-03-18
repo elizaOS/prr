@@ -84,7 +84,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Push retry cleanup**: If the post-rejection rebase fails (e.g. conflicts or "rebase-merge directory already exists"), we try `rebase --abort` first, then fall back to full git cleanup only if abort fails. *Why*: Abort restores commits; full cleanup is for stuck/corrupt state so the next run isn’t blocked.
 - **Non-interactive rebase continue**: All `rebase --continue` paths use `continueRebase(git)`, which sets `GIT_EDITOR=true` so git never opens an editor. *Why*: In headless/workdir runs there’s no TTY; the configured editor would fail with "Standard input is not a terminal" or "problem with the editor 'editor'". One helper keeps behavior consistent.
 - **Base branch merge (explicit refspec):** When merging the PR's base branch (e.g. `v2.0.0`) into the PR branch, PRR fetches the base with an explicit refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) so the tracking ref is always updated. *Why*: On `--single-branch` clones the default fetch config only includes the PR branch; a plain `git fetch origin v2.0.0` would not update `origin/v2.0.0`, leaving a stale ref and the merge-base check incorrectly reporting "already up-to-date", so the PR would stay "dirty" on GitHub. Explicit refspec forces the ref to match the remote tip every run.
-- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically. Resolution is **3-way** (base + ours + theirs), with **sub-chunking** at AST boundaries when a conflict region exceeds the model’s segment cap, and **validation** (parse TS/JS) before write/stage. *Why*: Two-way merge forces the model to guess; proper merge needs the common ancestor. Oversized regions are split at statement boundaries so we never exceed context or split mid-statement. See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md).
+- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically. Resolution is **3-way** (base + ours + theirs), with **sub-chunking** at AST boundaries when a conflict region exceeds the model’s segment cap, and **validation** (parse TS/JS) before write/stage. When the main path fails, a **top+tails fallback** runs (whole-file story + top of conflict + tail OURS/theirs). Parse validation failures trigger up to two retries with the error (and location) in the prompt. *Why*: Two-way merge forces the model to guess; proper merge needs the common ancestor. Oversized regions are split at statement boundaries. Fallback gives a second chance without changing the default path. See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md).
 - **Conflict prompt injection skip**: File-content injection is skipped for conflict-resolution prompts. *Why*: The conflict prompt already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), blow prompt size, and cause 504s.
 - **Large conflicted files (chunked embed)**: For files over ~30k chars with conflicts, only the conflict sections (with context) are embedded in the prompt, not the full file. *Why*: Full-file embed doubles prompt size and causes 504s; sections are enough for correct `<search>`/`<replace>` output.
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication; fetch and pull also use the token when the remote has no credentials (one-shot auth URL), so "Checking for conflicts" and pull never hang on a password prompt. **Why:** Repos cloned without token in the URL would otherwise block during fetch with no visible output; timeout + token fix it (see CHANGELOG).
@@ -216,6 +216,10 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 
 **ElizaCloud skip-list override (optional)**  
 - **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated model IDs): Models to *include* in rotation even if they are on the default skip list (e.g. `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.7-sonnet`). **WHY:** Those models are skipped by default because audits showed timeouts or 0% fix rate on some gateways; if your environment is different, set this to re-enable them (e.g. `PRR_ELIZACLOUD_INCLUDE_MODELS=openai/gpt-4o-mini`). Full IDs or short names (e.g. `gpt-4o-mini`) both work.
+
+**Clone / fetch (optional)**  
+- **`PRR_CLONE_TIMEOUT_MS`** (default 300000): Max ms for the initial clone. Large repos or slow connections may need more (e.g. 600000 for 10 min). Progress is logged every 30s.
+- **`PRR_FETCH_TIMEOUT_MS`** (default 60000): Max ms for fetch during update/merge. Increase for slow networks.
 
 On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves effective concurrency for 60s so the next run backs off without a code change.
 
@@ -497,6 +501,11 @@ When fixes fail, prr escalates through multiple strategies:
 - Git might mark a file as resolved (not in `status.conflicted`)
 - But file might still contain `<<<<<<<` markers if tool staged prematurely
 - Double-check catches false positives
+
+**Fallback and parse retries**
+- If the main strategy (chunked or single-shot) fails for a file, PRR tries a **top+tails fallback**: chunk the entire file to build a short "story", then for each conflict send only the **top** (context + start of conflict) and **tails** (last lines of OURS and THEIRS) plus base top/tail; the model produces a full resolution from that. *Why*: We don't process the whole file this way unless we need to; when the main path has already failed, this gives the model a different view (how each side ends) and often succeeds.
+- For TS/JS we **validate** resolved content (parse) before write/stage. If validation fails (e.g. `'*/' expected`), we **retry** resolution up to twice with the parse error (and location) in the prompt so the model can fix syntax. *Why*: Many parse failures are trivial (unclosed comment, missing comma); a few retries with the exact error avoid giving up on fixable output.
+- See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md) for flow, constants, and the top+tails design.
 
 ### Bail-Out Mechanism
 
@@ -845,6 +854,7 @@ ls -lt ~/.prr/debug/*/*.txt | head -5
 ### Common log messages
 
 - **"Overlap IDs (verifiedFixed ∩ dismissed)"** — A comment ID appeared in both verified and dismissed state (e.g. from an older run or state bug). State load now cleans this automatically; you may see "Cleaned N overlap" once. If it recurs, reset state: delete `.pr-resolver-state.json` in the workdir or run with `--reset-state` (see [State File](#state-file)).
+- **"Tracked file not found for review path: X"** — The comment's path didn't match a repo file. PRR tries extension variants (e.g. `tsconfig.js` → `tsconfig.json`, or `.d.ts` in `types/`) before dismissing; if still missing, the issue is dismissed as missing-file.
 - **"No model configured; defaulting to: …"** — You didn't set `PRR_LLM_MODEL`; PRR chose a default. Set `PRR_LLM_MODEL` to pin a specific model.
 - **"Configured model unavailable; using: …"** — Your configured model was skipped (e.g. on the skip list) or not available; PRR fell back. Set `PRR_LLM_MODEL` to another model, or `PRR_ELIZACLOUD_INCLUDE_MODELS` to re-enable a skipped model (see AGENTS.md "Model skip list").
 

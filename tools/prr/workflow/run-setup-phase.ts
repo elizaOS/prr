@@ -25,6 +25,7 @@ import { debug, debugStep } from '../../../shared/logger.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as State from '../state/state-core.js';
+import { setPhase } from '../state/state-context.js';
 import { resolveConflictsWithLLM as resolveConflictsImpl } from '../git/git-conflict-resolve.js';
 import { LLMClient } from '../llm/client.js';
 
@@ -57,7 +58,9 @@ export async function executeSetupPhase(
   ensureStateFileIgnored: (workdir: string) => Promise<void>,
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>,
   getRotationContext: () => any,
-  getCurrentModel: () => string | undefined
+  getCurrentModel: () => string | undefined,
+  /** Called as soon as workdir and stateContext exist so resolver can be synced before clone. Pill #4: interrupt during clone then persists state for resume. */
+  onManagersReady?: (workdir: string, stateContext: StateContext) => void
 ): Promise<{
   workdir: string;
   stateContext: StateContext;
@@ -90,6 +93,7 @@ export async function executeSetupPhase(
     throw new Error('State not initialized after setupWorkdirAndManagers');
   }
   const state = stateContext.state;
+  onManagersReady?.(workdir, stateContext);
 
   // Setup runner
   debugStep('SETTING UP RUNNERS');
@@ -106,9 +110,11 @@ export async function executeSetupPhase(
     resolvedRunner = rotationState.runner;
   }
   
-  // Clone or update repo
+  // Clone or update repo (set phase so interrupt during clone persists for resume — pill-output #4)
+  setPhase(stateContext, 'cloning');
   const hasVerifiedFixes = state.verifiedFixed.length > 0;
   const git = await ResolverProc.cloneOrUpdateRepository(prInfo, workdir, config.githubToken, hasVerifiedFixes, spinner, github);
+  setPhase(stateContext, 'setup');
 
   // Re-detect sync target existence so we don't delete repo-owned CLAUDE.md/AGENTS.md at final cleanup.
   // WHY: setWorkdir runs before clone, so on first run the workdir was empty and we recorded "didn't exist".

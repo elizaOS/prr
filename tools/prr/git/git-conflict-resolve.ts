@@ -32,6 +32,7 @@ import { buildConflictResolutionPrompt, buildConflictResolutionPromptWithContent
 import { handleLockFileConflicts } from './git-conflict-lockfiles.js';
 import {
   resolveConflictsChunked,
+  resolveConflictsWithTopTailsFallback,
   tryHeuristicResolution,
   extractConflictSides,
   extractConflictChunks,
@@ -188,11 +189,12 @@ function resolveKeepOurs(content: string): { resolved: boolean; content: string;
  * Validate that resolved TS/JS content parses. Reject before write/stage if invalid.
  * WHY: LLMs can truncate or corrupt output; committing invalid syntax would push broken code. We parse
  * with TypeScript's getSyntacticDiagnostics so only syntactically valid resolutions get written/staged.
+ * Returns location (line/column) when available so retry prompts can tell the model where to fix.
  */
 async function validateResolvedFileContent(
   content: string,
   filePath: string
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<{ valid: boolean; error?: string; location?: string }> {
   const ext = filePath.replace(/^.*\./, '').toLowerCase();
   if (!['ts', 'tsx', 'js', 'jsx'].includes(ext)) {
     return { valid: true };
@@ -216,14 +218,39 @@ async function validateResolvedFileContent(
     const diags = program.getSyntacticDiagnostics(sf);
     const err = diags.find(d => d.category === ts.DiagnosticCategory.Error);
     if (err) {
-      const msg = typeof err.messageText === 'string' ? err.messageText : err.messageText.messageText;
-      return { valid: false, error: String(msg) };
+      const msg = typeof err.messageText === 'string' ? err.messageText : (err.messageText as { messageText: string }).messageText;
+      const errorText = String(msg);
+      let location: string | undefined;
+      if (typeof err.start === 'number' && err.start >= 0) {
+        const pos = sf.getLineAndCharacterOfPosition(err.start);
+        location = `line ${pos.line + 1}${pos.character > 0 ? `, column ${pos.character + 1}` : ''}`;
+      }
+      return { valid: false, error: errorText, location };
     }
     return { valid: true };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return { valid: false, error: message };
   }
+}
+
+/**
+ * Build a retry hint that includes location and error-specific guidance so the LLM can fix the right place.
+ * WHY: Output.log showed "closing block comment" and "comma" as the main parse failures; location (line/column)
+ * and targeted hints (close block comments, fix commas) improve retry success.
+ */
+function buildParseErrorRetryHint(parseValidation: { error?: string; location?: string }): string {
+  const err = parseValidation.error ?? 'parse error';
+  const loc = parseValidation.location ? ` at ${parseValidation.location}` : '';
+  let hint = err;
+  if (loc) hint = `At ${parseValidation.location}: ${err}`;
+  // Error-specific guidance (output.log: '*/' expected and ',' expected were the two failures)
+  if (/\*\/.*expected|unclosed block comment/i.test(err)) {
+    hint += ' Fix unclosed block comments: ensure every /* has a matching */ and no conflict markers or stray text broke a comment.';
+  } else if (/',' expected|expected ','|comma/i.test(err)) {
+    hint += ' Fix commas: check object/array literals for missing commas between elements or illegal trailing commas.';
+  }
+  return hint;
 }
 
 /**
@@ -482,6 +509,9 @@ export async function resolveConflictsWithLLM(
 
       try {
         const conflictedContent = fs.readFileSync(fullPath, 'utf-8');
+        // WHY: When the main path fails due to parse validation we pass this into the top+tails fallback
+        // so the fallback prompts can tell the model to fix that specific error (e.g. close block comments).
+        let lastParseError: string | undefined;
 
         if (!conflictedContent.includes('<<<<<<<')) {
           const markerless = await resolveMarkerlessConflict(git, conflictFile, fullPath, conflictedContent);
@@ -611,50 +641,65 @@ export async function resolveConflictsWithLLM(
           } else {
             let parseValidation = await validateResolvedFileContent(result.content, conflictFile);
             if (!parseValidation.valid && (resolutionPath === 'chunked' || resolutionPath === 'single')) {
-              // Retry resolution once with parse-error hint so the model can fix e.g. unclosed comments.
-              const previousParseError = parseValidation.error ?? 'parse error';
-              console.log(chalk.blue(`    → Retrying resolution (parse error: ${previousParseError})`));
-              startHeartbeat();
-              try {
-                const sides = getFullFileSides(conflictedContent);
-                const retryResult = resolutionPath === 'chunked'
-                  ? await resolveConflictsChunked(
-                      llm,
-                      conflictFile,
-                      conflictedContent,
-                      mergingBranch,
-                      conflictModel,
-                      baseContent,
-                      maxSegmentChars,
-                      previousParseError
-                    )
-                  : await llm.resolveConflict(
-                      conflictFile,
-                      conflictedContent,
-                      mergingBranch,
-                      {
-                        ...(conflictModel ? { model: conflictModel } : {}),
+              // Retry resolution up to twice with parse-error hint (location + error-specific guidance).
+              const maxParseRetries = 2;
+              let lastResult = result;
+              let lastParseValidation = parseValidation;
+              for (let parseRetry = 0; parseRetry < maxParseRetries && !lastParseValidation.valid; parseRetry++) {
+                const previousParseError = buildParseErrorRetryHint(lastParseValidation);
+                console.log(chalk.blue(`    → Retrying resolution (parse error: ${lastParseValidation.error ?? 'parse error'})`));
+                startHeartbeat();
+                try {
+                  const sides = getFullFileSides(conflictedContent);
+                  const retryResult = resolutionPath === 'chunked'
+                    ? await resolveConflictsChunked(
+                        llm,
+                        conflictFile,
+                        conflictedContent,
+                        mergingBranch,
+                        conflictModel,
                         baseContent,
-                        oursContent: sides.ours,
-                        theirsContent: sides.theirs,
-                        previousParseError,
+                        maxSegmentChars,
+                        previousParseError
+                      )
+                    : await llm.resolveConflict(
+                        conflictFile,
+                        conflictedContent,
+                        mergingBranch,
+                        {
+                          ...(conflictModel ? { model: conflictModel } : {}),
+                          baseContent,
+                          oursContent: sides.ours,
+                          theirsContent: sides.theirs,
+                          previousParseError,
+                        }
+                      );
+                  if (retryResult.resolved) {
+                    const retryValidation = validateResolvedContent(conflictFile, conflictedContent, retryResult.content);
+                    if (retryValidation.valid) {
+                      lastParseValidation = await validateResolvedFileContent(retryResult.content, conflictFile);
+                      if (lastParseValidation.valid) {
+                        lastResult = retryResult;
+                        break;
                       }
-                    );
-                if (retryResult.resolved) {
-                  const retryValidation = validateResolvedContent(conflictFile, conflictedContent, retryResult.content);
-                  if (retryValidation.valid) {
-                    parseValidation = await validateResolvedFileContent(retryResult.content, conflictFile);
-                    if (parseValidation.valid) {
-                      result = retryResult;
+                      lastResult = retryResult;
                     }
                   }
+                } finally {
+                  stopHeartbeat();
                 }
-              } finally {
-                stopHeartbeat();
+              }
+              if (lastParseValidation.valid) {
+                result = lastResult;
+                parseValidation = lastParseValidation;
+              } else {
+                parseValidation = lastParseValidation;
               }
             }
             if (!parseValidation.valid) {
               debug('Resolution rejected by parse validation', { file: conflictFile, error: parseValidation.error });
+              // WHY: So the top+tails fallback can include this in prompts and the model can fix that specific error.
+              lastParseError = parseValidation.error;
               result = {
                 resolved: false,
                 content: conflictedContent,
@@ -673,14 +718,48 @@ export async function resolveConflictsWithLLM(
           await git.add(conflictFile);
           partialResolutions?.add(conflictFile, result.content);
         } else {
-          console.log(chalk.red(`    ✗ ${conflictFile}: ${result.explanation}`));
-          
-          // Provide helpful manual resolution instructions
-          console.log(chalk.gray(`      To resolve manually:`));
-          console.log(chalk.gray(`        1. Open: ${fullPath}`));
-          console.log(chalk.gray(`        2. Search for: <<<<<<<`));
-          console.log(chalk.gray(`        3. Merge changes and remove conflict markers`));
-          console.log(chalk.gray(`        4. Save and run: git add ${conflictFile}`));
+          // Fallback: try top+tails strategy (whole-file story + top of conflict + tail of each side) only when main path failed.
+          // WHY: We don't process the entire file with story + top/tails unless we need to; default path stays fast;
+          // when the main path has already failed, this gives the model a different view (how each side ends) and often succeeds.
+          console.log(chalk.blue(`    → Trying top+tails fallback (top of conflict + tail OURS + tail THEIRS)...`));
+          startHeartbeat();
+          let fallbackResult: { resolved: boolean; content: string; explanation: string };
+          try {
+            fallbackResult = await resolveConflictsWithTopTailsFallback(
+              llm,
+              conflictFile,
+              conflictedContent,
+              mergingBranch,
+              conflictModel,
+              baseContent,
+              undefined,
+              lastParseError
+            );
+          } finally {
+            stopHeartbeat();
+          }
+          if (fallbackResult.resolved) {
+            // WHY: Same validation as main path — size/JSON and parse — so we never stage broken output.
+            const fbValidation = validateResolvedContent(conflictFile, conflictedContent, fallbackResult.content);
+            if (fbValidation.valid) {
+              const fbParse = await validateResolvedFileContent(fallbackResult.content, conflictFile);
+              if (fbParse.valid) {
+                result = fallbackResult;
+                fs.writeFileSync(fullPath, result.content, 'utf-8');
+                console.log(chalk.green(`    ✓ ${conflictFile}: ${result.explanation}`));
+                await git.add(conflictFile);
+                partialResolutions?.add(conflictFile, result.content);
+              }
+            }
+          }
+          if (!result.resolved) {
+            console.log(chalk.red(`    ✗ ${conflictFile}: ${result.explanation}`));
+            console.log(chalk.gray(`      To resolve manually:`));
+            console.log(chalk.gray(`        1. Open: ${fullPath}`));
+            console.log(chalk.gray(`        2. Search for: <<<<<<<`));
+            console.log(chalk.gray(`        3. Merge changes and remove conflict markers`));
+            console.log(chalk.gray(`        4. Save and run: git add ${conflictFile}`));
+          }
         }
       } catch (e) {
         console.log(chalk.red(`    ✗ ${conflictFile}: Error - ${e}`));

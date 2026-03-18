@@ -3,8 +3,56 @@
  * send absolute or internal paths to the fixer (avoids "file outside workdir" and wasted LLM calls).
  */
 
+import { join } from 'path';
+import { existsSync } from 'fs';
+
 /** Segments that indicate an internal path not under the repo (e.g. .cursor plans, .prr state). */
 const INTERNAL_PATH_SEGMENTS = ['.cursor', '.prr', 'root'];
+
+/**
+ * Extension variants to try when the review path is not found (pill-output #9).
+ * Maps "given extension" -> [candidate extensions to try]. E.g. tsconfig.js often refers to tsconfig.json.
+ */
+const EXTENSION_VARIANT_MAP: Record<string, string[]> = {
+  '.js': ['.json', '.ts', '.jsx', '.mjs', '.cjs'],
+  '.ts': ['.tsx', '.js', '.json'],
+  '.tsx': ['.ts', '.jsx'],
+  '.jsx': ['.tsx', '.js'],
+  '.mjs': ['.js', '.cjs'],
+  '.cjs': ['.js', '.mjs'],
+};
+
+/**
+ * Try to resolve a path that doesn't exist by checking common extension variants.
+ * WHY: Review comments sometimes reference tsconfig.js when only tsconfig.json exists, or
+ * a .ts file when the repo has .tsx; dismissing as "file not found" wastes the fix loop.
+ * Returns the first path (original or variant) that exists, or the original path.
+ * Mapping rules: see EXTENSION_VARIANT_MAP; .d.ts fragments try same dir and types/ dir.
+ */
+export function tryResolvePathWithExtensionVariants(workdir: string, path: string): string {
+  const full = join(workdir, path);
+  if (existsSync(full)) return path;
+  if (path.endsWith('.d.ts') || path === '.d.ts') {
+    const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '.';
+    const base = path.includes('/') ? path.slice(path.lastIndexOf('/') + 1) : path;
+    const typeDirs = [dir, join(dir, 'types'), 'types', 'typings'];
+    for (const d of typeDirs) {
+      const candidate = d === '.' ? base : `${d}/${base}`;
+      if (existsSync(join(workdir, candidate))) return candidate;
+    }
+    return path;
+  }
+  const ext = path.includes('.') ? path.slice(path.lastIndexOf('.')) : '';
+  const variants = EXTENSION_VARIANT_MAP[ext];
+  if (variants) {
+    const base = path.slice(0, path.length - ext.length);
+    for (const v of variants) {
+      const candidate = base + v;
+      if (existsSync(join(workdir, candidate))) return candidate;
+    }
+  }
+  return path;
+}
 
 /** Top-level dirs that are typical repo source (not node_modules or external package refs from comments). */
 const REPO_TOP_LEVEL = new Set([

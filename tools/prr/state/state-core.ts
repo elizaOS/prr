@@ -155,6 +155,11 @@ export async function saveState(ctx: StateContext): Promise<void> {
   ctx.state.totalTimings = getOverallTimings();
   ctx.state.totalTokenUsage = getOverallTokenUsage();
 
+  // Dedupe verifiedFixed before persist so raw count stays meaningful (pill #3).
+  if (ctx.state.verifiedFixed && ctx.state.verifiedFixed.length > 0) {
+    ctx.state.verifiedFixed = [...new Set(ctx.state.verifiedFixed)];
+  }
+
   const dir = dirname(ctx.statePath);
   if (!existsSync(dir)) {
     await mkdir(dir, { recursive: true });

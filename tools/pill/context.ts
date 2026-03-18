@@ -162,6 +162,8 @@ export async function assembleContext(
     }
     if (rawPrompts) {
       const entries = parsePromptsLog(rawPrompts);
+      const withContent = entries.filter((e) => e.content.trim().length > 0);
+      const allEmpty = entries.length > 0 && withContent.length === 0;
       const promptsTokens = estimateTokens(rawPrompts);
       if (promptsTokens <= LOG_RAW_THRESHOLD_TOKENS) {
         promptsDigest = formatPromptsRaw(entries);
@@ -169,6 +171,14 @@ export async function assembleContext(
         promptsDigest = await processLogChapters(entries, llmClient, { model: config.llmModel });
       } else {
         promptsDigest = formatPromptsRaw(entries);
+      }
+      // So the audit (and user) know: empty bodies usually mean wrong path or logging bug, not "no prompts".
+      if (promptsDigest && allEmpty) {
+        promptsDigest =
+          `[Pill] The prompts.log at ${promptsPath} has ${entries.length} entry/entries but every PROMPT/RESPONSE body is empty. ` +
+          `This may mean (1) the run that produced this file had a logging bug (e.g. response body not passed to the logger), or (2) pill is reading a different file than the run you expect (e.g. different directory; pill reads from the same directory as output.log). ` +
+          `If your prompts.log elsewhere has content, pass that directory to pill so it reads the correct logs.\n\n` +
+          promptsDigest;
       }
     }
   }

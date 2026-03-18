@@ -323,6 +323,7 @@ export async function runFinalAudit(
   const auditResults = await llm.finalAudit(allIssuesForAudit, options.maxContextChars, 'final-audit');
   // L1: Respect verified-fixed verdict — don't let final audit override earlier verification (e.g. stronger model).
   const alreadyVerifiedIds = new Set(Verification.getVerifiedComments(stateContext));
+  if (!stateContext.auditOverridesThisRun) stateContext.auditOverridesThisRun = [];
   // Find issues that failed the audit - mark passing ones as verified
   const failedAudit: Array<{ comment: ReviewComment; explanation: string }> = [];
   let filteredNoAction = 0;
@@ -336,6 +337,15 @@ export async function runFinalAudit(
             path: comment.path,
             auditExplanation: result.explanation?.slice(0, 300) ?? '(none)',
           });
+          stateContext.auditOverridesThisRun.push({
+            commentId: comment.id,
+            path: comment.path,
+            line: comment.line,
+            explanation: result.explanation?.slice(0, 200),
+          });
+          console.warn(
+            chalk.yellow(`  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but keeping as verified (trusted prior verification).`)
+          );
           Verification.markVerified(stateContext, comment.id);
           continue;
         }

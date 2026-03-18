@@ -89,6 +89,14 @@ jobs:
           path: prr
           token: ${{ secrets.PRR_GITHUB_TOKEN }}
 
+      # Log which PRR commit is running so operators can verify "did it use our updated code?"
+      - name: Log PRR version
+        run: |
+          cd prr
+          echo "PRR ref: ${{ inputs.prr_ref }}"
+          echo "PRR SHA: $(git rev-parse HEAD)"
+          echo "PRR commit: $(git log -1 --oneline)"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

@@ -142,8 +142,17 @@ export async function executeRun(
     state.prInfo = prInfo;
     state.botTimings = botTimings;
     state.expectedBotResponseTime = expectedBotResponseTime;
-    const setupResult = await ResolverProc.executeSetupPhase(config, options, owner, repo, number, state.prInfo, github, spinner, callbacks.setupRunner, callbacks.ensureStateFileIgnored, callbacks.resolveConflictsWithLLM, callbacks.getRotationContext, callbacks.getCurrentModel);
-    
+    const setupResult = await ResolverProc.executeSetupPhase(
+      config, options, owner, repo, number, state.prInfo, github, spinner,
+      callbacks.setupRunner, callbacks.ensureStateFileIgnored, callbacks.resolveConflictsWithLLM,
+      callbacks.getRotationContext, callbacks.getCurrentModel,
+      (w, ctx) => {
+        state.workdir = w;
+        state.stateContext = ctx;
+        if (callbacks.syncResolverState) callbacks.syncResolverState(state);
+      }
+    );
+
     // Always copy setup results to state, even on early exit
     // WHY: Error handlers and cleanup need these values (especially stateContext)
     // CRITICAL: Also update via callback so the resolver instance is updated BEFORE callbacks are invoked

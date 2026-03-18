@@ -413,9 +413,12 @@ function writeToPromptLog(
   body: string, metadata?: Record<string, unknown>,
 ): void {
   if (!promptLogStream) return;
+  // Normalize: accept only string; coerce undefined/null and treat whitespace-only like empty (pill #5).
+  const content = typeof body === 'string' ? body : (body != null ? String(body) : '');
+  const isEmpty = content.length === 0 || (kind !== 'ERROR' && content.trim().length === 0);
   // WHY warn on empty: Pill/audit cycles need content between markers; empty entries indicate a logging bug
   // (e.g. subprocess runner not writing to same stream, or caller passed marker-only). See AGENTS.md prompts.log.
-  if (body.length === 0 && kind !== 'ERROR') {
+  if (isEmpty && kind !== 'ERROR') {
     try {
       const w = (typeof console !== 'undefined' && console.warn) ? console.warn : () => {};
       w('[logger] prompts.log: ' + kind + ' ' + slug + ' has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed.');
@@ -424,18 +427,19 @@ function writeToPromptLog(
     }
     return;
   }
+  const bodyToWrite = content;
   try {
     // WHY cork/uncork: Flush this entry as a unit so on crash we don't get a truncated entry
     // that breaks the parser (prompts.log audit). See AGENTS.md "Crash / truncation".
     if (promptLogStream.cork) promptLogStream.cork();
     const sep = '═'.repeat(70);
-    const sizeNote = `${body.length} chars`;
+    const sizeNote = `${bodyToWrite.length} chars`;
     let header = `${sep}\n ${slug}  ${kind}: ${label} (${sizeNote})\n`;
     header += ` ${new Date().toISOString()}\n`;
     if (metadata) header += ` ${safeStringify(metadata, true)}\n`;
     header += `${sep}\n`;
     promptLogStream.write(header);
-    promptLogStream.write(body);
+    promptLogStream.write(bodyToWrite);
     promptLogStream.write(`\n${sep}\n\n`);
     if (promptLogStream.uncork) promptLogStream.uncork();
   } catch (err) {

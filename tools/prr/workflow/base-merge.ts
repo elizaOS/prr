@@ -149,6 +149,10 @@ export async function checkAndMergeBaseBranch(
             console.log(chalk.red(`    - ${file}`));
           }
           console.log(chalk.yellow('\n  These conflicts must be resolved before prr can continue.'));
+          const resolvedCount = conflictedFiles.length - resolution.remainingConflicts.length;
+          if (resolvedCount > 0) {
+            console.log(chalk.gray(`\n  (${formatNumber(resolvedCount)} of ${formatNumber(conflictedFiles.length)} file(s) were auto-resolved; ${formatNumber(resolution.remainingConflicts.length)} still need manual resolution.)`));
+          }
           console.log(chalk.gray('\n  To resolve manually:'));
           console.log(chalk.gray(`    1. Checkout the branch: git checkout ${prInfo.branch}`));
           console.log(chalk.gray(`    2. Merge base branch: git merge ${prInfo.baseBranch}`));

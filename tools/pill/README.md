@@ -105,6 +105,8 @@ Numbers in user-facing strings (e.g. improvement counts) use `.toLocaleString()`
 
 Pill infers the pair from **logPrefix** in config (CLI passes it when invoked from the hook via `currentLogPrefix`). When auditing prr’s own repo, pill can also include **pill-output.log** in context when the primary logs are not pill’s own (pill-on-itself).
 
+**If pill says "every PROMPT/RESPONSE entry is empty" but your prompts.log has content:** Pill reads both logs from the **same directory** (the one containing the output log). When pill runs from the prr hook, that directory is where prr wrote its logs. The "empty" conclusion means the prompts.log pill actually read had entry headers but no body text — either (1) a **different run** wrote that file (e.g. logging bug or different cwd), or (2) you are looking at a prompts.log in another directory. Run pill with the directory that contains the log **pair** you want (e.g. `pill /path/to/dir`), or run prr with `--pill` from the directory where you want both logs so the hook reads the same run's files.
+
 ---
 
 ## Architecture (brief)

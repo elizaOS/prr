@@ -17,6 +17,7 @@ import * as Dismissed from '../../state/state-dismissed.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, APPLY_FAILURE_DISMISS_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
 import { pluralize, debug } from '../../../../shared/logger.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
+import { tryResolvePathWithExtensionVariants } from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
@@ -421,7 +422,8 @@ export function assessSolvability(
       reason: `Review path "${comment.path}" is a fragment (e.g. .d.ts), not a full file path — cannot resolve to a single file`,
     };
   }
-  const effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
+  let effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
+  effectivePath = tryResolvePathWithExtensionVariants(workdir, effectivePath);
   const effectiveFullPath = join(workdir, effectivePath);
 
   // Check 0e1: Issue references line numbers beyond current file length (file was shortened → comment stale).

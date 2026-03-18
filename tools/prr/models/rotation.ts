@@ -11,7 +11,7 @@ import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../../../shared/config.js';
 import { warn, debug, formatNumber } from '../../../shared/logger.js';
-import { DEFAULT_ELIZACLOUD_MODEL, getEffectiveElizacloudSkipModelIds, MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
+import { DEFAULT_ELIZACLOUD_MODEL, getEffectiveElizacloudSkipModelIds, getElizaCloudSkipReason, MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
 import * as Performance from '../state/state-performance.js';
 
@@ -721,7 +721,8 @@ export async function validateAndFilterModels(
       if (isLlMApi && useElizaCloudForLlMApi) {
         if (effectiveSkipSet.has(model)) {
           removed.push({ runner: runner.name, model });
-          debug(`ElizaCloud: skipping ${model} (known timeout/0% fix rate)`);
+          const reason = getElizaCloudSkipReason(model);
+          debug(`ElizaCloud: skipping ${model} (${reason === 'timeout' ? 'known timeout' : '0% fix rate'})`);
           if (model === DEFAULT_ELIZACLOUD_MODEL || (configuredModel && model === configuredModel)) {
             skippedConfiguredDefault = model;
           }
@@ -777,10 +778,12 @@ export async function validateAndFilterModels(
       }
     }
 
-    // User-visible warning when configured default was skipped (pill-output.md #1)
+    // User-visible warning when configured default was skipped (pill-output #2)
     if (skippedConfiguredDefault) {
       const replacement = validModels.length > 0 ? validModels[0] : '(none; add other models or remove from skip list)';
-      console.log(chalk.yellow(`  ⚠ Configured default "${skippedConfiguredDefault}" skipped (known timeout/504). Using: ${replacement}`));
+      const reason = getElizaCloudSkipReason(skippedConfiguredDefault);
+      const reasonLabel = reason === 'timeout' ? 'known timeout/504' : '0% fix rate (audit)';
+      console.log(chalk.yellow(`  ⚠ Configured default "${skippedConfiguredDefault}" skipped (${reasonLabel}). Using: ${replacement}`));
     }
 
     // Update the rotation list in-place (where it came from)
