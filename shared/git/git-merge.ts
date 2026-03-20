@@ -238,7 +238,26 @@ export async function startMergeForConflictResolution(
 export async function markConflictsResolved(git: SimpleGit, files: string[]): Promise<void> {
   debug('Marking conflicts as resolved', { files });
   for (const file of files) {
-    await git.add(file);
+    try {
+      // Check if file exists in worktree before trying to add
+      // WHY: Delete conflicts are resolved by git.rm() in resolveDeleteConflict(),
+      // so the file no longer exists. Trying to git.add() a deleted file fails with
+      // "pathspec did not match any files". Skip files that don't exist (they're
+      // already staged for deletion).
+      const { existsSync } = await import('fs');
+      const { join } = await import('path');
+      const workdir = (await git.revparse(['--show-toplevel'])).trim();
+      const fullPath = join(workdir, file);
+      if (!existsSync(fullPath)) {
+        debug('Skipping deleted file in markConflictsResolved', { file });
+        continue;
+      }
+      await git.add(file);
+    } catch (err) {
+      // If git.add fails (e.g. file was deleted), skip it
+      // Delete conflicts are already handled by resolveDeleteConflict()
+      debug('Skipping file in markConflictsResolved (likely deleted)', { file, error: err });
+    }
   }
 }
 
