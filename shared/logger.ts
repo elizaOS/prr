@@ -410,7 +410,16 @@ function writeToPromptLog(
   // WHY warn on empty: Pill/audit cycles need content between markers; empty entries indicate a logging bug
   // (e.g. elizacloud/LLM client not passing accumulated body after stream, or caller passed marker-only). See AGENTS.md prompts.log.
   if (isEmpty && kind !== 'ERROR') {
-    const msg = `[logger] prompts.log: ${kind} ${slug} has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed (e.g. after streaming, pass accumulated content).\n`;
+    // Include stack trace to identify the caller (pill #5, #6)
+    const stack = new Error().stack;
+    const stackSnippet = stack
+      ? stack
+          .split('\n')
+          .slice(2, 6) // Skip Error() and writeToPromptLog lines, show next 4 frames
+          .map((line) => line.trim())
+          .join('\n    ')
+      : '(stack unavailable)';
+    const msg = `[logger] prompts.log: ${kind} ${slug} has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed (e.g. after streaming, pass accumulated content).\n    Caller stack:\n    ${stackSnippet}\n`;
     try {
       if (typeof process !== 'undefined' && process.stderr?.write) {
         process.stderr.write(msg);

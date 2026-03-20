@@ -2,10 +2,12 @@ import type { UnresolvedIssue, FixPrompt } from './types.js';
 import type { BotRiskEntry } from '../workflow/bot-risk.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../../../shared/constants.js';
-import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
+import { filterAllowedPathsForFix, isPathAllowedForFix, tryResolvePathWithExtensionVariants } from '../../../shared/path-utils.js';
 import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
 import { estimateTokens } from '../../../shared/utils/tokens.js';
 import { getTestPathForIssueLike, issueRequestsTestsText } from './test-path-inference.js';
+import { join } from 'path';
+import { debug } from '../../../shared/logger.js';
 
 /**
  * Strip HTML noise, base64 JWT links, and metadata from PR comment bodies
@@ -719,7 +721,17 @@ export function buildFixPrompt(
   for (let i = 0; i < limitedIssues.length; i++) {
     const issue = limitedIssues[i];
     // Primary path: use resolvedPath when set (basename resolved from diff) so fixer sees correct file. Prompts.log audit: comment on "reporting.py" but issue was about "benchmarks/bfcl/reporting.py".
-    const primaryPath = issue.resolvedPath ?? issue.comment.path;
+    let primaryPath = issue.resolvedPath ?? issue.comment.path;
+    // Pill #7: Validate path exists before building prompt; try extension variants if pathExists is provided.
+    // WHY: Fixer was sent tsconfig.js repeatedly despite the file not existing (should be tsconfig.json).
+    // This wastes LLM credits and iteration slots on phantom files.
+    if (options?.pathExists && !options.pathExists(primaryPath)) {
+      // Try extension variants (e.g. tsconfig.js → tsconfig.json) if we have a workdir context.
+      // Note: pathExists is a function, not a workdir path, so we can't call tryResolvePathWithExtensionVariants directly.
+      // Instead, we rely on solvability.ts having already resolved paths via tryResolvePathWithExtensionVariants.
+      // If the path still doesn't exist here, log a warning but continue (the fixer will report "no changes").
+      debug('Warning: primary path does not exist in workdir', { path: primaryPath, commentId: issue.comment.id });
+    }
     // Add triage labels if available
     // WHY: The fixer should know which issues are critical (need careful handling)
     // vs trivial style nits (can get quick fixes). Importance 1-2 = critical/major,

@@ -4,7 +4,7 @@
  * head+tail+story-read middle (like tools/story). Final output log is capped in chars
  * (default 50k; PILL_OUTPUT_LOG_MAX_CHARS) to avoid 504 / FUNCTION_INVOCATION_TIMEOUT.
  */
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import type { PillConfig, PillContext } from './types.js';
 import { DEFAULT_PILL_CONTEXT_BUDGET_TOKENS } from './config.js';
@@ -115,8 +115,15 @@ export async function assembleContext(
   const promptsLogName = prefix ? `${prefix}-prompts.log` : 'prompts.log';
   const outputLogPath = join(targetDir, outputLogName);
 
+  // Debug: Log where pill is looking for logs
+  console.log(`[Pill debug] Target directory: ${targetDir}`);
+  console.log(`[Pill debug] Log prefix: ${prefix || '(none)'}`);
+  console.log(`[Pill debug] Looking for output.log: ${outputLogPath}`);
+
   let outputLog = '';
   if (existsSync(outputLogPath)) {
+    const stats = statSync(outputLogPath);
+    console.log(`[Pill debug] output.log exists: ${outputLogPath} (${stats.size} bytes)`);
     try {
       const raw = readFileSync(outputLogPath, 'utf-8');
       const tokens = estimateTokens(raw);
@@ -153,17 +160,24 @@ export async function assembleContext(
 
   let promptsDigest: string | undefined;
   const promptsPath = join(targetDir, promptsLogName);
+  // Debug: Log where pill is looking for prompts.log
+  console.log(`[Pill debug] Looking for prompts.log: ${promptsPath}`);
   if (existsSync(promptsPath)) {
+    const stats = statSync(promptsPath);
+    console.log(`[Pill debug] prompts.log exists: ${promptsPath} (${stats.size} bytes)`);
     let rawPrompts: string;
     try {
       rawPrompts = readFileSync(promptsPath, 'utf-8');
-    } catch {
+      console.log(`[Pill debug] Read prompts.log: ${rawPrompts.length} chars`);
+    } catch (err) {
+      console.error(`[Pill debug] Failed to read prompts.log: ${err}`);
       rawPrompts = '';
     }
     if (rawPrompts) {
       const entries = parsePromptsLog(rawPrompts);
       const withContent = entries.filter((e) => e.content.trim().length > 0);
       const allEmpty = entries.length > 0 && withContent.length === 0;
+      console.log(`[Pill debug] Parsed prompts.log: ${entries.length} entries, ${withContent.length} with content, ${allEmpty ? 'ALL EMPTY' : 'has content'}`);
       const promptsTokens = estimateTokens(rawPrompts);
       if (promptsTokens <= LOG_RAW_THRESHOLD_TOKENS) {
         promptsDigest = formatPromptsRaw(entries);
@@ -180,7 +194,11 @@ export async function assembleContext(
           `If your prompts.log elsewhere has content, pass that directory to pill so it reads the correct logs.\n\n` +
           promptsDigest;
       }
+    } else {
+      console.log(`[Pill debug] prompts.log exists but is empty or unreadable`);
     }
+  } else {
+    console.log(`[Pill debug] prompts.log does not exist: ${promptsPath}`);
   }
 
   // Pill-on-itself: if primary logs are not pill's own, also include pill-output.log when present.

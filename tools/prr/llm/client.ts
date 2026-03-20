@@ -643,9 +643,20 @@ export class LLMClient {
             usage: response.usage,
           });
 
+          // Pill #1, #4: Ensure we pass the accumulated response content, not empty string.
+          // The OpenAI/Anthropic SDKs should return full content, but add safeguard.
+          const responseContent = response.content || '';
+          if (!responseContent && response.usage?.outputTokens && response.usage.outputTokens > 0) {
+            debug('WARNING: LLM response has usage tokens but empty content — possible streaming accumulation bug', {
+              provider: this.provider,
+              model: chosenModel,
+              outputTokens: response.usage.outputTokens,
+            });
+          }
+
           const responseMeta: Record<string, unknown> = { model: chosenModel, usage: response.usage };
           if (options?.phase != null) responseMeta.phase = options.phase;
-          debugResponse(promptSlug, `llm-${this.provider}`, response.content, responseMeta);
+          debugResponse(promptSlug, `llm-${this.provider}`, responseContent, responseMeta);
 
           if (response.usage) {
             trackTokens(response.usage.inputTokens, response.usage.outputTokens);

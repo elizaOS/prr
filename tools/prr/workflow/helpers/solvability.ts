@@ -943,6 +943,9 @@ function isWhatsGoodOrPositiveSummaryComment(commentBody: string): boolean {
   if (/^#+\s*Strengths\b/im.test(head) && !/\b(fix|change|add|remove|update)\b.*\b(line|here)\b/i.test(head)) return true;
   // WHY: output.log audit babylon#1213 — "### Code Quality (Positive)" entered fix loop; treat (Positive) section headers as praise-only.
   if (/^#+\s*[^#\n]+\(Positive\)\s*$/im.test(head)) return true;
+  // WHY: prompts.log audit — "Excellent documentation added" with ✅ reached fixer; catch praise-only documentation comments.
+  if (/^#+\s*Documentation\s*✅/im.test(head) && /\b(?:Excellent|Great|Good|Well[- ]written)\s+(?:documentation|docs?)\s+added\b/i.test(head)) return true;
+  if (/\b(?:Excellent|Great|Good|Well[- ]written)\s+(?:documentation|docs?)\s+added\b/i.test(head) && !/\b(?:fix|change|add|remove|update|improve|missing|lacks?)\b.*\b(?:documentation|docs?|file)\b/i.test(head)) return true;
   return false;
 }
 
