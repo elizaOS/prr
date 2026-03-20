@@ -376,14 +376,16 @@ export async function runPillAnalysis(config: PillConfig): Promise<
         model: config.auditModel,
       });
       plan = parseImprovementPlan(response.content);
+      if (response.usage && config.verbose) {
+        console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
+      }
     }
 
     if (config.verbose) {
       displayPlan(plan);
     }
-    if (response.usage && config.verbose) {
-      console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
-    }
+    // Note: Token usage logging is only available for single-request audits (not chunked)
+    // When chunking, we make multiple requests and don't aggregate token usage
 
     if (plan.improvements.length === 0) {
       if (spinner) spinner.succeed('Pill: LLM returned zero improvements (audit ran successfully).');
