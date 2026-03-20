@@ -119,6 +119,18 @@ export async function processCommentsAndPrepareFixLoop(
   // against the actual comment set (stale IDs from previous HEAD revisions are excluded).
   stateContext.currentCommentIds = new Set(comments.map(c => c.id));
 
+  if (stateContext.state && stateContext.currentCommentIds.size > 0) {
+    const pruned = State.pruneVerifiedToCurrentCommentIds(stateContext.state, stateContext.currentCommentIds);
+    if (pruned.removedVerified > 0 || pruned.removedVerifiedComments > 0) {
+      console.log(
+        chalk.gray(
+          `  Pruned stale verification: ${formatNumber(pruned.removedVerified)} ID(s) from verifiedFixed, ${formatNumber(pruned.removedVerifiedComments)} from verifiedComments (not in current PR comments).`,
+        ),
+      );
+      await State.saveState(stateContext);
+    }
+  }
+
   if (comments.length === 0) {
     const noCommentsResult = await ResolverProc.handleNoComments(
       git,

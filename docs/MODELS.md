@@ -5,7 +5,19 @@ This doc summarizes **current and legacy models** from official provider docs. U
 **Sources (check for latest):**
 
 - **Claude:** [Models overview](https://platform.claude.com/docs/en/about-claude/models/overview)
-- **OpenAI:** [Models](https://developers.openai.com/api/docs/models)
+- **OpenAI:** [Models](https://developers.openai.com/api/docs/models) — full ID list for scraping lives on [All models](https://developers.openai.com/api/docs/models/all)
+
+### Machine-readable catalog (for PRR / automation)
+
+Vendor doc pages change often; review bots may lag and suggest wrong renames (e.g. “use `gpt-4-mini`” when `gpt-5-mini` exists).
+
+| Artifact | Purpose |
+|----------|---------|
+| **`generated/model-provider-catalog.json`** | `fetchedAtIso`, `recommendedRefreshDays` (7), per-provider `apiIds[]`, and `lookup.openaiHyphenless` / `anthropicHyphenless` for loose matching |
+| **`shared/model-catalog.ts`** | `loadModelProviderCatalog()`, `resolveCatalogModelId()`, `isKnownOpenAiModelId()`, `isModelCatalogStale()` |
+| **`tools/model-catalog/fetch-provider-catalog.ts`** | Fetches the two doc URLs above and regenerates the JSON (no API keys) |
+
+**Refresh:** `npm run update-model-catalog`. **Weekly:** GitHub Action `refresh-model-catalog.yml`. **Override file path:** `PRR_MODEL_CATALOG_PATH`.
 
 ---
 
@@ -96,7 +108,8 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ### Rotation order and skip list
 
-- **llm-api / elizacloud:** Default rotation in `shared/runners/types.ts` is ordered by observed fix success (Claude first, then GPT). Models that 500/timeout or have 0% fix rate in practice are in **ELIZACLOUD_SKIP_MODEL_IDS** in `shared/constants.ts` (e.g. `gpt-4.1`, `claude-sonnet-4.5`, `gpt-5.1-codex-max`, `claude-3-opus`, `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.7-sonnet`) and are never selected. **Why:** Audit showed 0%-success and error-prone models wasting rotation slots. **Override:** Set **PRR_ELIZACLOUD_INCLUDE_MODELS** to a comma-separated list of model IDs to include anyway (e.g. if timeouts were gateway-specific). See README Configuration.
-- **Per-run performance:** Success/failure is recorded in `state-performance`; rotation prefers better-performing models within the same run. Performance is not yet persisted across PRs.
+- **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from `shared/constants.ts`. Do not assume the static table in `types.ts` is the exact live order.
+- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in `shared/constants.ts` — currently includes `openai/gpt-5.2-codex`, `anthropic/claude-3-opus`, `openai/gpt-4.1`, `anthropic/claude-sonnet-4.5`, `openai/gpt-5.1-codex-max`, `anthropic/claude-3.7-sonnet`, `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`. **`ELIZACLOUD_SKIP_REASON`** marks some as **`timeout`** vs **`zero-fix-rate`** (timeout skips may be worth retrying if the gateway was flaky). **Override:** **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated) removes matching IDs from the effective skip set. See README Configuration.
+- **Per-run performance:** Success/failure is recorded in state; rotation can prefer better-performing models within the same run. Performance is not yet persisted across PRs.
 
-*Last updated from provider docs; verify on the linked pages for current IDs and pricing.*
+*Provider model tables: last curated from linked docs; verify there for current IDs and pricing. PRR integration bullets above: align with `shared/constants.ts` as of repo checkout — if they drift, trust the source file.*

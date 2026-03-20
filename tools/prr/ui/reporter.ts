@@ -257,7 +257,18 @@ export function printFinalSummary(
   if (overlapIds.length > 0) {
     debug('Overlap IDs (verifiedFixed ∩ dismissed)', overlapIds);
   }
-  // Pill #7: warn when verified set has accumulated many stale IDs (raw >> relevant).
+  // Pill #7: warn when verified set has accumulated many stale IDs (raw >> relevant or raw >> current PR size).
+  if (
+    currentIds &&
+    currentIds.size > 0 &&
+    verifiedFixed.length > 2 * currentIds.size
+  ) {
+    console.warn(
+      chalk.yellow(
+        `  ⚠ verifiedFixed (${formatNumber(verifiedFixed.length)}) is large vs current PR comments (${formatNumber(currentIds.size)}) — likely stale IDs; pruned at fetch when possible.`,
+      ),
+    );
+  }
   if (verifiedFixed.length > 0 && relevantVerified.length > 0 && verifiedFixed.length >= 3 * relevantVerified.length) {
     console.warn(chalk.yellow(`  ⚠ verifiedFixed has ${formatNumber(verifiedFixed.length)} entries but only ${formatNumber(relevantVerified.length)} are relevant to current comments (stale IDs from previous iterations)`));
   }
@@ -323,6 +334,14 @@ export function printFinalSummary(
   if (remainingCount !== undefined) {
     if (remainingCount === 0) {
       console.log(chalk.green(`\n  ✓ No issues remaining`));
+      if (exitReason === 'merge_conflicts') {
+        // Avoid implying success: queue is empty but run stopped before main loop (AUDIT-CYCLES merge_conflicts audits).
+        console.log(
+          chalk.yellow(
+            `  ⚠ Run blocked on base-merge: resolve the conflicted files above, then re-run PRR (review issues were not processed this run).`,
+          ),
+        );
+      }
     } else {
       console.log(chalk.yellow(`\n  ○ Remaining: ${formatNumber(remainingCount)} (auto-stopped after repeated failures — resolve by fix or conversation)`));
     }

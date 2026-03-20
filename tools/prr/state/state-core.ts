@@ -172,6 +172,29 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
   return ctx.state;
 }
 
+/**
+ * Drop verification for comment IDs that are not in the current PR's review set.
+ * WHY: Recovery and prior sessions can leave stale IDs in verifiedFixed; pill-output audits asked to prune against currentCommentIds.
+ */
+export function pruneVerifiedToCurrentCommentIds(
+  state: ResolverState,
+  currentIds: Set<string>,
+): { removedVerified: number; removedVerifiedComments: number } {
+  let removedVerified = 0;
+  let removedVerifiedComments = 0;
+  if (state.verifiedFixed?.length) {
+    const before = state.verifiedFixed.length;
+    state.verifiedFixed = state.verifiedFixed.filter((id) => currentIds.has(id));
+    removedVerified = before - state.verifiedFixed.length;
+  }
+  if (state.verifiedComments?.length) {
+    const before = state.verifiedComments.length;
+    state.verifiedComments = state.verifiedComments.filter((vc) => currentIds.has(vc.commentId));
+    removedVerifiedComments = before - state.verifiedComments.length;
+  }
+  return { removedVerified, removedVerifiedComments };
+}
+
 export async function saveState(ctx: StateContext): Promise<void> {
   if (!ctx.state) {
     throw new Error('No state to save. Call load() first.');

@@ -19,10 +19,12 @@ import { extractJson } from './llm/parse-json.js';
 import { truncateHeadAndTailByChars } from '../../shared/utils/tokens.js';
 
 /** Default hard cap on user message length (chars). Scaled down when PILL_CONTEXT_BUDGET_TOKENS is set (e.g. 20k). */
-const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 95_000;
+const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 60_000;
 /** Chars per token for deriving user message cap from context budget; reserve ~20% for system + response. */
 const CHARS_PER_TOKEN = 2.7;
 const USER_MESSAGE_TOKEN_FRACTION = 0.8;
+/** Safety margin for system prompt + JSON overhead (subtracted from calculated cap to avoid 504). */
+const REQUEST_OVERHEAD_CHARS = 5_000;
 
 function buildAuditUserMessage(ctx: {
   docs: string;
@@ -309,9 +311,13 @@ export async function runPillAnalysis(config: PillConfig): Promise<
       update('Running audit…');
     }
 
-    const userMessageMaxChars = Math.min(
-      DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS,
-      Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * CHARS_PER_TOKEN)
+    // Subtract overhead so total request (user + system + JSON) stays under gateway limits.
+    const userMessageMaxChars = Math.max(
+      10_000, // Minimum cap to ensure some content is sent
+      Math.min(
+        DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS,
+        Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * CHARS_PER_TOKEN) - REQUEST_OVERHEAD_CHARS,
+      ),
     );
     let userMessage = buildAuditUserMessage(ctx);
     if (userMessage.length > userMessageMaxChars) {

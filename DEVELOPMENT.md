@@ -130,6 +130,11 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 | `tools/prr/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 
 
+### Split tools (split-plan, split-rewrite-plan, split-exec)
+
+Three-phase pipeline: **split-plan** produces `.split-plan.md` (group plan); **split-rewrite-plan** clones repo and produces `.split-rewrite-plan.yaml` (ordered ops per split); **split-exec** runs the rewrite plan when present (rebuild branches, then optional `--promote`) or falls back to one commit per split from **Files:**. Implementation audited 2025-03-18 against `.cursor/plans/split_rewrite_plan_phased_15c5c9ae.plan.md`: correct; one edge case fixed — when a rewrite plan is loaded but a group-plan split has no matching rewrite entry (e.g. typo in branchName), split-exec now skips that split with a warning instead of falling back to file-based and pushing to the original branch name.
+
+
 ### Prompt Building
 
 

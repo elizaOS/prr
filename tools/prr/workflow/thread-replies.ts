@@ -143,13 +143,21 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   // commentId -> { threadId, databaseId } for replyable threads only.
   // WHY skip ic-*: Synthetic issue-comment threads have no real inline thread to reply to; posting would fail or confuse.
   // WHY require databaseId: REST createReplyForReviewComment expects numeric comment_id; GraphQL gives us this at fetch time.
+  // WHY lowercase alias: Commit messages store prr-fix:<id> with id.toLowerCase() (git-commit-iteration); GraphQL node ids
+  // are mixed-case. verifiedCommentIds / dismissed commentId may not match c.id string equality — lookup must be case-insensitive.
   const commentToThread = new Map<string, { threadId: string; databaseId: number }>();
   for (const c of comments) {
     if (c.threadId.startsWith('ic-')) continue;
     const dbId = c.databaseId ?? null;
     if (dbId == null) continue;
-    commentToThread.set(c.id, { threadId: c.threadId, databaseId: dbId });
+    const entry = { threadId: c.threadId, databaseId: dbId };
+    commentToThread.set(c.id, entry);
+    const lower = c.id.toLowerCase();
+    if (lower !== c.id) commentToThread.set(lower, entry);
   }
+
+  const getThreadEntry = (commentId: string): { threadId: string; databaseId: number } | undefined =>
+    commentToThread.get(commentId) ?? commentToThread.get(commentId.toLowerCase());
 
   const threadsRepliedThisCall: string[] = [];
   const botLogin = process.env.PRR_BOT_LOGIN?.trim() || undefined;
@@ -161,12 +169,12 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   // Collect candidate thread IDs we might reply to (for batched cross-run idempotency check).
   const candidateThreadIds = new Set<string>();
   for (const commentId of verifiedCommentIds) {
-    const entry = commentToThread.get(commentId);
+    const entry = getThreadEntry(commentId);
     if (entry && !repliedThreadIds.has(entry.threadId)) candidateThreadIds.add(entry.threadId);
   }
   for (const d of dismissedIssues) {
     if (!DISMISSED_CATEGORIES_WITH_REPLY.has(d.category)) continue;
-    const entry = commentToThread.get(d.commentId);
+    const entry = getThreadEntry(d.commentId);
     if (entry && !repliedThreadIds.has(entry.threadId)) candidateThreadIds.add(entry.threadId);
   }
 
@@ -192,7 +200,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   // Verified-fixed: reply "Fixed in `abc1234`."
   for (const commentId of verifiedCommentIds) {
     if (stopReplyDueTo422) break;
-    const entry = commentToThread.get(commentId);
+    const entry = getThreadEntry(commentId);
     if (!entry) continue;
     if (repliedThreadIds.has(entry.threadId)) continue;
     if (alreadyRepliedByUsMap.get(entry.threadId) === true) {
@@ -225,7 +233,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   for (const d of dismissedIssues) {
     if (stopReplyDueTo422) break;
     if (!DISMISSED_CATEGORIES_WITH_REPLY.has(d.category)) continue;
-    const entry = commentToThread.get(d.commentId);
+    const entry = getThreadEntry(d.commentId);
     if (!entry) continue;
     if (repliedThreadIds.has(entry.threadId)) continue;
     if (alreadyRepliedByUsMap.get(entry.threadId) === true) {

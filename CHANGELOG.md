@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-03) — `--reply-to-threads` skipped replies when ids differed in case or when push phase did not run
+
+- **Thread replies:** Match review comment ids **case-insensitively** when resolving threads (`prr-fix:` markers store lowercase; GraphQL returns mixed-case node ids).
+- **Thread replies:** **Final cleanup** now passes **`verifiedThisSession`** into `postThreadReplies` (with dismissals), so "Fixed in \`sha\`" can still post after **`--no-push`** or **nothing to push**; `repliedThreadIds` avoids double posts when push-phase already replied.
+
+### Changed (2026-03) — Pill follow-ups: skip low-performing model, shallow clone, prune verified, strict audit exit
+
+- **ElizaCloud:** `anthropic/claude-3.5-sonnet` added to default skip list (low fix rate in audits); **`ELIZACLOUD_FALLBACK_MODEL`** is now **`anthropic/claude-sonnet-4-5-20250929`** so fallback is never a skipped model. Re-enable sonnet with **`PRR_ELIZACLOUD_INCLUDE_MODELS`** if needed.
+- **Clone:** Optional **`PRR_CLONE_DEPTH`** (e.g. `1`) for shallow `git clone --depth`.
+- **State:** After fetching PR comments, **prune** `verifiedFixed` / `verifiedComments` entries whose IDs are not in the current PR (stale IDs from older runs); persist when anything was removed.
+- **RESULTS SUMMARY:** Warn when `verifiedFixed` is large vs current comment count (>2×); existing 3× relevant warning unchanged.
+- **Exit:** **`PRR_STRICT_FINAL_AUDIT=true`** exits with code **2** if audit overrides occurred (otherwise success paths unchanged).
+
+### Added (2026-03) — Split rewrite plan: three-phase pipeline, optional ordered ops, rebuild then promote
+
+**Three-phase pipeline (split-plan → split-rewrite-plan → split-exec)**
+- **split-plan** produces the group plan (`.split-plan.md`) with **Files:** per split; it does not clone the repo.
+- **split-rewrite-plan** (new tool under `tools/split-rewrite-plan/`) clones the repo (or uses a workdir), runs `git log target..source --first-parent`, and for each commit maps changed paths to splits. It writes a **rewrite plan** (`.split-rewrite-plan.yaml` or `.json`) with ordered ops per split: `cherry-pick` when a commit touches only one split, `commit-from-sha` when it touches multiple splits (one op per split with that split’s paths). **WHY:** So each split branch gets a linear history that only touches that split’s files instead of one squashed commit per split.
+- **split-exec** when a rewrite plan is present runs only those ops and pushes to **rebuild branches** (e.g. `feature/logging-rebuild`). When absent, it does the **bare minimum**: one commit per split from **Files:** (or cherry-picks from **Commits:**). **WHY:** Rebuild branches let you verify the result before overwriting the original branch; optional `--promote` force-pushes rebuild → original when satisfied.
+
+**Staleness check**
+- If the rewrite plan’s `source_tip_sha` does not match the current source branch tip, split-exec **fails** with a clear message and tells you to re-run split-rewrite-plan. **WHY:** Applying an outdated plan to a different source state would produce wrong branches; failing is safer than silently applying the wrong ops.
+
+**Rewrite plan format and parser**
+- Rewrite plan is **developer-editable** (Markdown with YAML frontmatter, or raw YAML/JSON). Parser in `tools/split-exec/rewrite-plan.ts`: discriminates `cherry-pick` vs `commit-from-sha` ops, rejects empty `paths` on commit-from-sha, normalizes paths (array or comma-separated). **WHY:** Humans and LLMs can edit the plan; we only throw on truly invalid content.
+
+**Edge cases**
+- If the rewrite plan has **no entry** for a group-plan split (e.g. typo in `branchName`), split-exec **skips** that split with a warning instead of falling back to file-based and pushing to the original branch name. **WHY:** When a rewrite plan is loaded we only run rewrite ops and only push to rebuild branches; mixing one split to original branch and others to rebuild would be inconsistent and could overwrite the original by mistake.
+- Splits with **zero ops** in the rewrite plan are skipped with a one-line warning; they are still emitted in the plan so split count matches the group plan.
+
+**Docs and options**
+- split-exec: `--rewrite-plan`, `--rebuild-suffix` (default `-rebuild`), `--promote`. README: three-phase pipeline, staleness, rebuild+promote, troubleshooting.
+- split-rewrite-plan: `--workdir`, `--output`; README with WHYs and pipeline. AGENTS.md and DEVELOPMENT.md updated (split tools subsection, file map).
+
+- Plan: `.cursor/plans/split_rewrite_plan_phased_15c5c9ae.plan.md`. Key files: `tools/split-exec/rewrite-plan.ts`, `tools/split-exec/run.ts`, `tools/split-rewrite-plan/` (cli, run, index).
+
 ### Added (2026-03) — Conflict resolution: top+tails fallback, parse retries, fetch message, workflow version log
 
 **Top+tails fallback (when main strategy fails)**

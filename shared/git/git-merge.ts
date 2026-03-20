@@ -2,6 +2,7 @@
  * Git merge operations
  */
 import type { SimpleGit } from 'simple-git';
+import { spawn } from 'child_process';
 import { debug } from '../logger.js';
 
 /**
@@ -32,49 +33,39 @@ export async function abortMerge(git: SimpleGit): Promise<void> {
   }
 }
 
+/** Run a git command in workdir with stdout/stderr suppressed so we don't flood the user with "fatal: No rebase in progress" etc. */
+async function gitQuiet(workdir: string, args: string[]): Promise<{ exitCode: number | null }> {
+  return new Promise((resolve) => {
+    const proc = spawn('git', args, {
+      cwd: workdir,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    proc.on('close', (code) => resolve({ exitCode: code }));
+    proc.on('error', () => resolve({ exitCode: null }));
+  });
+}
+
 export async function cleanupGitState(git: SimpleGit): Promise<void> {
   debug('Cleaning up git state');
-  
-  // Abort any in-progress merge
+
+  let workdir: string;
   try {
-    await git.merge(['--abort']);
-    debug('Aborted in-progress merge');
+    workdir = (await git.revparse(['--show-toplevel'])).trim();
   } catch {
-    // No merge in progress, ignore
+    workdir = (git as { _baseDir?: string })._baseDir ?? process.cwd();
   }
-  
-  // Abort any in-progress rebase
-  try {
-    await git.rebase(['--abort']);
-    debug('Aborted in-progress rebase');
-  } catch {
-    // No rebase in progress, ignore
-  }
-  
-  // Abort any in-progress cherry-pick
-  try {
-    await git.raw(['cherry-pick', '--abort']);
-    debug('Aborted in-progress cherry-pick');
-  } catch {
-    // No cherry-pick in progress, ignore
-  }
-  
-  // Reset any staged changes and restore working directory
-  try {
-    await git.reset(['--hard', 'HEAD']);
-    debug('Reset to HEAD');
-  } catch {
-    // May fail if HEAD doesn't exist, ignore
-  }
-  
-  // Clean untracked files and directories so checkout can overwrite them (avoids "would be overwritten by checkout").
-  // Use raw so we definitely run `git clean -fd`; simple-git clean() API may differ by version.
-  try {
-    await git.raw(['clean', '-fd']);
-    debug('Cleaned untracked files');
-  } catch {
-    // Ignore cleanup errors (caller may run clean again before checkout)
-  }
+
+  // Run abort/reset/clean with stderr suppressed so user doesn't see "fatal: No merge in progress" etc.
+  const m = await gitQuiet(workdir, ['merge', '--abort']);
+  if (m.exitCode === 0) debug('Aborted in-progress merge');
+  const r = await gitQuiet(workdir, ['rebase', '--abort']);
+  if (r.exitCode === 0) debug('Aborted in-progress rebase');
+  const c = await gitQuiet(workdir, ['cherry-pick', '--abort']);
+  if (c.exitCode === 0) debug('Aborted in-progress cherry-pick');
+  const reset = await gitQuiet(workdir, ['reset', '--hard', 'HEAD']);
+  if (reset.exitCode === 0) debug('Reset to HEAD');
+  const clean = await gitQuiet(workdir, ['clean', '-fd']);
+  if (clean.exitCode === 0) debug('Cleaned untracked files');
 }
 
 export interface MergeBaseResult {

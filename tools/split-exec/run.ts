@@ -1,6 +1,7 @@
 /**
  * split-exec runner: read plan, clone repo, execute each split (cherry-pick, push, create PR).
  * WHY iterative: Process one split at a time so the user can fix conflicts or stop between splits.
+ * When a rewrite plan is present, runs only its ordered ops (cherry-pick / commit-from-sha) on rebuild branches; when absent, does bare minimum (one commit per split from Files). WHY staleness check: Refuse to run if source_tip_sha !== current source tip so we never apply an outdated plan.
  */
 import chalk from 'chalk';
 import { execFileSync } from 'child_process';
@@ -10,6 +11,7 @@ import { join } from 'path';
 import type { Config } from '../../shared/config.js';
 import type { SplitExecOptions } from './cli.js';
 import { parsePlanFile, type ParsedPlan, type ParsedSplit } from './parse-plan.js';
+import { parseRewritePlanFile, resolveRewritePlanPath, type RewritePlan, type RewritePlanOp } from './rewrite-plan.js';
 import { GitHubAPI } from '../prr/github/api.js';
 import { cloneOrUpdate } from '../../shared/git/git-clone-index.js';
 import { pushWithRetry } from '../../shared/git/git-push.js';
@@ -67,6 +69,18 @@ export async function runSplitExec(
   const plan: ParsedPlan = parsePlanFile(planPath);
   spinner.succeed(`Plan: ${plan.splits.length} splits (${plan.sourceBranch} → ${plan.targetBranch})`);
 
+  // WHY optional rewrite plan: When absent we do bare minimum (one commit per split from Files); when present we run ordered ops on rebuild branches.
+  let rewritePlan: RewritePlan | null = null;
+  const rewritePlanPath = resolveRewritePlanPath(planPath, options.rewritePlan);
+  if (rewritePlanPath) {
+    try {
+      rewritePlan = parseRewritePlanFile(rewritePlanPath);
+      debug('split-exec: loaded rewrite plan', { path: rewritePlanPath, splits: rewritePlan.splits.length });
+    } catch (e) {
+      throw new Error(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   const cloneUrl = `https://github.com/${plan.owner}/${plan.repo}.git`;
   const workdir = options.workdir ?? join(process.cwd(), '.split-exec-workdir');
   const github = new GitHubAPI(config.githubToken);
@@ -107,7 +121,7 @@ export async function runSplitExec(
   spinner.succeed(`Target branch ${plan.targetBranch} exists`);
 
   const splitBranches = [...new Set([plan.targetBranch, ...plan.splits.map(s => s.newBranch).filter((b): b is string => b != null)])];
-  spinner.start('Cloning repository (source branch)...');
+  // No spinner during clone — git clone/fetch output is shown directly.
   const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
     additionalBranches: splitBranches,
   });
@@ -118,17 +132,50 @@ export async function runSplitExec(
     await ensureTargetRefOrFetch(git, plan.targetBranch, workdir);
   }
 
+  // Staleness check: when rewrite plan is loaded, source branch tip must match plan's source_tip_sha.
+  // WHY fail: Applying a plan built from a different source tip would replay wrong commits or apply ops that don't match the current tree; failing is safer than silent wrong branches.
+  if (!options.dryRun && rewritePlan != null) {
+    const currentTip = (await git.raw(['rev-parse', 'HEAD'])).trim();
+    let planTipFull: string;
+    try {
+      planTipFull = (await git.raw(['rev-parse', rewritePlan.source_tip_sha])).trim();
+    } catch {
+      throw new Error(
+        `Rewrite plan source_tip_sha ${rewritePlan.source_tip_sha} is not a valid commit in the repo. Re-run the rewrite-plan generator.`
+      );
+    }
+    if (currentTip !== planTipFull) {
+      throw new Error(
+        `Rewrite plan was built from ${rewritePlan.source_tip_sha} (${planTipFull}); source branch is now at ${currentTip.slice(0, 7)}. Re-run the rewrite-plan generator.`
+      );
+    }
+  }
+
   let executedCount = 0;
   let prsCreated = 0;
   let prsReused = 0;
   let skippedNothingToPush = 0;
   const prUrls: string[] = [];
   const failedSplits: { split: ParsedSplit; index: number; error: Error }[] = [];
+  const executedRebuildBranches: { newBranch: string; rebuildBranch: string }[] = [];
+
   for (let i = 0; i < plan.splits.length; i++) {
     const split = plan.splits[i];
     const n = i + 1;
     console.log(chalk.cyan(`\n[${n}/${plan.splits.length}] ${split.title}`));
-    if (split.files.length === 0 && split.commits.length === 0) {
+
+    const rewriteSplit = rewritePlan?.splits.find((rs) => rs.branchName === split.newBranch);
+    const useRewritePlan = rewritePlan != null && rewriteSplit != null && rewriteSplit.ops.length > 0;
+    // WHY skip when no matching rewrite entry: When rewrite plan is loaded we only run rewrite ops and push to rebuild branches; falling back to file-based for one split would push to original branch name and mix strategies.
+    if (rewritePlan != null && rewriteSplit == null && split.newBranch != null) {
+      console.log(chalk.yellow(`  Rewrite plan has no entry for branch "${split.newBranch}" — skipping (fix plan or re-run split-rewrite-plan)`));
+      continue;
+    }
+    if (rewritePlan != null && rewriteSplit != null && rewriteSplit.ops.length === 0) {
+      console.log(chalk.yellow('  Rewrite plan has no ops for this split — skipping'));
+      continue;
+    }
+    if (!useRewritePlan && split.files.length === 0 && split.commits.length === 0) {
       console.log(chalk.yellow('  No **Files:** nor **Commits:** listed — skipping'));
       if (split.rawCommitLines.length > 0) {
         console.log(chalk.gray('  Parser saw commit section:'));
@@ -139,17 +186,33 @@ export async function runSplitExec(
       continue;
     }
     if (options.dryRun) {
-      if (split.files.length > 0) {
+      if (useRewritePlan) {
+        console.log(chalk.gray(`  Dry run: would execute ${formatNumber(rewriteSplit!.ops.length)} rewrite-plan op(s) on ${split.newBranch}${options.rebuildSuffix}`));
+      } else if (split.files.length > 0) {
         console.log(chalk.gray(`  Dry run: would apply ${formatNumber(split.files.length)} file(s) from source (new commit)`));
       } else {
         console.log(chalk.gray(`  Dry run: would cherry-pick ${formatNumber(split.commits.length)} commits`));
       }
       if (split.routeToPrNumber != null) console.log(chalk.gray(`  Route to PR #${split.routeToPrNumber}`));
-      if (split.newBranch != null) console.log(chalk.gray(`  New PR branch: ${split.newBranch}`));
+      if (split.newBranch != null) console.log(chalk.gray(`  New PR branch: ${split.newBranch}${useRewritePlan ? options.rebuildSuffix : ''}`));
       continue;
     }
     try {
-      const outcome = await executeSplit(git, plan, split, github, config.githubToken, workdir, spinner, options.forcePush);
+      const outcome = await executeSplit(
+        git,
+        plan,
+        split,
+        github,
+        config.githubToken,
+        workdir,
+        spinner,
+        options.forcePush,
+        useRewritePlan ? rewriteSplit!.ops : undefined,
+        useRewritePlan ? options.rebuildSuffix : undefined
+      );
+      if (useRewritePlan && split.newBranch != null) {
+        executedRebuildBranches.push({ newBranch: split.newBranch, rebuildBranch: split.newBranch + options.rebuildSuffix });
+      }
       executedCount++;
       if (outcome?.prCreated) prsCreated++;
       if (outcome?.prReused) prsReused++;
@@ -184,6 +247,23 @@ export async function runSplitExec(
       failedSplits.push({ split, index: n, error });
       // Return to source branch so next split can create its branch from origin/target.
       await git.checkout(plan.sourceBranch).catch(() => {});
+    }
+  }
+
+  // Promote: force-push each rebuild branch over the original branch. WHY opt-in: User verifies rebuild PRs first; only then overwrite the original branch so the new history becomes canonical.
+  if (!options.dryRun && options.promote && rewritePlan != null && executedRebuildBranches.length > 0) {
+    console.log(chalk.cyan('\nPromoting rebuild branches to originals...'));
+    for (const { newBranch, rebuildBranch } of executedRebuildBranches) {
+      spinner.start(`Force-pushing ${rebuildBranch} → ${newBranch}...`);
+      try {
+        await git.raw(['push', 'origin', `${rebuildBranch}:${newBranch}`, '--force']);
+        spinner.succeed(`Promoted ${rebuildBranch} → ${newBranch}`);
+      } catch (err) {
+        spinner.fail(`Promote failed: ${rebuildBranch} → ${newBranch}`);
+        throw new Error(
+          `Failed to force-push ${rebuildBranch} to ${newBranch}. ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
   }
 
@@ -319,7 +399,7 @@ async function verifyCommitShasInRepo(git: SimpleGit, split: ParsedSplit): Promi
   }
 }
 
-/** Execute one split: checkout target branch, cherry-pick commits, push, create PR if new. */
+/** Execute one split: checkout target branch, apply rewrite-plan ops or files/commits, push, create PR if new. */
 async function executeSplit(
   git: SimpleGit,
   plan: ParsedPlan,
@@ -328,7 +408,9 @@ async function executeSplit(
   githubToken: string,
   workdir: string,
   spinner: Ora,
-  forcePush: boolean
+  forcePush: boolean,
+  rewriteOps?: RewritePlanOp[],
+  rebuildSuffix?: string
 ): Promise<SplitOutcome> {
   let branchToPush: string;
 
@@ -341,7 +423,7 @@ async function executeSplit(
       `Change the plan to use **New PR:** instead, then close the old PR after the new one is merged.`
     );
   } else if (split.newBranch != null) {
-    branchToPush = split.newBranch;
+    branchToPush = split.newBranch + (rebuildSuffix ?? ''); // WHY rebuild suffix when using rewrite plan: Push to a new branch first so original is only overwritten when user runs --promote.
     await ensureTargetRefOrFetch(git, plan.targetBranch, workdir);
     spinner.start(`Creating branch ${branchToPush} from ${plan.targetBranch}...`);
     try {
@@ -363,7 +445,40 @@ async function executeSplit(
     return undefined;
   }
 
-  if (split.files.length > 0) {
+  if (rewriteOps != null && rewriteOps.length > 0) {
+    // Rewrite plan path: execute ops in order (cherry-pick or commit-from-sha). WHY no fallback: When plan is present we only run these ops so each split gets the phased history; do not mix with file-based.
+    for (let c = 0; c < rewriteOps.length; c++) {
+      const op = rewriteOps[c];
+      if (op.type === 'cherry-pick') {
+        spinner.start(`Cherry-picking ${op.sha.slice(0, 7)} (${c + 1}/${rewriteOps.length})...`);
+        try {
+          await git.raw(['cherry-pick', op.sha]);
+          spinner.succeed(`Cherry-picked ${op.sha.slice(0, 7)}`);
+        } catch (err) {
+          spinner.fail(`Cherry-pick failed for ${op.sha}`);
+          await git.raw(['cherry-pick', '--abort']).catch(() => {}); // WHY: Leave index clean so next run or manual recovery doesn't see a conflicted state.
+          throw new Error(
+            `Conflict or error cherry-picking ${op.sha}. Resolve in ${workdir} and run again, or edit the rewrite plan.`
+          );
+        }
+      } else {
+        // commit-from-sha
+        const msg = op.message ?? `From ${op.sha.slice(0, 7)}: ${(await git.raw(['log', '-1', '--format=%s', op.sha])).trim()}`;
+        spinner.start(`Applying ${op.sha.slice(0, 7)} (${op.paths.length} file(s)) (${c + 1}/${rewriteOps.length})...`);
+        try {
+          await git.raw(['checkout', op.sha, '--', ...op.paths]);
+          await git.add(op.paths);
+          await git.commit(msg);
+          spinner.succeed(`Committed from ${op.sha.slice(0, 7)}`);
+        } catch (err) {
+          spinner.fail(`Commit-from-sha failed for ${op.sha}`);
+          throw new Error(
+            `Could not apply ${op.sha} (paths: ${op.paths.join(', ')}). ${err instanceof Error ? err.message : String(err)}. Resolve in ${workdir}.`
+          );
+        }
+      }
+    }
+  } else if (split.files.length > 0) {
     // File-based: copy only these files from source branch and make one new commit.
     // WHY: Cherry-pick is all-or-nothing per commit; a commit that touches both workflow and ticker
     // would pollute a "workflow-only" PR. Applying by file gives one clean commit per split.

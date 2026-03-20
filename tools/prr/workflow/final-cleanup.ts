@@ -159,8 +159,11 @@ export async function executeFinalCleanup(
     }
   }
 
-  // Reply on review threads for dismissed issues (already-fixed, stale, not-an-issue, false-positive).
-  if (!options.dryRun && options.replyToThreads && prInfo && repliedThreadIds != null && github && dismissedIssues.length > 0) {
+  // Reply on review threads: dismissed outcomes + verified fixes that did not get a push-phase reply.
+  // WHY verified at end: commit-and-push only posts "Fixed in …" when a push actually happened (!pushNothingToPush).
+  // Runs that verify fixes but skip push (--no-push), or "nothing to push", would otherwise leave threads silent.
+  // repliedThreadIds dedupes with any replies already posted after push.
+  if (!options.dryRun && options.replyToThreads && prInfo && repliedThreadIds != null && github) {
     try {
       let commitSha: string;
       try {
@@ -168,9 +171,15 @@ export async function executeFinalCleanup(
       } catch {
         commitSha = prInfo.headSha;
       }
+      const verifiedForReply = new Set<string>();
+      if (stateContext.verifiedThisSession) {
+        for (const id of stateContext.verifiedThisSession) {
+          if (Verification.isVerified(stateContext, id)) verifiedForReply.add(id);
+        }
+      }
       const replyStats = await postThreadReplies({
         comments: finalComments,
-        verifiedCommentIds: new Set(),
+        verifiedCommentIds: verifiedForReply,
         dismissedIssues,
         commitSha,
         repliedThreadIds,

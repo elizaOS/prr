@@ -19,7 +19,7 @@ import { ELIZACLOUD_FALLBACK_MODEL, getEffectiveElizacloudSkipModelIds, getEffec
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
-import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled, formatNumber } from '../../shared/logger.js';
 import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
@@ -176,6 +176,17 @@ async function main(): Promise<void> {
       console.log(chalk.gray(`\n📄 Full output log: ${logPath}`));
     }
     await closeOutputLog();
+
+    const strictFinalAudit =
+      process.env.PRR_STRICT_FINAL_AUDIT?.trim() === 'true' || process.env.PRR_STRICT_FINAL_AUDIT === '1';
+    if (resolver && strictFinalAudit && resolver.getAuditOverrideCount() > 0) {
+      console.warn(
+        chalk.yellow(
+          `\nStrict final audit: ${formatNumber(resolver.getAuditOverrideCount())} issue(s) kept verified despite audit UNFIXED — exiting with code 2 (PRR_STRICT_FINAL_AUDIT).`,
+        ),
+      );
+      process.exit(2);
+    }
 
     if (isFailureExitReason(resolver.getExitReason())) {
       process.exit(1);

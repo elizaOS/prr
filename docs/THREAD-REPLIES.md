@@ -49,6 +49,14 @@ GitHub’s REST API `pulls.createReplyForReviewComment` expects the comment’s 
 
 Some “comments” are synthetic: we create them from issue comments (e.g. bot review text) with a synthetic `threadId` like `ic-123`. Those don’t have a real review thread to reply to. **WHY:** Posting would fail or create confusion; skipping them keeps the reply flow for real inline threads only.
 
+## WHY comment ID lookup is case-insensitive
+
+`prr-fix:` markers in commit messages store the comment id **lowercase** (see `git-commit-iteration`). Recovery from git therefore puts **lowercase** ids in `verifiedFixed`. GitHub GraphQL returns review comment **node ids with mixed case**. Thread replies map `comment.id → thread`; lookups use **case-insensitive** matching so recovered ids still resolve to the correct `databaseId` for `createReplyForReviewComment`.
+
+## WHY final cleanup also passes verified-this-session
+
+“Fixed in \`sha\`” replies after **push** only run when a push actually happened (`!pushNothingToPush`). If you use **`--no-push`**, or the remote was already up to date after a fix, push-phase replies are skipped. **Final cleanup** calls `postThreadReplies` with **`verifiedThisSession`** (plus dismissals) so threads still get a “Fixed in …” when appropriate. **`repliedThreadIds`** prevents double posts if push-phase already replied.
+
 ## Configuration
 
 | Option / env | Purpose |

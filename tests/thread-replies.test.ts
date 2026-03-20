@@ -111,6 +111,18 @@ describe('postThreadReplies', () => {
     expect(replyCalls[0]).toEqual({ commentId: 100, body: 'Fixed in `abcdef0`.' });
   });
 
+  it('matches verified comment id case-insensitively (prr-fix markers use lowercase; GraphQL ids are mixed case)', async () => {
+    const comments = [makeComment('PRRC_kwDOMT5cIs6v2--B', 'thread-1', 100)];
+    await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['prrc_kwdomt5cis6v2--b']),
+      commitSha: 'abcdef0123456789',
+    });
+    expect(replyCalls).toHaveLength(1);
+    expect(replyCalls[0]).toEqual({ commentId: 100, body: 'Fixed in `abcdef0`.' });
+  });
+
   it('skips threads already in repliedThreadIds (in-run idempotency)', async () => {
     const comments = [makeComment('c1', 'thread-1', 100)];
     const repliedThreadIds = new Set<string>(['thread-1']);

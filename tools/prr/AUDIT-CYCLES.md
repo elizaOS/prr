@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-18 · **Recorded cycles:** 51 · **Historical (legacy):** 4
+**Last updated:** 2026-03-20 · **Recorded cycles:** 57 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -161,6 +161,116 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 57 — 2026-03-20 (prompts.log: eliza#6575 — conflict resolution retry prompts lack error context)
+
+**Artifacts audited:** prompts.log from elizaOS/eliza#6575 run (45,126 lines, 52 parse error retries).
+
+**Findings:**
+- **Medium (M1):** Conflict resolution retry prompts show parse error location (e.g., "At line 463, column 40: Expected '=' for property initializer") but only include the conflict region (BASE/OURS/THEIRS snippets), not the code around line 463 where the error occurred. LLM cannot see what's wrong at the error location, leading to repeated failures (9 retries for same error at line 463).
+- **Low (L1):** Syntax-fix pass (`tryFixSyntaxWithLlm`) correctly includes full file content, but only runs after retry attempts are exhausted. Retry prompts should include code around error location (e.g., ±20 lines) or show the full resolved file when error is outside the conflict region.
+- **Low (L2):** Verification prompts are well-structured with clear rules for STALE vs YES, truncation handling, and citation requirements. No issues found.
+
+**Improvements implemented:**
+- **None** — Finding is for future optimization. Retry prompts should include code around parse error location (extract ±20 lines from resolved content at error line/column) or fall back to syntax-fix pass earlier when error is outside conflict region.
+
+**Flip-flop check:** N — Audit-only; no code changes.
+
+**Notes:** 52 parse error retries observed; 9 retries for same error at line 463 in `inMemoryAdapter.ts` suggests retry prompt lacks sufficient context. Syntax-fix pass (which includes full file) succeeds when retries fail, confirming that showing the error location improves success rate. Consider: (1) extract code around error location from resolved content and include in retry prompt, (2) skip retries and go straight to syntax-fix pass when error location is far from conflict region, or (3) include full resolved file in retry prompt when error is outside conflict region.
+
+---
+
+### Cycle 56 — 2026-03-20 (eliza#6575 all_fixed: 504s during conflict resolution, parse errors, long merge time)
+
+**Artifacts audited:** output.log from elizaOS/eliza#6575 run that exited `all_fixed` (105m 12s session, 242m 45s overall).
+
+**Findings:**
+- **High (H1):** Multiple 504 timeouts during conflict resolution (4 instances) and syntax fix passes, causing 10s+20s retry delays per file. Retry logic exists but gateway timeouts still add significant latency (30s+ per failed attempt).
+- **Medium (M1):** Parse errors requiring multiple retries (Expression expected, Unterminated string literal, Declaration or statement expected) — 5 files failed syntax validation after conflict resolution, suggesting LLM output quality issues or insufficient context in retry prompts.
+- **Low (L1):** Base branch merge took 46m this session (183m overall) for 124 conflicted files — expected for large conflicts but could benefit from parallelization of independent files (future work).
+- **Low (L2):** Audit re-queued 3 issues (samTts.ts, tsconfig.json, test-run-cli.test.ts) because final audit said UNFIXED despite being previously verified — correct behavior (safe over sorry), but spot-check of samTts.ts:45 shows the fix is present (`out.set(new Uint8Array(wav))` is correct usage).
+
+**Improvements implemented:**
+- **None** — 504 retry logic already exists (chunked fallback, exponential backoff); parse errors are handled via retry. Findings are observations for future optimization rather than bugs requiring immediate fixes.
+
+**Flip-flop check:** N — Audit-only; no code changes.
+
+**Notes:** Spot-checked workdir `/root/.prr/work/5102b5012b5d2a72/examples/avatar/src/runtime/samTts.ts:45` — fix present (correct `Uint8Array.set()` usage). The audit re-queue is conservative and correct. 504s during conflict resolution are gateway-level issues; retry logic is working but adds latency. Parse errors suggest LLM may need more context in retry prompts (e.g., show surrounding code, not just the conflict region). Consider parallelizing conflict resolution for independent files in future (124 files processed sequentially).
+
+---
+
+### Cycle 55 — 2026-03-18 (pill-output follow-ups: skip sonnet, shallow clone, prune verified, strict exit)
+
+**Artifacts audited:** pill-output.md recurring items; code changes in this session.
+
+**Findings:**
+- **Info:** Several pill items were already implemented (mutual exclusivity, dedupe, path hints in solvability, logger bodies); remaining gaps were skip `claude-3.5-sonnet` without breaking fallback, optional shallow clone, prune stale verified IDs, early raw-vs-comments warning, strict audit exit.
+
+**Improvements implemented:**
+- `shared/constants.ts`: Skip `anthropic/claude-3.5-sonnet` (zero-fix-rate); `ELIZACLOUD_FALLBACK_MODEL` → `anthropic/claude-sonnet-4-5-20250929`.
+- `shared/git/git-clone-core.ts`: `PRR_CLONE_DEPTH` → `git clone --depth N`.
+- `state-core.ts` + `main-loop-setup.ts`: `pruneVerifiedToCurrentCommentIds` after fetch comments; save if pruned.
+- `reporter.ts`: Warn when verifiedFixed > 2× current PR comment count.
+- `index.ts` + `resolver.ts`: `PRR_STRICT_FINAL_AUDIT` → exit 2 when `getAuditOverrideCount() > 0`.
+- `AGENTS.md`, `README.md`, `CHANGELOG.md` updated.
+
+**Flip-flop check:** N — Additive/opt-in (strict exit, shallow clone); skip list + fallback alignment; state prune reduces stale IDs only.
+
+**Notes:** Deduplicate-by-file+line and resume-partial-clone not implemented (higher risk / lower ROI).
+
+---
+
+### Cycle 54 — 2026-03-18 (output.log: eliza#6575, RESULTS UX + audit follow-up)
+
+**Artifacts audited:** output.log (elizaOS/eliza#6575, branch odi-want; workdir `/root/.prr/work/5102b5012b5d2a72`). Exit merge_conflicts after 117/124 files auto-resolved, 7 manual; 94 verified from state; session ~76m; Pill failed 504 (FUNCTION_INVOCATION_TIMEOUT, ~78k char request to elizacloud).
+
+**Findings:**
+- **Low:** RESULTS SUMMARY showed green "✓ No issues remaining" next to exit merge_conflicts — review queue empty but run did not complete main loop; misleading without a line that base-merge is still blocking.
+- **Info:** Same run as Cycle 53 (lastResult fix landed after that log); Pill 504 already documented (AGENTS.md: lower `PILL_CONTEXT_BUDGET_TOKENS` or inspect output.log manually).
+
+**Improvements implemented:**
+- reporter.ts: When `exitReason === 'merge_conflicts'` and `remainingCount === 0`, print a yellow line that the run is blocked on base-merge and review issues were not processed this run.
+
+**Flip-flop check:** N — Additive UX; no behavior change to exit codes or queue.
+
+**Notes:** Spot-checked `packages/typescript/src/database/inMemoryAdapter.ts` in workdir — no `<<<<<<<` markers at read time (workdir may differ from exact log snapshot). Cycle 53 covers `lastResult` ReferenceError in conflict resolver.
+
+---
+
+### Cycle 53 — 2026-03-18 (output.log: eliza#6575 re-run, merge_conflicts 7 remaining, lastResult ReferenceError)
+
+**Artifacts audited:** output.log (elizaOS/eliza#6575, branch odi-want; workdir `/root/.prr/work/5102b5012b5d2a72` reused). State: 94 verifiedFixed. Reused partial conflict resolutions; 117 of 124 auto-resolved this session, 7 remaining; exit merge_conflicts. One file failed with "Error - ReferenceError: lastResult is not defined" (runtime-integration.test.ts). Pill 504 again (request body ~78k chars). Run stopped at base-merge.
+
+**Findings:**
+- **Medium:** When parse validation failed and resolution path was not 'chunked' or 'single' (e.g. heuristic, take-theirs, overview), `lastResult` was only declared inside the retry block, so the syntax-fix path at line 753 referenced undefined `lastResult` → ReferenceError thrown and printed as "Error - ReferenceError: lastResult is not defined". Syntax-fix pass was never attempted for that file.
+- **Low:** Pill 504 on large output.log (documented in AGENTS.md).
+
+**Improvements implemented:**
+- git-conflict-resolve.ts: Declare `lastResult = result` in the outer validation-else block so it is in scope when `!parseValidation.valid`; syntax-fix path and fallback error message can use it regardless of resolution path. Fixes ReferenceError and allows syntax-fix attempt for non-chunked/single paths that produce invalid parse.
+
+**Flip-flop check:** N — Bug fix; no behavior revert.
+
+**Notes:** Spot-check N/A (run stopped at base-merge; 94 from state; no fix applied this run). Workdir in merge state with 7 unresolved files.
+
+---
+
+### Cycle 52 — 2026-03-18 (output.log: eliza#6575, merge_conflicts exit, 124 conflicts)
+
+**Artifacts audited:** output.log (elizaOS/eliza#6575, branch odi-want, base v2.0.0; workdir `/root/.prr/work/5102b5012b5d2a72`). New workdir; 94 fixes recovered from git; merge with v2.0.0 had 124 conflicted files; 93 auto-resolved, 31 remaining; exit merge_conflicts. ~99m on "Merge base branch", 310 conflict LLM calls, ~$6.92. Pill later failed with 504 (request body ~78k chars). Run never reached fix loop.
+
+**Findings:**
+- **Medium:** Five files failed with "Resolution produced invalid syntax" (inMemoryAdapter.ts, runtime.ts, LLMStrategy.test.ts, publishPluginAction.ts, runtime-integration.test.ts) — parse errors (e.g. "Expression expected", "',' expected") after main or top+tails resolution; no syntax-fix pass was run in this log (run predates `tryFixSyntaxWithLlm`).
+- **Low:** Pill 504 on very large output.log — already documented in AGENTS.md (PILL_CONTEXT_BUDGET_TOKENS, inspect manually).
+- **Info:** Batch prompt 629 KB → correctly skipped runner, used per-file resolution. State saved so next run reuses 93 resolved files and only resolves 31.
+
+**Improvements implemented:**
+- None this cycle. Conflict syntax-fix pass (`tryFixSyntaxWithLlm`) and base-merge "Re-run prr to continue — already-resolved files will be reused" were added in prior work; this run predates syntax-fix. Future runs with syntax-fix may recover some of the five parse-fail files.
+
+**Flip-flop check:** N — Audit-only; no code change.
+
+**Notes:** Spot-check N/A (run stopped at base-merge; workdir reset on abort; 94 "fixed" from git recovery only, no fix-loop). The five parse-error files are candidates for syntax-fix pass on re-run.
+
+---
 
 ### Cycle 51 — 2026-03-18 (pill-output improvements: state exclusivity, audit re-queue, path disambiguation, AGENTS.md)
 

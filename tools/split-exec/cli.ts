@@ -13,6 +13,12 @@ export interface SplitExecOptions {
   forcePush: boolean;
   /** Run pill analysis on output log when the run finishes. */
   pill: boolean;
+  /** Path to rewrite plan (.split-rewrite-plan.md/.yaml/.json). If unset, looked up beside group plan. */
+  rewritePlan?: string;
+  /** Suffix for rebuild branch (e.g. -rebuild). When using rewrite plan, push to newBranch+suffix first. */
+  rebuildSuffix: string;
+  /** When true and rewrite plan was used, force-push each rebuild branch over the original branch. */
+  promote: boolean;
 }
 
 export interface SplitExecParsedArgs {
@@ -34,7 +40,10 @@ export function createCLI(): Command {
     .option('-y, --yes', 'Skip confirmation prompts (not used yet; for future per-split confirm)', false)
     .option('-v, --verbose', 'Verbose logging', false)
     .option('--force-push', 'On push rejection (remote has newer commits), force-push to overwrite (use when re-running a plan)', false)
-    .option('--pill', 'Run pill analysis on the output log when the run finishes', false);
+    .option('--pill', 'Run pill analysis on the output log when the run finishes', false)
+    .option('--rewrite-plan <path>', 'Path to rewrite plan (.split-rewrite-plan.md/.yaml/.json). If unset, looked up beside group plan.')
+    .option('--rebuild-suffix <suffix>', 'Suffix for rebuild branch when using rewrite plan (default: -rebuild)', '-rebuild')
+    .option('--promote', 'After building rebuild branches, force-push each over the original branch (use when satisfied)', false);
 
   return program;
 }
@@ -57,6 +66,9 @@ export function parseArgs(program: Command): SplitExecParsedArgs {
       verbose: opts.verbose ?? false,
       forcePush: opts.forcePush ?? false,
       pill: opts.pill ?? false,
+      rewritePlan: opts.rewritePlan ? String(opts.rewritePlan).trim() : undefined,
+      rebuildSuffix: opts.rebuildSuffix != null ? String(opts.rebuildSuffix) : '-rebuild',
+      promote: opts.promote ?? false,
     },
   };
 }

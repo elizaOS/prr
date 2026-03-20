@@ -218,8 +218,12 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 - **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated model IDs): Models to *include* in rotation even if they are on the default skip list (e.g. `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.7-sonnet`). **WHY:** Those models are skipped by default because audits showed timeouts or 0% fix rate on some gateways; if your environment is different, set this to re-enable them (e.g. `PRR_ELIZACLOUD_INCLUDE_MODELS=openai/gpt-4o-mini`). Full IDs or short names (e.g. `gpt-4o-mini`) both work.
 
 **Clone / fetch (optional)**  
-- **`PRR_CLONE_TIMEOUT_MS`** (default 300000): Max ms for the initial clone. Large repos or slow connections may need more (e.g. 600000 for 10 min). Progress is logged every 30s.
+- **`PRR_CLONE_TIMEOUT_MS`** (default 900000): Max ms for the initial clone. Large repos or slow connections may need more (e.g. 600000 for 10 min). Progress is logged every 30s.
+- **`PRR_CLONE_DEPTH`** (optional): If set to a positive integer (e.g. `1`), clone uses **`git clone --depth`** (shallow clone). Faster on huge repos; trade-off: incomplete history.
 - **`PRR_FETCH_TIMEOUT_MS`** (default 60000): Max ms for fetch during update/merge. Increase for slow networks.
+
+**Audit / exit (optional)**  
+- **`PRR_STRICT_FINAL_AUDIT`**: Set to `true` or `1` to exit with code **2** when the run succeeds but **audit overrides** exist (issues kept verified despite final audit UNFIXED). Default exit remains **0** in that case.
 
 On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves effective concurrency for 60s so the next run backs off without a code change.
 

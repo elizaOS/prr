@@ -223,6 +223,11 @@ export class PRResolver {
     return this.exitReason;
   }
 
+  /** For PRR_STRICT_FINAL_AUDIT: how many issues stayed verified despite final audit UNFIXED. */
+  getAuditOverrideCount(): number {
+    return this.stateContext?.auditOverridesThisRun?.length ?? 0;
+  }
+
   private async setupRunner(): Promise<Runner> { const result = await Rotation.setupRunner(this.options, this.config); this.runners = result.all; return result.primary; }
   private buildConflictResolutionPrompt(conflictedFiles: string[], baseBranch: string): string { return GitOps.buildConflictResolutionPrompt(conflictedFiles, baseBranch); }
 

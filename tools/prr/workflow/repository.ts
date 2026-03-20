@@ -85,7 +85,7 @@ export async function cloneOrUpdateRepository(
       console.log(chalk.gray(`  Repository size: ${formatRepoSize(sizeKb)}`));
     }
   }
-  spinner.start('Setting up repository...');
+  // No spinner during clone — git clone/fetch output (e.g. "Cloning into...", "Receiving objects") is shown directly.
   const additionalBranches = prInfo.baseBranch && prInfo.baseBranch !== prInfo.branch
     ? [prInfo.baseBranch]
     : undefined;

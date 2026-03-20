@@ -9,6 +9,7 @@
     "pill": "./dist/tools/pill/index.js",
     "split-exec": "./dist/tools/split-exec/index.js",
     "split-plan": "./dist/tools/split-plan/index.js",
+    "split-rewrite-plan": "./dist/tools/split-rewrite-plan/index.js",
     "story": "./dist/tools/story/index.js"
   },
   "scripts": {
@@ -19,7 +20,8 @@
     "dev": "bun --watch tools/prr/index.ts",
     "test": "vitest",
     "test:elizacloud": "echo 'No test-elizacloud script; set ELIZACLOUD_API_KEY and run pill or prr'",
-    "lint:workflows": "actionlint .github/workflows/"
+    "lint:workflows": "actionlint .github/workflows/",
+    "update-model-catalog": "tsx tools/model-catalog/fetch-provider-catalog.ts"
   },
   "keywords": [
     "github",
@@ -40,7 +42,8 @@
     "dotenv": "^16.4.5",
     "openai": "^4.73.0",
     "ora": "^8.1.0",
-    "simple-git": "^3.27.0"
+    "simple-git": "^3.27.0",
+    "yaml": "^2.7.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

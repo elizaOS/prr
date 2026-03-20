@@ -12,10 +12,10 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 /**
- * Clone timeout in ms. Configurable via PRR_CLONE_TIMEOUT_MS (default 300s).
+ * Clone timeout in ms. Configurable via PRR_CLONE_TIMEOUT_MS (default 900s).
  * WHY: Large repos (e.g. 1.6GB) can block indefinitely; timeout + progress feedback avoid silent hang (pill-output #1).
  */
-export const DEFAULT_CLONE_TIMEOUT_MS = 300_000;
+export const DEFAULT_CLONE_TIMEOUT_MS = 900_000;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // LLM TOKEN LIMITS & PROMPT SIZE
@@ -273,8 +273,9 @@ export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
 /**
  * Fallback model when DEFAULT_ELIZACLOUD_MODEL is unavailable (e.g. timeout/skip list).
  * Single source of truth for the default fallback; index.ts and rotation use this when needed.
+ * WHY not claude-3.5-sonnet: that ID is in ELIZACLOUD_SKIP_MODEL_IDS (low fix rate in audits); fallback must be non-skipped.
  */
-export const ELIZACLOUD_FALLBACK_MODEL = 'anthropic/claude-3.5-sonnet';
+export const ELIZACLOUD_FALLBACK_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
 
 /**
  * ElizaCloud API base URL (OpenAI-compatible).
@@ -299,6 +300,8 @@ export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'anthropic/claude-3.7-sonnet',
   'openai/gpt-4o',
   'openai/gpt-4o-mini',
+  /** Pill audits: ~25% fix success vs stronger models; wastes rotation slots. Re-enable with PRR_ELIZACLOUD_INCLUDE_MODELS. */
+  'anthropic/claude-3.5-sonnet',
 ];
 
 /** Per-model skip reason. Default 'timeout' for models known to 504/timeout; 'zero-fix-rate' for 0% fix rate in audits. */
@@ -306,6 +309,7 @@ export const ELIZACLOUD_SKIP_REASON: Record<string, ElizaCloudSkipReason> = {
   'anthropic/claude-3.7-sonnet': 'timeout',
   'openai/gpt-4o': 'timeout',
   'openai/gpt-4o-mini': 'zero-fix-rate',
+  'anthropic/claude-3.5-sonnet': 'zero-fix-rate',
 };
 
 export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {

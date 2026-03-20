@@ -43,3 +43,10 @@ pill-summary.md
 
 # split-exec clone and cherry-pick workdir
 .split-exec-workdir/
+
+# split-rewrite-plan output and workdir
+.split-rewrite-plan.md
+.split-rewrite-plan.yaml
+.split-rewrite-plan.yml
+.split-rewrite-plan.json
+.split-rewrite-plan-workdir/

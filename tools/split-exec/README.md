@@ -16,6 +16,21 @@ Reads a `.split-plan.md` file (from **split-plan**), clones the repository at th
 ## Input
 
 - **Plan file:** Path to a `.split-plan.md` produced by split-plan (or edited by hand). The file must have YAML frontmatter with `source_pr`, `source_branch`, `target_branch`, and a **## Split** section with `### N. Title`, **New PR:** `branch-name`, optional **PR title:** or **Title:** (used for commit message and GitHub PR title — use repo-style e.g. `feat: add PRR workflow`), **Files:** (recommended) or **Commits:** for each split.
+- **Rewrite plan (optional):** When present (e.g. `.split-rewrite-plan.yaml` beside the group plan, or `--rewrite-plan <path>`), split-exec runs **ordered ops** per split (cherry-pick or commit-from-sha) on a **rebuild branch** (e.g. `feature/logging-rebuild`). When absent, split-exec does the **bare minimum**: one commit per split from **Files:** (or cherry-picks from **Commits:**).
+
+## Three-phase pipeline (optional)
+
+1. **Group plan** — Run **split-plan** (or edit by hand) to produce `.split-plan.md` with splits and **Files:** per split.
+2. **Rewrite plan** — Run **split-rewrite-plan** to analyze the repo and produce `.split-rewrite-plan.yaml` with ordered ops per split (so each split branch gets a linear history that only touches that split’s files). Requires a clone; use `-w .split-exec-workdir` to reuse the same workdir as split-exec if desired.
+3. **Execution** — Run **split-exec**; if a rewrite plan is present it executes those ops and pushes to **rebuild branches** (e.g. `newBranch-rebuild`). When satisfied, run with `--promote` to force-push each rebuild branch over the original branch.
+
+**WHY rebuild branches:** Building clean history on a new branch (e.g. `feature/logging-rebuild`) keeps the original branch untouched until you verify the result. Only when you run with `--promote` does split-exec force-push rebuild to original.
+
+**Staleness:** If the rewrite plan’s `source_tip_sha` does not match the current source branch tip, split-exec **fails** and tells you to re-run split-rewrite-plan. **WHY:** Applying an outdated plan to a different source state would replay the wrong commits; failing is safer than silently producing wrong branches.
+
+**Empty splits:** Splits that have no ops in the rewrite plan are skipped with a one-line warning. **WHY:** The generator still emits them (empty `ops` array) so the rewrite plan's split list matches the group plan; the executor skips so we don't push an empty branch.
+
+**No matching rewrite entry:** If the rewrite plan has no split whose `branchName` matches a group-plan split's **New PR:** (e.g. typo or generator omitted it), split-exec skips that split with a warning instead of falling back to file-based. **WHY:** When a rewrite plan is loaded we only run rewrite ops and only push to rebuild branches; falling back for one split would push to the original branch name and mix strategies.
 
 ## Usage
 
@@ -31,6 +46,12 @@ split-exec .split-plan.md --dry-run
 
 # Force-push when remote has diverged (overwrite remote branches)
 split-exec .split-plan.md --force-push
+
+# With rewrite plan (uses .split-rewrite-plan.yaml beside plan if present; pushes to branch-rebuild)
+split-exec .split-plan.md --rewrite-plan .split-rewrite-plan.yaml
+
+# After verifying rebuild branches, promote them over the original branches (force-push)
+split-exec .split-plan.md --rewrite-plan .split-rewrite-plan.yaml --promote
 
 # Run pill analysis on the output log when the run finishes
 split-exec .split-plan.md --pill
@@ -48,6 +69,9 @@ split-exec .split-plan.md -v
 | `-y, --yes` | off | Reserved for future per-split confirmation; currently unused. |
 | `-v, --verbose` | off | Verbose logging. |
 | `--force-push` | off | On push rejection (remote has newer commits), force-push to overwrite the remote branch. **WHY:** Use when re-running a plan and your local split branches are the source of truth (e.g. after fixing commits). |
+| `--rewrite-plan <path>` | (beside plan) | Path to rewrite plan (`.split-rewrite-plan.md` / `.yaml` / `.json`). If unset, looked up beside the group plan file. When present, split-exec runs ordered ops and pushes to rebuild branches. **WHY optional:** Without a rewrite plan, split-exec still works (one commit per split from **Files:**); the rewrite plan adds phased history when you run split-rewrite-plan first. |
+| `--rebuild-suffix <suffix>` | `-rebuild` | Suffix for rebuild branch when using a rewrite plan (e.g. `feature/logging` → `feature/logging-rebuild`). **WHY:** So the original branch name is only overwritten when you run `--promote`; you can inspect the rebuild PR first. |
+| `--promote` | off | When using a rewrite plan, after building rebuild branches, force-push each rebuild branch over the original branch. **WHY:** Use only when satisfied with the rebuild; this overwrites the original branch so the new history becomes the canonical one. |
 | `--pill` | off | When the run finishes, run pill analysis on the output log and append to pill-output.md / pill-summary.md. **WHY:** Split-exec has no LLM calls; passing `--pill` lets you still get operational improvement suggestions from the log. |
 
 ## Exit codes (for CI / automation)
@@ -59,6 +83,8 @@ split-exec .split-plan.md -v
 | non-zero | One or more splits failed (e.g. cherry-pick conflict, push failed). |
 
 ## Flow (per split)
+
+When a **rewrite plan is present**, split-exec runs only the rewrite plan’s ops (cherry-pick or commit-from-sha) per split and pushes to **rebuild branches** (e.g. `newBranch-rebuild`). When **no rewrite plan** is present:
 
 1. **New PR (file-based, recommended):** If the split lists **Files:**, the tool copies only those files from the source branch into the new branch and creates **one new commit** (split title). No cherry-pick — so each PR contains only the intended changes (e.g. workflow-only or ticker-only).
 2. **New PR (cherry-pick):** If the split lists only **Commits:**, the tool cherry-picks those commits in order. Note: cherry-pick is all-or-nothing per commit; a commit that touches multiple areas will bring all changes into that PR.
@@ -94,6 +120,10 @@ The target branch is checked **once upfront** (before cloning). If it's missing,
 1. **Create the branch on the remote:** e.g. push an initial commit to `staging` from another clone, or create it in the GitHub UI.
 2. **Change the plan:** Edit `.split-plan.md` frontmatter and set `target_branch` to an existing branch (e.g. `main`).
 3. **Manual fetch (if the branch exists but ls-remote failed):** From the workdir printed in the error, run: `cd <workdir> && git fetch origin <target-branch>`.
+
+### "Rewrite plan was built from X; source branch is now at Y"
+
+The rewrite plan’s `source_tip_sha` does not match the current source branch tip (e.g. new commits were pushed). Re-run **split-rewrite-plan** to generate a new rewrite plan from the current source, then run split-exec again.
 
 ### "Push rejected and rebase has conflicts in: ..."
 

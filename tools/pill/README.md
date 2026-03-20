@@ -54,7 +54,7 @@ pill <directory> [options]
 
 Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/.env` (target overrides home). Same env vars as prr/story (e.g. `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`).
 
-- **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the audit request (user + system). Default 35000. Set to **20000** (or lower) for models with a small context window to avoid 504 / FUNCTION_INVOCATION_TIMEOUT. Per-section caps (output log, prompts digest, source, docs, tree) scale with the budget.
+- **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the audit request (user + system). Default 35000. Set to **20000** (or lower) for models with a small context window to avoid 504 / FUNCTION_INVOCATION_TIMEOUT. Per-section caps (output log, prompts digest, source, docs, tree) scale with the budget. User message is capped at 60k chars (with 5k safety margin for system prompt + JSON overhead) to keep total request size under gateway limits.
 - **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars sent to the audit (default 50000). Override if you need a different limit.
 
 ### Integrated (prr / story / split-exec / split-plan) — opt-in with --pill

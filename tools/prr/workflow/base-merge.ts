@@ -152,6 +152,7 @@ export async function checkAndMergeBaseBranch(
           const resolvedCount = conflictedFiles.length - resolution.remainingConflicts.length;
           if (resolvedCount > 0) {
             console.log(chalk.gray(`\n  (${formatNumber(resolvedCount)} of ${formatNumber(conflictedFiles.length)} file(s) were auto-resolved; ${formatNumber(resolution.remainingConflicts.length)} still need manual resolution.)`));
+            console.log(chalk.gray('  Re-run prr to continue — already-resolved files will be reused; only remaining conflicts will be resolved.'));
           }
           console.log(chalk.gray('\n  To resolve manually:'));
           console.log(chalk.gray(`    1. Checkout the branch: git checkout ${prInfo.branch}`));

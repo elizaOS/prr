@@ -254,6 +254,56 @@ function buildParseErrorRetryHint(parseValidation: { error?: string; location?: 
 }
 
 /**
+ * One-shot LLM pass to fix a single syntax error in already-resolved content.
+ * WHY: Resolution often produces nearly-correct output; throwing it away and asking the user to fix manually
+ * wastes the prior LLM cost. A small "fix the syntax" prompt often corrects missing commas or unclosed comments.
+ */
+async function tryFixSyntaxWithLlm(
+  llm: LLMClient,
+  conflictFile: string,
+  content: string,
+  parseValidation: { error?: string; location?: string },
+  model?: string
+): Promise<{ content: string } | null> {
+  const err = parseValidation.error ?? 'parse error';
+  const loc = parseValidation.location ?? 'unknown';
+  const ext = conflictFile.replace(/^.*\./, '').toLowerCase();
+  const lang = ['ts', 'tsx'].includes(ext) ? 'typescript' : ['js', 'jsx'].includes(ext) ? 'javascript' : ext;
+  const prompt = `The following ${conflictFile} file has exactly one syntax error.
+
+Error: ${err}
+Location: ${loc}
+
+Fix only the syntax (e.g. add a missing comma, close a block comment with */). Do not change logic or add explanations.
+Return the complete corrected file in a single code block. Use this format exactly:
+
+RESOLVED: \`\`\`${lang}
+<paste the entire corrected file here>
+\`\`\`
+
+File content:
+\`\`\`${lang}
+${content}
+\`\`\``;
+  try {
+    setTokenPhase('conflict-syntax-fix');
+    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
+    const body = response?.content?.trim() ?? '';
+    const codeMatch = body.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+    const fixed = codeMatch ? codeMatch[1].trim() : body.replace(/^```[^\n]*\n?/, '').replace(/\n?```$/, '').trim();
+    if (!fixed || fixed.length < 100) return null;
+    const recheck = await validateResolvedFileContent(fixed, conflictFile);
+    if (recheck.valid) {
+      debug('Syntax fix pass succeeded', { file: conflictFile });
+      return { content: fixed };
+    }
+  } catch (e) {
+    debug('Syntax fix pass failed', { file: conflictFile, error: e });
+  }
+  return null;
+}
+
+/**
  * Validate that resolved content is sane before writing to disk.
  * 
  * WHY: LLMs sometimes catastrophically corrupt files during conflict resolution.
@@ -640,10 +690,10 @@ export async function resolveConflictsWithLLM(
             };
           } else {
             let parseValidation = await validateResolvedFileContent(result.content, conflictFile);
+            let lastResult = result;
             if (!parseValidation.valid && (resolutionPath === 'chunked' || resolutionPath === 'single')) {
               // Retry resolution up to twice with parse-error hint (location + error-specific guidance).
               const maxParseRetries = 2;
-              let lastResult = result;
               let lastParseValidation = parseValidation;
               for (let parseRetry = 0; parseRetry < maxParseRetries && !lastParseValidation.valid; parseRetry++) {
                 const previousParseError = buildParseErrorRetryHint(lastParseValidation);
@@ -698,13 +748,23 @@ export async function resolveConflictsWithLLM(
             }
             if (!parseValidation.valid) {
               debug('Resolution rejected by parse validation', { file: conflictFile, error: parseValidation.error });
-              // WHY: So the top+tails fallback can include this in prompts and the model can fix that specific error.
               lastParseError = parseValidation.error;
-              result = {
-                resolved: false,
-                content: conflictedContent,
-                explanation: `Resolution produced invalid syntax: ${parseValidation.error ?? 'parse error'}`,
-              };
+              // One-shot syntax fix: don't discard the resolution — ask LLM to fix the reported error only.
+              if (lastResult?.content) {
+                console.log(chalk.blue(`    → Fixing syntax (${parseValidation.error ?? 'parse error'})...`));
+                const fixed = await tryFixSyntaxWithLlm(llm, conflictFile, lastResult.content, parseValidation, conflictModel);
+                if (fixed) {
+                  result = { resolved: true, content: fixed.content, explanation: 'Resolved; syntax corrected by LLM.' };
+                  parseValidation = { valid: true };
+                }
+              }
+              if (!result.resolved) {
+                result = {
+                  resolved: false,
+                  content: conflictedContent,
+                  explanation: `Resolution produced invalid syntax: ${parseValidation.error ?? 'parse error'}`,
+                };
+              }
             }
           }
         }
@@ -749,6 +809,17 @@ export async function resolveConflictsWithLLM(
                 console.log(chalk.green(`    ✓ ${conflictFile}: ${result.explanation}`));
                 await git.add(conflictFile);
                 partialResolutions?.add(conflictFile, result.content);
+              } else {
+                // Syntax fix pass: top+tails content is often one error away from valid.
+                console.log(chalk.blue(`    → Fixing syntax after top+tails (${fbParse.error ?? 'parse error'})...`));
+                const fixed = await tryFixSyntaxWithLlm(llm, conflictFile, fallbackResult.content, fbParse, conflictModel);
+                if (fixed) {
+                  result = { resolved: true, content: fixed.content, explanation: 'Resolved (top+tails); syntax corrected by LLM.' };
+                  fs.writeFileSync(fullPath, result.content, 'utf-8');
+                  console.log(chalk.green(`    ✓ ${conflictFile}: ${result.explanation}`));
+                  await git.add(conflictFile);
+                  partialResolutions?.add(conflictFile, result.content);
+                }
               }
             }
           }
