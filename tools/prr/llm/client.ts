@@ -1703,8 +1703,8 @@ ${codeSnippet}
       '3. Partial fixes do NOT count - the full issue must be resolved',
       '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
       '5. For ACCESSIBILITY (aria-label, accessible name, screen reader, unlabelled SVG): mark FIXED only if the code adds a meaningful accessible name (aria-label or title with the conveyed value). If the only change is aria-hidden or role="img" with no label, mark UNFIXED.',
-      '6. If the issue\'s file was DELETED (snippet shows "file not found" or empty) or the GitHub thread was marked outdated because the file was rewritten, and the issue was already verified fixed in a previous step, mark FIXED with explanation "File deleted or thread outdated; issue was resolved in an earlier fix."',
-      '7. If the snippet shows "(file not found or unreadable)" and the review comment asked to DELETE or REMOVE the file from the repository, mark FIXED (the file no longer exists = the requested fix was applied).',
+      '6. If the issue\'s file was DELETED (snippet shows "file not found" or empty) or the GitHub thread was marked outdated because the file was rewritten, and the issue was already verified fixed in a previous step, mark FIXED with explanation "File deleted or thread outdated; issue was resolved in an earlier fix." IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
+      '7. If the snippet shows "(file not found or unreadable)" and the review comment asked to DELETE or REMOVE the file from the repository, mark FIXED (the file no longer exists = the requested fix was applied). IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
       '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
@@ -1846,9 +1846,53 @@ ${codeSnippet}
           const idx = parseInt(numStr, 10) - 1;
           if (idx >= 0 && idx < batchIssues.length) {
             const issue = batchIssues[idx];
+            const isFixed = status.toUpperCase() === 'FIXED';
+            let finalStatus = !isFixed; // UNFIXED by default
+            let finalExplanation = explanation.trim();
+            
+            // Pill cycle 2 #2: Require code evidence when audit marks FIXED — if code snippet still contains bug pattern, demote to UNFIXED
+            if (isFixed) {
+              const codeSnippet = issue.codeSnippet.toLowerCase();
+              const commentLower = issue.comment.toLowerCase();
+              
+              // Extract bug patterns from comment (e.g. "gpt-5-mini", "non-null assertion", specific line references)
+              const bugPatterns: RegExp[] = [];
+              
+              // Pattern 1: Model IDs mentioned in comment (e.g. "gpt-5-mini" should be "gpt-4o-mini")
+              const modelIdMatch = commentLower.match(/\b(gpt-\d+(?:-mini|-turbo)?|claude-\d+(?:-sonnet|-opus|-haiku)?|qwen-\d+)\b/i);
+              if (modelIdMatch) {
+                const wrongModel = modelIdMatch[1].toLowerCase();
+                // Check if wrong model still exists in code
+                if (codeSnippet.includes(wrongModel)) {
+                  debug('Final audit contradiction: marked FIXED but code still contains bug pattern', {
+                    issueId: issue.id,
+                    pattern: wrongModel,
+                    explanation: finalExplanation,
+                  });
+                  finalStatus = true; // UNFIXED
+                  finalExplanation = `Code evidence contradicts FIXED verdict: code snippet still contains "${wrongModel}" mentioned in review. ${finalExplanation}`;
+                }
+              }
+              
+              // Pattern 2: Line-specific references (e.g. "line 31-32 still has incorrect")
+              const lineRefMatch = explanation.match(/(?:line|lines)\s+(\d+(?:\s*-\s*\d+)?)/i);
+              if (lineRefMatch && !codeSnippet.includes('not found') && !codeSnippet.includes('unreadable')) {
+                // If explanation cites specific lines but doesn't show replacement evidence, require it
+                const hasReplacementEvidence = /(?:now has|changed to|replaced with|uses|contains)\s+[a-z0-9-]+/i.test(explanation);
+                if (!hasReplacementEvidence && explanation.length < 50) {
+                  debug('Final audit FIXED verdict lacks code evidence', {
+                    issueId: issue.id,
+                    explanation: finalExplanation,
+                  });
+                  finalStatus = true; // UNFIXED
+                  finalExplanation = `FIXED verdict lacks code evidence — explanation does not cite replacement. Code snippet may still contain the bug. ${finalExplanation}`;
+                }
+              }
+            }
+            
             allResults.set(issue.id, {
-              stillExists: status.toUpperCase() === 'UNFIXED',
-              explanation: explanation.trim(),
+              stillExists: finalStatus,
+              explanation: finalExplanation,
             });
           }
         }

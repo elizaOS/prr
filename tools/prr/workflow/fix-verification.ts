@@ -831,6 +831,38 @@ export async function verifyFixes(
               reason: verification.explanation,
             });
 
+            // Pill #3: Cross-check for contradictions — if FIXED but explanation contains negative signals,
+            // treat as UNFIXED (safe-over-sorry). WHY: Verifier may say YES but reasoning contradicts it.
+            if (verification.fixed) {
+              const explanationLower = verification.explanation.toLowerCase();
+              const negativeSignals = [
+                /\bstill\s+have\s+(?:incorrect|wrong|the\s+bug|the\s+issue|the\s+problem)/i,
+                /\bstill\s+contains\s+(?:incorrect|wrong|the\s+bug)/i,
+                /\bbug\s+remains/i,
+                /\bnot\s+fixed/i,
+                /\bissue\s+still\s+exists/i,
+                /\bproblem\s+still\s+present/i,
+                /\bdoes\s+not\s+address/i,
+                /\bdoesn't\s+address/i,
+                /\bmissing\s+(?:the|required|necessary)/i,
+              ];
+              const hasContradiction = negativeSignals.some((pattern) => pattern.test(explanationLower));
+              if (hasContradiction) {
+                console.warn(
+                  chalk.yellow(
+                    `  ⚠ Verification contradiction: verifier said FIXED but explanation contains negative signals — treating as UNFIXED (safe-over-sorry)`,
+                  ),
+                );
+                debug('Verification contradiction detected', {
+                  commentId: issue.comment.id,
+                  explanation: verification.explanation,
+                  path: getIssuePrimaryPath(issue),
+                });
+                // Treat as UNFIXED — fall through to failedCount increment
+                verification.fixed = false;
+              }
+            }
+
             if (verification.fixed) {
               verifiedCount++;
               Verification.markVerified(stateContext, issue.comment.id);

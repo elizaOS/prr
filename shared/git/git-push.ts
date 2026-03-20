@@ -88,9 +88,12 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       : remoteUrl;
     if (githubToken && baseHttpsUrl.startsWith('https://')) {
       // AUTHORIZATION: basic base64(token:) — GitHub accepts token as username, empty password.
+      // WHY credential.helper=!: Explicitly disable all credential helpers (including global ones)
+      // so git doesn't try to prompt or use helpers when remote URL has a token.
       const basicAuth = Buffer.from(`${githubToken}:`, 'utf8').toString('base64');
       authConfigArgs = [
-        'credential.helper=',
+        'credential.helper=!',  // Disable all credential helpers
+        `credential.https://github.com.helper=!`,  // Also disable for GitHub specifically
         `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth}`,
       ];
       debug('Pre-push check', { hasTokenInUrl, usingAuthHeader: true });
@@ -98,6 +101,14 @@ export async function push(git: SimpleGit, branch: string, force = false, github
       debug('Remote URL is SSH — token injection skipped; push will use SSH credentials.');
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
+    } else if (hasTokenInUrl && !githubToken) {
+      // Remote URL has token but no githubToken param; disable credential helpers to prevent prompts
+      // WHY: Even with token in URL, git may try credential helpers; disable to avoid "could not read Password"
+      authConfigArgs = [
+        'credential.helper=!',
+        `credential.https://github.com.helper=!`,
+      ];
+      debug('Pre-push check', { hasTokenInUrl, usingUrlToken: true });
     } else {
       debug('Pre-push check', { hasTokenInUrl });
     }

@@ -31,6 +31,8 @@ let outputLogPath: string | null = null;
 let promptLogStream: WriteStream | null = null;
 let promptLogPath: string | null = null;
 let outputLogExitHandlerRegistered = false;
+// Pill #8: Counter for empty prompt bodies to emit summary at close
+let emptyPromptBodyCount = 0;
 
 /** When true, closeOutputLog() runs pill analysis on the logs we just closed. Set at init or via setPillEnabled() when --pill is passed. */
 let pillAnalysisEnabled = false;
@@ -191,6 +193,19 @@ export async function closeOutputLog(): Promise<void> {
       // Log but don't throw; caller expects shutdown to complete
       if (origErrorRef) origErrorRef('Log stream close/flush failed:', err);
     }
+  }
+
+  // Pill #8: Emit summary of empty prompt bodies to output.log so operators see it
+  if (emptyPromptBodyCount > 0 && outputLogPath) {
+    const summaryMsg = `WARNING: ${emptyPromptBodyCount} prompts.log entr${emptyPromptBodyCount === 1 ? 'y' : 'ies'} had empty bodies — see stderr for details. This may indicate a logging bug (e.g. elizacloud streaming not passing accumulated response to logger).\n`;
+    try {
+      appendFileSync(outputLogPath, summaryMsg, 'utf-8');
+      if (origWarnRef) origWarnRef(summaryMsg.trim());
+    } catch {
+      // ignore write errors during shutdown
+    }
+    // Reset counter for next run
+    emptyPromptBodyCount = 0;
   }
 
   // WHY run when output has content OR prompts have entries: split-exec has no prompts log; prr/story do. So we
@@ -410,6 +425,8 @@ function writeToPromptLog(
   // WHY warn on empty: Pill/audit cycles need content between markers; empty entries indicate a logging bug
   // (e.g. elizacloud/LLM client not passing accumulated body after stream, or caller passed marker-only). See AGENTS.md prompts.log.
   if (isEmpty && kind !== 'ERROR') {
+    // Pill #8: Increment counter for summary at close
+    emptyPromptBodyCount++;
     // Include stack trace to identify the caller (pill #5, #6)
     const stack = new Error().stack;
     const stackSnippet = stack
@@ -441,7 +458,8 @@ function writeToPromptLog(
     let header = `${sep}\n ${slug}  ${kind}: ${label} (${sizeNote})\n`;
     header += ` ${new Date().toISOString()}\n`;
     if (metadata) header += ` ${safeStringify(metadata, true)}\n`;
-    header += `${sep}\n`;
+    // Pill fix: Don't write delimiter between metadata and content — parser splits by delimiter
+    // and treats content as separate entry. Write delimiter only at start and end.
     promptLogStream.write(header);
     promptLogStream.write(bodyToWrite);
     promptLogStream.write(`\n${sep}\n\n`);

@@ -282,6 +282,8 @@ export interface SolvabilityResult {
   contextHints?: string[];            // Injected into LLM prompt in Phase 3
   retargetedLine?: number;            // If smart re-targeting found the code at a different line
   resolvedPath?: string;              // Canonical tracked path when raw comment path was truncated/basename-only
+  /** Pill cycle 2 #6: When true, auto-verify instead of dismissing (e.g. after N ALREADY_FIXED verdicts) */
+  autoVerify?: boolean;
 }
 
 /**
@@ -407,10 +409,28 @@ export function assessSolvability(
     };
   }
 
-  // Check 0e: Synthetic path "(PR comment)" — try to infer path from body before dismissing.
-  // WHY: output.log audit — comments like "Non-null assertion (line 290)" / "Lines 127-129" reference
-  // a file (e.g. TickerClient.tsx); inferPathLineFromBody may have failed on format, but body path hints can resolve.
+  // Pill cycle 2 #1: Early-exit for synthetic path "(PR comment)" — dismiss before path inference to avoid wasted LLM calls.
+  // WHY: Log shows issues #0017 and #0019 both attempted the same PR-checklist comment with TARGET FILE = '(PR comment)'.
+  // These waste LLM fix calls per iteration. Only try path inference if body suggests a real file (has file-like patterns).
   if (normalizedPath === '(PR comment)') {
+    // Pill cycle 2 #12: Detect bot commands (e.g. "@coderabbitai review") with specific category
+    const bodyLower = (comment.body ?? '').toLowerCase().trim();
+    if (/^@\w+.*(?:review|analyze|check)/i.test(bodyLower)) {
+      return {
+        solvable: false,
+        dismissCategory: 'not-an-issue',
+        reason: 'Bot command (e.g. @coderabbitai review) — not a code issue to fix',
+      };
+    }
+    if (bodyLower.length < 60) {
+      return {
+        solvable: false,
+        dismissCategory: 'not-an-issue',
+        reason: 'Synthetic path "(PR comment)" — too short to infer file path',
+      };
+    }
+    
+    // Try to infer path from body (only if body has file-like patterns)
     const pathHints = [
       ...extractPathHintsFromBody(comment.body ?? ''),
       ...extractBareFilePathHintsFromBody(comment.body ?? ''),
@@ -697,10 +717,26 @@ export function assessSolvability(
     };
   }
 
-  // Check 5a: ALREADY_FIXED any-explanation counter.
+  // Pill cycle 2 #6: Auto-verify after N ALREADY_FIXED verdicts instead of dismissing.
+  // WHY: Log shows issues marked ALREADY_FIXED 6+ times yet kept being re-queued when audit disagreed.
+  // Auto-verifying stops the oscillation loop and treats consensus as truth.
+  const alreadyFixedAny = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
+  const AUTO_VERIFY_ALREADY_FIXED_THRESHOLD = 2; // Lower than dismiss threshold — auto-verify earlier
+  if (alreadyFixedAny >= AUTO_VERIFY_ALREADY_FIXED_THRESHOLD) {
+    debug('Solvability auto-verify: already-fixed-any', { commentId: comment.id, path: comment.path, alreadyFixedAny, threshold: AUTO_VERIFY_ALREADY_FIXED_THRESHOLD });
+    // Return solvable: false but with a special flag that issue-analysis.ts will handle by auto-verifying
+    return {
+      solvable: false,
+      dismissCategory: 'already-fixed',
+      reason: `ALREADY_FIXED ${alreadyFixedAny}× (multiple models) — auto-verifying to stop oscillation`,
+      // Special marker for issue-analysis to auto-verify instead of dismissing
+      autoVerify: true,
+    };
+  }
+  
+  // Check 5a: ALREADY_FIXED any-explanation counter (dismiss threshold, higher than auto-verify).
   // WHY check here (before LLM calls): If 3+ models already said ALREADY_FIXED, re-running
   // the fixer would waste another iteration. Dismissing in solvability avoids the LLM call entirely.
-  const alreadyFixedAny = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
   if (alreadyFixedAny >= ALREADY_FIXED_ANY_THRESHOLD) {
     debug('Solvability dismiss: already-fixed-any', { commentId: comment.id, path: comment.path, alreadyFixedAny, threshold: ALREADY_FIXED_ANY_THRESHOLD });
     return {
@@ -951,9 +987,12 @@ function isWhatsGoodOrPositiveSummaryComment(commentBody: string): boolean {
   if (/^#+\s*Strengths\b/im.test(head) && !/\b(fix|change|add|remove|update)\b.*\b(line|here)\b/i.test(head)) return true;
   // WHY: output.log audit babylon#1213 — "### Code Quality (Positive)" entered fix loop; treat (Positive) section headers as praise-only.
   if (/^#+\s*[^#\n]+\(Positive\)\s*$/im.test(head)) return true;
+  // Pill cycle 2 #5: Catch "Excellent documentation ✅" and similar approval patterns
   // WHY: prompts.log audit — "Excellent documentation added" with ✅ reached fixer; catch praise-only documentation comments.
   if (/^#+\s*Documentation\s*✅/im.test(head) && /\b(?:Excellent|Great|Good|Well[- ]written)\s+(?:documentation|docs?)\s+added\b/i.test(head)) return true;
   if (/\b(?:Excellent|Great|Good|Well[- ]written)\s+(?:documentation|docs?)\s+added\b/i.test(head) && !/\b(?:fix|change|add|remove|update|improve|missing|lacks?)\b.*\b(?:documentation|docs?|file)\b/i.test(head)) return true;
+  // Pill cycle 2 #5: Explicit approval patterns with ✅ emoji
+  if (/\b(?:Excellent|Great|Good|Perfect|Outstanding)\s+(?:documentation|docs?|work|code|implementation)\s*✅/i.test(head)) return true;
   return false;
 }
 

@@ -52,9 +52,16 @@ export function dismissIssue(
   }
   
   const currentIteration = state.iterations.length;
-  // Pill: Keep verifiedFixed and dismissedIssues mutually exclusive — when we dismiss, remove from verified.
+  // Pill cycle 2 #9: Enforce mutual exclusivity at write time — when we dismiss, remove from verified.
   if (state.verifiedFixed?.length) {
     state.verifiedFixed = state.verifiedFixed.filter((id) => id !== commentId);
+  }
+  // Also remove from verifiedComments array (not just legacy verifiedFixed)
+  if (state.verifiedComments?.length) {
+    const index = state.verifiedComments.findIndex(v => v.commentId === commentId);
+    if (index !== -1) {
+      state.verifiedComments.splice(index, 1);
+    }
   }
   const existing = state.dismissedIssues.find(d => d.commentId === commentId);
   if (!existing) {

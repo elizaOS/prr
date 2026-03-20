@@ -51,10 +51,22 @@ export class StateManager {
             this.state.headSha = headSha;
             const hadVerified = (this.state.verifiedFixed?.length ?? 0) + (this.state.verifiedComments?.length ?? 0) > 0;
             const hadPartial = Object.keys(this.state.partialConflictResolutions ?? {}).length > 0;
+            // Pill #9: Also clear dismissed (especially already-fixed) on head change — stale dismissals can mask regressions
+            const hadDismissed = (this.state.dismissedIssues?.length ?? 0) > 0;
             if (hadVerified) {
               this.state.verifiedFixed = [];
               this.state.verifiedComments = [];
               console.warn(`PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code`);
+            }
+            if (hadDismissed) {
+              // Clear already-fixed dismissals (most likely to be stale) but keep others (e.g. not-an-issue, stale)
+              // WHY: already-fixed is based on code state; other dismissals are based on comment content which doesn't change with HEAD
+              const before = this.state.dismissedIssues?.length ?? 0;
+              this.state.dismissedIssues = (this.state.dismissedIssues ?? []).filter((d) => d.category !== 'already-fixed');
+              const cleared = before - (this.state.dismissedIssues?.length ?? 0);
+              if (cleared > 0) {
+                console.warn(`PR head changed: cleared ${cleared} already-fixed dismissal(s) so they are re-checked against current code`);
+              }
             }
             if (hadPartial) {
               this.state.partialConflictResolutions = {};

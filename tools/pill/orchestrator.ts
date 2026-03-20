@@ -16,7 +16,8 @@ import { assembleContext, getContextTokenCounts } from './context.js';
 import { LLMClient } from './llm/client.js';
 import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJson } from './llm/parse-json.js';
-import { truncateHeadAndTailByChars } from '../../shared/utils/tokens.js';
+import { truncateHeadAndTailByChars, estimateTokens } from '../../shared/utils/tokens.js';
+import { chunkPlainText } from '../../shared/llm/story-read.js';
 
 /** Default hard cap on user message length (chars). Scaled down when PILL_CONTEXT_BUDGET_TOKENS is set (e.g. 20k). */
 const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 60_000;
@@ -319,19 +320,63 @@ export async function runPillAnalysis(config: PillConfig): Promise<
         Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * CHARS_PER_TOKEN) - REQUEST_OVERHEAD_CHARS,
       ),
     );
-    let userMessage = buildAuditUserMessage(ctx);
-    if (userMessage.length > userMessageMaxChars) {
-      userMessage = truncateHeadAndTailByChars(
-        userMessage,
-        userMessageMaxChars,
-        '\n\n[ ... truncated for 504 avoidance (user message char cap) ... ]\n\n'
-      );
-      if (spinner) spinner.info(`User message capped at ${userMessageMaxChars.toLocaleString()} chars (avoids 504/timeout).`);
+    const fullUserMessage = buildAuditUserMessage(ctx);
+    
+    // Pill chunking: Instead of truncating, chunk large contexts and merge results
+    let plan: ImprovementPlan;
+    if (fullUserMessage.length > userMessageMaxChars) {
+      if (spinner) spinner.info(`Context exceeds ${userMessageMaxChars.toLocaleString()} chars — chunking into multiple audit requests (avoids 504/timeout).`);
+      
+      // Chunk by token budget (convert char cap to token budget for chunking)
+      const chunkTokenBudget = Math.floor(userMessageMaxChars / CHARS_PER_TOKEN);
+      const chapters = chunkPlainText(fullUserMessage, chunkTokenBudget);
+      
+      if (spinner) update(`Running audit (${chapters.length} chunk${chapters.length === 1 ? '' : 's'})…`);
+      
+      // Send audit request for each chunk and merge results
+      const chunkPlans: ImprovementPlan[] = [];
+      for (let i = 0; i < chapters.length; i++) {
+        if (spinner && chapters.length > 1) {
+          update(`Running audit chunk ${i + 1}/${chapters.length}…`);
+        }
+        const chunkMessage = `[CONTEXT CHUNK ${i + 1}/${chapters.length}]\n\n${chapters[i].text}`;
+        const chunkResponse = await llmClient.complete(chunkMessage, AUDIT_SYSTEM_PROMPT, {
+          model: config.auditModel,
+        });
+        const chunkPlan = parseImprovementPlan(chunkResponse.content);
+        chunkPlans.push(chunkPlan);
+      }
+      
+      // Merge chunk results: combine improvements, use first non-empty pitch/summary
+      const allImprovements: Improvement[] = [];
+      let mergedPitch = '';
+      let mergedSummary = '';
+      for (const chunkPlan of chunkPlans) {
+        allImprovements.push(...chunkPlan.improvements);
+        if (!mergedPitch && chunkPlan.pitch) mergedPitch = chunkPlan.pitch;
+        if (!mergedSummary && chunkPlan.summary) mergedSummary = chunkPlan.summary;
+      }
+      
+      // Deduplicate improvements by file+description (same file with similar description = duplicate)
+      const seen = new Map<string, Improvement>();
+      for (const imp of allImprovements) {
+        const key = `${imp.file}:${imp.description.substring(0, 100)}`;
+        if (!seen.has(key) || (imp.severity === 'critical' && seen.get(key)!.severity !== 'critical')) {
+          seen.set(key, imp);
+        }
+      }
+      
+      plan = {
+        pitch: mergedPitch || `Analyzed ${chapters.length} context chunk(s) and found ${seen.size} improvement(s).`,
+        summary: mergedSummary || `Merged audit results from ${chapters.length} chunk(s).`,
+        improvements: Array.from(seen.values()),
+      };
+    } else {
+      const response = await llmClient.complete(fullUserMessage, AUDIT_SYSTEM_PROMPT, {
+        model: config.auditModel,
+      });
+      plan = parseImprovementPlan(response.content);
     }
-    const response = await llmClient.complete(userMessage, AUDIT_SYSTEM_PROMPT, {
-      model: config.auditModel,
-    });
-    const plan = parseImprovementPlan(response.content);
 
     if (config.verbose) {
       displayPlan(plan);

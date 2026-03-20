@@ -14,6 +14,7 @@ import {
   loadModelProviderCatalog,
   resolveCatalogModelId,
 } from '../../../../shared/model-catalog.js';
+import { debug } from '../../../../shared/logger.js';
 
 const ENV_DISABLE_SOLVABILITY = 'PRR_DISABLE_MODEL_CATALOG_SOLVABILITY';
 
@@ -142,19 +143,63 @@ export interface OutdatedModelCatalogDismissal {
  * block the rest of PRR; we only skip dismissal, not crash.
  */
 export function getOutdatedModelCatalogDismissal(body: string | undefined | null): OutdatedModelCatalogDismissal | null {
-  if (process.env[ENV_DISABLE_SOLVABILITY]?.trim() === '1') return null;
-  if (!body) return null;
-  if (!commentSuggestsInvalidModelId(body)) return null;
+  if (process.env[ENV_DISABLE_SOLVABILITY]?.trim() === '1') {
+    debug('[Auto-heal detection] Disabled via PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1');
+    return null;
+  }
+  
+  if (!body) {
+    debug('[Auto-heal detection] No body text');
+    return null;
+  }
+  
+  if (!commentSuggestsInvalidModelId(body)) {
+    debug('[Auto-heal detection] Comment does not suggest invalid model ID', { 
+      bodySnippet: body.substring(0, 200),
+      hasInvalidFraming: false,
+    });
+    return null;
+  }
+  
+  debug('[Auto-heal detection] Comment suggests invalid model ID', { 
+    bodySnippet: body.substring(0, 200),
+  });
+  
   const pair = parseModelRenameAdvice(body);
-  if (!pair) return null;
-  if (!catalogValidatesBothIds(pair.catalogGoodId, pair.wronglySuggestedId)) return null;
+  if (!pair) {
+    debug('[Auto-heal detection] Could not parse model rename advice from body', { 
+      bodySnippet: body.substring(0, 300),
+    });
+    return null;
+  }
+  
+  debug('[Auto-heal detection] Parsed model rename pair', {
+    catalogGoodId: pair.catalogGoodId,
+    wronglySuggestedId: pair.wronglySuggestedId,
+  });
+  
+  if (!catalogValidatesBothIds(pair.catalogGoodId, pair.wronglySuggestedId)) {
+    debug('[Auto-heal detection] Catalog does not validate both IDs as distinct', {
+      catalogGoodId: pair.catalogGoodId,
+      wronglySuggestedId: pair.wronglySuggestedId,
+    });
+    return null;
+  }
+  
+  debug('[Auto-heal detection] Catalog validates both IDs - dismissal match', {
+    catalogGoodId: pair.catalogGoodId,
+    wronglySuggestedId: pair.wronglySuggestedId,
+  });
+  
   let reason = `Outdated model-id advice: both \`${pair.catalogGoodId}\` and \`${pair.wronglySuggestedId}\` are public API spellings per generated/model-provider-catalog.json — not a fixer task`;
   try {
     const cat = loadModelProviderCatalog();
     if (isModelCatalogStale(cat)) {
       reason += ' (catalog snapshot may be stale; run npm run update-model-catalog)';
+      debug('[Auto-heal detection] Catalog is stale');
     }
-  } catch {
+  } catch (err) {
+    debug('[Auto-heal detection] Failed to load/check catalog', { error: err instanceof Error ? err.message : String(err) });
     /* reason unchanged */
   }
   return { reason, pair };

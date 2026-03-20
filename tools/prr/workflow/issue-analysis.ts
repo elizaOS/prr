@@ -1548,6 +1548,21 @@ export async function findUnresolvedIssues(
     // Deterministic solvability check (zero LLM cost)
     const solvability = assessSolvability(workdir, comment, stateContext);
     if (!solvability.solvable) {
+      // Pill cycle 2 #6: Auto-verify after N ALREADY_FIXED verdicts instead of dismissing
+      if (solvability.autoVerify && solvability.dismissCategory === 'already-fixed') {
+        debug('Auto-verifying issue after multiple ALREADY_FIXED verdicts', {
+          commentId: comment.id,
+          path: comment.path,
+          reason: solvability.reason,
+        });
+        Verification.markVerified(stateContext, comment.id);
+        // Add to verifiedThisSession if available (it's set on stateContext)
+        if (stateContext.verifiedThisSession) {
+          stateContext.verifiedThisSession.add(comment.id);
+        }
+        continue;
+      }
+      
       // CRITICAL: dismissIssue ONLY — do NOT call markVerified.
       // If the file comes back (revert, re-add), we want to re-analyze it.
       const reason = solvability.reason ?? `Issue not solvable (${solvability.dismissCategory ?? 'unknown'})`;
@@ -1561,6 +1576,37 @@ export async function findUnresolvedIssues(
         comment.body,
         solvability.remediationHint
       );
+      
+      // Pill #7: Cascade dismissal to sibling sub-items when dismissing for outdated model advice
+      // (same file+line means same underlying issue; all sub-items should be dismissed consistently)
+      if (solvability.dismissCategory === 'not-an-issue' && /outdated.*model/i.test(reason)) {
+        const match = /^ic-(\d+)-(\d+)$/.exec(comment.id);
+        if (match) {
+          const parentId = match[1];
+          const siblings = comments.filter(c => 
+            c.id.startsWith(`ic-${parentId}-`) && 
+            c.id !== comment.id &&
+            c.path === comment.path &&
+            c.line === comment.line
+          );
+          for (const sibling of siblings) {
+            if (!Dismissed.isCommentDismissed(stateContext, sibling.id) && !Verification.isVerified(stateContext, sibling.id)) {
+              Dismissed.dismissIssue(
+                stateContext,
+                sibling.id,
+                `${reason} (cascaded from sibling sub-item)`,
+                solvability.dismissCategory!,
+                sibling.path,
+                sibling.line,
+                sibling.body,
+                solvability.remediationHint
+              );
+              debug('Cascaded dismissal to sibling sub-item', { parent: comment.id, sibling: sibling.id, category: solvability.dismissCategory });
+            }
+          }
+        }
+      }
+      
       if (solvability.dismissCategory === 'stale') {
         dismissedStaleFiles++;
       } else if (solvability.dismissCategory === 'chronic-failure') {

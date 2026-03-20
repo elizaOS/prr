@@ -197,9 +197,9 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     }
   }
 
-  // Verified-fixed: reply "Fixed in `abc1234`."
+  // Pill #10: Batch verified-fixed replies with concurrency limit (reduce wall-clock time)
+  const verifiedReplies: Array<{ entry: { threadId: string; databaseId: number }; body: string }> = [];
   for (const commentId of verifiedCommentIds) {
-    if (stopReplyDueTo422) break;
     const entry = getThreadEntry(commentId);
     if (!entry) continue;
     if (repliedThreadIds.has(entry.threadId)) continue;
@@ -207,31 +207,46 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       repliedThreadIds.add(entry.threadId);
       continue;
     }
-    const body = `Fixed in \`${short}\`.`;
-    attempted++;
-    const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'Addressed.');
-    if (result.ok) {
-      replied++;
-      consecutive422 = 0;
-      repliedThreadIds.add(entry.threadId);
-      threadsRepliedThisCall.push(entry.threadId);
-      debug('Posted fixed reply on thread', { threadId: entry.threadId });
-    } else {
-      if (result.is422) {
-        consecutive422++;
-        if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-          console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
-          stopReplyDueTo422 = true;
+    verifiedReplies.push({ entry, body: `Fixed in \`${short}\`.` });
+  }
+
+  // Process verified replies with concurrency limit (3 parallel)
+  const REPLY_CONCURRENCY = 3;
+  for (let i = 0; i < verifiedReplies.length && !stopReplyDueTo422; i += REPLY_CONCURRENCY) {
+    const batch = verifiedReplies.slice(i, i + REPLY_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async ({ entry, body }) => {
+        attempted++;
+        const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'Addressed.');
+        if (result.ok) {
+          replied++;
+          consecutive422 = 0;
+          repliedThreadIds.add(entry.threadId);
+          threadsRepliedThisCall.push(entry.threadId);
+          debug('Posted fixed reply on thread', { threadId: entry.threadId });
+        } else {
+          if (result.is422) {
+            consecutive422++;
+            if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
+              console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
+              stopReplyDueTo422 = true;
+            }
+          } else {
+            consecutive422 = 0;
+          }
         }
-      } else {
-        consecutive422 = 0;
-      }
+        return result;
+      })
+    );
+    // Check if any result triggered stop
+    if (results.some(r => r.is422 && consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP)) {
+      break;
     }
   }
 
-  // Dismissed: reply only for categories that get a reply
+  // Pill #10: Batch dismissed replies with concurrency limit
+  const dismissedReplies: Array<{ entry: { threadId: string; databaseId: number }; body: string }> = [];
   for (const d of dismissedIssues) {
-    if (stopReplyDueTo422) break;
     if (!DISMISSED_CATEGORIES_WITH_REPLY.has(d.category)) continue;
     const entry = getThreadEntry(d.commentId);
     if (!entry) continue;
@@ -258,24 +273,39 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     } else {
       body = `Dismissed: ${oneLine(d.reason)}`;
     }
-    attempted++;
-    const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'No change needed.');
-    if (result.ok) {
-      replied++;
-      consecutive422 = 0;
-      repliedThreadIds.add(entry.threadId);
-      threadsRepliedThisCall.push(entry.threadId);
-      debug('Posted dismissed reply on thread', { threadId: entry.threadId, category: d.category });
-    } else {
-      if (result.is422) {
-        consecutive422++;
-        if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-          console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
-          stopReplyDueTo422 = true;
+    dismissedReplies.push({ entry, body });
+  }
+
+  // Process dismissed replies with concurrency limit (3 parallel)
+  for (let i = 0; i < dismissedReplies.length && !stopReplyDueTo422; i += REPLY_CONCURRENCY) {
+    const batch = dismissedReplies.slice(i, i + REPLY_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async ({ entry, body }) => {
+        attempted++;
+        const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'No change needed.');
+        if (result.ok) {
+          replied++;
+          consecutive422 = 0;
+          repliedThreadIds.add(entry.threadId);
+          threadsRepliedThisCall.push(entry.threadId);
+          debug('Posted dismissed reply on thread', { threadId: entry.threadId });
+        } else {
+          if (result.is422) {
+            consecutive422++;
+            if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
+              console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
+              stopReplyDueTo422 = true;
+            }
+          } else {
+            consecutive422 = 0;
+          }
         }
-      } else {
-        consecutive422 = 0;
-      }
+        return result;
+      })
+    );
+    // Check if any result triggered stop
+    if (results.some(r => r.is422 && consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP)) {
+      break;
     }
   }
 

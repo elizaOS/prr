@@ -347,6 +347,20 @@ export function printFinalSummary(
     }
   }
 
+  // Pill #4: Warn about late-cycle comments (new comments added during fix cycle that weren't processed)
+  const lateCycleComments = stateContext.state?.commentStatuses
+    ? Object.values(stateContext.state.commentStatuses).filter(
+        (status) => status?.status === 'open' && status?.explanation === 'New comment added during fix cycle'
+      )
+    : [];
+  if (lateCycleComments.length > 0) {
+    console.warn(
+      chalk.yellow(
+        `\n  ⚠ ${formatNumber(lateCycleComments.length)} unprocessed late-cycle comment${lateCycleComments.length === 1 ? '' : 's'}: new comment(s) added during fix cycle were not analyzed — re-run PRR to process them`,
+      ),
+    );
+  }
+
   // Audit overrides: final audit said UNFIXED but we kept as verified (visible decisions over hidden confidence).
   const auditOverrides = stateContext.auditOverridesThisRun ?? [];
   if (auditOverrides.length > 0) {

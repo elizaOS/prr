@@ -138,10 +138,21 @@ export async function processCommentsAndPrepareFixLoop(
   // Restore catalog-correct model strings before analysis. Order matters: solvability dismisses
   // outdated advice, but the workdir may still carry a prior bad rename — heal first so snippets
   // and fileHashesKey below reflect corrected source. WHY saveState: markVerified updates verification state.
+  debug('[Auto-heal] Starting catalog model auto-heal phase', { 
+    workdir, 
+    commentCount: comments.length,
+    verifiedThisSessionSize: stateContext.verifiedThisSession?.size ?? 0,
+  });
   const catalogHealPaths = applyCatalogModelAutoHeals(workdir, comments, stateContext);
   if (catalogHealPaths.length > 0) {
-    debug('Catalog model auto-heal applied', { paths: catalogHealPaths, count: catalogHealPaths.length });
+    debug('[Auto-heal] Catalog model auto-heal applied', { 
+      paths: catalogHealPaths, 
+      count: catalogHealPaths.length,
+      verifiedThisSessionSize: stateContext.verifiedThisSession?.size ?? 0,
+    });
     await State.saveState(stateContext);
+  } else {
+    debug('[Auto-heal] No files healed (no matching comments or replacements found)');
   }
 
   if (comments.length === 0) {
@@ -281,7 +292,8 @@ export async function processCommentsAndPrepareFixLoop(
       options,
       spinner,
       getCodeSnippet,
-      getFullFile
+      getFullFile,
+      workdir // Pill cycle 2 #4: Pass workdir for Rule 6 validation
     );
     
     if (auditResult.failedAudit.length > 0) {
