@@ -510,6 +510,14 @@ export function assessSolvability(
       };
     }
     if (pathResolution.kind === 'ambiguous') {
+      // Pill #6: Log candidate paths for ambiguous basenames
+      debug('Ambiguous review path — multiple candidates', {
+        commentId: comment.id,
+        reviewPath: comment.path,
+        candidates: pathResolution.candidates,
+        candidateCount: pathResolution.candidates.length,
+        commentBodySnippet: (comment.body ?? '').substring(0, 200),
+      });
       return {
         solvable: false,
         dismissCategory: 'path-unresolved',
