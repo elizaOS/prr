@@ -45,6 +45,23 @@ describe('outdated-model-advice', () => {
     });
   });
 
+  it('parses have X instead of Y (CodeRabbit-style)', () => {
+    const body = 'Lines 31-32 still have incorrect model name "gpt-5-mini" instead of "gpt-4o-mini"';
+    expect(parseModelRenameAdvice(body)).toEqual({
+      catalogGoodId: 'gpt-5-mini',
+      wronglySuggestedId: 'gpt-4o-mini',
+    });
+    expect(commentSuggestsInvalidModelId(body)).toBe(true);
+  });
+
+  it('parses still have X instead of Y', () => {
+    const body = 'Still have `gpt-5-mini` instead of `gpt-4o-mini`';
+    expect(parseModelRenameAdvice(body)).toEqual({
+      catalogGoodId: 'gpt-5-mini',
+      wronglySuggestedId: 'gpt-4o-mini',
+    });
+  });
+
   it('returns null without rename pattern', () => {
     expect(
       parseModelRenameAdvice('We should use gpt-5-mini everywhere for cost.'),

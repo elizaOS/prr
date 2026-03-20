@@ -23,7 +23,7 @@ const ENV_DISABLE_SOLVABILITY = 'PRR_DISABLE_MODEL_CATALOG_SOLVABILITY';
  * that does not claim the current id is nonexistent.
  */
 const INVALID_FRAMING_RE =
-  /\b(model\s+name\s+typo|typo\s*[:\s].*model|invalid\s+model|not\s+a\s+valid\s+model|not\s+valid\s+model|wrong\s+model\s+name|wrong\s+model\b|does\s+not\s+exist|non-?existent\s+model|hallucinated\s+model|fix:\s*change.*model)/i;
+  /\b(model\s+name\s+typo|typo\s*[:\s].*model|invalid\s+model|incorrect\s+model\s+name|not\s+a\s+valid\s+model|not\s+valid\s+model|wrong\s+model\s+name|wrong\s+model\b|does\s+not\s+exist|non-?existent\s+model|hallucinated\s+model|fix:\s*change.*model)/i;
 
 function looksLikeModelSlug(id: string): boolean {
   const s = id.trim().toLowerCase();
@@ -62,6 +62,19 @@ export function parseModelRenameAdvice(body: string): ModelRenamePair | null {
   if (m) {
     const bad = m[1]!.toLowerCase();
     const good = m[2]!.toLowerCase();
+    if (looksLikeModelSlug(good) && looksLikeModelSlug(bad) && good !== bad) return { catalogGoodId: good, wronglySuggestedId: bad };
+  }
+  // have `A` instead of `B` or still have `A` instead of `B` → file has A (keep), bot wants B (bad)
+  m = t.match(/\b(?:still\s+)?have\s+(?:incorrect\s+model\s+name\s+)?[`"']([a-z0-9][a-z0-9.-]*)[`"']\s+instead\s+of\s+[`"']([a-z0-9][a-z0-9.-]*)[`"']/i);
+  if (m) {
+    const good = m[1]!.toLowerCase();
+    const bad = m[2]!.toLowerCase();
+    if (looksLikeModelSlug(good) && looksLikeModelSlug(bad) && good !== bad) return { catalogGoodId: good, wronglySuggestedId: bad };
+  }
+  m = t.match(/\b(?:still\s+)?have\s+(?:incorrect\s+model\s+name\s+)?([a-z0-9][a-z0-9.-]*)\s+instead\s+of\s+([a-z0-9][a-z0-9.-]*)\b/i);
+  if (m) {
+    const good = m[1]!.toLowerCase();
+    const bad = m[2]!.toLowerCase();
     if (looksLikeModelSlug(good) && looksLikeModelSlug(bad) && good !== bad) return { catalogGoodId: good, wronglySuggestedId: bad };
   }
   // change A to B → keep A, bad B
