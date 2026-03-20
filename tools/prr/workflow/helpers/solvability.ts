@@ -19,6 +19,7 @@ import { pluralize, debug } from '../../../../shared/logger.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
 import { tryResolvePathWithExtensionVariants } from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
+import { getOutdatedModelCatalogDismissal } from './outdated-model-advice.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
@@ -346,6 +347,19 @@ export function assessSolvability(
       solvable: false,
       dismissCategory: 'not-an-issue',
       reason: 'Bot progress/checklist comment — review status update, not a code issue to fix',
+    };
+  }
+
+  // Check 0a6: Outdated vendor model-ID "typo" advice (bots vs committed catalog).
+  // WHY early in solvability: Same category as 0a4/0a5 — stop non-actionable bot text before path
+  // resolution and LLM analysis. Pair must parse + both ids in generated/model-provider-catalog.json.
+  // Heal (if enabled) runs in main-loop-setup; dismissal here keeps the issue out of unresolvedIssues.
+  const catalogDismiss = getOutdatedModelCatalogDismissal(comment.body ?? '');
+  if (catalogDismiss) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: catalogDismiss.reason,
     };
   }
 

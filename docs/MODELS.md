@@ -19,6 +19,19 @@ Vendor doc pages change often; review bots may lag and suggest wrong renames (e.
 
 **Refresh:** `npm run update-model-catalog`. **Weekly:** GitHub Action `refresh-model-catalog.yml`. **Override file path:** `PRR_MODEL_CATALOG_PATH`.
 
+**PRR behavior:** Outdated bot comments that call a catalog-valid id a “typo” and suggest another id are **dismissed** (`assessSolvability`, check **0a6**) and optionally **auto-healed** in the workdir before issue analysis.
+
+| Mechanism | WHY |
+|-----------|-----|
+| **Dismiss in solvability** | Stops non-actionable “rename valid A → valid B” advice from entering the LLM analysis/fix queue. |
+| **Heal before hashes / cache** | Analysis reuse keys off file content; correcting a bad string first avoids stale “still broken” conclusions. |
+| **Quoted literals only + line window** | Replacing bare tokens file-wide could hit unrelated code or prose; quotes/backticks near the review line target typical `model: '…'` / `` `…` `` constants safely. |
+| **`markVerified` + commit when all resolved** | The normal commit gate requires verified session ids; deterministic heals must satisfy the same rule so we do not commit unrelated dirty trees. |
+
+**Environment:** `PRR_MODEL_CATALOG_PATH` (override JSON path). **Disable pieces:** `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1` (no 0a6 dismissal), `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1` (no file rewrite; dismissal still applies if solvability is on). Full narrative: `DEVELOPMENT.md` — *Commit gate and catalog model auto-heal*.
+
+**Limitations (intentional):** Detection requires **framing** (“typo”, “invalid model”, etc.) so neutral suggestions (“prefer X for cost”) are not auto-dismissed. Parsing needs a confident **pair** of ids (`change A to B`, `use B instead of A`, `replace … with …`, quoted `A → B`). Summary tables that only say “FIXED → `gpt-4o-mini`” without an explicit wrong id may **not** match — extend `parseModelRenameAdvice` if a stable real-world pattern appears.
+
 ---
 
 ## Claude (Anthropic)

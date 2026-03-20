@@ -1,13 +1,14 @@
 /**
  * Main loop setup and comment processing
- * 
+ *
  * Handles the outer push iteration loop:
  * 1. Fetch review comments
- * 2. Handle no-comments case
- * 3. Analyze unresolved issues
- * 4. Check for new comments added during cycle
- * 5. Run final audit if all resolved
- * 6. Handle dry-run mode
+ * 2. **Catalog model auto-heal** (before path hashes — see applyCatalogModelAutoHeals)
+ * 3. Handle no-comments case
+ * 4. Analyze unresolved issues
+ * 5. Check for new comments added during cycle
+ * 6. Run final audit if all resolved
+ * 7. Handle dry-run mode
  */
 
 import chalk from 'chalk';
@@ -34,18 +35,21 @@ import { computeLineMapFromDiff } from '../../../shared/git/git-diff.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import { createHash } from 'crypto';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
+import { hasChanges } from '../../../shared/git/git-clone-index.js';
+import { applyCatalogModelAutoHeals } from './catalog-model-autoheal.js';
 
 /**
  * Process comments and determine if fix loop should run
  * 
  * WORKFLOW:
  * 1. Fetch all review comments from GitHub
- * 2. If no comments, handle via workflow (merge base, exit)
- * 3. Analyze which issues are still unresolved
- * 4. If all resolved, check for new comments during cycle
- * 5. If still all resolved, run final audit
- * 6. If audit fails, re-enter fix loop with failed items
- * 7. If dry-run, just print issues and exit
+ * 2. Catalog model auto-heal (quoted literals near review lines, before analysis hashes)
+ * 3. If no comments, handle via workflow (merge base, exit)
+ * 4. Analyze which issues are still unresolved
+ * 5. If all resolved, check for new comments during cycle
+ * 6. If still all resolved, run final audit
+ * 7. If audit fails, re-enter fix loop with failed items
+ * 8. If dry-run, just print issues and exit
  * 
  * @returns Comments, unresolved issues, and control flow signals
  */
@@ -129,6 +133,15 @@ export async function processCommentsAndPrepareFixLoop(
       );
       await State.saveState(stateContext);
     }
+  }
+
+  // Restore catalog-correct model strings before analysis. Order matters: solvability dismisses
+  // outdated advice, but the workdir may still carry a prior bad rename — heal first so snippets
+  // and fileHashesKey below reflect corrected source. WHY saveState: markVerified updates verification state.
+  const catalogHealPaths = applyCatalogModelAutoHeals(workdir, comments, stateContext);
+  if (catalogHealPaths.length > 0) {
+    debug('Catalog model auto-heal applied', { paths: catalogHealPaths, count: catalogHealPaths.length });
+    await State.saveState(stateContext);
   }
 
   if (comments.length === 0) {
@@ -362,6 +375,30 @@ export async function processCommentsAndPrepareFixLoop(
   // Skip fix loop if there are no issues to fix
   if (unresolvedIssues.length === 0) {
     debug('No unresolved issues - skipping fix loop');
+    // Heal-only run: no LLM fixes, but catalog auto-heal may have written files + verifiedThisSession.
+    // WHY same entry as post-audit commit: commit gate requires verified session ids + dirty tree;
+    // without this branch, users would see a clean analysis but an uncommitted workdir.
+    const vs = stateContext.verifiedThisSession;
+    if (
+      vs &&
+      vs.size > 0 &&
+      !options.dryRun &&
+      !options.noCommit &&
+      (await hasChanges(git))
+    ) {
+      await ResolverProc.commitAndPushChanges(
+        git,
+        prInfo,
+        comments,
+        stateContext,
+        lessonsContext,
+        options,
+        config,
+        workdir,
+        spinner,
+        resolveConflictsWithLLM,
+      );
+    }
     console.log(chalk.green('\n✓ All issues resolved - nothing to fix'));
     return {
       comments,

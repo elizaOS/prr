@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (2026-03) — Programmatic provider model catalog
+
+- **`generated/model-provider-catalog.json`** — Machine-readable Anthropic + OpenAI API model IDs extracted from the official doc URLs in `docs/MODELS.md` (OpenAI uses the [all models](https://developers.openai.com/api/docs/models/all) page for complete slugs). Includes `fetchedAtIso`, `recommendedRefreshDays`, and hyphenless lookup maps (e.g. `gpt5mini` → `gpt-5-mini`) for validating spellings in automation.
+- **`npm run update-model-catalog`** — Runs `tools/model-catalog/fetch-provider-catalog.ts` (network; no provider keys).
+- **`shared/model-catalog.ts`** — Load catalog, resolve loose IDs, staleness helper; **`PRR_MODEL_CATALOG_PATH`** overrides the JSON path.
+- **`.github/workflows/refresh-model-catalog.yml`** — Weekly + manual refresh; commits updates to the JSON when the fetch changes output.
+
+### Added (2026-03) — Catalog-backed dismissal + auto-heal for bogus model-ID review advice
+
+- **Dismiss:** Comments that frame a catalog-valid id as a “typo” and suggest another id are dismissed in **`assessSolvability`** when both ids are in **`generated/model-provider-catalog.json`** (`tools/prr/workflow/helpers/outdated-model-advice.ts`). **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1`** skips.
+- **Auto-heal:** **`applyCatalogModelAutoHeals`** restores the catalog id in quoted literals near the review line (`tools/prr/workflow/catalog-model-autoheal.ts`), **`markVerified`** + **`verifiedThisSession`**. **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1`** skips.
+- **Commit:** When analysis yields no unresolved issues but auto-heal dirtied the tree, **`processCommentsAndPrepareFixLoop`** calls **`commitAndPushChanges`** if **`verifiedThisSession`** is non-empty (see **`DEVELOPMENT.md`** — Commit gate and catalog model auto-heal).
+
+### Documentation (2026-03) — Catalog model advice
+
+- **DEVELOPMENT.md:** Expanded “Commit gate and catalog model auto-heal” with WHYs (dismiss vs heal, quoted-only + window, ordering before analysis cache, verified session gate, limitations); added Key Files table for catalog modules.
+- **README.md:** Core feature bullet + Configuration entries for **`PRR_MODEL_CATALOG_PATH`**, **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY`**, **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL`**.
+- **docs/MODELS.md:** Deeper PRR behavior, env vars, and explicit limitation note (comment shapes that do not parse as a rename pair).
+- **AGENTS.md:** WHY summary for dismiss / auto-heal / commit interaction.
+- **Code:** File- and block-level comments in **`outdated-model-advice.ts`**, **`catalog-model-autoheal.ts`**, **`solvability.ts`** (0a6), **`main-loop-setup.ts`** (heal + heal-only commit).
+
 ### Fixed (2026-03) — `--reply-to-threads` skipped replies when ids differed in case or when push phase did not run
 
 - **Thread replies:** Match review comment ids **case-insensitively** when resolving threads (`prr-fix:` markers store lowercase; GraphQL returns mixed-case node ids).

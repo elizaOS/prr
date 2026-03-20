@@ -60,6 +60,28 @@ This contrasts with fully autonomous agents that create PRs without human involv
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Commit gate and catalog model auto-heal
+
+Review bots sometimes claim a **valid** vendor model id is a “typo” and tell authors to switch to another valid id (e.g. “change `gpt-5-mini` to `gpt-4o-mini`”). That is not actionable PRR work when **both** spellings appear in the committed **`generated/model-provider-catalog.json`**: the PR is already aligned with public API ids.
+
+**WHY dismiss in solvability (0a6):** Those comments would otherwise enter analysis and the fix loop, wasting iterations and risking the fixer “helpfully” applying the bot’s bad rename.
+
+**WHY auto-heal (optional, default on):** If a prior edit already replaced the good id with the bot’s suggestion, we restore the **catalog-correct** string in the workdir **deterministically** (no LLM) so the branch matches vendor reality before analysis.
+
+**WHY quoted literals only + line window:** Replacing bare substrings across a whole file could hit unrelated identifiers or prose. Restricting to `"…"`, `'…'`, and `` `…` `` near the review line bounds blast radius while still fixing typical `model: 'gpt-4o-mini'` style constants.
+
+**WHY heal runs before file hashes / analysis cache:** Cached “unresolved” results key off path content; healing after a bad bot rename must happen **before** hashing so the LLM sees corrected code and we do not reuse a stale “still wrong” analysis.
+
+**WHY `markVerified` + `verifiedThisSession`:** The normal commit path requires verified session ids so we do not commit unrelated dirty trees (*Skipping commit: no newly verified fixes*). Catalog heal is a verified, deterministic fix for that comment, so it participates in the same gate.
+
+**Push-iteration commit** ([`tools/prr/workflow/commit-and-push-loop.ts`](tools/prr/workflow/commit-and-push-loop.ts) `handleCommitAndPush`, and [`tools/prr/workflow/push-iteration-loop.ts`](tools/prr/workflow/push-iteration-loop.ts) before it): a commit runs only when `stateContext.verifiedThisSession` is **non-empty** and (in the push loop) the ids are not yet in `alreadyCommitted`. If the worktree is dirty but **no** comment id was added to `verifiedThisSession` this iteration, PRR logs *Skipping commit: no newly verified fixes* and leaves changes uncommitted.
+
+**Heal-only / all-dismissed path** ([`tools/prr/workflow/main-loop-setup.ts`](tools/prr/workflow/main-loop-setup.ts)): when **catalog model auto-heal** ([`tools/prr/workflow/catalog-model-autoheal.ts`](tools/prr/workflow/catalog-model-autoheal.ts)) rewrites files, it **`markVerified`** each affected review comment and adds its id to **`verifiedThisSession`**. If analysis then finds **no unresolved issues** (`unresolvedIssues.length === 0`), the setup path calls **`commitAndPushChanges`** when `verifiedThisSession` is non-empty, `hasChanges(git)`, not `--dry-run`, and not `--no-commit` — so deterministic heals still land without a fixer verification round (same idea as the post–final-audit commit path).
+
+**Dismissal** for outdated bot model “typos” is **`assessSolvability`** check 0a6 via [`tools/prr/workflow/helpers/outdated-model-advice.ts`](tools/prr/workflow/helpers/outdated-model-advice.ts). **Disable:** `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1`, `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1`.
+
+**Limitations (by design):** Parsing needs an explicit **pair** (e.g. `change A to B`, `use B instead of A`, quoted arrow). Table-only lines like “FIXED → `gpt-4o-mini`” without a parseable wrong→suggested pair may not dismiss or heal. Framing regex requires “invalid / typo / wrong model” style language — neutral cost/perf suggestions are intentionally not touched.
+
 ## Key Files
 
 Paths below are relative to the repo root. PRR-specific code lives under `tools/prr/`; shared modules (logger, git) under `shared/` (pill-output.md #8).
@@ -133,6 +155,17 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 ### Split tools (split-plan, split-rewrite-plan, split-exec)
 
 Three-phase pipeline: **split-plan** produces `.split-plan.md` (group plan); **split-rewrite-plan** clones repo and produces `.split-rewrite-plan.yaml` (ordered ops per split); **split-exec** runs the rewrite plan when present (rebuild branches, then optional `--promote`) or falls back to one commit per split from **Files:**. Implementation audited 2025-03-18 against `.cursor/plans/split_rewrite_plan_phased_15c5c9ae.plan.md`: correct; one edge case fixed — when a rewrite plan is loaded but a group-plan split has no matching rewrite entry (e.g. typo in branchName), split-exec now skips that split with a warning instead of falling back to file-based and pushing to the original branch name.
+
+
+### Catalog model advice (vendor API ids)
+
+
+| File | Purpose |
+|------|---------|
+| `tools/prr/workflow/helpers/outdated-model-advice.ts` | Framing + parse rename pair + catalog check; pure logic (no I/O except catalog load in dismissal helper) |
+| `tools/prr/workflow/catalog-model-autoheal.ts` | Windowed quoted literal restore; `markVerified` + `verifiedThisSession` |
+| `shared/model-catalog.ts` | Load JSON, `resolveCatalogModelId`, staleness |
+| `generated/model-provider-catalog.json` | Scraped Anthropic + OpenAI API ids (refresh: `npm run update-model-catalog`) |
 
 
 ### Prompt Building

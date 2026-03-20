@@ -47,6 +47,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - Uses LLM to detect which issues still exist in the code
 - **Conservative issue detection for distributed bugs**: Lifecycle/cache/leak comments and ordering/history comments now get broader analysis context before PRR decides they are already fixed. *Why*: Some bugs live across declaration, usage, cleanup, and trimming sites; a narrow anchor snippet can make a real issue look resolved.
 - **Path-resolution categories instead of blanket stale dismissals**: PRR now distinguishes `missing-file` from `path-unresolved`, and carries canonical resolved paths forward when a review cites a basename or truncated path. *Why*: "File no longer exists" was previously hiding very different root causes such as ambiguous basenames, summary-table leakage, and path fragments that only needed repo-path expansion.
+- **Catalog-backed dismissal + auto-heal for bogus model-id advice**: Bots with stale training sometimes flag a **valid** OpenAI/Anthropic API id as a “typo” and suggest another valid id. When **both** ids appear in the committed **`generated/model-provider-catalog.json`**, PRR dismisses the comment in solvability and (by default) restores the catalog id inside quoted literals near the review line, then can commit when the run would otherwise skip the fix loop. *Why*: Avoids burning the fixer on bad vendor advice and prevents silent adoption of the wrong model string in code. See [DEVELOPMENT.md](DEVELOPMENT.md) (“Commit gate and catalog model auto-heal”) and [docs/MODELS.md](docs/MODELS.md).
 - **Shared test-path inference**: Prompt building, create-file solvability, and retries now reuse the same test-target inference helper instead of maintaining slightly different regex copies. *Why*: When those phases drift, PRR can decide one test file should be created while another phase allows or explains a different one.
 - Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
 - **Config-driven concurrency**: Optional `PRR_MAX_CONCURRENT_LLM` (default 1) caps in-flight LLM requests; analysis batches, verification, and (with llm-api) parallel fix groups share this cap. On 429, concurrency is halved for 60s. *Why*: Default keeps behavior unchanged; raising (e.g. to 3) can cut wall-clock when the backend supports it. See Configuration.
@@ -221,6 +222,11 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 - **`PRR_CLONE_TIMEOUT_MS`** (default 900000): Max ms for the initial clone. Large repos or slow connections may need more (e.g. 600000 for 10 min). Progress is logged every 30s.
 - **`PRR_CLONE_DEPTH`** (optional): If set to a positive integer (e.g. `1`), clone uses **`git clone --depth`** (shallow clone). Faster on huge repos; trade-off: incomplete history.
 - **`PRR_FETCH_TIMEOUT_MS`** (default 60000): Max ms for fetch during update/merge. Increase for slow networks.
+
+**Provider model catalog (optional)**  
+- **`PRR_MODEL_CATALOG_PATH`**: Absolute or relative path to a `model-provider-catalog.json` override. **WHY:** Forks or air-gapped runs can point at a custom snapshot; default is the repo’s `generated/model-provider-catalog.json`.
+- **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1`**: Skips solvability check **0a6** (no dismissal of “both ids in catalog” model-typo advice). **WHY:** Escape hatch if framing regex misfires or you want every comment analyzed by the LLM regardless.
+- **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1`**: Skips deterministic file rewrite for those comments (dismissal still applies when solvability is enabled). **WHY:** Inspect or fix strings manually without PRR touching the workdir.
 
 **Audit / exit (optional)**  
 - **`PRR_STRICT_FINAL_AUDIT`**: Set to `true` or `1` to exit with code **2** when the run succeeds but **audit overrides** exist (issues kept verified despite final audit UNFIXED). Default exit remains **0** in that case.
