@@ -519,6 +519,7 @@ Working directory: ${workdir}`;
         placeholderTestContent: placeholderTestContent || undefined,
         skippedDisallowedFiles,
         skippedNewfilePathExists: skippedNewfilePathExists?.length ? skippedNewfilePathExists : undefined,
+        pathsWrittenByRunner: filesWritten,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

@@ -30,7 +30,7 @@ Vendor doc pages change often; review bots may lag and suggest wrong renames (e.
 
 **Environment:** `PRR_MODEL_CATALOG_PATH` (override JSON path). **Disable pieces:** `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1` (no 0a6 dismissal), `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1` (no file rewrite; dismissal still applies if solvability is on). Full narrative: `DEVELOPMENT.md` — *Commit gate and catalog model auto-heal*.
 
-**Limitations (intentional):** Detection requires **framing** (“typo”, “invalid model”, etc.) so neutral suggestions (“prefer X for cost”) are not auto-dismissed. Parsing needs a confident **pair** of ids (`change A to B`, `use B instead of A`, `replace … with …`, quoted `A → B`). Summary tables that only say “FIXED → `gpt-4o-mini`” without an explicit wrong id may **not** match — extend `parseModelRenameAdvice` if a stable real-world pattern appears.
+**Limitations (intentional):** Detection requires **framing** (“typo”, “invalid model”, etc.) so neutral suggestions (“prefer X for cost”) are not auto-dismissed. Parsing needs a confident **pair** of ids (`change A to B`, `use B instead of A`, `replace … with …`, quoted `A → B`, or a **heading** like `### Model name typo \`gpt-5-mini\`` with a later `use \`gpt-4o-mini\`` / `recommended \`…\`` in the same body). Summary tables that only say “FIXED → `gpt-4o-mini`” without an explicit wrong id may **not** match — extend `parseModelRenameAdvice` if another stable pattern appears.
 
 ---
 

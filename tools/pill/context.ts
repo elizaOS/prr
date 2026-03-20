@@ -31,8 +31,10 @@ const OUTPUT_LOG_HEAD_TAIL_LINES = 400;
 
 /** When trimming, per-section caps are scaled from defaults by (budget / DEFAULT_PILL_CONTEXT_BUDGET_TOKENS). Order: outputLog, promptsDigest, sourceFiles, docs, tree. */
 const OUTPUT_LOG_MAX_TOKENS_DEFAULT = 14_000;
-/** Hard cap on output log chars sent to audit (504 avoidance). Overridable via PILL_OUTPUT_LOG_MAX_CHARS. */
-const DEFAULT_OUTPUT_LOG_MAX_CHARS = 50_000;
+/** Hard cap on output log chars sent to audit (504 avoidance). Overridable via PILL_OUTPUT_LOG_MAX_CHARS.
+ * WHY 40k not 50k: System prompt + JSON overhead + user message structure can add 8-10k chars; 50k log + overhead → 504.
+ * Lower cap leaves room for system prompt and JSON structure. */
+const DEFAULT_OUTPUT_LOG_MAX_CHARS = 40_000;
 const PROMPTS_DIGEST_MAX_TOKENS_DEFAULT = 8_000;
 const SOURCE_MAX_TOKENS_WHEN_TRIMMED_DEFAULT = 10_000;
 const DOCS_MAX_TOKENS_WHEN_TRIMMED_DEFAULT = 2_000;

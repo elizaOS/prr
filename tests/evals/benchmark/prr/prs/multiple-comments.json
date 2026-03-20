@@ -1,0 +1,44 @@
+{
+  "name": "multiple-comments",
+  "description": "Multiple comments across multiple files",
+  "owner": "test-org",
+  "repo": "test-repo",
+  "number": 2,
+  "title": "Multiple fixes needed",
+  "body": "Various code quality improvements",
+  "branch": "feature/multiple-fixes",
+  "baseBranch": "main",
+  "headSha": "def456ghi789",
+  "files": [
+    {
+      "path": "src/foo.ts",
+      "content": "export function bar() {\n  const x = someValue || 'default';\n  return x;\n}\n",
+      "status": "modified"
+    },
+    {
+      "path": "src/baz.ts",
+      "content": "export function qux() {\n  if (condition) {\n    return value;\n  }\n}\n",
+      "status": "modified"
+    }
+  ],
+  "comments": [
+    {
+      "id": "c1",
+      "threadId": "thread-1",
+      "author": "reviewer",
+      "path": "src/foo.ts",
+      "line": 2,
+      "body": "Use nullish coalescing (??) instead of logical OR (||)",
+      "createdAt": "2025-01-01T00:00:00Z"
+    },
+    {
+      "id": "c2",
+      "threadId": "thread-2",
+      "author": "reviewer",
+      "path": "src/baz.ts",
+      "line": 4,
+      "body": "Missing return statement for else case",
+      "createdAt": "2025-01-01T00:01:00Z"
+    }
+  ]
+}

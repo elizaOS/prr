@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-20 · **Recorded cycles:** 57 · **Historical (legacy):** 4
+**Last updated:** 2026-03-20 · **Recorded cycles:** 63 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -161,6 +161,125 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 62 — 2026-03-20 (output.log: eliza#6575 — auto-heal corrects telegram models, fix queue undoes it)
+
+**Artifacts audited:** output.log elizaOS/eliza#6575 (~07:24–07:25Z). Workdir `/root/.prr/work/5102b5012b5d2a72`, head `e11d00ebf5…` (after prior `94dd9af → e11d00e` head change + verified clear).
+
+**Findings:**
+- **High (H1):** **Catalog auto-heal** correctly applied **`gpt-4o-mini` → `gpt-5-mini`** (2 literals) on `examples/telegram/typescript/telegram-agent.ts` for **`ic-4050517082-0`**, then the **fix loop** ran on **CodeRabbit** thread **`PRRC_kw…`** (“Model name typo `gpt-5-mini`”) and the fixer **claimed** it changed **`gpt-5-mini` → `gpt-4o-mini`** (catalog-wrong). **Spot-check workdir** `telegram-agent.ts` lines 31–32: **`gpt-4o-mini` present** — net state matches **wrong** review, not catalog. **Improvement:** After catalog heal/dismiss on a path, **suppress or merge** contradictory threads on the **same file** (or block S/R that flips to `wronglySuggestedId` from catalog dismissal); tie fix queue to **0a6** outcome.
+- **Medium (M1):** **Contradictory runner UX:** log shows **`Applied search/replace`**, **`Modified 1 file`**, then **`No changes made by llm-api`** while **`Result: FIXED`** — operators cannot tell success vs no-op. Reconcile post-apply diff vs narrative.
+- **Medium (M2):** **`ic-4079055770-0`** (“Closing — branch merged…”) still **verified** in final table (git recovery) while **open** PRRC telegram thread remains — meta vs code thread confusion persists (see Cycle 61 M1).
+- **Low (L1):** **`PRRC_kw…`** telegram thread: auto-heal **Could not parse model rename advice** (same duplicate-framing gap as Cycle 61 L1).
+- **Low (L2):** State churn: **133** fixes recovered from git, then **130** verification IDs **pruned** (not in current 52-comment set) — noisy; optional summary line “recovered N, pruned M, retained K”.
+- **Info:** **Pill** after run: **504 FUNCTION_INVOCATION_TIMEOUT** with request body **~44,176 chars** (smaller than pre-chunk-fix 76k) — suggests **wall-clock / model** timeout as well as size; lighter **`PILL_AUDIT_MODEL`** or env caps still relevant.
+
+**Improvements implemented:**
+- **H1 (partial):** Extended **`parseModelRenameAdvice`** for CodeRabbit **typo heading + later `use`/`recommended`** so **0a6** + auto-heal apply to **`PRRC_kw…`** threads (stops contradictory queue item when body matches).
+- **M2:** **`isMergeClosingMetaComment`** in **`assessSolvability` (0a3b)** dismisses **Closing / branch merged** meta text.
+- **M1:** **`pathsWrittenByRunner`** + **execute-fix-iteration** note when git clean after reported writes.
+- **L2:** Prune log **recovered-this-run** hint via **`gitRecoveredVerificationCount`**.
+- **Noise:** Removed auto-heal **target comment** debug branches.
+
+**Flip-flop check:** N — Dismissals and logging only; parse extension is fail-closed via catalog pair validation.
+
+**Notes:** Spot-check: `examples/telegram/typescript/telegram-agent.ts:31-32` — **`gpt-4o-mini`** (catalog prefers **`gpt-5-mini`** after heal narrative); confirms fix queue fought auto-heal. Overlaps Cycle 61 H1 with evidence auto-heal ran before fix iteration in this run.
+
+---
+
+### Cycle 63 — 2026-03-20 (prompts.log: eliza#6575 — verifier/fixer prompts lack catalog context)
+
+**Artifacts audited:** prompts.log elizaOS/eliza#6575 (~07:24–07:25Z). Same run as Cycle 62.
+
+**Findings:**
+- **High (H1):** **Verifier prompt (#0001)** and **fixer prompt (#0002)** both include the review comment text ("`gpt-5-mini` is not a valid OpenAI model name… it likely needs to be `gpt-4o-mini`") **without catalog context**. The verifier says **YES** (issue still exists) because code has `gpt-5-mini` instead of `gpt-4o-mini`; the fixer then changes `gpt-5-mini` → `gpt-4o-mini` (wrong direction per catalog). **Root cause:** Prompts parrot the review's claim; when `getOutdatedModelCatalogDismissal` matches but parsing fails (or comment reaches queue despite 0a6), verifier/fixer have no catalog knowledge. **Improvement:** Inject catalog context warning into verifier/fixer prompts when comment matches outdated model advice pattern (even if not dismissed) — warn that both IDs are valid and PR should keep catalog-correct ID.
+
+**Improvements implemented:**
+- **H1:** **`buildFixPrompt`** (prompt-builder.ts), **`buildSingleIssuePrompt`** (workflow/utils.ts), and **`batchCheckIssuesExist`** (llm/client.ts) now check **`getOutdatedModelCatalogDismissal`** and inject a **catalog context warning** when the comment matches outdated model advice. Warning states both IDs are valid per catalog and PR should keep the catalog-correct ID; fixer should respond ALREADY_FIXED if code already has it.
+
+**Flip-flop check:** N — Additive prompt context only; no behavior change when catalog pattern doesn't match.
+
+**Notes:** Follow-up to Cycle 62 H1. Even with improved parsing (Cycle 62), comments that slip through or have edge-case phrasing still reach verifier/fixer without catalog context. This ensures verifier/fixer see catalog truth even when 0a6 doesn't dismiss.
+
+---
+
+### Cycle 61 — 2026-03-20 (output.log: eliza#6575 short session — fixer flipped catalog model, meta comment stalemate)
+
+**Artifacts audited:** output.log elizaOS/eliza#6575 (~1m 40s session, 51 comments in RESULTS). Workdir `/root/.prr/work/5102b5012b5d2a72`, head `94dd9af`.
+
+**Findings:**
+- **High (H1):** Fixer **applied** a search/replace on `examples/telegram/typescript/telegram-agent.ts` claiming FIXED by changing **`gpt-5-mini` → `gpt-4o-mini`** — the **opposite** of catalog-correct behavior for outdated model-id advice (both ids valid; PR should **keep** `gpt-5-mini`). Risk: PRR reinforces the bot’s wrong suggestion. Guard: block or warn when the proposed change matches `wronglySuggestedId` from `getOutdatedModelCatalogDismissal` for the same file/thread family, or inject an explicit “do not change model string to gpt-4o-mini” lesson when 0a6 would dismiss a related comment on that file.
+- **Medium (M1):** **`ic-4079055770-0`** body is human **meta** (“Closing — the `odi-want` branch was already merged into develop…”) but is anchored on **`telegram-agent.ts`** and was treated as a **code fix** task → bail-out stalemate (`--max-stale-cycles`), wasted fix iteration. **Improvement:** Solvability (or early filter): treat “closing / merged / no further action” PR conversation comments as **`not-an-issue`** or **`not-solvable`** when they don’t cite a concrete code defect, even if GitHub attaches them to a file line.
+- **Medium (M2):** **Auto-heal** in this log still shows **window-only** skip (`no replacements found in window` for `ic-4050…`). **Cycle 60** already added full-file fallback + noop verify — **re-run with current `main`** should heal or noop without burning the fixer. This log predates or was captured before that build.
+- **Low (L1):** **Duplicate framing** on telegram model: **`PRRC_kw…`** thread body (“Model name typo `gpt-5-mini`…”) hit **Could not parse model rename advice**; **`ic-4050517082-0`** parsed the pair. Consider extending **`parseModelRenameAdvice`** for short “typo \`X\` … use \`Y\`” shapes so auto-heal + 0a6 apply consistently across thread variants.
+- **Low (L2):** UX: log shows **“✓ Modified 1 file”** then **“No changes made”** / confusing no-change path — tighten messaging when apply runs but verification or no-change detection disagrees.
+- **Info:** **Pruned 129** stale verified IDs (not in current 50-comment fetch) — expected after head/comment churn. **132** recovered-from-git verifications then heavy prune — OK. **4** final-audit re-queues (**UNFIXED** vs prior verify) — intentional safe-over-sorry. **3** `unseen` rows in debug table — note for thread/sync. Pill line present; outcome not shown in captured log tail.
+
+**Improvements implemented:**
+- **None in this cycle** — findings recorded for follow-up (H1/M1 highest leverage).
+
+**Flip-flop check:** N — Audit-only.
+
+**Notes:** Spot-check optional: workdir `telegram-agent.ts` after run to see whether `gpt-5-mini` or `gpt-4o-mini` is present (log suggests fixer attempted wrong swap). Cycle 60 addresses auto-heal gap; Cycle 61 adds fixer-vs-catalog and meta-comment queue issues.
+
+---
+
+### Cycle 60 — 2026-03-20 (output.log: eliza#6575 — catalog auto-heal matched but healed 0 files)
+
+**Artifacts audited:** output.log from elizaOS/eliza#6575 run (workdir `/root/.prr/work/5102b5012b5d2a72`). Auto-heal summary: `matchedPattern: 1`, `skippedNoReplacements: 1`, `healed: 0`.
+
+**Findings:**
+- **Root cause:** Catalog auto-heal correctly matched outdated model-id advice on `examples/telegram/typescript/telegram-agent.ts` (`ic-4050…`, parsed pair `gpt-5-mini` / `gpt-4o-mini`). It only replaces **quoted** `gpt-4o-mini` within **±20 lines** of GitHub anchor line 35. The workdir file had **no** quoted `gpt-4o-mini` in that window (PR never applied the bad suggestion, or the literal lives outside the window) → `Skipping: no replacements found in window`.
+- **Secondary gap:** No-op case did not **`markVerified`**, so the comment could still flow into analysis/fix loop unless solvability dismissed it; **`saveState`** only ran when disk paths were modified.
+
+**Improvements implemented:**
+- `catalog-model-autoheal.ts`: Full-file quoted-literal fallback when the anchor window finds no match; **noop verify** when the file has quoted catalog-good id and zero quoted wrong id (`catalog-autoheal-noop`). Return **`CatalogModelAutoHealOutcome`** `{ modifiedPaths, verificationTouched }`.
+- `main-loop-setup.ts`: **`saveState`** when **`verificationTouched`** (including noop), not only when files are modified.
+- Tests: noop + full-file fallback in `tests/outdated-model-advice.test.ts`. **CHANGELOG.md**, **AGENTS.md** updated.
+
+**Flip-flop check:** N — Additive healing/verify paths; quoted-only safety preserved.
+
+**Notes:** Spot-check not required for “heal failed” — log explains empty window; improvement addresses anchor drift and already-correct branches.
+
+---
+
+### Cycle 59 — 2026-03-20 (prompts.log: babylon#1293 — empty target file paths, large prompts, content generation failures)
+
+**Artifacts audited:** prompts.log from BabylonSocial/babylon#1293 run (93,810 lines, 96 prompts). Workdir `/root/.prr/work/03a784a488499b4d`.
+
+**Findings:**
+- **High (H1):** Multiple prompts have target files listed as empty string `""` (e.g., issues 3-7 in prompt #0017), causing LLM to respond with CANNOT_FIX because file content wasn't provided. This is directly related to the path resolution issue in Cycle 58 — basenames like `db.ts`, `pnl-history/route.ts` aren't resolved to full paths, so the prompt builder can't find file content to include. Wastes LLM credits on issues that can't be fixed.
+- **Medium (M1):** 10 instances of "Content generation ran but no content was created" — LLM calls that returned empty responses. This suggests silent failures or API issues that aren't being handled gracefully.
+- **Medium (M2):** Several very large prompts (100k-169k chars, e.g., #0002: 164k, #0008: 144k, #0043: 169k). While within token limits, these large prompts may cause slower processing, higher costs, and potential quality degradation as the model's attention window is spread thin.
+- **Low (L1):** Some prompts include issues where the target file path exists but file content is missing from the "Current Code:" section — this should be caught earlier in the pipeline (solvability or issue analysis phase).
+
+**Improvements implemented:**
+- `tools/prr/analyzer/prompt-builder.ts`: Skip issues with empty or invalid target file paths before building prompts. When `primaryPath` is empty, `(PR comment)`, or doesn't exist after resolution attempts (extension variants and common prefixes), the issue is skipped rather than included with an empty target file path. This prevents wasted LLM calls that would result in CANNOT_FIX responses. If all issues are skipped, return early with an informative message. Also skip issues where `allowedPaths` is empty after filtering (safety check).
+
+**Flip-flop check:** N — Additive improvement; skips invalid issues rather than including them, preventing wasted LLM calls.
+
+**Notes:** The empty target file path issue is the most critical — when `primaryPath` is empty or doesn't exist after resolution attempts, the prompt builder should either skip that issue entirely or dismiss it earlier (in solvability/issue-analysis phase) rather than including it with an empty target file path. The "Content generation ran but no content was created" errors suggest API-level issues that may need retry logic or better error handling. Large prompts are acceptable but could benefit from better batching or issue prioritization to keep prompts focused.
+
+---
+
+### Cycle 58 — 2026-03-20 (output.log: babylon#1293 — basename path resolution, BUG DETECTED mismatch)
+
+**Artifacts audited:** output.log from BabylonSocial/babylon#1293 run (workdir `/root/.prr/work/03a784a488499b4d`). Exit `no_changes` after 5 push iterations; 9 fixed, 57 dismissed, 12 remaining; Pill failed 504.
+
+**Findings:**
+- **Medium (M1):** Many "Warning: primary path does not exist in workdir" for basenames like `db.ts`, `game-tick.ts`, `PerpMarketService.ts` and partial paths like `pnl-history/route.ts`, `notifications-digest/route.ts`. These paths should be resolved to full paths (e.g. `packages/db/src/db.ts`) before being used in prompts, but `resolvedPath` may not be set or resolution fails. This wastes LLM credits on phantom files.
+- **Medium (M2):** BUG DETECTED mismatch occurred twice: "unresolvedIssues is empty but 1 comments are neither verified nor dismissed" (line 509) and "8 comments are neither verified nor dismissed" (line 5495). The checkEmptyIssues function correctly re-populates the queue, but the root cause (why comments are unaccounted) should be investigated — likely timing issue where comments are added during the run but not properly tracked in state.
+- **Low (L1):** Many issues dismissed as "file-unchanged" (13 total) — files were not modified by the fixer tool. This could indicate path resolution issues or the fixer not targeting the right file.
+- **Low (L2):** Several issues dismissed as "remaining" after "Repeated failed fix attempts (output did not match file)" — these are complex issues requiring manual review, which is expected behavior.
+
+**Improvements implemented:**
+- `tools/prr/analyzer/prompt-builder.ts`: Enhanced path resolution when `pathExists` returns false — tries extension variants (e.g. `.js` → `.json`, `.ts` → `.tsx`) and common prefixes (`apps/`, `packages/`, etc.) for basenames before logging warning. This helps resolve basenames like `db.ts` to `packages/db/src/db.ts` when the path doesn't exist.
+
+**Flip-flop check:** N — Additive improvement; tries to resolve paths before warning, but doesn't change core behavior if resolution fails.
+
+**Notes:** Workdir `/root/.prr/work/03a784a488499b4d`. BUG DETECTED mismatch suggests a state tracking issue where comments added during the run aren't properly marked as verified or dismissed. The checkEmptyIssues function handles this gracefully by re-populating the queue, but the root cause should be investigated in future cycles. Path resolution improvement helps with basenames but doesn't fully solve partial paths like `pnl-history/route.ts` without workdir context — those still rely on solvability.ts setting `resolvedPath` correctly.
+
+---
 
 ### Cycle 57 — 2026-03-20 (prompts.log: eliza#6575 — conflict resolution retry prompts lack error context)
 

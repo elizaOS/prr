@@ -62,6 +62,19 @@ describe('outdated-model-advice', () => {
     });
   });
 
+  it('parses CodeRabbit-style heading plus recommended id later in body', () => {
+    const body = `### Model name typo \`gpt-5-mini\` in telegram example
+
+Lines 31-32 still set models. Please use \`gpt-4o-mini\` for compatibility.`;
+    expect(parseModelRenameAdvice(body)).toEqual({
+      catalogGoodId: 'gpt-5-mini',
+      wronglySuggestedId: 'gpt-4o-mini',
+    });
+    const d = getOutdatedModelCatalogDismissal(body);
+    expect(d).not.toBeNull();
+    expect(d!.pair.catalogGoodId).toBe('gpt-5-mini');
+  });
+
   it('returns null without rename pattern', () => {
     expect(
       parseModelRenameAdvice('We should use gpt-5-mini everywhere for cost.'),
@@ -139,6 +152,25 @@ describe('assessSolvability catalog dismissal', () => {
     expect(r.dismissCategory).toBe('not-an-issue');
     expect(r.reason).toContain('catalog');
   });
+
+  it('dismisses merge/closing meta comment anchored on a file', () => {
+    const body =
+      'Closing — the `odi-want` branch was already merged directly into develop. No further action needed on this PR.';
+    const comment: ReviewComment = {
+      id: 'ic_merge_meta',
+      threadId: 't1',
+      author: 'human',
+      body,
+      path: 'examples/foo.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+    };
+    const ctx = minimalState();
+    const r = assessSolvability(join(tmpdir(), 'no-such-prr-workdir'), comment, ctx);
+    expect(r.solvable).toBe(false);
+    expect(r.dismissCategory).toBe('not-an-issue');
+    expect(r.reason).toMatch(/merge|closing/i);
+  });
 });
 
 describe('applyCatalogModelAutoHeals', () => {
@@ -186,8 +218,9 @@ describe('applyCatalogModelAutoHeals', () => {
         } as ResolverState,
         currentPhase: 'test',
       };
-      const modified = applyCatalogModelAutoHeals(dir, [comment], ctx);
-      expect(modified).toEqual([rel]);
+      const outcome = applyCatalogModelAutoHeals(dir, [comment], ctx);
+      expect(outcome.modifiedPaths).toEqual([rel]);
+      expect(outcome.verificationTouched).toBe(true);
       const text = readFileSync(join(dir, rel), 'utf8');
       expect(text).toContain('"gpt-5-mini"');
       expect(text).not.toMatch(/OPENAI_SMALL_MODEL = "gpt-4o-mini"/);
@@ -195,6 +228,100 @@ describe('applyCatalogModelAutoHeals', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
       delete process.env.PRR_DISABLE_MODEL_CATALOG_AUTOHEAL;
+    }
+  });
+
+  it('marks verified noop when file already has catalog id and wrong id never appears quoted', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-heal-noop-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir, env: gitEnv });
+      const rel = 'examples/telegram-agent.ts';
+      mkdirSync(join(dir, 'examples'), { recursive: true });
+      const lines: string[] = [];
+      for (let i = 0; i < 70; i++) {
+        if (i === 5) lines.push('export const OPENAI_SMALL_MODEL = "gpt-5-mini";');
+        else lines.push(`// line ${i}`);
+      }
+      writeFileSync(join(dir, rel), lines.join('\n') + '\n');
+      execFileSync('git', ['add', '.'], { cwd: dir, env: gitEnv });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, env: gitEnv });
+
+      const body =
+        '❌ CRITICAL: Model name typo in example\nChange gpt-5-mini to gpt-4o-mini';
+      const comment: ReviewComment = {
+        id: 'ic_heal_noop',
+        threadId: 't2',
+        author: 'claude',
+        body,
+        path: rel,
+        line: 50,
+        createdAt: new Date().toISOString(),
+      };
+      const ctx: StateContext = {
+        statePath: join(dir, '.pr-resolver-state.json'),
+        state: {
+          iterations: [],
+          verifiedFixed: [],
+          verifiedComments: [],
+          dismissedIssues: [],
+        } as ResolverState,
+        currentPhase: 'test',
+      };
+      const outcome = applyCatalogModelAutoHeals(dir, [comment], ctx);
+      expect(outcome.modifiedPaths).toEqual([]);
+      expect(outcome.verificationTouched).toBe(true);
+      expect(ctx.verifiedThisSession?.has('ic_heal_noop')).toBe(true);
+      const text = readFileSync(join(dir, rel), 'utf8');
+      expect(text).toContain('"gpt-5-mini"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('heals quoted wrong id outside ±20 line window via full-file fallback', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-heal-full-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir, env: gitEnv });
+      const rel = 'examples/telegram-agent.ts';
+      mkdirSync(join(dir, 'examples'), { recursive: true });
+      const lines: string[] = [];
+      for (let i = 0; i < 80; i++) {
+        if (i === 3) lines.push('export const OPENAI_SMALL_MODEL = "gpt-4o-mini";');
+        else lines.push(`// line ${i}`);
+      }
+      writeFileSync(join(dir, rel), lines.join('\n') + '\n');
+      execFileSync('git', ['add', '.'], { cwd: dir, env: gitEnv });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, env: gitEnv });
+
+      const body =
+        '❌ CRITICAL: Model name typo in example\nChange gpt-5-mini to gpt-4o-mini';
+      const comment: ReviewComment = {
+        id: 'ic_heal_full',
+        threadId: 't3',
+        author: 'claude',
+        body,
+        path: rel,
+        line: 55,
+        createdAt: new Date().toISOString(),
+      };
+      const ctx: StateContext = {
+        statePath: join(dir, '.pr-resolver-state.json'),
+        state: {
+          iterations: [],
+          verifiedFixed: [],
+          verifiedComments: [],
+          dismissedIssues: [],
+        } as ResolverState,
+        currentPhase: 'test',
+      };
+      const outcome = applyCatalogModelAutoHeals(dir, [comment], ctx);
+      expect(outcome.modifiedPaths).toEqual([rel]);
+      expect(outcome.verificationTouched).toBe(true);
+      const text = readFileSync(join(dir, rel), 'utf8');
+      expect(text).toContain('"gpt-5-mini"');
+      expect(text).not.toMatch(/OPENAI_SMALL_MODEL = "gpt-4o-mini"/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

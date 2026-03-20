@@ -126,13 +126,19 @@ export async function processCommentsAndPrepareFixLoop(
   if (stateContext.state && stateContext.currentCommentIds.size > 0) {
     const pruned = State.pruneVerifiedToCurrentCommentIds(stateContext.state, stateContext.currentCommentIds);
     if (pruned.removedVerified > 0 || pruned.removedVerifiedComments > 0) {
+      const recovered = stateContext.gitRecoveredVerificationCount;
+      const recoveredHint =
+        recovered != null && recovered > 0
+          ? ` (${formatNumber(recovered)} ID(s) recovered from git this run; pruned entries are absent from the ${formatNumber(comments.length)} current PR comment(s).)`
+          : '';
       console.log(
         chalk.gray(
-          `  Pruned stale verification: ${formatNumber(pruned.removedVerified)} ID(s) from verifiedFixed, ${formatNumber(pruned.removedVerifiedComments)} from verifiedComments (not in current PR comments).`,
+          `  Pruned stale verification: ${formatNumber(pruned.removedVerified)} ID(s) from verifiedFixed, ${formatNumber(pruned.removedVerifiedComments)} from verifiedComments (not in current PR comments).${recoveredHint}`,
         ),
       );
       await State.saveState(stateContext);
     }
+    delete stateContext.gitRecoveredVerificationCount;
   }
 
   // Restore catalog-correct model strings before analysis. Order matters: solvability dismisses
@@ -143,16 +149,18 @@ export async function processCommentsAndPrepareFixLoop(
     commentCount: comments.length,
     verifiedThisSessionSize: stateContext.verifiedThisSession?.size ?? 0,
   });
-  const catalogHealPaths = applyCatalogModelAutoHeals(workdir, comments, stateContext);
-  if (catalogHealPaths.length > 0) {
-    debug('[Auto-heal] Catalog model auto-heal applied', { 
-      paths: catalogHealPaths, 
-      count: catalogHealPaths.length,
+  const catalogHeal = applyCatalogModelAutoHeals(workdir, comments, stateContext);
+  if (catalogHeal.modifiedPaths.length > 0) {
+    debug('[Auto-heal] Catalog model auto-heal applied', {
+      paths: catalogHeal.modifiedPaths,
+      count: catalogHeal.modifiedPaths.length,
       verifiedThisSessionSize: stateContext.verifiedThisSession?.size ?? 0,
     });
+  }
+  if (catalogHeal.verificationTouched) {
     await State.saveState(stateContext);
-  } else {
-    debug('[Auto-heal] No files healed (no matching comments or replacements found)');
+  } else if (catalogHeal.modifiedPaths.length === 0) {
+    debug('[Auto-heal] No files healed and no catalog verification updates');
   }
 
   if (comments.length === 0) {

@@ -1,0 +1,24 @@
+{
+  "name": "deleted-file",
+  "description": "Comment on a file that was deleted",
+  "owner": "test-org",
+  "repo": "test-repo",
+  "number": 3,
+  "title": "Refactor: remove old file",
+  "body": "Removed deprecated file",
+  "branch": "feature/remove-old",
+  "baseBranch": "main",
+  "headSha": "ghi789jkl012",
+  "files": [],
+  "comments": [
+    {
+      "id": "c1",
+      "threadId": "thread-1",
+      "author": "reviewer",
+      "path": "src/old.ts",
+      "line": 10,
+      "body": "This function should use async/await",
+      "createdAt": "2025-01-01T00:00:00Z"
+    }
+  ]
+}

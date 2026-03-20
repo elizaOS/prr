@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed / changed (2026-03) — Catalog parse, merge-meta solvability, fixer UX, prune hint, prompt catalog context
+
+- **`parseModelRenameAdvice`:** Parses CodeRabbit-style **“model name typo \`X\`”** headings when a **use / recommended / prefer … \`Y\`** appears later in the same comment — same **0a6** dismissal + auto-heal as one-line pairs (audit eliza#6575 duplicate telegram threads).
+- **`assessSolvability` (0a3b):** Dismisses **PR merge / branch-closing** comments (“Closing — … merged …”) as **not-an-issue** so they are not queued as code fixes when GitHub anchors them on a file.
+- **llm-api / fix iteration:** Runner returns **`pathsWrittenByRunner`**; when **`hasChanges(git)`** is false but the runner reported writes, logs a **yellow note** that the tree matches HEAD (explains “Modified file” vs “No changes made” confusion).
+- **Git recovery + prune:** After **`Recovered N … from git`**, the **prune** line can append how many IDs were recovered this run vs current PR comment count (`StateContext.gitRecoveredVerificationCount`).
+- **Auto-heal:** Removed hard-coded debug logging for specific comment id prefixes.
+- **Verifier + fixer prompts:** When a comment matches outdated model advice pattern (even if not dismissed by 0a6), inject **catalog context** warning that both IDs are valid and the PR should keep the catalog-correct ID — prevents verifier/fixer from blindly following the review's "invalid model" claim (audit prompts.log eliza#6575).
+
+### Fixed (2026-03) — Pill audit 504 on ElizaCloud (chunk size mismatch)
+
+- **Pill:** Chunked audit requests used **`userMessageMaxChars / 2.7`** as the token budget passed to **`chunkPlainText`**, but **`chunkPlainText`** uses **`estimateTokens`** (**4 chars/token**), so each chunk could grow to **~75k chars** and the POST body (~76k) hit **Vercel FUNCTION_INVOCATION_TIMEOUT / 504**. Chunk budget now uses **`shared/utils/tokens.ts`** **`CHARS_PER_TOKEN` (4)** with a prefix reserve; **oversized single-line** chapters are split. Default **`DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS`** lowered **50k → 42k** for gateway headroom. Docs: **`tools/pill/README.md`**, **`AGENTS.md`**.
+
 ### Added (2026-03) — Programmatic provider model catalog
 
 - **`generated/model-provider-catalog.json`** — Machine-readable Anthropic + OpenAI API model IDs extracted from the official doc URLs in `docs/MODELS.md` (OpenAI uses the [all models](https://developers.openai.com/api/docs/models/all) page for complete slugs). Includes `fetchedAtIso`, `recommendedRefreshDays`, and hyphenless lookup maps (e.g. `gpt5mini` → `gpt-5-mini`) for validating spellings in automation.
@@ -18,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dismiss:** Comments that frame a catalog-valid id as a “typo” and suggest another id are dismissed in **`assessSolvability`** when both ids are in **`generated/model-provider-catalog.json`** (`tools/prr/workflow/helpers/outdated-model-advice.ts`). **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1`** skips.
 - **Auto-heal:** **`applyCatalogModelAutoHeals`** restores the catalog id in quoted literals near the review line (`tools/prr/workflow/catalog-model-autoheal.ts`), **`markVerified`** + **`verifiedThisSession`**. **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1`** skips.
+- **Auto-heal (fix):** If the wrong id is not in the ±20-line anchor window, retry quoted-literal replacement on the **full file**; if the file already has the catalog id and the wrong id never appears quoted, **`markVerified`** with reason **`catalog-autoheal-noop`** (no disk edit). **`applyCatalogModelAutoHeals`** returns **`{ modifiedPaths, verificationTouched }`**; **`main-loop-setup`** saves state when **`verificationTouched`** so noop verifies persist (output.log audit eliza#6575).
 - **Commit:** When analysis yields no unresolved issues but auto-heal dirtied the tree, **`processCommentsAndPrepareFixLoop`** calls **`commitAndPushChanges`** if **`verifiedThisSession`** is non-empty (see **`DEVELOPMENT.md`** — Commit gate and catalog model auto-heal).
 
 ### Documentation (2026-03) — Catalog model advice

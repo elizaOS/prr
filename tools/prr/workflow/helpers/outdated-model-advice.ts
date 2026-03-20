@@ -109,6 +109,25 @@ export function parseModelRenameAdvice(body: string): ModelRenamePair | null {
     const bad = m[2]!.toLowerCase();
     if (looksLikeModelSlug(good) && looksLikeModelSlug(bad) && good !== bad) return { catalogGoodId: good, wronglySuggestedId: bad };
   }
+  // CodeRabbit/Cursor: heading "### Model name typo `gpt-5-mini`" with separate "use `gpt-4o-mini`" / "recommended `...`"
+  // later in the body (pair not on one line). catalogGoodId = id wrongly flagged as typo; wronglySuggestedId = bot's pick.
+  if (/\bmodel\s+name\s+typo\b/i.test(t)) {
+    const typoPick = t.match(/\bmodel\s+name\s+typo[^`'"\n]{0,160}[`'"]([a-z0-9][a-z0-9.-]*)[`"']/i);
+    if (typoPick) {
+      const flagged = typoPick[1]!.toLowerCase();
+      if (!looksLikeModelSlug(flagged)) return null;
+      const fromTypo = t.slice((typoPick.index ?? 0) + typoPick[0].length);
+      const suggestRe =
+        /\b(?:use|recommend|recommended|prefer|should\s+use|change\s+(?:it|this)\s+to|update\s+to)\s+[`"']([a-z0-9][a-z0-9.-]*)[`"']/gi;
+      let suggested: string | null = null;
+      let sm: RegExpExecArray | null;
+      while ((sm = suggestRe.exec(fromTypo)) !== null) {
+        const cand = sm[1]!.toLowerCase();
+        if (looksLikeModelSlug(cand) && cand !== flagged) suggested = cand;
+      }
+      if (suggested) return { catalogGoodId: flagged, wronglySuggestedId: suggested };
+    }
+  }
   return null;
 }
 

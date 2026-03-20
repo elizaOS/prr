@@ -32,6 +32,8 @@ export interface StateContext {
   forceNextBatchSizeReduce?: boolean;
   /** Comments that were previously verified but final audit said UNFIXED — we re-queued them (safe over sorry). Used for AAR/visibility. */
   auditOverridesThisRun?: Array<{ commentId: string; path: string; line?: number | null; explanation?: string }>;
+  /** Set during git recovery; consumed when logging prune so operators see recovered vs pruned context. */
+  gitRecoveredVerificationCount?: number;
 }
 
 export function createStateContext(workdir: string): StateContext {

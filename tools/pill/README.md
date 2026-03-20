@@ -21,7 +21,7 @@
 
 **Context assembly (large logs and 504 avoidance):**
 - When **output.log** is small (≤30k tokens and ≤100k chars), it is included in full. When it is large, we use **head** (first 400 lines) + **story-read middle** (chapter-by-chapter LLM summarization from `shared/llm/story-read.ts`) + **tail** (last 400 lines) + **excerpt** (high-signal lines: RESULTS SUMMARY, Model Performance, etc.). **WHY:** A full ~183k-char log caused 504; char and token thresholds trigger summarization earlier; head/tail preserve init and exit state.
-- After assembly, the output log is capped at **50k chars** by default. Override with **`PILL_OUTPUT_LOG_MAX_CHARS`** (env) if you need a different limit. **WHY:** Hard char cap ensures the audit request never includes an unbounded log.
+- After assembly, the output log is capped at **40k chars** by default. Override with **`PILL_OUTPUT_LOG_MAX_CHARS`** (env) if you need a different limit. **WHY:** Hard char cap ensures the audit request never includes an unbounded log.
 - When the log is large but no LLM client is available (e.g. dry-run), we send head + "[ … middle omitted (no summarization client) … ]" + tail + excerpt instead of raw. **WHY:** Sending raw in that path would still cause 504.
 - **prompts.log** is included raw when under the same token threshold; otherwise it is summarized via story-read (pair PROMPT+RESPONSE per slug, chunked, then digest). See **shared/README.md** for story-read and **shared/utils/tokens.ts** for truncation.
 
@@ -54,8 +54,8 @@ pill <directory> [options]
 
 Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/.env` (target overrides home). Same env vars as prr/story (e.g. `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`).
 
-- **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the audit request (user + system). Default 35000. Set to **20000** (or lower) for models with a small context window to avoid 504 / FUNCTION_INVOCATION_TIMEOUT. Per-section caps (output log, prompts digest, source, docs, tree) scale with the budget. User message is capped at 60k chars (with 5k safety margin for system prompt + JSON overhead) to keep total request size under gateway limits.
-- **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars sent to the audit (default 50000). Override if you need a different limit.
+- **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the audit request (user + system). Default 35000. Set to **20000** (or lower) for models with a small context window to avoid 504 / FUNCTION_INVOCATION_TIMEOUT. Per-section caps (output log, prompts digest, source, docs, tree) scale with the budget. Each audit HTTP request uses at most **~42k chars** of user payload (plus system prompt); larger assembled context is **chunked** into multiple requests. Chunk sizing uses the same **chars/token (4)** as `estimateTokens` so a single chunk cannot balloon to ~75k chars (that mismatch caused ElizaCloud **504 / FUNCTION_INVOCATION_TIMEOUT**).
+- **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars sent to the audit (default **40000**). Override if you need a different limit.
 
 ### Integrated (prr / story / split-exec / split-plan) — opt-in with --pill
 

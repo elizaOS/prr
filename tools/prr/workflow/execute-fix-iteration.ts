@@ -769,6 +769,13 @@ export async function executeFixIteration(
 
   // Check for changes
   if (!(await hasChanges(git))) {
+    if (result.pathsWrittenByRunner && result.pathsWrittenByRunner.length > 0) {
+      console.log(
+        chalk.yellow(
+          `  Note: Fixer reported edits to ${formatNumber(result.pathsWrittenByRunner.length)} file(s), but git worktree matches HEAD — content likely equals the index (e.g. a local change matched committed files after interim edits).`,
+        ),
+      );
+    }
     // Handle no-changes scenario with verification
     const noChangesResult = await ResolverProc.handleNoChangesWithVerification(workingUnresolved, runner.name, currentModel, result.output || '', llm, stateContext, lessonsContext, verifiedThisSession, parseNoChangesExplanation, workdir);
     

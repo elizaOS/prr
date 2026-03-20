@@ -114,6 +114,7 @@ export async function recoverVerificationState(
   const committedFixes = await scanCommittedFixes(git, branch);
   if (committedFixes.length > 0) {
     const n = committedFixes.length;
+    stateContext.gitRecoveredVerificationCount = n;
     console.log(chalk.cyan(`Recovered ${formatNumber(n)} previously committed ${pluralize(n, 'fix', 'fixes')} from git history`));
     for (const commentId of committedFixes) {
       Verification.markVerified(stateContext, commentId);

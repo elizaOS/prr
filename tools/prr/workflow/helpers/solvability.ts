@@ -287,6 +287,30 @@ export interface SolvabilityResult {
 }
 
 /**
+ * Human "closing / merged" chatter on a file line — not a code defect (audit eliza#6575).
+ * WHY: GitHub may anchor merge-status replies on arbitrary files; the fix loop then burns stale cycles.
+ */
+function isMergeClosingMetaComment(body: string | undefined): boolean {
+  if (!body || body.length > 6_000) return false;
+  const t = body.trim();
+  const looksClosing =
+    /^\s*closing[\s—:-]/i.test(t) ||
+    /\bbranch\s+was\s+already\s+merged\b/i.test(t) ||
+    /\bthis\s+work\s+is\s+(?:already\s+)?in\s+\S+/i.test(t);
+  if (!looksClosing) return false;
+  if (!/\bmerged\b/i.test(body)) return false;
+  const head = body.slice(0, 550).toLowerCase();
+  if (
+    /\b(model\s+name|typo|invalid\s+model|incorrect\s+import|undefined|error:|fix:|should\s+use|change\s+`)\b/.test(
+      head,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Assess whether an issue is solvable before attempting any LLM call.
  * Checks file existence, line validity with smart re-targeting, and attempt exhaustion.
  * 
@@ -328,6 +352,15 @@ export function assessSolvability(
       solvable: false,
       dismissCategory: 'not-an-issue',
       reason: 'Approval/verdict comment — no issue to fix',
+    };
+  }
+
+  // Check 0a3b: PR merge / branch-closing status (often anchored on a code file by mistake).
+  if (isMergeClosingMetaComment(comment.body)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: 'PR merge or branch-closing message — no concrete code fix requested',
     };
   }
 

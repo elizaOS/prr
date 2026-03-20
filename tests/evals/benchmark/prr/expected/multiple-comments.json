@@ -1,0 +1,22 @@
+{
+  "name": "multiple-comments",
+  "expectedFixes": [
+    {
+      "commentId": "c1",
+      "expectedAction": "fixed",
+      "expectedFile": "src/foo.ts",
+      "expectedChange": "Replace `||` with `??`"
+    },
+    {
+      "commentId": "c2",
+      "expectedAction": "fixed",
+      "expectedFile": "src/baz.ts",
+      "expectedChange": "Add return statement or handle else case"
+    }
+  ],
+  "expectedDismissals": [],
+  "expectedRemaining": [],
+  "minFixRate": 0.85,
+  "maxFalsePositiveRate": 0.15,
+  "minAccuracy": 0.8
+}

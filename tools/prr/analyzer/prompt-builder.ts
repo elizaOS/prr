@@ -8,6 +8,7 @@ import { estimateTokens } from '../../../shared/utils/tokens.js';
 import { getTestPathForIssueLike, issueRequestsTestsText } from './test-path-inference.js';
 import { join } from 'path';
 import { debug } from '../../../shared/logger.js';
+import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
 
 /**
  * Strip HTML noise, base64 JWT links, and metadata from PR comment bodies
@@ -718,20 +719,96 @@ export function buildFixPrompt(
     parts.push('**If the review asks to delete or remove files from the repo:** output `<deletefile path="relative/path"/>` for each file to remove. Do not just empty the file or add a comment — the file must be deleted.\n');
   }
 
+  // Filter out issues with empty or invalid target file paths before building prompts.
+  // WHY: Cycle 59 (prompts.log audit) — issues with empty target file paths (e.g., "") cause LLM to respond
+  // with CANNOT_FIX because file content wasn't provided. Skipping these issues saves LLM credits and
+  // prevents wasted fix attempts. These issues should be dismissed earlier (in solvability/issue-analysis),
+  // but this is a safety net.
+  const validIssues: Array<{ issue: UnresolvedIssue; primaryPath: string }> = [];
+  const skippedIssues: UnresolvedIssue[] = [];
+  
   for (let i = 0; i < limitedIssues.length; i++) {
     const issue = limitedIssues[i];
     // Primary path: use resolvedPath when set (basename resolved from diff) so fixer sees correct file. Prompts.log audit: comment on "reporting.py" but issue was about "benchmarks/bfcl/reporting.py".
     let primaryPath = issue.resolvedPath ?? issue.comment.path;
-    // Pill #7: Validate path exists before building prompt; try extension variants if pathExists is provided.
+    
+    // Skip synthetic paths like "(PR comment)" — these can't be fixed by editing files
+    if (!primaryPath || primaryPath === '(PR comment)' || primaryPath.trim() === '') {
+      debug('Skipping issue with empty or synthetic path', { path: primaryPath, commentId: issue.comment.id });
+      skippedIssues.push(issue);
+      continue;
+    }
+    
+    // Pill #7: Validate path exists before building prompt; try extension variants and common prefixes if pathExists is provided.
     // WHY: Fixer was sent tsconfig.js repeatedly despite the file not existing (should be tsconfig.json).
+    // Also, basenames like "db.ts" or partial paths like "pnl-history/route.ts" may need prefix resolution.
     // This wastes LLM credits and iteration slots on phantom files.
     if (options?.pathExists && !options.pathExists(primaryPath)) {
-      // Try extension variants (e.g. tsconfig.js → tsconfig.json) if we have a workdir context.
-      // Note: pathExists is a function, not a workdir path, so we can't call tryResolvePathWithExtensionVariants directly.
-      // Instead, we rely on solvability.ts having already resolved paths via tryResolvePathWithExtensionVariants.
-      // If the path still doesn't exist here, log a warning but continue (the fixer will report "no changes").
-      debug('Warning: primary path does not exist in workdir', { path: primaryPath, commentId: issue.comment.id });
+      // Try extension variants first (e.g. tsconfig.js → tsconfig.json)
+      const ext = primaryPath.includes('.') ? primaryPath.slice(primaryPath.lastIndexOf('.')) : '';
+      const variants = ext === '.js' ? ['.json', '.ts', '.jsx', '.mjs', '.cjs'] : ext === '.ts' ? ['.tsx', '.js', '.json'] : [];
+      let resolved = primaryPath;
+      for (const variant of variants) {
+        const candidate = primaryPath.slice(0, primaryPath.length - ext.length) + variant;
+        if (options.pathExists(candidate)) {
+          resolved = candidate;
+          debug('Resolved path via extension variant', { original: primaryPath, resolved: candidate, commentId: issue.comment.id });
+          break;
+        }
+      }
+      
+      // If still not found and path looks like a basename (no slash), try common prefixes
+      // WHY: output.log audit — basenames like "db.ts", "game-tick.ts" weren't resolved to full paths
+      if (resolved === primaryPath && !primaryPath.includes('/')) {
+        const commonPrefixes = ['apps/', 'packages/', 'plugins/', 'tools/', 'shared/', 'examples/', 'src/'];
+        for (const prefix of commonPrefixes) {
+          const candidate = prefix + primaryPath;
+          if (options.pathExists(candidate)) {
+            resolved = candidate;
+            debug('Resolved basename path via prefix', { original: primaryPath, resolved: candidate, commentId: issue.comment.id });
+            break;
+          }
+        }
+      }
+      
+      if (resolved !== primaryPath) {
+        primaryPath = resolved;
+      } else {
+        // Path still doesn't exist after trying variants and prefixes
+        // Cycle 59: Skip this issue rather than including it with an empty/invalid target file path
+        // which would cause the LLM to respond with CANNOT_FIX and waste credits.
+        debug('Skipping issue: primary path does not exist in workdir (tried extension variants and common prefixes)', { path: primaryPath, commentId: issue.comment.id, resolvedPath: issue.resolvedPath });
+        skippedIssues.push(issue);
+        continue;
+      }
     }
+    
+    validIssues.push({ issue, primaryPath });
+  }
+  
+  // If all issues were skipped, return early
+  if (validIssues.length === 0) {
+    if (skippedIssues.length > 0) {
+      debug('All issues skipped due to empty or invalid target file paths', { skippedCount: skippedIssues.length });
+    }
+    return {
+      prompt: '',
+      summary: 'No valid issues to fix (all skipped due to empty or invalid target file paths)',
+      detailedSummary: `All ${skippedIssues.length} issue(s) were skipped because target file paths are empty or do not exist in workdir.`,
+      lessonsIncluded: 0,
+      issues: [],
+    };
+  }
+  
+  if (skippedIssues.length > 0) {
+    debug('Skipped issues with empty or invalid target file paths', { skippedCount: skippedIssues.length, validCount: validIssues.length });
+  }
+  
+  // Build prompts for valid issues only
+  // Track which issues were actually included (not skipped due to empty allowedPaths)
+  const actuallyIncludedIssues: UnresolvedIssue[] = [];
+  for (let i = 0; i < validIssues.length; i++) {
+    const { issue, primaryPath } = validIssues[i];
     // Add triage labels if available
     // WHY: The fixer should know which issues are critical (need careful handling)
     // vs trivial style nits (can get quick fixes). Importance 1-2 = critical/major,
@@ -739,6 +816,7 @@ export function buildFixPrompt(
     const triageLabel = issue.triage
       ? ` [importance:${issue.triage.importance}/5, difficulty:${issue.triage.ease}/5]`
       : '';
+    // Issue number is based on valid issues only (i is the index in validIssues array)
     parts.push(`### Issue ${i + 1}: ${primaryPath}${issue.comment.line ? `:${issue.comment.line}` : ''}${triageLabel}`);
     let basePaths = issue.allowedPaths?.length ? filterAllowedPathsForFix(issue.allowedPaths) : [primaryPath];
     const journalPath = getMigrationJournalPath(issue);
@@ -771,6 +849,13 @@ export function buildFixPrompt(
       if (isPathAllowedForFix(hiddenTestPath) && !allowedPaths.includes(hiddenTestPath)) allowedPaths = [...allowedPaths, hiddenTestPath];
     }
     allowedPaths = filterAllowedPathsForFix(allowedPaths);
+    // Guard: If allowedPaths is empty after filtering, skip this issue (shouldn't happen if primaryPath is valid, but safety check)
+    if (allowedPaths.length === 0) {
+      debug('Skipping issue: no valid allowed paths after filtering', { primaryPath, commentId: issue.comment.id });
+      continue;
+    }
+    // Track that this issue is being included in the prompt
+    actuallyIncludedIssues.push(issue);
     parts.push(`**Apply fixes for this issue only in \`${allowedPaths.join('`, `')}\`** — do not change other files for this issue.`);
     // When TARGET FILE(S) has multiple files and the review mentions callers, nudge to update implementation and every call site.
     // WHY: Prompts.log audit showed the fixer updated only reporting.py while runner.py was in TARGET FILE(S); the verifier correctly rejected because print_results still called generate_report() without await/args. Explicit nudge reduces incomplete multi-file fixes.
@@ -806,6 +891,14 @@ export function buildFixPrompt(
     }
     
     parts.push('```\n');
+    
+    // Inject catalog context when comment matches outdated model advice pattern (audit prompts.log eliza#6575).
+    // WHY: Verifier/fixer prompts parrot the review's claim (e.g. "gpt-5-mini is invalid") without catalog context;
+    // when both IDs are valid per catalog, the fixer should not blindly change to the wrongly-suggested ID.
+    const catalogDismiss = getOutdatedModelCatalogDismissal(issue.comment.body ?? '');
+    if (catalogDismiss) {
+      parts.push(`**⚠ Catalog context:** This review comment suggests changing model ID \`${catalogDismiss.pair.catalogGoodId}\` to \`${catalogDismiss.pair.wronglySuggestedId}\`, but **both IDs are valid** per \`generated/model-provider-catalog.json\`. The PR should **keep** \`${catalogDismiss.pair.catalogGoodId}\` (the catalog-correct ID). Do NOT change it to \`${catalogDismiss.pair.wronglySuggestedId}\` — that would be the wrong direction. If the code already has \`${catalogDismiss.pair.catalogGoodId}\`, respond RESULT: ALREADY_FIXED and cite the lines.\n`);
+    }
     
     // Render merged duplicates if present
     if (issue.mergedDuplicates && issue.mergedDuplicates.length > 0) {
@@ -959,7 +1052,7 @@ export function buildFixPrompt(
     summary,
     detailedSummary,
     lessonsIncluded: Math.min(lessonsLearned.length, lessonCap),
-    issues: limitedIssues,  // Return only the issues included in the prompt
+    issues: actuallyIncludedIssues,  // Return only the issues actually included in the prompt
   };
 }
 

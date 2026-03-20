@@ -40,6 +40,11 @@ function escapeRe(s: string): string {
  * WHY quoted-only: Avoids touching identifiers, import paths, or prose that happen to contain the
  * same substring outside string literals.
  */
+/** Count quoted string literals exactly matching `id` (same rules as replace). */
+function countQuotedModelIdLiterals(lines: string[], id: string): number {
+  return replaceModelIdInQuotedStringsInLines(lines, id, id).count;
+}
+
 export function replaceModelIdInQuotedStringsInLines(
   lines: string[],
   wronglySuggestedId: string,
@@ -65,15 +70,26 @@ export function replaceModelIdInQuotedStringsInLines(
   return { lines: out, count };
 }
 
+export interface CatalogModelAutoHealOutcome {
+  /** Repo-relative paths written (quoted literal replacements). */
+  modifiedPaths: string[];
+  /** At least one comment was markVerified (disk heal or noop-already-correct) — caller should saveState. */
+  verificationTouched: boolean;
+}
+
 /**
- * Apply heals for all matching review comments. Returns repo-relative paths touched.
+ * Apply heals for all matching review comments. Returns paths touched and whether verification state was updated.
  */
-export function applyCatalogModelAutoHeals(workdir: string, comments: ReviewComment[], stateContext: StateContext): string[] {
+export function applyCatalogModelAutoHeals(
+  workdir: string,
+  comments: ReviewComment[],
+  stateContext: StateContext,
+): CatalogModelAutoHealOutcome {
   debug('[Auto-heal] Starting catalog model auto-heal', { workdir, commentCount: comments.length });
   
   if (process.env[ENV_DISABLE_AUTOHEAL]?.trim() === '1') {
     debug('[Auto-heal] Disabled via PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1');
-    return [];
+    return { modifiedPaths: [], verificationTouched: false };
   }
   
   const modified: string[] = [];
@@ -89,29 +105,14 @@ export function applyCatalogModelAutoHeals(workdir: string, comments: ReviewComm
   let skippedNoFile = 0;
   let skippedNoLine = 0;
   let skippedNoReplacements = 0;
+  /** Matched outdated advice but file never contained quoted wrong id — already catalog-correct. */
+  let verifiedNoOp = 0;
+  let verificationTouched = false;
 
   for (const comment of comments) {
     checkedCount++;
-    // Debug specific comment IDs that should match but don't
-    const isTargetComment = comment.id.includes('4079055770') || comment.id.includes('4050517082');
-    if (isTargetComment) {
-      debug('[Auto-heal] Checking target comment', {
-        commentId: comment.id,
-        path: comment.path,
-        line: comment.line,
-        bodyPreview: comment.body?.substring(0, 200),
-        bodyLength: comment.body?.length ?? 0,
-      });
-    }
     const dismissal = getOutdatedModelCatalogDismissal(comment.body ?? '');
     if (!dismissal) {
-      if (isTargetComment) {
-        debug('[Auto-heal] Target comment did not match - checking why', {
-          commentId: comment.id,
-          hasFraming: /incorrect\s+model\s+name|model\s+name\s+typo/i.test(comment.body ?? ''),
-          bodyPreview: comment.body?.substring(0, 300),
-        });
-      }
       debug('[Auto-heal] Comment does not match outdated model advice pattern', { 
         commentId: comment.id.slice(0, 7), 
         path: comment.path,
@@ -199,39 +200,101 @@ export function applyCatalogModelAutoHeals(workdir: string, comments: ReviewComm
       replaceWith: dismissal.pair.catalogGoodId,
     });
     
-    const { lines: newWindow, count } = replaceModelIdInQuotedStringsInLines(
+    const wrongly = dismissal.pair.wronglySuggestedId;
+    const good = dismissal.pair.catalogGoodId;
+
+    let { lines: newWindow, count } = replaceModelIdInQuotedStringsInLines(
       windowLines,
-      dismissal.pair.wronglySuggestedId,
-      dismissal.pair.catalogGoodId,
+      wrongly,
+      good,
     );
-    
+    let useFullFile = false;
+
+    // Full-file fallback when anchor window has no quoted wrong id (output.log audit eliza#6575).
+    // WHY: Review anchor line (e.g. 35) may sit on env checks while `model: "gpt-4o-mini"` lives
+    // elsewhere; ±20 lines then misses the only place a bad "fix" was applied.
     if (count === 0) {
+      const full = replaceModelIdInQuotedStringsInLines(allLines, wrongly, good);
+      if (full.count > 0) {
+        newWindow = full.lines;
+        count = full.count;
+        useFullFile = true;
+        debug('[Auto-heal] Window had no match; applied heal on full file', {
+          commentId: comment.id.slice(0, 7),
+          resolvedPath: rel,
+          targetLine: line,
+          windowStart: start + 1,
+          windowEnd: end,
+          searchFor: wrongly,
+          replacementCount: count,
+        });
+      }
+    }
+
+    if (count === 0) {
+      // Code never had the bot's wrongly-suggested id in quotes; if catalog-good id appears in quotes,
+      // the PR is already correct — mark verified so we skip fixer (output.log audit eliza#6575).
+      const wrongQuoted = countQuotedModelIdLiterals(allLines, wrongly);
+      const goodQuoted = countQuotedModelIdLiterals(allLines, good);
+      if (wrongQuoted === 0 && goodQuoted > 0) {
+        verifiedNoOp++;
+        vs.add(comment.id);
+        verificationTouched = true;
+        try {
+          Verification.markVerified(stateContext, comment.id, 'catalog-autoheal-noop');
+          debug('[Auto-heal] No file change needed — file already uses catalog model id in literals', {
+            commentId: comment.id.slice(0, 7),
+            resolvedPath: rel,
+            catalogGoodId: good,
+            wronglySuggestedId: wrongly,
+            goodQuotedLiterals: goodQuoted,
+          });
+        } catch (e) {
+          debug('[Auto-heal] markVerified failed (catalog-autoheal-noop)', {
+            commentId: comment.id.slice(0, 7),
+            err: String(e),
+          });
+        }
+        console.log(
+          chalk.cyan(
+            `  Catalog auto-heal: no edit needed — ${rel} already has \`${good}\` in string literal(s); marked review ${comment.id.slice(0, 7)}… verified (outdated model advice)`,
+          ),
+        );
+        continue;
+      }
+
       skippedNoReplacements++;
-      debug('[Auto-heal] Skipping: no replacements found in window', {
+      debug('[Auto-heal] Skipping: no replacements found in window or full file', {
         commentId: comment.id.slice(0, 7),
         resolvedPath: rel,
         targetLine: line,
         windowStart: start + 1,
         windowEnd: end,
-        searchFor: dismissal.pair.wronglySuggestedId,
+        searchFor: wrongly,
+        wrongQuotedLiterals: wrongQuoted,
+        goodQuotedLiterals: goodQuoted,
         windowPreview: windowLines.slice(0, 3).join(' | ').substring(0, 100),
       });
       continue;
     }
-    
+
     debug('[Auto-heal] Found replacements, applying heal', {
       commentId: comment.id.slice(0, 7),
       resolvedPath: rel,
       replacementCount: count,
-      searchFor: dismissal.pair.wronglySuggestedId,
-      replaceWith: dismissal.pair.catalogGoodId,
+      searchFor: wrongly,
+      replaceWith: good,
+      scope: useFullFile ? 'full-file' : 'anchor-window',
     });
-    
-    const merged = [...allLines.slice(0, start), ...newWindow, ...allLines.slice(end)];
+
+    const merged = useFullFile
+      ? newWindow
+      : [...allLines.slice(0, start), ...newWindow, ...allLines.slice(end)];
     writeFileSync(abs, merged.join('\n'), 'utf8');
     modified.push(rel);
     vs.add(comment.id);
-    
+    verificationTouched = true;
+
     try {
       Verification.markVerified(stateContext, comment.id, 'catalog-autoheal');
       debug('[Auto-heal] Marked comment as verified', { commentId: comment.id.slice(0, 7) });
@@ -260,9 +323,10 @@ export function applyCatalogModelAutoHeals(workdir: string, comments: ReviewComm
     skippedNoFile,
     skippedNoLine,
     skippedNoReplacements,
+    verifiedNoOpAlreadyCorrect: verifiedNoOp,
     healed: modified.length,
     healedPaths: modified,
   });
 
-  return modified;
+  return { modifiedPaths: modified, verificationTouched };
 }

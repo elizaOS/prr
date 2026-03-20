@@ -9,6 +9,7 @@ import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMentionedTestFilePaths, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getOutdatedModelCatalogDismissal } from './helpers/outdated-model-advice.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -508,6 +509,14 @@ Review Comment:
 ${sanitizeCommentForPrompt(issue.comment.body)}
 
 `;
+
+  // Inject catalog context when comment matches outdated model advice (audit prompts.log eliza#6575).
+  const catalogDismiss = getOutdatedModelCatalogDismissal(issue.comment.body ?? '');
+  if (catalogDismiss) {
+    prompt += `⚠ CATALOG CONTEXT: This review suggests changing model ID \`${catalogDismiss.pair.catalogGoodId}\` to \`${catalogDismiss.pair.wronglySuggestedId}\`, but **both IDs are valid** per \`generated/model-provider-catalog.json\`. The PR should **keep** \`${catalogDismiss.pair.catalogGoodId}\` (the catalog-correct ID). Do NOT change it to \`${catalogDismiss.pair.wronglySuggestedId}\` — that would be the wrong direction. If the code already has \`${catalogDismiss.pair.catalogGoodId}\`, respond RESULT: ALREADY_FIXED and cite the lines.
+
+`;
+  }
 
   const snippet = codeSnippetOverride !== undefined && codeSnippetOverride !== null ? codeSnippetOverride : issue.codeSnippet;
   if (snippet) {

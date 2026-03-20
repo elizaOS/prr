@@ -51,6 +51,11 @@ export interface RunnerResult {
   usedFullFileRewrite?: boolean;
   /** True when the fixer emitted change blocks but every one was a no-op (search === replace). Skip verification and treat as no changes. WHY: Avoids running the verifier on unchanged code; workflow goes straight to rotation. */
   noMeaningfulChanges?: boolean;
+  /**
+   * Paths the runner wrote during apply; git may still be clean if final bytes match HEAD
+   * (e.g. fixer reversed an interim auto-heal so the tree matches the index). UX: reconcile with hasChanges(git).
+   */
+  pathsWrittenByRunner?: string[];
   /** When allowlist was enforced and the fixer attempted edits to files not in TARGET FILE(S). Surfaces so workflow can add a wrong-file lesson and penalize. */
   skippedDisallowedFiles?: string[];
   /** When the fixer used <newfile> for a path that already exists (we skipped to avoid overwriting). Workflow can add a lesson: use <change> to edit, not <newfile>. */

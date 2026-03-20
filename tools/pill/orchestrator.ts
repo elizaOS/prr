@@ -16,16 +16,49 @@ import { assembleContext, getContextTokenCounts } from './context.js';
 import { LLMClient } from './llm/client.js';
 import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJson } from './llm/parse-json.js';
-import { truncateHeadAndTailByChars, estimateTokens } from '../../shared/utils/tokens.js';
+import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
 import { chunkPlainText } from '../../shared/llm/story-read.js';
 
-/** Default hard cap on user message length (chars). Scaled down when PILL_CONTEXT_BUDGET_TOKENS is set (e.g. 20k). */
-const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 60_000;
-/** Chars per token for deriving user message cap from context budget; reserve ~20% for system + response. */
-const CHARS_PER_TOKEN = 2.7;
+/** Default hard cap on user message length (chars). Scaled down when PILL_CONTEXT_BUDGET_TOKENS is set (e.g. 20k).
+ * WHY 42k not 50k: Chunked audits send one chunk + system per request; ElizaCloud/Vercel 504s observed ~76k body when
+ * chunk sizing was wrong. 42k user + ~3k system + JSON stays under gateway comfort zone. */
+const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 42_000;
+/**
+ * Optimistic chars/token when converting PILL_CONTEXT_BUDGET_TOKENS → max user chars (allow more text in budget).
+ * MUST NOT be used for chunkPlainText — that uses shared estimateTokens (length / CHARS_PER_TOKEN).
+ */
+const BUDGET_TO_USER_CHARS_RATIO = 2.7;
 const USER_MESSAGE_TOKEN_FRACTION = 0.8;
-/** Safety margin for system prompt + JSON overhead (subtracted from calculated cap to avoid 504). */
-const REQUEST_OVERHEAD_CHARS = 5_000;
+/** Safety margin for system prompt + JSON overhead (subtracted from calculated cap to avoid 504).
+ * WHY 8k not 5k: Observed 504s at ~48k total request; system prompt (~3-4k) + JSON structure (~4-5k) = ~8k overhead. */
+const REQUEST_OVERHEAD_CHARS = 8_000;
+/** Reserve for `[CONTEXT CHUNK i/n]\n\n` so chunk body + prefix ≤ userMessageMaxChars. */
+const CHUNK_PREFIX_RESERVE_CHARS = 160;
+
+/**
+ * Subdivide chapters whose text exceeds maxChars (e.g. one log line longer than token budget).
+ * WHY: chunkPlainText emits a single line as one chapter when that line alone exceeds the token budget; that can still be huge in bytes.
+ */
+function enforceMaxChunkChars(
+  chapters: { label: string; text: string }[],
+  maxChars: number
+): { label: string; text: string }[] {
+  const out: { label: string; text: string }[] = [];
+  for (const ch of chapters) {
+    if (ch.text.length <= maxChars) {
+      out.push(ch);
+      continue;
+    }
+    const sliceCount = Math.ceil(ch.text.length / maxChars);
+    for (let p = 0; p < sliceCount; p++) {
+      out.push({
+        label: `${ch.label} · part ${p + 1}/${sliceCount}`,
+        text: ch.text.slice(p * maxChars, (p + 1) * maxChars),
+      });
+    }
+  }
+  return out;
+}
 
 function buildAuditUserMessage(ctx: {
   docs: string;
@@ -317,7 +350,8 @@ export async function runPillAnalysis(config: PillConfig): Promise<
       10_000, // Minimum cap to ensure some content is sent
       Math.min(
         DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS,
-        Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * CHARS_PER_TOKEN) - REQUEST_OVERHEAD_CHARS,
+        Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * BUDGET_TO_USER_CHARS_RATIO) -
+          REQUEST_OVERHEAD_CHARS,
       ),
     );
     const fullUserMessage = buildAuditUserMessage(ctx);
@@ -327,9 +361,12 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     if (fullUserMessage.length > userMessageMaxChars) {
       if (spinner) spinner.info(`Context exceeds ${userMessageMaxChars.toLocaleString()} chars — chunking into multiple audit requests (avoids 504/timeout).`);
       
-      // Chunk by token budget (convert char cap to token budget for chunking)
-      const chunkTokenBudget = Math.floor(userMessageMaxChars / CHARS_PER_TOKEN);
-      const chapters = chunkPlainText(fullUserMessage, chunkTokenBudget);
+      // MUST use shared CHARS_PER_TOKEN (4): chunkPlainText uses estimateTokens = ceil(len/4).
+      // Previously we divided by 2.7 here, which let each chapter grow to ~74k chars → 504 on ElizaCloud.
+      const maxChunkBodyChars = Math.max(4_000, userMessageMaxChars - CHUNK_PREFIX_RESERVE_CHARS);
+      const chunkTokenBudget = Math.max(512, Math.floor(maxChunkBodyChars / CHARS_PER_TOKEN));
+      let chapters = chunkPlainText(fullUserMessage, chunkTokenBudget);
+      chapters = enforceMaxChunkChars(chapters, maxChunkBodyChars);
       
       if (spinner) update(`Running audit (${chapters.length} chunk${chapters.length === 1 ? '' : 's'})…`);
       
@@ -418,7 +455,16 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (spinner) spinner.fail(msg);
+    const is504 = /504|FUNCTION_INVOCATION_TIMEOUT|timeout/i.test(msg);
+    if (spinner) {
+      if (is504) {
+        spinner.fail(
+          `Pill audit timed out (504) — request too large or slow. Try: PILL_CONTEXT_BUDGET_TOKENS=20000, PILL_OUTPUT_LOG_MAX_CHARS=28000, or a lighter PILL_AUDIT_MODEL.`,
+        );
+      } else {
+        spinner.fail(msg);
+      }
+    }
     recordNoImprovements('api_call_failed');
     // Return instead of throw so callers can log reason (pill-output.md #3)
     return { result: null, reason: 'api_call_failed', errorMessage: msg };

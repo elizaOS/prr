@@ -24,6 +24,7 @@ import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
 import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
 import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
+import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
 
 /** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
 function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
@@ -1127,6 +1128,15 @@ ${codeSnippet}
         : '';
 
       const parts = [];
+      
+      // Inject catalog context when comment matches outdated model advice (audit prompts.log eliza#6575).
+      // WHY: Verifier prompts parrot the review's claim without catalog context; when both IDs are valid,
+      // the verifier should not say YES just because the code has the catalog-correct ID.
+      const catalogDismiss = getOutdatedModelCatalogDismissal(issue.comment);
+      if (catalogDismiss) {
+        parts.push(`⚠ CATALOG CONTEXT: This review suggests changing \`${catalogDismiss.pair.catalogGoodId}\` to \`${catalogDismiss.pair.wronglySuggestedId}\`, but **both are valid** per \`generated/model-provider-catalog.json\`. The PR should **keep** \`${catalogDismiss.pair.catalogGoodId}\`. If Current Code has \`${catalogDismiss.pair.catalogGoodId}\`, respond NO (already correct).`);
+        parts.push('');
+      }
       
       // Inject context hints as factual observations
       if (issue.contextHints && issue.contextHints.length > 0) {
