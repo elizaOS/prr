@@ -41,6 +41,7 @@ import type { LLMClient } from '../llm/client.js';
 import type { RotationContext } from '../models/rotation.js';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 import { cleanupWorkdir } from '../../../shared/git/workdir.js';
+import { push as gitPushWithAuth } from '../../../shared/git/git-push.js';
 import * as ResolverProc from '../resolver-proc.js';
 import { addDismissalComments } from './dismissal-comments.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -379,7 +380,12 @@ export async function executeRun(
           // informational and safe, and bots need to see them on the next review pass)
           if (options.autoPush && !options.noPush) {
             spinner.text = 'Pushing dismissal comments...';
-            await git.push();
+            // WHY shared push(): simple-git push() ignores credential.helper / extraheader and
+            // prompts in CI ("could not read Password … No such device or address").
+            const pushResult = await gitPushWithAuth(git, state.prInfo.branch, false, config.githubToken);
+            if (!pushResult.success) {
+              throw new Error(pushResult.error ?? 'Git push failed');
+            }
           }
           
           spinner.succeed(`Added ${added} dismissal comment${added === 1 ? '' : 's'}`);
