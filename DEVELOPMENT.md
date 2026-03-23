@@ -19,7 +19,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 **What it is:** Optional artifact from **pill** after auditing a run’s `output.log`. This repo may keep a copy at **`pill-output.md`** for traceability.
 
-**Mixed sources:** Some items reference **`src/`** or **`packages/`** paths from **another repository** (the PR pill analyzed). Those are **not** prr layout — treat them as **N/A (external)** when porting fixes. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state lives under **`tools/prr/state`**, not root **`src/state.ts`**).
+**Mixed sources:** Some items reference **`src/`** or **`packages/`** paths from **another repository** (the PR pill analyzed). Those are **not** prr layout — treat them as **N/A (external)** when porting fixes. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state lives under **`tools/prr/state`**, not root **`src/state.ts`**). **In this repo’s docs,** a few **example JSON blobs** still use generic paths like `src/auth.ts` to illustrate lesson keys — those are not implied file paths in this tree.
 
 **Per-item status:** Each improvement line includes **`**Status:** …`** and a legend at the top of **`pill-output.md`** (`Done (prr)`, `Partial (prr)`, `Open (prr)`, `N/A (external)`, etc.).
 

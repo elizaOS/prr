@@ -63,7 +63,18 @@ function determineScope(filePaths: string[]): string {
       bestScope = scope;
     }
   }
-  
+
+  // Pill-output: paths like `src/utils.ts` filter out `src` and become empty → avoid generic "misc"
+  if (bestScope === 'misc' && filePaths.length > 0) {
+    for (const path of filePaths) {
+      const segments = path.split('/').filter((s) => s && s !== '.' && s !== '..');
+      const dirSegments = segments.length > 1 ? segments.slice(0, -1) : [];
+      if (dirSegments.length > 0) {
+        return dirSegments[0]!;
+      }
+    }
+  }
+
   return bestScope;
 }
 

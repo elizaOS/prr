@@ -26,7 +26,7 @@ These are created by tools and should not be committed: `.split-plan.md`, `.spli
 
 **Final audit model:** When **`PRR_LLM_MODEL`** is a small/fast verifier (e.g. qwen-14b), the **adversarial final-audit** pass uses the same id by default and can **parrot review text** vs the full file shown in the prompt. Set **`PRR_FINAL_AUDIT_MODEL`** to a stronger model (often the same as the fixer, e.g. `anthropic/claude-opus-4.5`). Order: **`PRR_FINAL_AUDIT_MODEL` → `PRR_VERIFIER_MODEL` → `PRR_LLM_MODEL`**. See **`PRR_VERIFIER_MODEL`** in `shared/config.ts` / `README.md` for verification pinning.
 
-**Model skip list (ElizaCloud):** Some models are skipped by default. Reasons are separate: **known timeout/504** (transient possible — retry with `PRR_ELIZACLOUD_INCLUDE_MODELS`) vs **0% fix rate** (audit). The list is in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`; reasons in `ELIZACLOUD_SKIP_REASON`). DEBUG logs show which reason per model. To re-enable a skipped model (e.g. timeout was gateway-specific), set **`PRR_ELIZACLOUD_INCLUDE_MODELS`** to a comma-separated list (e.g. `openai/gpt-4o,anthropic/claude-3.7-sonnet`). See `getEffectiveElizacloudSkipModelIds()` and `getElizaCloudSkipReason()`.
+**Model skip list (ElizaCloud):** Some models are skipped by default. Reasons are separate: **known timeout/504** (transient possible — retry with `PRR_ELIZACLOUD_INCLUDE_MODELS`) vs **0% fix rate** (audit). The list is in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`; reasons in `ELIZACLOUD_SKIP_REASON`). DEBUG logs show which reason per model. **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** (comma-separated) merges **additional** ids into that list for this environment. To re-enable a skipped model (e.g. timeout was gateway-specific), set **`PRR_ELIZACLOUD_INCLUDE_MODELS`** to a comma-separated list (e.g. `openai/gpt-4o,anthropic/claude-3.7-sonnet`). See `getEffectiveElizacloudSkipModelIds()` and `getElizaCloudSkipReason()`.
 
 **Session model skip (this run):** Independently of the catalog skip list, **`PRR_SESSION_MODEL_SKIP_FAILURES`** (default **4**) skips a tool/model for the **rest of the process** after that many **verification** failures with **zero** verified fixes; **`PRR_SESSION_MODEL_SKIP_FAILURES=0`** disables. **`PRR_DIMINISHING_RETURNS_ITERATIONS`** (default **10**) emits one warning after that many consecutive iterations with **no** new verified fixes; **`0`** disables.
 
@@ -69,6 +69,12 @@ With **`--reply-to-threads`** (or **`PRR_REPLY_TO_THREADS=true`**), PRR posts a 
 - **HEAD change:** When **`headSha`** changes, **verified** state is cleared so fixes are re-checked. **`already-fixed`** dismissals are also cleared (code-state-dependent). Other dismissals (e.g. not-an-issue) are kept unless overlap cleanup removes them.
 - **Final audit:** If the adversarial pass reports **UNFIXED**, the issue is re-queued (removed from verified) even if it was verified earlier in the run — see README “Safe over sorry verification”.
 - **Path resolution:** Review **`comment.path`** is normalized (slashes, etc.). Fragment / extension-only paths use **`isReviewPathFragment`** and **`pathDismissCategoryForNotFound`** (`shared/path-utils.ts`) so dismissal is **`path-unresolved`**, not **`missing-file`**, when the path cannot name a single file (e.g. `.d.ts`, bare `d.ts`). Real root files like **`.env`** are **not** treated as fragments. Extension fallbacks for “tracked file not found” live in **`tryResolvePathWithExtensionVariants`** and solvability — extend there rather than duplicating ad hoc rules.
+
+### Path resolution rules (canonical)
+
+1. **Extension variants:** If the review path is missing on disk, **`tryResolvePathWithExtensionVariants`** (`shared/path-utils.ts`) tries mapped alternatives (e.g. `.js` → `.json`, `.ts`, `.mjs`, …) before dismissing.
+2. **Fragments:** Bare **`.d.ts`** / extension-only paths are **`path-unresolved`** (not **`missing-file`**); use **`pathDismissCategoryForNotFound`** + **`isReviewPathFragment`** so legacy state can be normalized on load.
+3. **One path → one category:** Do not assign the same logical path different dismissal categories in different code paths; extend **`path-utils`** / solvability instead of ad hoc branches.
 
 ## Pill output (`pill-output.md`)
 

@@ -183,6 +183,20 @@ story --help      # PR narrative & changelog
 
 ## Configuration
 
+**Operator env quick reference** (see `.env.example` for comments):
+
+| Variable | Purpose |
+|----------|---------|
+| `GITHUB_TOKEN` | GitHub API access |
+| `ELIZACLOUD_API_KEY` / provider keys | LLM gateway or direct API |
+| `PRR_LLM_MODEL` | Pin the primary fixer/verifier model |
+| `PRR_MAX_CONCURRENT_LLM` | In-flight LLM cap (default `1`) |
+| `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` | Comma-separated ids **added** to the built-in ElizaCloud skip list (`shared/constants.ts`) |
+| `PRR_ELIZACLOUD_INCLUDE_MODELS` | Comma-separated ids to **remove** from the built-in skip list (re-enable after transient timeouts) |
+| `PRR_SESSION_MODEL_SKIP_FAILURES` | Skip a model for the rest of the run after N zero-fix verification failures (`0` = off) |
+| `PRR_DIMINISHING_RETURNS_ITERATIONS` | Warn after N consecutive iterations with no new verified fixes (`0` = off) |
+| `PRR_BOT_LOGIN` | GitHub login for thread-reply idempotency when using `--reply-to-threads` |
+
 Create a `.env` file (see `.env.example`):
 
 ```bash

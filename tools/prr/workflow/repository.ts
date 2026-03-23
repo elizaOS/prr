@@ -128,7 +128,7 @@ export async function recoverVerificationState(
     console.log(chalk.cyan(`Recovered ${formatNumber(n)} previously committed ${pluralize(n, 'fix', 'fixes')} from git history`));
     for (const commentId of committedFixes) {
       if (!Verification.isVerified(stateContext, commentId)) {
-        Verification.markVerified(stateContext, commentId);
+        Verification.markVerified(stateContext, commentId, Verification.PRR_GIT_RECOVERY_VERIFIED_MARKER);
       }
     }
     // WHY: So the first analysis skips stale re-check and unmark for these IDs (output.log audit).

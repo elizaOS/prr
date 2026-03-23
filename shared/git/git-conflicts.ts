@@ -96,6 +96,7 @@ export async function fetchOriginBranch(
     proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
 
     const timeout = setTimeout(() => {
+      clearTimeout(timeout);
       proc.kill('SIGKILL');
       settle(() => {
         const out = [
@@ -141,7 +142,14 @@ export interface ConflictStatus {
 }
 
 
-/** Check for merge conflicts and behind/ahead counts. WHY options.githubToken: unblocks fetch when remote has no credentials. */
+/**
+ * Check for merge conflicts and behind/ahead counts. WHY options.githubToken: unblocks fetch when remote has no credentials.
+ *
+ * **Limitation:** `hasConflicts` / `conflictedFiles` reflect **in-progress** merge/rebase state only
+ * (`git status` conflicted paths). After a plain `fetch`, latent conflicts with `origin/<branch>` are **not**
+ * detected here. Callers use this after operations that may leave conflict markers, or together with
+ * explicit merge attempts (e.g. base-branch merge). See pill-output.md #32.
+ */
 export async function checkForConflicts(
   git: SimpleGit,
   branch: string,
@@ -153,7 +161,7 @@ export async function checkForConflicts(
 
   const status = await git.status();
 
-  // Check if there are merge conflicts
+  // Check if there are merge conflicts (only when merge/rebase is in progress — not latent vs remote)
   const conflictedFiles = status.conflicted || [];
 
   // Check how far behind/ahead we are

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / changed (pill-output low-hanging fruit)
+
+- **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`:** Comma-separated model ids merged into the built-in ElizaCloud skip list (`getEffectiveElizacloudSkipModelIds`). Documented in **`.env.example`**, **`README.md`** (operator table), **`AGENTS.md`**.
+- **Git recovery provenance:** **`recoverVerificationState`** calls **`markVerified(..., PRR_GIT_RECOVERY_VERIFIED_MARKER)`** so state shows verification restored from **`prr-fix:`** commits.
+- **Final audit:** Debug **`warn`** if any comment id appears in both verified and dismissed (overlap invariant).
+- **Commit scope:** **`determineScope`** falls back to the first directory segment (e.g. `src`) when deeper “meaningful” segments are empty — fewer **`misc:`** messages for `src/*`-only paths.
+- **`checkForConflicts`:** JSDoc documents that conflict detection is for **in-progress** merge/rebase only; **`fetchOriginBranch`** timeout handler clears its timer defensively at fire.
+- **Docs:** **`AGENTS.md`** “Path resolution rules (canonical)” subsection; **`DEVELOPMENT.md`** note on generic **`src/`** paths in example JSON.
+
 ### Documentation (2026-03) — Pill output status + cross-links
 
 - **`pill-output.md`:** Status legend and a **Status** line on each numbered item (prr Done / Partial / Open vs N/A external for eliza/`packages/*`-shaped paths). **WHY:** Pill text mixed target-repo items with PRR items; without tags, contributors misread missing `src/` paths as prr breakage.

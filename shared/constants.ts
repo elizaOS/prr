@@ -342,15 +342,29 @@ export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {
  */
 let loggedElizacloudIncludeModels = false;
 
+let loggedElizacloudExtraSkip = false;
+
 export function getEffectiveElizacloudSkipModelIds(): string[] {
+  const extraRaw = process.env.PRR_ELIZACLOUD_EXTRA_SKIP_MODELS?.trim();
+  const extraIds = extraRaw
+    ? extraRaw.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+  const mergedBase = [...new Set([...ELIZACLOUD_SKIP_MODEL_IDS, ...extraIds])];
+  if (extraIds.length > 0 && !loggedElizacloudExtraSkip) {
+    loggedElizacloudExtraSkip = true;
+    console.log(
+      `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS: added ${extraIds.length.toLocaleString()} extra id(s) to ElizaCloud skip list (see shared/constants.ts for built-in list).`,
+    );
+  }
+
   const raw = process.env.PRR_ELIZACLOUD_INCLUDE_MODELS?.trim();
-  if (!raw) return [...ELIZACLOUD_SKIP_MODEL_IDS];
+  if (!raw) return mergedBase;
   const include = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
   const match = (id: string) => include.has(id) || include.has(id.replace(/^(openai|anthropic|google)\//, ''));
-  const filtered = ELIZACLOUD_SKIP_MODEL_IDS.filter(id => !match(id));
+  const filtered = mergedBase.filter(id => !match(id));
   if (!loggedElizacloudIncludeModels) {
     loggedElizacloudIncludeModels = true;
-    const before = ELIZACLOUD_SKIP_MODEL_IDS.length;
+    const before = mergedBase.length;
     console.log(
       `PRR_ELIZACLOUD_INCLUDE_MODELS: skip list narrowed from ${before.toLocaleString()} to ${filtered.length.toLocaleString()} model id(s).`,
     );

@@ -88,7 +88,7 @@ export function recordSessionModelVerificationOutcome(
     rs.skippedModelKeys.add(key);
     warn(
       `${runnerName} / ${m}: ${formatNumber(cur.failures)} verification failure(s) with no verified fixes this run — skipping this model until next run. ` +
-        `Set PRR_SESSION_MODEL_SKIP_FAILURES=0 to disable. For persistent poor performers, extend ELIZACLOUD_SKIP_MODEL_IDS in shared/constants.ts (or use PRR_ELIZACLOUD_INCLUDE_MODELS).`,
+        `Set PRR_SESSION_MODEL_SKIP_FAILURES=0 to disable. For persistent poor performers, extend ELIZACLOUD_SKIP_MODEL_IDS in shared/constants.ts, set PRR_ELIZACLOUD_EXTRA_SKIP_MODELS for env-specific skips, or use PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable.`,
     );
   }
 }

@@ -26,7 +26,8 @@ export interface VerifiedComment {
   commentId: string;
   verifiedAt: string;        // ISO timestamp when verified
   verifiedAtIteration: number;  // Which iteration it was verified in
-  autoVerifiedFrom?: string;  // If this was auto-verified, the canonical comment ID
+  /** Canonical duplicate source comment id, or sentinel `PRR_GIT_RECOVERY_VERIFIED_MARKER` when restored from git (`prr-fix:` commits). */
+  autoVerifiedFrom?: string;
 }
 
 /**

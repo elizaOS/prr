@@ -25,6 +25,9 @@ import { debug } from '../../../shared/logger.js';
 
 export type VerificationRecord = VerifiedComment;
 
+/** Sentinel for `autoVerifiedFrom` when verification was restored from `prr-fix:` git history (not a duplicate). */
+export const PRR_GIT_RECOVERY_VERIFIED_MARKER = '__prr_git_recovery__';
+
 /**
  * Mark a comment as verified/fixed
  * 

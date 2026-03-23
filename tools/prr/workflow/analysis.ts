@@ -317,7 +317,23 @@ export async function runFinalAudit(
   // If audit fails for some comments, we unmark those once at the end of this
   // function so the next iteration re-verifies; clearing everything would lose valid verifications.
   debug('Starting final audit (verification cache not cleared - results are additive)');
-  
+
+  // Pill-output #11: runtime overlap check (load() also repairs; this surfaces bugs in-session)
+  const verifiedSet = new Set(Verification.getVerifiedComments(stateContext));
+  const dismissedIds = Dismissed.getDismissedIssues(stateContext).map((d) => d.commentId);
+  const overlapIds = dismissedIds.filter((id) => verifiedSet.has(id));
+  if (overlapIds.length > 0) {
+    debug('Invariant: comment ID(s) in both verified and dismissed — should be empty after load/markVerified', {
+      count: overlapIds.length,
+      sample: overlapIds.slice(0, 8),
+    });
+    console.warn(
+      chalk.yellow(
+        `  ⚠ ${formatNumber(overlapIds.length)} comment ID(s) appear in both verified and dismissed — state may be inconsistent; see debug log`,
+      ),
+    );
+  }
+
   spinner.start('Running final audit on all issues...');
   
   // Gather all comments with their current code. Use full file when provided so the audit
