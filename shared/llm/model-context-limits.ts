@@ -8,7 +8,7 @@
  */
 import { MAX_FIX_PROMPT_CHARS } from '../constants.js';
 
-/** ~4 chars per token; leave headroom for completion. */
+/** ~4 chars per token for prose-heavy prompts; code/review prompts skew higher (see Qwen below). */
 const CHARS_PER_TOKEN = 4;
 
 /**
@@ -17,9 +17,17 @@ const CHARS_PER_TOKEN = 4;
 /** M4 (output.log audit): gpt-4o-mini gets a lower prompt cap to avoid 174k-char prompts and timeouts. */
 const GPT4O_MINI_MAX_PROMPT_CHARS = 80_000;
 
+/**
+ * Qwen3-14B via DeepInfra reports 24576-token context; ~89k chars measured as ~27k tokens (~3.2 char/token).
+ * WHY explicit cap: (24576 * 0.8) * 4 ≈ 76k chars still overflowed when model id did not match the lookup
+ * (fallback 100k cap). This hard ceiling keeps fix batches under the real tokenizer budget + completion room.
+ */
+const QWEN_3_14B_MAX_FIX_PROMPT_CHARS = 48_000;
+
 const ELIZACLOUD_MODEL_MAX_INPUT_TOKENS: Record<string, number> = {
-  'alibaba/qwen-3-14b': 24_000,
-  'Qwen/Qwen3-14B': 24_000,
+  // DeepInfra/OpenAI-compat: 24576 total context (error text from gateway, 2026-03).
+  'alibaba/qwen-3-14b': 24_576,
+  'Qwen/Qwen3-14B': 24_576,
   'openai/gpt-4o-mini': 128_000,
   'openai/gpt-4o': 128_000,
   'anthropic/claude-3.5-sonnet': 200_000,
@@ -29,6 +37,11 @@ const ELIZACLOUD_MODEL_MAX_INPUT_TOKENS: Record<string, number> = {
 };
 
 const modelMaxCharsOverride = new Map<string, number>();
+
+function isQwen314BModelId(model: string): boolean {
+  const m = model.toLowerCase();
+  return m.includes('qwen-3-14b') || m.includes('qwen3-14b') || m.includes('qwen/qwen3-14b');
+}
 
 /**
  * Get max fix prompt chars (before file injection) for a provider/model.
@@ -46,8 +59,15 @@ export function getMaxFixPromptCharsForModel(
   if (provider === 'elizacloud' && model) {
     const override = modelMaxCharsOverride.get(model);
     if (override !== undefined) return override;
+    if (isQwen314BModelId(model)) {
+      return QWEN_3_14B_MAX_FIX_PROMPT_CHARS;
+    }
     const tokens = ELIZACLOUD_MODEL_MAX_INPUT_TOKENS[model];
     if (tokens !== undefined) {
+      // Small contexts (≤32k): code-heavy prompts tokenize tighter than 4 chars/token — use 3 + smaller input fraction.
+      if (tokens <= 32_000) {
+        return Math.floor(tokens * 0.62 * 3);
+      }
       return Math.floor((tokens * 0.8) * CHARS_PER_TOKEN);
     }
     return 128_000;

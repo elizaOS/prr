@@ -29,6 +29,7 @@ import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
 import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
 import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
 import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
+import { lowerModelMaxPromptChars } from '../../../shared/llm/model-context-limits.js';
 
 /** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
 function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
@@ -58,6 +59,38 @@ function getElizaCloudErrorContext(error: unknown): { status?: number; statusTex
   if (cause && typeof cause === 'object' && out.body === undefined && 'responseBody' in cause) out.body = cause.responseBody;
   if (cause && typeof cause === 'object' && out.body === undefined && 'error' in cause) out.body = cause.error;
   return out;
+}
+
+/**
+ * Gateway may return HTTP 500 while embedding a 400 "maximum context length" from the upstream.
+ * Retrying is pointless; lowering the fix prompt cap helps the next batch.
+ */
+function isLikelyContextLengthExceededError(e: unknown): boolean {
+  const parts: string[] = [];
+  const walk = (x: unknown, depth: number) => {
+    if (depth > 6 || x == null) return;
+    if (x instanceof Error) {
+      parts.push(x.message);
+      walk(x.cause, depth + 1);
+      return;
+    }
+    if (typeof x === 'string') {
+      parts.push(x);
+      return;
+    }
+    if (typeof x === 'object') {
+      try {
+        parts.push(JSON.stringify(x));
+      } catch {
+        parts.push(String(x));
+      }
+    }
+  };
+  walk(e, 0);
+  const t = parts.join('\n');
+  return /maximum context length|maximum context length is \d+ tokens|input tokens\. please reduce|reduce the length of the input messages|context window.*exceeded/i.test(
+    t
+  );
 }
 
 /** Safe description of an API key for debug/error messages (never log the full key). */
@@ -645,7 +678,19 @@ export class LLMClient {
                 debug('ElizaCloud error (response context)', getElizaCloudErrorContext(e504));
               }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
-              if (attempt504 < max504Retries && (isServerError(e504) || timeoutMsg)) {
+              const contextOverflow = isLikelyContextLengthExceededError(e504);
+              if (contextOverflow && this.provider === 'elizacloud') {
+                lowerModelMaxPromptChars('elizacloud', chosenModel, prompt.length);
+                debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
+                  model: chosenModel,
+                  promptLength: prompt.length,
+                });
+              }
+              if (
+                attempt504 < max504Retries &&
+                (isServerError(e504) || timeoutMsg) &&
+                !contextOverflow
+              ) {
                 const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
                 debug('Server error or request timeout, retrying', {
                   attempt: attempt504 + 1,
