@@ -2195,7 +2195,7 @@ export async function findUnresolvedIssues(
       if (r?.exists && !Verification.isVerified(stateContext, freshToAnalyze[i].comment.id)) toFixFromBatch++;
     }
     const toFixCount = toFixFromBatch + cachedOpenNotInBatch;
-    if (toFixCount >= 5 && modelContext?.availableModels?.length) {
+    if (toFixCount >= 5 && (modelContext?.availableModels?.length ?? 0) > 1) {
       const summaryLines = [...batchResult.issues.entries()].map(([id, r]) => {
         const triage = r.exists ? ` I${r.importance} D${r.ease}` : '';
         const snippet = r.explanation.slice(0, 200).replace(/\n/g, ' ');

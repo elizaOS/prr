@@ -28,8 +28,13 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
-import { formatNumber, debugStep, startTimer, endTimer, debug } from '../../../shared/logger.js';
-import { COULD_NOT_INJECT_CREATE_FILE_THRESHOLD, COULD_NOT_INJECT_DISMISS_THRESHOLD, DELETE_ENTIRELY_DISMISS_THRESHOLD } from '../../../shared/constants.js';
+import { formatNumber, debugStep, startTimer, endTimer, debug, warn } from '../../../shared/logger.js';
+import {
+  COULD_NOT_INJECT_CREATE_FILE_THRESHOLD,
+  COULD_NOT_INJECT_DISMISS_THRESHOLD,
+  DELETE_ENTIRELY_DISMISS_THRESHOLD,
+  getDiminishingReturnsIterationThreshold,
+} from '../../../shared/constants.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -466,6 +471,22 @@ export async function executePushIteration(
     
     progressThisCycle += cleanupResult.progressMade;
     if (cleanupResult.expectedBotResponseTime !== undefined) expectedBotResponseTimeRef.current = cleanupResult.expectedBotResponseTime;
+
+    const drThreshold = getDiminishingReturnsIterationThreshold();
+    if (drThreshold > 0) {
+      if (cleanupResult.progressMade <= 0) {
+        stateContext.diminishingReturnsZeroVerifyStreak = (stateContext.diminishingReturnsZeroVerifyStreak ?? 0) + 1;
+        if (!stateContext.diminishingReturnsWarned && stateContext.diminishingReturnsZeroVerifyStreak >= drThreshold) {
+          stateContext.diminishingReturnsWarned = true;
+          warn(
+            `No new verified fixes in the last ${formatNumber(drThreshold)} iteration(s) — consider a stronger fixer model, manual review, or dismissing non-actionable comments. ` +
+              `(Set PRR_DIMINISHING_RETURNS_ITERATIONS=0 to disable.)`,
+          );
+        }
+      } else {
+        stateContext.diminishingReturnsZeroVerifyStreak = 0;
+      }
+    }
 
     // Remove verified issues from the queue so "all fixed" and next iteration see the true remaining set.
     // WHY: allFixed was previously (failedCount === 0), which is true when no verification failures

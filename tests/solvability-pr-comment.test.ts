@@ -127,3 +127,44 @@ describe('(PR comment) path inference in solvability', () => {
     expect(result.dismissCategory).toBe('not-an-issue');
   });
 });
+
+describe('human-confirmed addressed (solvability 0a5b)', () => {
+  it('dismisses when maintainer confirmed the thread is addressed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-confirmed-'));
+    tempDirs.push(dir);
+    const comment: ReviewComment = {
+      id: 'c-conf',
+      threadId: 't-conf',
+      author: 'coderabbitai',
+      path: 'packages/foo.ts',
+      line: 12,
+      createdAt: new Date().toISOString(),
+      body: '_Potential issue_\n\n**Trim order**\n\n✅ Confirmed as addressed by @odilitime',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+    expect(result.reason).toMatch(/confirmed issue already addressed/i);
+  });
+
+  it('does not dismiss when text says not confirmed as addressed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-not-conf-'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    writeFileSync(join(dir, 'x.ts'), 'export const x = 1;\n', 'utf8');
+    execFileSync('git', ['add', 'x.ts'], { cwd: dir, stdio: 'ignore' });
+    const comment: ReviewComment = {
+      id: 'c-nc',
+      threadId: 't-nc',
+      author: 'bot',
+      path: 'x.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+      body: 'Not confirmed as addressed — please fix the race condition.',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.dismissCategory).not.toBe('not-an-issue');
+    expect(result.reason ?? '').not.toMatch(/confirmed issue already addressed/i);
+    expect(result.solvable).toBe(true);
+  });
+});

@@ -32,9 +32,9 @@ const OUTPUT_LOG_HEAD_TAIL_LINES = 400;
 /** When trimming, per-section caps are scaled from defaults by (budget / DEFAULT_PILL_CONTEXT_BUDGET_TOKENS). Order: outputLog, promptsDigest, sourceFiles, docs, tree. */
 const OUTPUT_LOG_MAX_TOKENS_DEFAULT = 14_000;
 /** Hard cap on output log chars sent to audit (504 avoidance). Overridable via PILL_OUTPUT_LOG_MAX_CHARS.
- * WHY 40k not 50k: System prompt + JSON overhead + user message structure can add 8-10k chars; 50k log + overhead → 504.
- * Lower cap leaves room for system prompt and JSON structure. */
-const DEFAULT_OUTPUT_LOG_MAX_CHARS = 40_000;
+ * WHY 28k: Vercel FUNCTION_INVOCATION_TIMEOUT on ElizaCloud audit + large prompts digest; 40k still 504'd with Opus.
+ * Override: PILL_OUTPUT_LOG_MAX_CHARS. */
+const DEFAULT_OUTPUT_LOG_MAX_CHARS = 28_000;
 const PROMPTS_DIGEST_MAX_TOKENS_DEFAULT = 8_000;
 const SOURCE_MAX_TOKENS_WHEN_TRIMMED_DEFAULT = 10_000;
 const DOCS_MAX_TOKENS_WHEN_TRIMMED_DEFAULT = 2_000;
@@ -45,8 +45,19 @@ const AUDIT_TRUNCATE_MARKER =
 const OUTPUT_LOG_CAP_MARKER =
   '\n\n[ ... truncated (output log char cap for 504 avoidance) ... ]\n\n';
 
+/** Small prompts.log path: cap each entry so a few huge PROMPTs do not blow the audit payload. */
+const MAX_RAW_PROMPTS_ENTRY_CHARS = 12_000;
+const RAW_PROMPTS_ENTRY_MARKER =
+  '\n[ ... pill: truncated entry for digest size (504 avoidance) ... ]\n';
+
 function formatPromptsRaw(entries: { slug: string; type: string; content: string }[]): string {
-  const parts = entries.map((e) => `--- ${e.slug} ${e.type} ---\n${e.content}`);
+  const parts = entries.map((e) => {
+    const body =
+      e.content.length > MAX_RAW_PROMPTS_ENTRY_CHARS
+        ? e.content.slice(0, MAX_RAW_PROMPTS_ENTRY_CHARS) + RAW_PROMPTS_ENTRY_MARKER
+        : e.content;
+    return `--- ${e.slug} ${e.type} ---\n${body}`;
+  });
   return parts.join('\n\n');
 }
 

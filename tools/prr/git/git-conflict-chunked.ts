@@ -159,6 +159,154 @@ export function extractConflictSides(conflictLines: string[]): { ours: string[];
 }
 
 /**
+ * First `=======` that belongs to the outermost open conflict (nesting depth === 1).
+ * WHY: Nested `<<<<<<<` (e.g. CHANGELOG) made the old parser treat the inner `>>>>>>>` as the
+ * end of the outer region → broken chunks or zero chunks for valid files.
+ */
+function findOuterConflictSeparatorLine(lines: string[], outerStart: number): number {
+  let depth = 0;
+  for (let i = outerStart; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      // Closed the conflict that opened at outerStart without ever seeing `=======` at depth 1
+      // (two-marker conflict or junk) — do not keep scanning; later `=======` belongs to other regions.
+      if (depth === 0) return -1;
+    } else if (line.startsWith('=======') && depth === 1) return i;
+  }
+  return -1;
+}
+
+/**
+ * Closing `>>>>>>>` for the outer conflict whose `=======` is at `sepIdx`.
+ */
+function findOuterConflictEndLine(lines: string[], sepIdx: number): number {
+  let depth = 1;
+  for (let i = sepIdx + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Trim leading whitespace on lines that are conflict markers so `<<<<<<<` is column 0.
+ * WHY: Editors or bad merges sometimes indent markers; `startsWith('<<<<<<<')` would miss them and
+ * nested-depth parsing would see a different shape than git intended.
+ */
+export function normalizeConflictMarkerLines(content: string): string {
+  return content
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (
+        trimmed.startsWith('<<<<<<<') ||
+        trimmed.startsWith('=======') ||
+        trimmed.startsWith('>>>>>>>')
+      ) {
+        return trimmed;
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+/**
+ * Skip to the line after a conflict block that opened at `startLine` when the block has no valid
+ * outer `=======` / `>>>>>>>` pair (or close is missing). Uses <<<<<<< / >>>>>>> depth counting.
+ * WHY: `i++` on malformed markers rescanned every inner line and spammed debug; it also left the
+ * parser out of sync with real git conflict regions.
+ */
+function advancePastBrokenConflictRegion(lines: string[], startLine: number): number {
+  let depth = 0;
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      if (depth <= 0) return i + 1;
+    }
+  }
+  return lines.length;
+}
+
+/**
+ * Index of the `>>>>>>>` that closes the conflict opened at `startLine` (depth on <<<<<<< / >>>>>>> only).
+ * WHY: Detect two-marker conflicts (`<<<<<<<` … `>>>>>>>` with no `=======`) and nested blocks missing
+ * an outer separator — same balance rule as skipping broken regions.
+ */
+function findMatchingConflictCloseLine(lines: string[], startLine: number): number {
+  let depth = 0;
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Insert missing `=======` before the closing `>>>>>>>` when the outer conflict has no separator at depth 1.
+ * WHY: Botched merges and some tools emit two-marker conflicts; git-shaped three-way text restores parsing.
+ * Valid files pass through unchanged (separator already present). Opt out: `PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR=1`.
+ */
+export function repairMissingConflictSeparators(content: string): string {
+  const lines = normalizeConflictMarkerLines(content).split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i]!.startsWith('<<<<<<<')) {
+      out.push(lines[i]!);
+      i++;
+      continue;
+    }
+    const start = i;
+    const sepIdx = findOuterConflictSeparatorLine(lines, start);
+    if (sepIdx >= 0) {
+      const endIdx = findOuterConflictEndLine(lines, sepIdx);
+      if (endIdx >= 0) {
+        for (let j = start; j <= endIdx; j++) out.push(lines[j]!);
+        i = endIdx + 1;
+        continue;
+      }
+      for (let j = start; j < lines.length; j++) out.push(lines[j]!);
+      i = lines.length;
+      continue;
+    }
+    const closeIdx = findMatchingConflictCloseLine(lines, start);
+    if (closeIdx < 0) {
+      const nextI = advancePastBrokenConflictRegion(lines, start);
+      for (let j = start; j < nextI; j++) out.push(lines[j]!);
+      i = nextI;
+      continue;
+    }
+    for (let j = start; j < closeIdx; j++) out.push(lines[j]!);
+    out.push('=======');
+    out.push(lines[closeIdx]!);
+    i = closeIdx + 1;
+  }
+  return out.join('\n');
+}
+
+/**
+ * Normalize + optional separator repair before chunk extraction. Used when reading conflicted files.
+ */
+export function preprocessConflictFileContent(content: string): string {
+  if (process.env.PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR?.trim() === '1') {
+    return normalizeConflictMarkerLines(content);
+  }
+  return repairMissingConflictSeparators(content);
+}
+
+/**
  * Extract all conflict regions from a file
  * WHY: Parse once, resolve many - more efficient than regex searching repeatedly
  */
@@ -166,53 +314,55 @@ export function extractConflictChunks(
   content: string,
   contextLines: number = 10
 ): ConflictChunk[] {
-  const lines = content.split('\n');
+  const lines = preprocessConflictFileContent(content).split('\n');
   const chunks: ConflictChunk[] = [];
   let i = 0;
 
   while (i < lines.length) {
-    // Find conflict marker
-    if (lines[i].startsWith('<<<<<<<')) {
-      const startLine = i;
-      const contextBefore = lines.slice(Math.max(0, i - contextLines), i);
-
-      // Find end of conflict (>>>>>>)
-      let endLine = i;
-      const conflictLines: string[] = [];
-
-      while (endLine < lines.length && !lines[endLine].startsWith('>>>>>>>')) {
-        conflictLines.push(lines[endLine]);
-        endLine++;
-      }
-
-      if (endLine < lines.length) {
-        conflictLines.push(lines[endLine]); // Include >>>>>>> line
-        endLine++;
-
-        const contextAfter = lines.slice(endLine, Math.min(lines.length, endLine + contextLines));
-
-        chunks.push({
-          startLine,
-          endLine: endLine - 1,
-          contextBefore,
-          conflictLines,
-          contextAfter,
-          fullContent: [
-            ...contextBefore,
-            ...conflictLines,
-            ...contextAfter
-          ].join('\n')
-        });
-
-        i = endLine;
-      } else {
-        // Malformed conflict (no closing marker)
-        debug('Malformed conflict marker - no closing >>>>>>>', { startLine });
-        i++;
-      }
-    } else {
+    if (!lines[i]!.startsWith('<<<<<<<')) {
       i++;
+      continue;
     }
+
+    const startLine = i;
+    const contextBefore = lines.slice(Math.max(0, i - contextLines), i);
+    const sepIdx = findOuterConflictSeparatorLine(lines, startLine);
+    if (sepIdx < 0) {
+      const nextI = advancePastBrokenConflictRegion(lines, startLine);
+      debug('Malformed conflict marker — no ======= at outer depth', {
+        startLine,
+        skippedToLine: nextI,
+      });
+      i = nextI;
+      continue;
+    }
+
+    const endIdx = findOuterConflictEndLine(lines, sepIdx);
+    if (endIdx < 0) {
+      const nextI = advancePastBrokenConflictRegion(lines, startLine);
+      debug('Malformed conflict marker — no closing >>>>>>> for outer region', {
+        startLine,
+        skippedToLine: nextI,
+      });
+      i = nextI;
+      continue;
+    }
+
+    const conflictLines = lines.slice(startLine, endIdx + 1);
+    const endLine = endIdx;
+    const afterStart = endLine + 1;
+    const contextAfter = lines.slice(afterStart, Math.min(lines.length, afterStart + contextLines));
+
+    chunks.push({
+      startLine,
+      endLine,
+      contextBefore,
+      conflictLines,
+      contextAfter,
+      fullContent: [...contextBefore, ...conflictLines, ...contextAfter].join('\n'),
+    });
+
+    i = afterStart;
   }
 
   return chunks;
@@ -312,7 +462,7 @@ async function getFileConflictOverviewInternal(
   baseBranch: string,
   model?: string
 ): Promise<string | null> {
-  const opts = model ? { model } : undefined;
+  const opts = { phase: 'conflict-file-story' as const, ...(model ? { model } : {}) };
   try {
     const segments = splitFileIntoFullSegments(content, FILE_OVERVIEW_SEGMENT_CHARS);
     let story = '';
@@ -367,7 +517,10 @@ export async function resolveConflictChunk(
   );
 
   try {
-    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
+    const response = await llm.complete(prompt, undefined, {
+      phase: 'conflict-chunk',
+      ...(model ? { model } : {}),
+    });
     if (!response || typeof response.content !== 'string') {
       return {
         resolved: false,
@@ -603,7 +756,10 @@ async function resolveOneSubChunk(
     fileOverview
   );
   try {
-    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
+    const response = await llm.complete(prompt, undefined, {
+      phase: 'conflict-subchunk',
+      ...(model ? { model } : {}),
+    });
     const content = response?.content ?? '';
     const codeMatch = content.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
     if (!codeMatch) {
@@ -982,7 +1138,7 @@ export async function resolveConflictsWithTopTailsFallback(
   const lines = content.split('\n');
   const resolutions = new Map<number, string[]>();
   const explanations: string[] = [];
-  const opts = model ? { model } : undefined;
+  const opts = { phase: 'conflict-top-tails' as const, ...(model ? { model } : {}) };
 
   for (const chunk of chunks) {
     const { ours, theirs } = extractConflictSides(chunk.conflictLines);
@@ -1613,7 +1769,10 @@ NO_ADDITIONS - if the smaller side has nothing meaningful beyond what the larger
 ADDITIONS_FOUND: <brief description of what unique content exists>`;
 
   try {
-    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
+    const response = await llm.complete(prompt, undefined, {
+      phase: 'conflict-asymmetric-check',
+      ...(model ? { model } : {}),
+    });
     const responseText = response.content.trim();
 
     if (responseText.startsWith('NO_ADDITIONS')) {

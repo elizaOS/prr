@@ -15,6 +15,18 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 **Why human-in-the-loop drives the design:** When the human can interrupt (Ctrl+C), inspect the workdir, and decide when to push, the system must persist state, avoid silent failures, and keep the workdir usable. That’s why we save state on signal, close logs before exit, and never assume the process runs to completion.
 
+## Pill output triage (`pill-output.md`)
+
+**What it is:** Optional artifact from **pill** after auditing a run’s `output.log`. This repo may keep a copy at **`pill-output.md`** for traceability.
+
+**Mixed sources:** Some items reference **`src/`** or **`packages/`** paths from **another repository** (the PR pill analyzed). Those are **not** prr layout — treat them as **N/A (external)** when porting fixes. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state lives under **`tools/prr/state`**, not root **`src/state.ts`**).
+
+**Per-item status:** Each improvement line includes **`**Status:** …`** and a legend at the top of **`pill-output.md`** (`Done (prr)`, `Partial (prr)`, `Open (prr)`, `N/A (external)`, etc.).
+
+**WHY document this here:** Contributors otherwise grep for `src/` in pill text and assume missing files are a bug in prr. The status lines record what was implemented in **this** tree vs. what was eliza/downstream-only.
+
+**Where the prr-side work landed (pointers):** Path fragments vs `missing-file` and extension variants — **`shared/path-utils.ts`**, solvability; verified/dismissed overlap and head cleanup — **`tools/prr/state`**; session model skip / diminishing-returns warning — **`shared/constants.ts`**, **`tools/prr/models/rotation.ts`**, **`tools/prr/workflow/push-iteration-loop.ts`**; committed-fix scan cache — **`shared/git/git-commit-scan.ts`**; 429 concurrency restore — **`shared/llm/rate-limit.ts`**; dirty / unmergeable PR warning — setup phase (see **AGENTS.md**). Full bullets: **CHANGELOG [Unreleased]**.
+
 **Technical implications**:
 - State persistence is critical (resume after interruption)
 - Workdir preservation by default (inspect before pushing)
@@ -1328,6 +1340,16 @@ The old code had ~250 lines duplicated. Now all share `resolveConflictsWithLLM()
 - Conflict markers (`<<<<<<<`) in files will cause fixer tools to fail confusingly
 - They might try to "fix" the conflict markers as if they were code issues
 - Better to detect and resolve conflicts upfront
+
+**Nested conflict markers:** `extractConflictChunks` uses nesting depth so the **outer** `=======` / `>>>>>>>` pair is found; a second `<<<<<<<` inside the ours section no longer terminates the region at the inner `>>>>>>>`.
+
+**Separator scan:** `findOuterConflictSeparatorLine` stops when a `>>>>>>>` closes the opening conflict **before** any `=======` at depth 1 (two-marker / botched blocks). That prevents a **later** conflict’s `=======` from being mistaken for the first block’s separator.
+
+**Separator repair:** `preprocessConflictFileContent` (on conflicted reads) inserts a missing `=======` before the closing `>>>>>>>` when needed. Opt out: **`PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR=1`**.
+
+**Large-file syntax fix:** If post-merge parse fails and the file exceeds **`MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS`**, PRR tries a **windowed** LLM pass around the error line (or first `<<<<<<<`) before giving up. Tunables: **`CONFLICT_SYNTAX_FIX_WINDOW_HALF_LINES`**, **`CONFLICT_SYNTAX_FIX_WINDOW_MAX_CHARS`**.
+
+**Markerless unmerged paths:** If git still lists a file as conflicted but the working tree has no standard markers (e.g. after a partial tool write), PRR may resolve **TypeScript/JavaScript** sources from the index: **stage 2 (ours / PR branch)** by default. Set **`PRR_MARKERLESS_CONFLICT_PREFER=theirs`** to take **stage 3 (incoming / base)** instead.
 
 **Lock file handling** (`handleLockFileConflicts`):
 

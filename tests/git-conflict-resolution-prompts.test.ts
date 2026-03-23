@@ -4,7 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { LLMClient } from '../tools/prr/llm/client.js';
 import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../shared/constants.js';
-import { buildConflictResolutionPromptWithContent } from '../tools/prr/git/git-conflict-prompts.js';
+import {
+  buildConflictResolutionPromptWithContent,
+  splitConflictFilesIntoBatches,
+} from '../tools/prr/git/git-conflict-prompts.js';
 import {
   extractConflictChunks,
   extractConflictSides,
@@ -57,6 +60,33 @@ describe('conflict resolution prompt improvements', () => {
     );
     expect(prompt).toContain('--- FILE: demo.ts (section 1/');
     expect(prompt).not.toContain('--- FILE: demo.ts ---\nbefore_0');
+  });
+
+  it('splits conflict files into multiple batches when a single prompt would exceed the batch char cap', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-conflicts-split-'));
+    tempDirs.push(dir);
+
+    const small = `line\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n`;
+    writeFileSync(join(dir, 'one.ts'), small, 'utf-8');
+    writeFileSync(join(dir, 'two.ts'), small, 'utf-8');
+    writeFileSync(join(dir, 'three.ts'), small, 'utf-8');
+
+    const maxTotal = 200_000;
+    const full = buildConflictResolutionPromptWithContent(['one.ts', 'two.ts', 'three.ts'], 'main', dir, maxTotal);
+    const oneOnly = buildConflictResolutionPromptWithContent(['one.ts'], 'main', dir, maxTotal).length;
+    const twoFiles = buildConflictResolutionPromptWithContent(['one.ts', 'two.ts'], 'main', dir, maxTotal).length;
+    expect(twoFiles).toBeGreaterThan(oneOnly);
+    const tightBatch = oneOnly + Math.floor((twoFiles - oneOnly) / 2);
+    expect(full.length).toBeGreaterThan(tightBatch);
+    expect(oneOnly).toBeLessThanOrEqual(tightBatch);
+    expect(twoFiles).toBeGreaterThan(tightBatch);
+
+    const batches = splitConflictFilesIntoBatches(['one.ts', 'two.ts', 'three.ts'], 'main', dir, maxTotal, tightBatch);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      expect(buildConflictResolutionPromptWithContent(batch, 'main', dir, maxTotal).length).toBeLessThanOrEqual(tightBatch);
+    }
+    expect(new Set(batches.flat())).toEqual(new Set(['one.ts', 'two.ts', 'three.ts']));
   });
 
   it('omits a chunked file entirely when all sections will not fit in the prompt budget', () => {

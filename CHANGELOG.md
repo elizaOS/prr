@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation (2026-03) — Pill output status + cross-links
+
+- **`pill-output.md`:** Status legend and a **Status** line on each numbered item (prr Done / Partial / Open vs N/A external for eliza/`packages/*`-shaped paths). **WHY:** Pill text mixed target-repo items with PRR items; without tags, contributors misread missing `src/` paths as prr breakage.
+- **`DEVELOPMENT.md`:** “Pill output triage” — mixed sources, mapping to `tools/prr`/`shared`, pointers to implemented areas.
+- **`README.md`:** **`PRR_SESSION_MODEL_SKIP_FAILURES`** and **`PRR_DIMINISHING_RETURNS_ITERATIONS`** under Configuration (**WHY:** discoverable operator knobs; defaults match `shared/constants.ts`).
+- **`AGENTS.md`:** “Pill output” note linking **`pill-output.md`** + **DEVELOPMENT.md**.
+- **`docs/ROADMAP.md`:** Mutual-exclusivity item marked largely done; “Pill-output follow-ups” for remaining prr-scope work.
+
+### Changed (2026-03) — Dirty PR warning + scanCommittedFixes cache
+
+- **Setup:** When GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set**, emit a **`warn`** that resolving conflicts or using **`--merge-base`** may avoid wasted work.
+- **`scanCommittedFixes`:** Optional in-process cache keyed by **`workdir` + branch + `HEAD`** (passed from **`recoverVerificationState`**); **`clearScanCommittedFixesCache()`** for tests. Removed unused **`scanCommittedFixes`** import from **`resolver.ts`**.
+
+### Changed (2026-03) — Path fragment vs missing-file (canonical dismissal)
+
+- **`shared/path-utils.ts`:** **`isReviewPathFragment`** and **`pathDismissCategoryForNotFound`** centralize rules. Extension-only paths (e.g. `.d.ts`, `d.ts`) map to **`path-unresolved`**; real root files like **`.env`** are **not** fragments (fixes over-broad “dot file, no slash” logic).
+- **`assessSolvability`:** “Tracked file not found” uses **`pathDismissCategoryForNotFound`** so **`missing-file` vs `path-unresolved`** stays consistent when **`git ls-files`** is unavailable or resolution is **`missing`**.
+- **State load:** Legacy **`missing-file`** rows whose **`filePath`** is a fragment are normalized to **`path-unresolved`** (broader than `.d.ts` only).
+
+### Changed (2026-03) — Session model skip + diminishing-returns warning
+
+- **Rotation:** After **`PRR_SESSION_MODEL_SKIP_FAILURES`** cumulative verification failures (default **4**) for a tool/model pair with **no** verified fixes this process, that model is **skipped until the next run**; a verified fix clears the skip. **`getCurrentModel`** skips session-bad models for recommended and legacy rotation ( **`PRR_SESSION_MODEL_SKIP_FAILURES=0`** disables).
+- **Fix loop:** One **`warn`** when **`PRR_DIMINISHING_RETURNS_ITERATIONS`** consecutive iterations (default **10**) produce **no** new verified fixes; **`0`** disables.
+
+### Changed (2026-03) — Clone base refs, verification no-ops
+
+- **`cloneOrUpdate`:** Fetches **`additionalBranches`** in the **preserve-changes** path too (read-only), then **fails fast** if any required **`origin/<branch>`** ref is still missing (default **`verifyAdditionalRemoteRefs: true`**). **split-exec** passes **`verifyAdditionalRemoteRefs: false`** because new split branch names may not exist on the remote yet.
+- **`markVerified`:** No-op when the comment is already verified at the **current iteration** with the same **`autoVerifiedFrom`** and no **dismissed** overlap to fix. Git recovery skips **`markVerified`** when the ID is already verified.
+
+### Changed (2026-03) — Pill output.log: state, logging, config, push, docs
+
+- **State:** **`verifiedSet`** on load includes **`verifiedComments`** (not only **`verifiedFixed`**) when removing overlaps; **`StateManager.load`** also removes dismissed entries for any verified ID. **`markVerified` (update)** strips **`dismissedIssues`**. **`loadState`** clears **`already-fixed`** dismissals on PR **head** change (aligned with **`StateManager`**).
+- **429 cooldown:** **`acquireElizacloud`** logs (debug) when the post-429 half-concurrency window ends and full **`PRR_MAX_CONCURRENT_LLM`** cap applies again.
+- **prompts.log:** On empty PROMPT/RESPONSE body refusal, writes a **`PROMPTLOG_EMPTY_BODY`** line into **`prompts.log`** for CI/pill visibility.
+- **Config:** Warns when both **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY`** and **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL`** are set.
+- **CLI:** Warns when **`--reply-to-threads`** is on but **`PRR_BOT_LOGIN`** is unset.
+- **Runners:** When not **`--verbose`**, **`debug`** lists fix tools that were skipped (not ready / not installed).
+- **`pushWithRetry`:** **`console.warn`** with conflicted file list when rebase conflicts are not resolved (handler missing or failed).
+- **Commits:** **`generateCommitFirstLine`** truncates the base subject to **72** chars when needed.
+- **Docs:** **README** final-audit bullet completed; **`.env.example`** expanded; **AGENTS.md** “State and path invariants”.
+
+### Fixed (2026-03) — Merge: conflict marker normalization + malformed skip
+
+- **`normalizeConflictMarkerLines`:** Strips **leading whitespace** on `<<<<<<<` / `=======` / `>>>>>>>` lines so indented markers still parse; applied when reading conflicted files in **`git-conflict-resolve`** and inside **`extractConflictChunks`**.
+- **Malformed regions:** If a block has **no outer `=======`** or **no closing `>>>>>>>`**, advance past the whole region (depth-balanced) instead of **`i++`**, reducing debug spam and allowing **valid conflicts later in the file** to parse.
+
+### Fixed / changed (2026-03) — Merge: separator repair, outer-`=======` scan, windowed syntax fix
+
+- **`findOuterConflictSeparatorLine`:** Stops when **`>>>>>>>`** brings depth back to **0** before any **`=======` at depth 1** — avoids attributing a **later** conflict’s separator to an **earlier** two-marker block (fixes bogus single mega-chunk and “malformed” spam).
+- **`repairMissingConflictSeparators`:** Inserts a missing **`=======`** before the closing **`>>>>>>>`** for two-marker conflicts; **`preprocessConflictFileContent`** runs normalize + repair; opt out with **`PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR=1`**.
+- **Syntax fix (large files):** If the file exceeds **`MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS`**, try a **windowed** LLM fix around the TS/JS error line (or first `<<<<<<<`) before giving up — **`CONFLICT_SYNTAX_FIX_WINDOW_HALF_LINES`** / **`CONFLICT_SYNTAX_FIX_WINDOW_MAX_CHARS`** in **`shared/constants.ts`**.
+
+### Changed (2026-03) — Model catalog, state overlap, concurrency env, observability
+
+- **`loadModelProviderCatalog`:** Missing, unreadable, or invalid JSON **no longer throws** — logs a **one-time warning** per path and returns an **empty in-memory catalog** (dismissal/auto-heal stay fail-open; run `npm run update-model-catalog` to restore).
+- **State load:** Removes **`verifiedComments`** rows whose `commentId` is in **`dismissedIssues`** (same overlap rule as **`verifiedFixed`**); **`StateManager.load`** uses **`formatNumber`** for overlap counts.
+- **`PRR_MAX_CONCURRENT_LLM`:** Invalid values log a **one-time warning** and clamp to **1** (range **1–32**).
+- **`PRR_ELIZACLOUD_INCLUDE_MODELS`:** Logs once how the ElizaCloud **skip list** was narrowed.
+- **Solvability 0a6:** **Gray console line** when a comment is dismissed as catalog model-id noise (easier audits).
+
+### Fixed (2026-03) — Merge: nested conflict markers + large-file single-shot + markerless TS
+
+- **`extractConflictChunks`:** Depth-aware parsing so **nested `<<<<<<<`** (e.g. CHANGELOG) no longer ends the outer region at the **inner** `>>>>>>>` — fixes empty/wrong chunks and failed resolution on valid files.
+- **Attempt 2:** Skip **`resolveConflict`** single-shot when file **> 50k chars** if chunked already ran (avoids misleading “file too large” as the only message); parse-retry skips single-shot over cap too.
+- **Markerless unmerged** `.ts`/`.tsx`/`.js`/`.jsx`: choose **stage 2 (ours)** or **stage 3 (theirs)** from the index and **`git add`** — **`PRR_MARKERLESS_CONFLICT_PREFER=theirs`** to prefer base.
+- **Top+tails failure:** Log **fallback’s** explanation when it is more specific than the prior failure.
+- **Constants:** **`MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS`** aliases the 50k cap; **`LLMClient.resolveConflict`** imports it.
+
+### Fixed (2026-03) — Pill 504 on ElizaCloud (large prompts.log + Opus audit)
+
+- **prompts.log digest:** Each PROMPT/RESPONSE **pair truncated (~18k chars)** before story-read chapter grouping — a single huge entry no longer bypasses the chapter token budget.
+- **Story-read:** Lower **chapter token budgets** (8k paired / 10k plain text) so summarization calls stay smaller.
+- **Audit request:** Default user payload cap **~20k chars** per request (was ~42k); **~12k** for Opus-class / `o3-` / `gpt-5` (excluding mini/nano) audit models. Optional **`PILL_AUDIT_MAX_USER_CHARS`** (6000–80000). **Output log** default char cap **28k** (was 40k). **Raw prompts path:** **12k** max per log entry.
+- **Docs:** `tools/pill/README.md`, **AGENTS.md** (Pill section).
+
+### Changed (2026-03) — prompts.log pairing, conflict phases, nested-marker warning
+
+- **LLM client:** If the provider returns **HTTP success with an empty/whitespace body**, **`prompts.log` records an `ERROR` entry** for that slug (avoids orphan PROMPT lines; `writeToPromptLog` refuses empty RESPONSE).
+- **Merge conflict LLM calls:** Log metadata **`phase`** set per step (`resolve-conflict`, `conflict-syntax-fix`, `conflict-file-story`, `conflict-chunk`, `conflict-subchunk`, `conflict-top-tails`, `conflict-asymmetric-check`) for easier audits.
+- **Nested conflicts:** **`hasNestedConflictMarkers`** in **`shared/git/git-lock-files.ts`**; per-file **yellow warning** during Attempt 2 when the working tree has overlapping `<<<<<<<` regions.
+
+### Changed (2026-03) — Merge conflicts, handoff/AAR, solvability, prompts.log messaging
+
+- **Base-branch conflict resolution:** When one embedded batch exceeds the char budget, **split into multiple `llm-api` runner batches** instead of skipping Attempt 1; batch cap scales with model context (capped for timeouts). **`hasConflictMarkers`** matches the same scanner as conflict discovery; clearer message when git is unmerged but the working tree has no standard markers; **`ROADMAP.md`** uses the same deterministic keep-ours strategy as changelog-style docs.
+- **Reporting:** **`merge_conflicts`** exit shows **merge-first** warnings in handoff, AAR, and RESULTS SUMMARY; AAR summary separates **PR comments loaded this run** from **bucket counts** (clarifies 0 fetched vs cumulative state); **`executeErrorCleanup`** receives **`exitReason`/`exitDetails`** so setup failures (e.g. merge) are not mislabeled; **handoff** folds near-duplicate unresolved issues (same file + first line).
+- **Solvability 0a5b:** Dismisses review threads where a human **confirmed addressed** (e.g. ✅ Confirmed as addressed by @user) as **not-an-issue**.
+- **Docs / CLI:** **`prompts.log`** behavior documented in **AGENTS.md**; startup banner and **README** `--verbose` row no longer imply prompts are gated on verbose (in-process LLM vs subprocess; **`PRR_DEBUG_PROMPTS=1`**).
+
 ### Fixed / changed (2026-03) — Catalog parse, merge-meta solvability, fixer UX, prune hint, prompt catalog context
 
 - **`parseModelRenameAdvice`:** Parses CodeRabbit-style **“model name typo \`X\`”** headings when a **use / recommended / prefer … \`Y\`** appears later in the same comment — same **0a6** dismissal + auto-heal as one-line pairs (audit eliza#6575 duplicate telegram threads).
@@ -15,6 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Git recovery + prune:** After **`Recovered N … from git`**, the **prune** line can append how many IDs were recovered this run vs current PR comment count (`StateContext.gitRecoveredVerificationCount`).
 - **Auto-heal:** Removed hard-coded debug logging for specific comment id prefixes.
 - **Verifier + fixer prompts:** When a comment matches outdated model advice pattern (even if not dismissed by 0a6), inject **catalog context** warning that both IDs are valid and the PR should keep the catalog-correct ID — prevents verifier/fixer from blindly following the review's "invalid model" claim (audit prompts.log eliza#6575).
+- **`unmarkVerified`:** Also removes the comment id from **`verifiedThisSession`** so **final-audit** re-queues are not dropped by “verified this session” filtering (audit output.log babylon#1327).
+- **Final audit (prompts.log Cycle 65):** **`PRR_FINAL_AUDIT_MODEL`** chooses the model for the adversarial final-audit pass (**`finalAuditModel` → `verifierModel` → `llmModel`**). Prompt rules stress judging from **shown code** vs stale review text; **UUID comment / `[1-8]` regex** post-check demotes false **UNFIXED**. Batch verify: shorter examples; **YES→NO** when **`(end of file)`** snippet but explanation cites **truncation**; skip **model recommendation** call when only **one** fixer model exists.
+- **Cycle 64 follow-through (output.log babylon#1327):** **RESULTS SUMMARY** / **AAR** / PR review body explain **audit re-queue** vs **exit state** (no false “still broken” when all re-opened issues were fixed again). **`runFinalAudit`**: one **`unmarkVerified`** pass (no duplicate with **`main-loop-setup`**); **UUID snippet + verified-this-session** tie-break keeps verified when code already matches. **Auto-heal:** silent return when a comment does not suggest an invalid catalog model id (drops per-comment debug spam). **Tests:** `mkdir` **`src/`** before writes in split-exec / split-rewrite-plan git fixture tests.
 
 ### Fixed (2026-03) — Pill audit 504 on ElizaCloud (chunk size mismatch)
 

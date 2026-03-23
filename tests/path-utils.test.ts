@@ -10,6 +10,8 @@ import {
   normalizePathSegmentEncoding,
   isPathAllowedForFix,
   filterAllowedPathsForFix,
+  isReviewPathFragment,
+  pathDismissCategoryForNotFound,
 } from '../shared/path-utils.js';
 
 describe('normalizeRepoPath', () => {
@@ -94,5 +96,34 @@ describe('filterAllowedPathsForFix', () => {
     expect(filterAllowedPathsForFix(['packages/2Fmessage-service.test.ts'])).toEqual([
       'packages/message-service.test.ts',
     ]);
+  });
+});
+
+describe('isReviewPathFragment', () => {
+  it('treats extension-only review paths as fragments', () => {
+    expect(isReviewPathFragment('.d.ts')).toBe(true);
+    expect(isReviewPathFragment('d.ts')).toBe(true);
+    expect(isReviewPathFragment('.tsx')).toBe(true);
+  });
+  it('does not treat real single-segment root files as fragments', () => {
+    expect(isReviewPathFragment('.env')).toBe(false);
+    expect(isReviewPathFragment('.gitignore')).toBe(false);
+  });
+  it('does not treat normal paths as fragments', () => {
+    expect(isReviewPathFragment('src/foo.ts')).toBe(false);
+    expect(isReviewPathFragment('globals.d.ts')).toBe(false);
+  });
+});
+
+describe('pathDismissCategoryForNotFound', () => {
+  it('uses path-unresolved for ambiguous or fragment resolution', () => {
+    expect(pathDismissCategoryForNotFound('foo.ts', 'ambiguous')).toBe('path-unresolved');
+    expect(pathDismissCategoryForNotFound('x', 'fragment')).toBe('path-unresolved');
+  });
+  it('uses path-unresolved for fragment-shaped review path even when resolution is missing', () => {
+    expect(pathDismissCategoryForNotFound('.d.ts', 'missing')).toBe('path-unresolved');
+  });
+  it('uses missing-file for normal paths with missing resolution', () => {
+    expect(pathDismissCategoryForNotFound('src/nope.ts', 'missing')).toBe('missing-file');
   });
 });

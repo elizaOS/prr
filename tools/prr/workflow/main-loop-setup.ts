@@ -20,7 +20,6 @@ import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
-import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
 import * as Iterations from '../state/state-iterations.js';
 import * as Lessons from '../state/state-lessons.js';
@@ -305,13 +304,7 @@ export async function processCommentsAndPrepareFixLoop(
     );
     
     if (auditResult.failedAudit.length > 0) {
-      // Invalidate verification cache for issues the audit says are still unfixed.
-      // WHY: Without unmarkVerified(), the next iteration's verifyFixes still sees
-      // these as "already verified" and skips them, so Changed files → [] and
-      // zero progress — the loop re-enters forever (e.g. 30+ min runs).
-      for (const { comment } of auditResult.failedAudit) {
-        Verification.unmarkVerified(stateContext, comment.id);
-      }
+      // runFinalAudit() already unmarked every failed-audit comment (single place — avoids duplicate unmark logs).
       // Re-run solvability on audit-failed items so we don't re-enter with unsolvable issues (e.g. (PR comment), deleted file).
       const { assessSolvability } = await import('./helpers/solvability.js');
       unresolvedIssues.length = 0;

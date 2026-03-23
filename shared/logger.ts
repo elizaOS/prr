@@ -446,6 +446,16 @@ function writeToPromptLog(
     } catch {
       // avoid throwing from logger
     }
+    // Pill / audit: record in prompts.log so CI and pill see empty-body events (not only stderr).
+    try {
+      if (promptLogStream) {
+        const stamp = new Date().toISOString();
+        const line = `--- PROMPTLOG_EMPTY_BODY slug=${slug} kind=${kind} label=${JSON.stringify(label)} at=${stamp} ---\n`;
+        promptLogStream.write(line);
+      }
+    } catch {
+      // ignore
+    }
     return;
   }
   const bodyToWrite = content;

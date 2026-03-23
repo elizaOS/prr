@@ -12,9 +12,41 @@
  * - Provides audit trail of what was actually committed
  * 
  * USAGE: Called at startup to restore verification state from previous runs.
+ *
+ * **In-process cache (workdir + branch + HEAD):** Repeated calls with the same refs reuse the
+ * parsed comment-id list so recovery does not re-run `git log` / grep when nothing changed.
+ * **WHY:** Pill noted redundant scans; the scan is bounded but still avoidable when setup and
+ * recovery share one HEAD. Tests call **`clearScanCommittedFixesCache()`**.
  */
 import type { SimpleGit } from 'simple-git';
 import { debug } from '../logger.js';
+
+/** In-process cache: same workdir + branch + HEAD → same grep scan (pill: avoid redundant git log). */
+const committedFixScanCache = new Map<string, string[]>();
+const MAX_SCAN_CACHE_ENTRIES = 64;
+
+function scanCacheKey(workdir: string, branch: string, headSha: string): string {
+  return `${workdir}\0${branch}\0${headSha}`;
+}
+
+function rememberScanCache(key: string, ids: string[]): void {
+  if (committedFixScanCache.size >= MAX_SCAN_CACHE_ENTRIES) {
+    const firstKey = committedFixScanCache.keys().next().value as string | undefined;
+    if (firstKey !== undefined) committedFixScanCache.delete(firstKey);
+  }
+  committedFixScanCache.set(key, ids);
+}
+
+/** Clear process-wide scan cache (tests or long-lived hosts). */
+export function clearScanCommittedFixesCache(): void {
+  committedFixScanCache.clear();
+}
+
+export interface ScanCommittedFixesOptions {
+  /** When set with headSha, reuse a prior in-process result for this workdir/branch/HEAD. */
+  workdir?: string;
+  headSha?: string;
+}
 
 /**
  * Scan git commit messages for prr-fix markers to recover verification state
@@ -45,9 +77,22 @@ import { debug } from '../logger.js';
  * 
  * @param git - SimpleGit instance for the repository
  * @param branch - Current PR branch name
+ * @param opts - Optional cache: pass workdir + headSha to dedupe scans in one process
  * @returns Array of comment IDs that were previously committed (empty on error)
  */
-export async function scanCommittedFixes(git: SimpleGit, branch: string): Promise<string[]> {
+export async function scanCommittedFixes(
+  git: SimpleGit,
+  branch: string,
+  opts?: ScanCommittedFixesOptions
+): Promise<string[]> {
+  if (opts?.workdir && opts?.headSha) {
+    const key = scanCacheKey(opts.workdir, branch, opts.headSha);
+    const hit = committedFixScanCache.get(key);
+    if (hit) {
+      debug('scanCommittedFixes (cache hit)', { branch, headSha: opts.headSha.slice(0, 7) });
+      return [...hit];
+    }
+  }
   try {
     // Find the base branch - try common names
     const baseBranches = ['origin/main', 'origin/master', 'origin/develop'];
@@ -94,7 +139,11 @@ export async function scanCommittedFixes(git: SimpleGit, branch: string): Promis
     
     // Deduplicate: the same ID can appear in multiple commits
     // (e.g., re-verified after a push, or re-committed after interruption)
-    return [...new Set(commentIds)];
+    const unique = [...new Set(commentIds)];
+    if (opts?.workdir && opts?.headSha) {
+      rememberScanCache(scanCacheKey(opts.workdir, branch, opts.headSha), unique);
+    }
+    return unique;
   } catch (error) {
     // WHY catch and return empty instead of throw:
     // Scan failure shouldn't prevent startup - we'll just verify everything fresh

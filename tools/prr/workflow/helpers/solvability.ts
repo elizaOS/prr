@@ -8,6 +8,7 @@
 import { execFileSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve, sep } from 'path';
+import chalk from 'chalk';
 import type { ReviewComment } from '../../github/types.js';
 import type { StateContext } from '../../state/state-context.js';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
@@ -17,7 +18,11 @@ import * as Dismissed from '../../state/state-dismissed.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, APPLY_FAILURE_DISMISS_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
 import { pluralize, debug } from '../../../../shared/logger.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
-import { tryResolvePathWithExtensionVariants } from '../../../../shared/path-utils.js';
+import {
+  isReviewPathFragment,
+  pathDismissCategoryForNotFound,
+  tryResolvePathWithExtensionVariants,
+} from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 import { getOutdatedModelCatalogDismissal } from './outdated-model-advice.js';
 
@@ -166,19 +171,10 @@ function isCreateFileCandidate(comment: ReviewComment, resolution: TrackedPathRe
  * winner both mislead operators. The debug table should say "we could not tell
  * which file this meant" when that is the real problem.
  */
-/** Paths that are fragments (e.g. ".d.ts") or extension-only, not resolvable to a single file. */
-function isPathFragment(rawPath: string): boolean {
-  const t = rawPath.trim();
-  if (!t) return true;
-  if (t.startsWith('.') && !t.includes('/')) return true;  // e.g. ".d.ts"
-  if (/^\.(d\.ts|ts|tsx|js|jsx|mjs|cjs)$/.test(t)) return true;
-  return false;
-}
-
 export function resolveTrackedPathDetailed(workdir: string, rawPath: string, commentBody = ''): TrackedPathResolution {
   const repoFiles = getTrackedRepoFiles(workdir);
   if (!repoFiles) return { kind: 'missing' };
-  if (isPathFragment(rawPath)) return { kind: 'fragment' };
+  if (isReviewPathFragment(rawPath)) return { kind: 'fragment' };
   const exact = repoFiles.find((f) => f === rawPath);
   if (exact) return { kind: 'exact', path: exact };
   const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + rawPath) || f === rawPath);
@@ -385,12 +381,27 @@ export function assessSolvability(
     };
   }
 
+  // Check 0a5b: Human confirmed the thread is addressed (e.g. "✅ Confirmed as addressed by @user").
+  // WHY: output.log audit eliza#6562 — no remaining code task; keeps Remaining queue noisy and burns retries.
+  if (isHumanConfirmedAddressedComment(comment.body)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: 'Reviewer/human confirmed issue already addressed — no code change requested',
+    };
+  }
+
   // Check 0a6: Outdated vendor model-ID "typo" advice (bots vs committed catalog).
   // WHY early in solvability: Same category as 0a4/0a5 — stop non-actionable bot text before path
   // resolution and LLM analysis. Pair must parse + both ids in generated/model-provider-catalog.json.
   // Heal (if enabled) runs in main-loop-setup; dismissal here keeps the issue out of unresolvedIssues.
   const catalogDismiss = getOutdatedModelCatalogDismissal(comment.body ?? '');
   if (catalogDismiss) {
+    console.log(
+      chalk.gray(
+        `Solvability 0a6: dismissing catalog model-id noise — ${catalogDismiss.pair.catalogGoodId} vs ${catalogDismiss.pair.wronglySuggestedId} (comment ${String(comment.id)})`,
+      ),
+    );
     return {
       solvable: false,
       dismissCategory: 'not-an-issue',
@@ -579,7 +590,7 @@ export function assessSolvability(
     }
     return {
       solvable: false,
-      dismissCategory: 'missing-file',
+      dismissCategory: pathDismissCategoryForNotFound(comment.path, pathResolution.kind),
       reason: `Tracked file not found for review path: ${comment.path}`,
     };
   }
@@ -1047,6 +1058,15 @@ function isBotProgressOrChecklistComment(commentBody: string): boolean {
   if (hasProgressHeading && checklistCount >= 2) return true;
   if (checklistCount >= 4 && hasReviewWorkflowText) return true;
   if ((hasProgressHeading || hasReviewWorkflowText) && hasJobRunLink) return true;
+  return false;
+}
+
+/** Thread marked resolved by a human in-line (e.g. CodeRabbit + maintainer confirmation). */
+function isHumanConfirmedAddressedComment(commentBody: string): boolean {
+  const head = commentBody.slice(0, 1500);
+  if (/\bnot\s+confirmed\s+as\s+addressed\b/i.test(head)) return false;
+  if (/✅\s*[Cc]onfirmed\s+as\s+addressed\b/.test(head)) return true;
+  if (/\b[Cc]onfirmed\s+as\s+addressed\s+by\s+@/i.test(head)) return true;
   return false;
 }
 

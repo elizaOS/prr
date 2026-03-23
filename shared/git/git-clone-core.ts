@@ -77,6 +77,58 @@ function findReferenceWorkdir(workdir: string, cloneUrl: string): string | null 
   return candidates[0].path;
 }
 
+/**
+ * Ensure refs/remotes/origin/<b> exist for each additional branch after fetch.
+ * WHY: --single-branch clones omit base from default fetch; a missing origin/base makes
+ * merge-base checks lie ("already up-to-date") while the PR is dirty (AGENTS.md).
+ */
+async function assertAdditionalBranchTrackingRefs(
+  git: SimpleGit,
+  primaryBranch: string,
+  additionalBranches: string[] | undefined
+): Promise<void> {
+  if (!additionalBranches?.length) return;
+  const missing: string[] = [];
+  for (const b of additionalBranches) {
+    if (!b || b === primaryBranch) continue;
+    try {
+      await git.raw(['rev-parse', '--verify', `refs/remotes/origin/${b}`]);
+    } catch {
+      missing.push(b);
+    }
+  }
+  if (missing.length === 0) return;
+  const list = missing.map((b) => `origin/${b}`).join(', ');
+  throw new Error(
+    `Missing remote tracking ref(s) after fetch: ${list}. ` +
+      `Those branches may not exist on the remote, or fetching them failed. ` +
+      `PRR needs these refs for base-branch merge checks. Fix the branch name or ensure it exists on origin, then re-run.`,
+  );
+}
+
+/** Fetch extra branches (explicit refspec) so origin/<b> exists under --single-branch. */
+async function fetchAdditionalBranches(git: SimpleGit, primaryBranch: string, additionalBranches: string[] | undefined): Promise<void> {
+  if (!additionalBranches?.length) return;
+  for (const b of additionalBranches) {
+    if (b && b !== primaryBranch) {
+      try {
+        await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
+        debug('Fetching additional branch', { branch: b });
+        await git.fetch(['origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        debug(`Failed to fetch origin/${b}`, { err: msg });
+        const isBranchMissing = /couldn't find|does not exist|not found|invalid refspec/i.test(msg);
+        if (isBranchMissing) {
+          console.warn(`  ⚠ Branch ${b} does not exist on remote; ref origin/${b} will be missing.`);
+        } else {
+          console.warn(`  ⚠ Failed to fetch origin/${b}: ${msg.slice(0, 80)}${msg.length > 80 ? '…' : ''}`);
+        }
+      }
+    }
+  }
+}
+
 /** Clone timeout in ms. Override with PRR_CLONE_TIMEOUT_MS (default 900s). */
 function getCloneTimeoutMs(): number {
   const raw = process.env.PRR_CLONE_TIMEOUT_MS;
@@ -104,6 +156,13 @@ export interface CloneOptions {
   preserveChanges?: boolean;  // If true, don't reset - keep existing uncommitted changes
   /** Fetch these branches after clone/update so refs exist (e.g. split-exec needs origin/targetBranch). */
   additionalBranches?: string[];
+  /**
+   * When true (default), require every `additionalBranches` entry (except the primary clone branch)
+   * to exist as `refs/remotes/origin/<name>` after fetch — fail fast if missing.
+   * WHY: PRR base-branch merge needs real refs. split-exec lists new split branches that may not
+   * exist on the remote yet; pass `verifyAdditionalRemoteRefs: false` there.
+   */
+  verifyAdditionalRemoteRefs?: boolean;
 }
 
 export async function cloneOrUpdate(
@@ -182,6 +241,9 @@ export async function cloneOrUpdate(
       } catch {
         // Already on branch or changes prevent checkout - that's fine
       }
+      // WHY: Base-branch ref must exist for merge-base even when we preserve dirty workdir;
+      // the non-preserve path always fetched these — align behavior (fetch-only, no reset).
+      await fetchAdditionalBranches(git!, branch, options?.additionalBranches);
     } else {
       // Clean start - reset everything
       console.log(`Existing workdir found at ${workdir}, cleaning up and fetching latest...`);
@@ -206,28 +268,7 @@ export async function cloneOrUpdate(
       });
       await git!.checkout(branch);
       await git!.reset(['--hard', `origin/${branch}`]);
-      if (options?.additionalBranches?.length) {
-        for (const b of options.additionalBranches) {
-          if (b && b !== branch) {
-            try {
-              await git!.raw(['remote', 'set-branches', '--add', 'origin', b]);
-              debug('Fetching additional branch', { branch: b });
-              // WHY explicit refspec: Plain fetch does not update refs when the refspec is not in
-              // remote.origin.fetch (e.g. after --single-branch clone); explicit refspec forces update.
-              await git!.fetch(['origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]);
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              debug(`Failed to fetch origin/${b}`, { err: msg });
-              const isBranchMissing = /couldn't find|does not exist|not found|invalid refspec/i.test(msg);
-              if (isBranchMissing) {
-                console.warn(`  ⚠ Branch ${b} does not exist on remote; ref origin/${b} will be missing.`);
-              } else {
-                console.warn(`  ⚠ Failed to fetch origin/${b}: ${msg.slice(0, 80)}${msg.length > 80 ? '…' : ''}`);
-              }
-            }
-          }
-        }
-      }
+      await fetchAdditionalBranches(git!, branch, options?.additionalBranches);
       console.log(`Updated to latest ${branch}`);
     }
   }
@@ -288,32 +329,16 @@ export async function cloneOrUpdate(
     });
 
     git = simpleGit(workdir);
-    if (options?.additionalBranches?.length) {
-      for (const b of options.additionalBranches) {
-        if (b && b !== branch) {
-          try {
-            // WHY explicit refspec: --single-branch leaves only the cloned branch in fetch config;
-            // explicit refspec guarantees origin/<b> is created/updated so base-merge and others see it.
-            await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
-            await git.fetch(['origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]);
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            debug(`Failed to fetch origin/${b}`, { err: msg });
-            const isBranchMissing = /couldn't find|does not exist|not found|invalid refspec/i.test(msg);
-            if (isBranchMissing) {
-              console.warn(`  ⚠ Branch ${b} does not exist on remote; ref origin/${b} will be missing.`);
-            } else {
-              console.warn(`  ⚠ Failed to fetch origin/${b}: ${msg.slice(0, 80)}${msg.length > 80 ? '…' : ''}`);
-            }
-          }
-        }
-      }
-    }
+    await fetchAdditionalBranches(git, branch, options?.additionalBranches);
     console.log(`Cloned ${branch} successfully`);
   }
 
   if (git === undefined) {
     throw new Error('cloneOrUpdate: internal error — git instance was not initialized');
+  }
+  const verifyRefs = options?.verifyAdditionalRemoteRefs !== false;
+  if (verifyRefs) {
+    await assertAdditionalBranchTrackingRefs(git, branch, options?.additionalBranches);
   }
   return { git, workdir };
 }

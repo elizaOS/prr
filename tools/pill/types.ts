@@ -12,6 +12,8 @@ export interface PillConfig {
   instructionsOut?: string;
   /** Max context tokens for the audit request (user + system). Overridable via PILL_CONTEXT_BUDGET_TOKENS. Default 35k; use 20k for small-context models. */
   contextBudgetTokens?: number;
+  /** Hard cap on user-message chars per audit HTTP request (chunk size). Set via PILL_AUDIT_MAX_USER_CHARS (6000–80000). */
+  auditMaxUserChars?: number;
   outputOnly: boolean;
   promptsOnly: boolean;
   dryRun: boolean;

@@ -5,13 +5,19 @@
 import chalk from 'chalk';
 import type { Runner } from '../../../shared/runners/types.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../../../shared/runners/detect.js';
-import type { StateContext } from '../state/state-context.js';
+import { ensureRotationSession, type StateContext } from '../state/state-context.js';
 import * as Rotation from '../state/state-rotation.js';
 import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../../../shared/config.js';
 import { warn, debug, formatNumber } from '../../../shared/logger.js';
-import { DEFAULT_ELIZACLOUD_MODEL, getEffectiveElizacloudSkipModelIds, getElizaCloudSkipReason, MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
+import {
+  DEFAULT_ELIZACLOUD_MODEL,
+  getEffectiveElizacloudSkipModelIds,
+  getElizaCloudSkipReason,
+  getSessionModelSkipFailureThreshold,
+  MAX_MODELS_PER_TOOL_ROUND,
+} from '../../../shared/constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
 import * as Performance from '../state/state-performance.js';
 
@@ -39,6 +45,67 @@ export interface RotationContext {
   cycleHadOnlyTimeouts?: boolean;
   /** When set, rotation list is sorted by success rate (best first). WHY: Tries proven models before chronic low performers. */
   stateContext?: StateContext;
+}
+
+/** Same key shape as state-performance (tool/model). */
+export function sessionModelKey(runnerName: string, model: string): string {
+  return `${runnerName}/${model}`;
+}
+
+function isSessionModelSkipped(ctx: RotationContext, model: string): boolean {
+  const skipped = ctx.stateContext?.rotationSession?.skippedModelKeys;
+  if (!skipped?.size) return false;
+  return skipped.has(sessionModelKey(ctx.runner.name, model));
+}
+
+/**
+ * After verification, update session stats; skip models with enough failures and zero fixes this run.
+ * WHY: Pill — 0% models waste rotation until manual skip list update.
+ */
+export function recordSessionModelVerificationOutcome(
+  stateContext: StateContext,
+  runnerName: string,
+  model: string | undefined,
+  verifiedCount: number,
+  failedCount: number
+): void {
+  const threshold = getSessionModelSkipFailureThreshold();
+  if (threshold <= 0) return;
+  const rs = ensureRotationSession(stateContext);
+  const m = model || 'unknown';
+  const key = sessionModelKey(runnerName, m);
+  const cur = rs.modelStats.get(key) ?? { fixes: 0, failures: 0 };
+  cur.fixes += verifiedCount;
+  cur.failures += failedCount;
+  rs.modelStats.set(key, cur);
+  if (cur.fixes > 0) {
+    if (rs.skippedModelKeys.delete(key)) {
+      debug('Session model skip cleared after verified fix', { key });
+    }
+    return;
+  }
+  if (cur.failures >= threshold && !rs.skippedModelKeys.has(key)) {
+    rs.skippedModelKeys.add(key);
+    warn(
+      `${runnerName} / ${m}: ${formatNumber(cur.failures)} verification failure(s) with no verified fixes this run — skipping this model until next run. ` +
+        `Set PRR_SESSION_MODEL_SKIP_FAILURES=0 to disable. For persistent poor performers, extend ELIZACLOUD_SKIP_MODEL_IDS in shared/constants.ts (or use PRR_ELIZACLOUD_INCLUDE_MODELS).`,
+    );
+  }
+}
+
+/** First index from `start` (inclusive, wrapping) whose model is not session-skipped; or `start` if all skipped / skip disabled. */
+function resolveRotationIndexSkippingSession(ctx: RotationContext, models: string[], startIndex: number): number {
+  if (models.length <= 1 || getSessionModelSkipFailureThreshold() <= 0) {
+    return startIndex >= models.length ? 0 : startIndex;
+  }
+  const skipped = ctx.stateContext?.rotationSession?.skippedModelKeys;
+  if (!skipped?.size) return startIndex >= models.length ? 0 : startIndex;
+  let idx = startIndex >= models.length ? 0 : startIndex;
+  for (let o = 0; o < models.length; o++) {
+    const i = (idx + o) % models.length;
+    if (!skipped.has(sessionModelKey(ctx.runner.name, models[i]!))) return i;
+  }
+  return idx;
 }
 
 /**
@@ -102,7 +169,12 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
     // Try current and subsequent recommendations to find one compatible with current runner
     for (let i = ctx.recommendedModelIndex; i < ctx.recommendedModels.length; i++) {
       const model = ctx.recommendedModels[i];
-      if (model && isModelAvailableForRunner(ctx, model) && isModelProviderCompatible(ctx.runner, model)) {
+      if (
+        model &&
+        isModelAvailableForRunner(ctx, model) &&
+        isModelProviderCompatible(ctx.runner, model) &&
+        !isSessionModelSkipped(ctx, model)
+      ) {
         // Advance index to this position so advanceModel starts from here
         ctx.recommendedModelIndex = i;
         debug('Using LLM-recommended model', { model, runner: ctx.runner.name, index: i });
@@ -122,14 +194,19 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
     return undefined;  // Let the tool use its default
   }
   
-  const index = ctx.modelIndices.get(ctx.runner.name) || 0;
+  let index = ctx.modelIndices.get(ctx.runner.name) || 0;
   // Bounds check: if persisted index exceeds model list (e.g., model was removed),
   // wrap back to 0 and update the stored index
   if (index >= models.length) {
+    index = 0;
     ctx.modelIndices.set(ctx.runner.name, 0);
-    return models[0];
   }
-  return models[index];
+  const resolved = resolveRotationIndexSkippingSession(ctx, models, index);
+  if (resolved !== index && ctx.stateContext) {
+    ctx.modelIndices.set(ctx.runner.name, resolved);
+    Rotation.setModelIndex(ctx.stateContext, ctx.runner.name, resolved);
+  }
+  return models[resolved];
 }
 
 /**

@@ -172,11 +172,8 @@ export function getOutdatedModelCatalogDismissal(body: string | undefined | null
     return null;
   }
   
+  // Most comments don't mention vendor model IDs — skip silently (per-comment debug was very noisy; Cycle 64 L1).
   if (!commentSuggestsInvalidModelId(body)) {
-    debug('[Auto-heal detection] Comment does not suggest invalid model ID', { 
-      bodySnippet: body.substring(0, 200),
-      hasInvalidFraming: false,
-    });
     return null;
   }
   

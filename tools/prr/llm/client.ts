@@ -17,7 +17,11 @@ import OpenAI from 'openai';
 import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../../../shared/config.js';
 import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError } from '../../../shared/logger.js';
-import { ELIZACLOUD_API_BASE_URL, getEffectiveMaxConcurrentLLM } from '../../../shared/constants.js';
+import {
+  ELIZACLOUD_API_BASE_URL,
+  getEffectiveMaxConcurrentLLM,
+  MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS,
+} from '../../../shared/constants.js';
 import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
@@ -201,6 +205,16 @@ export function explanationHasConcreteFixEvidence(explanation: string): boolean 
  * Hedged phrasing ("suggests", "appears to") with truncated snippet/excerpt is still
  * uncertainty, not evidence the issue is fixed or obsolete — we treat it as missing visibility.
  */
+/**
+ * True when the snippet shows a UUID regex using [1-8] and an adjacent line comment documents
+ * versions 1–8 (not v4-only). Used to demote false final-audit UNFIXED that parroted an
+ * outdated "comment says v4 but allows 1–8" review when the code was already aligned (Cycle 65).
+ */
+export function snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet: string): boolean {
+  if (!/\[1-8\]/.test(codeSnippet)) return false;
+  return /(versions?\s*1[\s–-]8|uuid format.*\(versions 1-8\)|version\s+bits.*1.?8)/i.test(codeSnippet);
+}
+
 export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
   return (
     /snippet.*(?:truncated|unavailable)/i.test(explanation) ||
@@ -513,6 +527,8 @@ export class LLMClient {
   private model: string;
   /** When set (e.g. PRR_VERIFIER_MODEL), batch verification uses this instead of model to reduce false negatives. */
   private verifierModel?: string;
+  /** When set (PRR_FINAL_AUDIT_MODEL), adversarial final-audit uses this model (Cycle 65). */
+  private finalAuditModel?: string;
   private anthropic?: Anthropic;
   private openai?: OpenAI;
   private thinkingBudget?: number;
@@ -531,10 +547,16 @@ export class LLMClient {
     return this.verifierModel;
   }
 
+  /** Model for final audit: PRR_FINAL_AUDIT_MODEL ?? PRR_VERIFIER_MODEL ?? PRR_LLM_MODEL. */
+  getFinalAuditModel(): string {
+    return this.finalAuditModel ?? this.verifierModel ?? this.model;
+  }
+
   constructor(config: Config) {
     this.provider = config.llmProvider;
     this.model = config.llmModel;
     this.verifierModel = config.verifierModel;
+    this.finalAuditModel = config.finalAuditModel;
     this.thinkingBudget = config.anthropicThinkingBudget;
 
     if (this.provider === 'anthropic') {
@@ -655,12 +677,27 @@ export class LLMClient {
             });
           }
 
-          const responseMeta: Record<string, unknown> = { model: chosenModel, usage: response.usage };
-          if (options?.phase != null) responseMeta.phase = options.phase;
-          debugResponse(promptSlug, `llm-${this.provider}`, responseContent, responseMeta);
-
           if (response.usage) {
             trackTokens(response.usage.inputTokens, response.usage.outputTokens);
+          }
+
+          // WHY: writeToPromptLog refuses empty RESPONSE — audits would see orphan PROMPT slugs with no ERROR.
+          if (!responseContent.trim()) {
+            debugPromptError(
+              promptSlug,
+              `llm-${this.provider}`,
+              'Empty or whitespace-only response body (HTTP success but no text; prompts.log would not record a RESPONSE).',
+              {
+                model: chosenModel,
+                usage: response.usage,
+                ...(options?.phase != null ? { phase: options.phase } : {}),
+                emptyBody: true,
+              }
+            );
+          } else {
+            const responseMeta: Record<string, unknown> = { model: chosenModel, usage: response.usage };
+            if (options?.phase != null) responseMeta.phase = options.phase;
+            debugResponse(promptSlug, `llm-${this.provider}`, responseContent, responseMeta);
           }
 
           return response;
@@ -1066,6 +1103,7 @@ ${codeSnippet}
       '  removed or rewritten. Use STALE.',
       '- If "(end of file)" says the file has N lines but the comment references line M where M > N,',
       '  the file was shortened and the referenced code no longer exists. Use STALE.',
+      '- If your uncertainty is ONLY because the excerpt was truncated (not because you see the bug in the visible lines), prefer STALE over YES — do not treat the review text as current truth when the code block is partial.',
       '',
       'CRITICAL - Base your verdict on the ACTUAL CODE shown, not the review comment\'s description:',
       '- Read the Current Code carefully. If the review says "rank += 1 inside enumerate" but the Current Code',
@@ -1082,8 +1120,8 @@ ${codeSnippet}
       'Just plain text: issue_1: YES: I1: D2: explanation',
       '',
       'Example GOOD responses:',
-      'issue_1: YES: I1: D2: Line 45 still has SQL injection via unsanitized user input',
-      'issue_2: YES: I4: D1: Line 12 uses `var` instead of `const`',
+      'issue_1: YES: I2: D3: Line 45 still omits the required validation',
+      'issue_2: YES: I4: D1: Line 12 still uses the deprecated API',
       'issue_3: NO: Line 23 now has `if (input === null) return;` guard',
       'issue_4: STALE: The processUser function no longer exists; module was refactored',
       'issue_5: NO: Comment approves current state (e.g. "correctly reflects"); no change required',
@@ -1398,6 +1436,21 @@ ${codeSnippet}
           if (staleButMissingCode) {
             debug('Batch override: STALE→YES (reason was missing from excerpt, not removed)', { resultId, explanationPreview: explanation.slice(0, 80) });
             exists = true;
+            stale = false;
+          }
+
+          // Cycle 65: Verifier said YES citing truncation while the snippet is a complete "(end of file)" view.
+          if (
+            exists &&
+            sourceIssue &&
+            (sourceIssue.codeSnippet ?? '').includes('(end of file') &&
+            /\btruncat/i.test(explanation)
+          ) {
+            debug('Batch override: YES→NO (complete file shown; truncation hedge invalid)', {
+              resultId,
+              explanationPreview: explanation.slice(0, 100),
+            });
+            exists = false;
             stale = false;
           }
 
@@ -1716,6 +1769,10 @@ ${codeSnippet}
       '6. If the issue\'s file was DELETED (snippet shows "file not found" or empty) or the GitHub thread was marked outdated because the file was rewritten, and the issue was already verified fixed in a previous step, mark FIXED with explanation "File deleted or thread outdated; issue was resolved in an earlier fix." IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
       '7. If the snippet shows "(file not found or unreadable)" and the review comment asked to DELETE or REMOVE the file from the repository, mark FIXED (the file no longer exists = the requested fix was applied). IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
       '',
+      'CRITICAL - Read the CODE in this prompt, not the review comment alone:',
+      '8. The "Comment:" lines are the ORIGINAL review. They may be stale. If the code block already satisfies what the review asked (e.g. comment and regex both describe UUID versions 1-8 and the pattern uses [1-8]), respond FIXED and quote the lines — do NOT UNFIXED by repeating the review\'s old wording.',
+      '9. UNFIXED only when the shown code still exhibits the problem. If you cannot find the problem in the snippet, say FIXED or explain what is missing with line cites from the snippet.',
+      '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
       '[2] UNFIXED: The validation is still missing',
@@ -1844,7 +1901,14 @@ ${codeSnippet}
           issueCount: batchIssues.length,
         });
       }
-      const response = await this.complete(promptText, undefined, phase ? { phase } : undefined);
+      const auditModel = this.getFinalAuditModel();
+      if (auditModel !== this.model) {
+        debug('Final audit using model override', { model: auditModel });
+      }
+      const response = await this.complete(promptText, undefined, {
+        ...(phase ? { phase } : {}),
+        model: auditModel,
+      });
       lastAuditResponseContent = response.content;
 
       // Parse responses - match [N] FIXED/UNFIXED pattern
@@ -1859,6 +1923,19 @@ ${codeSnippet}
             const isFixed = status.toUpperCase() === 'FIXED';
             let finalStatus = !isFixed; // UNFIXED by default
             let finalExplanation = explanation.trim();
+
+            // Cycle 65: UNFIXED parroted stale review while snippet already aligned UUID comment + [1-8] regex.
+            if (!isFixed && snippetShowsUuidCommentAlignedWithVersionRange(issue.codeSnippet)) {
+              const rev = (issue.comment ?? '').toLowerCase();
+              if (/\buuid\b/.test(rev) && /\bv4|version|regex|comment\b/i.test(rev)) {
+                debug('Final audit override: UNFIXED→FIXED (UUID comment/regex already aligned in snippet)', {
+                  issueId: issue.id,
+                });
+                finalStatus = false;
+                finalExplanation =
+                  'FIXED (post-check): Shown code documents UUID versions 1-8 and regex uses [1-8]; prior UNFIXED repeated stale review text.';
+              }
+            }
             
             // Pill cycle 2 #2: Require code evidence when audit marks FIXED — if code snippet still contains bug pattern, demote to UNFIXED
             if (isFixed) {
@@ -2438,8 +2515,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     options?: { model?: string; baseContent?: string; oursContent?: string; theirsContent?: string; previousParseError?: string }
   ): Promise<{ resolved: boolean; content: string; explanation: string }> {
     // Check if file is too large for reliable conflict resolution
-    // WHY: Files >50KB cause token limit issues and response truncation
-    const MAX_SAFE_SIZE = 50000; // 50KB
+    // WHY: Files >50KB cause token limit issues and response truncation; caller should use chunked merge.
+    const MAX_SAFE_SIZE = MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS;
     if (conflictedContent.length > MAX_SAFE_SIZE) {
       debug('File too large for automatic conflict resolution', { 
         filePath, 
@@ -2498,6 +2575,7 @@ RESOLVED:
     const response = await this.complete(prompt, undefined, {
       model: options?.model,
       max504Retries: 0,
+      phase: 'resolve-conflict',
     });
     const content = response.content;
     

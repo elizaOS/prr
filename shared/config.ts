@@ -8,6 +8,7 @@
  */
 
 import dotenv from 'dotenv';
+import chalk from 'chalk';
 import { homedir } from 'os';
 import { join } from 'path';
 import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL } from './constants.js';
@@ -34,6 +35,12 @@ export interface Config {
   llmModel: string;
   /** Optional stronger model for verification (e.g. PRR_VERIFIER_MODEL). When set, batch verification uses this instead of llmModel to reduce false negatives. */
   verifierModel?: string;
+  /**
+   * Optional model for adversarial final audit only (PRR_FINAL_AUDIT_MODEL).
+   * When unset, final audit uses verifierModel ?? llmModel (same as other verify calls that don’t override).
+   * WHY: Weak defaults (e.g. qwen) parrot review text vs shown code → false UNFIXED (audit Cycle 65).
+   */
+  finalAuditModel?: string;
   /** Optional model for split-plan (SPLIT_PLAN_LLM_MODEL). When set, split-plan uses this; when unset, split-plan uses the provider's fast/cheap model to reduce 504 timeouts. */
   splitPlanModel?: string;
   /** ElizaCloud API key (recommended - one key for all models) */
@@ -102,6 +109,7 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
  * - PRR_LLM_PROVIDER: 'elizacloud', 'anthropic', or 'openai' (auto-detects if not set)
  * - PRR_LLM_MODEL: Model name (defaults based on provider)
  * - PRR_VERIFIER_MODEL: Stronger model for verification (recommended when default is weak; reduces false negatives)
+ * - PRR_FINAL_AUDIT_MODEL: Model for adversarial final-audit pass only (e.g. anthropic/claude-opus-4.5 when llmModel is a small verifier)
  * - PRR_TOOL: Default fixer tool
  * - PRR_THINKING_BUDGET: Extended thinking token budget
  *
@@ -156,12 +164,14 @@ export function loadConfig(): Config {
   }
 
   const verifierModelRaw = process.env.PRR_VERIFIER_MODEL?.trim();
+  const finalAuditModelRaw = process.env.PRR_FINAL_AUDIT_MODEL?.trim();
   const splitPlanModelRaw = process.env.SPLIT_PLAN_LLM_MODEL?.trim();
   const config: Config = {
     githubToken: getEnvOrThrow('GITHUB_TOKEN'),
     llmProvider,
     llmModel: getEnvOrDefault('PRR_LLM_MODEL', defaultModel),
     verifierModel: verifierModelRaw && verifierModelRaw.length > 0 ? verifierModelRaw : undefined,
+    finalAuditModel: finalAuditModelRaw && finalAuditModelRaw.length > 0 ? finalAuditModelRaw : undefined,
     splitPlanModel: splitPlanModelRaw && splitPlanModelRaw.length > 0 ? splitPlanModelRaw : undefined,
     defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'auto')),
     workdirBase: join(homedir(), '.prr', 'work'),
@@ -193,6 +203,17 @@ export function loadConfig(): Config {
   if (!config.anthropicApiKey) {
     const v = process.env.ANTHROPIC_API_KEY?.trim();
     if (v) config.anthropicApiKey = v;
+  }
+
+  if (
+    process.env.PRR_DISABLE_MODEL_CATALOG_SOLVABILITY?.trim() === '1' &&
+    process.env.PRR_DISABLE_MODEL_CATALOG_AUTOHEAL?.trim() === '1'
+  ) {
+    console.warn(
+      chalk.yellow(
+        'Both PRR_DISABLE_MODEL_CATALOG_SOLVABILITY and PRR_DISABLE_MODEL_CATALOG_AUTOHEAL are set — catalog dismissal and auto-heal for stale model-id bot advice are off; those threads may enter the fix loop.',
+      ),
+    );
   }
 
   return config;

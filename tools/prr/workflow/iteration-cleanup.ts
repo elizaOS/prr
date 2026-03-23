@@ -20,6 +20,7 @@ import type { Runner } from '../../../shared/runners/types.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, startTimer, endTimer, formatDuration, formatNumber, pluralize } from '../../../shared/logger.js';
+import { recordSessionModelVerificationOutcome } from '../models/rotation.js';
 import { commitIteration, commitIterationPerFile, pushWithRetry } from '../../../shared/git/git-commit-index.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
@@ -77,7 +78,14 @@ export async function handleIterationCleanup(
   if (failedCount > 0) {
     Performance.recordModelFailure(stateContext, runner.name, currentModel || 'unknown', failedCount);
   }
-  
+  recordSessionModelVerificationOutcome(
+    stateContext,
+    runner.name,
+    currentModel ?? undefined,
+    verifiedCount,
+    failedCount
+  );
+
   // Record per-issue attempts (with file hash so chronic check only counts same-version attempts)
   const allIssuesForAttempts = [...changedIssues, ...unchangedIssues];
   const hashes = await Promise.all(

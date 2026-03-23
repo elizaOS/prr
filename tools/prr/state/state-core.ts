@@ -8,6 +8,7 @@ import type { ResolverState } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage, formatNumber } from '../../../shared/logger.js';
 import { getEffectiveElizacloudSkipModelIds } from '../../../shared/constants.js';
+import { isReviewPathFragment } from '../../../shared/path-utils.js';
 import type { StateContext } from './state-context.js';
 
 export async function loadState(ctx: StateContext, pr: string, branch: string, headSha: string): Promise<ResolverState> {
@@ -39,6 +40,18 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
             console.warn(
               `PR head changed: cleared partial conflict resolutions so they are re-applied against current merge`,
             );
+          }
+          // Pill / audit: already-fixed dismissals are tied to code state; clear on HEAD change (same as StateManager).
+          const hadDismissed = (ctx.state.dismissedIssues?.length ?? 0) > 0;
+          if (hadDismissed) {
+            const before = ctx.state.dismissedIssues!.length;
+            ctx.state.dismissedIssues = ctx.state.dismissedIssues!.filter((d) => d.category !== 'already-fixed');
+            const cleared = before - ctx.state.dismissedIssues.length;
+            if (cleared > 0) {
+              console.warn(
+                `PR head changed: cleared ${formatNumber(cleared)} already-fixed dismissal(s) so they are re-checked against current code`,
+              );
+            }
           }
         }
 
@@ -101,24 +114,28 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           ctx.state.dismissedIssues = [];
         }
 
-        // Normalize legacy .d.ts dismissals: old runs stored "missing-file" for path ".d.ts";
-        // we now treat it as path-unresolved (fragment). Update so debug table and counts are consistent.
-        const fragmentReason = `Review path ".d.ts" is a fragment (e.g. .d.ts), not a full file path — cannot resolve to a single file`;
+        // Normalize legacy dismissals: fragment / extension-only paths were sometimes "missing-file";
+        // canonical category is path-unresolved (shared/path-utils isReviewPathFragment).
         let normalizedFragment = 0;
         for (const d of ctx.state.dismissedIssues) {
-          if (d.filePath === '.d.ts' && d.reason?.startsWith('Tracked file not found for review path: .d.ts')) {
+          if (d.category === 'missing-file' && isReviewPathFragment(d.filePath)) {
             d.category = 'path-unresolved';
-            d.reason = fragmentReason;
+            if (d.reason?.includes('Tracked file not found')) {
+              d.reason = `Review path "${d.filePath}" is a fragment or incomplete path — cannot resolve to a single tracked file`;
+            }
             normalizedFragment++;
           }
         }
         if (normalizedFragment > 0) {
-          console.log(`Normalized ${formatNumber(normalizedFragment)} legacy .d.ts dismissal(s) to path-unresolved`);
+          console.log(`Normalized ${formatNumber(normalizedFragment)} legacy fragment dismissal(s) to path-unresolved`);
         }
 
         // Keep verifiedFixed and dismissedIssues mutually exclusive (output.log audit: overlapVerifiedAndDismissed; pill #3).
         // (1) Remove from dismissed when it's in verified. (2) Remove from verified when it's in dismissed.
-        const verifiedSet = new Set(ctx.state.verifiedFixed ?? []);
+        const verifiedSet = new Set([
+          ...(ctx.state.verifiedFixed ?? []),
+          ...(ctx.state.verifiedComments?.map((v) => v.commentId) ?? []),
+        ]);
         const dismissedIds = new Set(ctx.state.dismissedIssues.map((d) => d.commentId));
         if (verifiedSet.size > 0 && ctx.state.dismissedIssues.length > 0) {
           const beforeD = ctx.state.dismissedIssues.length;
@@ -134,6 +151,16 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           const removedV = beforeV - ctx.state.verifiedFixed.length;
           if (removedV > 0) {
             console.warn(`State load: removed ${formatNumber(removedV)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned)`);
+          }
+        }
+        if (dismissedIds.size > 0 && ctx.state.verifiedComments?.length) {
+          const beforeVc = ctx.state.verifiedComments.length;
+          ctx.state.verifiedComments = ctx.state.verifiedComments.filter((v) => !dismissedIds.has(v.commentId));
+          const removedVc = beforeVc - ctx.state.verifiedComments.length;
+          if (removedVc > 0) {
+            console.warn(
+              `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned)`,
+            );
           }
         }
 

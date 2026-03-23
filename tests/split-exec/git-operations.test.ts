@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
@@ -41,6 +41,7 @@ describe('split-exec git operations', () => {
 
     // Create feature branch with commits
     await git.checkoutBranch('feature', 'main');
+    mkdirSync(join(dir, 'src'), { recursive: true });
     require('fs').writeFileSync(join(dir, 'src/a.ts'), 'export const a = 1;\n', 'utf-8');
     await git.add('.');
     const commitSha = await git.commit('Add a.ts');

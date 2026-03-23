@@ -21,9 +21,9 @@
 
 **Context assembly (large logs and 504 avoidance):**
 - When **output.log** is small (≤30k tokens and ≤100k chars), it is included in full. When it is large, we use **head** (first 400 lines) + **story-read middle** (chapter-by-chapter LLM summarization from `shared/llm/story-read.ts`) + **tail** (last 400 lines) + **excerpt** (high-signal lines: RESULTS SUMMARY, Model Performance, etc.). **WHY:** A full ~183k-char log caused 504; char and token thresholds trigger summarization earlier; head/tail preserve init and exit state.
-- After assembly, the output log is capped at **40k chars** by default. Override with **`PILL_OUTPUT_LOG_MAX_CHARS`** (env) if you need a different limit. **WHY:** Hard char cap ensures the audit request never includes an unbounded log.
+- After assembly, the output log is capped at **28k chars** by default. Override with **`PILL_OUTPUT_LOG_MAX_CHARS`**. **WHY:** Hard char cap + Vercel timeouts on large ElizaCloud audit bodies.
 - When the log is large but no LLM client is available (e.g. dry-run), we send head + "[ … middle omitted (no summarization client) … ]" + tail + excerpt instead of raw. **WHY:** Sending raw in that path would still cause 504.
-- **prompts.log** is included raw when under the same token threshold; otherwise it is summarized via story-read (pair PROMPT+RESPONSE per slug, chunked, then digest). See **shared/README.md** for story-read and **shared/utils/tokens.ts** for truncation.
+- **prompts.log** is included raw when under the same token threshold (each entry still capped at **12k chars**); otherwise it is summarized via story-read. **Each PROMPT/RESPONSE pair is truncated to ~18k chars** before chapter grouping so a single 200k-char conflict prompt cannot create one giant story-read chapter. See **shared/README.md** for story-read and **shared/utils/tokens.ts** for truncation.
 
 **WHY logPrefix:** When prr runs, logs are `output.log` / `prompts.log`. When story runs, the shared logger uses `prefix: 'story'` so files are `story-output.log` / `story-prompts.log`. Pill uses its own logger with hardcoded `pill-output.log` / `pill-prompts.log`. The prefix tells pill which log pair to read (prr vs story vs pill-on-pill).
 
@@ -54,8 +54,9 @@ pill <directory> [options]
 
 Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/.env` (target overrides home). Same env vars as prr/story (e.g. `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`).
 
-- **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the audit request (user + system). Default 35000. Set to **20000** (or lower) for models with a small context window to avoid 504 / FUNCTION_INVOCATION_TIMEOUT. Per-section caps (output log, prompts digest, source, docs, tree) scale with the budget. Each audit HTTP request uses at most **~42k chars** of user payload (plus system prompt); larger assembled context is **chunked** into multiple requests. Chunk sizing uses the same **chars/token (4)** as `estimateTokens` so a single chunk cannot balloon to ~75k chars (that mismatch caused ElizaCloud **504 / FUNCTION_INVOCATION_TIMEOUT**).
-- **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars sent to the audit (default **40000**). Override if you need a different limit.
+- **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the assembled context (default **35000**). Per-section caps scale with the budget. If you hit 504, try **20000** or lower.
+- **PILL_AUDIT_MAX_USER_CHARS** (optional, **6000–80000**) — Hard cap on **user** message size **per audit HTTP request** (single request or each chunk). If unset: default ceiling **~20k** chars, **~12k** for Opus-class / `o3-` / `gpt-5` (excluding mini/nano) audit models (Vercel invocation timeout). Raise only if you use a direct API (not ElizaCloud) or a fast model.
+- **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars in the audit payload (default **28000**).
 
 ### Integrated (prr / story / split-exec / split-plan) — opt-in with --pill
 

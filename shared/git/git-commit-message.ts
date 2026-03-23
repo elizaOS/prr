@@ -13,7 +13,10 @@ export function generateCommitFirstLine(
 ): string {
   const scope = determineScope(filePaths);
   const desc = extractDescription(fixedIssues, filePaths);
-  const base = `${scope}: ${desc}`;
+  let base = `${scope}: ${desc}`;
+  if (base.length > 72) {
+    base = `${base.slice(0, 69)}...`;
+  }
   if (filePaths.length >= 1 && filePaths.length <= 3) {
     const names = filePaths.map((p) => p.split('/').pop() ?? p).filter(Boolean);
     const uniq = [...new Set(names)];

@@ -18,9 +18,22 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## State consistency: verifiedFixed vs dismissedIssues (mutual exclusivity)
 
-**Idea:** Ensure a comment is never in both `verifiedFixed` and `dismissedIssues`. When marking a comment verified, remove it from `dismissedIssues`; when dismissing, remove it from `verifiedFixed`. Transition semantics (e.g. re-dismiss after verify) can be documented and tested.
+**Status:** Largely **done** — `markVerified` / `dismissIssue` and load paths enforce mutual exclusivity; `verifiedComments` included in overlap cleanup; `already-fixed` dismissals clear on HEAD change. **CHANGELOG [Unreleased]** has the full list.
 
-**WHY:** Pill audit noted overlap can confuse summaries and re-runs. We now keep them mutually exclusive in `markVerified` and `dismissIssue`; this item tracks any further normalization (e.g. migration of existing state files, tests).
+**Remaining (optional):** Broader “clear all dismissals on HEAD change” (trade-off vs. stable not-an-issue dismissals); explicit migration notes for very old state files; extra tests if new edge cases appear.
+
+**WHY (original):** Pill audit noted overlap can confuse summaries and re-runs.
+
+## Pill-output follow-ups (this repo)
+
+From root **`pill-output.md`** triage — **prr** scope only:
+
+- **Docs:** Occasional pass to replace stale **`src/`** string references in **DEVELOPMENT.md** with **`tools/prr/`** / **`shared/`** where they mean PRR code.
+- **`autoVerifiedFrom`:** Populate when verification is recovered from **`scanCommittedFixes`** so state shows provenance (**WHY:** debugging and dedup).
+- **Git utilities:** Audit **`checkForConflicts`** / **`fetchOriginBranch`** if pill concerns still apply (**WHY:** correctness of “has conflicts” signal after fetch-only).
+- **CodeRabbit:** If SHA mismatch (“reviewing older commit”) should block or wait, wire behavior in **`tools/prr`** (**WHY:** avoid stale comment fixes).
+- **Skip list ops:** Refresh **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`** when Model Performance tables show new 0% models (**WHY:** static list drifts vs. gateway reality).
+- **`determineScope`:** Less **`misc`** fallback for paths that only have filtered segments like **`src/`** (**WHY:** clearer auto commit subjects).
 
 ## Lesson staleness / conflict detection
 

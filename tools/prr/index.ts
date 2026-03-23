@@ -29,7 +29,13 @@ try {
   const outPath = getOutputLogPath();
   const promptPath = getPromptLogPath();
   if (outPath) console.log(chalk.gray(`  Output log:  ${outPath}`));
-  if (promptPath) console.log(chalk.gray(`  Prompts log: ${promptPath} (populated with --verbose)`));
+  if (promptPath) {
+    console.log(
+      chalk.gray(
+        `  Prompts log: ${promptPath} (full prompts when in-process LLM runs; use PRR_DEBUG_PROMPTS=1 for ~/.prr/debug files)`,
+      ),
+    );
+  }
 } catch (err) {
   // Non-fatal: log tee unavailable (e.g., read-only CWD), continue without it
   console.warn('Warning: Could not initialize output log:', err);
@@ -166,6 +172,14 @@ async function main(): Promise<void> {
 
     const maxConcurrent = getEffectiveMaxConcurrentLLM();
     console.log(chalk.gray(`  LLM concurrency: ${maxConcurrent === 1 ? '1 (default)' : maxConcurrent} — set PRR_MAX_CONCURRENT_LLM to tune`));
+
+    if (options.replyToThreads && !process.env.PRR_BOT_LOGIN?.trim()) {
+      console.warn(
+        chalk.yellow(
+          '  --reply-to-threads: PRR_BOT_LOGIN is not set — cross-run idempotency is off; re-runs may post duplicate thread replies. Set PRR_BOT_LOGIN to your bot GitHub login.',
+        ),
+      );
+    }
 
     // Create and run resolver
     resolver = new PRResolver(config, options);

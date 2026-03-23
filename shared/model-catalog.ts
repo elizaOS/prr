@@ -37,6 +37,35 @@ export interface ModelProviderCatalog {
 let cached: ModelProviderCatalog | null = null;
 let cachedPath: string | null = null;
 
+/** In-memory fallback when the JSON is missing, unreadable, or invalid. Never cached as a successful load. */
+export const EMPTY_MODEL_PROVIDER_CATALOG: ModelProviderCatalog = {
+  schemaVersion: 1,
+  fetchedAtIso: '',
+  recommendedRefreshDays: 7,
+  sources: [],
+  providers: {
+    anthropic: { apiIds: [] },
+    openai: { apiIds: [] },
+  },
+  lookup: {
+    openaiHyphenless: {},
+    anthropicHyphenless: {},
+    ambiguousHyphenless: [],
+  },
+};
+
+const warnedCatalogPaths = new Set<string>();
+
+function warnCatalogOnce(key: string, message: string): void {
+  if (warnedCatalogPaths.has(key)) return;
+  warnedCatalogPaths.add(key);
+  console.warn(message);
+}
+
+function emptyCatalogFresh(): ModelProviderCatalog {
+  return structuredClone(EMPTY_MODEL_PROVIDER_CATALOG);
+}
+
 /**
  * Resolve path to generated/model-provider-catalog.json.
  * Walks up from this file so it works from source (`shared/`), `dist/shared/`, or other layouts.
@@ -58,25 +87,56 @@ export function modelCatalogDefaultPath(): string {
 export function loadModelProviderCatalog(path?: string): ModelProviderCatalog {
   const p = path ?? modelCatalogDefaultPath();
   if (cached && cachedPath === p) return cached;
+  const warnKey = `load:${p}`;
   if (!existsSync(p)) {
-    throw new Error(
-      `Model catalog not found at ${p}. Run: npm run update-model-catalog`,
+    warnCatalogOnce(
+      warnKey,
+      `Model catalog not found at ${p} — catalog-based dismissal/auto-heal disabled until present. Run: npm run update-model-catalog`,
     );
+    return emptyCatalogFresh();
   }
-  const raw = readFileSync(p, 'utf8');
-  const parsed = JSON.parse(raw) as ModelProviderCatalog;
-  if (parsed.schemaVersion !== 1) {
-    throw new Error(`Unsupported model catalog schemaVersion: ${String((parsed as { schemaVersion?: unknown }).schemaVersion)}`);
+  let raw: string;
+  try {
+    raw = readFileSync(p, 'utf8');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    warnCatalogOnce(warnKey, `Model catalog unreadable at ${p} (${msg}) — using empty catalog until fixed.`);
+    return emptyCatalogFresh();
   }
-  cached = parsed;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    warnCatalogOnce(warnKey, `Model catalog JSON parse failed at ${p} (${msg}) — using empty catalog until fixed.`);
+    return emptyCatalogFresh();
+  }
+  const catalog = parsed as ModelProviderCatalog;
+  if (catalog.schemaVersion !== 1) {
+    warnCatalogOnce(
+      warnKey,
+      `Unsupported model catalog schemaVersion at ${p}: ${String((parsed as { schemaVersion?: unknown }).schemaVersion)} — using empty catalog.`,
+    );
+    return emptyCatalogFresh();
+  }
+  if (!catalog.providers?.openai?.apiIds || !catalog.providers?.anthropic?.apiIds) {
+    warnCatalogOnce(warnKey, `Model catalog at ${p} is missing providers.openai/apiIds or providers.anthropic/apiIds — using empty catalog.`);
+    return emptyCatalogFresh();
+  }
+  if (!catalog.lookup?.openaiHyphenless || !catalog.lookup?.anthropicHyphenless || !Array.isArray(catalog.lookup?.ambiguousHyphenless)) {
+    warnCatalogOnce(warnKey, `Model catalog at ${p} is missing lookup tables — using empty catalog.`);
+    return emptyCatalogFresh();
+  }
+  cached = catalog;
   cachedPath = p;
-  return parsed;
+  return catalog;
 }
 
 /** Clear in-process cache (e.g. tests). */
 export function resetModelProviderCatalogCache(): void {
   cached = null;
   cachedPath = null;
+  warnedCatalogPaths.clear();
 }
 
 export function modelCatalogAgeMs(catalog: ModelProviderCatalog): number {

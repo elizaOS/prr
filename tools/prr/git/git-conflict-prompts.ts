@@ -5,6 +5,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../../../shared/constants.js';
+import { hasConflictMarkers } from '../../../shared/git/git-clone-index.js';
 import { extractConflictChunks } from './git-conflict-chunked.js';
 
 /** Above this size we embed only conflict sections, not the full file. WHY: Large files (e.g. CHANGELOG 600+ lines) double prompt size and cause 504s; conflict sections are enough for <search>/<replace>. */
@@ -78,9 +79,9 @@ export function buildConflictResolutionPromptWithContent(
       continue;
     }
 
-    const hasConflictMarkers = content.includes('<<<<<<<');
-    const chunks = hasConflictMarkers ? extractConflictChunks(content, 7) : [];
-    const useChunkedEmbed = hasConflictMarkers
+    const fileHasMarkers = hasConflictMarkers(content);
+    const chunks = fileHasMarkers ? extractConflictChunks(content, 7) : [];
+    const useChunkedEmbed = fileHasMarkers
       && (
         content.length > CONFLICT_EMBED_FULL_MAX_CHARS
         || chunks.length >= CONFLICT_USE_CHUNKED_FIRST_CHUNKS
@@ -171,4 +172,45 @@ export function buildConflictResolutionPromptWithContent(
   );
 
   return parts.join('\n');
+}
+
+/**
+ * Split conflicted files into subsets so each subset's embedded prompt stays under maxBatchPromptChars.
+ * WHY: A single 40k cap skipped the entire llm-api batch at ~71k (output.log audit); multiple smaller
+ * runner passes resolve more conflicts before the per-file fallback.
+ */
+export function splitConflictFilesIntoBatches(
+  conflictedFiles: string[],
+  baseBranch: string,
+  workdir: string,
+  maxTotalChars: number,
+  maxBatchPromptChars: number
+): string[][] {
+  if (conflictedFiles.length === 0) return [];
+
+  function promptLen(files: string[]): number {
+    return buildConflictResolutionPromptWithContent(files, baseBranch, workdir, maxTotalChars).length;
+  }
+
+  const batches: string[][] = [];
+  let current: string[] = [];
+
+  for (const file of conflictedFiles) {
+    const trial = [...current, file];
+    if (promptLen(trial) <= maxBatchPromptChars) {
+      current = trial;
+      continue;
+    }
+    if (current.length > 0) {
+      batches.push(current);
+      current = [];
+    }
+    if (promptLen([file]) <= maxBatchPromptChars) {
+      current = [file];
+    } else {
+      batches.push([file]);
+    }
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
 }

@@ -32,6 +32,32 @@ function dedupeByLocation(issues: DismissedIssue[]): DismissedIssue[] {
   });
 }
 
+/** Group near-duplicate review threads (same file + same first-line topic) for a shorter handoff. WHY: output.log audit — multiple bots repeat the same concern at adjacent lines. */
+function handoffTopicKey(path: string, body: string): string {
+  const first = sanitizeCommentForDisplay(body).split('\n').find((l) => l.trim()) ?? '';
+  const slug = first
+    .replace(/^#+\s*/, '')
+    .replace(/\*\*/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .slice(0, 120)
+    .trim();
+  return `${path}::${slug}`;
+}
+
+function groupUnresolvedForHandoff(issues: UnresolvedIssue[]): { rep: UnresolvedIssue; others: UnresolvedIssue[] }[] {
+  const map = new Map<string, UnresolvedIssue[]>();
+  for (const i of issues) {
+    const k = handoffTopicKey(i.comment.path, i.comment.body);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k)!.push(i);
+  }
+  return [...map.values()].map((g) => {
+    const sorted = [...g].sort((a, b) => (a.comment.line ?? 0) - (b.comment.line ?? 0));
+    return { rep: sorted[0]!, others: sorted.slice(1) };
+  });
+}
+
 /** Regexes used to detect analysis text that contradicts the verifier (e.g. "fix may already be in place"). */
 const LOOKS_FIXED_REGEXES = [
   /already.*(?:fixed|applied|in place)/i,
@@ -344,6 +370,13 @@ export function printFinalSummary(
       }
     } else {
       console.log(chalk.yellow(`\n  ○ Remaining: ${formatNumber(remainingCount)} (auto-stopped after repeated failures — resolve by fix or conversation)`));
+      if (exitReason === 'merge_conflicts') {
+        console.log(
+          chalk.yellow(
+            `  ⚠ Base-branch merge is still blocked — finish resolving conflicts before expecting PRR to work through the review backlog.`,
+          ),
+        );
+      }
     }
   }
 
@@ -361,10 +394,38 @@ export function printFinalSummary(
     );
   }
 
-  // Audit overrides: final audit said UNFIXED but we kept as verified (visible decisions over hidden confidence).
+  // Mid-run final audit re-opened these for re-verification (auditOverridesThisRun). Wording depends on end state (Cycle 64 M1).
   const auditOverrides = stateContext.auditOverridesThisRun ?? [];
   if (auditOverrides.length > 0) {
-    console.log(chalk.yellow(`\n  ⚠ ${formatNumber(auditOverrides.length)} issue${auditOverrides.length === 1 ? '' : 's'} re-queued: audit said UNFIXED (were previously verified; safe over sorry)`));
+    const relevantVerifiedSet = new Set(relevantVerified);
+    const unrecovered = auditOverrides.filter((o) => !relevantVerifiedSet.has(o.commentId));
+    if (remainingCount === undefined) {
+      console.log(
+        chalk.gray(
+          `\n  ℹ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s) mid-run for re-verification (see log).`,
+        ),
+      );
+    } else if (remainingCount === 0) {
+      if (unrecovered.length === 0) {
+        console.log(
+          chalk.gray(
+            `\n  ℹ Mid-run, final audit re-opened ${formatNumber(auditOverrides.length)} previously verified issue(s) for re-check; all were addressed before exit (see log).`,
+          ),
+        );
+      } else {
+        console.log(
+          chalk.yellow(
+            `\n  ⚠ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s); ${formatNumber(unrecovered.length)} ${unrecovered.length === 1 ? 'is' : 'are'} not in verified-fixed now — review dismissed/state if unexpected.`,
+          ),
+        );
+      }
+    } else {
+      console.log(
+        chalk.yellow(
+          `\n  ⚠ ${formatNumber(auditOverrides.length)} issue(s) were re-opened by final audit for re-verification; see Remaining above (${formatNumber(remainingCount)}).`,
+        ),
+      );
+    }
   }
 
   // When run in GitHub Actions, hint how to get logs
@@ -410,6 +471,11 @@ export function buildReviewSummaryMarkdown(
 
   const lines: string[] = ['## PRR run summary'];
   if (exitDetails) lines.push(`**Exit:** ${exitDetails}`);
+  if (exitReason === 'merge_conflicts') {
+    lines.push(
+      '- ⚠ Base-branch merge did not complete; resolve conflicts in the workdir and re-run PRR before tackling remaining review threads.',
+    );
+  }
   if (toolFixedCount > 0) {
     let note = '';
     if (fixedThisSession > 0 && fixedThisSession < toolFixedCount) note = ` (${formatNumber(fixedThisSession)} this run)`;
@@ -426,6 +492,26 @@ export function buildReviewSummaryMarkdown(
   }
   if (remainingCount === 0) lines.push('- ✓ No issues remaining');
   else lines.push(`- ○ ${formatNumber(remainingCount)} remaining (resolve by fix or conversation)`);
+
+  const auditOverrides = stateContext.auditOverridesThisRun ?? [];
+  if (auditOverrides.length > 0) {
+    const verifiedSet = new Set(relevantVerified);
+    const unrecovered = auditOverrides.filter((o) => !verifiedSet.has(o.commentId));
+    if (remainingCount === 0 && unrecovered.length === 0) {
+      lines.push(
+        `- ℹ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s) mid-run for re-verification; all addressed before exit.`,
+      );
+    } else if (remainingCount > 0) {
+      lines.push(
+        `- ⚠ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s) mid-run; see remaining above.`,
+      );
+    } else {
+      lines.push(
+        `- ⚠ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s); ${formatNumber(unrecovered.length)} not in verified-fixed — review state.`,
+      );
+    }
+  }
+
   return lines.join('\n');
 }
 
@@ -436,11 +522,25 @@ export function buildReviewSummaryMarkdown(
 export function printHandoffPrompt(
   unresolvedIssues: UnresolvedIssue[],
   noHandoffPrompt: boolean,
-  exhaustedIssues: DismissedIssue[] = []
+  exhaustedIssues: DismissedIssue[] = [],
+  exitReason: string | null = null,
+  exitDetails: string | null = null
 ): void {
   const exhaustedDeduped = dedupeByLocation(exhaustedIssues);
-  const total = unresolvedIssues.length + exhaustedDeduped.length;
+  const grouped = groupUnresolvedForHandoff(unresolvedIssues);
+  const displayedUnresolved = grouped.length;
+  const total = displayedUnresolved + exhaustedDeduped.length;
   if (noHandoffPrompt || total === 0) return;
+
+  if (exitReason === 'merge_conflicts') {
+    console.log(chalk.yellow('\n┌─ BLOCKED: base-branch merge conflicts ─────────────────────────────────────┐'));
+    console.log(chalk.yellow('│ Finish the merge in the workdir first, then re-run PRR.                       │'));
+    console.log(chalk.yellow('│ Numbered items below are review backlog — not processed on this run.          │'));
+    console.log(chalk.yellow('└──────────────────────────────────────────────────────────────────────────────┘'));
+    if (exitDetails) {
+      console.log(chalk.gray(`  ${exitDetails}`));
+    }
+  }
 
   console.log(chalk.cyan('\n┌─────────────────────────────────────────────────────────────┐'));
   console.log(chalk.cyan('│              DEVELOPER HANDOFF PROMPT                       │'));
@@ -461,10 +561,19 @@ export function printHandoffPrompt(
   };
 
   console.log(chalk.white('─'.repeat(60)));
-  console.log(chalk.white(`Remaining — resolve the following ${formatNumber(total)} code review issue(s) by fix, conversation, or other means:\n`));
+  const folded = unresolvedIssues.length - displayedUnresolved;
+  let backlogIntro = `Remaining — resolve the following ${formatNumber(total)} code review issue(s) by fix, conversation, or other means`;
+  if (folded > 0) {
+    backlogIntro += ` (${formatNumber(displayedUnresolved)} topic group(s); folded ${formatNumber(folded)} near-duplicate thread(s) with the same file and heading)`;
+  }
+  console.log(chalk.white(`${backlogIntro}:\n`));
   let index = 1;
-  for (const issue of unresolvedIssues) {
-    formatIssueBlock(index++, issue.comment.path, issue.comment.line ?? null, issue.comment.body);
+  for (const { rep, others } of grouped) {
+    formatIssueBlock(index++, rep.comment.path, rep.comment.line ?? null, rep.comment.body);
+    if (others.length > 0) {
+      const lines = others.map((o) => formatNumber(o.comment.line ?? 0)).join(', ');
+      console.log(chalk.gray(`   _Similar threads at lines: ${lines}_\n`));
+    }
   }
   for (const d of exhaustedDeduped) {
     formatIssueBlock(index++, d.filePath, d.line, d.commentBody);
@@ -559,7 +668,9 @@ export async function printAfterActionReport(
   comments: ReviewComment[],
   noAfterAction: boolean,
   stateContext: StateContext | null,
-  lessonsContext: LessonsContext | null
+  lessonsContext: LessonsContext | null,
+  exitReason: string | null = null,
+  exitDetails: string | null = null
 ): Promise<void> {
   if (noAfterAction) return;
 
@@ -576,6 +687,22 @@ export async function printAfterActionReport(
   console.log(chalk.cyan('│                 AFTER ACTION REPORT                         │'));
   console.log(chalk.cyan('└─────────────────────────────────────────────────────────────┘'));
 
+  if (exitReason === 'merge_conflicts') {
+    console.log(
+      chalk.yellow(
+        `\n  ⚠ Merge with the base branch did not complete — resolve conflicts in the workdir, commit, then re-run PRR.`,
+      ),
+    );
+    if (exitDetails) {
+      console.log(chalk.gray(`     ${exitDetails}`));
+    }
+    console.log(
+      chalk.gray(
+        `     Remaining-issue sections below are backlog from state (this run did not analyze PR comments).`,
+      ),
+    );
+  }
+
   // --- Fixed this session ---
   if (fixedThisSessionComments.length > 0) {
     console.log(chalk.green(`\n━━━ Fixed This Session (${formatNumber(fixedThisSessionComments.length)}) ━━━`));
@@ -587,21 +714,57 @@ export async function printAfterActionReport(
     }
   }
 
-  // --- Audit overrides: kept as verified despite final audit saying UNFIXED ---
-  const auditOverrides = stateContext?.auditOverridesThisRun ?? [];
-  if (auditOverrides.length > 0) {
-    console.log(chalk.yellow(`\n━━━ Audit re-queued (${formatNumber(auditOverrides.length)}) — audit said UNFIXED (were previously verified) ━━━`));
-    for (const o of auditOverrides) {
-      console.log(chalk.yellow(`  ⚠ ${o.path}:${o.line ?? '?'}`));
-      if (o.explanation) console.log(chalk.gray(`    Audit said: ${o.explanation.slice(0, 120)}${o.explanation.length > 120 ? '…' : ''}`));
-    }
-  }
-
   // --- Remaining (unresolved + legacy exhausted/remaining) — resolve by fix, conversation, or other means ---
   const dismissedIssues = stateContext ? Dismissed.getDismissedIssues(stateContext) : [];
   const exhaustedList = dismissedIssues.filter(d => d.category === 'exhausted' || d.category === 'remaining');
   const exhaustedDeduped = dedupeByLocation(exhaustedList);
   const remainingTotal = unresolvedIssues.length + exhaustedDeduped.length;
+
+  // --- Mid-run final audit re-opened (auditOverridesThisRun) — tone follows whether issues were recovered (Cycle 64 M1) ---
+  const auditOverrides = stateContext?.auditOverridesThisRun ?? [];
+  if (auditOverrides.length > 0 && stateContext?.state) {
+    const verifiedFixed = stateContext.state.verifiedFixed || [];
+    const allDismissedIds = new Set(dismissedIssues.map(d => d.commentId));
+    const alreadyFixedDismissedIds = new Set(
+      dismissedIssues.filter(d => d.category === 'already-fixed').map(d => d.commentId),
+    );
+    const currentIds = stateContext.currentCommentIds;
+    const relevantVerifiedIds = (currentIds
+      ? verifiedFixed.filter(id => currentIds.has(id) && !allDismissedIds.has(id))
+      : verifiedFixed.filter(id => !allDismissedIds.has(id))
+    ).filter(id => !alreadyFixedDismissedIds.has(id));
+    const verifiedSet = new Set(relevantVerifiedIds);
+    const unrecovered = auditOverrides.filter((o) => !verifiedSet.has(o.commentId));
+    const recovered = unrecovered.length === 0;
+    const headerColor = remainingTotal === 0 && recovered ? chalk.gray : chalk.yellow;
+    console.log(
+      headerColor(
+        `\n━━━ Final audit re-check (${formatNumber(auditOverrides.length)}) — audit said UNFIXED for previously verified issue(s) ━━━`,
+      ),
+    );
+    if (remainingTotal === 0 && recovered) {
+      console.log(
+        chalk.gray(`  All were addressed again before exit; details below are for the log trail.`),
+      );
+    } else if (remainingTotal > 0) {
+      console.log(
+        chalk.yellow(
+          `  Some work may still be pending — see Remaining (${formatNumber(remainingTotal)}) below.`,
+        ),
+      );
+    } else if (!recovered) {
+      console.log(
+        chalk.yellow(
+          `  ${formatNumber(unrecovered.length)} re-opened issue(s) not in verified-fixed — review dismissed/state if unexpected.`,
+        ),
+      );
+    }
+    const lineColor = remainingTotal === 0 && recovered ? chalk.gray : chalk.yellow;
+    for (const o of auditOverrides) {
+      console.log(lineColor(`  ${remainingTotal === 0 && recovered ? '•' : '⚠'} ${o.path}:${o.line ?? '?'}`));
+      if (o.explanation) console.log(chalk.gray(`    Audit said: ${o.explanation.slice(0, 120)}${o.explanation.length > 120 ? '…' : ''}`));
+    }
+  }
   const withVerifierReason = unresolvedIssues.filter(i => i.verifierContradiction);
   if (remainingTotal > 0) {
     console.log(chalk.yellow(`\n━━━ Remaining (${formatNumber(remainingTotal)}) — Resolve by fix, conversation, or other means ━━━`));
@@ -745,7 +908,21 @@ export async function printAfterActionReport(
   const remainingCount = unresolvedIssues.length + exhaustedDeduped.length;
   const fixedThisSessionCount = verifiedThisSession.size;
   const totalAccounted = new Set([...fixedIds, ...dismissedIds, ...remainingIds, ...exhaustedDeduped.map(d => d.commentId)]).size;
-  console.log(chalk.gray(`  From ${formatNumber(comments.length)} comments: Fixed ${formatNumber(fixedCount)}, Dismissed ${formatNumber(dismissedCount)}, Remaining ${formatNumber(remainingCount)}`));
+  const commentsFetched = comments.length;
+  const fetchNote =
+    commentsFetched === 0
+      ? ' — no comments fetched this run; Fixed/Dismissed/Remaining below are from resolver state (cumulative across sessions).'
+      : '';
+  console.log(
+    chalk.gray(
+      `  PR comments loaded this run: ${formatNumber(commentsFetched)}${fetchNote}`,
+    ),
+  );
+  console.log(
+    chalk.gray(
+      `  Buckets: Fixed ${formatNumber(fixedCount)}, Dismissed ${formatNumber(dismissedCount)}, Remaining ${formatNumber(remainingCount)}`,
+    ),
+  );
   if (totalAccounted !== comments.length) {
     console.log(chalk.gray(`  (Unique comment IDs in these buckets: ${formatNumber(totalAccounted)})`));
   }

@@ -77,6 +77,42 @@ export function normalizePathForAllow(path: string): string {
   return normalizeRepoPath(path).replace(/^\.\//, '');
 }
 
+/** Resolution kind from `resolveTrackedPathDetailed` (solvability) — used only for dismissal mapping. */
+export type TrackedPathResolutionKind =
+  | 'exact'
+  | 'suffix'
+  | 'body-hint'
+  | 'ambiguous'
+  | 'missing'
+  | 'fragment';
+
+/**
+ * True when the review path cannot denote a single repo file (extension-only / bot fragments).
+ * WHY: Distinguish from real root files like `.env` — do **not** use "starts with dot, no slash"
+ * alone (that would misclassify `.env` as a fragment; pill-output / audit).
+ */
+export function isReviewPathFragment(rawPath: string): boolean {
+  const t = normalizeRepoPath(rawPath);
+  if (!t) return true;
+  if (t === '.' || t === '..') return true;
+  if (/^\.(d\.ts|ts|tsx|js|jsx|mjs|cjs)$/i.test(t)) return true;
+  if (!t.includes('/') && /^d\.ts$/i.test(t)) return true;
+  return false;
+}
+
+/**
+ * When a tracked file is not found after resolution, pick a single dismissal category.
+ * WHY: Same logical case must not flip between missing-file and path-unresolved (pill-output).
+ */
+export function pathDismissCategoryForNotFound(
+  reviewPath: string,
+  resolutionKind: TrackedPathResolutionKind
+): 'missing-file' | 'path-unresolved' {
+  if (resolutionKind === 'fragment' || resolutionKind === 'ambiguous') return 'path-unresolved';
+  if (isReviewPathFragment(reviewPath)) return 'path-unresolved';
+  return 'missing-file';
+}
+
 /**
  * Fix URL-encoding artifacts in path segments (e.g. from GitHub links in comment bodies).
  * A segment like "2Fmessage-service.test.ts" comes from "%2Fmessage..." with % stripped;

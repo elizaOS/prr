@@ -53,7 +53,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Config-driven concurrency**: Optional `PRR_MAX_CONCURRENT_LLM` (default 1) caps in-flight LLM requests; analysis batches, verification, and (with llm-api) parallel fix groups share this cap. On 429, concurrency is halved for 60s. *Why*: Default keeps behavior unchanged; raising (e.g. to 3) can cut wall-clock when the backend supports it. See Configuration.
 - Verifies fixes with LLM to prevent false positives
 - **Debug issue table**: Verbose mode prints a human-readable per-comment table after analysis and again at exit. *Why*: This exposes the exact `open` / `dismissed/<category>` / `verified` decision PRR is using so you can compare it with the PR thread list.
-- **Final audit**: Adversarial re-verification of ALL issues before declaring done
+- **Final audit**: Adversarial re-verification of all issues before declaring success — asks what is still wrong (not “is it fixed?”) so weak verifiers do not rubber-stamp. Overrides that keep an issue verified despite UNFIXED are opt-in via `PRR_STRICT_FINAL_AUDIT`. See [DEVELOPMENT.md](DEVELOPMENT.md) and `PRR_FINAL_AUDIT_MODEL` in Configuration.
 
 ### Smart Retry Strategies
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
@@ -218,6 +218,10 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 **ElizaCloud skip-list override (optional)**  
 - **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated model IDs): Models to *include* in rotation even if they are on the default skip list (e.g. `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.7-sonnet`). **WHY:** Those models are skipped by default because audits showed timeouts or 0% fix rate on some gateways; if your environment is different, set this to re-enable them (e.g. `PRR_ELIZACLOUD_INCLUDE_MODELS=openai/gpt-4o-mini`). Full IDs or short names (e.g. `gpt-4o-mini`) both work.
 
+**Fix-loop hygiene (optional)**  
+- **`PRR_SESSION_MODEL_SKIP_FAILURES`** (integer, default **4**; set **`0`** to disable): After this many cumulative verification failures for a tool/model pair **with no verified fix in this process**, skip that model until the next run; a verified fix clears the skip. **WHY:** Audit runs showed 0%-success models still consuming rotation slots; skipping for the rest of the session saves tokens without editing the static skip list in code.  
+- **`PRR_DIMINISHING_RETURNS_ITERATIONS`** (integer, default **10**; set **`0`** to disable): Emit one **warning** when this many consecutive fix iterations produce **no** new verified fixes. **WHY:** Gives operators a visible cue to intervene (merge base, manual edits, or stop) instead of burning API budget quietly.
+
 **Clone / fetch (optional)**  
 - **`PRR_CLONE_TIMEOUT_MS`** (default 900000): Max ms for the initial clone. Large repos or slow connections may need more (e.g. 600000 for 10 min). Progress is logged every 30s.
 - **`PRR_CLONE_DEPTH`** (optional): If set to a positive integer (e.g. `1`), clone uses **`git clone --depth`** (shallow clone). Faster on huge repos; trade-off: incomplete history.
@@ -230,6 +234,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 
 **Audit / exit (optional)**  
 - **`PRR_STRICT_FINAL_AUDIT`**: Set to `true` or `1` to exit with code **2** when the run succeeds but **audit overrides** exist (issues kept verified despite final audit UNFIXED). Default exit remains **0** in that case.
+- **`PRR_FINAL_AUDIT_MODEL`**: Model id for the **adversarial final-audit** pass only. If unset, PRR uses **`PRR_VERIFIER_MODEL`** if set, else **`PRR_LLM_MODEL`**. **WHY:** Small default verifiers can mark UNFIXED by repeating review text while the prompt already shows fixed code; pinning a stronger model (often the same as the fixer) reduces false re-queues.
 
 On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves effective concurrency for 60s so the next run backs off without a code change.
 
@@ -322,7 +327,7 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-bell` | off | Disable terminal bell on completion |
 | `--keep-workdir` | on | Keep work directory after completion |
 | `--no-batch` | off | Disable batched LLM calls |
-| `--verbose` | on | Debug output; when on, prompts.log (in CWD or PRR_LOG_DIR) is populated with full prompt/response text for each LLM call. Empty entries between markers indicate a logging bug (see AGENTS.md prompts.log troubleshooting). Subprocess runners (e.g. llm-api) may write only to output.log; set `PRR_DEBUG_PROMPTS=1` for per-prompt files under `~/.prr/debug/`. |
+| `--verbose` | on | Extra debug output on the console. **`prompts.log`** (in CWD or `PRR_LOG_DIR`) is **not** controlled by this flag: it records full prompt/response text when the **in-process** LLM runs (`LLMClient` in the main process). It may stay **empty** if the run never calls that path (e.g. exits at merge conflicts first) or fixers run only in a **subprocess** (see AGENTS.md). Use **`PRR_DEBUG_PROMPTS=1`** for per-prompt files under `~/.prr/debug/`. |
 | `--reply-to-threads` | off | Post a short reply on each review thread when PRR fixes or dismisses an issue. Use `PRR_REPLY_TO_THREADS=true` to enable via env. **WHY:** Gives reviewers visible feedback in the PR; opt-in so default runs stay unchanged. |
 | `--no-reply-to-threads` | (default) | Do not post replies on review threads. |
 | `--resolve-threads` | off | When replying, also resolve the review thread (collapse with checkmark). **WHY:** Optional; some teams prefer to resolve threads only after human review. |

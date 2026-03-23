@@ -6,6 +6,7 @@
  * effective concurrency temporarily so the next run self-corrects without code change.
  */
 import { getEffectiveMaxConcurrentLLM, getEffectiveMinDelayMs } from '../constants.js';
+import { debug } from '../logger.js';
 
 let elizacloudInFlight = 0;
 /** Time of the most recent slot acquisition (start of a request). Used to stagger starts. */
@@ -15,12 +16,19 @@ const elizacloudQueue: Array<() => void> = [];
 /** After a 429, we use halved concurrency for this many ms. */
 const RATE_LIMIT_BACKOFF_MS = 60_000;
 let rateLimitBackoffUntil = 0;
+let wasIn429Backoff = false;
 
 function getMaxInFlight(): number {
   const cap = getEffectiveMaxConcurrentLLM();
-  if (Date.now() < rateLimitBackoffUntil) {
+  const inBackoff = Date.now() < rateLimitBackoffUntil;
+  if (inBackoff) {
+    wasIn429Backoff = true;
     return Math.max(1, Math.floor(cap / 2));
   }
+  if (wasIn429Backoff && cap > 1) {
+    debug('ElizaCloud 429 cooldown ended — restored full LLM concurrency', { cap });
+  }
+  wasIn429Backoff = false;
   return cap;
 }
 

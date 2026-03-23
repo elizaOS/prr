@@ -21,7 +21,7 @@ import type { LessonsContext, LessonsSyncTarget } from '../state/lessons-context
 import type { LockConfig } from '../state/lock-functions.js';
 import type { ReviewComment } from '../github/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
-import { debug, debugStep } from '../../../shared/logger.js';
+import { debug, debugStep, warn } from '../../../shared/logger.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as State from '../state/state-core.js';
@@ -116,6 +116,15 @@ export async function executeSetupPhase(
   const git = await ResolverProc.cloneOrUpdateRepository(prInfo, workdir, config.githubToken, hasVerifiedFixes, spinner, github);
   setPhase(stateContext, 'setup');
 
+  const githubSaysNotMergeable =
+    prInfo.mergeable === false || prInfo.mergeableState?.toLowerCase() === 'dirty';
+  if (githubSaysNotMergeable && !options.mergeBase) {
+    warn(
+      `GitHub reports this PR is not cleanly mergeable (mergeable: ${String(prInfo.mergeable)}, state: ${prInfo.mergeableState}). ` +
+        `PRR will still run, but fixing conflicts first or passing --merge-base may avoid wasted work.`,
+    );
+  }
+
   // Re-detect sync target existence so we don't delete repo-owned CLAUDE.md/AGENTS.md at final cleanup.
   // WHY: setWorkdir runs before clone, so on first run the workdir was empty and we recorded "didn't exist".
   // After clone, those files may exist in the repo; refresh state so cleanup only removes files we created.
@@ -143,7 +152,7 @@ export async function executeSetupPhase(
   await ensureStateFileIgnored(workdir);
 
   // Recover verification state from git history
-  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext);
+  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext, workdir);
 
   // Create conflict resolution wrapper with setup phase context
   // WHY: During setup, resolver's workdir/runner are not set yet, so we need to

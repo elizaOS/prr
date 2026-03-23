@@ -15,8 +15,18 @@ import {
   type StoryReadClient,
 } from '../../../shared/llm/story-read.js';
 import { estimateTokens } from '../utils/files.js';
+import { truncateHeadAndTailByChars } from '../../../shared/utils/tokens.js';
 
-const CHAPTER_TOKEN_BUDGET = 35_000;
+/**
+ * Max chars per PROMPT/RESPONSE pair before story-read. WHY: A single pair (e.g. 200k-char conflict prompt)
+ * used to bypass CHAPTER_TOKEN_BUDGET — one "chapter" was entire blob → gateway timeouts during assembly.
+ */
+const MAX_PAIR_BODY_CHARS = 18_000;
+const PAIR_TRUNCATE_MARKER =
+  '\n\n[ ... pill: truncated this prompt/response body for digest size (504 avoidance) ... ]\n\n';
+
+/** Token budget per story-read chapter (pair groups + plain-text chunking). Lower = smaller ElizaCloud requests. */
+const CHAPTER_TOKEN_BUDGET = 8_000;
 
 /** Minimal LLM client for chapter analysis (same client as audit, passed in). */
 export type LLMClientForProcessor = StoryReadClient;
@@ -30,7 +40,11 @@ function chunkPairs(pairs: { slug: string; text: string }[]): { slugRange: strin
   let endSlug = startSlug;
 
   for (const { slug, text } of pairs) {
-    const tokens = estimateTokens(text);
+    const bounded =
+      text.length > MAX_PAIR_BODY_CHARS
+        ? truncateHeadAndTailByChars(text, MAX_PAIR_BODY_CHARS, PAIR_TRUNCATE_MARKER)
+        : text;
+    const tokens = estimateTokens(bounded);
     if (currentTokens + tokens > CHAPTER_TOKEN_BUDGET && current.length > 0) {
       chapters.push({
         slugRange: `${startSlug}–${endSlug}`,
@@ -40,7 +54,7 @@ function chunkPairs(pairs: { slug: string; text: string }[]): { slugRange: strin
       currentTokens = 0;
       startSlug = slug;
     }
-    current.push(text);
+    current.push(bounded);
     currentTokens += tokens;
     endSlug = slug;
   }
@@ -92,6 +106,9 @@ function groupPairs(entries: LogEntry[]): { slug: string; text: string }[] {
  * Story-read arbitrary plain text (e.g. output.log).
  * Chunks by line boundaries, runs each through the cheap model, compiles a digest.
  */
+/** Plain-text logs (e.g. output.log middle): slightly larger chapters than paired prompts — still bounded for ElizaCloud. */
+const PLAIN_TEXT_CHAPTER_TOKEN_BUDGET = 10_000;
+
 export async function storyReadPlainText(
   text: string,
   client: LLMClientForProcessor,
@@ -99,7 +116,7 @@ export async function storyReadPlainText(
 ): Promise<string> {
   return sharedStoryReadPlainText(text, client, {
     ...options,
-    chapterTokenBudget: CHAPTER_TOKEN_BUDGET,
+    chapterTokenBudget: PLAIN_TEXT_CHAPTER_TOKEN_BUDGET,
   });
 }
 

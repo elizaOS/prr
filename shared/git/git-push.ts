@@ -28,7 +28,7 @@ import type { SimpleGit } from 'simple-git';
 import { spawn, execFileSync } from 'child_process';
 import { existsSync, rmSync } from 'fs';
 import { join } from 'path';
-import { debug } from '../logger.js';
+import { debug, formatNumber } from '../logger.js';
 import { cleanupGitState, continueRebase } from './git-merge.js';
 import { redactUrlCredentials } from './redact-url.js';
 
@@ -405,7 +405,16 @@ export async function pushWithRetry(
             debug('onConflict handler failed', { error: redactUrlCredentials(handlerMsg) });
           }
         }
-        
+
+        if (conflictedFiles.length > 0) {
+          const handlerNote = options?.onConflict
+            ? 'onConflict did not finish the rebase (or returned false). '
+            : 'No onConflict handler was provided. ';
+          console.warn(
+            `${handlerNote}Rebase conflicts in ${formatNumber(conflictedFiles.length)} file(s): ${conflictedFiles.join(', ')}`,
+          );
+        }
+
         // WHY only abort, not cleanupGitState: cleanupGitState does reset --hard + clean -fd and
         // destroys the caller's commits (e.g. split-exec's cherry-picks). Abort preserves commits.
         try {

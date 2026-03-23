@@ -39,4 +39,12 @@ describe('model catalog', () => {
     expect(isModelCatalogStale(c, 365 * 100)).toBe(false);
     expect(isModelCatalogStale(c, 0)).toBe(true);
   });
+
+  it('missing catalog path returns empty providers without throwing', () => {
+    const missing = join(__dirname, 'this-catalog-file-does-not-exist.json');
+    const c = loadModelProviderCatalog(missing);
+    expect(c.schemaVersion).toBe(1);
+    expect(c.providers.openai.apiIds).toEqual([]);
+    expect(c.providers.anthropic.apiIds).toEqual([]);
+  });
 });

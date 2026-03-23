@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-20 · **Recorded cycles:** 63 · **Historical (legacy):** 4
+**Last updated:** 2026-03-18 · **Recorded cycles:** 65 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -161,6 +161,54 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 65 — 2026-03-21 (prompts.log: babylon#1327 — final audit parrots review; verifier + huge fix prompts)
+
+**Artifacts audited:** prompts.log BabylonSocial/babylon#1327 run (~03:25–03:29Z). Workdir `/root/.prr/work/63e58dcd956d6759`. Cross-check: final-audit **PROMPT** text in log (not workdir spot-check for this cycle).
+
+**Findings:**
+- **High (H1):** **Final audit (#0009, qwen)** line **`[1] UNFIXED`** claims the **comment still says UUID v4** while the **same prompt’s full-file snippet** shows line 40 as **`Matches standard UUID format (versions 1-8)`** aligned with **`[1-8]`** in the regex — i.e. the audit **ignored the shown current code** and **parroted the original review**. That drove **spurious UNFIXED**, **unmarkVerified**, and **extra fix-loop work** (matches output.log Cycle 64 narrative). **Improvement:** Run **final audit** with **≥ same capability as post-fix verification** (e.g. opus), and add an instruction: **if the in-prompt file already matches the review’s requested alignment (comment ↔ regex), respond FIXED and quote the lines.**
+- **Medium (M1):** **Batch verify (#0002, qwen)** for **`issue_1`**: explanation cites **“code snippet truncated, but regex not shown to be corrected”** while still answering **YES** — conflicts with **truncated → STALE / don’t speculate** guidance and can **inflate YES** vs a complete-snippet verify. **Improvement:** Enforce **STALE** or **secondary verify** when the verifier cites truncation as the reason.
+- **Medium (M2):** **Fixer prompts** **#0004 ~73k** and **#0007 ~55k** chars before API — **timeout/cost** risk on gateways. **Improvement:** Tighter **batch split**, cap **injected file** sections, or align with conservative prompt cap messaging.
+- **Low (L1):** **Verifier system prompt** embeds **generic SQL injection / `var` examples** in every batch-verify call — small **token tax** and **domain noise** for unrelated PRs. **Improvement:** Shorten examples or use **neutral placeholders**.
+- **Low (L2):** **Model recommendation (#0003)** is useful; when only **one** model is available the block is mostly **ritual** — could **skip** or shorten.
+
+**Improvements implemented:**
+- **H1:** **`PRR_FINAL_AUDIT_MODEL`** + **`getFinalAuditModel()`** — final audit calls **`complete(..., { model })`** with **`finalAuditModel ?? verifierModel ?? llmModel`**. Prompt rules **8–9** require judging from shown code, not stale review text. **Post-parse:** UNFIXED demoted to FIXED when **`snippetShowsUuidCommentAlignedWithVersionRange`** and review mentions UUID/version (parrot guard).
+- **M1:** Batch verify: instruction to prefer **STALE** when uncertainty is **only** truncation; **YES→NO** override when snippet is **`(end of file)`** but explanation cites **truncation**.
+- **M2:** (Deferred) Enriched fix cap — monitor after opus prompt sizes.
+- **L1:** Shorter **batch-verify** example lines (drop SQL/`var` toy examples).
+- **L2:** Skip separate **model recommendation** call when **`availableModels.length <= 1`**.
+
+**Flip-flop check:** Y — Final audit can mark FIXED where a weak model said UNFIXED (post-check + stronger model); batch override can clear YES when file is complete.
+
+**Notes:** Final-audit prompt/response **contradiction** verified by reading `prompts.log` around **#0009** (lines 5899–5902 vs response **[1] UNFIXED**). Set **`PRR_FINAL_AUDIT_MODEL`** (e.g. same as fixer) when **`PRR_LLM_MODEL`** is a small verifier.
+
+---
+
+### Cycle 64 — 2026-03-21 (output.log: babylon#1327 — final audit unmark vs `verifiedThisSession` empty-queue bug)
+
+**Artifacts audited:** output.log BabylonSocial/babylon#1327 (~03:15–03:29Z). Workdir `/root/.prr/work/63e58dcd956d6759`, branch `odi-db`.
+
+**Findings:**
+- **High (H1):** After **final audit** said **UNFIXED** for 5 previously verified Copilot threads, **`unmarkVerified`** ran but **`Filtering issues verified this session`** immediately removed all 5 from the queue → **`BUG DETECTED: unresolvedIssues is empty but N comments are neither verified nor dismissed`** → **re-populated**. Same pattern later with **3** issues. **Root cause:** **`verifiedThisSession`** still contained those comment IDs from earlier in the same run; **`unmarkVerified`** cleared persisted verification but **not** the session set, so **`filterUnresolvedAgainstVerifiedThisSession`** (fix-loop-utils) treated re-queued issues as “already fixed this session.” **Improvement:** On **`unmarkVerified`**, also **`verifiedThisSession.delete(commentId)`** so audit re-queue and persistent state stay aligned.
+- **Medium (M1):** **RESULTS SUMMARY** shows **“Exit: All issues resolved”** / **0 remaining** alongside **“5 issues re-queued: audit said UNFIXED”** — confusing for operators; clarify that re-queue was **handled** in the same run vs **deferred technical debt**.
+- **Medium (M2):** **Final audit** (qwen) contradicted **inline verification** (opus) on substantive Copilot threads (comment vs UUID version bits, test naming vs routing, DB skip, assertion gap) — risk of **flip-flop** between “verified” and “audit UNFIXED”. Consider **stronger / same model** for final audit when issues were verified with opus, or **tie-break** rules when audit disagrees with recent successful verify.
+- **Low (L1):** **`[Auto-heal detection] Comment does not suggest invalid model ID`** logged **per comment × per phase** (many lines) — batch or **debug-only** once per phase to cut noise.
+- **Low (L2):** **Duplicate `unmarkVerified`** debug lines for the same IDs in one audit tick (two back-to-back unmark sequences) — dedupe or single code path.
+
+**Improvements implemented:**
+- **H1:** **`unmarkVerified`** (`state-verification.ts`) now removes the comment id from **`verifiedThisSession`** when present.
+- **M1:** **RESULTS SUMMARY**, **AAR**, and **GitHub review summary** (`reporter.ts` / `buildReviewSummaryMarkdown`) clarify mid-run **audit re-queue** vs end state: when **0 remaining** and re-opened ids are back in **verified-fixed**, informational copy instead of implying unresolved debt.
+- **M2 (partial):** **`runFinalAudit`** (`analysis.ts`) **tie-break**: if the comment was **verified this session** and **`snippetShowsUuidCommentAlignedWithVersionRange`**, keep verified (defense in depth with final-audit client post-check / **`PRR_FINAL_AUDIT_MODEL`** from Cycle 65).
+- **L1:** **`getOutdatedModelCatalogDismissal`**: no per-comment **`debug`** when the comment does not suggest an invalid model id (noise reduction).
+- **L2:** **Single `unmarkVerified` path** for final-audit failures: batch unmark in **`runFinalAudit`** after building **`failedAudit`**; removed duplicate loop from **`main-loop-setup.ts`**.
+
+**Flip-flop check:** Y — Changes who enters the fix loop after unmark; aligns with intent of audit re-queue (re-verify / re-fix). Should not skip fixes that audit explicitly reopened.
+
+**Notes:** Did not spot-check workdir files for “audit UNFIXED vs opus verified” substance; log shows both narratives in one session — worth human review on the PR if tests/comments still mismatch Copilot’s bar. Cycle 64 follow-through landed 2026-03-18 (M1/M2/L1/L2).
+
+---
 
 ### Cycle 62 — 2026-03-20 (output.log: eliza#6575 — auto-heal corrects telegram models, fix queue undoes it)
 

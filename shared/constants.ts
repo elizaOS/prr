@@ -126,6 +126,9 @@ export const MAX_SNIPPET_LINES = 500;
  */
 export const MAX_CONFLICT_RESOLUTION_FILE_SIZE = 50000;
 
+/** Same as MAX_CONFLICT_RESOLUTION_FILE_SIZE — max chars for one-shot LLM merge prompts (tools/prr/llm/client.ts). */
+export const MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS = MAX_CONFLICT_RESOLUTION_FILE_SIZE;
+
 /**
  * Use chunked resolution for conflict files above this size (chars) instead of
  * trying full-file first. Reduces 504/timeouts on 22–50KB files.
@@ -172,6 +175,22 @@ export const MAX_EDGE_SEGMENT_CHARS_DEFAULT = 12_000;
  * send a single request with more than one segment's worth of content (keeps context bounded).
  */
 export const MAX_SINGLE_CHUNK_CHARS = 12_000;
+
+/**
+ * Max file size (chars) embedded in the post-resolution "syntax fix" LLM pass (full file in prompt).
+ * Larger files skip that pass — avoids gateway 504 / multi-minute timeouts (audit: ~214k-char prompt).
+ */
+export const MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS = 45_000;
+
+/**
+ * Half-window line count (above + below center) for **windowed** conflict syntax-fix when the file
+ * exceeds MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS. WHY: Large files (e.g. 200k+ chars) still fail parse
+ * with leftover markers; a local fragment prompt avoids 504s while fixing the error line.
+ */
+export const CONFLICT_SYNTAX_FIX_WINDOW_HALF_LINES = 140;
+
+/** Max chars for that fragment (prompt + response headroom). */
+export const CONFLICT_SYNTAX_FIX_WINDOW_MAX_CHARS = 32_000;
 
 /**
  * Minimum ratio of resolved content lines to the larger conflict side's lines.
@@ -321,12 +340,22 @@ export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {
  * PRR_ELIZACLOUD_INCLUDE_MODELS (comma-separated). WHY: Lets operators re-enable a skipped
  * model when timeouts were transient or environment-specific (see output.log audit §9).
  */
+let loggedElizacloudIncludeModels = false;
+
 export function getEffectiveElizacloudSkipModelIds(): string[] {
   const raw = process.env.PRR_ELIZACLOUD_INCLUDE_MODELS?.trim();
   if (!raw) return [...ELIZACLOUD_SKIP_MODEL_IDS];
   const include = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
   const match = (id: string) => include.has(id) || include.has(id.replace(/^(openai|anthropic|google)\//, ''));
-  return ELIZACLOUD_SKIP_MODEL_IDS.filter(id => !match(id));
+  const filtered = ELIZACLOUD_SKIP_MODEL_IDS.filter(id => !match(id));
+  if (!loggedElizacloudIncludeModels) {
+    loggedElizacloudIncludeModels = true;
+    const before = ELIZACLOUD_SKIP_MODEL_IDS.length;
+    console.log(
+      `PRR_ELIZACLOUD_INCLUDE_MODELS: skip list narrowed from ${before.toLocaleString()} to ${filtered.length.toLocaleString()} model id(s).`,
+    );
+  }
+  return filtered;
 }
 
 /**
@@ -345,11 +374,21 @@ export const ELIZACLOUD_MIN_DELAY_MS = 6000;
 const MIN_CONCURRENT = 1;
 const MAX_CONCURRENT = 32;
 
+let warnedInvalidMaxConcurrentLlm = false;
+
 function parseEnvConcurrent(): number {
   const raw = process.env.PRR_MAX_CONCURRENT_LLM;
   if (raw === undefined || raw === '') return MIN_CONCURRENT;
   const n = parseInt(raw, 10);
-  if (!Number.isInteger(n) || n < MIN_CONCURRENT || n > MAX_CONCURRENT) return MIN_CONCURRENT;
+  if (!Number.isInteger(n) || n < MIN_CONCURRENT || n > MAX_CONCURRENT) {
+    if (!warnedInvalidMaxConcurrentLlm) {
+      warnedInvalidMaxConcurrentLlm = true;
+      console.warn(
+        `PRR_MAX_CONCURRENT_LLM="${raw}" is invalid; using ${MIN_CONCURRENT.toLocaleString()} (allowed range ${MIN_CONCURRENT.toLocaleString()}–${MAX_CONCURRENT.toLocaleString()}, integers only).`,
+      );
+    }
+    return MIN_CONCURRENT;
+  }
   return n;
 }
 
@@ -717,3 +756,26 @@ export const LOCK_FILENAME = '.prr-lock.json';
  * WHY: Detect infinite loops/generation issues.
  */
 export const MAX_WHITESPACE_IN_RUNNER_OUTPUT = 1000;
+
+/**
+ * Cumulative verification failures (per tool/model, this process) with zero verified fixes before skipping that model for the rest of the run.
+ * WHY: Pill — chronic 0% models still consume rotation slots; session skip saves tokens. Set `PRR_SESSION_MODEL_SKIP_FAILURES=0` to disable.
+ */
+export function getSessionModelSkipFailureThreshold(): number {
+  const raw = process.env.PRR_SESSION_MODEL_SKIP_FAILURES?.trim();
+  if (raw === '0') return 0;
+  if (raw === undefined || raw === '') return 4;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 4;
+}
+
+/**
+ * Consecutive fix iterations with no new verified fixes before emitting one warning. Set `PRR_DIMINISHING_RETURNS_ITERATIONS=0` to disable.
+ */
+export function getDiminishingReturnsIterationThreshold(): number {
+  const raw = process.env.PRR_DIMINISHING_RETURNS_ITERATIONS?.trim();
+  if (raw === '0') return 0;
+  if (raw === undefined || raw === '') return 10;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 10;
+}

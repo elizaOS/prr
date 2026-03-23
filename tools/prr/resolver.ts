@@ -27,7 +27,7 @@ import type { LockConfig } from './state/lock-functions.js';
 import { ensureWorkdir, cleanupWorkdir, getWorkdirInfo } from '../../shared/git/workdir.js';
 import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../shared/git/git-clone-index.js';
 import type { SimpleGit } from 'simple-git';
-import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from '../../shared/git/git-commit-index.js';
+import { squashCommit, pushWithRetry, commitIteration } from '../../shared/git/git-commit-index.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../../shared/runners/detect.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from '../../shared/logger.js';
 import * as Reporter from './ui/reporter.js';
@@ -107,8 +107,36 @@ export class PRResolver {
     Reporter.printFinalSummary(this.stateContext, this.exitReason, this.exitDetails, remainingCount);
   }
   private getExitReasonDisplay(): { label: string; icon: string; color: (text: string) => string } { return Reporter.getExitReasonDisplay(this.exitReason); }
-  private printHandoffPrompt(unresolvedIssues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]): void { Reporter.printHandoffPrompt(unresolvedIssues, this.options.noHandoffPrompt, exhaustedIssues ?? []); }
-  private async printAfterActionReport(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { return Reporter.printAfterActionReport(unresolvedIssues, comments, this.options.noAfterAction, this.stateContext, this.lessonsContext); }
+  private printHandoffPrompt(
+    unresolvedIssues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ): void {
+    Reporter.printHandoffPrompt(
+      unresolvedIssues,
+      this.options.noHandoffPrompt,
+      exhaustedIssues ?? [],
+      exitReason ?? this.exitReason,
+      exitDetails ?? this.exitDetails
+    );
+  }
+  private async printAfterActionReport(
+    unresolvedIssues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ): Promise<void> {
+    return Reporter.printAfterActionReport(
+      unresolvedIssues,
+      comments,
+      this.options.noAfterAction,
+      this.stateContext,
+      this.lessonsContext,
+      exitReason ?? this.exitReason,
+      exitDetails ?? this.exitDetails
+    );
+  }
   private getModelsForRunner(runner: Runner): string[] { return Rotation.getModelsForRunner(runner); }
   private getCurrentModel(): string | undefined { const ctx = this.getRotationContext(); return Rotation.getCurrentModel(ctx, this.options); }
   private isModelAvailableForRunner(model: string): boolean { const ctx = this.getRotationContext(); return Rotation.isModelAvailableForRunner(ctx, model); }
@@ -180,8 +208,8 @@ export class PRResolver {
       waitForBotReviews: (o, r, n, sha) => this.waitForBotReviews(o, r, n, sha), 
       cleanupCreatedSyncTargets: (git) => this.cleanupCreatedSyncTargets(git), 
       printModelPerformance: () => this.printModelPerformance(), 
-      printHandoffPrompt: (issues, exhausted) => this.printHandoffPrompt(issues, exhausted), 
-      printAfterActionReport: (issues, comments) => this.printAfterActionReport(issues, comments), 
+      printHandoffPrompt: (issues, exhausted, er, ed) => this.printHandoffPrompt(issues, exhausted, er, ed),
+      printAfterActionReport: (issues, comments, er, ed) => this.printAfterActionReport(issues, comments, er, ed),
       printFinalSummary: (remainingCount?: number) => this.printFinalSummary(remainingCount), 
       ringBell: (times) => this.ringBell(times), 
       runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n),

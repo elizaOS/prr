@@ -19,19 +19,20 @@ import { extractJson } from './llm/parse-json.js';
 import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
 import { chunkPlainText } from '../../shared/llm/story-read.js';
 
-/** Default hard cap on user message length (chars). Scaled down when PILL_CONTEXT_BUDGET_TOKENS is set (e.g. 20k).
- * WHY 42k not 50k: Chunked audits send one chunk + system per request; ElizaCloud/Vercel 504s observed ~76k body when
- * chunk sizing was wrong. 42k user + ~3k system + JSON stays under gateway comfort zone. */
-const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 42_000;
+/** Default hard cap on user message length (chars) per audit HTTP request. Override: PILL_AUDIT_MAX_USER_CHARS.
+ * WHY 20k not 42k: Vercel FUNCTION_INVOCATION_TIMEOUT on ElizaCloud with claude-opus + ~44k POST bodies (audit still failed). */
+const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 20_000;
+/** Opus / heavy models: smaller payloads finish inside gateway limits. Skipped when PILL_AUDIT_MAX_USER_CHARS is set. */
+const SLOW_AUDIT_MODEL_MAX_USER_CHARS = 12_000;
+const MIN_AUDIT_USER_MESSAGE_MAX_CHARS = 6_000;
 /**
  * Optimistic chars/token when converting PILL_CONTEXT_BUDGET_TOKENS → max user chars (allow more text in budget).
  * MUST NOT be used for chunkPlainText — that uses shared estimateTokens (length / CHARS_PER_TOKEN).
  */
 const BUDGET_TO_USER_CHARS_RATIO = 2.7;
 const USER_MESSAGE_TOKEN_FRACTION = 0.8;
-/** Safety margin for system prompt + JSON overhead (subtracted from calculated cap to avoid 504).
- * WHY 8k not 5k: Observed 504s at ~48k total request; system prompt (~3-4k) + JSON structure (~4-5k) = ~8k overhead. */
-const REQUEST_OVERHEAD_CHARS = 8_000;
+/** Safety margin for system prompt + JSON overhead (subtracted from calculated cap to avoid 504). */
+const REQUEST_OVERHEAD_CHARS = 11_000;
 /** Reserve for `[CONTEXT CHUNK i/n]\n\n` so chunk body + prefix ≤ userMessageMaxChars. */
 const CHUNK_PREFIX_RESERVE_CHARS = 160;
 
@@ -39,6 +40,30 @@ const CHUNK_PREFIX_RESERVE_CHARS = 160;
  * Subdivide chapters whose text exceeds maxChars (e.g. one log line longer than token budget).
  * WHY: chunkPlainText emits a single line as one chapter when that line alone exceeds the token budget; that can still be huge in bytes.
  */
+function isSlowAuditModel(model: string): boolean {
+  const m = model.toLowerCase();
+  if (/opus|claude-3-opus|o3-|o1-pro/.test(m)) return true;
+  // gpt-5 family can be slow on gateways; exclude mini/nano-sized ids from the tight cap.
+  if (/gpt-5/.test(m) && !/gpt-5-nano|gpt-5-mini|5-nano|5-mini/.test(m)) return true;
+  return false;
+}
+
+/** Max user chars per audit request (single or per chunk). Env override wins; else slow models get a tighter cap. */
+function computeAuditUserMessageMaxChars(
+  budgetTokens: number,
+  auditModel: string,
+  envOverride?: number
+): number {
+  const fromBudget = Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * BUDGET_TO_USER_CHARS_RATIO) - REQUEST_OVERHEAD_CHARS;
+  let cap = Math.min(DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS, fromBudget);
+  if (envOverride !== undefined && Number.isFinite(envOverride)) {
+    cap = Math.min(Math.max(MIN_AUDIT_USER_MESSAGE_MAX_CHARS, envOverride), 80_000);
+  } else if (isSlowAuditModel(auditModel)) {
+    cap = Math.min(cap, SLOW_AUDIT_MODEL_MAX_USER_CHARS);
+  }
+  return Math.max(MIN_AUDIT_USER_MESSAGE_MAX_CHARS, cap);
+}
+
 function enforceMaxChunkChars(
   chapters: { label: string; text: string }[],
   maxChars: number
@@ -345,14 +370,11 @@ export async function runPillAnalysis(config: PillConfig): Promise<
       update('Running audit…');
     }
 
-    // Subtract overhead so total request (user + system + JSON) stays under gateway limits.
-    const userMessageMaxChars = Math.max(
-      10_000, // Minimum cap to ensure some content is sent
-      Math.min(
-        DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS,
-        Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * BUDGET_TO_USER_CHARS_RATIO) -
-          REQUEST_OVERHEAD_CHARS,
-      ),
+    // Subtract overhead so total request (user + system + JSON) stays under gateway time/size limits.
+    const userMessageMaxChars = computeAuditUserMessageMaxChars(
+      budgetTokens,
+      config.auditModel,
+      config.auditMaxUserChars
     );
     const fullUserMessage = buildAuditUserMessage(ctx);
     
@@ -459,7 +481,7 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     if (spinner) {
       if (is504) {
         spinner.fail(
-          `Pill audit timed out (504) — request too large or slow. Try: PILL_CONTEXT_BUDGET_TOKENS=20000, PILL_OUTPUT_LOG_MAX_CHARS=28000, or a lighter PILL_AUDIT_MODEL.`,
+          `Pill audit timed out (504) — request too large or slow. Try: PILL_AUDIT_MAX_USER_CHARS=8000, PILL_CONTEXT_BUDGET_TOKENS=20000, PILL_OUTPUT_LOG_MAX_CHARS=20000, or a lighter PILL_AUDIT_MODEL (e.g. sonnet).`,
         );
       } else {
         spinner.fail(msg);

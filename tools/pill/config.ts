@@ -95,6 +95,16 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
         })()
       : undefined;
 
+  const auditMaxUserEnv = getEnv('PILL_AUDIT_MAX_USER_CHARS');
+  const auditMaxUserChars =
+    auditMaxUserEnv !== undefined && auditMaxUserEnv !== ''
+      ? (() => {
+          const n = parseInt(auditMaxUserEnv, 10);
+          if (!Number.isFinite(n) || n < 6_000 || n > 80_000) return undefined;
+          return n;
+        })()
+      : undefined;
+
   const config: PillConfig = {
     targetDir: input.targetDir,
     llmProvider,
@@ -102,6 +112,7 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     llmModel,
     logPrefix: input.logPrefix,
     contextBudgetTokens,
+    auditMaxUserChars,
     outputOnly: input.outputOnly,
     promptsOnly: input.promptsOnly,
     dryRun: input.dryRun,

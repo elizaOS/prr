@@ -99,8 +99,18 @@ export interface RunCallbacks {
   waitForBotReviews: (owner: string, repo: string, prNumber: number, headSha: string) => Promise<void>;
   cleanupCreatedSyncTargets: (git: SimpleGit) => Promise<void>;
   printModelPerformance: () => void;
-  printHandoffPrompt: (issues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]) => void;
-  printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
+  printHandoffPrompt: (
+    issues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => void;
+  printAfterActionReport: (
+    issues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => Promise<void>;
   printFinalSummary: (remainingCount?: number) => void;
   ringBell: (times: number) => void;
   runCleanupMode: (prUrl: string, owner: string, repo: string, prNumber: number) => Promise<void>;
@@ -183,7 +193,22 @@ export async function executeRun(
       if (setupResult.exitDetails) state.exitDetails = setupResult.exitDetails;
       // Sync resolver so printFinalSummary shows correct exit reason; run error cleanup so user sees "Exit: Error" and details (not "successfully ran").
       if (callbacks.syncResolverState) callbacks.syncResolverState(state);
-      await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, state.finalUnresolvedIssues, state.finalComments, state.stateContext, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
+      await ResolverProc.executeErrorCleanup(
+        state.workdir || '',
+        options,
+        spinner,
+        state.finalUnresolvedIssues,
+        state.finalComments,
+        state.stateContext,
+        cleanupWorkdir,
+        callbacks.printModelPerformance,
+        callbacks.printHandoffPrompt,
+        callbacks.printAfterActionReport,
+        callbacks.printFinalSummary,
+        callbacks.ringBell,
+        state.exitReason,
+        state.exitDetails
+      );
       return state;
     }
     debug('Setup complete, entering push iteration loop', { workdir: setupResult.workdir, hasPrefetchedComments: !!setupResult.prefetchedComments?.length });
@@ -385,7 +410,23 @@ export async function executeRun(
     // Prefer ref snapshot so AAR/remaining count are correct when error happens mid-iteration (audit: remaining on early exit, AAR on auth exit).
     const issuesForCleanup = finalUnresolvedIssuesRef.current.length > 0 ? finalUnresolvedIssuesRef.current : state.finalUnresolvedIssues;
     const commentsForCleanup = finalCommentsRef.current.length > 0 ? finalCommentsRef.current : state.finalComments;
-    await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, issuesForCleanup, commentsForCleanup, state.stateContext, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
+    const errDetails = error instanceof Error ? error.message : String(error);
+    await ResolverProc.executeErrorCleanup(
+      state.workdir || '',
+      options,
+      spinner,
+      issuesForCleanup,
+      commentsForCleanup,
+      state.stateContext,
+      cleanupWorkdir,
+      callbacks.printModelPerformance,
+      callbacks.printHandoffPrompt,
+      callbacks.printAfterActionReport,
+      callbacks.printFinalSummary,
+      callbacks.ringBell,
+      'error',
+      errDetails
+    );
     throw error;
   }
   return state;

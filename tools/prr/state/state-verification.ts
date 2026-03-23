@@ -46,10 +46,24 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
   const existing = state.verifiedComments.find(v => v.commentId === commentId);
   
   if (existing) {
+    const hadDismissed = state.dismissedIssues?.some((d) => d.commentId === commentId) ?? false;
+    const sameIteration = existing.verifiedAtIteration === currentIteration;
+    const fromCompatible =
+      autoVerifiedFrom === undefined || autoVerifiedFrom === existing.autoVerifiedFrom;
+    if (sameIteration && fromCompatible && !hadDismissed) {
+      return;
+    }
     existing.verifiedAt = new Date().toISOString();
     existing.verifiedAtIteration = currentIteration;
     if (autoVerifiedFrom !== undefined) {
       existing.autoVerifiedFrom = autoVerifiedFrom;
+    }
+    if (state.dismissedIssues?.length) {
+      const before = state.dismissedIssues.length;
+      state.dismissedIssues = state.dismissedIssues.filter((d) => d.commentId !== commentId);
+      if (state.dismissedIssues.length < before) {
+        debug('markVerified (update): removed from dismissed — mutual exclusivity', { commentId });
+      }
     }
     debug('markVerified (update)', { commentId, iteration: currentIteration, autoVerifiedFrom });
   } else {
@@ -122,6 +136,13 @@ export function unmarkVerified(ctx: StateContext, commentId: string): void {
   if (state.commentStatuses?.[commentId]) {
     delete state.commentStatuses[commentId];
   }
+
+  // WHY: fix-loop start filters out IDs in verifiedThisSession ("already fixed this session").
+  // Final audit calls unmarkVerified when it says UNFIXED; if we leave the ID in the session set,
+  // the next iteration drops all re-queued issues → empty queue → "BUG DETECTED" repopulate
+  // (output.log audit babylon#1327 2026-03-21).
+  ctx.verifiedThisSession?.delete(commentId);
+
   debug('unmarkVerified', { commentId, remainingVerified: (state.verifiedFixed ?? []).length });
 }
 

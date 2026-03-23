@@ -17,7 +17,7 @@ import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, ModelStats, ModelPerformance, DismissedIssue, BailOutRecord, IssueAttempt, IssueAttempts } from './types.js';
 import { createInitialState } from './types.js';
-import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage } from '../../../shared/logger.js';
+import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage, formatNumber } from '../../../shared/logger.js';
 import * as Normalize from './lessons-normalize.js';
 
 const STATE_FILENAME = '.pr-resolver-state.json';
@@ -110,14 +110,39 @@ export class StateManager {
           }
 
           // Keep verifiedFixed and dismissedIssues mutually exclusive (pill #3; output.log audit).
-          // Remove from verified any ID that is in dismissed (symmetric to removing from dismissed when in verified).
+          const verifiedAll = new Set([
+            ...(this.state.verifiedFixed ?? []),
+            ...(this.state.verifiedComments?.map((v) => v.commentId) ?? []),
+          ]);
           const dismissedIds = new Set((this.state.dismissedIssues ?? []).map((d) => d.commentId));
+          if (verifiedAll.size > 0 && (this.state.dismissedIssues?.length ?? 0) > 0) {
+            const beforeD = this.state.dismissedIssues!.length;
+            this.state.dismissedIssues = this.state.dismissedIssues!.filter((d) => !verifiedAll.has(d.commentId));
+            const removedD = beforeD - this.state.dismissedIssues.length;
+            if (removedD > 0) {
+              console.log(
+                `Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified)`,
+              );
+            }
+          }
           if (dismissedIds.size > 0 && this.state.verifiedFixed?.length) {
             const before = this.state.verifiedFixed.length;
             this.state.verifiedFixed = this.state.verifiedFixed.filter((id) => !dismissedIds.has(id));
             const removed = before - this.state.verifiedFixed.length;
             if (removed > 0) {
-              console.warn(`State load: removed ${removed} ID(s) from verifiedFixed (already in dismissed — overlap cleaned)`);
+              console.warn(
+                `State load: removed ${formatNumber(removed)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned)`,
+              );
+            }
+          }
+          if (dismissedIds.size > 0 && this.state.verifiedComments?.length) {
+            const beforeVc = this.state.verifiedComments.length;
+            this.state.verifiedComments = this.state.verifiedComments.filter((v) => !dismissedIds.has(v.commentId));
+            const removedVc = beforeVc - this.state.verifiedComments.length;
+            if (removedVc > 0) {
+              console.warn(
+                `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned)`,
+              );
             }
           }
         }

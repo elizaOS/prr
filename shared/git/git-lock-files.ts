@@ -27,6 +27,24 @@ export function hasConflictMarkers(content: string): boolean {
   return /^<{7}\s|^={7}\s|^>{7}\s/m.test(content);
 }
 
+/**
+ * True if a `<<<<<<<` appears again before the first `=======` for that region (nested / botched merge).
+ * WHY: Audits showed CHANGELOG prompts with back-to-back `<<<<<<< HEAD` — LLM resolution is unreliable;
+ * deterministic keep-ours may also fail; warn the operator early.
+ */
+export function hasNestedConflictMarkers(content: string): boolean {
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i]!.startsWith('<<<<<<<')) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j]!;
+      if (line.startsWith('=======') || line.startsWith('>>>>>>>')) break;
+      if (line.startsWith('<<<<<<<')) return true;
+    }
+  }
+  return false;
+}
+
 export function findFilesWithConflictMarkers(workdir: string, files: string[]): string[] {
   if (!workdir) return [];
   

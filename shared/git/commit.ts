@@ -53,6 +53,6 @@ export { commitIteration } from './git-commit-iteration.js';
  * Re-exported from git-commit-scan.ts (canonical implementation with raw() and proper casing).
  * WHY: commit.ts had a duplicate using simple-git's log() with different behavior; single source avoids inconsistent recovery (pill-output.md #4).
  */
-export { scanCommittedFixes } from './git-commit-scan.js';
+export { scanCommittedFixes, clearScanCommittedFixesCache } from './git-commit-scan.js';
 
 export { buildCommitMessage, stripMarkdownForCommit } from './git-commit-message.js';

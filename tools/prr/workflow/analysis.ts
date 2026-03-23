@@ -8,7 +8,7 @@ import type { Ora } from 'ora';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { LLMClient } from '../llm/client.js';
+import { type LLMClient, snippetShowsUuidCommentAlignedWithVersionRange } from '../llm/client.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
@@ -314,8 +314,8 @@ export async function runFinalAudit(
   
   // Review: Verification cache is intentionally NOT cleared before audit.
   // Pass/fail results are applied per-comment below (markVerified calls).
-  // If audit fails for some comments, the caller unmarks those so the next
-  // iteration re-verifies; clearing everything would lose valid verifications.
+  // If audit fails for some comments, we unmark those once at the end of this
+  // function so the next iteration re-verifies; clearing everything would lose valid verifications.
   debug('Starting final audit (verification cache not cleared - results are additive)');
   
   spinner.start('Running final audit on all issues...');
@@ -350,7 +350,26 @@ export async function runFinalAudit(
           // Check if fixer marked this as ALREADY_FIXED multiple times
           const alreadyFixedCount = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
           const codeSnippet = auditSnippets[comments.indexOf(comment)] ?? '';
-          
+
+          // Cycle 64 M2: If inline verify already passed this session and the snippet shows UUID
+          // regex + version-range comment alignment, don't let a flaky final audit re-open the issue
+          // (defense in depth alongside client-side post-parse demotion).
+          if (
+            stateContext.verifiedThisSession?.has(comment.id) &&
+            snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet)
+          ) {
+            debug(
+              'Final audit tie-break: UUID/comment alignment in snippet + verified this session — keeping verified',
+              { commentId: comment.id, path: comment.path },
+            );
+            console.warn(
+              chalk.yellow(
+                `  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but code shows UUID/comment alignment — keeping verified (verified this session).`,
+              ),
+            );
+            continue;
+          }
+
           // Require code contradiction: audit must cite specific line numbers + pattern still present
           const hasCodeContradiction = /(?:line|lines)\s+\d+.*(?:still|contains|has)\s+(?:incorrect|wrong|the\s+bug|missing)/i.test(result.explanation);
           const mentionsPattern = /(?:still|contains|has)\s+["']?[a-z0-9-]+["']?/i.test(result.explanation);
@@ -387,7 +406,6 @@ export async function runFinalAudit(
           console.warn(
             chalk.yellow(`  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} — re-queuing (was verified earlier; safe over sorry).`)
           );
-          Verification.unmarkVerified(stateContext, comment.id);
           failedAudit.push({ comment, explanation: result.explanation ?? 'Audit said UNFIXED' });
           continue;
         }
@@ -444,6 +462,12 @@ export async function runFinalAudit(
       failedAudit.push({ comment, explanation: 'Audit did not return a result for this issue' });
     }
   }
+
+  // Single unmark pass for all failed-audit comments (WHY: main-loop-setup used to unmark too → duplicate logs).
+  for (const { comment } of failedAudit) {
+    Verification.unmarkVerified(stateContext, comment.id);
+  }
+
   if (filteredNoAction > 0) {
     debug('Audit filtered no-action-needed', { count: filteredNoAction });
   }

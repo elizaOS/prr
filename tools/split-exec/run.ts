@@ -124,6 +124,8 @@ export async function runSplitExec(
   // No spinner during clone — git clone/fetch output is shown directly.
   const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
     additionalBranches: splitBranches,
+    // New split branch names may not exist on remote until first push; only PRR base-branch fetch is strict.
+    verifyAdditionalRemoteRefs: false,
   });
   spinner.succeed(`Workdir: ${workdir}`);
 

@@ -108,16 +108,28 @@ export async function cloneOrUpdateRepository(
 export async function recoverVerificationState(
   git: SimpleGit,
   branch: string,
-  stateContext: StateContext
+  stateContext: StateContext,
+  workdir: string
 ): Promise<void> {
   debugStep('RECOVERING STATE FROM GIT');
-  const committedFixes = await scanCommittedFixes(git, branch);
+  let headSha = '';
+  try {
+    headSha = (await git.revparse(['HEAD'])).trim();
+  } catch {
+    /* fall through — scan without cache */
+  }
+  const committedFixes = await scanCommittedFixes(git, branch, {
+    workdir,
+    headSha: headSha || undefined,
+  });
   if (committedFixes.length > 0) {
     const n = committedFixes.length;
     stateContext.gitRecoveredVerificationCount = n;
     console.log(chalk.cyan(`Recovered ${formatNumber(n)} previously committed ${pluralize(n, 'fix', 'fixes')} from git history`));
     for (const commentId of committedFixes) {
-      Verification.markVerified(stateContext, commentId);
+      if (!Verification.isVerified(stateContext, commentId)) {
+        Verification.markVerified(stateContext, commentId);
+      }
     }
     // WHY: So the first analysis skips stale re-check and unmark for these IDs (output.log audit).
     getState(stateContext).recoveredFromGitCommentIds = [...committedFixes];

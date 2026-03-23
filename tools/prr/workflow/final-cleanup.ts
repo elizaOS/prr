@@ -77,8 +77,18 @@ export async function executeFinalCleanup(
   cleanupCreatedSyncTargets: (git: SimpleGit) => Promise<void>,
   cleanupWorkdir: (workdir: string) => Promise<void>,
   printModelPerformance: () => void,
-  printHandoffPrompt: (issues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]) => void,
-  printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
+  printHandoffPrompt: (
+    issues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => void,
+  printAfterActionReport: (
+    issues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => Promise<void>,
   printFinalSummary: (remainingCount?: number) => void,
   ringBell: (times: number) => void,
   prInfo?: PRInfo | null,
@@ -135,11 +145,11 @@ export async function executeFinalCleanup(
   const remainingCount = trulyUnresolved.length + exhaustedDeduped.length;
   const fixedThisSessionCount = stateContext.verifiedThisSession?.size ?? 0;
   if (remainingCount > 0) {
-    printHandoffPrompt(trulyUnresolved, exhaustedDeduped);
+    printHandoffPrompt(trulyUnresolved, exhaustedDeduped, exitReason, exitDetails);
   }
   // AAR when there are remaining issues (unresolved + exhausted/remaining) or fixes this session — gives a record of what was done (audit).
   if (remainingCount > 0 || fixedThisSessionCount > 0) {
-    await printAfterActionReport(trulyUnresolved, finalComments);
+    await printAfterActionReport(trulyUnresolved, finalComments, exitReason, exitDetails);
   }
 
   // Final results summary - remaining = unresolved + legacy exhausted/remaining (same formula as AAR)
@@ -225,10 +235,23 @@ export async function executeErrorCleanup(
   stateContext: StateContext | null,
   cleanupWorkdir: (workdir: string) => Promise<void>,
   printModelPerformance: () => void,
-  printHandoffPrompt: (issues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]) => void,
-  printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
+  printHandoffPrompt: (
+    issues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => void,
+  printAfterActionReport: (
+    issues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => Promise<void>,
   printFinalSummary: (remainingCount?: number) => void,
-  ringBell: (times: number) => void
+  ringBell: (times: number) => void,
+  /** Passed to handoff/AAR when setup exits early (e.g. merge_conflicts). */
+  exitReasonForReporting?: string | null,
+  exitDetailsForReporting?: string | null
 ): Promise<void> {
   endTimer('Total');
   printTimingSummary();
@@ -248,11 +271,13 @@ export async function executeErrorCleanup(
   const exhaustedDedupedErr = dedupeDismissedByLocation(exhaustedOrRemainingErr);
   const remainingCountErr = trulyUnresolved.length + exhaustedDedupedErr.length;
   const fixedThisSessionCount = stateContext?.verifiedThisSession?.size ?? 0;
+  const er = exitReasonForReporting ?? null;
+  const ed = exitDetailsForReporting ?? null;
   if (remainingCountErr > 0) {
-    printHandoffPrompt(trulyUnresolved, exhaustedDedupedErr);
+    printHandoffPrompt(trulyUnresolved, exhaustedDedupedErr, er, ed);
   }
   if (remainingCountErr > 0 || fixedThisSessionCount > 0) {
-    await printAfterActionReport(trulyUnresolved, finalComments);
+    await printAfterActionReport(trulyUnresolved, finalComments, er, ed);
   }
 
   printFinalSummary(remainingCountErr);  // same formula as AAR: unresolved + exhausted/remaining deduped
