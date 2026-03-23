@@ -16,7 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../../../shared/config.js';
-import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError } from '../../../shared/logger.js';
+import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError, formatNumber } from '../../../shared/logger.js';
 import {
   ELIZACLOUD_API_BASE_URL,
   getEffectiveMaxConcurrentLLM,
@@ -29,7 +29,12 @@ import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
 import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
 import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
 import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
-import { lowerModelMaxPromptChars } from '../../../shared/llm/model-context-limits.js';
+import {
+  getElizaCloudModelContextSpec,
+  getMaxFixPromptCharsForModel,
+  lowerModelMaxPromptChars,
+  resolveElizaCloudCanonicalModelId,
+} from '../../../shared/llm/model-context-limits.js';
 
 /** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
 function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
@@ -59,6 +64,38 @@ function getElizaCloudErrorContext(error: unknown): { status?: number; statusTex
   if (cause && typeof cause === 'object' && out.body === undefined && 'responseBody' in cause) out.body = cause.responseBody;
   if (cause && typeof cause === 'object' && out.body === undefined && 'error' in cause) out.body = cause.error;
   return out;
+}
+
+/** True when error looks like ElizaCloud/gateway 5xx (status or message heuristics). */
+function isElizaCloudServerClassError(e: unknown): boolean {
+  const ctx = getElizaCloudErrorContext(e);
+  if (ctx.status === 500 || ctx.status === 502 || ctx.status === 504) return true;
+  const msg = `${ctx.message ?? ''} ${e instanceof Error ? e.message : String(e)}`;
+  return /500|504|502|gateway.*timeout|deployment.*timeout|internal_server_error/i.test(msg);
+}
+
+/**
+ * For debug when ElizaCloud returns 5xx: configured max context vs this request size.
+ * WHY: Gateway often wraps upstream 400 (context) as 500 — operators need expected limits from model-context-limits.
+ */
+function elizaCloudServerErrorExpectationDebug(
+  model: string,
+  prompt: string,
+  systemPrompt?: string
+): Record<string, string | boolean> {
+  const spec = getElizaCloudModelContextSpec(model);
+  const canonical = resolveElizaCloudCanonicalModelId(model);
+  const sysLen = systemPrompt?.length ?? 0;
+  const total = prompt.length + sysLen;
+  return {
+    expectedMaxContextTokens: formatNumber(spec.maxContextTokens),
+    expectedMaxFixPromptChars: formatNumber(getMaxFixPromptCharsForModel('elizacloud', model)),
+    requestUserChars: formatNumber(prompt.length),
+    requestSystemChars: formatNumber(sysLen),
+    requestTotalChars: formatNumber(total),
+    usingUnknownModelContextDefault: canonical === null,
+    ...(canonical != null ? { canonicalModelId: canonical } : {}),
+  };
 }
 
 /**
@@ -675,7 +712,12 @@ export class LLMClient {
               break;
             } catch (e504) {
               if (this.provider === 'elizacloud') {
-                debug('ElizaCloud error (response context)', getElizaCloudErrorContext(e504));
+                const base504 = getElizaCloudErrorContext(e504);
+                const payload504 =
+                  isElizaCloudServerClassError(e504)
+                    ? { ...base504, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+                    : base504;
+                debug('ElizaCloud error (response context)', payload504);
               }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
               const contextOverflow = isLikelyContextLengthExceededError(e504);
@@ -683,7 +725,8 @@ export class LLMClient {
                 lowerModelMaxPromptChars('elizacloud', chosenModel, prompt.length);
                 debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
                   model: chosenModel,
-                  promptLength: prompt.length,
+                  promptLength: formatNumber(prompt.length),
+                  ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt),
                 });
               }
               if (
@@ -696,6 +739,9 @@ export class LLMClient {
                   attempt: attempt504 + 1,
                   maxRetries: max504Retries,
                   delayMs,
+                  ...(this.provider === 'elizacloud'
+                    ? elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt)
+                    : {}),
                 });
                 await new Promise(r => setTimeout(r, delayMs));
               } else {
@@ -772,13 +818,23 @@ export class LLMClient {
             }
           }
           if (this.provider === 'elizacloud') {
-            debug('ElizaCloud error (response context)', getElizaCloudErrorContext(err));
+            const baseErr = getElizaCloudErrorContext(err);
+            const payloadErr =
+              isElizaCloudServerClassError(err)
+                ? { ...baseErr, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+                : baseErr;
+            debug('ElizaCloud error (response context)', payloadErr);
           }
           throw err;
         }
       }
       if (this.provider === 'elizacloud' && lastErr != null) {
-        debug('ElizaCloud error (response context)', getElizaCloudErrorContext(lastErr));
+        const baseLast = getElizaCloudErrorContext(lastErr);
+        const payloadLast =
+          isElizaCloudServerClassError(lastErr)
+            ? { ...baseLast, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+            : baseLast;
+        debug('ElizaCloud error (response context)', payloadLast);
       }
       const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
       debugPromptError(promptSlug, `llm-${this.provider}`, lastMsg, {
@@ -1098,8 +1154,12 @@ ${codeSnippet}
       return { issues: new Map() };
     }
 
-    // ElizaCloud uses small-context models (e.g. Qwen3-14B 40k). Reserve room for completion.
-    const providerCap = this.provider === 'elizacloud' ? 90_000 : 150_000;
+    // ElizaCloud: small models need a TOTAL budget (system + user). batchCheckIssuesExist has a ~5–6k system prompt;
+    // a flat 90k user budget was still ~90k+ total and blew past Qwen 24k tokens (audit: 29k input tokens).
+    const providerCap =
+      this.provider === 'elizacloud'
+        ? Math.min(90_000, getMaxFixPromptCharsForModel('elizacloud', this.model) + 14_000)
+        : 150_000;
     const effectiveMaxContextChars = maxContextChars != null
       ? Math.min(maxContextChars, providerCap)
       : providerCap;

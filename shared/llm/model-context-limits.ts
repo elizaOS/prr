@@ -1,46 +1,130 @@
 /**
  * Per-model context limits for fix prompts (ElizaCloud and others).
  *
- * WHY this module exists: ElizaCloud is a gateway that routes to different LLM
- * backends. Those backends have wildly different context windows. The global
- * MAX_FIX_PROMPT_CHARS is sized for Claude; using it for smaller models causes
- * 400 "maximum context length" or 504 gateway timeouts.
+ * WHY ElizaCloud table: The gateway routes to many backends; each model has a different
+ * context window. We store **maxContextTokens** per known model ID and derive char caps
+ * conservatively. Unknown models use a safe default until someone adds an entry.
+ *
+ * When you hit "maximum context length" for a new ElizaCloud model, add it to
+ * `ELIZACLOUD_MODEL_CONTEXT` (and optional `ELIZACLOUD_MODEL_ID_ALIASES` if the gateway
+ * uses another string).
  */
 import { MAX_FIX_PROMPT_CHARS } from '../constants.js';
 
-/** ~4 chars per token for prose-heavy prompts; code/review prompts skew higher (see Qwen below). */
-const CHARS_PER_TOKEN = 4;
+// ─── ElizaCloud: canonical model limits (fill in as we learn) ─────────────────
+
+export type ElizaCloudModelContextSpec = {
+  /** Total context window in tokens (provider docs or API error text). */
+  maxContextTokens: number;
+  /**
+   * Optional hard ceiling on fix-prompt chars when the derived formula is still too
+   * loose (e.g. gateway timeouts on gpt-4o-mini despite 128k context).
+   */
+  maxFixPromptCharsCap?: number;
+  /** Maintainer note only (not read at runtime). */
+  notes?: string;
+};
 
 /**
- * ElizaCloud model ID -> max input context tokens (from provider/observed errors).
+ * Canonical ElizaCloud model IDs → context metadata.
+ * Keys should match API model strings (e.g. `alibaba/qwen-3-14b`).
  */
-/** M4 (output.log audit): gpt-4o-mini gets a lower prompt cap to avoid 174k-char prompts and timeouts. */
-const GPT4O_MINI_MAX_PROMPT_CHARS = 80_000;
+export const ELIZACLOUD_MODEL_CONTEXT: Record<string, ElizaCloudModelContextSpec> = {
+  'alibaba/qwen-3-14b': {
+    maxContextTokens: 24_576,
+    notes: 'DeepInfra Qwen3-14B; code-heavy prompts tokenize ~0.62 tok/char (2026-03).',
+  },
+  'openai/gpt-4o-mini': {
+    maxContextTokens: 128_000,
+    maxFixPromptCharsCap: 80_000,
+    notes: 'M4 audit: cap avoids 174k-char prompts / gateway timeouts.',
+  },
+  'openai/gpt-4o': {
+    maxContextTokens: 128_000,
+  },
+  'anthropic/claude-3.5-sonnet': {
+    maxContextTokens: 200_000,
+  },
+  'anthropic/claude-3.7-sonnet': {
+    maxContextTokens: 200_000,
+  },
+  'anthropic/claude-sonnet-4-5-20250929': {
+    maxContextTokens: 200_000,
+  },
+  'anthropic/claude-opus-4-5': {
+    maxContextTokens: 200_000,
+  },
+};
+
+/** Exact alternate IDs that map to a canonical `ELIZACLOUD_MODEL_CONTEXT` key. */
+export const ELIZACLOUD_MODEL_ID_ALIASES: Record<string, string> = {
+  'Qwen/Qwen3-14B': 'alibaba/qwen-3-14b',
+};
 
 /**
- * Qwen3-14B via DeepInfra reports 24576-token context; ~89k chars measured as ~27k tokens (~3.2 char/token).
- * WHY explicit cap: (24576 * 0.8) * 4 ≈ 76k chars still overflowed when model id did not match the lookup
- * (fallback 100k cap). This hard ceiling keeps fix batches under the real tokenizer budget + completion room.
+ * When the API model string is not an exact key, match here → canonical key.
+ * WHY: Gateways may resolve to provider-specific slugs; we still want one spec row.
  */
-const QWEN_3_14B_MAX_FIX_PROMPT_CHARS = 48_000;
+const ELIZACLOUD_MODEL_PATTERN_ALIASES: Array<{
+  canonical: string;
+  test: (modelLower: string) => boolean;
+}> = [
+  {
+    canonical: 'alibaba/qwen-3-14b',
+    test: (m) =>
+      m.includes('qwen-3-14b') || m.includes('qwen3-14b') || m.includes('qwen/qwen3-14b'),
+  },
+];
 
-const ELIZACLOUD_MODEL_MAX_INPUT_TOKENS: Record<string, number> = {
-  // DeepInfra/OpenAI-compat: 24576 total context (error text from gateway, 2026-03).
-  'alibaba/qwen-3-14b': 24_576,
-  'Qwen/Qwen3-14B': 24_576,
-  'openai/gpt-4o-mini': 128_000,
-  'openai/gpt-4o': 128_000,
-  'anthropic/claude-3.5-sonnet': 200_000,
-  'anthropic/claude-3.7-sonnet': 200_000,
-  'anthropic/claude-sonnet-4-5-20250929': 200_000,
-  'anthropic/claude-opus-4-5': 200_000,
+/** Until a model is listed above, assume this context (conservative for small gateways). */
+const ELIZACLOUD_UNKNOWN_MODEL_SPEC: ElizaCloudModelContextSpec = {
+  maxContextTokens: 32_768,
+  notes: 'Default for unknown ElizaCloud models — add to ELIZACLOUD_MODEL_CONTEXT when known.',
 };
 
 const modelMaxCharsOverride = new Map<string, number>();
 
-function isQwen314BModelId(model: string): boolean {
-  const m = model.toLowerCase();
-  return m.includes('qwen-3-14b') || m.includes('qwen3-14b') || m.includes('qwen/qwen3-14b');
+/** Resolve ElizaCloud API model string to a canonical key present in `ELIZACLOUD_MODEL_CONTEXT`, or null. */
+export function resolveElizaCloudCanonicalModelId(model: string): string | null {
+  if (ELIZACLOUD_MODEL_CONTEXT[model]) return model;
+  const viaAlias = ELIZACLOUD_MODEL_ID_ALIASES[model];
+  if (viaAlias && ELIZACLOUD_MODEL_CONTEXT[viaAlias]) return viaAlias;
+  const lower = model.toLowerCase();
+  for (const { canonical, test } of ELIZACLOUD_MODEL_PATTERN_ALIASES) {
+    if (test(lower) && ELIZACLOUD_MODEL_CONTEXT[canonical]) return canonical;
+  }
+  return null;
+}
+
+/**
+ * Spec used for budgeting (known model or unknown default).
+ * Export for logging / tests.
+ */
+export function getElizaCloudModelContextSpec(model: string): ElizaCloudModelContextSpec {
+  const key = resolveElizaCloudCanonicalModelId(model);
+  if (key) return ELIZACLOUD_MODEL_CONTEXT[key]!;
+  return ELIZACLOUD_UNKNOWN_MODEL_SPEC;
+}
+
+/**
+ * Derive max fix-prompt characters from context tokens.
+ * Small windows (≤32k): assume dense code tokenization (~0.62 tok/char) and large completion reserve.
+ * Large windows: match legacy (input 80% of context × 4 chars/token).
+ */
+export function deriveMaxFixPromptCharsFromContext(spec: ElizaCloudModelContextSpec): number {
+  const { maxContextTokens, maxFixPromptCharsCap } = spec;
+  const isSmall = maxContextTokens <= 32_000;
+  const completionReserve = isSmall ? 0.28 : 0.2;
+  const inputTokenBudget = Math.floor(maxContextTokens * (1 - completionReserve));
+  const assumedCharsPerToken = isSmall ? 1.6 : 4;
+  const derived = Math.floor(inputTokenBudget * assumedCharsPerToken);
+  const capped =
+    maxFixPromptCharsCap != null ? Math.min(derived, maxFixPromptCharsCap) : derived;
+  return capped;
+}
+
+function isOpenAiGpt4oMiniModel(model: string): boolean {
+  return model?.toLowerCase().includes('gpt-4o-mini') ?? false;
 }
 
 /**
@@ -50,33 +134,26 @@ export function getMaxFixPromptCharsForModel(
   provider: 'elizacloud' | 'anthropic' | 'openai',
   model: string
 ): number {
-  // M4: small-context / timeout-prone models get a lower cap (openai used for ElizaCloud routing too).
-  if ((provider === 'openai' || provider === 'elizacloud') && model?.toLowerCase().includes('gpt-4o-mini')) {
+  if ((provider === 'openai' || provider === 'elizacloud') && model && isOpenAiGpt4oMiniModel(model)) {
     const override = modelMaxCharsOverride.get(model);
     if (override !== undefined) return override;
-    return GPT4O_MINI_MAX_PROMPT_CHARS;
+    const spec = ELIZACLOUD_MODEL_CONTEXT['openai/gpt-4o-mini'];
+    if (spec) return deriveMaxFixPromptCharsFromContext(spec);
+    return 80_000;
   }
+
   if (provider === 'elizacloud' && model) {
     const override = modelMaxCharsOverride.get(model);
     if (override !== undefined) return override;
-    if (isQwen314BModelId(model)) {
-      return QWEN_3_14B_MAX_FIX_PROMPT_CHARS;
-    }
-    const tokens = ELIZACLOUD_MODEL_MAX_INPUT_TOKENS[model];
-    if (tokens !== undefined) {
-      // Small contexts (≤32k): code-heavy prompts tokenize tighter than 4 chars/token — use 3 + smaller input fraction.
-      if (tokens <= 32_000) {
-        return Math.floor(tokens * 0.62 * 3);
-      }
-      return Math.floor((tokens * 0.8) * CHARS_PER_TOKEN);
-    }
-    return 128_000;
+    const spec = getElizaCloudModelContextSpec(model);
+    return deriveMaxFixPromptCharsFromContext(spec);
   }
+
   return MAX_FIX_PROMPT_CHARS;
 }
 
 /**
- * Lower the effective cap for this model after a 504/timeout.
+ * Lower the effective cap for this model after a 504 / timeout / context overflow.
  */
 export function lowerModelMaxPromptChars(
   provider: 'elizacloud' | 'anthropic' | 'openai',

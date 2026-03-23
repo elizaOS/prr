@@ -1,6 +1,6 @@
 # LLM Models Reference
 
-This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits (e.g. `tools/prr/llm/model-context-limits.ts` or `shared/llm/model-context-limits.ts`).
+This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits in **`shared/llm/model-context-limits.ts`** (re-exported from `tools/prr/llm/model-context-limits.ts`).
 
 **Sources (check for latest):**
 
@@ -115,7 +115,7 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ## Using this in PRR
 
-- **ElizaCloud / context limits:** When adding or changing models in `tools/prr/llm/model-context-limits.ts` (or `shared/llm/model-context-limits.ts`), use the **input** context (e.g. 200K tokens for Claude, 128K for GPT-4o) and leave headroom for completion (~20%).
+- **ElizaCloud / context limits:** Edit **`ELIZACLOUD_MODEL_CONTEXT`** in `shared/llm/model-context-limits.ts`. Each entry sets **`maxContextTokens`** (total context window for that API model ID). PRR derives fix-prompt char caps from that (small contexts use a denser tokenization estimate). Optional **`maxFixPromptCharsCap`** tightens the derived value when the gateway still times out. Unknown gateway models use a conservative default until you add a row. Use **`ELIZACLOUD_MODEL_ID_ALIASES`** and pattern aliases in that file when the same physical model appears under multiple strings (e.g. `Qwen/Qwen3-14B` → `alibaba/qwen-3-14b`).
 - **Model IDs:** Prefer stable snapshot IDs (e.g. `claude-sonnet-4-5-20250929`) when you need reproducible behavior; use aliases (e.g. `claude-sonnet-4-6`) for "latest" behavior.
 - **Claude 4.6:** See [Migrating to Claude 4.6](https://platform.claude.com/docs/en/about-claude/models/migration-guide) when moving from older Claude versions.
 
