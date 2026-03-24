@@ -26,10 +26,17 @@ export function httpsRemoteHasUserinfo(url: string): boolean {
   }
 }
 
-/** GitHub accepts the PAT as the HTTPS username; URL encodes special characters. */
+/**
+ * Build a push URL with the token embedded as credentials.
+ *
+ * WHY x-access-token: GitHub installation tokens (ghs_*) and fine-grained PATs
+ * require `x-access-token:<token>` (username:password). Classic PATs (ghp_*) also
+ * accept this format. Using token-as-username-only (`<token>@`) causes git to prompt
+ * for a password in CI (`fatal: could not read Password … terminal prompts disabled`).
+ */
 export function buildHttpsPushUrlWithToken(cleanHttpsUrl: string, token: string): string {
   const u = new URL(cleanHttpsUrl);
-  u.username = token;
-  u.password = '';
+  u.username = 'x-access-token';
+  u.password = token;
   return u.href;
 }

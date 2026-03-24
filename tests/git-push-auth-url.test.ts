@@ -39,15 +39,20 @@ describe('httpsRemoteHasUserinfo', () => {
 });
 
 describe('buildHttpsPushUrlWithToken', () => {
-  it('sets PAT as username and clears password', () => {
+  it('uses x-access-token:token format (works for ghs_ and ghp_ tokens)', () => {
     const out = buildHttpsPushUrlWithToken('https://github.com/org/repo.git', 'ghp_abcd');
-    expect(out).toBe('https://ghp_abcd@github.com/org/repo.git');
+    expect(out).toBe('https://x-access-token:ghp_abcd@github.com/org/repo.git');
+  });
+
+  it('works with GitHub installation tokens (ghs_)', () => {
+    const out = buildHttpsPushUrlWithToken('https://github.com/org/repo.git', 'ghs_xyz123');
+    expect(out).toBe('https://x-access-token:ghs_xyz123@github.com/org/repo.git');
   });
 
   it('URL-encodes special characters in the token', () => {
     const out = buildHttpsPushUrlWithToken('https://github.com/org/repo.git', 'tok:en@x');
-    expect(out).toContain('%3A');
-    expect(out).toContain('%40');
-    expect(out).not.toContain('tok:en@x@');
+    expect(out).toContain('x-access-token:');
+    const u = new URL(out);
+    expect(decodeURIComponent(u.password)).toBe('tok:en@x');
   });
 });

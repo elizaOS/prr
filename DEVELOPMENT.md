@@ -1812,7 +1812,7 @@ git remote add origin https://github.com/YOUR_ORG/YOUR_REPO.git
 export GITHUB_TOKEN   # PAT with push access
 # Same shape PRR uses: push URL carries the token; credential helpers off; no prompt.
 git -c credential.helper= -c credential.https://github.com.helper= \
-  push "https://${GITHUB_TOKEN}@github.com/YOUR_ORG/YOUR_REPO.git" \
+  push "https://x-access-token:${GITHUB_TOKEN}@github.com/YOUR_ORG/YOUR_REPO.git" \
   HEAD:refs/heads/prr-ci-push-smoke
 cd - && rm -rf "$tmpdir"
 ```
