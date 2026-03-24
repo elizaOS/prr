@@ -11,6 +11,13 @@
  */
 import { MAX_FIX_PROMPT_CHARS } from '../constants.js';
 
+/**
+ * Extra characters allowed beyond `getMaxFixPromptCharsForModel` for ElizaCloud **total**
+ * input (system + user) in `LLMClient.complete` and similar paths.
+ * WHY 14k: Matches batch-verify slack (`batchCheckIssuesExist`); system prompts are a few k.
+ */
+export const ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS = 14_000;
+
 // ─── ElizaCloud: canonical model limits (fill in as we learn) ─────────────────
 
 export type ElizaCloudModelContextSpec = {
@@ -150,6 +157,15 @@ export function getMaxFixPromptCharsForModel(
   }
 
   return MAX_FIX_PROMPT_CHARS;
+}
+
+/**
+ * Max total characters (system + user) for one ElizaCloud chat completion for this model.
+ * WHY: Gateways often return HTTP 500 with no body when upstream rejects oversized input;
+ * failing fast avoids useless retries and matches the budget already logged in debug fields.
+ */
+export function getMaxElizacloudLlmCompleteInputChars(model: string): number {
+  return getMaxFixPromptCharsForModel('elizacloud', model) + ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS;
 }
 
 /**

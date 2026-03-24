@@ -165,6 +165,7 @@ export async function executeFinalCleanup(
       await submitReview(body, prInfo);
     } catch (err) {
       // Non-fatal: review submission is a nice-to-have; don't fail the run
+      // Detailed GitHub 5xx debug: `submitPullRequestReview` logs via `logGitHubApiFailure` before throw.
       console.log(chalk.gray(`\nCould not submit PR review: ${err instanceof Error ? err.message : String(err)}`));
     }
   }

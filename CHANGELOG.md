@@ -9,13 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **ElizaCloud / small models:** **`LLMClient.complete`** now **rejects** requests when **system + user** length exceeds **`getMaxElizacloudLlmCompleteInputChars(model)`** (fix-prompt budget + 14k overhead, same idea as batch-verify). Avoids **opaque HTTP 500 (no body)** and useless retries when prompts are far over context (e.g. **~93k chars vs ~42k** for **`alibaba/qwen-3-14b`**). Debug fields add **`expectedMaxTotalInputChars`**; 5xx retries are skipped when still over the configured budget. **`shared/llm/model-context-limits.ts`**, **`tests/model-context-limits.test.ts`**.
 - **Git push (CI / HTTPS):** When **`githubToken`** is passed and **`origin`** is HTTPS, **`push()`** uses a **one-shot URL** (`https://<token>@host/...`) with credential helpers cleared instead of relying on **`origin`** + **`http.extraheader`**, avoiding **`terminal prompts disabled`** when the remote URL has a stale or masked token. Pure URL helpers: **`shared/git/git-push-auth-url.ts`**; tests: **`tests/git-push-auth-url.test.ts`**. **DEVELOPMENT.md** — local smoke steps.
 - **Partial conflict cache:** State field **`partialConflictSavedOriginBaseSha`** records **`origin/<base>`** when a base-merge stops with unresolved conflicts; on the next run, if the remote base tip changed, saved partial resolutions are **cleared** (avoids re-applying stale merged text). Cleared with partials on successful merge, PR **HEAD** change, and **`--clean-state`** paths.
 - **Model catalog / 0a6:** When the provider catalog is **empty** (missing JSON or zero API ids), **`getOutdatedModelCatalogDismissal`** no longer relies on **`catalogValidatesBothIds`** alone — it **skips** dismissal with a **one-time `console.warn`** and **`npm run update-model-catalog`** hint (**`isEffectivelyEmptyModelCatalog`** in **`shared/model-catalog.ts`**).
 - **Merge conflict follow-up:** **`hasConflictMarkers`** detects **`<<<<<<<`**, orphan **`>>>>>>>`**, orphan / multiple **`=======`** lines, and uses **trimStart** + narrow setext heuristic for a **single** lone middle line. **Size-regression** validation is skipped for **keep ours** and **take theirs** resolutions so intentional one-side outcomes are not rejected.
+- **Deterministic doc merge (CHANGELOG, etc.):** When the working tree has **nested/overlapping** conflict markers, or line-based **keep ours** would still leave markers, PRR resolves by reading **ours** from the unmerged index (**`git show :2:<path>`**) instead of parsing conflict regions in the file (**`tools/prr/git/git-conflict-resolve.ts`**). **`resolveKeepOurs`** uses **trimStart** on lines so indented markers match **`hasConflictMarkers`**. **Index stage-2** validation uses **`hasGitConflictOpenOrCloseMarkers`** only (`<<<<<<<` / `>>>>>>>`) so markdown **`=======`** lines in **ours** do not reject the blob (audit Cycle 66 / ROADMAP).
 
 ### Added
 
+- **Conflict resolution (verbose):** **`debug()`** lines **`Conflict resolution: file snapshot`**, **`Conflict index stage-2 (ours) OK`**, expanded index-failure / line-parser marker context, and **`Deterministic merge outcome`** with **`strategy`** (**`tools/prr/git/git-conflict-resolve.ts`**).
 - **`fetchOriginBranch`:** **`isBranchRefSafeForOriginFetch`** uses **`git check-ref-format --branch`** after quick sanity checks (**`shared/git/git-conflicts.ts`**).
 - **`PROMPTLOG_EMPTY_BODY`:** Log line includes **`phase=...`** when **`writeToPromptLog`** metadata carries **`phase`** (**`shared/logger.ts`**).
 - **Catalog auto-heal:** User-visible line when **±20** line window misses the quoted wrong id and **full-file** fallback applies (**`tools/prr/workflow/catalog-model-autoheal.ts`**).
@@ -24,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation / UX
 
+- **CONFLICT-RESOLUTION.md:** **Verbose debug** — grep targets for conflict snapshot, index **stage-2**, and deterministic merge **`strategy`** in **`output.log`** (see **Added** above).
 - **README:** **Troubleshooting** — resolver state path (**.pr-resolver-state.json** in clone workdir), when to delete state, verified∩dismissed overlap, final-audit re-queue line in **RESULTS SUMMARY**, **`--clean-state`**, **`PRR_FETCH_TIMEOUT_MS`** typos.
 - **DEVELOPMENT.md:** **State invariants, paths, and skip-list (operator reference)** — verified/dismissed, HEAD change envs, path-utils, skip list + session skip + maintainer refresh; corrected resolver state path note (not only under **`.prr/`**).
 - **RESULTS SUMMARY / GitHub review body:** Prominent **Final audit re-queued** count; yellow warn if verified∩dismissed overlap remains at exit; review markdown leads with **Final audit re-queues** then shorter follow-up bullets (**`tools/prr/ui/reporter.ts`**).

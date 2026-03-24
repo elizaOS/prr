@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-18 · **Recorded cycles:** 65 · **Historical (legacy):** 4
+**Last updated:** 2026-03-24 · **Recorded cycles:** 66 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -161,6 +161,25 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 66 — 2026-03-24 (output.log: elizaOS/eliza#6562 — base merge, ROADMAP index false positive, exit 500)
+
+**Artifacts audited:** `output.log` (~01:54–02:xxZ). PR **elizaOS/eliza#6562** (`odi-dev` vs `v2.0.0`). Workdir **`/root/.prr/work/641c5dac25972ea4`**.
+
+**Findings:**
+- **High (H1):** Run ends with **`Error: 500 status code (no body)`** immediately after the long **RESULTS SUMMARY** table (after comment **266**). No stack trace in log — likely **GitHub REST/GraphQL** failure (submit review, large body, or transient). **Impact:** Operator sees hard failure after substantial work; unclear which step failed. **Improvement:** Log **request phase** (e.g. create review, comment) + **response headers** on 5xx; retry with backoff for idempotent reads; truncate/split review body if size limit.
+- **Medium (M1):** **Base merge** conflict on **`packages/typescript/ROADMAP.md`**: verbose debug shows **`Conflict index stage 2 still contains marker-like lines`** → **`readOursFromConflictIndex` rejects stage-2** → deterministic keep-ours **cannot** use index; **LLM** eventually merges successfully. Suggests **`hasConflictMarkers` false positive on “ours” blob** (e.g. markdown `=======` / lines resembling conflict middle) or rare dirty stage-2. **Improvement:** For index stage-2, use **stricter** check (only `<<<<<<<` / `>>>>>>>`) or **allow** known doc patterns; see conflict debug theme in `CONFLICT-RESOLUTION.md`.
+- **Medium (M2):** **Bail-out** after fixer **`All change blocks targeted disallowed files`** — model proposed **`banner.test.ts` / `reply.test.ts`** as **newfile** while **`TARGET FILE(S)`** was only **`anxiety.test.ts`**. **Remaining:** 1 issue; **zero progress** cycle. **Improvement:** Prompt nudge to **only** edit listed targets or expand allowed paths when review explicitly needs sibling tests.
+- **Low (L1):** **ElizaCloud** **timeout/retry** on first conflict-resolution batch (`claude-sonnet-4-5`); recovered on retry — cost/latency.
+- **Low (L2):** **CodeRabbit** review targets older SHA vs PR **HEAD**; **mergeable/dirty** on GitHub — expected noise; latent **merge-tree** probe correctly listed **6** conflicting paths.
+
+**Improvements implemented:** **`hasGitConflictOpenOrCloseMarkers`** in **`shared/git/git-lock-files.ts`** — index **stage-2** check in **`readOursFromConflictIndex`** no longer uses full **`hasConflictMarkers`** (avoids false reject on doc **`=======`**). Tests in **`tests/has-conflict-markers.test.ts`**.
+
+**Flip-flop check:** N — stricter only for rejecting corrupt stage-2; more merges succeed deterministically.
+
+**Notes:** **Workdir spot-check:** **`packages/typescript/src/utils/slice-to-fit-budget.ts:42`** — `return items.slice(0, count);` present — aligns with log **`resolved/fixed`** for **`ic-4070759879-1`** (slice `fromEnd: false`). **`packages/typescript/src/logger.ts`** ~**399–402** — single `openSync` sequence for log fds; no duplicate declaration — aligns with **`ic-4070631596-0` verified**. **`packages/typescript/CHANGELOG.md`** (start of file) — **no** conflict markers visible — aligns with successful merge path. **ROADMAP** path: log shows nested markers + **stage-2 failed marker check** then **LLM success** — spot-check: **`grep ^=======` on ROADMAP** in workdir **no matches** (post-merge clean).
+
+---
 
 ### Cycle 65 — 2026-03-21 (prompts.log: babylon#1327 — final audit parrots review; verifier + huge fix prompts)
 

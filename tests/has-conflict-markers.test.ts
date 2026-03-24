@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   hasConflictMarkers,
+  hasGitConflictOpenOrCloseMarkers,
   isGitConflictMiddleLine,
   isGitConflictOpenLine,
   isGitConflictCloseLine,
@@ -73,6 +74,30 @@ theirs-side
 ========
 Section`;
     expect(hasConflictMarkers(s)).toBe(false);
+  });
+});
+
+describe('hasGitConflictOpenOrCloseMarkers (index stage-2 validation)', () => {
+  it('returns false for orphan ======= when hasConflictMarkers is true (no open/close)', () => {
+    const s = `left content
+=======
+right content
+`;
+    expect(hasGitConflictOpenOrCloseMarkers(s)).toBe(false);
+    expect(hasConflictMarkers(s)).toBe(true);
+  });
+
+  it('returns false for setext title + ======= + body', () => {
+    const s = `Roadmap
+=======
+Near-term items.`;
+    expect(hasGitConflictOpenOrCloseMarkers(s)).toBe(false);
+    expect(hasConflictMarkers(s)).toBe(false);
+  });
+
+  it('returns true when opener or closer present', () => {
+    expect(hasGitConflictOpenOrCloseMarkers('<<<<<<< HEAD\nx\n')).toBe(true);
+    expect(hasGitConflictOpenOrCloseMarkers('>>>>>>> branch\n')).toBe(true);
   });
 });
 

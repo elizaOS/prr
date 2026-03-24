@@ -3,9 +3,11 @@
  */
 export {
   deriveMaxFixPromptCharsFromContext,
+  ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS,
   ELIZACLOUD_MODEL_CONTEXT,
   ELIZACLOUD_MODEL_ID_ALIASES,
   getElizaCloudModelContextSpec,
+  getMaxElizacloudLlmCompleteInputChars,
   getMaxFixPromptCharsForModel,
   lowerModelMaxPromptChars,
   resolveElizaCloudCanonicalModelId,

@@ -9,6 +9,7 @@ import {
   extractFullCommitShaFromText,
 } from './types.js';
 import { debug } from '../../../shared/logger.js';
+import { logGitHubApiFailure } from './github-api-errors.js';
 
 // Static configuration for PR status / bot detection (allocated once, not per call)
 const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
@@ -86,27 +87,32 @@ export class GitHubAPI {
 
   async getPRInfo(owner: string, repo: string, prNumber: number): Promise<PRInfo> {
     debug('Fetching PR info', { owner, repo, prNumber });
-    const { data: pr } = await this.octokit.pulls.get({
-      owner,
-      repo,
-      pull_number: prNumber,
-    });
+    try {
+      const { data: pr } = await this.octokit.pulls.get({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
 
-    const info: PRInfo = {
-      owner,
-      repo,
-      number: prNumber,
-      title: pr.title,
-      body: pr.body ?? '',
-      branch: pr.head.ref,
-      baseBranch: pr.base.ref,
-      headSha: pr.head.sha,
-      cloneUrl: pr.head.repo?.clone_url || `https://github.com/${owner}/${repo}.git`,
-      mergeable: pr.mergeable,
-      mergeableState: pr.mergeable_state,
-    };
-    debug('PR info fetched', info);
-    return info;
+      const info: PRInfo = {
+        owner,
+        repo,
+        number: prNumber,
+        title: pr.title,
+        body: pr.body ?? '',
+        branch: pr.head.ref,
+        baseBranch: pr.base.ref,
+        headSha: pr.head.sha,
+        cloneUrl: pr.head.repo?.clone_url || `https://github.com/${owner}/${repo}.git`,
+        mergeable: pr.mergeable,
+        mergeableState: pr.mergeable_state,
+      };
+      debug('PR info fetched', info);
+      return info;
+    } catch (err) {
+      logGitHubApiFailure('REST pulls.get (getPRInfo)', err, { owner, repo, prNumber });
+      throw err;
+    }
   }
 
   /**
@@ -408,12 +414,23 @@ export class GitHubAPI {
 
     do {
       pageCount++;
-      const response: GraphQLResponse = await this.graphqlWithAuth<GraphQLResponse>(query, {
-        owner,
-        repo,
-        pr: prNumber,
-        cursor,
-      });
+      let response: GraphQLResponse;
+      try {
+        response = await this.graphqlWithAuth<GraphQLResponse>(query, {
+          owner,
+          repo,
+          pr: prNumber,
+          cursor,
+        });
+      } catch (err) {
+        logGitHubApiFailure('GraphQL pullRequest.reviewThreads (getReviewThreads)', err, {
+          owner,
+          repo,
+          prNumber,
+          page: pageCount,
+        });
+        throw err;
+      }
 
       const reviewThreads = response.repository.pullRequest.reviewThreads;
       const pageInfo = reviewThreads.pageInfo;
@@ -738,14 +755,25 @@ export class GitHubAPI {
     body: string
   ): Promise<void> {
     debug('Submitting PR review', { owner, repo, prNumber, event, bodyLength: body.length });
-    await this.octokit.pulls.createReview({
-      owner,
-      repo,
-      pull_number: prNumber,
-      event,
-      body,
-    });
-    debug('PR review submitted');
+    try {
+      await this.octokit.pulls.createReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        event,
+        body,
+      });
+      debug('PR review submitted');
+    } catch (err) {
+      logGitHubApiFailure('REST pulls.createReview (submitPullRequestReview)', err, {
+        owner,
+        repo,
+        prNumber,
+        event,
+        bodyChars: body.length,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -753,13 +781,23 @@ export class GitHubAPI {
    */
   async postComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
     debug('Posting comment to PR', { owner, repo, prNumber, bodyLength: body.length });
-    await this.octokit.issues.createComment({
-      owner,
-      repo,
-      issue_number: prNumber,
-      body,
-    });
-    debug('Comment posted successfully');
+    try {
+      await this.octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+      });
+      debug('Comment posted successfully');
+    } catch (err) {
+      logGitHubApiFailure('REST issues.createComment (postComment)', err, {
+        owner,
+        repo,
+        prNumber,
+        bodyChars: body.length,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -792,6 +830,12 @@ export class GitHubAPI {
         debug('Review comment not found (404), skipping reply', { commentDatabaseId });
         return;
       }
+      logGitHubApiFailure('REST pulls.createReplyForReviewComment (replyToReviewThread)', err, {
+        owner,
+        repo,
+        prNumber,
+        commentDatabaseId,
+      });
       throw err;
     }
   }
@@ -844,8 +888,17 @@ export class GitHubAPI {
         }
       }
     `;
-    await this.graphqlWithAuth<{ resolveReviewThread: { thread: { isResolved: boolean } } }>(mutation, { threadId });
-    debug('Review thread resolved');
+    try {
+      await this.graphqlWithAuth<{ resolveReviewThread: { thread: { isResolved: boolean } } }>(mutation, { threadId });
+      debug('Review thread resolved');
+    } catch (err) {
+      logGitHubApiFailure('GraphQL resolveReviewThread', err, {
+        owner,
+        repo,
+        threadIdPrefix: threadId.slice(0, 24),
+      });
+      throw err;
+    }
   }
 
   /**

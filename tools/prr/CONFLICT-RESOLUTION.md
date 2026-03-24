@@ -75,7 +75,17 @@ See the phased plan in [.cursor/plans/large-file-deconflict-correct.plan.md](../
 
 - **Lock files** — Deleted and regenerated (e.g. `package-lock.json`, `bun.lockb`).
 - **`.github/workflows/*`** — **Take theirs** (incoming/base version). When the base branch updated the same workflow file, using the repo's version avoids outdated or broken workflows and matches common CI expectations.
-- **CHANGELOG.md, docs/, CONTRIBUTING, etc.** — **Keep ours** (see `DETERMINISTIC_MERGE_FILES` / `DETERMINISTIC_MERGE_PATTERNS` in `git-conflict-resolve.ts`). LLM is not used for these so large docs don't hit context limits. **Marker detection** (`hasConflictMarkers` in `shared/git/git-lock-files.ts`): **`<<<<<<<`**, **`>>>>>>>`** (including orphan closers), and **`=======`** middle lines; **two+** middle-only lines ⇒ conflict; a **single** lone `=======` is ignored only when it matches a **narrow setext-style** pattern (heading-like previous line + body after). **Size-regression validation** is skipped for keep-ours / take-theirs so valid one-side merges are not rejected.
+- **CHANGELOG.md, docs/, CONTRIBUTING, etc.** — **Keep ours** (see `DETERMINISTIC_MERGE_FILES` / `DETERMINISTIC_MERGE_PATTERNS` in `git-conflict-resolve.ts`). LLM is not used for these so large docs don't hit context limits. **Nested/overlapping conflict markers** in the working tree break the simple line-based keep-ours scanner; in that case PRR uses **`git show :2:<path>`** (unmerged index **stage 2 = ours**) as the resolved content when the blob has **no `<<<<<<<` / `>>>>>>>`** (`hasGitConflictOpenOrCloseMarkers` — not full `hasConflictMarkers`, so markdown `=======` dividers in stage-2 docs do not block keep-ours). If line-based keep-ours would still leave markers, the same index fallback runs. **Marker detection** (`hasConflictMarkers` in `shared/git/git-lock-files.ts`): **`<<<<<<<`**, **`>>>>>>>`** (including orphan closers), and **`=======`** middle lines; **two+** middle-only lines ⇒ conflict; a **single** lone `=======` is ignored only when it matches a **narrow setext-style** pattern (heading-like previous line + body after). **Size-regression validation** is skipped for keep-ours / take-theirs so valid one-side merges are not rejected.
+
+## Verbose debug (tracking failures)
+
+With **`--verbose`** (or whatever enables **`shared/logger` `debug()`**), conflict resolution logs:
+
+- **`Conflict resolution: file snapshot`** — per conflicted file: size, line count, **`extractChunks`**, **`markerLines`** (`openers` / `middle` / `closers`), **`nestedWt`**, **`hasMarkers`**.
+- **`Conflict index stage-2 (ours) OK`** — when reading **`:2:`** succeeds: char/line counts and marker counts on that blob (should be zeros).
+- **`Deterministic merge outcome`** — **`strategy`**: `index-stage-2-nested-wt` | `index-stage-2-after-line-markers` | `line-keep-ours` | `line-keep-ours-still-markers` | `none`, plus **`resolved`** and output **`outHasMarkers`** when resolved.
+
+Use these lines in **`output.log`** to see whether the working tree was nested, whether index **ours** was used, or whether the line parser left markers.
 
 ## When resolution still fails
 

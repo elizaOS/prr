@@ -15,6 +15,7 @@ import {
   getLockFileInfo,
   findFilesWithConflictMarkers,
   hasConflictMarkers,
+  hasGitConflictOpenOrCloseMarkers,
   hasNestedConflictMarkers,
 } from '../../../shared/git/git-clone-index.js';
 import type { LLMClient } from '../llm/client.js';
@@ -104,6 +105,23 @@ function shouldUseDeterministicMerge(filePath: string): boolean {
 
 function shouldTakeTheirs(filePath: string): boolean {
   return TAKE_THEIRS_PATTERNS.some(p => p.test(filePath));
+}
+
+/**
+ * Rough marker line counts for verbose debug (setext `=======` may inflate `middle`).
+ * WHY: Triages nested vs simple conflicts without reading full file in logs.
+ */
+function countConflictMarkerLines(content: string): { openers: number; middle: number; closers: number } {
+  let openers = 0;
+  let middle = 0;
+  let closers = 0;
+  for (const line of content.split('\n')) {
+    const s = line.trimStart();
+    if (s.startsWith('<<<<<<<')) openers++;
+    else if (s.startsWith('=======')) middle++;
+    else if (s.startsWith('>>>>>>>')) closers++;
+  }
+  return { openers, middle, closers };
 }
 
 function isExplicitMarkerlessPolicyFile(filePath: string): boolean {
@@ -207,6 +225,7 @@ async function stageRunnerOutputIfClean(git: SimpleGit, workdir: string, file: s
 /**
  * Resolve a conflict by keeping ours (HEAD) side for all conflict regions.
  * Non-conflicted lines are preserved verbatim.
+ * WHY trimStart: Markers may be indented; must align with `hasConflictMarkers` / git's typical output.
  */
 function resolveKeepOurs(content: string): { resolved: boolean; content: string; explanation: string } {
   const lines = content.split('\n');
@@ -215,16 +234,17 @@ function resolveKeepOurs(content: string): { resolved: boolean; content: string;
   let inTheirs = false;
 
   for (const line of lines) {
-    if (line.startsWith('<<<<<<<')) {
+    const s = line.trimStart();
+    if (s.startsWith('<<<<<<<')) {
       inConflict = true;
       inTheirs = false;
       continue;
     }
-    if (line.startsWith('=======') && inConflict) {
+    if (s.startsWith('=======') && inConflict) {
       inTheirs = true;
       continue;
     }
-    if (line.startsWith('>>>>>>>') && inConflict) {
+    if (s.startsWith('>>>>>>>') && inConflict) {
       inConflict = false;
       inTheirs = false;
       continue;
@@ -238,6 +258,32 @@ function resolveKeepOurs(content: string): { resolved: boolean; content: string;
     content: result.join('\n'),
     explanation: 'Kept ours (documentation file — deterministic merge)',
   };
+}
+
+/**
+ * Read unmerged "ours" (stage 2) from the index — clean blob without conflict markers.
+ * WHY: Nested/overlapping `<<<<<<<` in the working tree breaks the simple keep-ours line scanner;
+ * git's stage-2 snapshot is still the correct ours side for deterministic doc merges.
+ */
+async function readOursFromConflictIndex(
+  git: SimpleGit,
+  filePath: string
+): Promise<{ content: string; ok: true } | { ok: false; reason: string }> {
+  const oursIdx = await readConflictStage(git, filePath, 2);
+  if (oursIdx === null || oursIdx === '') {
+    return { ok: false, reason: 'empty or missing stage-2 (ours)' };
+  }
+  if (hasGitConflictOpenOrCloseMarkers(oursIdx)) {
+    debug('Conflict index stage 2 contains <<<<<<< or >>>>>>>', { file: filePath });
+    return { ok: false, reason: 'stage-2 blob has conflict open/close markers' };
+  }
+  debug('Conflict index stage-2 (ours) OK', {
+    file: filePath,
+    chars: formatNumber(oursIdx.length),
+    lines: formatNumber(oursIdx.split('\n').length),
+    markerLines: countConflictMarkerLines(oursIdx),
+  });
+  return { content: oursIdx, ok: true };
 }
 
 
@@ -805,7 +851,9 @@ export async function resolveConflictsWithLLM(
         }
 
         console.log(chalk.cyan(`    Resolving: ${conflictFile}`));
-        if (hasNestedConflictMarkers(conflictedContent)) {
+        const nestedWt = hasNestedConflictMarkers(conflictedContent);
+        const markerLines = countConflictMarkerLines(conflictedContent);
+        if (nestedWt) {
           console.log(
             chalk.yellow(
               `    Warning: nested/overlapping conflict markers in ${conflictFile} — merge may need manual cleanup; LLM/deterministic resolution can mis-merge.`
@@ -814,6 +862,16 @@ export async function resolveConflictsWithLLM(
         }
         const fileSize = Math.round(conflictedContent.length / 1024);
         const conflictChunkCount = extractConflictChunks(conflictedContent, 0).length;
+        debug('Conflict resolution: file snapshot', {
+          file: conflictFile,
+          kb: formatNumber(fileSize),
+          chars: formatNumber(conflictedContent.length),
+          lines: formatNumber(conflictedContent.split('\n').length),
+          extractChunks: formatNumber(conflictChunkCount),
+          markerLines,
+          nestedWt,
+          hasMarkers: hasConflictMarkers(conflictedContent),
+        });
         // WHY read base here: Every LLM resolution path (chunked and single-chunk) needs base for 3-way merge.
         const baseContent = (await readConflictStage(git, conflictFile, 1)) ?? '';
 
@@ -837,9 +895,91 @@ export async function resolveConflictsWithLLM(
           }
         }
         if (!result.resolved && shouldUseDeterministicMerge(conflictFile)) {
-          console.log(chalk.blue(`    → Using deterministic merge (keep ours) for ${conflictFile}`));
-          result = resolveKeepOurs(conflictedContent);
-          if (result.resolved) resolutionSkipsSizeRegression = true;
+          let det: { resolved: boolean; content: string; explanation: string } = {
+            resolved: false,
+            content: conflictedContent,
+            explanation: '',
+          };
+          let usedIndexForNestedWt = false;
+          let usedLineKeepOurs = false;
+          let usedIndexAfterLineMarkers = false;
+
+          // Nested markers: line-based keep-ours mis-merges; use git's stage-2 "ours" blob (no markers).
+          if (nestedWt) {
+            console.log(
+              chalk.blue(
+                `    → Deterministic merge: keep ours from git index (nested conflict markers in working tree)…`,
+              ),
+            );
+            const idx = await readOursFromConflictIndex(git, conflictFile);
+            if (idx.ok) {
+              usedIndexForNestedWt = true;
+              det = {
+                resolved: true,
+                content: idx.content,
+                explanation:
+                  'Kept ours from conflict index (nested/overlapping markers — working tree not safely parsed)',
+              };
+            } else {
+              debug('Index ours unavailable for nested-marker deterministic merge', {
+                file: conflictFile,
+                reason: idx.reason,
+                markerLinesWt: markerLines,
+              });
+            }
+          }
+
+          if (!det.resolved) {
+            console.log(chalk.blue(`    → Using deterministic merge (keep ours) for ${conflictFile}`));
+            const ko = resolveKeepOurs(conflictedContent);
+            usedLineKeepOurs = true;
+            if (ko.resolved && !hasConflictMarkers(ko.content)) {
+              det = ko;
+            } else if (ko.resolved && hasConflictMarkers(ko.content)) {
+              debug('resolveKeepOurs left markers in output; trying index stage 2', {
+                file: conflictFile,
+                markerLinesAfterLineParse: countConflictMarkerLines(ko.content),
+                markerLinesWorkingTree: markerLines,
+              });
+              const idx = await readOursFromConflictIndex(git, conflictFile);
+              if (idx.ok) {
+                usedIndexAfterLineMarkers = true;
+                det = {
+                  resolved: true,
+                  content: idx.content,
+                  explanation:
+                    'Kept ours from conflict index (line-based keep-ours left markers in working tree)',
+                };
+              } else {
+                debug('Deterministic merge: line parser left markers and index stage-2 unusable', {
+                  file: conflictFile,
+                  indexReason: idx.reason,
+                });
+              }
+            }
+          }
+
+          const strategy = usedIndexForNestedWt
+            ? 'index-stage-2-nested-wt'
+            : usedIndexAfterLineMarkers
+              ? 'index-stage-2-after-line-markers'
+              : usedLineKeepOurs && det.resolved
+                ? 'line-keep-ours'
+                : usedLineKeepOurs
+                  ? 'line-keep-ours-still-markers'
+                  : 'none';
+          debug('Deterministic merge outcome', {
+            file: conflictFile,
+            resolved: det.resolved,
+            strategy,
+            outChars: det.resolved ? formatNumber(det.content.length) : undefined,
+            outHasMarkers: det.resolved ? hasConflictMarkers(det.content) : undefined,
+          });
+
+          if (det.resolved) {
+            result = det;
+            resolutionSkipsSizeRegression = true;
+          }
         }
         if (!result.resolved && (
           isGeneratedArtifactFile(conflictFile) &&

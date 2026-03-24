@@ -31,6 +31,7 @@ import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurren
 import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
 import {
   getElizaCloudModelContextSpec,
+  getMaxElizacloudLlmCompleteInputChars,
   getMaxFixPromptCharsForModel,
   lowerModelMaxPromptChars,
   resolveElizaCloudCanonicalModelId,
@@ -90,6 +91,7 @@ function elizaCloudServerErrorExpectationDebug(
   return {
     expectedMaxContextTokens: formatNumber(spec.maxContextTokens),
     expectedMaxFixPromptChars: formatNumber(getMaxFixPromptCharsForModel('elizacloud', model)),
+    expectedMaxTotalInputChars: formatNumber(getMaxElizacloudLlmCompleteInputChars(model)),
     requestUserChars: formatNumber(prompt.length),
     requestSystemChars: formatNumber(sysLen),
     requestTotalChars: formatNumber(total),
@@ -671,7 +673,24 @@ export class LLMClient {
       promptLength: prompt.length,
       hasSystemPrompt: !!systemPrompt,
     });
-    
+
+    // ElizaCloud: fail fast when total input exceeds configured budget. Gateways often
+    // return 500 (no body) for oversize upstream — retries waste minutes (audit: qwen 93k vs ~42k cap).
+    if (this.provider === 'elizacloud') {
+      const maxTotal = getMaxElizacloudLlmCompleteInputChars(chosenModel);
+      const total = prompt.length + (systemPrompt?.length ?? 0);
+      if (total > maxTotal) {
+        const detail = elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt);
+        warn(
+          `ElizaCloud prompt exceeds model input budget (${formatNumber(total)} chars > ${formatNumber(maxTotal)}). Use a larger-context model, split verification batches, or adjust ELIZACLOUD_MODEL_CONTEXT.`,
+        );
+        debug('ElizaCloud input budget exceeded (detail)', detail);
+        throw new Error(
+          `ElizaCloud request too large for ${chosenModel}: ${formatNumber(total)} chars (max ${formatNumber(maxTotal)}).`,
+        );
+      }
+    }
+
     // Log full prompt to debug file
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
     const promptMeta: Record<string, unknown> = { model: chosenModel };
@@ -721,6 +740,10 @@ export class LLMClient {
               }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
               const contextOverflow = isLikelyContextLengthExceededError(e504);
+              const totalChars = prompt.length + (systemPrompt?.length ?? 0);
+              const overConfiguredBudget =
+                this.provider === 'elizacloud' &&
+                totalChars > getMaxElizacloudLlmCompleteInputChars(chosenModel);
               if (contextOverflow && this.provider === 'elizacloud') {
                 lowerModelMaxPromptChars('elizacloud', chosenModel, prompt.length);
                 debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
@@ -732,7 +755,8 @@ export class LLMClient {
               if (
                 attempt504 < max504Retries &&
                 (isServerError(e504) || timeoutMsg) &&
-                !contextOverflow
+                !contextOverflow &&
+                !overConfiguredBudget
               ) {
                 const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
                 debug('Server error or request timeout, retrying', {
@@ -1158,7 +1182,7 @@ ${codeSnippet}
     // a flat 90k user budget was still ~90k+ total and blew past Qwen 24k tokens (audit: 29k input tokens).
     const providerCap =
       this.provider === 'elizacloud'
-        ? Math.min(90_000, getMaxFixPromptCharsForModel('elizacloud', this.model) + 14_000)
+        ? Math.min(90_000, getMaxElizacloudLlmCompleteInputChars(this.model))
         : 150_000;
     const effectiveMaxContextChars = maxContextChars != null
       ? Math.min(maxContextChars, providerCap)

@@ -148,6 +148,21 @@ export function hasNestedConflictMarkers(content: string): boolean {
   return false;
 }
 
+/**
+ * True only when git **open or close** conflict markers appear (`<<<<<<<` / `>>>>>>>`).
+ * WHY: `hasConflictMarkers` also flags standalone `=======` lines; markdown (ROADMAP, CHANGELOG)
+ * often uses seven equals. Unmerged **index stage-2** blobs from Git should not contain open/close
+ * markers — if they do, the blob is corrupt or not a normal ours side. Use this to validate
+ * `git show :2:path` before writing deterministic keep-ours (see audit Cycle 66).
+ */
+export function hasGitConflictOpenOrCloseMarkers(content: string): boolean {
+  for (const line of content.split('\n')) {
+    const lineTrim = t(line);
+    if (isGitConflictOpenLine(lineTrim) || isGitConflictCloseLine(lineTrim)) return true;
+  }
+  return false;
+}
+
 export function findFilesWithConflictMarkers(workdir: string, files: string[]): string[] {
   if (!workdir) return [];
 
