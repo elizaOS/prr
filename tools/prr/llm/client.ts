@@ -1863,7 +1863,9 @@ ${codeSnippet}
    * 36 issues × 3KB = 108KB prompt. Too big for some models.
    * We batch based on actual content size, not fixed counts.
    * 
-   * @param maxContextChars - Maximum characters per batch (default 400k, ~100k tokens)
+   * @param maxContextChars - Upper bound per batch (default 400k). **ElizaCloud:** clamped to
+   *   `getMaxElizacloudLlmCompleteInputChars(finalAuditModel)` (same as `LLMClient.complete`) so
+   *   batching matches the model that actually runs the audit (avoids 400k plan + 42k send fail).
    */
   async finalAudit(
     issues: Array<{
@@ -1881,7 +1883,19 @@ ${codeSnippet}
       return new Map();
     }
 
-    debug('Running final audit on all issues', { count: issues.length, maxContextChars });
+    const auditModel = this.getFinalAuditModel();
+    let effectiveMaxContextChars = maxContextChars;
+    if (this.provider === 'elizacloud') {
+      const modelCap = Math.min(90_000, getMaxElizacloudLlmCompleteInputChars(auditModel));
+      effectiveMaxContextChars = Math.min(maxContextChars, modelCap);
+    }
+
+    debug('Running final audit on all issues', {
+      count: issues.length,
+      maxContextChars,
+      effectiveMaxContextChars,
+      auditModel,
+    });
 
     // Build the static prompt header (used for each batch)
     const headerParts = [
@@ -1911,7 +1925,12 @@ ${codeSnippet}
     ];
     const headerSize = headerParts.join('\n').length;
     const footerSize = 100; // Reserve space for closing instructions
-    const availableForIssues = maxContextChars - headerSize - footerSize;
+    // Slack for ``` fences, `## File:` lines, and `### [n]` headers (estimate is per-issue/snippet only).
+    const structureSlack = this.provider === 'elizacloud' ? 2_500 : 0;
+    const availableForIssues = Math.max(
+      0,
+      effectiveMaxContextChars - headerSize - footerSize - structureSlack,
+    );
 
     // Group by file so we send each file's content once per batch (saves context when many issues share a file)
     const byFile = new Map<string, typeof issues>();
@@ -2030,7 +2049,6 @@ ${codeSnippet}
           issueCount: batchIssues.length,
         });
       }
-      const auditModel = this.getFinalAuditModel();
       if (auditModel !== this.model) {
         debug('Final audit using model override', { model: auditModel });
       }
