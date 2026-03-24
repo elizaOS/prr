@@ -214,20 +214,30 @@ export function applyCatalogModelAutoHeals(
     // WHY: Review anchor line (e.g. 35) may sit on env checks while `model: "gpt-4o-mini"` lives
     // elsewhere; ±20 lines then misses the only place a bad "fix" was applied.
     if (count === 0) {
+      debug('[Auto-heal] Anchor window missed quoted wrong id — trying full-file fallback', {
+        commentId: comment.id.slice(0, 7),
+        resolvedPath: rel,
+        targetLine: line,
+        windowLines1Based: `${formatNumber(start + 1)}–${formatNumber(end)}`,
+        radius: CATALOG_MODEL_AUTOHEAL_LINE_RADIUS,
+        searchQuotedId: wrongly,
+      });
       const full = replaceModelIdInQuotedStringsInLines(allLines, wrongly, good);
       if (full.count > 0) {
         newWindow = full.lines;
         count = full.count;
         useFullFile = true;
-        debug('[Auto-heal] Window had no match; applied heal on full file', {
+        debug('[Auto-heal] Full-file fallback matched', {
           commentId: comment.id.slice(0, 7),
           resolvedPath: rel,
-          targetLine: line,
-          windowStart: start + 1,
-          windowEnd: end,
-          searchFor: wrongly,
           replacementCount: count,
+          searchFor: wrongly,
         });
+        console.log(
+          chalk.gray(
+            `  Catalog auto-heal: ±${formatNumber(CATALOG_MODEL_AUTOHEAL_LINE_RADIUS)} line window missed \`${wrongly}\` — used full-file search (${formatNumber(count)} replacement(s)) in ${rel}`,
+          ),
+        );
       }
     }
 

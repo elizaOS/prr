@@ -88,6 +88,17 @@ export interface ReviewComment {
   databaseId?: number | null;
 }
 
+/**
+ * First full 40-character lowercase hex git object id in text, or undefined.
+ * WHY: Some bots (e.g. CodeRabbit) post **issue** comments with an embedded commit SHA when there is no
+ * `pulls.listReviews` row; `getBotReviewStatus` uses this for **`lastReviewSha`** / HEAD comparison.
+ */
+export function extractFullCommitShaFromText(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const m = text.match(/\b([0-9a-f]{40})\b/i);
+  return m ? m[1]!.toLowerCase() : undefined;
+}
+
 export function parsePRUrl(url: string): { owner: string; repo: string; number: number } {
   // Supports formats:
   // https://github.com/owner/repo/pull/123

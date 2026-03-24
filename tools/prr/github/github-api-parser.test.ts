@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { parseBranchSpec, parseRepoUrl, normalizeCompareBranch } from './types.js';
+import {
+  parseBranchSpec,
+  parseRepoUrl,
+  normalizeCompareBranch,
+  extractFullCommitShaFromText,
+} from './types.js';
+
+describe('extractFullCommitShaFromText', () => {
+  it('returns first 40-char hex sha lowercase', () => {
+    const sha = 'a'.repeat(40);
+    expect(extractFullCommitShaFromText(`Reviewing commit ${sha} on branch x`)).toBe(sha);
+  });
+
+  it('returns undefined when no full sha', () => {
+    expect(extractFullCommitShaFromText('only short abc1234 and 1234567')).toBeUndefined();
+    expect(extractFullCommitShaFromText(undefined)).toBeUndefined();
+    expect(extractFullCommitShaFromText('')).toBeUndefined();
+  });
+
+  it('is case-insensitive and ignores partial matches', () => {
+    const mixed = 'ABCDEF0123456789abcdef0123456789abcdef01';
+    expect(extractFullCommitShaFromText(`x ${mixed} y`)).toBe(mixed.toLowerCase());
+  });
+});
 
 describe('parseRepoUrl', () => {
   it('parses https://github.com/owner/repo', () => {

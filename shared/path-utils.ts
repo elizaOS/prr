@@ -28,6 +28,9 @@ const EXTENSION_VARIANT_MAP: Record<string, string[]> = {
  * a .ts file when the repo has .tsx; dismissing as "file not found" wastes the fix loop.
  * Returns the first path (original or variant) that exists, or the original path.
  * Mapping rules: see EXTENSION_VARIANT_MAP; .d.ts fragments try same dir and types/ dir.
+ *
+ * @param workdir - **PR clone root** (absolute path where the target repo is checked out — same as `SimpleGit`'s top-level). **Not** `process.cwd()` of the prr process unless they happen to match.
+ * @param path - Repo-relative path from the review comment.
  */
 export function tryResolvePathWithExtensionVariants(workdir: string, path: string): string {
   const full = join(workdir, path);

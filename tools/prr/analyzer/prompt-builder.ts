@@ -6,7 +6,6 @@ import { filterAllowedPathsForFix, isPathAllowedForFix, tryResolvePathWithExtens
 import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
 import { estimateTokens } from '../../../shared/utils/tokens.js';
 import { getTestPathForIssueLike, issueRequestsTestsText } from './test-path-inference.js';
-import { join } from 'path';
 import { debug } from '../../../shared/logger.js';
 import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
 
@@ -506,6 +505,12 @@ export function buildFixPrompt(
      */
     pathExists?: (path: string) => boolean;
     /**
+     * **PR clone root** (absolute path): the checkout PRR is fixing — same directory **`SimpleGit`** uses
+     * (`rev-parse --show-toplevel`), **not** `process.cwd()` where `prr` was launched. When set, primary paths
+     * are normalized with **`tryResolvePathWithExtensionVariants`** (full map + `.d.ts` heuristics) before `pathExists` checks.
+     */
+    workdir?: string;
+    /**
      * Last apply/validation error (e.g. search text did not match). Included so next attempt can adjust.
      * output.log audit: include in retry prompt so the fixer can use exact content or shorter anchor.
      */
@@ -739,45 +744,51 @@ export function buildFixPrompt(
       continue;
     }
     
-    // Pill #7: Validate path exists before building prompt; try extension variants and common prefixes if pathExists is provided.
-    // WHY: Fixer was sent tsconfig.js repeatedly despite the file not existing (should be tsconfig.json).
-    // Also, basenames like "db.ts" or partial paths like "pnl-history/route.ts" may need prefix resolution.
-    // This wastes LLM credits and iteration slots on phantom files.
-    if (options?.pathExists && !options.pathExists(primaryPath)) {
-      // Try extension variants first (e.g. tsconfig.js → tsconfig.json)
+    // Pill #7: Validate path exists before building prompt; align extension rules with shared/path-utils.
+    // WHY: Fixer was sent tsconfig.js when tsconfig.json exists; duplicate variant lists here drifted from solvability.
+    if (options?.workdir) {
+      const fromUtils = tryResolvePathWithExtensionVariants(options.workdir, primaryPath);
+      if (fromUtils !== primaryPath) {
+        debug('Resolved primary path via tryResolvePathWithExtensionVariants', {
+          original: issue.resolvedPath ?? issue.comment.path,
+          resolved: fromUtils,
+          commentId: issue.comment.id,
+        });
+      }
+      primaryPath = fromUtils;
+    } else if (options?.pathExists && !options.pathExists(primaryPath)) {
+      // Legacy: no workdir (e.g. tests) — keep a small inline variant pass
       const ext = primaryPath.includes('.') ? primaryPath.slice(primaryPath.lastIndexOf('.')) : '';
       const variants = ext === '.js' ? ['.json', '.ts', '.jsx', '.mjs', '.cjs'] : ext === '.ts' ? ['.tsx', '.js', '.json'] : [];
-      let resolved = primaryPath;
       for (const variant of variants) {
         const candidate = primaryPath.slice(0, primaryPath.length - ext.length) + variant;
         if (options.pathExists(candidate)) {
-          resolved = candidate;
-          debug('Resolved path via extension variant', { original: primaryPath, resolved: candidate, commentId: issue.comment.id });
+          debug('Resolved path via extension variant (no workdir)', { original: primaryPath, resolved: candidate, commentId: issue.comment.id });
+          primaryPath = candidate;
           break;
         }
       }
-      
-      // If still not found and path looks like a basename (no slash), try common prefixes
-      // WHY: output.log audit — basenames like "db.ts", "game-tick.ts" weren't resolved to full paths
-      if (resolved === primaryPath && !primaryPath.includes('/')) {
+    }
+
+    if (options?.pathExists && !options.pathExists(primaryPath)) {
+      // Basenames like "db.ts" → packages/.../db.ts
+      if (!primaryPath.includes('/')) {
         const commonPrefixes = ['apps/', 'packages/', 'plugins/', 'tools/', 'shared/', 'examples/', 'src/'];
         for (const prefix of commonPrefixes) {
           const candidate = prefix + primaryPath;
           if (options.pathExists(candidate)) {
-            resolved = candidate;
-            debug('Resolved basename path via prefix', { original: primaryPath, resolved: candidate, commentId: issue.comment.id });
+            primaryPath = candidate;
+            debug('Resolved basename path via prefix', { original: issue.resolvedPath ?? issue.comment.path, resolved: candidate, commentId: issue.comment.id });
             break;
           }
         }
       }
-      
-      if (resolved !== primaryPath) {
-        primaryPath = resolved;
-      } else {
-        // Path still doesn't exist after trying variants and prefixes
-        // Cycle 59: Skip this issue rather than including it with an empty/invalid target file path
-        // which would cause the LLM to respond with CANNOT_FIX and waste credits.
-        debug('Skipping issue: primary path does not exist in workdir (tried extension variants and common prefixes)', { path: primaryPath, commentId: issue.comment.id, resolvedPath: issue.resolvedPath });
+      if (!options.pathExists(primaryPath)) {
+        debug('Skipping issue: primary path does not exist in PR clone (after variants and prefixes)', {
+          path: primaryPath,
+          commentId: issue.comment.id,
+          resolvedPath: issue.resolvedPath,
+        });
         skippedIssues.push(issue);
         continue;
       }
@@ -794,7 +805,7 @@ export function buildFixPrompt(
     return {
       prompt: '',
       summary: 'No valid issues to fix (all skipped due to empty or invalid target file paths)',
-      detailedSummary: `All ${skippedIssues.length} issue(s) were skipped because target file paths are empty or do not exist in workdir.`,
+      detailedSummary: `All ${skippedIssues.length} issue(s) were skipped because target file paths are empty or do not exist in the PR clone.`,
       lessonsIncluded: 0,
       issues: [],
     };

@@ -8,6 +8,7 @@
 
 - **prr** and **story** produce logs that describe what the tool did and what the LLM saw. Those logs are evidence of behavior: failures, retries, model rotations, and user-visible output.
 - **WHY audit logs:** Logs often reveal patterns that code review misses: repeated failures pointing to prompt or logic bugs, bail-outs that suggest architectural issues, or documentation gaps. Turning that evidence into an actionable improvement plan helps improve the project (and the tool itself when run on prr’s own repo).
+- **WHY triage when prr audited another repo:** **`output.log`** mostly describes PRR’s work inside the **clone** (the PR’s codebase). The audit LLM often *proposes* improvements for **that** tree (`src/`, `packages/`, …) as well as for **PRR** (`tools/prr/`, `shared/`). **Default (this repo layout):** When **`targetDir`** contains **`tools/prr`**, pill **post-filters** so **`pill-output.md`** only records paths under **`tools/`**, **`shared/`**, **`tests/`**, **`docs/`**, **`generated/`**, **`.cursor/`**, **`.github/`**, or allowlisted root files — clone paths are omitted (see **`PILL_TOOL_REPO_SCOPE_FILTER`**). **AGENTS.md** / **DEVELOPMENT.md** (“Pill output triage”) and **`pill-output.md`** legend cover older runs and **`PILL_TOOL_REPO_SCOPE_FILTER=0`**.
 - **WHY analysis-only:** Earlier designs included fix/verify/commit cycles. That duplicated prr’s loop and made pill heavy and stateful. Analysis-only keeps pill simple: one LLM audit, append-only markdown output, no git or runner integration. You (or another process) decide what to do with the plan.
 - **WHY two output files:** **pill-output.md** holds the full improvement list (summary + per-item details) so implementers have one place to work from. **pill-summary.md** holds a short, dated log of runs (pitch + link to pill-output) so you can see history at a glance without opening the full instructions file.
 
@@ -57,6 +58,7 @@ Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/
 - **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the assembled context (default **35000**). Per-section caps scale with the budget. If you hit 504, try **20000** or lower.
 - **PILL_AUDIT_MAX_USER_CHARS** (optional, **6000–80000**) — Hard cap on **user** message size **per audit HTTP request** (single request or each chunk). If unset: default ceiling **~20k** chars, **~12k** for Opus-class / `o3-` / `gpt-5` (excluding mini/nano) audit models (Vercel invocation timeout). Raise only if you use a direct API (not ElizaCloud) or a fast model.
 - **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars in the audit payload (default **28000**).
+- **PILL_TOOL_REPO_SCOPE_FILTER** (optional) — **`0`** / **`false`** / **`off`** disables dropping clone-only paths; **`1`** / **`true`** forces the filter on. **Unset:** filter is **on** only when **`tools/prr`** exists under **`targetDir`** (typical prr monorepo). **WHY:** Keeps **`pill-output.md`** focused on improving **this** tool repo, not the PR under review.
 
 ### Integrated (prr / story / split-exec / split-plan) — opt-in with --pill
 
@@ -72,7 +74,7 @@ When you run **prr**, **story**, **split-exec**, or **split-plan** with the **`-
 
 ## Failure modes and debugging
 
-When pill records **no improvements**, it returns one of four distinct reasons so you can fix the cause (pill-output.md #3):
+When pill records **no improvements**, it returns a distinct **reason** so you can fix the cause (pill-output.md #3):
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
@@ -80,6 +82,7 @@ When pill records **no improvements**, it returns one of four distinct reasons s
 | **no_api_key** | No LLM API key configured for the chosen provider. | Set the right key in `.env`: `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` (see Configuration in main README). When pill runs from the hook, it uses the same env as the parent process. |
 | **api_call_failed** | The audit LLM request failed (network, rate limit, model error). | Check the error message in the console or in the log line. Ensure the model ID is valid and the key has access. Look at **pill-prompts.log** for the request if it was written before the failure. |
 | **zero_improvements_from_llm** | The audit ran successfully but the LLM suggested zero improvements. | Not a failure — the logs were analyzed and the model had nothing to add. |
+| **all_filtered_tool_scope** | Every suggestion used paths outside the tool-repo allowlist (e.g. clone `src/` / `packages/`). | Expected when scope filter is on and the model only echoed the PR. Set **`PILL_TOOL_REPO_SCOPE_FILTER=0`** if you want those rows in **`pill-output.md`**. |
 
 **Where you see the reason:** When pill is run from the **CLI**, it prints a single line (e.g. `No improvements to record: No logs to analyze.`). When pill runs from the **hook** (after prr/story/split-exec close their logs), the shared logger prints a short message to the console (e.g. `[Pill] No logs to analyze (output/prompts log empty or missing for this prefix).`) and appends a `[Pill] No improvements to record (reason: …)` line to the output log. Check **pill-output.log** (or the tool’s output log) for the exact reason string.
 

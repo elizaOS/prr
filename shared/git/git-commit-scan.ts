@@ -25,8 +25,9 @@ import { debug } from '../logger.js';
 const committedFixScanCache = new Map<string, string[]>();
 const MAX_SCAN_CACHE_ENTRIES = 64;
 
-function scanCacheKey(workdir: string, branch: string, headSha: string): string {
-  return `${workdir}\0${branch}\0${headSha}`;
+function scanCacheKey(workdir: string, branch: string, headSha: string, prBaseBranch?: string): string {
+  const base = prBaseBranch?.trim() ?? '';
+  return `${workdir}\0${branch}\0${headSha}\0${base}`;
 }
 
 function rememberScanCache(key: string, ids: string[]): void {
@@ -46,6 +47,13 @@ export interface ScanCommittedFixesOptions {
   /** When set with headSha, reuse a prior in-process result for this workdir/branch/HEAD. */
   workdir?: string;
   headSha?: string;
+  /**
+   * GitHub PR base branch name (e.g. `develop`, `v2.0.0`). When set, PRR tries `origin/<name>` first
+   * for the `base..branch` log range before falling back to origin/main|master|develop.
+   * WHY: Repos whose default is not main/master/develop used to leave `baseBranch` null in debug and
+   * rely on `-n 100`; using the real PR base matches pill/external audits expecting a proper merge range.
+   */
+  prBaseBranch?: string;
 }
 
 /**
@@ -86,7 +94,7 @@ export async function scanCommittedFixes(
   opts?: ScanCommittedFixesOptions
 ): Promise<string[]> {
   if (opts?.workdir && opts?.headSha) {
-    const key = scanCacheKey(opts.workdir, branch, opts.headSha);
+    const key = scanCacheKey(opts.workdir, branch, opts.headSha, opts.prBaseBranch);
     const hit = committedFixScanCache.get(key);
     if (hit) {
       debug('scanCommittedFixes (cache hit)', { branch, headSha: opts.headSha.slice(0, 7) });
@@ -94,11 +102,23 @@ export async function scanCommittedFixes(
     }
   }
   try {
-    // Find the base branch - try common names
+    // Find the base branch — PR's GitHub base first, then common default names
     const baseBranches = ['origin/main', 'origin/master', 'origin/develop'];
     let baseBranch: string | null = null;
-    
+
+    const prBase = opts?.prBaseBranch?.trim();
+    if (prBase) {
+      const prRef = `origin/${prBase}`;
+      try {
+        await git.raw(['rev-parse', '--verify', prRef]);
+        baseBranch = prRef;
+      } catch {
+        // Single-branch clones may not have fetched base yet; fall through to heuristics
+      }
+    }
+
     for (const candidate of baseBranches) {
+      if (baseBranch) break;
       try {
         await git.raw(['rev-parse', '--verify', candidate]);
         baseBranch = candidate;
@@ -141,7 +161,7 @@ export async function scanCommittedFixes(
     // (e.g., re-verified after a push, or re-committed after interruption)
     const unique = [...new Set(commentIds)];
     if (opts?.workdir && opts?.headSha) {
-      rememberScanCache(scanCacheKey(opts.workdir, branch, opts.headSha), unique);
+      rememberScanCache(scanCacheKey(opts.workdir, branch, opts.headSha, opts.prBaseBranch), unique);
     }
     return unique;
   } catch (error) {

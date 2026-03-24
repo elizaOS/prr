@@ -90,6 +90,7 @@ async function main(): Promise<void> {
       console.log(chalk.gray('\n  Instructions:'), out.result.instructionsPath);
       console.log(chalk.gray('  Summary log:'), out.result.summaryPath);
     } else {
+      const fc = (out as { filteredCount?: number }).filteredCount;
       const reasonMsg =
         out.reason === 'no_logs'
           ? 'No logs to analyze.'
@@ -97,7 +98,9 @@ async function main(): Promise<void> {
             ? 'No API key configured.'
             : out.reason === 'api_call_failed'
               ? `API call failed${(out as { errorMessage?: string }).errorMessage ? `: ${(out as { errorMessage?: string }).errorMessage}` : ''}.`
-              : 'LLM returned zero improvements.';
+              : out.reason === 'all_filtered_tool_scope'
+                ? `All suggestions filtered (outside tool-repo paths${fc != null ? `; ${fc.toLocaleString()} omitted` : ''}). Set PILL_TOOL_REPO_SCOPE_FILTER=0 to disable.`
+                : 'LLM returned zero improvements.';
       console.log(chalk.gray('\nNo improvements to record: ' + reasonMsg));
     }
     const outPath = getOutputLogPath();

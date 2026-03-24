@@ -359,6 +359,7 @@ export async function executeFixIteration(
     undefined,
     modelContext,
     pathExists,
+    workdir,
     fixIteration === 1,
     stateContext
   );
@@ -479,6 +480,7 @@ export async function executeFixIteration(
           undefined,
           modelContext,
           pathExists,
+          workdir,
           fixIteration === 1,
           stateContext
         );

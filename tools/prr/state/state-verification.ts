@@ -36,7 +36,8 @@ export const PRR_GIT_RECOVERY_VERIFIED_MARKER = '__prr_git_recovery__';
  * 
  * @param ctx - State context
  * @param commentId - ID of the comment to mark as verified
- * @param autoVerifiedFrom - Optional canonical comment ID if this is an auto-verified duplicate
+ * @param autoVerifiedFrom - Optional canonical comment ID for auto-verified **duplicates**, or
+ *   **`PRR_GIT_RECOVERY_VERIFIED_MARKER`** when verification was restored from **`prr-fix:`** git history (`recoverVerificationState`).
  */
 export function markVerified(ctx: StateContext, commentId: string, autoVerifiedFrom?: string): void {
   const state = getState(ctx);

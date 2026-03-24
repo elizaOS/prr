@@ -13,12 +13,12 @@
  * the process runs forever. spawn() gives us direct process control so we can
  * SIGKILL on timeout or Ctrl+C interruption.
  * 
- * WHY one-shot auth URL instead of modifying remote:
- * HTTPS auth for push requires credentials. Instead of using `git remote set-url`
- * which persists the token to .git/config (security risk if SIGKILL leaves it
- * exposed), we pass the auth URL directly in the push command:
- *   git push https://token@github.com/... HEAD:branch
- * This way the token is never written to disk.
+ * WHY one-shot push URL with token (not origin + http.extraheader):
+ * CI often has `origin` set to `https://***@github.com/...` or a token that no
+ * longer matches GITHUB_TOKEN; git then still asks for a password. Passing
+ *   git -c credential.helper= push https://<token>@github.com/org/repo.git HEAD:branch
+ * embeds the current token in the URL only for this process (not persisted to
+ * .git/config like `remote set-url`).
  * 
  * DESIGN: This module is intentionally kept together despite its size because
  * the push logic is tightly coupled - timeout handling, auth, and retry all
@@ -31,6 +31,11 @@ import { join } from 'path';
 import { debug, formatNumber } from '../logger.js';
 import { cleanupGitState, continueRebase } from './git-merge.js';
 import { redactUrlCredentials } from './redact-url.js';
+import {
+  buildHttpsPushUrlWithToken,
+  httpsRemoteHasUserinfo,
+  stripHttpsUserinfo,
+} from './git-push-auth-url.js';
 
 /**
  * Result of a git push operation.
@@ -75,61 +80,53 @@ export async function push(git: SimpleGit, branch: string, force = false, github
     debug('Using fallback workdir', { workdir, method: (git as any)._baseDir ? '_baseDir' : 'cwd' });
   }
   
-  // Prefer Authorization header (like actions/checkout) so push never prompts in CI.
-  // WHY: Embedding token in URL (https://TOKEN@...) can fail in CI with "could not read Password"
-  // when the token contains special characters or git uses a credential helper that ignores URL auth.
-  // Using http.https://github.com/.extraheader with Basic auth is reliable and matches GitHub Actions.
-  let authConfigArgs: string[] = [];
+  let pushArgs: string[] = ['push', 'origin', `HEAD:${branch}`];
+  if (force) pushArgs.push('--force');
+  let disableCredentialHelpers = false;
+
   try {
     const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
-    const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
-    const baseHttpsUrl = remoteUrl.startsWith('https://') && hasTokenInUrl
-      ? 'https://' + remoteUrl.replace(/^https:\/\/[^@]+@/, '')
-      : remoteUrl;
-    if (githubToken && baseHttpsUrl.startsWith('https://')) {
-      // AUTHORIZATION: basic base64(token:) — GitHub accepts token as username, empty password.
-      // WHY credential.helper= (empty): Clears inherited helpers for this invocation so git does not
-      // prompt. Do NOT use credential.helper=! — in git, ! means "run shell command as helper";
-      // credential.helper=! breaks CI with errors like "get: 1: get: not found".
-      const basicAuth = Buffer.from(`${githubToken}:`, 'utf8').toString('base64');
-      authConfigArgs = [
-        'credential.helper=',
-        'credential.https://github.com.helper=',
-        `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth}`,
-      ];
-      debug('Pre-push check', { hasTokenInUrl, usingAuthHeader: true });
-    } else if (githubToken && !baseHttpsUrl.startsWith('https://')) {
+    const hasTokenInUrl = httpsRemoteHasUserinfo(remoteUrl);
+    const cleanHttps =
+      remoteUrl.startsWith('https://') ? stripHttpsUserinfo(remoteUrl) : remoteUrl;
+
+    if (githubToken && cleanHttps.startsWith('https://')) {
+      const pushUrl = buildHttpsPushUrlWithToken(cleanHttps, githubToken);
+      pushArgs = ['push', ...(force ? ['--force'] : []), pushUrl, `HEAD:${branch}`];
+      disableCredentialHelpers = true;
+      debug('Pre-push check', { hasTokenInUrl, usingOneShotPushUrlWithToken: true });
+    } else if (githubToken && !cleanHttps.startsWith('https://')) {
       debug('Remote URL is SSH — token injection skipped; push will use SSH credentials.');
     } else if (!hasTokenInUrl && !githubToken) {
       debug('WARNING: Remote URL does not contain token and no token provided - push may fail');
     } else if (hasTokenInUrl && !githubToken) {
-      // Remote URL has token but no githubToken param; disable credential helpers to prevent prompts
-      // WHY: Even with token in URL, git may try credential helpers; disable to avoid "could not read Password"
-      authConfigArgs = [
-        'credential.helper=',
-        'credential.https://github.com.helper=',
-      ];
-      debug('Pre-push check', { hasTokenInUrl, usingUrlToken: true });
+      pushArgs = ['push', 'origin', `HEAD:${branch}`];
+      if (force) pushArgs.push('--force');
+      disableCredentialHelpers = true;
+      debug('Pre-push check', { hasTokenInUrl, usingOriginUrlToken: true });
     } else {
       debug('Pre-push check', { hasTokenInUrl });
+    }
+
+    if (disableCredentialHelpers) {
+      pushArgs = [
+        '-c',
+        'credential.helper=',
+        '-c',
+        'credential.https://github.com.helper=',
+        ...pushArgs,
+      ];
     }
   } catch (e) {
     debug('Could not check remote URL', { error: redactUrlCredentials(String(e)) });
   }
 
-  // Push to origin; when we have a token, -c options supply auth for this command only.
-  const args = ['push', 'origin', `HEAD:${branch}`];
-  if (force) args.push('--force');
-  const pushArgs = authConfigArgs.length > 0
-    ? [...authConfigArgs.flatMap((v) => ['-c', v]), ...args]
-    : args;
-
   const fullCommand = `git ${pushArgs.join(' ')}`;
   debug('Starting git push', { command: redactUrlCredentials(fullCommand), workdir });
 
   const spawnEnv = { ...process.env };
-  if (authConfigArgs.length > 0) {
-    spawnEnv.GIT_TERMINAL_PROMPT = '0';  // Never prompt for credentials (CI has no TTY)
+  if (disableCredentialHelpers) {
+    spawnEnv.GIT_TERMINAL_PROMPT = '0';
   }
 
   return new Promise((resolve) => {

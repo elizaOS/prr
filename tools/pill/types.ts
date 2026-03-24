@@ -14,6 +14,11 @@ export interface PillConfig {
   contextBudgetTokens?: number;
   /** Hard cap on user-message chars per audit HTTP request (chunk size). Set via PILL_AUDIT_MAX_USER_CHARS (6000–80000). */
   auditMaxUserChars?: number;
+  /**
+   * When true, drop improvements whose `file` is not under this repo’s tool layout (tools/, shared/, tests/, …).
+   * Default: on if `tools/prr` exists under targetDir; override with PILL_TOOL_REPO_SCOPE_FILTER.
+   */
+  toolRepoScopeFilter: boolean;
   outputOnly: boolean;
   promptsOnly: boolean;
   dryRun: boolean;

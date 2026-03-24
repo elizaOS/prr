@@ -245,6 +245,7 @@ export async function closeOutputLog(): Promise<void> {
               : `[Pill] No improvements to record (reason: ${out.reason}).\n`;
           appendFileSync(outputLogPath, reasonLine, 'utf-8');
           // WHY distinct console message: Operators need to know why pill recorded nothing (pill-output.md #3, #7).
+          const fc = (out as { filteredCount?: number }).filteredCount;
           const consoleMsg =
             out.reason === 'no_logs'
               ? 'Pill: No logs to analyze (output/prompts log empty or missing for this prefix).'
@@ -252,9 +253,11 @@ export async function closeOutputLog(): Promise<void> {
                 ? 'Pill: No improvements to record (no API key configured). Set API key in .env.'
                 : out.reason === 'zero_improvements_from_llm'
                   ? 'Pill: LLM returned zero improvements (audit ran successfully).'
-                  : out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
-                    ? `Pill: Audit failed: ${(out as { errorMessage?: string }).errorMessage}`
-                    : `Pill: No improvements to record (reason: ${out.reason}).`;
+                  : out.reason === 'all_filtered_tool_scope'
+                    ? `Pill: All suggestions were outside tool-repo paths (${fc != null ? fc.toLocaleString() : '?'} omitted); nothing written. Set PILL_TOOL_REPO_SCOPE_FILTER=0 to include clone-target ideas.`
+                    : out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
+                      ? `Pill: Audit failed: ${(out as { errorMessage?: string }).errorMessage}`
+                      : `Pill: No improvements to record (reason: ${out.reason}).`;
           if (origLogRef) origLogRef('\n[Pill] ' + consoleMsg);
         }
       } else {
@@ -450,7 +453,12 @@ function writeToPromptLog(
     try {
       if (promptLogStream) {
         const stamp = new Date().toISOString();
-        const line = `--- PROMPTLOG_EMPTY_BODY slug=${slug} kind=${kind} label=${JSON.stringify(label)} at=${stamp} ---\n`;
+        const phase =
+          metadata && typeof metadata === 'object' && metadata !== null && 'phase' in metadata
+            ? String((metadata as { phase?: unknown }).phase ?? '')
+            : '';
+        const phasePart = phase ? ` phase=${JSON.stringify(phase)}` : '';
+        const line = `--- PROMPTLOG_EMPTY_BODY slug=${slug} kind=${kind} label=${JSON.stringify(label)}${phasePart} at=${stamp} ---\n`;
         promptLogStream.write(line);
       }
     } catch {

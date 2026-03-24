@@ -75,7 +75,7 @@ See the phased plan in [.cursor/plans/large-file-deconflict-correct.plan.md](../
 
 - **Lock files** — Deleted and regenerated (e.g. `package-lock.json`, `bun.lockb`).
 - **`.github/workflows/*`** — **Take theirs** (incoming/base version). When the base branch updated the same workflow file, using the repo's version avoids outdated or broken workflows and matches common CI expectations.
-- **CHANGELOG.md, docs/, CONTRIBUTING, etc.** — **Keep ours** (see `DETERMINISTIC_MERGE_FILES` / `DETERMINISTIC_MERGE_PATTERNS` in `git-conflict-resolve.ts`). LLM is not used for these so large docs don't hit context limits.
+- **CHANGELOG.md, docs/, CONTRIBUTING, etc.** — **Keep ours** (see `DETERMINISTIC_MERGE_FILES` / `DETERMINISTIC_MERGE_PATTERNS` in `git-conflict-resolve.ts`). LLM is not used for these so large docs don't hit context limits. **Marker detection** (`hasConflictMarkers` in `shared/git/git-lock-files.ts`): **`<<<<<<<`**, **`>>>>>>>`** (including orphan closers), and **`=======`** middle lines; **two+** middle-only lines ⇒ conflict; a **single** lone `=======` is ignored only when it matches a **narrow setext-style** pattern (heading-like previous line + body after). **Size-regression validation** is skipped for keep-ours / take-theirs so valid one-side merges are not rejected.
 
 ## When resolution still fails
 

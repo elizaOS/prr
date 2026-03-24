@@ -60,6 +60,8 @@ export function buildAndDisplayFixPrompt(
   modelContext?: { provider: 'elizacloud' | 'anthropic' | 'openai'; model: string },
   /** When provided, used to resolve test file paths so TARGET FILE(S) point to the path that exists (e.g. __tests__/integration vs colocated). */
   pathExists?: (path: string) => boolean,
+  /** **PR clone root** (absolute); passed to **`buildFixPrompt`** — **not** `process.cwd()`. See **AGENTS.md** (“Clone workdir”). */
+  workdir?: string,
   /** When true, use a conservative cap (80k) to avoid gateway timeout on first attempt (audit: 94k timed out). */
   firstFixAttempt?: boolean,
   /** When provided, last apply error is injected into prompt and cleared for included issues (output.log audit). */
@@ -173,7 +175,18 @@ export function buildAndDisplayFixPrompt(
     const result = buildPrompt(
       sortedIssues,
       lessons,
-      { maxIssues: currentMax, perFileLessons, perIssueLessons, prInfo, diffStat, botRiskByFile, pathExists, lastApplyError, consecutiveNoChanges: consecutiveZeroFixIterations }
+      {
+        maxIssues: currentMax,
+        perFileLessons,
+        perIssueLessons,
+        prInfo,
+        diffStat,
+        botRiskByFile,
+        pathExists,
+        workdir,
+        lastApplyError,
+        consecutiveNoChanges: consecutiveZeroFixIterations,
+      }
     );
     if (result.prompt.length <= effectiveCap || currentMax <= MIN_ISSUES_PER_PROMPT) {
       prompt = result.prompt;

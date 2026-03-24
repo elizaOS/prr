@@ -9,6 +9,7 @@ import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
 import type { GitHubAPI } from '../github/api.js';
+import type { StateContext } from '../state/state-context.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber } from '../../../shared/logger.js';
 import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../../../shared/git/git-clone-index.js';
 import { push } from '../../../shared/git/git-push.js';
@@ -27,7 +28,9 @@ export async function checkAndMergeBaseBranch(
   resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
   githubToken?: string,
   github?: GitHubAPI,
-  onMergeSuccess?: () => void
+  onMergeSuccess?: () => void,
+  /** When set, stale partial conflict caches are dropped if `origin/<base>` advanced since they were saved. */
+  stateContext?: StateContext
 ): Promise<{
   success: boolean;
   exitReason?: string;
@@ -98,6 +101,21 @@ export async function checkAndMergeBaseBranch(
     const headSha = (await git.revparse(['HEAD'])).trim();
     const baseSha = (await git.revparse([`origin/${prInfo.baseBranch}`])).trim();
     const mergeBaseSha = (await git.raw(['merge-base', 'HEAD', `origin/${prInfo.baseBranch}`])).trim();
+
+    const partials = stateContext?.state?.partialConflictResolutions;
+    if (partials && Object.keys(partials).length > 0) {
+      const saved = stateContext!.state!.partialConflictSavedOriginBaseSha?.trim();
+      if (saved && saved !== baseSha) {
+        const n = Object.keys(partials).length;
+        stateContext!.state!.partialConflictResolutions = {};
+        stateContext!.state!.partialConflictSavedOriginBaseSha = undefined;
+        console.warn(
+          chalk.yellow(
+            `Cleared ${formatNumber(n)} partial conflict resolution(s): origin/${prInfo.baseBranch} advanced (${saved.slice(0, 7)} → ${baseSha.slice(0, 7)}).`,
+          ),
+        );
+      }
+    }
     const isBehindLocally = baseSha !== mergeBaseSha;
     const forceMerge = isBehindLocally || prInfo.mergeableState?.toLowerCase() === 'behind';
     debug('Base merge decision', {
@@ -143,6 +161,13 @@ export async function checkAndMergeBaseBranch(
         );
         
         if (!resolution.success) {
+          if (
+            stateContext?.state &&
+            stateContext.state.partialConflictResolutions &&
+            Object.keys(stateContext.state.partialConflictResolutions).length > 0
+          ) {
+            stateContext.state.partialConflictSavedOriginBaseSha = baseSha;
+          }
           console.log(chalk.red('\n✗ Could not resolve all merge conflicts automatically'));
           console.log(chalk.red('  Remaining conflicts:'));
           for (const file of resolution.remainingConflicts) {

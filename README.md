@@ -36,7 +36,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 **Philosophy in practice**:
 - Run prr on a specific PR (you choose)
 - Watch it work, interrupt with Ctrl+C anytime
-- Inspect the workdir, modify files, continue
+- Inspect the **PR clone** (workdir), modify files, continue — this is **not** necessarily the directory where you ran `prr` (`process.cwd()`); see [AGENTS.md](AGENTS.md) (“Clone workdir”).
 - Push when *you* decide it's ready
 
 ## Features
@@ -190,12 +190,24 @@ story --help      # PR narrative & changelog
 | `GITHUB_TOKEN` | GitHub API access |
 | `ELIZACLOUD_API_KEY` / provider keys | LLM gateway or direct API |
 | `PRR_LLM_MODEL` | Pin the primary fixer/verifier model |
+| `PRR_VERIFIER_MODEL` | Stronger model for batch verification (when default is weak) |
+| `PRR_FINAL_AUDIT_MODEL` | Model for adversarial final-audit pass only |
+| `PRR_STRICT_FINAL_AUDIT` | `1` / `true` — exit **2** when final audit overrides keep issues verified |
 | `PRR_MAX_CONCURRENT_LLM` | In-flight LLM cap (default `1`) |
-| `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` | Comma-separated ids **added** to the built-in ElizaCloud skip list (`shared/constants.ts`) |
+| `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` | Comma-separated ids **added** to the built-in ElizaCloud skip list (`shared/constants.ts` **`ELIZACLOUD_SKIP_MODEL_IDS`**) |
 | `PRR_ELIZACLOUD_INCLUDE_MODELS` | Comma-separated ids to **remove** from the built-in skip list (re-enable after transient timeouts) |
 | `PRR_SESSION_MODEL_SKIP_FAILURES` | Skip a model for the rest of the run after N zero-fix verification failures (`0` = off) |
 | `PRR_DIMINISHING_RETURNS_ITERATIONS` | Warn after N consecutive iterations with no new verified fixes (`0` = off) |
+| `PRR_EXIT_ON_STALE_BOT_REVIEW` | `1` / `true` — exit setup **before clone** if bot review SHA ≠ PR HEAD (stale inline comments) |
+| `PRR_EXIT_ON_UNMERGEABLE` | `1` / `true` — exit setup **before clone** when GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set** |
+| `PRR_CLEAR_ALL_DISMISSED_ON_HEAD` | `1` / `true` — on PR HEAD change, clear **all** dismissals (default: only **`already-fixed`**) |
+| `PRR_DISABLE_LATENT_MERGE_PROBE` | `1` / `true` — skip **`git merge-tree`** dry-merge vs `origin/<prBranch>` during sync (default: probe on) |
+| `PRR_DISABLE_LATENT_MERGE_PROBE_BASE` | `1` / `true` — skip the **second** dry-merge vs `origin/<prBase>` (GitHub mergeable/dirty); default runs when base ≠ PR branch |
+| `PRR_MATERIALIZE_LATENT_MERGE` | `1` / `true` — when the PR-tip probe predicts conflicts, run **`git merge origin/<branch> --no-commit --no-ff`** before pull so LLM conflict resolution can run early |
+| `PRR_MATERIALIZE_LATENT_MERGE_BASE` | `1` / `true` — when the **PR-vs-base** probe predicts conflicts, run **`git merge origin/<prBase> --no-commit --no-ff`** for early LLM resolution |
 | `PRR_BOT_LOGIN` | GitHub login for thread-reply idempotency when using `--reply-to-threads` |
+
+**CLI (related):** pass **`--merge-base`** when GitHub reports the PR as not mergeable / dirty and you want PRR to merge the PR base before the fix loop.
 
 Create a `.env` file (see `.env.example`):
 
@@ -239,7 +251,9 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 **Clone / fetch (optional)**  
 - **`PRR_CLONE_TIMEOUT_MS`** (default 900000): Max ms for the initial clone. Large repos or slow connections may need more (e.g. 600000 for 10 min). Progress is logged every 30s.
 - **`PRR_CLONE_DEPTH`** (optional): If set to a positive integer (e.g. `1`), clone uses **`git clone --depth`** (shallow clone). Faster on huge repos; trade-off: incomplete history.
-- **`PRR_FETCH_TIMEOUT_MS`** (default 60000): Max ms for fetch during update/merge. Increase for slow networks.
+- **`PRR_FETCH_TIMEOUT_MS`** (default 60000): Max ms for fetch during update/merge. Increase for slow networks. Non-integer env values use the default; **`--verbose`** logs a debug line if the value is invalid.
+- **`PRR_LLM_TASK_TIMEOUT_MS`** (optional): Max ms per concurrent pool worker for LLM batch verification and parallel fix groups. Unset or `0` = no cap; env values below 5000 ms clamp to 5000.
+- **Latent merge probe (sync):** After **`git fetch`**, **`checkForConflicts`** runs **`git merge-tree --write-tree`** on **`HEAD`** vs **`origin/<prBranch>`** (Git 2.38+) so PRR can warn about conflicts **before** `git status` shows an in-progress merge. A **second** probe runs **`HEAD`** vs **`origin/<prBase>`** when the PR’s GitHub base differs from the PR branch — closer to **mergeable / dirty** than the PR-tip probe alone. **`PRR_MATERIALIZE_LATENT_MERGE=1`** / **`PRR_MATERIALIZE_LATENT_MERGE_BASE=1`** start the matching real **`git merge --no-commit`**. **`PRR_DISABLE_LATENT_MERGE_PROBE=1`** / **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE=1`** turn each probe off (e.g. huge repos).
 
 **Provider model catalog (optional)**  
 - **`PRR_MODEL_CATALOG_PATH`**: Absolute or relative path to a `model-provider-catalog.json` override. **WHY:** Forks or air-gapped runs can point at a custom snapshot; default is the repo’s `generated/model-provider-catalog.json`.
@@ -251,6 +265,20 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 - **`PRR_FINAL_AUDIT_MODEL`**: Model id for the **adversarial final-audit** pass only. If unset, PRR uses **`PRR_VERIFIER_MODEL`** if set, else **`PRR_LLM_MODEL`**. **WHY:** Small default verifiers can mark UNFIXED by repeating review text while the prompt already shows fixed code; pinning a stronger model (often the same as the fixer) reduces false re-queues.
 
 On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves effective concurrency for 60s so the next run backs off without a code change.
+
+### Troubleshooting (state, summary, logs)
+
+- **Where state lives:** Per-PR resolver state is **`.pr-resolver-state.json`** at the **root of the clone workdir** (same directory as the PR checkout — see verbose lines like **Reusing existing workdir** or **Workdir preserved**). Lessons may live under **`.prr/`** inside that clone; resolver state is **not** only under **`.prr/`**.
+- **Stale or contradictory decisions:** If the debug issue table or **RESULTS SUMMARY** looks wrong after a rebase, force-push, or manual edits, delete **`.pr-resolver-state.json`** in that workdir and re-run PRR (or remove the workdir with **`--no-keep-workdir`** on a previous run, then run again so clone is fresh). **WHY:** Head-change rules clear **verified** (and some dismissals), but a corrupted or hand-edited file can still confuse a run.
+- **Same comment ID in both verified and dismissed:** PRR enforces **verified ∩ dismissed = ∅** on **load** and when marking verified/dismissed; overlap at end-of-run is unexpected — treat as a bug and **delete the state file** after capturing **`output.log`**. Debug logs may still list **Overlap IDs** during the run while repair runs.
+- **`verifiedFixed` huge vs current PR (yellow warning):** Often stale IDs from older PR heads; pruning uses **`currentCommentIds`** for display. Clearing state resets counts.
+- **Final audit re-queues:** **RESULTS SUMMARY** shows **Final audit re-queued: N** when the adversarial pass said **UNFIXED** for issues that were previously verified (safe-over-sorry). Details and paths appear in the **After Action Report** block and in **`output.log`**.
+- **Re-verify everything:** **`--reverify`** ignores cached verification for another pass without deleting state (see CLI table).
+- **State committed to git by mistake:** Run **`prr`** with **`--clean-state`** on the same PR URL to remove **`.pr-resolver-state.json`** from git tracking in the workdir (cleanup mode); use **`--clean-all`** for broader cleanup. See **`prr --help`**.
+- **`PRR_FETCH_TIMEOUT_MS`:** Non-numeric values fall back to the default; with **`--verbose`**, a debug line notes invalid values. Check for typos if your setting seems ignored.
+- **`PRR_LLM_TASK_TIMEOUT_MS`:** Optional per pool-task wall-clock cap (ms) for concurrent LLM batches / fix groups (`runWithConcurrency`). Unset or `0` = no cap. Env values below `5,000` ms are clamped to `5,000`. Invalid values disable the cap and log a debug line when verbose. Programmatic override: `runWithConcurrency(tasks, n, { taskTimeoutMs })` (no clamp; for advanced use / tests).
+- **Partial base-merge resolutions:** When merge with **`origin/<base>`** fails part-way, PRR stores resolved file text in state for the next run. If **`origin/<base>`** moves to a new commit before you re-run, that cache is **cleared** so you don’t reuse content from an old merge attempt.
+- **Model catalog missing:** If **`generated/model-provider-catalog.json`** is absent, solvability **0a6** (dismiss bogus “model typo” noise) is **skipped** with a one-time console warning — run **`npm run update-model-catalog`** (or set **`PRR_MODEL_CATALOG_PATH`**).
 
 ### Why These Defaults?
 
@@ -598,6 +626,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 ## Work Directory
 
+- **What it is:** The **clone** of the **repository under review** (PR branch checkout), where PRR runs git and fixers. **Not** the prr tool’s own source tree and **not** required to equal `process.cwd()`.
 - Location: `~/.prr/work/<hash>`
 - Hash is based on `owner/repo#number` - same PR reuses same directory
 - Cleaned up by default on success
@@ -605,7 +634,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 ## State File
 
-State is persisted in `<workdir>/.pr-resolver-state.json`:
+State is persisted in `<clone-workdir>/.pr-resolver-state.json` (the PR checkout path above):
 
 ```json
 {

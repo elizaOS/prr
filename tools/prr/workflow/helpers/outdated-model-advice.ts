@@ -10,6 +10,7 @@
  */
 
 import {
+  isEffectivelyEmptyModelCatalog,
   isModelCatalogStale,
   loadModelProviderCatalog,
   resolveCatalogModelId,
@@ -17,6 +18,14 @@ import {
 import { debug } from '../../../../shared/logger.js';
 
 const ENV_DISABLE_SOLVABILITY = 'PRR_DISABLE_MODEL_CATALOG_SOLVABILITY';
+
+const warnedEmptyCatalogFor0a6 = new Set<string>();
+
+function warnEmptyCatalogFor0a6Once(message: string): void {
+  if (warnedEmptyCatalogFor0a6.has(message)) return;
+  warnedEmptyCatalogFor0a6.add(message);
+  console.warn(message);
+}
 
 /**
  * Framing: the comment asserts an id is **wrong**, invalid, or hallucinated — not a neutral
@@ -185,6 +194,18 @@ export function getOutdatedModelCatalogDismissal(body: string | undefined | null
   if (!pair) {
     debug('[Auto-heal detection] Could not parse model rename advice from body', { 
       bodySnippet: body.substring(0, 300),
+    });
+    return null;
+  }
+
+  const catalogSnapshot = loadModelProviderCatalog();
+  if (isEffectivelyEmptyModelCatalog(catalogSnapshot)) {
+    warnEmptyCatalogFor0a6Once(
+      '[PRR] Model catalog is empty or missing — skipping solvability 0a6 / catalog dismissal for model-id advice. Run: npm run update-model-catalog (or set PRR_MODEL_CATALOG_PATH).',
+    );
+    debug('[Auto-heal detection] Empty catalog — not dismissing 0a6', {
+      catalogGoodId: pair.catalogGoodId,
+      wronglySuggestedId: pair.wronglySuggestedId,
     });
     return null;
   }

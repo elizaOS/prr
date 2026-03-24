@@ -7,8 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Git push (CI / HTTPS):** When **`githubToken`** is passed and **`origin`** is HTTPS, **`push()`** uses a **one-shot URL** (`https://<token>@host/...`) with credential helpers cleared instead of relying on **`origin`** + **`http.extraheader`**, avoiding **`terminal prompts disabled`** when the remote URL has a stale or masked token. Pure URL helpers: **`shared/git/git-push-auth-url.ts`**; tests: **`tests/git-push-auth-url.test.ts`**. **DEVELOPMENT.md** — local smoke steps.
+- **Partial conflict cache:** State field **`partialConflictSavedOriginBaseSha`** records **`origin/<base>`** when a base-merge stops with unresolved conflicts; on the next run, if the remote base tip changed, saved partial resolutions are **cleared** (avoids re-applying stale merged text). Cleared with partials on successful merge, PR **HEAD** change, and **`--clean-state`** paths.
+- **Model catalog / 0a6:** When the provider catalog is **empty** (missing JSON or zero API ids), **`getOutdatedModelCatalogDismissal`** no longer relies on **`catalogValidatesBothIds`** alone — it **skips** dismissal with a **one-time `console.warn`** and **`npm run update-model-catalog`** hint (**`isEffectivelyEmptyModelCatalog`** in **`shared/model-catalog.ts`**).
+- **Merge conflict follow-up:** **`hasConflictMarkers`** detects **`<<<<<<<`**, orphan **`>>>>>>>`**, orphan / multiple **`=======`** lines, and uses **trimStart** + narrow setext heuristic for a **single** lone middle line. **Size-regression** validation is skipped for **keep ours** and **take theirs** resolutions so intentional one-side outcomes are not rejected.
+
+### Added
+
+- **`fetchOriginBranch`:** **`isBranchRefSafeForOriginFetch`** uses **`git check-ref-format --branch`** after quick sanity checks (**`shared/git/git-conflicts.ts`**).
+- **`PROMPTLOG_EMPTY_BODY`:** Log line includes **`phase=...`** when **`writeToPromptLog`** metadata carries **`phase`** (**`shared/logger.ts`**).
+- **Catalog auto-heal:** User-visible line when **±20** line window misses the quoted wrong id and **full-file** fallback applies (**`tools/prr/workflow/catalog-model-autoheal.ts`**).
+- **`PRR_LLM_TASK_TIMEOUT_MS`:** Optional per-task timeout for **`runWithConcurrency`** / **`runWithConcurrencyAllSettled`** (LLM batch pools). Unset or non-positive = no cap; invalid values disable the cap with a verbose debug line. Optional third argument **`{ taskTimeoutMs }`** overrides env for one call (no minimum clamp; for advanced use / tests).
+- **`parseFetchTimeoutMs` / fetch:** Invalid **`PRR_FETCH_TIMEOUT_MS`** logs a debug line when verbose (still defaults to 60s). **`git fetch` spawn `error` message** is passed through **`redactUrlCredentials`**. Verbose debug explains when **one-shot fetch auth** is skipped (credentials already in URL, non-https, no token, unsafe branch ref).
+
+### Documentation / UX
+
+- **README:** **Troubleshooting** — resolver state path (**.pr-resolver-state.json** in clone workdir), when to delete state, verified∩dismissed overlap, final-audit re-queue line in **RESULTS SUMMARY**, **`--clean-state`**, **`PRR_FETCH_TIMEOUT_MS`** typos.
+- **DEVELOPMENT.md:** **State invariants, paths, and skip-list (operator reference)** — verified/dismissed, HEAD change envs, path-utils, skip list + session skip + maintainer refresh; corrected resolver state path note (not only under **`.prr/`**).
+- **RESULTS SUMMARY / GitHub review body:** Prominent **Final audit re-queued** count; yellow warn if verified∩dismissed overlap remains at exit; review markdown leads with **Final audit re-queues** then shorter follow-up bullets (**`tools/prr/ui/reporter.ts`**).
+
+### Added / changed (pill-output external → prr)
+
+- **`PRR_EXIT_ON_UNMERGEABLE`:** When **`1`/`true`**, setup exits **before clone** if GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set** (symmetry with **`PRR_EXIT_ON_STALE_BOT_REVIEW`**). **`tools/prr/resolver.ts`:** removed unused **`checkForConflicts`** import.
+- **Latent merge probe (`git merge-tree`):** After fetch, **`checkForConflicts`** dry-merges **`HEAD`** with **`origin/<branch>`** (requires Git 2.38+) so conflicts are surfaced even when **`git status`** has no in-progress merge. **`checkAndSyncWithRemote`** prints file list + hints. **`PRR_MATERIALIZE_LATENT_MERGE=1`** runs **`git merge --no-commit --no-ff`** when the probe hits so LLM resolution can run before pull. **`PRR_DISABLE_LATENT_MERGE_PROBE=1`** skips. **`parseMergeTreeConflictPaths`**, **`tests/git-latent-merge-probe.test.ts`**.
+- **Second latent probe (PR vs base / GitHub dirty):** When GitHub **`baseBranch`** differs from the PR branch, **`checkForConflicts`** also dry-merges **`HEAD`** with **`origin/<prBase>`** (after fetching the base ref). Warns separately from the PR-tip probe; aligns with **mergeable / dirty** vs integrating only **`origin/<prBranch>`**. **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE=1`** skips. **`PRR_MATERIALIZE_LATENT_MERGE_BASE=1`** materializes **`git merge origin/<prBase> --no-commit`**. **`run-setup-phase`** passes **`prInfo.baseBranch`** into **`checkAndSyncWithRemote`**.
+- **`PRR_EXIT_ON_STALE_BOT_REVIEW`:** When **`1`/`true`**, setup exits **before clone** if the latest bot review commit ≠ PR HEAD (same condition as the yellow CodeRabbit warn). Default unchanged (warn only).
+- **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD`:** When **`1`/`true`**, a PR **HEAD** change clears **all** **`dismissedIssues`** (default remains: clear only **`already-fixed`** dismissals). **`state-core.ts`** + **`tools/prr/state/manager.ts`**.
+- **README** operator table: verifier / final-audit / strict audit / stale-bot exit / clear-dismissals / pointer to **`--merge-base`**. **AGENTS.md:** mermaid fix-loop diagram; CodeRabbit exit env; **path-fragment** = **`path-unresolved`** note; HEAD-change dismissals env.
+- **`scanCommittedFixes` + PR base:** Optional **`prBaseBranch`** (from GitHub PR) tries **`origin/<base>`** first for the `git log` range before **`origin/main|master|develop`**, so recovery isn’t stuck with **`baseBranch: null`** on repos whose default branch naming differs. **`recoverVerificationState`** passes **`prInfo.baseBranch`** from **`run-setup-phase.ts`**.
+- **Commit message hygiene:** **`stripMarkdownForCommit`** strips leading emoji via **`\p{Extended_Pictographic}`** (covers bot prefixes beyond the fixed alternation list). **`generateCommitFirstLine`** avoids **`!`** on regex capture groups.
+- **Docs:** **DEVELOPMENT.md** — table mapping pill **`N/A (external)`** themes to **prr** files; **AGENTS.md** — short fix-loop lifecycle pointer for interpreting clone-path pill items.
+
+### Changed (pill)
+
+- **Tool-repo scope filter:** When **`tools/prr`** exists under pill’s **`targetDir`**, improvements whose **`file`** is outside the monorepo tool layout (`tools/`, `shared/`, `tests/`, `docs/`, `generated/`, `.cursor/`, `.github/`, allowlisted root files) are **dropped** before append. **`PILL_TOOL_REPO_SCOPE_FILTER=0`** disables; **`=1`** forces on. New no-improvements reason **`all_filtered_tool_scope`**. Audit system prompt asks for paths in **this** repo only. See **`tools/pill/tool-repo-scope.ts`**, **`tests/pill-tool-repo-scope.test.ts`**, **`tools/pill/README.md`**.
+
+### Documentation
+
+- **Pill vs two codebases:** **`pill-output.md`** legend + **DEVELOPMENT.md** / **AGENTS.md** / **`tools/pill/README.md`** — explicit that pill **mixes** improvements for the **PR clone** with improvements for **prr**; triage by path/status.
+- **AGENTS.md** / **DEVELOPMENT.md:** Clarify **clone workdir** (PR checkout / `SimpleGit` root) vs **`process.cwd()`** vs the **prr tool repository**; **`shared/git/git-conflicts.ts`**, **`path-utils`**, **`buildFixPrompt`**, **`buildAndDisplayFixPrompt`** JSDoc/strings aligned so agents don’t mix target checkout with the prr source tree.
+
 ### Added / changed (pill-output low-hanging fruit)
 
+- **CodeRabbit vs PR HEAD:** **`triggerCodeRabbitIfNeeded`** returns optional **`botReviewCommitSha`** (from **`getBotReviewStatus`**). **`checkCodeRabbitStatus`** (**`startup.ts`**) prints a **yellow warn** when that SHA differs from PR HEAD so operators know inline review threads may be stale until the bot re-reviews.
+- **`getBotReviewStatus`** (issue-comment fallback): **`extractFullCommitShaFromText`** (`tools/prr/github/types.ts`) pulls a **40-character** commit from the latest bot comment when **`pulls.listReviews`** has no bot row — improves **`lastReviewSha`** / stale-HEAD detection vs. **7-char prefix** only.
+- **Remote check UX:** Setup spinner text is **“Fetching from origin and checking git status…”** (clearer than “conflicts” only). Behind/ahead commit counts use **`formatNumber`**. **`checkForConflicts`** logs a **debug** line that **`hasConflicts`** is in-progress merge/rebase only, not latent vs **`origin`** after fetch.
+- **Docs:** **DEVELOPMENT.md** lessons JSON example uses **`tools/prr/`** / **`shared/`** paths; **ROADMAP** marks **`autoVerifiedFrom`** git-recovery and git-util follow-ups done where implemented.
+- **Fix prompt paths:** **`buildFixPrompt`** accepts optional **`workdir`**; with **`pathExists`**, primary paths are normalized via **`tryResolvePathWithExtensionVariants`** (`shared/path-utils.ts`) before basename-prefix fallback — same extension / `.d.ts` rules as solvability. **`buildAndDisplayFixPrompt`** / **`execute-fix-iteration`** pass **`workdir`**.
 - **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`:** Comma-separated model ids merged into the built-in ElizaCloud skip list (`getEffectiveElizacloudSkipModelIds`). Documented in **`.env.example`**, **`README.md`** (operator table), **`AGENTS.md`**.
 - **Git recovery provenance:** **`recoverVerificationState`** calls **`markVerified(..., PRR_GIT_RECOVERY_VERIFIED_MARKER)`** so state shows verification restored from **`prr-fix:`** commits.
 - **Final audit:** Debug **`warn`** if any comment id appears in both verified and dismissed (overlap invariant).

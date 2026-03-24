@@ -25,7 +25,7 @@ import type { StateContext } from './state/state-context.js';
 import type { LessonsContext } from './state/lessons-context.js';
 import type { LockConfig } from './state/lock-functions.js';
 import { ensureWorkdir, cleanupWorkdir, getWorkdirInfo } from '../../shared/git/workdir.js';
-import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../shared/git/git-clone-index.js';
+import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../shared/git/git-clone-index.js';
 import type { SimpleGit } from 'simple-git';
 import { squashCommit, pushWithRetry, commitIteration } from '../../shared/git/git-commit-index.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../../shared/runners/detect.js';

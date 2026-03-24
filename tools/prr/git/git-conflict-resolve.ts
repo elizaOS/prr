@@ -491,12 +491,13 @@ ${content}
  * 
  * Checks performed:
  * 1. JSON validation for .json files (catches structural corruption)
- * 2. Size regression detection (catches catastrophic truncation)
+ * 2. Size regression detection (catches catastrophic truncation; skipped for keep-ours / take-theirs)
  */
 function validateResolvedContent(
   filePath: string,
   originalConflictedContent: string,
-  resolvedContent: string
+  resolvedContent: string,
+  options?: { skipSizeRegression?: boolean }
 ): { valid: boolean; reason?: string } {
   // JSON validation: if the file is JSON, ensure the resolution is valid JSON
   if (filePath.endsWith('.json')) {
@@ -511,7 +512,7 @@ function validateResolvedContent(
   // Size regression: compare resolved content to the larger side of conflicts.
   // The resolved file should not be drastically smaller than the larger conflict side.
   const chunks = extractConflictChunks(originalConflictedContent);
-  if (chunks.length > 0) {
+  if (chunks.length > 0 && !options?.skipSizeRegression) {
     // Find the total size of the larger side across all conflicts
     let totalLargerSideLines = 0;
     for (const chunk of chunks) {
@@ -819,6 +820,11 @@ export async function resolveConflictsWithLLM(
         let result = tryHeuristicResolution(conflictFile, conflictedContent);
         /** Used to retry resolution once with a parse-error hint when TS/JS parse validation fails. */
         let resolutionPath: 'chunked' | 'single' | null = null;
+        /**
+         * Keep-ours / take-theirs intentionally keep only one side; size-regression heuristic
+         * compares to max(ours, theirs) and would reject valid outcomes.
+         */
+        let resolutionSkipsSizeRegression = false;
 
         if (result.resolved) {
           console.log(chalk.blue(`    → Using heuristic strategy for ${conflictFile}`));
@@ -827,11 +833,13 @@ export async function resolveConflictsWithLLM(
           if (theirsContent !== null && theirsContent !== '') {
             console.log(chalk.blue(`    → Using base branch version (take theirs) for ${conflictFile}`));
             result = { resolved: true, content: theirsContent, explanation: 'Using incoming (base) version for .github/workflows' };
+            resolutionSkipsSizeRegression = true;
           }
         }
         if (!result.resolved && shouldUseDeterministicMerge(conflictFile)) {
           console.log(chalk.blue(`    → Using deterministic merge (keep ours) for ${conflictFile}`));
           result = resolveKeepOurs(conflictedContent);
+          if (result.resolved) resolutionSkipsSizeRegression = true;
         }
         if (!result.resolved && (
           isGeneratedArtifactFile(conflictFile) &&
@@ -925,7 +933,9 @@ export async function resolveConflictsWithLLM(
           // WHY: Catches corrupted resolutions (invalid JSON, catastrophic truncation)
           // before they get committed and pushed. Better to bail to manual resolution
           // than to push garbage.
-          const validation = validateResolvedContent(conflictFile, conflictedContent, result.content);
+          const validation = validateResolvedContent(conflictFile, conflictedContent, result.content, {
+            skipSizeRegression: resolutionSkipsSizeRegression,
+          });
           if (!validation.valid) {
             debug('Resolution rejected by validation', { file: conflictFile, reason: validation.reason });
             result = {

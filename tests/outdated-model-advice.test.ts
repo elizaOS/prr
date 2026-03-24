@@ -17,6 +17,7 @@ import {
   replaceModelIdInQuotedStringsInLines,
   applyCatalogModelAutoHeals,
 } from '../tools/prr/workflow/catalog-model-autoheal.js';
+import { resetModelProviderCatalogCache } from '../shared/model-catalog.js';
 
 describe('outdated-model-advice', () => {
   it('parses change A to B (eliza-style)', () => {
@@ -104,6 +105,35 @@ Lines 31-32 still set models. Please use \`gpt-4o-mini\` for compatibility.`;
     const body = '❌ CRITICAL: Model name typo\nChange gpt-5-mini to gpt-4o-mini';
     expect(getOutdatedModelCatalogDismissal(body)).toBeNull();
     delete process.env.PRR_DISABLE_MODEL_CATALOG_SOLVABILITY;
+  });
+
+  it('getOutdatedModelCatalogDismissal returns null when catalog has no provider ids', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-empty-cat-'));
+    const emptyCat = join(dir, 'empty-catalog.json');
+    writeFileSync(
+      emptyCat,
+      JSON.stringify({
+        schemaVersion: 1,
+        fetchedAtIso: '',
+        recommendedRefreshDays: 7,
+        sources: [],
+        providers: { anthropic: { apiIds: [] }, openai: { apiIds: [] } },
+        lookup: { openaiHyphenless: {}, anthropicHyphenless: {}, ambiguousHyphenless: [] },
+      }),
+      'utf8',
+    );
+    const prev = process.env.PRR_MODEL_CATALOG_PATH;
+    process.env.PRR_MODEL_CATALOG_PATH = emptyCat;
+    resetModelProviderCatalogCache();
+    try {
+      const body = '❌ CRITICAL: Model name typo\nChange gpt-5-mini to gpt-4o-mini';
+      expect(getOutdatedModelCatalogDismissal(body)).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.PRR_MODEL_CATALOG_PATH;
+      else process.env.PRR_MODEL_CATALOG_PATH = prev;
+      resetModelProviderCatalogCache();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

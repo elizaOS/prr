@@ -1,6 +1,13 @@
 import { Octokit } from '@octokit/rest';
 import { graphql } from '@octokit/graphql';
-import type { PRInfo, ReviewThread, ReviewComment, PRStatus, BotResponseTiming } from './types.js';
+import {
+  type PRInfo,
+  type ReviewThread,
+  type ReviewComment,
+  type PRStatus,
+  type BotResponseTiming,
+  extractFullCommitShaFromText,
+} from './types.js';
 import { debug } from '../../../shared/logger.js';
 
 // Static configuration for PR status / bot detection (allocated once, not per call)
@@ -922,14 +929,23 @@ export class GitHubAPI {
         
         // Get latest bot comment
         const latestComment = botComments[botComments.length - 1];
-        
-        // Check if the comment mentions the current SHA or was made recently
-        // CodeRabbit often includes commit SHA in its comments
-        const mentionsCurrentSha = latestComment.body?.includes(currentHeadSha.substring(0, 7)) || false;
-        
+        const body = latestComment.body ?? '';
+        const curLower = currentHeadSha.toLowerCase();
+        const fullInBody = extractFullCommitShaFromText(body);
+        if (fullInBody) {
+          return {
+            hasReviewed: true,
+            isCurrentCommit: fullInBody === curLower,
+            lastReviewSha: fullInBody,
+            lastReviewDate: latestComment.created_at,
+          };
+        }
+        // CodeRabbit often includes at least a 7-char prefix in prose
+        const mentionsCurrentSha = body.toLowerCase().includes(curLower.slice(0, 7));
         return {
           hasReviewed: true,
           isCurrentCommit: mentionsCurrentSha,
+          lastReviewSha: mentionsCurrentSha ? currentHeadSha : undefined,
           lastReviewDate: latestComment.created_at,
         };
       }
@@ -1545,6 +1561,8 @@ export class GitHubAPI {
     mode: string; 
     reason: string;
     reviewedCurrentCommit: boolean;
+    /** Latest CodeRabbit review `commit_id` (or undefined if only inferred from issue comments). */
+    botReviewCommitSha?: string;
   }> {
     debug('Checking if CodeRabbit trigger needed', { owner, repo, prNumber, currentHeadSha, cachedMode });
     
@@ -1567,11 +1585,13 @@ export class GitHubAPI {
         mode: 'up-to-date',
         reason: `CodeRabbit already reviewed current commit (${currentHeadSha.substring(0, 7)})`,
         reviewedCurrentCommit: true,
+        botReviewCommitSha: reviewStatus.lastReviewSha ?? currentHeadSha,
       };
     }
     
     // CodeRabbit exists but hasn't reviewed current commit. Use cached mode from setup when available.
     const mode = cachedMode ?? await this.getCodeRabbitMode(owner, repo, branch, prNumber);
+    const staleSha = reviewStatus.lastReviewSha;
     
     if (mode === 'auto') {
       // Auto mode - CodeRabbit should pick up changes automatically
@@ -1579,8 +1599,9 @@ export class GitHubAPI {
       return { 
         triggered: false, 
         mode: 'auto', 
-        reason: `CodeRabbit (auto mode) reviewing older commit (${reviewStatus.lastReviewSha?.substring(0, 7) || '?'}) - should auto-update`,
+        reason: `CodeRabbit (auto mode) reviewing older commit (${staleSha?.substring(0, 7) || '?'}) - should auto-update`,
         reviewedCurrentCommit: false,
+        botReviewCommitSha: staleSha,
       };
     }
     
@@ -1595,6 +1616,7 @@ export class GitHubAPI {
         ? `CodeRabbit (manual mode) - triggered review for new commit (${currentHeadSha.substring(0, 7)})`
         : `CodeRabbit needs trigger for new commit (${currentHeadSha.substring(0, 7)})`,
       reviewedCurrentCommit: false,
+      botReviewCommitSha: staleSha,
     };
   }
 

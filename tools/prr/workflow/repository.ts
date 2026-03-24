@@ -109,7 +109,8 @@ export async function recoverVerificationState(
   git: SimpleGit,
   branch: string,
   stateContext: StateContext,
-  workdir: string
+  workdir: string,
+  options?: { prBaseBranch?: string }
 ): Promise<void> {
   debugStep('RECOVERING STATE FROM GIT');
   let headSha = '';
@@ -121,6 +122,7 @@ export async function recoverVerificationState(
   const committedFixes = await scanCommittedFixes(git, branch, {
     workdir,
     headSha: headSha || undefined,
+    prBaseBranch: options?.prBaseBranch,
   });
   if (committedFixes.length > 0) {
     const n = committedFixes.length;
@@ -138,9 +140,31 @@ export async function recoverVerificationState(
   }
 }
 
+const LATENT_CONFLICT_LIST_MAX = 25;
+
+function logLatentConflictWarning(
+  label: string,
+  files: string[],
+  footer: string
+): void {
+  if (files.length === 0) return;
+  const n = files.length;
+  console.log(chalk.yellow(`${label} ${formatNumber(n)} file(s):`));
+  for (const f of files.slice(0, LATENT_CONFLICT_LIST_MAX)) {
+    console.log(chalk.yellow(`    - ${f}`));
+  }
+  if (files.length > LATENT_CONFLICT_LIST_MAX) {
+    console.log(
+      chalk.gray(`    … and ${formatNumber(files.length - LATENT_CONFLICT_LIST_MAX)} more`),
+    );
+  }
+  console.log(chalk.gray(`  ${footer}`));
+}
+
 /**
  * Check for conflicts and sync with remote, auto-resolving if possible.
  * Pass githubToken when the remote is not configured with credentials so fetch/pull use one-shot auth.
+ * **`prBaseBranch`:** GitHub PR base ref name (e.g. `main`); enables second **`merge-tree`** probe vs **`origin/<prBase>`** (GitHub dirty / mergeable).
  */
 export async function checkAndSyncWithRemote(
   git: SimpleGit,
@@ -149,7 +173,8 @@ export async function checkAndSyncWithRemote(
   resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
   githubToken?: string,
   /** When true, skip pushing after resolving conflicts (e.g. user passed --no-push). */
-  noPush?: boolean
+  noPush?: boolean,
+  prBaseBranch?: string
 ): Promise<{success: boolean; error?: string}> {
   // Check for conflicts and sync with remote
   // WHY CHECK EARLY: Conflict markers in files will cause fixer tools to fail confusingly.
@@ -157,10 +182,13 @@ export async function checkAndSyncWithRemote(
   // WHY fetchOpts: when remote has no credentials, fetch would prompt for password and hang; token unblocks.
   const fetchOpts = githubToken ? { githubToken } : undefined;
   debugStep('CHECKING FOR CONFLICTS');
-  spinner.start('Checking for conflicts with remote...');
+  spinner.start('Fetching from origin and checking git status...');
   let conflictStatus: Awaited<ReturnType<typeof checkForConflicts>>;
   try {
-    conflictStatus = await checkForConflicts(git, branch, fetchOpts);
+    conflictStatus = await checkForConflicts(git, branch, {
+      ...fetchOpts,
+      prBaseBranch: prBaseBranch?.trim() || undefined,
+    });
   } catch (err) {
     // WHY catch here: fetch can timeout or fail with message that includes git stdout/stderr; show it and return cleanly.
     spinner.fail('Checking for conflicts failed');
@@ -169,6 +197,112 @@ export async function checkAndSyncWithRemote(
     return { success: false, error: msg };
   }
   spinner.stop();
+
+  if (!conflictStatus.hasConflicts && conflictStatus.latentConflictWithOrigin && conflictStatus.latentConflictedFiles.length > 0) {
+    logLatentConflictWarning(
+      `⚠ Dry-merge probe (PR vs remote tip): merging origin/${branch} would conflict in`,
+      conflictStatus.latentConflictedFiles,
+      'Pull/rebase will surface these conflicts next. Set PRR_MATERIALIZE_LATENT_MERGE=1 to merge --no-commit now for early auto-resolve. PRR_DISABLE_LATENT_MERGE_PROBE=1 skips this probe.',
+    );
+  }
+
+  const pb = prBaseBranch?.trim();
+  if (
+    pb &&
+    pb !== branch.trim() &&
+    !conflictStatus.hasConflicts &&
+    conflictStatus.latentConflictWithPrBase &&
+    conflictStatus.latentConflictedFilesWithPrBase.length > 0
+  ) {
+    logLatentConflictWarning(
+      `⚠ Dry-merge probe (PR vs base — GitHub mergeable/dirty): merging origin/${pb} into HEAD would conflict in`,
+      conflictStatus.latentConflictedFilesWithPrBase,
+      'This aligns with GitHub “not mergeable / dirty” more than the PR-tip probe alone. Set PRR_MATERIALIZE_LATENT_MERGE_BASE=1 to merge --no-commit now for early auto-resolve. PRR_DISABLE_LATENT_MERGE_PROBE_BASE=1 skips this probe.',
+    );
+  } else if (pb && pb !== branch.trim() && conflictStatus.latentProbePrBaseNote) {
+    debug('PR-base latent probe note', { prBase: pb, note: conflictStatus.latentProbePrBaseNote });
+  }
+
+  /** Passed to LLM conflict resolution (`origin/…` label). Base merge uses `origin/<prBase>` when materialized here. */
+  let mergeConflictSourceLabel = `origin/${branch}`;
+
+  const mat = process.env.PRR_MATERIALIZE_LATENT_MERGE?.trim().toLowerCase();
+  if (mat === '1' || mat === 'true' || mat === 'yes' || mat === 'on') {
+    if (!conflictStatus.hasConflicts && conflictStatus.latentConflictWithOrigin) {
+      spinner.start(`Materializing merge with origin/${branch} (latent conflicts)...`);
+      try {
+        await git.raw(['merge', `origin/${branch}`, '--no-commit', '--no-ff']);
+      } catch {
+        /* non-zero exit when Git stops on conflicts */
+      }
+      const st = await git.status();
+      const nowConflicted = st.conflicted || [];
+      if (nowConflicted.length > 0) {
+        conflictStatus = {
+          ...conflictStatus,
+          hasConflicts: true,
+          conflictedFiles: nowConflicted,
+        };
+      } else {
+        let mergeHead = '';
+        try {
+          mergeHead = (await git.raw(['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).trim();
+        } catch {
+          mergeHead = '';
+        }
+        if (mergeHead) {
+          try {
+            await git.raw(['merge', '--abort']);
+          } catch {
+            await cleanupGitState(git);
+          }
+        }
+      }
+      spinner.stop();
+    }
+  }
+
+  const matBase = process.env.PRR_MATERIALIZE_LATENT_MERGE_BASE?.trim().toLowerCase();
+  if (matBase === '1' || matBase === 'true' || matBase === 'yes' || matBase === 'on') {
+    if (
+      pb &&
+      pb !== branch.trim() &&
+      !conflictStatus.hasConflicts &&
+      conflictStatus.latentConflictWithPrBase
+    ) {
+      spinner.start(`Materializing merge with origin/${pb} (PR vs base latent conflicts)...`);
+      try {
+        await git.raw(['merge', `origin/${pb}`, '--no-commit', '--no-ff']);
+      } catch {
+        /* non-zero exit when Git stops on conflicts */
+      }
+      const st = await git.status();
+      const nowConflicted = st.conflicted || [];
+      if (nowConflicted.length > 0) {
+        conflictStatus = {
+          ...conflictStatus,
+          hasConflicts: true,
+          conflictedFiles: nowConflicted,
+        };
+        mergeConflictSourceLabel = `origin/${pb}`;
+      } else {
+        let mergeHead = '';
+        try {
+          mergeHead = (await git.raw(['rev-parse', '-q', '--verify', 'MERGE_HEAD'])).trim();
+        } catch {
+          mergeHead = '';
+        }
+        if (mergeHead) {
+          try {
+            await git.raw(['merge', '--abort']);
+          } catch {
+            await cleanupGitState(git);
+          }
+        }
+      }
+      spinner.stop();
+    }
+  }
 
   if (conflictStatus.hasConflicts) {
     // WHY AUTO-RESOLVE: Previously, prr would bail out here with "resolve manually".
@@ -181,7 +315,7 @@ export async function checkAndSyncWithRemote(
     const resolution = await resolveConflicts(
       git,
       conflictStatus.conflictedFiles,
-      `origin/${branch}`
+      mergeConflictSourceLabel
     );
     
     if (!resolution.success) {
@@ -197,7 +331,7 @@ export async function checkAndSyncWithRemote(
     }
     
     // All conflicts resolved - complete the merge
-    const commitResult = await completeMerge(git, `Merge remote-tracking branch 'origin/${branch}'`);
+    const commitResult = await completeMerge(git, `Merge remote-tracking branch '${mergeConflictSourceLabel}'`);
     
     if (!commitResult.success) {
       console.log(chalk.red(`✗ Failed to complete merge: ${commitResult.error}`));
@@ -224,7 +358,7 @@ export async function checkAndSyncWithRemote(
   }
 
   if (conflictStatus.behindBy > 0) {
-    console.log(chalk.yellow(`⚠ Branch is ${conflictStatus.behindBy} commits behind remote`));
+    console.log(chalk.yellow(`⚠ Branch is ${formatNumber(conflictStatus.behindBy)} commits behind remote`));
     spinner.start('Pulling latest changes...');
     const pullResult = await pullLatest(git, branch, fetchOpts);
     
@@ -364,11 +498,11 @@ export async function checkAndSyncWithRemote(
   }
   
   if (conflictStatus.aheadBy > 0 && !noPush) {
-    console.log(chalk.yellow(`  Branch is ${conflictStatus.aheadBy} commits ahead of remote — pushing unpushed commits`));
+    console.log(chalk.yellow(`  Branch is ${formatNumber(conflictStatus.aheadBy)} commits ahead of remote — pushing unpushed commits`));
     const { push } = await import('../../../shared/git/git-push.js');
     const pushResult = await push(git, branch, false, fetchOpts?.githubToken);
     if (pushResult.success && !pushResult.nothingToPush) {
-      console.log(chalk.green(`  ✓ Pushed ${conflictStatus.aheadBy} unpushed commit(s)`));
+      console.log(chalk.green(`  ✓ Pushed ${formatNumber(conflictStatus.aheadBy)} unpushed commit(s)`));
     } else if (pushResult.success && pushResult.nothingToPush) {
       debug('Ahead commits already on remote (tracking mismatch)', { aheadBy: conflictStatus.aheadBy });
     } else {

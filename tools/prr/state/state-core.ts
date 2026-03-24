@@ -37,20 +37,32 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           }
           if (hadPartial) {
             ctx.state.partialConflictResolutions = {};
+            ctx.state.partialConflictSavedOriginBaseSha = undefined;
             console.warn(
               `PR head changed: cleared partial conflict resolutions so they are re-applied against current merge`,
             );
           }
-          // Pill / audit: already-fixed dismissals are tied to code state; clear on HEAD change (same as StateManager).
+          // Pill / audit: dismissals tied to code/HEAD — clear already-fixed by default; optional clear-all (trade-off: other dismissals often still valid).
           const hadDismissed = (ctx.state.dismissedIssues?.length ?? 0) > 0;
           if (hadDismissed) {
-            const before = ctx.state.dismissedIssues!.length;
-            ctx.state.dismissedIssues = ctx.state.dismissedIssues!.filter((d) => d.category !== 'already-fixed');
-            const cleared = before - ctx.state.dismissedIssues.length;
-            if (cleared > 0) {
+            const clearAllRaw = process.env.PRR_CLEAR_ALL_DISMISSED_ON_HEAD?.trim().toLowerCase();
+            const clearAll =
+              clearAllRaw === '1' || clearAllRaw === 'true' || clearAllRaw === 'yes' || clearAllRaw === 'on';
+            if (clearAll) {
+              const n = ctx.state.dismissedIssues!.length;
+              ctx.state.dismissedIssues = [];
               console.warn(
-                `PR head changed: cleared ${formatNumber(cleared)} already-fixed dismissal(s) so they are re-checked against current code`,
+                `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD`,
               );
+            } else {
+              const before = ctx.state.dismissedIssues!.length;
+              ctx.state.dismissedIssues = ctx.state.dismissedIssues!.filter((d) => d.category !== 'already-fixed');
+              const cleared = before - ctx.state.dismissedIssues.length;
+              if (cleared > 0) {
+                console.warn(
+                  `PR head changed: cleared ${formatNumber(cleared)} already-fixed dismissal(s) so they are re-checked against current code`,
+                );
+              }
             }
           }
         }

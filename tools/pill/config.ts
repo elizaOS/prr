@@ -7,6 +7,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { existsSync, statSync } from 'fs';
 import type { PillConfig } from './types.js';
+import { resolveToolRepoScopeFilter } from './tool-repo-scope.js';
 
 const DEFAULT_AUDIT_MODEL = 'claude-opus-4-6';
 const DEFAULT_LLM_MODEL = 'claude-sonnet-4-5-20250929';
@@ -105,6 +106,8 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
         })()
       : undefined;
 
+  const toolRepoScopeFilter = resolveToolRepoScopeFilter(input.targetDir, getEnv('PILL_TOOL_REPO_SCOPE_FILTER'));
+
   const config: PillConfig = {
     targetDir: input.targetDir,
     llmProvider,
@@ -113,6 +116,7 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     logPrefix: input.logPrefix,
     contextBudgetTokens,
     auditMaxUserChars,
+    toolRepoScopeFilter,
     outputOnly: input.outputOnly,
     promptsOnly: input.promptsOnly,
     dryRun: input.dryRun,

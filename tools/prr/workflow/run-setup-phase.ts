@@ -11,7 +11,7 @@
  */
 
 import type { Ora } from 'ora';
-import type { SimpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { PRInfo } from '../github/types.js';
@@ -28,6 +28,11 @@ import * as State from '../state/state-core.js';
 import { setPhase } from '../state/state-context.js';
 import { resolveConflictsWithLLM as resolveConflictsImpl } from '../git/git-conflict-resolve.js';
 import { LLMClient } from '../llm/client.js';
+
+function isEnvTruthy(key: string): boolean {
+  const v = process.env[key]?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
 
 /**
  * Execute complete setup phase
@@ -109,15 +114,65 @@ export async function executeSetupPhase(
     currentRunnerIndex = rotationState.runnerIndex;
     resolvedRunner = rotationState.runner;
   }
-  
+
+  // Optional hard stop before clone when bot inline review is behind PR HEAD (pill: CodeRabbit SHA mismatch).
+  if (isEnvTruthy('PRR_EXIT_ON_STALE_BOT_REVIEW') && crStatus.staleInlineReviewVsHead) {
+    const gitStub = simpleGit(workdir);
+    return {
+      workdir,
+      stateContext,
+      lessonsContext,
+      lockConfig,
+      runner: resolvedRunner,
+      runners: ctx.runners,
+      currentRunnerIndex,
+      modelIndices: ctx.modelIndices,
+      git: gitStub,
+      shouldExit: true,
+      exitReason: 'stale_bot_review',
+      exitDetails:
+        'Bot review targets an older commit than PR HEAD (inline comments may be stale). Wait for CodeRabbit to re-review, or unset PRR_EXIT_ON_STALE_BOT_REVIEW to proceed.',
+      codeRabbitTriggered,
+      codeRabbitMode,
+      prefetchedComments: crStatus.prefetchedComments,
+    };
+  }
+
+  const githubSaysNotMergeable =
+    prInfo.mergeable === false || prInfo.mergeableState?.toLowerCase() === 'dirty';
+  if (
+    isEnvTruthy('PRR_EXIT_ON_UNMERGEABLE') &&
+    githubSaysNotMergeable &&
+    !options.mergeBase
+  ) {
+    const gitStub = simpleGit(workdir);
+    const ms = prInfo.mergeableState ?? '(unset)';
+    const mb = prInfo.mergeable === null || prInfo.mergeable === undefined ? 'unknown' : String(prInfo.mergeable);
+    return {
+      workdir,
+      stateContext,
+      lessonsContext,
+      lockConfig,
+      runner: resolvedRunner,
+      runners: ctx.runners,
+      currentRunnerIndex,
+      modelIndices: ctx.modelIndices,
+      git: gitStub,
+      shouldExit: true,
+      exitReason: 'github_unmergeable',
+      exitDetails: `GitHub reports mergeable=${mb}, mergeableState=${ms}. Resolve conflicts or pass --merge-base, or unset PRR_EXIT_ON_UNMERGEABLE to run anyway.`,
+      codeRabbitTriggered,
+      codeRabbitMode,
+      prefetchedComments: crStatus.prefetchedComments,
+    };
+  }
+
   // Clone or update repo (set phase so interrupt during clone persists for resume — pill-output #4)
   setPhase(stateContext, 'cloning');
   const hasVerifiedFixes = state.verifiedFixed.length > 0;
   const git = await ResolverProc.cloneOrUpdateRepository(prInfo, workdir, config.githubToken, hasVerifiedFixes, spinner, github);
   setPhase(stateContext, 'setup');
 
-  const githubSaysNotMergeable =
-    prInfo.mergeable === false || prInfo.mergeableState?.toLowerCase() === 'dirty';
   if (githubSaysNotMergeable && !options.mergeBase) {
     warn(
       `GitHub reports this PR is not cleanly mergeable (mergeable: ${String(prInfo.mergeable)}, state: ${prInfo.mergeableState}). ` +
@@ -152,7 +207,9 @@ export async function executeSetupPhase(
   await ensureStateFileIgnored(workdir);
 
   // Recover verification state from git history
-  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext, workdir);
+  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext, workdir, {
+    prBaseBranch: prInfo.baseBranch,
+  });
 
   // Create conflict resolution wrapper with setup phase context
   // WHY: During setup, resolver's workdir/runner are not set yet, so we need to
@@ -176,11 +233,22 @@ export async function executeSetupPhase(
   };
 
   const clearPartialResolutionsOnMergeSuccess = (): void => {
-    if (stateContext.state) stateContext.state.partialConflictResolutions = {};
+    if (stateContext.state) {
+      stateContext.state.partialConflictResolutions = {};
+      stateContext.state.partialConflictSavedOriginBaseSha = undefined;
+    }
   };
 
   // Check for conflicts and sync with remote (pass token so fetch does not prompt for password)
-  const syncResult = await ResolverProc.checkAndSyncWithRemote(git, prInfo.branch, spinner, resolveConflictsInSetup, config.githubToken, options.noPush);
+  const syncResult = await ResolverProc.checkAndSyncWithRemote(
+    git,
+    prInfo.branch,
+    spinner,
+    resolveConflictsInSetup,
+    config.githubToken,
+    options.noPush,
+    prInfo.baseBranch
+  );
   if (!syncResult.success) {
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
@@ -191,7 +259,17 @@ export async function executeSetupPhase(
   }
 
   // Check and merge base branch (pass githubToken so merge-commit push uses same auth as fix push)
-  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup, config.githubToken, github, clearPartialResolutionsOnMergeSuccess);
+  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(
+    git,
+    prInfo,
+    options,
+    spinner,
+    resolveConflictsInSetup,
+    config.githubToken,
+    github,
+    clearPartialResolutionsOnMergeSuccess,
+    stateContext,
+  );
   if (!mergeResult.success) {
     // Persist state so partial conflict resolutions (if any) are saved for the next run
     await State.saveState(stateContext);

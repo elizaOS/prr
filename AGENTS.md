@@ -48,14 +48,29 @@ These are created by tools and should not be committed: `.split-plan.md`, `.spli
 
 Entry points: `tools/<tool>/index.ts` (e.g. `tools/prr/index.js` after build). Build output: `dist/tools/<tool>/index.js`.
 
+## Clone workdir (don’t confuse with CWD or the prr repo)
+
+Throughout PRR, **workdir** (and **clone workdir**) means the **absolute path to the git checkout of the PR under review** — where PRR clones or reuses the target repo, where **`SimpleGit`** is rooted (`git rev-parse --show-toplevel` in that checkout), and where fixers edit files. Default layout is under **`~/.prr/work/<hash>/`** (see config).
+
+**Not the same as:**
+
+- **`process.cwd()`** — the directory you ran `prr` from (often your laptop’s project or `/root/prr`); PRR does **not** require running from the clone.
+- **This repository** — the package that contains `tools/prr/` and `shared/`; that is the **tool source**, not the PR’s files.
+
+When code takes a parameter **`workdir`**, **`pathExists(p)`** must resolve **`p`** relative to that **clone root**. When git helpers resolve paths via **`rev-parse --show-toplevel`**, that is the clone root for the bound **`SimpleGit`** instance — use that, not `process.cwd()`, unless you are sure they are identical.
+
 ## Build and test
 
 - **Typecheck (compile to dist/):** `npm run typecheck` or `npx tsc` (or `bun run typecheck`). Use `npm run typecheck:noemit` for type-only check (no emit). Development uses `bun`; CI supports both npm and bun.
 - **Tests:** `npm test` or `bun test` (vitest).
 - **split-exec:** Requires the plan's **target branch to exist on the remote** (checked before clone). Run from any directory; it clones the plan's repo into the workdir and pre-fetches target and split branch refs (so `pushWithRetry`'s rebase can resolve `origin/<branch>`). Uses `pushWithRetry` (fetch + rebase + retry on push rejection). `pushWithRetry` supports an `onConflict` callback for automatic conflict resolution; split-exec wires a simple handler for `.github/workflows/` files (checkout --theirs). Other conflicts require `--force-push` or manual resolution in the workdir. If the remote branch has newer commits and rebase fails or retries are exhausted, re-run with `--force-push` to overwrite, or resolve manually. On re-runs, splits whose branches already contain the cherry-picked commits report "already up-to-date" — this is expected and does not indicate an error.
 - **prr base-branch merge:** For PRs whose base branch differs from the PR branch (e.g. `1.x`, `staging`, `develop`), the base branch is fetched during clone via `additionalBranches`. All base-branch (and `additionalBranches`) fetches use an **explicit refspec** (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) so the tracking ref is always updated. **WHY:** On `--single-branch` clones the default fetch config only includes the PR branch; a plain `git fetch origin <branch>` would not update `origin/<branch>`, leaving a stale ref so the merge-base check incorrectly reports "already up-to-date" and the PR stays "dirty" on GitHub. If you see "ambiguous argument origin/\<branch\>", the base branch was never fetched — check that the remote has the branch and that `additionalBranches` includes it.
+- **Latent merge vs base (sync):** After fetch, PRR dry-merges **`HEAD`** vs **`origin/<prBranch>`** and (when GitHub **base ≠ PR branch**) vs **`origin/<prBase>`** — the second probe tracks **mergeable / dirty** better than the PR-tip probe alone. **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE`**, **`PRR_MATERIALIZE_LATENT_MERGE_BASE`**.
 
 - **Dirty / unmergeable PR (GitHub):** If **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set**, setup logs a **warning** (PRR still runs). Use **`--merge-base`** or resolve conflicts first to avoid wasted fix-loop work on an unmergeable branch.
+
+- **CodeRabbit behind HEAD:** On startup, **`checkCodeRabbitStatus`** compares CodeRabbit’s latest review **`commit_id`** (or a **40-char SHA** parsed from the bot’s latest **issue** comment if there is no review row) to PR **HEAD**. If they differ, PRR prints a **yellow warn** — inline threads may still describe an older revision until the bot re-reviews (**`triggerCodeRabbitIfNeeded`** exposes **`botReviewCommitSha`**). Set **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** to **exit before clone** in that case (saves work on huge repos). Default remains warn-only.
+- **GitHub unmergeable / dirty:** When **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set**, PRR **warns** after clone (default). **`PRR_EXIT_ON_UNMERGEABLE=1`** exits **before clone** instead (**`run-setup-phase.ts`**, **`exitReason: github_unmergeable`**).
 
 ## PRR thread replies
 
@@ -63,34 +78,60 @@ With **`--reply-to-threads`** (or **`PRR_REPLY_TO_THREADS=true`**), PRR posts a 
 
 **WHY opt-in:** Default runs stay fast and unchanged; posting to GitHub is a conscious choice. **WHY one reply per thread:** Keeps noise low and leaves room for human follow-up in the same thread. **WHY fixed replies only after push:** "Fixed in \<sha\>." is posted only when the commit has been successfully pushed (commit-and-push phase), not after incremental pushes. **WHY reply for remaining/exhausted:** We reply for `already-fixed`, `stale`, `not-an-issue`, `false-positive`, and also for `remaining` and `exhausted` with a short "Could not auto-fix; manual review recommended." so threads (e.g. wrong-file exhaust) are not left without any reply. We do not reply for `chronic-failure` and other rare categories. **WHY cross-run idempotency:** Re-runs would otherwise duplicate replies; `PRR_BOT_LOGIN` lets us skip threads we already replied to. Full WHYs: [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
 
+## Fix-loop lifecycle (for mapping pill “src/*” items)
+
+Pill often cites **`src/state.ts`**, **`src/git.ts`**, etc. from a **clone** (e.g. eliza). In **this** repo the same *themes* map to: **`recoverVerificationState`** + **`scanCommittedFixes`** (`shared/git/git-commit-scan.ts`, **`prBaseBranch`** from GitHub), **`tools/prr/state/`** (verified/dismissed), **`shared/path-utils.ts`** + solvability, **`tools/prr/models/rotation.ts`** (skip list + session skip). See **DEVELOPMENT.md** (“Pill `N/A (external)` items → what to do in this repo”) for the full handoff table.
+
+```mermaid
+flowchart LR
+  subgraph setup [Setup]
+    CR[CodeRabbit check]
+    WD[Workdir + state]
+    CL[Clone / fetch]
+    RV[Recover prr-fix from git]
+    SY[Sync + merge base]
+  end
+  subgraph loop [Fix loop]
+    AN[Analyze / solvability]
+    FX[Fix + verify]
+    PU[Commit / push]
+  end
+  FA[Final audit]
+  CR --> WD --> CL --> RV --> SY --> AN --> FX --> PU
+  PU -->|auto-push| AN
+  PU --> FA
+```
+
 ## State and path invariants (pill / audit)
 
 - **Verified ∩ dismissed = ∅:** A comment ID must not appear in both verified (`verifiedFixed` / `verifiedComments`) and `dismissedIssues`. **`markVerified`** and **`dismissIssue`** remove the ID from the opposite set; **`load` / `loadState`** cleans overlaps and drops **`verifiedComments`** rows for dismissed IDs. Prefer verified when repairing legacy overlap.
-- **HEAD change:** When **`headSha`** changes, **verified** state is cleared so fixes are re-checked. **`already-fixed`** dismissals are also cleared (code-state-dependent). Other dismissals (e.g. not-an-issue) are kept unless overlap cleanup removes them.
+- **HEAD change:** When **`headSha`** changes, **verified** state is cleared so fixes are re-checked. **`already-fixed`** dismissals are also cleared (code-state-dependent). Other dismissals (e.g. not-an-issue) are kept unless overlap cleanup removes them. Set **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** to clear **every** dismissal on HEAD change (aggressive; use after rebases when you want a full re-triage).
 - **Final audit:** If the adversarial pass reports **UNFIXED**, the issue is re-queued (removed from verified) even if it was verified earlier in the run — see README “Safe over sorry verification”.
-- **Path resolution:** Review **`comment.path`** is normalized (slashes, etc.). Fragment / extension-only paths use **`isReviewPathFragment`** and **`pathDismissCategoryForNotFound`** (`shared/path-utils.ts`) so dismissal is **`path-unresolved`**, not **`missing-file`**, when the path cannot name a single file (e.g. `.d.ts`, bare `d.ts`). Real root files like **`.env`** are **not** treated as fragments. Extension fallbacks for “tracked file not found” live in **`tryResolvePathWithExtensionVariants`** and solvability — extend there rather than duplicating ad hoc rules.
+- **Path resolution:** Review **`comment.path`** is normalized (slashes, etc.). Fragment / extension-only paths use **`isReviewPathFragment`** and **`pathDismissCategoryForNotFound`** (`shared/path-utils.ts`) so dismissal is **`path-unresolved`**, not **`missing-file`**, when the path cannot name a single file (e.g. `.d.ts`, bare `d.ts`). Real root files like **`.env`** are **not** treated as fragments. Extension fallbacks for “tracked file not found” live in **`tryResolvePathWithExtensionVariants`** and solvability — extend there rather than duplicating ad hoc rules. The **fix prompt** (`buildFixPrompt`) receives the **clone workdir** (see above) during normal runs and applies the same **`tryResolvePathWithExtensionVariants`** step before **`pathExists`** / basename-prefix fallback.
 
 ### Path resolution rules (canonical)
 
 1. **Extension variants:** If the review path is missing on disk, **`tryResolvePathWithExtensionVariants`** (`shared/path-utils.ts`) tries mapped alternatives (e.g. `.js` → `.json`, `.ts`, `.mjs`, …) before dismissing.
-2. **Fragments:** Bare **`.d.ts`** / extension-only paths are **`path-unresolved`** (not **`missing-file`**); use **`pathDismissCategoryForNotFound`** + **`isReviewPathFragment`** so legacy state can be normalized on load.
+2. **Fragments:** Bare **`.d.ts`** / extension-only paths are **`path-unresolved`** (not **`missing-file`**); pill sometimes calls this a **path-fragment** — same rule, same persisted category **`path-unresolved`**. Use **`pathDismissCategoryForNotFound`** + **`isReviewPathFragment`** so legacy state can be normalized on load.
 3. **One path → one category:** Do not assign the same logical path different dismissal categories in different code paths; extend **`path-utils`** / solvability instead of ad hoc branches.
 
 ## Pill output (`pill-output.md`)
 
-Root **`pill-output.md`** (when present) is a **pill** improvement list from a concrete **`output.log`** — often a **target PR repo**, not necessarily this tree. Items under **`src/*`** or **`packages/*`** may describe **eliza** or other downstream code; **`**Status:** N/A (external)`** marks those. **WHY:** Without that tag, agents assume missing paths are a prr bug. PRR-shaped items map to **`tools/prr/`** and **`shared/`**; see **`DEVELOPMENT.md`** (“Pill output triage”) and the status legend in **`pill-output.md`**.
+Root **`pill-output.md`** (when present) is a **pill** improvement list from a concrete **`output.log`**. That log is about PRR’s work on **another checkout** (the PR); the audit LLM may still suggest fixes for **clone paths** (`src/`, `packages/`, …). **Default:** When pill’s **`targetDir`** contains **`tools/prr`** (this monorepo layout), pill **post-filters** improvements so only paths under the tool repo (`tools/`, `shared/`, `tests/`, `docs/`, …) are **written** to **`pill-output.md`**. **`PILL_TOOL_REPO_SCOPE_FILTER=0`** disables that filter. Older runs and external layouts may still use **`**Status:** N/A (external)`** in **`pill-output.md`** for hand-triaged clone-only items; see **`DEVELOPMENT.md`** (“Pill output triage”).
 
 ## Conventions
 
 - **Imports:** Use `.js` extensions in import paths (ES modules), e.g. `from './foo.js'`.
 - **User-facing numbers:** Use `formatNumber(n)` from `shared/logger.js` or `n.toLocaleString()` so counts show with comma thousands separators (see `.cursor/rules/number-formatting.mdc`).
 - **Paths:** PRR code lives under `tools/prr/` and `shared/`; docs may still say `src/` in places — treat as `tools/prr/` for code. DEVELOPMENT.md’s Architecture Overview diagram uses canonical paths (tools/prr/, shared/); the Key Files table there matches. After path migrations, run `prr --tidy-lessons`; section keys in `.prr/lessons.md` may need manual updates so file-scoped lessons match.
+- **Clone workdir vs repo paths:** **`tools/prr/...`** paths name **this** tool’s source. **`workdir`** in workflow APIs names the **PR clone** (target repo checkout), not the tool repo — see **Clone workdir** above.
+- **Latent merge vs `git status`:** After **`fetch`**, **`git status`** only lists conflicted files during an **in‑progress** merge/rebase. **`shared/git/git-conflicts.ts`** can **`git merge-tree`** **`HEAD`** vs **`origin/<branch>`** to predict conflicts before that. Sync prints a warning; **`PRR_MATERIALIZE_LATENT_MERGE`** materializes **`git merge --no-commit`** for early resolution.
 
 ## Docs and rules
 
 - **`.cursor/rules/`** — Cursor rules (e.g. number formatting, audit-cycle template, canonical paths, **docs-no-new-md**: do not create new `.md` files until you have checked existing docs for an appropriate place; see rule).
 - **`tools/prr/AUDIT-CYCLES.md`** — PRR audit log; when adding a cycle, use the template, bump "Recorded cycles", and add the new cycle under "Recorded cycles" (newest first).
-- **`DEVELOPMENT.md`** — Developer guide, key files, run locally (`bun dist/tools/prr/index.js …`). **Fix-loop audit content** (pain points, thresholds, rationale) lives in DEVELOPMENT.md "Fix loop audits (output.log)", not in standalone audit files.
+- **`DEVELOPMENT.md`** — Developer guide, key files, run locally (`bun dist/tools/prr/index.js …`). **Fix-loop audit content** (pain points, thresholds, rationale) lives in DEVELOPMENT.md "Fix loop audits (output.log)", not in standalone audit files. **Operator quick ref:** same file, **State invariants, paths, and skip-list**; **`README.md`** has **Troubleshooting** (**.pr-resolver-state.json** location, when to delete state, **RESULTS SUMMARY** / final-audit re-queue, **`--clean-state`**).
 - **No standalone audit .md:** Integrate audit findings and run context into DEVELOPMENT.md and AUDIT-CYCLES.md; only add a new doc when the content has no proper home (see `.cursor/rules/docs-no-new-md.mdc`).
 
 ## Quick file map

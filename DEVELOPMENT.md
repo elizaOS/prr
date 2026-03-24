@@ -15,17 +15,72 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 **Why human-in-the-loop drives the design:** When the human can interrupt (Ctrl+C), inspect the workdir, and decide when to push, the system must persist state, avoid silent failures, and keep the workdir usable. That’s why we save state on signal, close logs before exit, and never assume the process runs to completion.
 
+### Terminology: **clone workdir** vs **process cwd** vs **this repo**
+
+- **Clone workdir** — Absolute path to the **PR under review** checkout (where PRR clones the target repo, typically under `~/.prr/work/...`). **`SimpleGit`** is bound here; **`pathExists(relative)`** and **`tryResolvePathWithExtensionVariants(workdir, ...)`** use this root. State for that PR often lives under **`<clone>/.pr-resolver-state.json`** (or configured base).
+- **Process cwd (`process.cwd()`)** — Where the user invoked `prr`; may be anything. **Do not** assume it equals the clone workdir.
+- **This repository** — The **prr** package (`tools/prr/`, `shared/`). Not the clone; editing paths under `tools/prr/` in docs refers to the tool, not the customer’s PR files.
+
+Audits and agents sometimes conflate these when logs mention “workdir” next to paths like `tools/prr/...` — the latter are almost always **this** tree; the former is the **target** checkout.
+
 ## Pill output triage (`pill-output.md`)
 
 **What it is:** Optional artifact from **pill** after auditing a run’s `output.log`. This repo may keep a copy at **`pill-output.md`** for traceability.
 
-**Mixed sources:** Some items reference **`src/`** or **`packages/`** paths from **another repository** (the PR pill analyzed). Those are **not** prr layout — treat them as **N/A (external)** when porting fixes. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state lives under **`tools/prr/state`**, not root **`src/state.ts`**). **In this repo’s docs,** a few **example JSON blobs** still use generic paths like `src/auth.ts` to illustrate lesson keys — those are not implied file paths in this tree.
+**Tool-repo scope filter (default on here):** When pill’s **`targetDir`** contains **`tools/prr`**, only improvements whose **`file`** is under **`tools/`**, **`shared/`**, **`tests/`**, **`docs/`**, **`generated/`**, **`.cursor/`**, **`.github/`**, or an allowlisted root file (e.g. **`README.md`**, **`package.json`**) are **appended** to **`pill-output.md`**. Clone-shaped paths (`src/`, `packages/`, `apps/`, …) are dropped (with console / summary notes). **`PILL_TOOL_REPO_SCOPE_FILTER=0`** turns filtering off. **`PILL_TOOL_REPO_SCOPE_FILTER=1`** forces it on even when **`tools/prr`** is absent (rare).
+
+**Pill conflates two targets (LLM view):** The analyzed log is from PRR working on **someone else’s repo** (the **clone**), so the model may still *propose* fixes for that codebase. The filter above keeps **written** pill-output focused on **this** repo when you run from the prr tree; hand-triage with **N/A (external)** vs **Done (prr)** still applies to older sections or when filtering is off.
+
+**Mixed sources:** Items that reference **`src/`** or **`packages/`** usually mean **that other repository**, not prr’s layout — treat as **N/A (external)** when porting fixes into **this** repo. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state under **`tools/prr/state`**, not root **`src/state.ts`**). **In this repo’s docs,** lesson examples mostly use **`tools/prr/`** / **`shared/`**; a few **downstream-style** snippets (e.g. eliza **`src/runtime.rs`**) illustrate foreign-repo lesson files — not paths in this tree.
 
 **Per-item status:** Each improvement line includes **`**Status:** …`** and a legend at the top of **`pill-output.md`** (`Done (prr)`, `Partial (prr)`, `Open (prr)`, `N/A (external)`, etc.).
 
 **WHY document this here:** Contributors otherwise grep for `src/` in pill text and assume missing files are a bug in prr. The status lines record what was implemented in **this** tree vs. what was eliza/downstream-only.
 
 **Where the prr-side work landed (pointers):** Path fragments vs `missing-file` and extension variants — **`shared/path-utils.ts`**, solvability; verified/dismissed overlap and head cleanup — **`tools/prr/state`**; session model skip / diminishing-returns warning — **`shared/constants.ts`**, **`tools/prr/models/rotation.ts`**, **`tools/prr/workflow/push-iteration-loop.ts`**; committed-fix scan cache — **`shared/git/git-commit-scan.ts`**; 429 concurrency restore — **`shared/llm/rate-limit.ts`**; dirty / unmergeable PR warning — setup phase (see **AGENTS.md**). Full bullets: **CHANGELOG [Unreleased]**.
+
+### Pill `N/A (external)` items → what to do in **this** repo
+
+Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or **`packages/typescript/...`**. Those paths name the **PR clone** (e.g. eliza), not **prr**. They are **not missing files** in this tree. Use this map to turn them into **prr** work (code, docs, or “close as downstream”):
+
+| External theme (pill path) | Action in prr monorepo |
+|----------------------------|-------------------------|
+| **`src/config.ts`** skip models | **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`), **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`**, **`PRR_ELIZACLOUD_INCLUDE_MODELS`**, **`validateAndFilterModels`** warning in **`tools/prr/models/rotation.ts`**. |
+| **`src/state.ts`** verified ∩ dismissed | **`tools/prr/state/`** (`StateManager.load`, **`markVerified`** / **`markDismissed`**, overlap warnings in **`analysis.ts`**). |
+| **`src/commit.ts`** emoji / noun phrase in commits | **`shared/git/git-commit-message.ts`** (`stripMarkdownForCommit`, **`generateCommitFirstLine`**). |
+| **`src/lessons.ts`** lesson bloat | **`.prr/lessons.md`** + **`tools/prr/state/lessons-prune.ts`**, **`compactLessons`**, **`prr --tidy-lessons`**. |
+| **`src/git.ts` / `scanCommittedFixes` / `baseBranch: null`** | **`shared/git/git-commit-scan.ts`**: pass **`prBaseBranch`** from the GitHub PR (wired from **`recoverVerificationState`** in **`run-setup-phase.ts`**) so `git log` uses `origin/<base>..branch` when the clone isn’t `main`/`master`/`develop`. |
+| **`src/coderabbit.ts`** stale bot SHA | **`tools/prr/workflow/startup.ts`** (HEAD vs bot review SHA), **`extractFullCommitShaFromText`** on issue comments (**`tools/prr/github/types.ts`**, **`api.ts`**). |
+| **`src/resolveComment.ts` / `src/path-resolver.ts`** paths | **`shared/path-utils.ts`**, **`tools/prr/workflow/helpers/solvability.ts`**. |
+| **`src/mergeBase.ts`** / merge conflicts in the clone | **`tools/prr/CONFLICT-RESOLUTION.md`**, **`tools/prr/git/git-conflict-*.ts`**, split-exec **`pushWithRetry`** conflict UX — not eliza’s merge driver. |
+| **`src/runners/llm-api.ts`** diminishing returns | **`PRR_DIMINISHING_RETURNS_ITERATIONS`** in **`push-iteration-loop.ts`**. |
+| **`src/fixes.ts`** recovery / **`markVerified`** churn | **`recoverVerificationState`** + scan cache; skip **`markVerified`** when already verified. |
+| Runtime / embedding / batch API / serverless / **`packages/core`** | **Product code** under review — open issues in **that** repository; prr only sees them via logs. |
+| **`CHANGELOG.md` / `ROADMAP.md`** conflicts in pill | Were **eliza** merge artifacts — maintain **`CHANGELOG.md`** and **`docs/ROADMAP.md`** here separately. |
+| **`AGENTS.md`** “companion architecture” | Describes **eliza** — **root `AGENTS.md` here** documents **prr**, pill, clone workdir, state/path rules. |
+| **CodeRabbit SHA ≠ HEAD** | Warn by default; **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** exits after workdir setup **before clone** (**`run-setup-phase.ts`**). |
+| **GitHub mergeable false / dirty** | Warn after clone by default; **`PRR_EXIT_ON_UNMERGEABLE=1`** exits **before clone** when **`--merge-base` is not set**. |
+| **Clear all dismissals on rebase** | Default: only **`already-fixed`** cleared on HEAD change; **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears entire **`dismissedIssues`** (**`state-core.ts`** / **`manager.ts`**). |
+| **“path-fragment” in pill** | Same as **`path-unresolved`** in state — see **AGENTS.md** path rules (no separate category value). |
+| **merge-tree / latent conflicts (pill #32)** | **`shared/git/git-conflicts.ts`**: after fetch, **`probeLatentMergeConflictsWithOrigin`** runs **`git merge-tree`** for **`HEAD`** vs **`origin/<prBranch>`** and (when **`prBase ≠ prBranch`**) a **second** probe vs **`origin/<prBase>`** (GitHub mergeable/dirty). **`checkAndSyncWithRemote`** warns for each; **`PRR_MATERIALIZE_LATENT_MERGE`** / **`PRR_MATERIALIZE_LATENT_MERGE_BASE`** materialize the corresponding **`git merge --no-commit`**. Skip: **`PRR_DISABLE_LATENT_MERGE_PROBE`**, **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE`**. |
+
+**Fix-loop lifecycle (short):** Setup → clone/sync → **`recoverVerificationState`** (scan `prr-fix:` markers, optional **`prBaseBranch`**) → analysis → solvability/dismissals → fix iterations (push cycles, verification, rotation) → final audit → optional thread replies. **Resolver state file:** **`<clone workdir>/.pr-resolver-state.json`** (see **`tools/prr/state/manager.ts`**). Lessons and other artifacts may live under **`<clone>/.prr/`** — do not confuse that folder with the resolver JSON path. **Diagram:** **AGENTS.md** (mermaid under “Fix-loop lifecycle”).
+
+### State invariants, paths, and skip-list (operator reference)
+
+**Verified vs dismissed:** A comment ID must not appear in both **verified** (`verifiedFixed` / `verifiedComments`) and **`dismissedIssues`**. **`markVerified`** / **`dismissIssue`** remove the ID from the opposite set; **`StateManager.load`** / **`loadState`** repair legacy overlap (prefer verified). If **RESULTS SUMMARY** still shows overlap at exit, capture **`output.log`** and delete **`.pr-resolver-state.json`** in the workdir — see **README.md** (Troubleshooting).
+
+**HEAD change:** When GitHub PR **head SHA** changes, **verified** state is cleared so fixes are re-checked; **`already-fixed`** dismissals are cleared. **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears **all** dismissals (aggressive, e.g. after a messy rebase). See **AGENTS.md** and **`tools/prr/state/state-core.ts`**.
+
+**Path resolution (review comments):** Extension fallbacks (**`tryResolvePathWithExtensionVariants`** in **`shared/path-utils.ts`**) and fragment handling (**`isReviewPathFragment`**, **`pathDismissCategoryForNotFound`**) keep **one path → one dismissal category**; legacy fragment **`missing-file`** is normalized to **`path-unresolved`** on load. Extend rules in **`path-utils`** / solvability, not ad hoc branches.
+
+**Model skip list (ElizaCloud / llm-api):** Built-in skip IDs and reasons live in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`, `ELIZACLOUD_SKIP_REASON`). Operators can add removals via **`PRR_ELIZACLOUD_INCLUDE_MODELS`** or extra skips via **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** (see **README** / **`.env.example`**). **Session-level** skip after repeated zero-fix failures: **`PRR_SESSION_MODEL_SKIP_FAILURES`** (**`tools/prr/models/rotation.ts`**). **Maintainer cadence:** Refresh the static list from **Model Performance** tables in **`output.log`** when audits show persistent 0% success — there is no automatic PR for that.
+
+**Fetch / concurrent LLM pool:** **`PRR_FETCH_TIMEOUT_MS`** — non-integer values use the default; with **`--verbose`**, a debug line records the bad value (**`parseFetchTimeoutMs`** in **`shared/git/git-conflicts.ts`**). Branch names for fetch use **`isBranchRefSafeForOriginFetch`** (**`git check-ref-format --branch`**). **`fetchOriginBranch`** logs (verbose) why one-shot HTTPS auth was skipped; spawn **`error`** messages are redacted. **`PRR_LLM_TASK_TIMEOUT_MS`** — optional per-slot wall clock for **`runWithConcurrency`** / **`runWithConcurrencyAllSettled`** (**`shared/run-with-concurrency.ts`**); see **README** Troubleshooting.
+
+**Partial base-merge cache:** State may hold **`partialConflictResolutions`** and **`partialConflictSavedOriginBaseSha`** (tip of **`origin/<base>`** when merge failed part-way). If the base tip changes before the next run, partials are cleared (**`tools/prr/workflow/base-merge.ts`**). Cleared on PR **HEAD** change (**`StateManager`**, **`state-core`**).
+
+**Final audit vs queue:** When the final adversarial audit returns **UNFIXED** for an issue that was **verified** earlier in the run, PRR **re-queues** it (removes from verified, fix loop again). **RESULTS SUMMARY** and the GitHub review summary report **how many** were re-queued (**`auditOverridesThisRun`**). **WHY:** Documented as “safe over sorry” in **README** / **AGENTS.md**.
 
 **Technical implications**:
 - State persistence is critical (resume after interruption)
@@ -598,11 +653,13 @@ Lessons store: ~/.prr/lessons/<owner>/<repo>/<branch>.json
 {
   "global": [],
   "files": {
-    "src/auth.ts": ["Fix rejected: try/catch doesn't handle the edge case - need early return"],
-    "src/api.ts:45": ["Validation must preserve backward compatibility - don't change function signature"]
+    "tools/prr/cli.ts": ["Fix rejected: try/catch doesn't handle the edge case - need early return"],
+    "shared/config.ts:45": ["Validation must preserve backward compatibility - don't change function signature"]
   }
-  }
+}
 ```
+
+*(Example paths illustrate this repo’s layout; lessons for a target PR use that repo’s paths, often under `src/`.)*
 
 **Why LLM-analyzed lessons?** Generic "tool failed" messages aren't actionable:
 - BAD: "cursor failed: Process exited with code 1"
@@ -1679,6 +1736,8 @@ if (hasForbidden) {
 }
 ```
 
+*(Shape is real; `src/runtime.rs` is an example target-repo path, not this package’s layout.)*
+
 ## CLI Implementation Notes
 
 ### Commander.js `--no-*` Options
@@ -1732,6 +1791,41 @@ prr --help
 ```
 
 ## Testing Tips
+
+### Git HTTPS push + token (CI-style, no credential helper)
+
+PRR can push with a **one-shot URL** (`https://<token>@github.com/...`) and credential helpers disabled so Git never prompts. **Unit tests** (no network, no secrets) cover URL building:
+
+```bash
+npm test -- tests/git-push-auth-url.test.ts
+```
+
+**Manual smoke (real token, real remote):** use a throwaway branch on a repo you own. Prefer env + a subshell so the token is not hard-coded in the command string.
+
+```bash
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+git init -b main
+git commit --allow-empty -m "smoke"
+git remote add origin https://github.com/YOUR_ORG/YOUR_REPO.git
+export GITHUB_TOKEN   # PAT with push access
+# Same shape PRR uses: push URL carries the token; credential helpers off; no prompt.
+git -c credential.helper= -c credential.https://github.com.helper= \
+  push "https://${GITHUB_TOKEN}@github.com/YOUR_ORG/YOUR_REPO.git" \
+  HEAD:refs/heads/prr-ci-push-smoke
+cd - && rm -rf "$tmpdir"
+```
+
+To exercise the **exact** URL encoder PRR uses (tokens with `:` / `@`), from the **prr** repo after `npm run typecheck`:
+
+```bash
+cd /path/to/prr
+TOKEN_URL=$(node --input-type=module -e "import { buildHttpsPushUrlWithToken } from './dist/shared/git/git-push-auth-url.js'; console.log(buildHttpsPushUrlWithToken('https://github.com/YOUR_ORG/YOUR_REPO.git', process.env.GITHUB_TOKEN));")
+# then in the temp clone:
+git -c credential.helper= -c credential.https://github.com.helper= push "$TOKEN_URL" HEAD:refs/heads/prr-ci-push-smoke
+```
+
+Delete remote branch `prr-ci-push-smoke` after a successful push. If this works but CI fails, compare `git remote get-url origin` in CI (a stale or masked token in `origin` used to break pushes before one-shot URLs).
 
 ```bash
 # Dry run (no changes)

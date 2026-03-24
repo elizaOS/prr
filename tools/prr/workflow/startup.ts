@@ -139,11 +139,10 @@ export async function analyzeBotTimingAndDisplay(
 }
 
 /**
- * Check CodeRabbit status and trigger if needed
- */
-/**
  * Check CodeRabbit status and trigger review if needed.
- * We never block on CodeRabbit; after triggering we fetch current comments once and return so the analysis/fix loop can start immediately. New CodeRabbit comments are picked up on a later run or when checking for new comments.
+ * By default we do not wait on CodeRabbit; after triggering we fetch current comments once and return so the analysis/fix loop can start immediately. New CodeRabbit comments are picked up on a later run or when checking for new comments. Optional **`PRR_EXIT_ON_STALE_BOT_REVIEW`** stops before clone when the bot’s review SHA ≠ PR HEAD.
+ *
+ * When **`triggerCodeRabbitIfNeeded`** reports a **bot review commit** older than PR HEAD, we emit a **warn** and set **`staleInlineReviewVsHead`**. **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** in **`run-setup-phase`** exits before clone (pill-output CodeRabbit SHA mismatch).
  *
  * prefetchedComments: When we trigger CodeRabbit we fetch comments once here; the caller can reuse them in the "FETCHING REVIEW COMMENTS" phase to avoid a redundant API call.
  */
@@ -155,9 +154,16 @@ export async function checkCodeRabbitStatus(
   branch: string,
   headSha: string,
   spinner: Ora,
-  /** Kept for API compatibility (e.g. --no-wait-bot). We never block on CodeRabbit anymore. */
+  /** Kept for API compatibility (e.g. --no-wait-bot). */
   skipCodeRabbitWait?: boolean
-): Promise<{ triggered: boolean; reviewedCurrentCommit: boolean; prefetchedComments?: ReviewComment[]; codeRabbitMode?: string }> {
+): Promise<{
+  triggered: boolean;
+  reviewedCurrentCommit: boolean;
+  prefetchedComments?: ReviewComment[];
+  codeRabbitMode?: string;
+  /** True when a bot review commit is known and differs from PR HEAD (inline threads may be stale). */
+  staleInlineReviewVsHead: boolean;
+}> {
   try {
     spinner.start('Checking CodeRabbit status...');
     const crResult = await github.triggerCodeRabbitIfNeeded(
@@ -185,6 +191,22 @@ export async function checkCodeRabbitStatus(
       spinner.info(`CodeRabbit: ${crResult.reason}`);
     }
 
+    let staleInlineReviewVsHead = false;
+    if (
+      crResult.mode !== 'none' &&
+      crResult.mode !== 'up-to-date' &&
+      !crResult.reviewedCurrentCommit &&
+      crResult.botReviewCommitSha &&
+      crResult.botReviewCommitSha !== headSha
+    ) {
+      staleInlineReviewVsHead = true;
+      console.log(
+        chalk.yellow(
+          `  ⚠ CodeRabbit's latest review targets \`${crResult.botReviewCommitSha.substring(0, 7)}\`; PR HEAD is \`${headSha.substring(0, 7)}\` — inline comments may be stale until the bot re-reviews.`,
+        ),
+      );
+    }
+
     // Check for bot rate-limit signals (e.g. CodeRabbit posting "review paused")
     try {
       const rateLimits = await github.checkBotRateLimits(owner, repo, prNumber);
@@ -205,11 +227,12 @@ export async function checkCodeRabbitStatus(
       reviewedCurrentCommit: crResult.reviewedCurrentCommit ?? false,
       prefetchedComments,
       codeRabbitMode: crResult.mode !== 'none' ? crResult.mode : undefined,
+      staleInlineReviewVsHead,
     };
   } catch (err) {
     spinner.warn('Could not check CodeRabbit status (continuing anyway)');
     debug('CodeRabbit startup check failed', { error: err });
-    return { triggered: false, reviewedCurrentCommit: false };
+    return { triggered: false, reviewedCurrentCommit: false, staleInlineReviewVsHead: false };
   }
 }
 

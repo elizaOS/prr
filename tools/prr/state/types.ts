@@ -273,6 +273,11 @@ export interface ResolverState {
    * run reuses it and only runs LLM on the remaining files. Cleared when merge completes successfully.
    */
   partialConflictResolutions?: Record<string, string>;   // file path -> resolved content
+  /**
+   * `git rev-parse origin/<baseBranch>` when partial resolutions were last saved.
+   * WHY: If the base branch advances, cached file contents may be wrong for the new merge — clear partials.
+   */
+  partialConflictSavedOriginBaseSha?: string;
 }
 
 export function createInitialState(pr: string, branch: string, headSha: string): ResolverState {

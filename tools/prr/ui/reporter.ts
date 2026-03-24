@@ -302,7 +302,23 @@ export function printFinalSummary(
   console.log(chalk.cyan('\n════════════════════════════════════════════════════════════'));
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
   console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
-  
+
+  const auditOverridesEarly = stateContext.auditOverridesThisRun ?? [];
+  if (auditOverridesEarly.length > 0) {
+    console.log(
+      chalk.cyan(
+        `\n  ◆ Final audit re-queued: ${formatNumber(auditOverridesEarly.length)} issue(s) (adversarial pass said UNFIXED for previously verified — see After Action Report)`,
+      ),
+    );
+  }
+  if (overlapIds.length > 0) {
+    console.warn(
+      chalk.yellow(
+        `  ⚠ verified ∩ dismissed still shows ${formatNumber(overlapIds.length)} ID(s) at summary time — unexpected. Delete .pr-resolver-state.json in the clone workdir (see README Troubleshooting), then re-run.`,
+      ),
+    );
+  }
+
   // Exit reason - most important info
   // WHEN no_changes but 0 remaining: we fixed everything in a previous iteration; show success.
   const effectiveReason = (exitReason === 'no_changes' && remainingCount === 0)
@@ -470,6 +486,12 @@ export function buildReviewSummaryMarkdown(
   const fixedThisSession = stateContext.verifiedThisSession?.size ?? 0;
 
   const lines: string[] = ['## PRR run summary'];
+  const auditOverridesMd = stateContext.auditOverridesThisRun ?? [];
+  if (auditOverridesMd.length > 0) {
+    lines.push(
+      `**Final audit re-queues:** ${formatNumber(auditOverridesMd.length)} (adversarial pass said UNFIXED for previously verified issue(s); safe-over-sorry re-queue).`,
+    );
+  }
   if (exitDetails) lines.push(`**Exit:** ${exitDetails}`);
   if (exitReason === 'merge_conflicts') {
     lines.push(
@@ -498,16 +520,14 @@ export function buildReviewSummaryMarkdown(
     const verifiedSet = new Set(relevantVerified);
     const unrecovered = auditOverrides.filter((o) => !verifiedSet.has(o.commentId));
     if (remainingCount === 0 && unrecovered.length === 0) {
-      lines.push(
-        `- ℹ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s) mid-run for re-verification; all addressed before exit.`,
-      );
+      lines.push(`- ℹ All ${formatNumber(auditOverrides.length)} re-queued issue(s) were addressed again before exit.`);
     } else if (remainingCount > 0) {
       lines.push(
-        `- ⚠ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s) mid-run; see remaining above.`,
+        `- ⚠ With ${formatNumber(remainingCount)} issue(s) still remaining, review threads above — final audit had re-opened ${formatNumber(auditOverrides.length)} previously verified issue(s).`,
       );
     } else {
       lines.push(
-        `- ⚠ Final audit re-opened ${formatNumber(auditOverrides.length)} issue(s); ${formatNumber(unrecovered.length)} not in verified-fixed — review state.`,
+        `- ⚠ ${formatNumber(unrecovered.length)} of ${formatNumber(auditOverrides.length)} re-queued issue(s) not in verified-fixed — review dismissed/state.`,
       );
     }
   }

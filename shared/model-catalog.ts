@@ -153,6 +153,13 @@ export function isModelCatalogStale(
   return modelCatalogAgeMs(catalog) > ms;
 }
 
+/** True when no provider ids are loaded — dismissal/auto-heal must not treat comments as "catalog-validated". */
+export function isEffectivelyEmptyModelCatalog(catalog: ModelProviderCatalog): boolean {
+  const o = catalog.providers?.openai?.apiIds?.length ?? 0;
+  const a = catalog.providers?.anthropic?.apiIds?.length ?? 0;
+  return o === 0 && a === 0;
+}
+
 function stripProviderPrefix(id: string): { provider?: 'openai' | 'anthropic'; rest: string } {
   const s = id.trim();
   const lo = s.toLowerCase();

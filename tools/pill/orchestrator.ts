@@ -18,6 +18,7 @@ import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJson } from './llm/parse-json.js';
 import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
 import { chunkPlainText } from '../../shared/llm/story-read.js';
+import { filterImprovementsByToolRepoScope } from './tool-repo-scope.js';
 
 /** Default hard cap on user message length (chars) per audit HTTP request. Override: PILL_AUDIT_MAX_USER_CHARS.
  * WHY 20k not 42k: Vercel FUNCTION_INVOCATION_TIMEOUT on ElizaCloud with claude-opus + ~44k POST bodies (audit still failed). */
@@ -233,7 +234,8 @@ function appendNoImprovementsRun(
   targetDir: string,
   meta: PillOutputMeta,
   reason: PillNoImprovementsReason,
-  instructionsPathOverride?: string
+  instructionsPathOverride?: string,
+  extra?: { filteredCount?: number }
 ): void {
   const instructionsPath = instructionsPathOverride ?? join(targetDir, 'pill-output.md');
   const summaryPath = join(targetDir, 'pill-summary.md');
@@ -245,7 +247,13 @@ function appendNoImprovementsRun(
         ? 'No API key configured.'
         : reason === 'zero_improvements_from_llm'
           ? 'LLM returned zero improvements.'
-          : 'Audit request failed.';
+          : reason === 'all_filtered_tool_scope'
+            ? `All suggestions were filtered (paths outside this tool repository — e.g. the PR clone).${
+                extra?.filteredCount != null
+                  ? ` ${extra.filteredCount.toLocaleString()} suggestion(s) omitted.`
+                  : ''
+              } Set PILL_TOOL_REPO_SCOPE_FILTER=0 to disable filtering and record everything.`
+            : 'Audit request failed.';
   const instructionsEntry = [
     '',
     '---',
@@ -284,12 +292,15 @@ export type PillNoImprovementsReason =
   | 'no_logs'
   | 'no_api_key'
   | 'api_call_failed'
-  | 'zero_improvements_from_llm';
+  | 'zero_improvements_from_llm'
+  | 'all_filtered_tool_scope';
 
 export interface PillNoImprovementsResult {
   result: null;
   reason: PillNoImprovementsReason;
   errorMessage?: string;
+  /** When reason is all_filtered_tool_scope: how many LLM suggestions were dropped. */
+  filteredCount?: number;
 }
 
 /**
@@ -307,12 +318,12 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     if (spinner) spinner.text = text;
   };
 
-  function recordNoImprovements(reason: PillNoImprovementsReason): void {
+  function recordNoImprovements(reason: PillNoImprovementsReason, extra?: { filteredCount?: number }): void {
     if (config.dryRun) return;
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
     const source = (config.logPrefix?.trim()) ? config.logPrefix : 'prr';
-    appendNoImprovementsRun(config.targetDir, { date: dateStr, source }, reason, config.instructionsOut);
+    appendNoImprovementsRun(config.targetDir, { date: dateStr, source }, reason, config.instructionsOut, extra);
   }
 
   // No API key — distinct message so operators know why (pill-output.md #3)
@@ -440,6 +451,24 @@ export async function runPillAnalysis(config: PillConfig): Promise<
       }
     }
 
+    let scopeFilteredTotal = 0;
+    if (config.toolRepoScopeFilter) {
+      const { kept, dropped } = filterImprovementsByToolRepoScope(plan.improvements);
+      scopeFilteredTotal = dropped;
+      plan.improvements = kept;
+      if (dropped > 0) {
+        const scopeMsg = `Scope filter: omitted ${dropped.toLocaleString()} suggestion(s) outside this tool repository (likely the PR clone). Set PILL_TOOL_REPO_SCOPE_FILTER=0 to disable.`;
+        if (plan.improvements.length > 0) {
+          plan.summary = `${plan.summary}\n\n(${scopeMsg})`;
+        }
+        if (config.verbose) {
+          console.log(chalk.gray(scopeMsg));
+        } else if (spinner && plan.improvements.length > 0) {
+          spinner.info(`Pill: ${scopeMsg}`);
+        }
+      }
+    }
+
     if (config.verbose) {
       displayPlan(plan);
     }
@@ -447,6 +476,15 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     // When chunking, we make multiple requests and don't aggregate token usage
 
     if (plan.improvements.length === 0) {
+      if (scopeFilteredTotal > 0) {
+        if (spinner) {
+          spinner.info(
+            `Pill: All ${scopeFilteredTotal.toLocaleString()} suggestion(s) were outside tool-repo paths; nothing written. Set PILL_TOOL_REPO_SCOPE_FILTER=0 to include clone-target ideas.`,
+          );
+        }
+        recordNoImprovements('all_filtered_tool_scope', { filteredCount: scopeFilteredTotal });
+        return { result: null, reason: 'all_filtered_tool_scope', filteredCount: scopeFilteredTotal };
+      }
       if (spinner) spinner.succeed('Pill: LLM returned zero improvements (audit ran successfully).');
       recordNoImprovements('zero_improvements_from_llm');
       return { result: null, reason: 'zero_improvements_from_llm' };

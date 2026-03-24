@@ -28,12 +28,12 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 From root **`pill-output.md`** triage — **prr** scope only:
 
-- **Docs:** Occasional pass to replace stale **`src/`** string references in **DEVELOPMENT.md** with **`tools/prr/`** / **`shared/`** where they mean PRR code.
-- **`autoVerifiedFrom`:** Populate when verification is recovered from **`scanCommittedFixes`** so state shows provenance (**WHY:** debugging and dedup).
-- **Git utilities:** Audit **`checkForConflicts`** / **`fetchOriginBranch`** if pill concerns still apply (**WHY:** correctness of “has conflicts” signal after fetch-only).
-- **CodeRabbit:** If SHA mismatch (“reviewing older commit”) should block or wait, wire behavior in **`tools/prr`** (**WHY:** avoid stale comment fixes).
+- **Docs:** **DEVELOPMENT.md** lessons example JSON now uses **`tools/prr/`** / **`shared/`** paths; broader **`src/`** grep cleanup remains optional where examples mean “generic target repo”.
+- **`autoVerifiedFrom`:** **Done** — **`recoverVerificationState`** sets **`PRR_GIT_RECOVERY_VERIFIED_MARKER`** on recovered IDs (see **`types.ts`** / **CHANGELOG**).
+- **Git utilities:** **`checkForConflicts`** JSDoc + **debug** line clarify fetch-only vs in-progress conflicts; **`fetchOriginBranch`** timeout/clear documented in **CHANGELOG**.
+- **CodeRabbit SHA vs HEAD:** **Partial** — startup warns when **`botReviewCommitSha`** ≠ PR HEAD (review **`commit_id`**, or **40-char SHA** in latest bot issue comment if no review row). Optional future: deprioritize stale threads or wait (trade-off vs speed).
 - **Skip list ops:** Refresh **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`** when Model Performance tables show new 0% models (**WHY:** static list drifts vs. gateway reality).
-- **`determineScope`:** Less **`misc`** fallback for paths that only have filtered segments like **`src/`** (**WHY:** clearer auto commit subjects).
+- **`determineScope`:** **Done** — falls back to first directory segment (e.g. `src`) when “meaningful” segments are empty.
 
 ## Lesson staleness / conflict detection
 
@@ -67,7 +67,7 @@ Would require: PR changed-file list (`git diff base...HEAD --name-only`), a depe
 From [tools/prr/AUDIT-CYCLES.md](../tools/prr/AUDIT-CYCLES.md) consolidated findings; not committed, low priority.
 
 - **getConsolidateDuplicateTargetPath:** Iterate all path matches in comment body and return the first that is not `comment.path` and not `lib/utils/db-errors.(ts|js)` (today we use first match only, so if db-errors is mentioned first we return null). **WHY:** When the canonical duplicate file is listed after db-errors, fixer could get allowed path for the right file.
-- **pathExists for single-issue prompt:** `buildSingleIssuePrompt` in `workflow/utils.ts` calls `getTestPathForSourceFileIssue(issue)` without `pathExists`; batch prompt and recovery already pass it. **WHY:** Single-issue focus mode can resolve to a colocated test path that does not exist when the real file is in __tests__/integration/; passing pathExists would align behavior and reduce wrong-file attempts.
+- **pathExists for single-issue prompt:** **Done** (see CHANGELOG) — resolver/recovery pass `pathExists` into `buildSingleIssuePrompt` and no-changes verification.
 - **Path normalization:** In runner `allowedSet`, add `.replace(/\\/g, '/')` so Windows-style paths match. **WHY:** Avoid cross-platform mismatches when comparing paths.
 - **Tests:** Unit tests for `getMigrationJournalPath`, `getConsolidateDuplicateTargetPath`, `getFixedIssueTitle`, `pluralize`, `shared/path-utils.ts` (e.g. `isPathAllowedForFix`, `filterAllowedPathsForFix`), and optionally `isCodeRabbitMetaComment`. **WHY:** Future refactors don't break behavior.
 
