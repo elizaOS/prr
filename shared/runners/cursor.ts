@@ -265,7 +265,7 @@ export class CursorRunner implements Runner {
     }
     writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('cursor-agent', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('cursor-agent', prompt, { workdir, model: options?.model });
     const cleanupPromptFile = () => {
       try {
         unlinkSync(promptFile);
@@ -405,7 +405,7 @@ export class CursorRunner implements Runner {
         console.log('\n'); // Clean line after streaming output
         
         // Log response to debug file
-        debugResponse('cursor-agent', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse(promptSlug, 'cursor-agent', stdout, { exitCode: code, stderrLength: stderr.length });
 
         if (code === 0) {
           resolve({

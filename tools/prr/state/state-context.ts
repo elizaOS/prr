@@ -13,6 +13,12 @@ export interface AggregatedTokenUsage {
   output_tokens: number;
 }
 
+/** In-memory only (not persisted in .pr-resolver-state.json): session-level model skip after repeated failures. */
+export interface RotationSessionTracking {
+  skippedModelKeys: Set<string>;
+  modelStats: Map<string, { fixes: number; failures: number }>;
+}
+
 export interface StateContext {
   statePath: string;
   state: ResolverState | null;
@@ -30,6 +36,16 @@ export interface StateContext {
   /** When set, next fix prompt should use a smaller batch (e.g. after large-prompt failure before rotate). Cleared when consumed.
    *  WHY: Prompts >200k chars cause gateway 500s/timeouts. Forcing a smaller batch on the next iteration avoids re-sending the same oversized prompt and burning rotation slots. */
   forceNextBatchSizeReduce?: boolean;
+  /** Comments that were previously verified but final audit said UNFIXED — we re-queued them (safe over sorry). Used for AAR/visibility. */
+  auditOverridesThisRun?: Array<{ commentId: string; path: string; line?: number | null; explanation?: string }>;
+  /** Set during git recovery; consumed when logging prune so operators see recovered vs pruned context. */
+  gitRecoveredVerificationCount?: number;
+  /** Ephemeral: skip tool/model for rest of run after threshold failures with no fixes (see PRR_SESSION_MODEL_SKIP_FAILURES). */
+  rotationSession?: RotationSessionTracking;
+  /** Ephemeral: consecutive iterations with zero new verified fixes (diminishing-returns warning). */
+  diminishingReturnsZeroVerifyStreak?: number;
+  /** Ephemeral: already logged one diminishing-returns warning this run. */
+  diminishingReturnsWarned?: boolean;
 }
 
 export function createStateContext(workdir: string): StateContext {
@@ -41,6 +57,13 @@ export function createStateContext(workdir: string): StateContext {
     state: null,
     currentPhase: 'init',
   };
+}
+
+export function ensureRotationSession(ctx: StateContext): RotationSessionTracking {
+  if (!ctx.rotationSession) {
+    ctx.rotationSession = { skippedModelKeys: new Set(), modelStats: new Map() };
+  }
+  return ctx.rotationSession;
 }
 
 export function getState(ctx: StateContext): ResolverState {

@@ -8,7 +8,7 @@ const DELIMITER_LINE_REGEX = new RegExp(`^\\s*${DELIMITER}{10,}\\s*$`, 'gm');
 export interface LogEntry {
   id: number;
   slug: string;
-  type: 'PROMPT' | 'RESPONSE';
+  type: 'PROMPT' | 'RESPONSE' | 'ERROR';
   label: string;
   timestamp: string;
   model?: string;
@@ -17,21 +17,21 @@ export interface LogEntry {
   content: string;
 }
 
-function parseHeaderLine(slugLine: string): { slug: string; type: 'PROMPT' | 'RESPONSE'; label: string; charCount?: number } {
-  const match = slugLine.match(/#(\d+)\/([^\s]+)\s+(PROMPT|RESPONSE):\s*([^\s(]+)\s*\((\d+)\s*chars\)?/);
+function parseHeaderLine(slugLine: string): { slug: string; type: 'PROMPT' | 'RESPONSE' | 'ERROR'; label: string; charCount?: number } {
+  const match = slugLine.match(/#(\d+)\/([^\s]+)\s+(PROMPT|RESPONSE|ERROR):\s*([^\s(]+)\s*\((\d+)\s*chars\)?/);
   if (match) {
     return {
       slug: `#${match[1].padStart(4, '0')}/${match[2]}`,
-      type: match[3] as 'PROMPT' | 'RESPONSE',
+      type: match[3] as 'PROMPT' | 'RESPONSE' | 'ERROR',
       label: match[4],
       charCount: parseInt(match[5], 10),
     };
   }
-  const fallback = slugLine.match(/#(\d+)\/([^\s]+)\s+(PROMPT|RESPONSE):\s*([^\n]+)/);
+  const fallback = slugLine.match(/#(\d+)\/([^\s]+)\s+(PROMPT|RESPONSE|ERROR):\s*([^\n]+)/);
   if (fallback) {
     return {
       slug: `#${fallback[1].padStart(4, '0')}/${fallback[2]}`,
-      type: fallback[3] as 'PROMPT' | 'RESPONSE',
+      type: fallback[3] as 'PROMPT' | 'RESPONSE' | 'ERROR',
       label: fallback[4].trim(),
     };
   }
@@ -83,7 +83,7 @@ export function parsePromptsLog(raw: string): LogEntry[] {
     const slugLineIdx = lines.findIndex((l) => l.trim().length > 0);
     if (slugLineIdx === -1 || slugLineIdx >= lines.length - 1) continue;
     const slugLine = lines[slugLineIdx].trim();
-    if (!slugLine.includes('PROMPT') && !slugLine.includes('RESPONSE')) continue;
+    if (!slugLine.includes('PROMPT') && !slugLine.includes('RESPONSE') && !slugLine.includes('ERROR')) continue;
 
     const header = parseHeaderLine(slugLine);
     if (!header.slug) continue;

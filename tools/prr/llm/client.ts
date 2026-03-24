@@ -16,12 +16,25 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../../../shared/config.js';
-import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError } from '../../../shared/logger.js';
-import { ELIZACLOUD_API_BASE_URL } from '../../../shared/constants.js';
-import { acquireElizacloud, releaseElizacloud } from '../../../shared/llm/rate-limit.js';
+import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError, formatNumber } from '../../../shared/logger.js';
+import {
+  ELIZACLOUD_API_BASE_URL,
+  getEffectiveMaxConcurrentLLM,
+  MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS,
+} from '../../../shared/constants.js';
+import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
+import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
+import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
+import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
+import {
+  getElizaCloudModelContextSpec,
+  getMaxFixPromptCharsForModel,
+  lowerModelMaxPromptChars,
+  resolveElizaCloudCanonicalModelId,
+} from '../../../shared/llm/model-context-limits.js';
 
 /** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
 function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
@@ -53,6 +66,70 @@ function getElizaCloudErrorContext(error: unknown): { status?: number; statusTex
   return out;
 }
 
+/** True when error looks like ElizaCloud/gateway 5xx (status or message heuristics). */
+function isElizaCloudServerClassError(e: unknown): boolean {
+  const ctx = getElizaCloudErrorContext(e);
+  if (ctx.status === 500 || ctx.status === 502 || ctx.status === 504) return true;
+  const msg = `${ctx.message ?? ''} ${e instanceof Error ? e.message : String(e)}`;
+  return /500|504|502|gateway.*timeout|deployment.*timeout|internal_server_error/i.test(msg);
+}
+
+/**
+ * For debug when ElizaCloud returns 5xx: configured max context vs this request size.
+ * WHY: Gateway often wraps upstream 400 (context) as 500 — operators need expected limits from model-context-limits.
+ */
+function elizaCloudServerErrorExpectationDebug(
+  model: string,
+  prompt: string,
+  systemPrompt?: string
+): Record<string, string | boolean> {
+  const spec = getElizaCloudModelContextSpec(model);
+  const canonical = resolveElizaCloudCanonicalModelId(model);
+  const sysLen = systemPrompt?.length ?? 0;
+  const total = prompt.length + sysLen;
+  return {
+    expectedMaxContextTokens: formatNumber(spec.maxContextTokens),
+    expectedMaxFixPromptChars: formatNumber(getMaxFixPromptCharsForModel('elizacloud', model)),
+    requestUserChars: formatNumber(prompt.length),
+    requestSystemChars: formatNumber(sysLen),
+    requestTotalChars: formatNumber(total),
+    usingUnknownModelContextDefault: canonical === null,
+    ...(canonical != null ? { canonicalModelId: canonical } : {}),
+  };
+}
+
+/**
+ * Gateway may return HTTP 500 while embedding a 400 "maximum context length" from the upstream.
+ * Retrying is pointless; lowering the fix prompt cap helps the next batch.
+ */
+function isLikelyContextLengthExceededError(e: unknown): boolean {
+  const parts: string[] = [];
+  const walk = (x: unknown, depth: number) => {
+    if (depth > 6 || x == null) return;
+    if (x instanceof Error) {
+      parts.push(x.message);
+      walk(x.cause, depth + 1);
+      return;
+    }
+    if (typeof x === 'string') {
+      parts.push(x);
+      return;
+    }
+    if (typeof x === 'object') {
+      try {
+        parts.push(JSON.stringify(x));
+      } catch {
+        parts.push(String(x));
+      }
+    }
+  };
+  walk(e, 0);
+  const t = parts.join('\n');
+  return /maximum context length|maximum context length is \d+ tokens|input tokens\. please reduce|reduce the length of the input messages|context window.*exceeded/i.test(
+    t
+  );
+}
+
 /** Safe description of an API key for debug/error messages (never log the full key). */
 function maskApiKey(key: string | undefined): string {
   if (key === undefined || key === null) return 'not set';
@@ -75,7 +152,7 @@ function getConflictFileTypeRules(filePath: string): string {
 
 /** Re-export for consumers that still import from llm/client. */
 export { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
-export { acquireElizacloud, releaseElizacloud } from '../../../shared/llm/rate-limit.js';
+export { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 
 /** Normalize issue/comment IDs: strip markdown (headings, bold) and standardize to issue_<n> for matching. */
 function normalizeIssueId(raw: string): string {
@@ -126,6 +203,8 @@ interface CompleteOptions {
    * instead of spending ~10 minutes exhausting the global retry ladder first.
    */
   max504Retries?: number;
+  /** Optional phase label for prompts.log metadata (e.g. batch-verify, final-audit). Helps pill and auditors filter by step. */
+  phase?: string;
 }
 
 /**
@@ -196,6 +275,16 @@ export function explanationHasConcreteFixEvidence(explanation: string): boolean 
  * Hedged phrasing ("suggests", "appears to") with truncated snippet/excerpt is still
  * uncertainty, not evidence the issue is fixed or obsolete — we treat it as missing visibility.
  */
+/**
+ * True when the snippet shows a UUID regex using [1-8] and an adjacent line comment documents
+ * versions 1–8 (not v4-only). Used to demote false final-audit UNFIXED that parroted an
+ * outdated "comment says v4 but allows 1–8" review when the code was already aligned (Cycle 65).
+ */
+export function snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet: string): boolean {
+  if (!/\[1-8\]/.test(codeSnippet)) return false;
+  return /(versions?\s*1[\s–-]8|uuid format.*\(versions 1-8\)|version\s+bits.*1.?8)/i.test(codeSnippet);
+}
+
 export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
   return (
     /snippet.*(?:truncated|unavailable)/i.test(explanation) ||
@@ -481,6 +570,11 @@ const CHEAP_MODELS: Record<string, string> = {
   elizacloud: 'openai/gpt-4o-mini',               // ElizaCloud uses owner/model IDs
 };
 
+/** Return the fast/cheap model for the provider (for split-plan, dedup, etc.). WHY exported: split-plan uses it when SPLIT_PLAN_LLM_MODEL is unset to avoid 504 timeouts. */
+export function getCheapModelForProvider(provider: string): string | undefined {
+  return CHEAP_MODELS[provider];
+}
+
 /**
  * Filter attempt history to only lines for issues in the current batch.
  * WHY: Audit showed full history (all issues) sent to every verify batch; only the current batch is relevant.
@@ -503,6 +597,8 @@ export class LLMClient {
   private model: string;
   /** When set (e.g. PRR_VERIFIER_MODEL), batch verification uses this instead of model to reduce false negatives. */
   private verifierModel?: string;
+  /** When set (PRR_FINAL_AUDIT_MODEL), adversarial final-audit uses this model (Cycle 65). */
+  private finalAuditModel?: string;
   private anthropic?: Anthropic;
   private openai?: OpenAI;
   private thinkingBudget?: number;
@@ -521,10 +617,16 @@ export class LLMClient {
     return this.verifierModel;
   }
 
+  /** Model for final audit: PRR_FINAL_AUDIT_MODEL ?? PRR_VERIFIER_MODEL ?? PRR_LLM_MODEL. */
+  getFinalAuditModel(): string {
+    return this.finalAuditModel ?? this.verifierModel ?? this.model;
+  }
+
   constructor(config: Config) {
     this.provider = config.llmProvider;
     this.model = config.llmModel;
     this.verifierModel = config.verifierModel;
+    this.finalAuditModel = config.finalAuditModel;
     this.thinkingBudget = config.anthropicThinkingBudget;
 
     if (this.provider === 'anthropic') {
@@ -572,7 +674,9 @@ export class LLMClient {
     
     // Log full prompt to debug file
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
-    debugPrompt(`llm-${this.provider}`, fullPrompt, { model: chosenModel });
+    const promptMeta: Record<string, unknown> = { model: chosenModel };
+    if (options?.phase != null) promptMeta.phase = options.phase;
+    const promptSlug = debugPrompt(`llm-${this.provider}`, fullPrompt, promptMeta);
     
     const is429 = (e: unknown) => {
       const status = (e as { status?: number })?.status;
@@ -608,15 +712,36 @@ export class LLMClient {
               break;
             } catch (e504) {
               if (this.provider === 'elizacloud') {
-                debug('ElizaCloud error (response context)', getElizaCloudErrorContext(e504));
+                const base504 = getElizaCloudErrorContext(e504);
+                const payload504 =
+                  isElizaCloudServerClassError(e504)
+                    ? { ...base504, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+                    : base504;
+                debug('ElizaCloud error (response context)', payload504);
               }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
-              if (attempt504 < max504Retries && (isServerError(e504) || timeoutMsg)) {
+              const contextOverflow = isLikelyContextLengthExceededError(e504);
+              if (contextOverflow && this.provider === 'elizacloud') {
+                lowerModelMaxPromptChars('elizacloud', chosenModel, prompt.length);
+                debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
+                  model: chosenModel,
+                  promptLength: formatNumber(prompt.length),
+                  ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt),
+                });
+              }
+              if (
+                attempt504 < max504Retries &&
+                (isServerError(e504) || timeoutMsg) &&
+                !contextOverflow
+              ) {
                 const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
                 debug('Server error or request timeout, retrying', {
                   attempt: attempt504 + 1,
                   maxRetries: max504Retries,
                   delayMs,
+                  ...(this.provider === 'elizacloud'
+                    ? elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt)
+                    : {}),
                 });
                 await new Promise(r => setTimeout(r, delayMs));
               } else {
@@ -632,13 +757,38 @@ export class LLMClient {
             usage: response.usage,
           });
 
-          debugResponse(`llm-${this.provider}`, response.content, {
-            model: chosenModel,
-            usage: response.usage,
-          });
+          // Pill #1, #4: Ensure we pass the accumulated response content, not empty string.
+          // The OpenAI/Anthropic SDKs should return full content, but add safeguard.
+          const responseContent = response.content || '';
+          if (!responseContent && response.usage?.outputTokens && response.usage.outputTokens > 0) {
+            debug('WARNING: LLM response has usage tokens but empty content — possible streaming accumulation bug', {
+              provider: this.provider,
+              model: chosenModel,
+              outputTokens: response.usage.outputTokens,
+            });
+          }
 
           if (response.usage) {
             trackTokens(response.usage.inputTokens, response.usage.outputTokens);
+          }
+
+          // WHY: writeToPromptLog refuses empty RESPONSE — audits would see orphan PROMPT slugs with no ERROR.
+          if (!responseContent.trim()) {
+            debugPromptError(
+              promptSlug,
+              `llm-${this.provider}`,
+              'Empty or whitespace-only response body (HTTP success but no text; prompts.log would not record a RESPONSE).',
+              {
+                model: chosenModel,
+                usage: response.usage,
+                ...(options?.phase != null ? { phase: options.phase } : {}),
+                emptyBody: true,
+              }
+            );
+          } else {
+            const responseMeta: Record<string, unknown> = { model: chosenModel, usage: response.usage };
+            if (options?.phase != null) responseMeta.phase = options.phase;
+            debugResponse(promptSlug, `llm-${this.provider}`, responseContent, responseMeta);
           }
 
           return response;
@@ -657,24 +807,37 @@ export class LLMClient {
                 `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
               );
             }
-            if (is429(err) && attempt < max429Retries) {
-              const wait = backoffMs[attempt] ?? 8000;
-              debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
-              await new Promise(r => setTimeout(r, wait));
-              continue;
+            if (is429(err)) {
+              notifyRateLimitHit();
+              if (attempt < max429Retries) {
+                const wait = backoffMs[attempt] ?? 8000;
+                debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
+                await new Promise(r => setTimeout(r, wait));
+                continue;
+              }
             }
           }
           if (this.provider === 'elizacloud') {
-            debug('ElizaCloud error (response context)', getElizaCloudErrorContext(err));
+            const baseErr = getElizaCloudErrorContext(err);
+            const payloadErr =
+              isElizaCloudServerClassError(err)
+                ? { ...baseErr, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+                : baseErr;
+            debug('ElizaCloud error (response context)', payloadErr);
           }
           throw err;
         }
       }
       if (this.provider === 'elizacloud' && lastErr != null) {
-        debug('ElizaCloud error (response context)', getElizaCloudErrorContext(lastErr));
+        const baseLast = getElizaCloudErrorContext(lastErr);
+        const payloadLast =
+          isElizaCloudServerClassError(lastErr)
+            ? { ...baseLast, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+            : baseLast;
+        debug('ElizaCloud error (response context)', payloadLast);
       }
       const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-      debugPromptError(`llm-${this.provider}`, lastMsg, {
+      debugPromptError(promptSlug, `llm-${this.provider}`, lastMsg, {
         model: chosenModel,
         status: (lastErr as { status?: number })?.status,
         is504: lastErr != null && isServerError(lastErr),
@@ -983,14 +1146,20 @@ ${codeSnippet}
     }>,
     modelContext?: ModelRecommendationContext,
     maxContextChars?: number,
-    maxIssuesPerBatch?: number
+    maxIssuesPerBatch?: number,
+    /** Optional phase for prompts.log metadata (e.g. 'batch-verify'). */
+    phase?: string
   ): Promise<BatchCheckResult> {
     if (issues.length === 0) {
       return { issues: new Map() };
     }
 
-    // ElizaCloud uses small-context models (e.g. Qwen3-14B 40k). Reserve room for completion.
-    const providerCap = this.provider === 'elizacloud' ? 90_000 : 150_000;
+    // ElizaCloud: small models need a TOTAL budget (system + user). batchCheckIssuesExist has a ~5–6k system prompt;
+    // a flat 90k user budget was still ~90k+ total and blew past Qwen 24k tokens (audit: 29k input tokens).
+    const providerCap =
+      this.provider === 'elizacloud'
+        ? Math.min(90_000, getMaxFixPromptCharsForModel('elizacloud', this.model) + 14_000)
+        : 150_000;
     const effectiveMaxContextChars = maxContextChars != null
       ? Math.min(maxContextChars, providerCap)
       : providerCap;
@@ -1039,6 +1208,7 @@ ${codeSnippet}
       '  removed or rewritten. Use STALE.',
       '- If "(end of file)" says the file has N lines but the comment references line M where M > N,',
       '  the file was shortened and the referenced code no longer exists. Use STALE.',
+      '- If your uncertainty is ONLY because the excerpt was truncated (not because you see the bug in the visible lines), prefer STALE over YES — do not treat the review text as current truth when the code block is partial.',
       '',
       'CRITICAL - Base your verdict on the ACTUAL CODE shown, not the review comment\'s description:',
       '- Read the Current Code carefully. If the review says "rank += 1 inside enumerate" but the Current Code',
@@ -1055,10 +1225,11 @@ ${codeSnippet}
       'Just plain text: issue_1: YES: I1: D2: explanation',
       '',
       'Example GOOD responses:',
-      'issue_1: YES: I1: D2: Line 45 still has SQL injection via unsanitized user input',
-      'issue_2: YES: I4: D1: Line 12 uses `var` instead of `const`',
+      'issue_1: YES: I2: D3: Line 45 still omits the required validation',
+      'issue_2: YES: I4: D1: Line 12 still uses the deprecated API',
       'issue_3: NO: Line 23 now has `if (input === null) return;` guard',
       'issue_4: STALE: The processUser function no longer exists; module was refactored',
+      'issue_5: NO: Comment approves current state (e.g. "correctly reflects"); no change required',
       '',
       'Example BAD responses (NEVER do this):',
       '**issue_1**: YES: ...',
@@ -1081,7 +1252,7 @@ ${codeSnippet}
     const maxCommentLen = wideSnippets ? 2500 : 2000;
     const maxCodeLen = wideSnippets ? 3000 : 2000;
 
-    const buildIssueText = (issue: typeof issues[0]): string => {
+    const buildIssueText = (issue: typeof issues[0], opts?: { codeSeeAbove?: boolean }): string => {
       // Sanitize HTML noise (base64 JWT links, metadata comments, <picture> tags)
       // THEN truncate. Without sanitizing first, a 600-char JWT blob can consume
       // 30% of the truncation budget, leaving too little actual description.
@@ -1101,6 +1272,15 @@ ${codeSnippet}
 
       const parts = [];
       
+      // Inject catalog context when comment matches outdated model advice (audit prompts.log eliza#6575).
+      // WHY: Verifier prompts parrot the review's claim without catalog context; when both IDs are valid,
+      // the verifier should not say YES just because the code has the catalog-correct ID.
+      const catalogDismiss = getOutdatedModelCatalogDismissal(issue.comment);
+      if (catalogDismiss) {
+        parts.push(`⚠ CATALOG CONTEXT: This review suggests changing \`${catalogDismiss.pair.catalogGoodId}\` to \`${catalogDismiss.pair.wronglySuggestedId}\`, but **both are valid** per \`generated/model-provider-catalog.json\`. The PR should **keep** \`${catalogDismiss.pair.catalogGoodId}\`. If Current Code has \`${catalogDismiss.pair.catalogGoodId}\`, respond NO (already correct).`);
+        parts.push('');
+      }
+      
       // Inject context hints as factual observations
       if (issue.contextHints && issue.contextHints.length > 0) {
         for (const hint of issue.contextHints) {
@@ -1109,17 +1289,28 @@ ${codeSnippet}
         parts.push('');
       }
       
-      parts.push(
-        `## Issue ${issue.id}`,
-        `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
-        `Comment: ${truncatedComment}`,
-        '',
-        'Current code:',
-        '```',
-        hasCode ? truncatedCode : '(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)',
-        '```',
-        '',
-      );
+      if (opts?.codeSeeAbove) {
+        parts.push(
+          `## Issue ${issue.id}`,
+          `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+          `Comment: ${truncatedComment}`,
+          '',
+          `Current code: (see File: ${issue.filePath} above.)`,
+          '',
+        );
+      } else {
+        parts.push(
+          `## Issue ${issue.id}`,
+          `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+          `Comment: ${truncatedComment}`,
+          '',
+          'Current code:',
+          '```',
+          hasCode ? truncatedCode : '(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)',
+          '```',
+          '',
+        );
+      }
 
       return parts.join('\n');
     };
@@ -1141,9 +1332,15 @@ ${codeSnippet}
     let currentBatch: typeof issues = [];
     let currentTexts: string[] = [];
     let currentSize = 0;
+    /** Within current batch: keys "filePath\0snippet" we've already output full code for. Same file + same snippet → "see above" to save tokens (prompts.log audit). */
+    let seenFileSnippetInBatch = new Set<string>();
 
     for (const issue of issues) {
-      const issueText = buildIssueText(issue);
+      const fileSnippetKey = `${issue.filePath}\0${issue.codeSnippet ?? ''}`;
+      const useSeeAbove = seenFileSnippetInBatch.has(fileSnippetKey);
+      const issueText = buildIssueText(issue, useSeeAbove ? { codeSeeAbove: true } : undefined);
+      if (!useSeeAbove) seenFileSnippetInBatch.add(fileSnippetKey);
+
       const issueSize = issueText.length;
 
       // Start a new batch if adding this issue would exceed size OR count limit
@@ -1152,6 +1349,7 @@ ${codeSnippet}
         currentBatch = [];
         currentTexts = [];
         currentSize = 0;
+        seenFileSnippetInBatch = new Set<string>();
       }
 
       currentBatch.push(issue);
@@ -1172,27 +1370,26 @@ ${codeSnippet}
       maxIssuesPerBatch: MAX_ISSUES_PER_BATCH,
     });
 
-    // Process all batches
-    const allResults = new Map<string, {
-      exists: boolean;
-      explanation: string;
-      stale: boolean;
-      importance: number;
-      ease: number;
-    }>();
-    let recommendedModels: string[] | undefined;
-    let modelRecommendationReasoning: string | undefined;
+    // Process all batches (parallel up to getEffectiveMaxConcurrentLLM())
+    type BatchSingleResult = { exists: boolean; explanation: string; stale: boolean; importance: number; ease: number };
+    type BatchBatchResult = {
+      batchResults: Map<string, BatchSingleResult>;
+      recommendedModels?: string[];
+      modelRecommendationReasoning?: string;
+    };
 
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const { issues: batchIssues, issueTexts } = batches[batchIdx];
+    const processOneBatch = async (batchIdx: number, batch: { issues: typeof issues; issueTexts: string[] }): Promise<BatchBatchResult> => {
+      const { issues: batchIssues, issueTexts } = batch;
       const isFirstBatch = batchIdx === 0;
-      
-      debug(`Processing batch ${batchIdx + 1}/${batches.length}`, { 
+      const batchResults = new Map<string, BatchSingleResult>();
+      let recommendedModels: string[] | undefined;
+      let modelRecommendationReasoning: string | undefined;
+
+      debug(`Processing batch ${batchIdx + 1}/${batches.length}`, {
         issueCount: batchIssues.length,
-        chars: issueTexts.join('').length + headerSize + footerSize
+        chars: issueTexts.join('').length + headerSize + footerSize,
       });
 
-      try {
       // Build user message with only dynamic content (static rules are in systemPrompt)
       const parts = [
         ...issueTexts,
@@ -1201,7 +1398,6 @@ ${codeSnippet}
         'Now analyze each issue STRICTLY and respond with one line per issue:',
       ];
 
-      // Only ask for model recommendation in first batch when requested (omitted for verification to save tokens).
       if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         parts.push('');
         parts.push('---');
@@ -1216,8 +1412,6 @@ ${codeSnippet}
         parts.push('- Issue count and diversity: many issues or multi-file changes need capable models');
         parts.push('- Previous attempts: if a model already failed, try a different one');
         parts.push('');
-        
-        // Cap model/attempt history so first batch doesn't exceed gateway limits (was 100k+ and caused 500)
         const MODEL_HISTORY_MAX = 1500;
         const ATTEMPT_HISTORY_MAX = 2500;
         if (modelContext.modelHistory) {
@@ -1228,13 +1422,11 @@ ${codeSnippet}
         }
         if (modelContext.attemptHistory) {
           parts.push('## Previous Attempts on These Issues');
-          // WHY filter to batch: Audit showed full attempt history (all issues) sent to every batch; only current batch is relevant.
           const filtered = filterAttemptHistoryToBatch(modelContext.attemptHistory, batchIssues.map(i => i.id));
           const a = filtered.length <= ATTEMPT_HISTORY_MAX ? filtered : filtered.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)';
           parts.push(a);
           parts.push('');
         }
-        
         parts.push('End your response with this line:');
         parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | explain why these models in this order');
         parts.push('');
@@ -1243,7 +1435,7 @@ ${codeSnippet}
         parts.push('MODEL_RECOMMENDATION: gpt-5-mini, claude-haiku | Simple style/formatting fixes only');
       }
 
-      const response = await this.complete(parts.join('\n'), systemPrompt);
+      const response = await this.complete(parts.join('\n'), systemPrompt, phase ? { phase } : undefined);
       const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
 
       // Parse issue responses with optional triage scores
@@ -1253,7 +1445,7 @@ ${codeSnippet}
       for (const line of lines) {
         const match = line.match(/^([^:]+):\s*(YES|NO|STALE):\s*(.*)$/i);
         if (match) {
-          let [, id, response, rest] = match;
+          let [, id, verdict, rest] = match;
           const resultId = normalizeIssueId(id);
           if (!allowedIds.has(resultId)) {
             debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
@@ -1270,7 +1462,7 @@ ${codeSnippet}
             rest = triageMatch[3];
           }
           
-          const responseUpper = response.toUpperCase();
+          const responseUpper = verdict.toUpperCase();
           const explanation = rest.trim();
           let exists = responseUpper === 'YES';
           let stale = responseUpper === 'STALE';
@@ -1352,7 +1544,22 @@ ${codeSnippet}
             stale = false;
           }
 
-          allResults.set(resultId, {
+          // Cycle 65: Verifier said YES citing truncation while the snippet is a complete "(end of file)" view.
+          if (
+            exists &&
+            sourceIssue &&
+            (sourceIssue.codeSnippet ?? '').includes('(end of file') &&
+            /\btruncat/i.test(explanation)
+          ) {
+            debug('Batch override: YES→NO (complete file shown; truncation hedge invalid)', {
+              resultId,
+              explanationPreview: explanation.slice(0, 100),
+            });
+            exists = false;
+            stale = false;
+          }
+
+          batchResults.set(resultId, {
             exists,
             stale,
             explanation,
@@ -1362,22 +1569,17 @@ ${codeSnippet}
         }
       }
 
-      // Per-batch outcome summary
-      // WHY: Without this, the only signal between batches is the raw LLM response length.
-      // Operators need to see how many issues were parsed and their disposition per batch
-      // to diagnose prompt/model problems early (e.g., batch 2 parsed 0 = response format issue).
       {
         let batchParsed = 0, batchExists = 0, batchFixed = 0, batchStale = 0;
         let sumImportance = 0, sumEase = 0, countTriage = 0;
         for (const issue of batchIssues) {
           const rid = normalizeIssueId(issue.id);
-          const r = allResults.get(rid);
+          const r = batchResults.get(rid);
           if (r) {
             batchParsed++;
             if (r.stale) batchStale++;
             else if (r.exists) batchExists++;
             else batchFixed++;
-            // Accumulate triage scores for avg calculation
             sumImportance += r.importance;
             sumEase += r.ease;
             countTriage++;
@@ -1395,19 +1597,15 @@ ${codeSnippet}
           avgImportance,
           avgEase,
         });
-
-        // When parsing falls short, log enough to diagnose the problem
         if (batchParsed < batchIssues.length) {
           const unparsedIssueIds = batchIssues
-            .filter(issue => !allResults.has(normalizeIssueId(issue.id)))
+            .filter(issue => !batchResults.has(normalizeIssueId(issue.id)))
             .map(issue => issue.id);
-          
           const unmatchedLines = lines
             .map(l => l.trim())
             .filter(l => l.length > 0)
             .filter(l => !l.match(/^([^:]+):\s*(YES|NO|STALE):\s*/i))
             .slice(0, 10);
-
           debug(`Batch ${batchIdx + 1} parse shortfall`, {
             missing: batchIssues.length - batchParsed,
             unparsedIssueIds,
@@ -1417,25 +1615,18 @@ ${codeSnippet}
         }
       }
 
-      // Parse model recommendation only from first batch when we asked for it
       if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
         if (modelMatch) {
           const modelList = modelMatch[1];
           const reasoning = modelMatch[2]?.trim();
-          
           const availableSet = new Set(modelContext.availableModels.map(m => m.toLowerCase()));
           recommendedModels = modelList
             .split(',')
             .map(m => m.trim())
             .filter(m => {
               const lower = m.toLowerCase();
-              // Exact match (case-insensitive)
               if (availableSet.has(lower)) return true;
-              // Prefix match: the recommended model is a prefix of an available model
-              // (e.g., "claude-sonnet" matches "claude-sonnet-4-5-20250929")
-              // But NOT the reverse — we don't want "gpt" to match "gpt-5.3-codex"
-              // because that's too loose and could cross provider boundaries.
               for (const avail of modelContext.availableModels!) {
                 const availLower = avail.toLowerCase();
                 if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
@@ -1449,35 +1640,44 @@ ${codeSnippet}
               for (const avail of modelContext.availableModels!) {
                 const availLower = avail.toLowerCase();
                 if (availLower === lower) return avail;
-                // Normalize to the full available model name
                 if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
                   return avail;
                 }
               }
               return m;
             });
-          
           modelRecommendationReasoning = reasoning || undefined;
-          
           if (recommendedModels.length > 0) {
-            debug('LLM model recommendation', { 
-              recommendedModels, 
-              reasoning: modelRecommendationReasoning,
-            });
+            debug('LLM model recommendation', { recommendedModels, reasoning: modelRecommendationReasoning });
           }
         }
       }
-      } catch (batchErr) {
-        if (allResults.size > 0) {
-          warn(`Batch ${batchIdx + 1}/${batches.length} failed (${batchErr instanceof Error ? batchErr.message : String(batchErr)}), returning ${allResults.size} partial result(s)`);
-          return {
-            issues: allResults,
-            recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
-            modelRecommendationReasoning,
-            partial: true,
-          };
+      return { batchResults, recommendedModels, modelRecommendationReasoning };
+    };
+
+    // WHY runWithConcurrencyAllSettled: Batch analysis has multiple batches; running with concurrency cap cuts wall-clock. AllSettled so one 429/timeout doesn't fail the whole phase — we merge partial results and use first batch for model recommendation.
+    const concurrencyLimit = getEffectiveMaxConcurrentLLM();
+    const batchTasks = batches.map((batch, batchIdx) => () => processOneBatch(batchIdx, batch));
+    const settled = await runWithConcurrencyAllSettled(batchTasks, concurrencyLimit);
+
+    const allResults = new Map<string, BatchSingleResult>();
+    let recommendedModels: string[] | undefined;
+    let modelRecommendationReasoning: string | undefined;
+    let partial = false;
+
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i]!;
+      if (r.status === 'fulfilled') {
+        for (const [id, v] of r.value.batchResults) {
+          allResults.set(id, v);
         }
-        throw batchErr;
+        if (i === 0 && r.value.recommendedModels?.length) {
+          recommendedModels = r.value.recommendedModels;
+          modelRecommendationReasoning = r.value.modelRecommendationReasoning;
+        }
+      } else {
+        partial = true;
+        warn(`Batch ${i + 1}/${batches.length} failed (${r.reason instanceof Error ? r.reason.message : String(r.reason)}), merging partial results`);
       }
     }
 
@@ -1504,6 +1704,7 @@ ${codeSnippet}
       issues: allResults,
       recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
       modelRecommendationReasoning,
+      ...(partial ? { partial: true as const } : {}),
     };
   }
 
@@ -1648,7 +1849,9 @@ ${codeSnippet}
       line: number | null;
       codeSnippet: string;
     }>,
-    maxContextChars: number = 400_000
+    maxContextChars: number = 400_000,
+    /** Optional phase for prompts.log metadata (e.g. 'final-audit'). */
+    phase?: string
   ): Promise<Map<string, { stillExists: boolean; explanation: string }>> {
     if (issues.length === 0) {
       return new Map();
@@ -1667,6 +1870,13 @@ ${codeSnippet}
       '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
       '3. Partial fixes do NOT count - the full issue must be resolved',
       '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
+      '5. For ACCESSIBILITY (aria-label, accessible name, screen reader, unlabelled SVG): mark FIXED only if the code adds a meaningful accessible name (aria-label or title with the conveyed value). If the only change is aria-hidden or role="img" with no label, mark UNFIXED.',
+      '6. If the issue\'s file was DELETED (snippet shows "file not found" or empty) or the GitHub thread was marked outdated because the file was rewritten, and the issue was already verified fixed in a previous step, mark FIXED with explanation "File deleted or thread outdated; issue was resolved in an earlier fix." IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
+      '7. If the snippet shows "(file not found or unreadable)" and the review comment asked to DELETE or REMOVE the file from the repository, mark FIXED (the file no longer exists = the requested fix was applied). IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
+      '',
+      'CRITICAL - Read the CODE in this prompt, not the review comment alone:',
+      '8. The "Comment:" lines are the ORIGINAL review. They may be stale. If the code block already satisfies what the review asked (e.g. comment and regex both describe UUID versions 1-8 and the pattern uses [1-8]), respond FIXED and quote the lines — do NOT UNFIXED by repeating the review\'s old wording.',
+      '9. UNFIXED only when the shown code still exhibits the problem. If you cannot find the problem in the snippet, say FIXED or explain what is missing with line cites from the snippet.',
       '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
@@ -1688,30 +1898,54 @@ ${codeSnippet}
     }
 
     const ISSUE_HEADER_APPROX = 180; // "[N] path:line — comment preview" without code
+    const COMMENT_PREVIEW_MAX = 500;
     const batches: Array<{ groups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> }> = [];
     let currentGroups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> = [];
     let currentSize = 0;
 
     for (const [filePath, fileIssues] of byFile) {
-      // Collect all unique snippets for this file (each issue may point to a different region)
       const snippets = new Map<string, string>();
-      let totalSnippetSize = 0;
       for (const issue of fileIssues) {
-        if (!snippets.has(issue.id)) {
-          snippets.set(issue.id, issue.codeSnippet);
-          totalSnippetSize += issue.codeSnippet.length;
+        if (!snippets.has(issue.id)) snippets.set(issue.id, issue.codeSnippet);
+      }
+      // Split this file's issues into chunks that fit within availableForIssues (avoids 306k+ prompts → 0-parsed / 504)
+      const issueList = [...fileIssues];
+      let chunkStart = 0;
+      while (chunkStart < issueList.length) {
+        let chunkSize = 0;
+        let chunkEnd = chunkStart;
+        while (chunkEnd < issueList.length) {
+          const issue = issueList[chunkEnd]!;
+          const snip = snippets.get(issue.id) ?? '';
+          const add = snip.length + ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX;
+          if (chunkSize + add > availableForIssues && chunkEnd > chunkStart) break;
+          chunkSize += add;
+          chunkEnd++;
         }
-      }
-      // Review: calculates group size by including total snippet size and header for each issue
-      const groupSize = totalSnippetSize + fileIssues.length * ISSUE_HEADER_APPROX;
+        if (chunkEnd === chunkStart) chunkEnd = chunkStart + 1;
+        const chunkIssues = issueList.slice(chunkStart, chunkEnd);
+        const firstSnippet = snippets.get(chunkIssues[0]!.id) ?? '';
+        const allSameContent = chunkIssues.length > 1 && chunkIssues.every(i => (snippets.get(i.id) ?? '') === firstSnippet);
+        // When we dedupe (same file content once per group), actual size = one snippet + (n × (header + comment))
+        if (allSameContent && firstSnippet.length > 0) {
+          chunkSize = firstSnippet.length + chunkIssues.length * (ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX);
+        }
+        const chunkSnippets = new Map<string, string>();
+        for (const issue of chunkIssues) {
+          const s = snippets.get(issue.id);
+          if (s) chunkSnippets.set(issue.id, s);
+        }
+        const groupSize = chunkSize;
 
-      if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
-        batches.push({ groups: currentGroups });
-        currentGroups = [];
-        currentSize = 0;
+        if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
+          batches.push({ groups: currentGroups });
+          currentGroups = [];
+          currentSize = 0;
+        }
+        currentGroups.push({ filePath, snippets: chunkSnippets, issues: chunkIssues });
+        currentSize += groupSize;
+        chunkStart = chunkEnd;
       }
-      currentGroups.push({ filePath, snippets, issues: fileIssues });
-      currentSize += groupSize;
     }
     if (currentGroups.length > 0) {
       batches.push({ groups: currentGroups });
@@ -1725,6 +1959,7 @@ ${codeSnippet}
     });
 
     const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
+    let lastAuditResponseContent: string | null = null;
 
     for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
       const { groups } = batches[batchIdx];
@@ -1732,17 +1967,28 @@ ${codeSnippet}
 
       const promptParts: string[] = [...headerParts];
       let issueNum = 0;
+      const commentMax = 500;
       for (const group of groups) {
         promptParts.push(`## File: ${group.filePath}`);
-        const commentMax = 500;
+        const snippets = group.issues.map(i => group.snippets.get(i.id) ?? '');
+        const firstSnippet = snippets[0] ?? '';
+        const allSameSnippet = snippets.length > 0 && snippets.every(s => s === firstSnippet);
+        if (allSameSnippet && firstSnippet.length > 0) {
+          // WHY: prompts.log audit — same file was sent twice (21k+ chars) for two issues; send once per file.
+          promptParts.push('```');
+          promptParts.push(firstSnippet);
+          promptParts.push('```');
+          promptParts.push('');
+        }
         for (const issue of group.issues) {
           issueNum++;
-          // Include each issue's specific code snippet so audit has full context
-          const snippet = group.snippets.get(issue.id) ?? '';
           promptParts.push(`### [${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''}`);
-          promptParts.push('```');
-          promptParts.push(snippet);
-          promptParts.push('```');
+          if (!allSameSnippet) {
+            const snippet = group.snippets.get(issue.id) ?? '';
+            promptParts.push('```');
+            promptParts.push(snippet);
+            promptParts.push('```');
+          }
           const preview = sanitizeCommentForPrompt(issue.comment);
           const short = preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
           promptParts.push(`Comment: ${short}`);
@@ -1752,7 +1998,23 @@ ${codeSnippet}
       promptParts.push('---');
       promptParts.push(`Respond with exactly ${batchIssues.length} lines, one per issue [1] through [${batchIssues.length}]:`);
 
-      const response = await this.complete(promptParts.join('\n'));
+      const promptText = promptParts.join('\n');
+      if (promptText.length > 280_000) {
+        debug('Final audit batch prompt very large (risk of 0-parsed or 504)', {
+          batchIndex: batchIdx + 1,
+          promptChars: promptText.length,
+          issueCount: batchIssues.length,
+        });
+      }
+      const auditModel = this.getFinalAuditModel();
+      if (auditModel !== this.model) {
+        debug('Final audit using model override', { model: auditModel });
+      }
+      const response = await this.complete(promptText, undefined, {
+        ...(phase ? { phase } : {}),
+        model: auditModel,
+      });
+      lastAuditResponseContent = response.content;
 
       // Parse responses - match [N] FIXED/UNFIXED pattern
       const lines = response.content.split('\n');
@@ -1763,9 +2025,66 @@ ${codeSnippet}
           const idx = parseInt(numStr, 10) - 1;
           if (idx >= 0 && idx < batchIssues.length) {
             const issue = batchIssues[idx];
+            const isFixed = status.toUpperCase() === 'FIXED';
+            let finalStatus = !isFixed; // UNFIXED by default
+            let finalExplanation = explanation.trim();
+
+            // Cycle 65: UNFIXED parroted stale review while snippet already aligned UUID comment + [1-8] regex.
+            if (!isFixed && snippetShowsUuidCommentAlignedWithVersionRange(issue.codeSnippet)) {
+              const rev = (issue.comment ?? '').toLowerCase();
+              if (/\buuid\b/.test(rev) && /\bv4|version|regex|comment\b/i.test(rev)) {
+                debug('Final audit override: UNFIXED→FIXED (UUID comment/regex already aligned in snippet)', {
+                  issueId: issue.id,
+                });
+                finalStatus = false;
+                finalExplanation =
+                  'FIXED (post-check): Shown code documents UUID versions 1-8 and regex uses [1-8]; prior UNFIXED repeated stale review text.';
+              }
+            }
+            
+            // Pill cycle 2 #2: Require code evidence when audit marks FIXED — if code snippet still contains bug pattern, demote to UNFIXED
+            if (isFixed) {
+              const codeSnippet = issue.codeSnippet.toLowerCase();
+              const commentLower = issue.comment.toLowerCase();
+              
+              // Extract bug patterns from comment (e.g. "gpt-5-mini", "non-null assertion", specific line references)
+              const bugPatterns: RegExp[] = [];
+              
+              // Pattern 1: Model IDs mentioned in comment (e.g. "gpt-5-mini" should be "gpt-4o-mini")
+              const modelIdMatch = commentLower.match(/\b(gpt-\d+(?:-mini|-turbo)?|claude-\d+(?:-sonnet|-opus|-haiku)?|qwen-\d+)\b/i);
+              if (modelIdMatch) {
+                const wrongModel = modelIdMatch[1].toLowerCase();
+                // Check if wrong model still exists in code
+                if (codeSnippet.includes(wrongModel)) {
+                  debug('Final audit contradiction: marked FIXED but code still contains bug pattern', {
+                    issueId: issue.id,
+                    pattern: wrongModel,
+                    explanation: finalExplanation,
+                  });
+                  finalStatus = true; // UNFIXED
+                  finalExplanation = `Code evidence contradicts FIXED verdict: code snippet still contains "${wrongModel}" mentioned in review. ${finalExplanation}`;
+                }
+              }
+              
+              // Pattern 2: Line-specific references (e.g. "line 31-32 still has incorrect")
+              const lineRefMatch = explanation.match(/(?:line|lines)\s+(\d+(?:\s*-\s*\d+)?)/i);
+              if (lineRefMatch && !codeSnippet.includes('not found') && !codeSnippet.includes('unreadable')) {
+                // If explanation cites specific lines but doesn't show replacement evidence, require it
+                const hasReplacementEvidence = /(?:now has|changed to|replaced with|uses|contains)\s+[a-z0-9-]+/i.test(explanation);
+                if (!hasReplacementEvidence && explanation.length < 50) {
+                  debug('Final audit FIXED verdict lacks code evidence', {
+                    issueId: issue.id,
+                    explanation: finalExplanation,
+                  });
+                  finalStatus = true; // UNFIXED
+                  finalExplanation = `FIXED verdict lacks code evidence — explanation does not cite replacement. Code snippet may still contain the bug. ${finalExplanation}`;
+                }
+              }
+            }
+            
             allResults.set(issue.id, {
-              stillExists: status.toUpperCase() === 'UNFIXED',
-              explanation: explanation.trim(),
+              stillExists: finalStatus,
+              explanation: finalExplanation,
             });
           }
         }
@@ -1795,6 +2114,10 @@ ${codeSnippet}
       debug('WARNING: Some audit responses could not be parsed - marked as needing review', {
         unparsed: issues.length - parsed,
       });
+    }
+    if (parsed === 0 && lastAuditResponseContent) {
+      const preview = lastAuditResponseContent.slice(0, 600).replace(/\n/g, ' ');
+      debug('Final audit parse failed (0 parsed) — response preview for debugging', { preview });
     }
 
     return allResults;
@@ -2114,6 +2437,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'If the concern is fully addressed in another file or by a different function (e.g. this code now delegates to a function that implements the fix), answer YES and cite where the fix is implemented.',
       'For lifecycle/cache/leak issues (Map/Set/cache cleanup, pruning, TTL, stale entries), answer YES only if the code shown demonstrates safe cleanup across the relevant creation/replacement/cleanup paths. A declaration-only tweak is not enough if stale entries can still survive on early returns or thrown errors.',
       '',
+      'For ACCESSIBILITY issues (review asks for aria-label, accessible name, screen reader, unlabelled SVG): answer YES only if the code adds a MEANINGFUL accessible name (e.g. aria-label or title with the conveyed value, such as the percentage or state). If the only change is aria-hidden="true" or role="img" with no label, or a generic/empty label, the concern is NOT addressed — answer NO and in LESSON suggest adding aria-label or title with the actual value (e.g. "X% yes").',
+      '',
       'For "duplicate" / "extract to shared utility" issues: The fix is usually to remove the duplicate from THIS file and import from the shared module (often lib/utils/...). The review may mention another file as where the duplicate already exists — that is a reference only; the canonical shared source is typically a dedicated util (e.g. lib/utils/db-errors.ts), not that reference file. In LESSON lines, do not suggest "use from [reference file]" as the shared source when a lib/utils/... module is the intended canonical location.',
       '',
       'For EACH fix, respond with EXACTLY this format:',
@@ -2129,6 +2454,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'Example: 1: YES: The null check on line 45 matches what the comment requested',
       '2: NO: Added try/catch but the comment asks for input validation before the call',
       'LESSON: Review asks for pre-call validation (line 32), not post-call error handling',
+      '',
+      'CRITICAL FORMAT: Reply with plain lines starting with the fix number (e.g. 1: YES: ... or 2: NO: ...).',
+      'Do NOT use markdown headings in your response. Wrong: ## Fix 1: YES: ... Right: 1: YES: ...',
       '',
       '---',
       '',
@@ -2185,7 +2513,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     parts.push('---');
     parts.push('');
-    parts.push('Now verify each fix. Use the fix number (e.g. "1: YES: ..." or "2: NO: ..."). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
+    parts.push('Now verify each fix. Reply with lines like 1: YES: ... or 2: NO: ... (plain text, no ## Fix headings). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
     return parts.join('\n');
   }
 
@@ -2200,13 +2528,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
-    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..." (no colon after FIX_ID), or "FIX_ID: 1" then "NO: ..." on next line
+    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "## Fix 1: YES: ..." (prompts.log audit), or "FIX_ID: 1" then "NO: ..." on next line
     const lines = content.split('\n');
     let currentOriginalId: string | null = null;
 
     for (const line of lines) {
-      // Match "1: YES: ..." or "fix_2: NO: ..." or "FIX_ID: 1: NO: ..." or "FIX_ID 1: YES: ..." (output.log audit: model used "FIX_ID 1:" with space, no colon)
-      const verifyMatch = line.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
+      // Match "1: YES: ...", "## Fix 1: YES: ...", "fix_2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..."
+      const verifyMatch = line.match(/^(?:##\s*[Ff]ix\s+|fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
       if (verifyMatch) {
         const [, numStr, yesNo, explanation] = verifyMatch;
         const idx = parseInt(numStr, 10);
@@ -2289,11 +2617,11 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     filePath: string,
     conflictedContent: string,
     baseBranch: string,
-    options?: { model?: string }
+    options?: { model?: string; baseContent?: string; oursContent?: string; theirsContent?: string; previousParseError?: string }
   ): Promise<{ resolved: boolean; content: string; explanation: string }> {
     // Check if file is too large for reliable conflict resolution
-    // WHY: Files >50KB cause token limit issues and response truncation
-    const MAX_SAFE_SIZE = 50000; // 50KB
+    // WHY: Files >50KB cause token limit issues and response truncation; caller should use chunked merge.
+    const MAX_SAFE_SIZE = MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS;
     if (conflictedContent.length > MAX_SAFE_SIZE) {
       debug('File too large for automatic conflict resolution', { 
         filePath, 
@@ -2306,7 +2634,17 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         explanation: `File too large (${Math.round(conflictedContent.length / 1024)}KB) for automatic resolution. Please resolve manually.`,
       };
     }
-    const prompt = `You are resolving a Git merge conflict.
+    const useThreeWay = options?.baseContent != null && options?.oursContent != null && options?.theirsContent != null;
+    const prompt = useThreeWay
+      ? buildConflictResolutionPromptThreeWay(
+          options.baseContent!,
+          options.oursContent!,
+          options.theirsContent!,
+          baseBranch,
+          filePath,
+          options.previousParseError
+        ) + `\n\nOutput the COMPLETE resolved file. ${getConflictFileTypeRules(filePath)}`
+      : `You are resolving a Git merge conflict.
 
 FILE: ${filePath}
 MERGING: ${baseBranch} into current branch
@@ -2325,6 +2663,7 @@ INSTRUCTIONS:
 3. Remove ALL conflict markers (<<<<<<<, =======, >>>>>>>)
 4. Ensure the result is valid, working code
 5. CRITICAL: Output the COMPLETE file - do not truncate or omit any sections
+${options?.previousParseError ? `\nIMPORTANT: A previous attempt had a syntax/parse error: "${options.previousParseError}". Ensure the resolved file is valid code (e.g. close all block comments with */, no missing commas).\n` : ''}
 ${getConflictFileTypeRules(filePath)}
 
 Respond in this EXACT format (no other text before or after):
@@ -2341,6 +2680,7 @@ RESOLVED:
     const response = await this.complete(prompt, undefined, {
       model: options?.model,
       max504Retries: 0,
+      phase: 'resolve-conflict',
     });
     const content = response.content;
     
@@ -2552,7 +2892,8 @@ ${reason}
 TASK:
 1. If there is ALREADY a comment near line ${params.line} that addresses the concern, respond: EXISTING
 2. If the code is self-explanatory and no comment adds value, respond: SKIP
-3. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
+3. If the dismissal reason above says the snippet does not show the lines referenced in the concern, respond SKIP (you cannot safely add a comment without seeing that code).
+4. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
 
 RULES:
 - Write as a developer, not a review tool. Explain the design decision, not what changed in a diff.

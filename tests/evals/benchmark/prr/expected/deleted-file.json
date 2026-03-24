@@ -1,0 +1,15 @@
+{
+  "name": "deleted-file",
+  "expectedFixes": [],
+  "expectedDismissals": [
+    {
+      "commentId": "c1",
+      "expectedCategory": "file-not-found",
+      "expectedReason": "File no longer exists"
+    }
+  ],
+  "expectedRemaining": [],
+  "minFixRate": 1.0,
+  "maxFalsePositiveRate": 0.0,
+  "minAccuracy": 1.0
+}

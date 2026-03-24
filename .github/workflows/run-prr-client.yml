@@ -4,10 +4,11 @@
 #   1. Actions → Run PRR (client) → Run workflow → enter PR number.
 #   2. On the PR: add the "run-prr" label.
 #   3. Request PRR as a reviewer: add a bot user (or GitHub App bot) as a collaborator,
-#      set PRR_REVIEWER_LOGIN to that bot's login (e.g. prr-bot or my-app[bot]), then
-#      when someone requests that reviewer on the PR, this workflow runs.
+#      set repository variable PRR_REVIEWER_LOGIN (Settings → Variables) to that bot's
+#      login (e.g. prr-bot or my-app[bot]); when that reviewer is requested, this workflow runs.
 #
-# WHY pass secrets.GITHUB_TOKEN: The job runs in this repo's context; no extra PAT needed.
+# Inlined from run-prr-server.yml so validators that require runs-on accept this file.
+# Other repos can still call run-prr-server.yml directly (workflow_call).
 name: Run PRR (client)
 
 on:
@@ -26,23 +27,70 @@ concurrency:
 
 jobs:
   prr:
-    # Run when: manual, or label "run-prr", or requested reviewer matches PRR_REVIEWER_LOGIN (set in env below).
+    name: Run PRR
+    # Run when: manual, or label "run-prr", or requested reviewer matches vars.PRR_REVIEWER_LOGIN.
+    # (env is not available in job-level if; use repository variable instead.)
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && (
         (github.event.action == 'labeled' && github.event.label.name == 'run-prr') ||
-        (github.event.action == 'review_requested' && env.PRR_REVIEWER_LOGIN != '' && github.event.requested_reviewer.login == env.PRR_REVIEWER_LOGIN)
+        (github.event.action == 'review_requested' && vars.PRR_REVIEWER_LOGIN != '' && github.event.requested_reviewer.login == vars.PRR_REVIEWER_LOGIN)
       ))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
-      # Set to your bot's login (e.g. prr-bot or my-app[bot]) to run when that user is requested as a reviewer. Leave empty to disable.
-      PRR_REVIEWER_LOGIN: ''
-    uses: ./.github/workflows/run-prr-server.yml
-    with:
-      pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
-      prr_repo: ${{ github.repository }}
-    secrets:
-      # Caller's token; server receives it as PRR_GITHUB_TOKEN and uses it as GITHUB_TOKEN.
-      PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    permissions:
+      contents: write      # checkout + PRR push
+      pull-requests: write # submit PR review (Create a review for a pull request)
+    steps:
+      - name: Checkout PRR
+        uses: actions/checkout@v4
+
+      - name: Resolve PR number
+        if: github.event_name == 'workflow_dispatch'
+        id: resolve-pr
+        run: echo "pr_number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install and build PRR
+        run: |
+          npm ci
+          npm run typecheck
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run PRR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRR_SUBMIT_REVIEW: ${{ github.event_name == 'workflow_dispatch' }}
+          PRR_PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.resolve-pr.outputs.pr_number }}
+          ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          node dist/tools/prr/index.js \
+            "https://github.com/${{ github.repository }}/pull/${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.resolve-pr.outputs.pr_number }}" \
+            --tool llm-api \
+            --no-wait-bot
+
+      # output.log + prompts.log are written to CWD (repo root) by PRR; upload as artifacts for debugging.
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prr-logs-${{ github.event_name == 'pull_request' && github.event.pull_request.number || steps.resolve-pr.outputs.pr_number }}
+          path: |
+            output.log
+            prompts.log
+          retention-days: 14
+          if-no-files-found: ignore

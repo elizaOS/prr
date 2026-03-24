@@ -10,7 +10,7 @@ import OpenAI from 'openai';
 import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
 import { getMaxFixPromptCharsForModel, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient } from '../llm/elizacloud.js';
-import { acquireElizacloud, releaseElizacloud } from '../llm/rate-limit.js';
+import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../llm/rate-limit.js';
 import { normalizePathForAllow, normalizeRepoPath } from '../path-utils.js';
 
 /**
@@ -366,7 +366,7 @@ Working directory: ${workdir}`;
       debug('Escalated to full-file rewrite', { files: rewriteFiles });
     }
 
-    debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
+    const promptSlug = debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
 
     if (enrichedPrompt.length > maxEnrichedChars) {
       throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${maxEnrichedChars.toLocaleString()} for ${model}). Reduce batch size or file count.`);
@@ -457,44 +457,40 @@ Working directory: ${workdir}`;
         };
       }
 
-      debugResponse('llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
+      debugResponse(promptSlug, 'llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
 
       // Parse and apply file changes (pass escalated files so <file> blocks are applied even when S/R ran)
       const applyResult = await this.applyFileChanges(workdir, response, rewriteFiles, options?.allowedPathsForBatch);
-      const { filesWritten, noMeaningfulChanges, skippedDisallowedFiles, placeholderTestContent } = applyResult;
+      const { filesWritten, noMeaningfulChanges, applyFailureSummary, skippedDisallowedFiles, skippedDisallowedAttemptedSummary, skippedNewfilePathExists, placeholderTestContent } = applyResult;
 
       if (filesWritten.length === 0) {
-        // All change blocks were no-ops (search === replace): signal so workflow skips verification. WHY: Verifier on unchanged code wastes latency; go straight to rotation.
+        // No-ops or S/R failed: signal so workflow skips verification. WHY §5: Verifier on unchanged code wastes latency; go straight to rotation; §2: applyFailureSummary lets workflow persist hint for next attempt.
         if (noMeaningfulChanges) {
           this.consecutive504Count = 0;
+          if (applyFailureSummary) {
+            console.log('  ⚠ LLM attempted changes but search/replace failed to match');
+          }
           return {
             success: true,
             output: response,
             noMeaningfulChanges: true,
             usedFullFileRewrite: rewriteFiles.length > 0,
+            applyFailureSummary: applyFailureSummary ?? undefined,
           };
         }
         // Strict allowlist: fixer tried to edit only disallowed files — treat as failure so workflow adds lesson and rotates.
         if (skippedDisallowedFiles?.length) {
-          console.log(`  ⚠ Fixer attempted disallowed file(s) (not in TARGET FILE(S)): ${skippedDisallowedFiles.slice(0, 5).join(', ')}${skippedDisallowedFiles.length > 5 ? ` +${skippedDisallowedFiles.length - 5} more` : ''}`);
+          const attemptedMsg = skippedDisallowedAttemptedSummary ?? skippedDisallowedFiles.join(', ');
+          console.log(`  ⚠ Fixer attempted disallowed file(s) (not in TARGET FILE(S)): ${attemptedMsg}`);
           this.consecutive504Count = 0;
           return {
             success: false,
             output: response,
-            error: `All change blocks targeted disallowed files. Edit only the file(s) listed in TARGET FILE(S). Attempted: ${skippedDisallowedFiles.join(', ')}`,
+            error: `All change blocks targeted disallowed files. Edit only the file(s) listed in TARGET FILE(S). Attempted: ${attemptedMsg}`,
             skippedDisallowedFiles,
           };
         }
-        // Check if LLM tried to make changes but all search/replace failed
-        const hasChangeBlocks = /<change\s+path="/.test(response) || /<file\s+path="/.test(response) || /<newfile\s+path="/.test(response);
-        if (hasChangeBlocks) {
-          console.log('  ⚠ LLM attempted changes but all search/replace operations failed to match');
-          return {
-            success: false,
-            output: response,
-            error: 'All search/replace operations failed - search text did not match file contents',
-          };
-        }
+        // No change blocks at all (no noMeaningfulChanges, no disallowed) — LLM didn't emit changes.
         console.log('  No file changes extracted from LLM response');
         this.consecutive504Count = 0;
         return {
@@ -522,10 +518,17 @@ Working directory: ${workdir}`;
         usedFullFileRewrite: rewriteFiles.length > 0,
         placeholderTestContent: placeholderTestContent || undefined,
         skippedDisallowedFiles,
+        skippedNewfilePathExists: skippedNewfilePathExists?.length ? skippedNewfilePathExists : undefined,
+        pathsWrittenByRunner: filesWritten,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       debug('LLM API error', { error: errorMessage });
+
+      const status = (error as { status?: number })?.status;
+      if (status === 429 || /429|Too many requests|rate limit/i.test(errorMessage)) {
+        notifyRateLimitHit();
+      }
 
       const is504OrTimeout = isServerError(error) || /request timeout|timeout after/i.test(errorMessage);
       if (is504OrTimeout) {
@@ -768,9 +771,15 @@ Working directory: ${workdir}`;
     // Injecting their contents wastes context budget on files the fixer doesn't need to touch.
     // Filtering to files with unfixed issues keeps the prompt focused and leaves room for
     // files that actually need changes (observed 40-60% reduction in injected content on rounds 2+).
+    // Caller must pass allowedPathsForInjection/allowedPathsForBatch that match TARGET FILE(S) in the prompt.
     if (allowedPathsForInjection?.length) {
       const allowedSet = new Set(allowedPathsForInjection.map((p) => p.replace(/^\.\//, '')));
+      const beforeCount = sortedPaths.length;
       sortedPaths = sortedPaths.filter((p) => allowedSet.has(p.replace(/^\.\//, '')));
+      const dropped = beforeCount - sortedPaths.length;
+      if (dropped > 0) {
+        debug('Injection filtered by allowedPathsForInjection', { kept: sortedPaths.length, dropped, keptPaths: sortedPaths.slice(0, 5) });
+      }
     }
 
     const fileSections: string[] = [];
@@ -1022,9 +1031,12 @@ Working directory: ${workdir}`;
     return false;
   }
 
-  private async applyFileChanges(workdir: string, response: string, escalatedFiles: string[] = [], allowedPathsForBatch?: string[]): Promise<{ filesWritten: string[]; noMeaningfulChanges?: boolean; skippedDisallowedFiles?: string[]; placeholderTestContent?: boolean }> {
+  private async applyFileChanges(workdir: string, response: string, escalatedFiles: string[] = [], allowedPathsForBatch?: string[]): Promise<{ filesWritten: string[]; noMeaningfulChanges?: boolean; applyFailureSummary?: string; skippedDisallowedFiles?: string[]; skippedDisallowedAttemptedSummary?: string; skippedNewfilePathExists?: string[]; placeholderTestContent?: boolean }> {
     const filesModified = new Set<string>();
     const skippedDisallowed = new Set<string>();
+    const skippedNewfilePathExists: string[] = [];
+    /** Per-skip: what the fixer attempted (path + block type) for error messages */
+    const skippedDisallowedDetails: { path: string; blockType: string }[] = [];
     let attemptedChanges = 0;
     let noOpSkips = 0;
     let failedSearchReplace = 0;
@@ -1032,6 +1044,7 @@ Working directory: ${workdir}`;
     let placeholderTestContent = false;
     const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const MAX_WHITESPACE = 1000;
+    // Caller must pass allowedPathsForBatch that matches TARGET FILE(S) in the fix prompt so edits are not rejected as disallowed.
     const allowedSet = allowedPathsForBatch?.length ? new Set(allowedPathsForBatch.map(normalizePathForAllow)) : null;
 
     // Parse <deletefile path="..."/> or <deletefile path="..."></deletefile> — remove file from repo (Cycle 13 M2).
@@ -1043,6 +1056,7 @@ Working directory: ${workdir}`;
       if (!filePath) continue;
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'deletefile' });
         debug('Skipping deletefile — not in TARGET FILE(S)', { filePath });
         continue;
       }
@@ -1104,6 +1118,7 @@ Working directory: ${workdir}`;
 
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'change' });
         debug('Skipping change to disallowed file (not in TARGET FILE(S) for any issue)', { filePath });
         continue;
       }
@@ -1211,6 +1226,7 @@ Working directory: ${workdir}`;
       }
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'newfile' });
         debug('Skipping newfile to disallowed path (not in TARGET FILE(S))', { filePath });
         continue;
       }
@@ -1222,6 +1238,7 @@ Working directory: ${workdir}`;
       }
 
       if (existsSync(fullPath)) {
+        skippedNewfilePathExists.push(filePath);
         debug('Skipping newfile — path already exists (overwriting would destroy existing content); use <change> to edit', { filePath });
         continue;
       }
@@ -1256,6 +1273,7 @@ Working directory: ${workdir}`;
 
       if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
         skippedDisallowed.add(filePath);
+        skippedDisallowedDetails.push({ path: filePath, blockType: 'file' });
         debug('Skipping file block to disallowed path (not in TARGET FILE(S))', { filePath });
         continue;
       }
@@ -1273,6 +1291,7 @@ Working directory: ${workdir}`;
       if (!existsSync(fullPath)) {
         if (allowedSet && !allowedSet.has(normalizePathForAllow(filePath))) {
           skippedDisallowed.add(filePath);
+          skippedDisallowedDetails.push({ path: filePath, blockType: 'file (new)' });
           debug('Skipping legacy <file> new file — not in TARGET FILE(S)', { filePath });
           continue;
         }
@@ -1349,10 +1368,17 @@ Working directory: ${workdir}`;
     }
 
     const filesWritten = Array.from(filesModified);
-    // WHY: When every change block was a no-op (search === replace), we signal so the workflow skips verification and treats as "no changes" for rotation.
-    const noMeaningfulChanges = attemptedChanges > 0 && noOpSkips === attemptedChanges && filesWritten.length === 0;
+    // WHY §5: When fixer attempted changes but wrote nothing (all no-ops or all S/R failed), skip verification and treat as no changes for rotation.
+    const noMeaningfulChanges = attemptedChanges > 0 && filesWritten.length === 0;
+    // WHY §2: Workflow persists this as lastApplyError so the next fix prompt gets "Previous attempt: …"; file list and hint give the model something actionable (exact content, shorter search block).
+    const applyFailureSummary = failedSearchReplace > 0
+      ? `Search/replace failed to match in: ${Array.from(failedFiles).join(', ')}. Use exact content or shorter search block.`
+      : undefined;
     const skippedDisallowedFiles = skippedDisallowed.size > 0 ? Array.from(skippedDisallowed) : undefined;
-    return { filesWritten, noMeaningfulChanges: noMeaningfulChanges ? true : undefined, skippedDisallowedFiles, placeholderTestContent: placeholderTestContent || undefined };
+    const attemptedSummary = skippedDisallowedDetails.length > 0
+      ? skippedDisallowedDetails.map(d => `${d.path} (${d.blockType})`).join('; ')
+      : undefined;
+    return { filesWritten, noMeaningfulChanges: noMeaningfulChanges ? true : undefined, applyFailureSummary, skippedDisallowedFiles, skippedDisallowedAttemptedSummary: attemptedSummary, skippedNewfilePathExists: skippedNewfilePathExists.length ? skippedNewfilePathExists : undefined, placeholderTestContent: placeholderTestContent || undefined };
   }
 }
 

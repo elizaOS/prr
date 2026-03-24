@@ -6,13 +6,21 @@ export interface PillConfig {
   elizacloudApiKey?: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
-  tool: string;
-  fixerModel?: string;
-  maxCycles: number;
+  /** '' | undefined = output.log; 'story' = story-output.log; 'pill' = pill-output.log */
+  logPrefix?: string;
+  /** Override path for pill-output.md (e.g. from --instructions-out). */
+  instructionsOut?: string;
+  /** Max context tokens for the audit request (user + system). Overridable via PILL_CONTEXT_BUDGET_TOKENS. Default 35k; use 20k for small-context models. */
+  contextBudgetTokens?: number;
+  /** Hard cap on user-message chars per audit HTTP request (chunk size). Set via PILL_AUDIT_MAX_USER_CHARS (6000–80000). */
+  auditMaxUserChars?: number;
+  /**
+   * When true, drop improvements whose `file` is not under this repo’s tool layout (tools/, shared/, tests/, …).
+   * Default: on if `tools/prr` exists under targetDir; override with PILL_TOOL_REPO_SCOPE_FILTER.
+   */
+  toolRepoScopeFilter: boolean;
   outputOnly: boolean;
   promptsOnly: boolean;
-  commit: boolean;
-  force: boolean;
   dryRun: boolean;
   verbose: boolean;
 }
@@ -23,9 +31,13 @@ export interface PillContext {
   directoryTree: string;
   outputLog: string;
   promptsDigest?: string;
+  /** Set when context was trimmed to stay under audit request budget (avoids 504/timeout). */
+  contextTrimmed?: boolean;
 }
 
 export interface ImprovementPlan {
+  /** Hypeman summary for console (engaging, high-stakes). */
+  pitch: string;
   summary: string;
   improvements: Improvement[];
 }
@@ -38,61 +50,6 @@ export interface Improvement {
   category: 'code' | 'docs';
 }
 
-export interface VerifyResult {
-  status: 'clean' | 'issues';
-  issues?: Improvement[];
-}
+/** Per-chapter output when story-reading logs (from shared story-read). */
+export type { ChapterAnalysis } from '../../shared/llm/story-read.js';
 
-/** Per-chapter output when story-reading logs */
-export interface ChapterAnalysis {
-  observations: string[];
-  answeredQuestions: string[];
-  confirmedPredictions: string[];
-  refutedPredictions: string[];
-  newQuestions: string[];
-  newPredictions: string[];
-  threads: string[];
-}
-
-// ─── Audit cycles (per-directory, AUDIT-CYCLES.md–like storage) ─────────────────
-
-/** Severity for findings: High = regression/data-loss, Medium = correctness/UX, Low = minor/cosmetic. */
-export type AuditFindingSeverity = 'high' | 'medium' | 'low';
-
-/** One recorded audit cycle for a directory (mirrors AUDIT-CYCLES.md cycle template). */
-export interface AuditCycle {
-  /** Date of the cycle (YYYY-MM-DD). */
-  date: string;
-  /** What was audited (e.g. "output.log from run X, prompts.log #0005–#0016"). */
-  artifacts: string;
-  /** Findings by severity (short one-line entries). */
-  findings: {
-    high: string[];
-    medium: string[];
-    low: string[];
-  };
-  /** Improvements implemented (bullet list). */
-  improvementsImplemented: string[];
-  /** Y = no revert/conflicting change; N = had revert or conflict. */
-  flipFlopCheck: 'Y' | 'N';
-  /** One-line note for flip-flop (e.g. "any revert or conflicting change?"). */
-  flipFlopNote?: string;
-  /** Optional notes. */
-  notes?: string;
-}
-
-/** Per-directory audit store: cycles plus optional recurring patterns / regression watchlist. */
-export interface PillAuditStore {
-  /** Directory this store belongs to (resolved path). */
-  directory: string;
-  /** Last time the store was updated (ISO date string). */
-  lastUpdated: string;
-  /** Number of recorded cycles (length of cycles array). */
-  recordedCycles: number;
-  /** Audit cycles, newest last. */
-  cycles: AuditCycle[];
-  /** Optional: recurring patterns (pattern name + description). */
-  recurringPatterns?: { pattern: string; description: string }[];
-  /** Optional: regression watchlist (checklist items). */
-  regressionWatchlist?: string[];
-}

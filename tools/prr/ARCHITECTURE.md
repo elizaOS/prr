@@ -2,6 +2,8 @@
 
 This document explains the high-level architecture of PRR (PR Resolver), a system for automatically resolving GitHub PR review comments using AI coding assistants.
 
+**Path note:** Code lives under `tools/prr/` (PRR) and `shared/` (shared modules).
+
 ## Core Philosophy
 
 **Modularity via Procedural Code**: PRR's architecture emphasizes:
@@ -17,13 +19,13 @@ This document explains the high-level architecture of PRR (PR Resolver), a syste
 ```mermaid
 graph TB
     subgraph "Entry Point"
-        CLI[CLI Parser<br/>src/cli.ts]
-        Main[Main Entry<br/>src/index.ts]
+        CLI[CLI Parser<br/>tools/prr/cli.ts]
+        Main[Main Entry<br/>tools/prr/index.ts]
     end
     
     subgraph "Core Resolver"
-        Resolver[PR Resolver<br/>src/resolver.ts]
-        ResolverProc[Resolver Procedures<br/>src/resolver-proc.ts]
+        Resolver[PR Resolver<br/>tools/prr/resolver.ts]
+        ResolverProc[Resolver Procedures<br/>tools/prr/resolver-proc.ts]
     end
     
     subgraph "Workflow Orchestration"
@@ -67,13 +69,13 @@ Fallback (plain text):
 
 ┌─────────────────────────────────────────────────────────────┐
 │                         CLI Entry                            │
-│                      (src/cli.ts)                           │
+│                   (tools/prr/cli.ts)                        │
 └────────────────┬────────────────────────────────────────────┘
                  │
                  ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Main Resolver                             │
-│                   (src/resolver.ts)                         │
+│                 (tools/prr/resolver.ts)                     │
 └────────┬───────────────────────────────────────────────────┘
          │
     ┌────┴────┬────────────┬───────────────┬──────────────┐
@@ -88,20 +90,20 @@ Fallback (plain text):
 
 ## Key Subsystems
 
-### 1. GitHub Integration (`src/github/`)
+### 1. GitHub Integration (`tools/prr/github/`)
 
 Handles all interactions with GitHub's API:
 - Fetching PR information (title, description, files, comments, status)
-- Extracting bot review comments from issue comments (Claude, Greptile)
+- Extracting bot review comments from issue comments (Claude, Greptile, Copilot, Cursor)
 - Posting verification comments
 - Managing PR metadata
 
 **Bot comment extraction:**
 Two separate paths capture review feedback:
 1. **Inline review threads** (`getReviewThreads()`): GraphQL-based, captures CodeRabbit, Copilot, humans
-2. **Issue comments** (`getReviewBotIssueComments()`): REST-based, captures Claude, Greptile
+2. **Issue comments** (`getReviewBotIssueComments()`): REST-based, captures Claude, Greptile, Copilot, Cursor (see `REVIEW_BOTS_PARSE` in api.ts).
 
-WHY two paths: Some bots (Claude, Greptile) post structured reviews as issue/conversation comments, not inline threads. CodeRabbit is intentionally absent from the issue-comment path — it uses inline threads, and its summary comment would produce duplicate pseudo-issues.
+WHY two paths: Some bots post structured reviews as issue/conversation comments, not inline threads. CodeRabbit is intentionally absent from the issue-comment path — it uses inline threads, and its summary comment would produce duplicate pseudo-issues.
 
 **Bot name normalization:**
 `normalizeBotName()` converts `claude[bot]` → `Claude` for cleaner prompt display. Only used in the issue-comment path. WHY NOT in inline threads: raw logins like `coderabbitai[bot]` serve as identity keys for dedup and verification tracking — normalizing them would break matching.
@@ -110,7 +112,7 @@ WHY two paths: Some bots (Claude, Greptile) post structured reviews as issue/con
 - `api.ts` - GitHub API client wrapper (bot filtering, normalization)
 - `types.ts` - Type definitions for PR data (`PRInfo` includes title/body)
 
-### 2. Git Operations (`src/git/`)
+### 2. Git Operations (`shared/git/`)
 
 Manages local git repository operations:
 - Cloning and updating repositories
@@ -137,7 +139,7 @@ PRR can now handle files of any size using three strategies:
 
 See `DEVELOPMENT.md` §15 (Merge Conflict Resolution) for details.
 
-### 3. LLM Client (`src/llm/`)
+### 3. LLM Client (`tools/prr/llm/`)
 
 Interfaces with LLM providers (Anthropic Claude, OpenAI):
 - Verifying fixes
@@ -235,7 +237,7 @@ WHY: A verifier that says "the snippet is truncated" is not providing evidence t
 
 WHY: Line-drift "identifier not found" dismissals were being driven by incidental tokens like `BigInt` that appear in many files. Weak identifiers are poor evidence that the reviewed code was removed or renamed; keeping those issues open avoids false stale dismissals.
 
-### 4. Analyzer (`src/analyzer/`)
+### 4. Analyzer (`tools/prr/analyzer/`)
 
 Issue analysis and prompt building:
 - `types.ts` - Core types: `UnresolvedIssue`, `IssueTriage`, `FixPrompt`
@@ -268,7 +270,7 @@ The `sortByPriority()` function accepts 7 sort orders:
 
 **Default triage:** Issues without LLM-assigned triage (recovery paths, new comments mid-cycle) default to `{ importance: 3, ease: 3 }` (middle of pack), not `5` (worst). WHY: These aren't necessarily trivial, they just haven't been analyzed yet. Putting them in the middle ensures they're not deprioritized.
 
-### 5. Runners (`src/runners/`)
+### 5. Runners (`shared/runners/`)
 
 Fixer tools that make actual code changes:
 - **Cursor** - Cursor Composer agent
@@ -292,7 +294,7 @@ interface Runner {
 
 **Runner output hygiene:** Runners return clean text in `RunResult.output`, not raw protocol frames. WHY: The Cursor runner streams JSON frames like `{"type":"text","content":"..."}`. Downstream consumers like `parseNoChangesExplanation()` search the output for patterns like `NO_CHANGES:` — raw JSON metadata caused false matches against embedded instruction text, triggering expensive re-verification of all issues.
 
-### 6. State Management (`src/state/`)
+### 6. State Management (`tools/prr/state/`)
 
 Persistent state lives in `.pr-resolver-state.json` in the repo workdir. WHY this name: Unambiguous (not just "state") and tool-prefixed so it's clear it belongs to PRR and doesn't collide with other tools' state files.
 
@@ -321,7 +323,7 @@ Lessons are:
 - `state-*.ts` - State operation modules (verification, lessons, iterations)
 - `lessons-*.ts` - Lessons subsystem modules
 
-### 7. Workflow Orchestration (`src/workflow/`)
+### 7. Workflow Orchestration (`tools/prr/workflow/`)
 
 Breaks down the main resolver loop into focused phases:
 
@@ -364,7 +366,7 @@ Breaks down the main resolver loop into focused phases:
 - `helpers/solvability.ts` - Pre-screens issues for solvability (deleted files, stale refs, exhausted attempts). `recheckSolvability` parallelizes snippet fetching.
 - `utils.ts` - `parseNoChangesExplanation()` with prompt regurgitation detection
 
-### 8. UI & Reporting (`src/ui/`)
+### 8. UI & Reporting (`tools/prr/ui/`)
 
 User-facing output and progress indicators:
 - Spinners for long operations
@@ -374,7 +376,7 @@ User-facing output and progress indicators:
 - Model performance stats
 - **After Action Report**: Three-section AAR (Fixed This Session, Dismissed, Remaining) with suggested resolutions
 
-### 9. Prompt Sanitization (`src/analyzer/prompt-builder.ts`)
+### 9. Prompt Sanitization (`tools/prr/analyzer/prompt-builder.ts`)
 
 Comment body cleanup before LLM ingestion:
 - `sanitizeCommentForPrompt()` strips base64 JWT tokens from "Fix in Cursor" links, HTML metadata comments (`<!-- BUGBOT_BUG_ID -->`, `<!-- DESCRIPTION START/END -->`), `<details>/<summary>` blocks, `<picture>/<img>` tags, and other bot-specific noise.
@@ -382,14 +384,16 @@ Comment body cleanup before LLM ingestion:
 
 WHY: Bot review comments embed massive base64-encoded JWTs (500+ chars per link) and HTML metadata that wastes tokens and pollutes LLM context. A typical CodeRabbit comment shrinks by 30-60% after sanitization, improving both cost and LLM comprehension.
 
-### 10. Logging (`src/logger.ts`)
+### 10. Logging (`shared/logger.ts`)
 
 Three-tier logging system:
-- **`output.log`**: All console output, ANSI-stripped. Truncated per run. Patches `console.log/warn/error` directly (excludes spinner noise).
-- **`prompts.log`**: Full LLM prompts and responses. Each entry tagged with a searchable slug (e.g., `#0007/llm-anthropic`) that also appears as a one-liner in `output.log`.
+- **`output.log`** (or `{prefix}-output.log`): All console output, ANSI-stripped. Truncated per run. Patches `console.log/warn/error` directly (excludes spinner noise).
+- **`prompts.log`** (or `{prefix}-prompts.log`): Full LLM prompts and responses. Each entry tagged with a searchable slug (e.g., `#0007/llm-anthropic`) that also appears as a one-liner in `output.log`.
 - **Standalone debug files**: Individual prompt/response files in `~/.prr/debug/<timestamp>/` (when `PRR_DEBUG_PROMPTS=1`).
 
-WHY dual logging: Inlining 5-50K prompts in `output.log` would drown the operational log. The slug system enables cross-file navigation: see something suspicious in `output.log`, Cmd+F the slug in `prompts.log` to jump to the full prompt.
+**WHY dual logging:** Inlining 5-50K prompts in `output.log` would drown the operational log. The slug system enables cross-file navigation: see something suspicious in `output.log`, Cmd+F the slug in `prompts.log` to jump to the full prompt.
+
+**Pill integration:** When `initOutputLog({ enablePill: true })` is used (prr, story), `closeOutputLog()` dynamically imports the pill orchestrator and runs pill on the closed logs, then prints the pitch and file paths to the **original** console (refs captured before patching). WHY dynamic import: the orchestrator must not import from logger or a circular dependency results. WHY original refs: the patched console tees to the log file; pill’s output should go to the user’s terminal. WHY double-init guard: if `initOutputLog` is called twice, we only capture the real console on first init so the pill hook never gets a patched ref. See [tools/pill/README.md](../tools/pill/README.md).
 
 ---
 
@@ -400,7 +404,7 @@ WHY dual logging: Inlining 5-50K prompts in `output.log` would drown the operati
 ```text
 1. Fetch PR comments from GitHub
    ├─ Inline review threads (GraphQL)
-   └─ Bot issue comments (Claude, Greptile)
+   └─ Bot issue comments (Claude, Greptile, Copilot, Cursor)
    ↓
 2. Pre-screen for solvability (skip deleted files, stale refs)
    ↓
@@ -481,17 +485,17 @@ Lessons are stored in `.prr/lessons.md` (markdown format) and `.prr/lessons.json
 ```json
 {
   "global": [
-    "Fix for src/foo.ts:42 rejected: Always check null before accessing properties"
+    "Fix for tools/prr/foo.ts:42 rejected: Always check null before accessing properties"
   ],
   "files": {
-    "src/foo.ts": [
+    "tools/prr/foo.ts": [
       "Use ?? instead of || for nullish coalescing in TypeScript"
     ]
   }
 }
 ```
 
-**Lesson normalization** (`src/state/lessons-normalize.ts`): Raw text from fixers, batch verify, and no-changes handlers is normalized before storage. Design is *flexible on input, best-effort canonical form*: (1) inline backticks (e.g. `execSync`) are preserved for readable code references; (2) "tool/fixer made no changes" variants are canonicalized and kept instead of rejected so they can be deduped; (3) single-asterisk list lines and code-fence blocks are dropped to avoid junk. WHY: Lessons come from many sources; rejecting messy-but-valid input lost signal. Normalizing gives one consistent shape for `.prr/lessons.md` and CLAUDE.md without forcing callers to pre-sanitize.
+**Lesson normalization** (`tools/prr/state/lessons-normalize.ts`): Raw text from fixers, batch verify, and no-changes handlers is normalized before storage. Design is *flexible on input, best-effort canonical form*: (1) inline backticks (e.g. `execSync`) are preserved for readable code references; (2) "tool/fixer made no changes" variants are canonicalized and kept instead of rejected so they can be deduped; (3) single-asterisk list lines and code-fence blocks are dropped to avoid junk. WHY: Lessons come from many sources; rejecting messy-but-valid input lost signal. Normalizing gives one consistent shape for `.prr/lessons.md` and CLAUDE.md without forcing callers to pre-sanitize.
 
 ---
 
@@ -525,7 +529,7 @@ Configuration comes from multiple sources (priority order):
 
 1. **Command-line arguments** (`--model`, `--max-context`, etc.)
 2. **Environment variables** (`.env` file)
-3. **Defaults** (`src/constants.ts`)
+3. **Defaults** (`shared/constants.ts`)
 
 Key configuration:
 - `LLM_PROVIDER`: 'anthropic' | 'openai' | 'elizacloud'
@@ -537,11 +541,11 @@ Key configuration:
 
 ## Error Handling & Resilience
 
-- **Graceful shutdown** (`src/workflow/graceful-shutdown.ts`): Single Ctrl+C saves state and exits cleanly. Double Ctrl+C force exits.
-- **State persistence** (`src/state/manager.ts`): Auto-save on every mutation. Resume from interruption.
-- **Conflict auto-resolution** (`src/git/git-conflict-resolve.ts`): Lock files regenerated via package manager. Code files resolved by LLM (2 attempts).
-- **Push retry with rebase** (`src/git/git-push.ts`): On rejection, pull + rebase + retry. Auto-inject GitHub token to remote URL.
-- **Distributed locking** (`src/state/lock-functions.ts`): Prevents parallel instances on same PR. PID-based stale lock detection.
+- **Graceful shutdown** (`tools/prr/workflow/graceful-shutdown.ts`): Single Ctrl+C saves state and exits cleanly. Double Ctrl+C force exits.
+- **State persistence** (`tools/prr/state/manager.ts`): Auto-save on every mutation. Resume from interruption.
+- **Conflict auto-resolution** (`shared/git/git-conflict-resolve.ts`): Lock files regenerated via package manager. Code files resolved by LLM (2 attempts).
+- **Push retry with rebase** (`shared/git/git-push.ts`): On rejection, pull + rebase + retry. Auto-inject GitHub token to remote URL.
+- **Distributed locking** (`tools/prr/state/lock-functions.ts`): Prevents parallel instances on same PR. PID-based stale lock detection.
 
 ---
 
@@ -549,21 +553,21 @@ Key configuration:
 
 ### Adding a New Runner
 
-1. Implement `Runner` interface in `src/runners/your-runner.ts`
-2. Export from `src/runners/index.ts`
-3. Add detection logic in `detectAvailableRunners()`
+1. Implement `Runner` interface in `shared/runners/your-runner.ts`
+2. Add to `ALL_RUNNERS` in `shared/runners/detect.ts`
+3. `detectAvailableRunners()` will pick it up automatically
 4. Add to CLI help text
 
 ### Adding a New LLM Provider
 
-1. Add provider type to `src/config.ts`
-2. Implement client in `src/llm/client.ts`
+1. Add provider type to `shared/config.ts`
+2. Implement client in `tools/prr/llm/client.ts`
 3. Add environment variable validation
 4. Update documentation
 
 ### Adding New Heuristic Resolution
 
-1. Add file type detection in `tryHeuristicResolution()` (`src/git/git-conflict-chunked.ts`)
+1. Add file type detection in `tryHeuristicResolution()` (`shared/git/git-conflict-chunked.ts`)
 2. Implement resolution function (e.g., `resolveDockerfileConflict()`)
 3. Return `{ resolved: true/false, content, explanation }`
 
@@ -573,7 +577,7 @@ Key configuration:
 
 ### Module Structure
 ```text
-src/subsystem/
+tools/prr/subsystem/
 ├── subsystem-core.ts       # Core types and pure functions
 ├── subsystem-operations.ts # Stateful operations
 ├── subsystem-helpers.ts    # Utility functions
@@ -638,7 +642,7 @@ This shows:
 
 ## Further Reading
 
-- **Flowcharts**: `docs/flowchart.md`
-- [Runners Documentation](./RUNNERS.md) - Deep dive into fixer tools
-- [Development Guide](../DEVELOPMENT.md) - Design decisions, WHYs, troubleshooting
-- **Changelog**: `CHANGELOG.md`
+- **Flowcharts**: [flowchart.md](flowchart.md)
+- [Runners Documentation](RUNNERS.md) - Deep dive into fixer tools
+- [Development Guide](../../DEVELOPMENT.md) - Design decisions, WHYs, troubleshooting
+- **Changelog**: [CHANGELOG.md](../../CHANGELOG.md)

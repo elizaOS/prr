@@ -1,15 +1,90 @@
-// Full implementation in Phase 5A. Until then: Phase 2 = context; Phase 3 = audit; Phase 4 = runners; Phase 5 = fix/verify/commit.
+/**
+ * Pill analysis-only: assemble context from logs, run audit LLM, append to pill-output.md and pill-summary.md.
+ * No runners, fix, verify, or commit.
+ *
+ * WHY no import from shared/logger: closeOutputLog() in shared/logger.ts dynamically imports this module
+ * to run the pill hook. Importing formatNumber (or anything) from logger would create a circular dependency.
+ * User-facing numbers use n.toLocaleString() here (workspace rule allows that when logger is not imported).
+ */
 import chalk from 'chalk';
-import type { PillConfig, ImprovementPlan, Improvement, AuditCycle } from './types.js';
-import { loadAuditCycles, appendCycle, initAuditStore } from './audit-cycles.js';
-import type { Runner } from '../../shared/runners/types.js';
-import { detectAvailableRunners } from '../../shared/runners/detect.js';
+import ora from 'ora';
+import { appendFileSync } from 'fs';
+import { join } from 'path';
+import type { PillConfig, ImprovementPlan, Improvement } from './types.js';
+import { DEFAULT_PILL_CONTEXT_BUDGET_TOKENS } from './config.js';
 import { assembleContext, getContextTokenCounts } from './context.js';
 import { LLMClient } from './llm/client.js';
-import { AUDIT_SYSTEM_PROMPT, VERIFY_SYSTEM_PROMPT } from './llm/prompts.js';
+import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJson } from './llm/parse-json.js';
-import type { VerifyResult } from './types.js';
-import { snapshotFiles, computeDiffs, changedPaths } from './utils/snapshot.js';
+import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
+import { chunkPlainText } from '../../shared/llm/story-read.js';
+import { filterImprovementsByToolRepoScope } from './tool-repo-scope.js';
+
+/** Default hard cap on user message length (chars) per audit HTTP request. Override: PILL_AUDIT_MAX_USER_CHARS.
+ * WHY 20k not 42k: Vercel FUNCTION_INVOCATION_TIMEOUT on ElizaCloud with claude-opus + ~44k POST bodies (audit still failed). */
+const DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS = 20_000;
+/** Opus / heavy models: smaller payloads finish inside gateway limits. Skipped when PILL_AUDIT_MAX_USER_CHARS is set. */
+const SLOW_AUDIT_MODEL_MAX_USER_CHARS = 12_000;
+const MIN_AUDIT_USER_MESSAGE_MAX_CHARS = 6_000;
+/**
+ * Optimistic chars/token when converting PILL_CONTEXT_BUDGET_TOKENS → max user chars (allow more text in budget).
+ * MUST NOT be used for chunkPlainText — that uses shared estimateTokens (length / CHARS_PER_TOKEN).
+ */
+const BUDGET_TO_USER_CHARS_RATIO = 2.7;
+const USER_MESSAGE_TOKEN_FRACTION = 0.8;
+/** Safety margin for system prompt + JSON overhead (subtracted from calculated cap to avoid 504). */
+const REQUEST_OVERHEAD_CHARS = 11_000;
+/** Reserve for `[CONTEXT CHUNK i/n]\n\n` so chunk body + prefix ≤ userMessageMaxChars. */
+const CHUNK_PREFIX_RESERVE_CHARS = 160;
+
+/**
+ * Subdivide chapters whose text exceeds maxChars (e.g. one log line longer than token budget).
+ * WHY: chunkPlainText emits a single line as one chapter when that line alone exceeds the token budget; that can still be huge in bytes.
+ */
+function isSlowAuditModel(model: string): boolean {
+  const m = model.toLowerCase();
+  if (/opus|claude-3-opus|o3-|o1-pro/.test(m)) return true;
+  // gpt-5 family can be slow on gateways; exclude mini/nano-sized ids from the tight cap.
+  if (/gpt-5/.test(m) && !/gpt-5-nano|gpt-5-mini|5-nano|5-mini/.test(m)) return true;
+  return false;
+}
+
+/** Max user chars per audit request (single or per chunk). Env override wins; else slow models get a tighter cap. */
+function computeAuditUserMessageMaxChars(
+  budgetTokens: number,
+  auditModel: string,
+  envOverride?: number
+): number {
+  const fromBudget = Math.floor(budgetTokens * USER_MESSAGE_TOKEN_FRACTION * BUDGET_TO_USER_CHARS_RATIO) - REQUEST_OVERHEAD_CHARS;
+  let cap = Math.min(DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS, fromBudget);
+  if (envOverride !== undefined && Number.isFinite(envOverride)) {
+    cap = Math.min(Math.max(MIN_AUDIT_USER_MESSAGE_MAX_CHARS, envOverride), 80_000);
+  } else if (isSlowAuditModel(auditModel)) {
+    cap = Math.min(cap, SLOW_AUDIT_MODEL_MAX_USER_CHARS);
+  }
+  return Math.max(MIN_AUDIT_USER_MESSAGE_MAX_CHARS, cap);
+}
+
+function enforceMaxChunkChars(
+  chapters: { label: string; text: string }[],
+  maxChars: number
+): { label: string; text: string }[] {
+  const out: { label: string; text: string }[] = [];
+  for (const ch of chapters) {
+    if (ch.text.length <= maxChars) {
+      out.push(ch);
+      continue;
+    }
+    const sliceCount = Math.ceil(ch.text.length / maxChars);
+    for (let p = 0; p < sliceCount; p++) {
+      out.push({
+        label: `${ch.label} · part ${p + 1}/${sliceCount}`,
+        text: ch.text.slice(p * maxChars, (p + 1) * maxChars),
+      });
+    }
+  }
+  return out;
+}
 
 function buildAuditUserMessage(ctx: {
   docs: string;
@@ -29,8 +104,10 @@ function buildAuditUserMessage(ctx: {
 }
 
 function parseImprovementPlan(raw: string): ImprovementPlan {
-  const obj = extractJson<{ summary?: string; improvements?: unknown[] }>(raw);
+  const obj = extractJson<{ pitch?: string; summary?: string; improvements?: unknown[] }>(raw);
   const summary = typeof obj.summary === 'string' ? obj.summary : '';
+  const pitch =
+    typeof obj.pitch === 'string' ? obj.pitch : typeof obj.summary === 'string' ? obj.summary : '';
   const improvements: Improvement[] = [];
   if (Array.isArray(obj.improvements)) {
     for (const item of obj.improvements) {
@@ -46,63 +123,7 @@ function parseImprovementPlan(raw: string): ImprovementPlan {
       }
     }
   }
-  return { summary, improvements };
-}
-
-function buildFixPrompt(plan: ImprovementPlan, targetDir: string): string {
-  const lines: string[] = [
-    `You are working in ${targetDir}. Make the following improvements to the code in this directory.`,
-    '',
-    plan.summary,
-    '',
-    'Improvements to apply:',
-  ];
-  for (const imp of plan.improvements) {
-    lines.push(`- ${imp.file}: [${imp.severity}] ${imp.description}`);
-    lines.push(`  Rationale: ${imp.rationale}`);
-    lines.push('');
-  }
-  return lines.join('\n');
-}
-
-function parseVerifyResult(raw: string): VerifyResult {
-  const obj = extractJson<{ status?: string; issues?: unknown[] }>(raw);
-  const status = obj.status === 'issues' ? 'issues' : 'clean';
-  const issues: Improvement[] = [];
-  if (Array.isArray(obj.issues)) {
-    for (const item of obj.issues) {
-      if (item && typeof item === 'object' && 'file' in item && 'description' in item) {
-        const i = item as Record<string, unknown>;
-        issues.push({
-          file: String(i.file ?? ''),
-          description: String(i.description ?? ''),
-          rationale: String(i.rationale ?? ''),
-          severity: (i.severity as Improvement['severity']) ?? 'minor',
-          category: (i.category as Improvement['category']) ?? 'code',
-        });
-      }
-    }
-  }
-  return status === 'clean' ? { status: 'clean' } : { status: 'issues', issues };
-}
-
-function buildVerifyUserMessage(
-  plan: ImprovementPlan,
-  diffs: string,
-  currentFiles: Map<string, string>,
-  changedPathsSet: Set<string>
-): string {
-  const planSection =
-    '[IMPROVEMENT PLAN]\n' +
-    plan.summary +
-    '\n\n' +
-    plan.improvements.map((i: Improvement) => `- ${i.file}: ${i.description}`).join('\n');
-  const diffSection = '[UNIFIED DIFFS]\n' + (diffs || '(no diffs)');
-  const currentParts: string[] = ['[CURRENT STATE OF CHANGED FILES]'];
-  for (const path of changedPathsSet) {
-    currentParts.push(`\n--- ${path} ---\n${currentFiles.get(path) ?? ''}`);
-  }
-  return [planSection, diffSection, currentParts.join('')].join('\n\n');
+  return { pitch, summary, improvements };
 }
 
 function displayPlan(plan: ImprovementPlan): void {
@@ -123,155 +144,391 @@ function displayPlan(plan: ImprovementPlan): void {
   }
 }
 
-export async function runPill(config: PillConfig): Promise<void> {
-  if (config.verbose) {
-    console.log('Provider:', config.llmProvider);
-    console.log('Audit model:', config.auditModel);
-  }
+/** GitHub-style heading slug: lowercase, alphanumeric/hyphens/spaces only, spaces to single hyphen. */
+function headingSlug(title: string): string {
+  const s = title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return s || 'section';
+}
 
-  // Step 1: Check git status early (if --commit, block on dirty tree unless --force)
-  const { getPreDirtyPaths, commitChanges } = await import('./git.js');
-  const preDirtyPaths = config.commit ? await getPreDirtyPaths(config.targetDir) : new Set<string>();
-  if (config.commit && !config.force && preDirtyPaths.size > 0) {
-    throw new Error(
-      `${preDirtyPaths.size} file(s) already modified in ${config.targetDir}. ` +
-      `Use --force to proceed (only pill-touched files will be committed).`
-    );
-  }
+export interface PillOutputMeta {
+  date: string;
+  source: string;
+}
 
-  // Step 2: Detect runners before audit (avoid wasting API tokens if no runner available)
-  let runner: Runner | null = null;
-  if (!config.dryRun) {
-    const detected = await detectAvailableRunners();
-    if (config.tool === 'auto') {
-      runner = detected.length > 0 ? detected[0].runner : null;
-    } else {
-      runner = detected.find((d) => d.runner.name === config.tool)?.runner ?? null;
-    }
-    if (!runner) {
-      throw new Error('No runner available. Install cursor-agent, claude-code, aider, codex, gemini, or set an API key for llm-api.');
-    }
-    const status = await runner.checkStatus();
-    if (!status.ready) {
-      throw new Error(`Runner ${runner.displayName} is not ready: ${status.error ?? 'unknown'}`);
-    }
-    console.log(chalk.gray(`Using runner: ${runner.displayName}`));
-  }
-
-  // Step 3: Assemble context
-  const llmClient = new LLMClient(config);
-  const ctx = await assembleContext(config, llmClient);
-  const counts = getContextTokenCounts(ctx);
-
-  if (config.verbose) {
-    console.log('Context token counts:');
-    console.log('  docs:', counts.docs);
-    console.log('  sourceFiles:', counts.sourceFiles);
-    console.log('  directoryTree:', counts.directoryTree);
-    console.log('  outputLog:', counts.outputLog);
-    console.log('  promptsDigest:', counts.promptsDigest);
-    const total =
-      counts.docs + counts.sourceFiles + counts.directoryTree + counts.outputLog + counts.promptsDigest;
-    console.log('  total:', total);
-  }
-
-  // Step 4: Audit
-  const userMessage = buildAuditUserMessage(ctx);
-  const response = await llmClient.complete(userMessage, AUDIT_SYSTEM_PROMPT, {
-    model: config.auditModel,
-  });
-  const plan = parseImprovementPlan(response.content);
-  displayPlan(plan);
-  if (response.usage) {
-    console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
-  }
-
-  if (config.dryRun) {
-    return;
-  }
-
-  if (plan.improvements.length === 0) {
-    console.log(chalk.gray('No improvements to apply.'));
-    return;
-  }
-
-  let filesToFix = [...new Set(plan.improvements.map((i: Improvement) => i.file))];
-  const touchedFiles = new Set<string>();
-  let currentPlan = plan;
-
-  if (!runner) {
-    console.log(chalk.red('No runner available; cannot apply fixes.'));
-    return;
-  }
-
-  for (let cycle = 1; cycle <= config.maxCycles; cycle++) {
-    if (currentPlan.improvements.length === 0) break;
-    const before = snapshotFiles(config.targetDir, filesToFix);
-    const fixPrompt = buildFixPrompt(currentPlan, config.targetDir);
-    const result = await runner.run(config.targetDir, fixPrompt, {
-      model: config.fixerModel ?? config.llmModel,
+function formatInstructionsEntry(plan: ImprovementPlan, meta: PillOutputMeta): string {
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const lines: string[] = ['', '---', '', `## ${title}`, '', '### Summary', '', plan.summary, ''];
+  if (plan.improvements.length > 0) {
+    lines.push('### Improvements', '');
+    plan.improvements.forEach((imp, i) => {
+      lines.push(`#### ${i + 1}. \`${imp.file}\` [${imp.severity} / ${imp.category}]`);
+      lines.push('**Description:** ' + imp.description);
+      lines.push('**Rationale:** ' + imp.rationale);
+      lines.push('');
     });
-    if (!result.success) {
-      console.log(chalk.red('Fix step failed:'), result.error ?? 'unknown');
-      break;
-    }
-    const after = snapshotFiles(config.targetDir, filesToFix);
-    const changed = changedPaths(before, after);
-    if (changed.size === 0) {
-      console.log(chalk.yellow('Runner made no changes; stopping cycle.'));
-      break;
-    }
-    for (const p of changed) touchedFiles.add(p);
-    const diffs = computeDiffs(before, after);
-    const verifyMsg = buildVerifyUserMessage(currentPlan, diffs, after, changed);
-    const verifyRes = await llmClient.complete(verifyMsg, VERIFY_SYSTEM_PROMPT, {
-      model: config.auditModel,
-    });
-    const verifyResult = parseVerifyResult(verifyRes.content);
-    if (verifyResult.status === 'clean') {
-      console.log(chalk.green('Verify: clean.'));
-      break;
-    }
-    const issues = verifyResult.issues ?? [];
-    console.log(chalk.yellow(`Verify: ${issues.length} issue(s) remaining.`));
-    for (const i of issues) filesToFix.push(i.file);
-    filesToFix = [...new Set(filesToFix)];
-    currentPlan = { summary: currentPlan.summary, improvements: issues };
   }
+  lines.push('---');
+  return lines.join('\n');
+}
 
-  if (config.commit && touchedFiles.size > 0) {
-    await commitChanges(config.targetDir, plan, touchedFiles, preDirtyPaths);
-  }
+function formatSummaryEntry(
+  plan: ImprovementPlan,
+  meta: PillOutputMeta,
+  instructionsAnchor: string
+): string {
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const critical = plan.improvements.filter((i) => i.severity === 'critical').length;
+  const important = plan.improvements.filter((i) => i.severity === 'important').length;
+  const minor = plan.improvements.filter((i) => i.severity === 'minor').length;
+  // User-facing counts: use toLocaleString (no logger import — avoids circular dependency with shared/logger).
+  const countLine = `${plan.improvements.length.toLocaleString()} improvement(s) (${critical.toLocaleString()} critical, ${important.toLocaleString()} important, ${minor.toLocaleString()} minor)`;
+  const lines: string[] = [
+    '',
+    '---',
+    '',
+    `## ${title}`,
+    '',
+    `> ${countLine}`,
+    `> Details: [pill-output.md](${instructionsAnchor})`,
+    '',
+    plan.pitch || plan.summary,
+    '',
+    '---',
+  ];
+  return lines.join('\n');
+}
 
-  // Record this run in the directory's audit-cycle store (AUDIT-CYCLES.md–like per directory).
-  const today = new Date().toISOString().slice(0, 10);
-  const artifacts =
-    config.outputOnly && config.promptsOnly
-      ? 'pill-output.log, pill-prompts.log'
-      : config.outputOnly
-        ? 'pill-output.log'
-        : config.promptsOnly
-          ? 'pill-prompts.log'
-          : 'pill-output.log, pill-prompts.log';
-  const bySeverity = { high: [] as string[], medium: [] as string[], low: [] as string[] };
-  for (const i of plan.improvements) {
-    const line = `${i.file}: ${i.description}`;
-    if (i.severity === 'critical') bySeverity.high.push(line);
-    else if (i.severity === 'important') bySeverity.medium.push(line);
-    else bySeverity.low.push(line);
-  }
-  const cycle: AuditCycle = {
-    date: today,
-    artifacts,
-    findings: bySeverity,
-    improvementsImplemented: plan.improvements
-      .filter((i) => touchedFiles.has(i.file))
-      .map((i) => `${i.file}: ${i.description}`),
-    flipFlopCheck: 'Y',
-    flipFlopNote: 'No revert or conflicting change detected this run.',
+export interface AppendPillOutputResult {
+  instructionsPath: string;
+  summaryPath: string;
+}
+
+function appendPillOutput(
+  targetDir: string,
+  plan: ImprovementPlan,
+  meta: PillOutputMeta,
+  instructionsPathOverride?: string
+): AppendPillOutputResult {
+  const instructionsPath = instructionsPathOverride ?? join(targetDir, 'pill-output.md');
+  const summaryPath = join(targetDir, 'pill-summary.md');
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const slug = headingSlug(title);
+  const instructionsAnchor = `pill-output.md#${slug}`;
+
+  const instructionsEntry = formatInstructionsEntry(plan, meta);
+  const summaryEntry = formatSummaryEntry(plan, meta, instructionsAnchor);
+
+  appendFileSync(instructionsPath, instructionsEntry, 'utf-8');
+  appendFileSync(summaryPath, summaryEntry, 'utf-8');
+
+  return { instructionsPath, summaryPath };
+}
+
+/** Append a minimal "run but no improvements" section so pill-output.md / pill-summary.md are not left empty when user passed --pill. */
+function appendNoImprovementsRun(
+  targetDir: string,
+  meta: PillOutputMeta,
+  reason: PillNoImprovementsReason,
+  instructionsPathOverride?: string,
+  extra?: { filteredCount?: number }
+): void {
+  const instructionsPath = instructionsPathOverride ?? join(targetDir, 'pill-output.md');
+  const summaryPath = join(targetDir, 'pill-summary.md');
+  const title = `${meta.date} -- ${meta.source} run analysis`;
+  const reasonText =
+    reason === 'no_logs'
+      ? 'No logs to analyze (output/prompts log empty or missing).'
+      : reason === 'no_api_key'
+        ? 'No API key configured.'
+        : reason === 'zero_improvements_from_llm'
+          ? 'LLM returned zero improvements.'
+          : reason === 'all_filtered_tool_scope'
+            ? `All suggestions were filtered (paths outside this tool repository — e.g. the PR clone).${
+                extra?.filteredCount != null
+                  ? ` ${extra.filteredCount.toLocaleString()} suggestion(s) omitted.`
+                  : ''
+              } Set PILL_TOOL_REPO_SCOPE_FILTER=0 to disable filtering and record everything.`
+            : 'Audit request failed.';
+  const instructionsEntry = [
+    '',
+    '---',
+    '',
+    `## ${title}`,
+    '',
+    '### Summary',
+    '',
+    `No improvements suggested (${reasonText})`,
+    '',
+    '---',
+  ].join('\n');
+  const summaryEntry = [
+    '',
+    '---',
+    '',
+    `## ${title}`,
+    '',
+    `> No improvements (${reasonText})`,
+    '',
+    '---',
+  ].join('\n');
+  appendFileSync(instructionsPath, instructionsEntry, 'utf-8');
+  appendFileSync(summaryPath, summaryEntry, 'utf-8');
+}
+
+export interface PillAnalysisResult {
+  pitch: string;
+  plan: ImprovementPlan;
+  instructionsPath: string;
+  summaryPath: string;
+}
+
+/** Reason when runPillAnalysis returns no improvements (so callers can log the specific cause). */
+export type PillNoImprovementsReason =
+  | 'no_logs'
+  | 'no_api_key'
+  | 'api_call_failed'
+  | 'zero_improvements_from_llm'
+  | 'all_filtered_tool_scope';
+
+export interface PillNoImprovementsResult {
+  result: null;
+  reason: PillNoImprovementsReason;
+  errorMessage?: string;
+  /** When reason is all_filtered_tool_scope: how many LLM suggestions were dropped. */
+  filteredCount?: number;
+}
+
+/**
+ * Run the audit LLM and append to pill-output.md / pill-summary.md (or return paths in dry-run).
+ * Errors (LLM, parse, write) propagate to the caller. Callers: pill CLI (should see errors) and
+ * shared/logger closeOutputLog() hook (wraps in try/catch so pill remains optional and shutdown completes).
+ * When no improvements are recorded, returns { result: null, reason } so operators can distinguish no logs / no API key / zero improvements (pill-output.md #1).
+ */
+export async function runPillAnalysis(config: PillConfig): Promise<
+  | { result: PillAnalysisResult; reason?: never }
+  | PillNoImprovementsResult
+> {
+  const spinner = config.verbose ? null : ora();
+  const update = (text: string) => {
+    if (spinner) spinner.text = text;
   };
-  if (loadAuditCycles(config.targetDir) === null) initAuditStore(config.targetDir);
-  appendCycle(config.targetDir, cycle);
 
-  console.log(chalk.gray('\nDone.'));
+  function recordNoImprovements(reason: PillNoImprovementsReason, extra?: { filteredCount?: number }): void {
+    if (config.dryRun) return;
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
+    const source = (config.logPrefix?.trim()) ? config.logPrefix : 'prr';
+    appendNoImprovementsRun(config.targetDir, { date: dateStr, source }, reason, config.instructionsOut, extra);
+  }
+
+  // No API key — distinct message so operators know why (pill-output.md #3)
+  if (config.llmProvider === 'elizacloud' && !config.elizacloudApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (elizacloud). Set ELIZACLOUD_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'openai' && !config.openaiApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (openai). Set OPENAI_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'anthropic' && !config.anthropicApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (anthropic). Set ANTHROPIC_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
+    return { result: null, reason: 'no_api_key' };
+  }
+
+  try {
+    if (config.verbose) {
+      console.log('Provider:', config.llmProvider);
+      console.log('Audit model:', config.auditModel);
+    } else if (spinner) {
+      spinner.start('Assembling context…');
+    }
+
+    const llmClient = new LLMClient(config);
+    const ctx = await assembleContext(config, llmClient);
+
+    const budgetTokens = config.contextBudgetTokens ?? DEFAULT_PILL_CONTEXT_BUDGET_TOKENS;
+    if (ctx.contextTrimmed && spinner) {
+      spinner.info(`Context trimmed to fit ${budgetTokens.toLocaleString()} token budget (avoids 504/timeout).`);
+    }
+
+    const hasLogs = ctx.outputLog.trim().length > 0 || (ctx.promptsDigest ?? '').trim().length > 0;
+    if (!hasLogs) {
+      if (spinner) spinner.info('Pill: No logs to analyze (output/prompts log empty or missing for this prefix).');
+      recordNoImprovements('no_logs');
+      return { result: null, reason: 'no_logs' };
+    }
+
+    const counts = getContextTokenCounts(ctx);
+    if (config.verbose) {
+      console.log('Context token counts:');
+      console.log('  docs:', counts.docs);
+      console.log('  sourceFiles:', counts.sourceFiles);
+      console.log('  directoryTree:', counts.directoryTree);
+      console.log('  outputLog:', counts.outputLog);
+      console.log('  promptsDigest:', counts.promptsDigest);
+      const total =
+        counts.docs + counts.sourceFiles + counts.directoryTree + counts.outputLog + counts.promptsDigest;
+      console.log('  total:', total);
+    } else {
+      update('Running audit…');
+    }
+
+    // Subtract overhead so total request (user + system + JSON) stays under gateway time/size limits.
+    const userMessageMaxChars = computeAuditUserMessageMaxChars(
+      budgetTokens,
+      config.auditModel,
+      config.auditMaxUserChars
+    );
+    const fullUserMessage = buildAuditUserMessage(ctx);
+    
+    // Pill chunking: Instead of truncating, chunk large contexts and merge results
+    let plan: ImprovementPlan;
+    if (fullUserMessage.length > userMessageMaxChars) {
+      if (spinner) spinner.info(`Context exceeds ${userMessageMaxChars.toLocaleString()} chars — chunking into multiple audit requests (avoids 504/timeout).`);
+      
+      // MUST use shared CHARS_PER_TOKEN (4): chunkPlainText uses estimateTokens = ceil(len/4).
+      // Previously we divided by 2.7 here, which let each chapter grow to ~74k chars → 504 on ElizaCloud.
+      const maxChunkBodyChars = Math.max(4_000, userMessageMaxChars - CHUNK_PREFIX_RESERVE_CHARS);
+      const chunkTokenBudget = Math.max(512, Math.floor(maxChunkBodyChars / CHARS_PER_TOKEN));
+      let chapters = chunkPlainText(fullUserMessage, chunkTokenBudget);
+      chapters = enforceMaxChunkChars(chapters, maxChunkBodyChars);
+      
+      if (spinner) update(`Running audit (${chapters.length} chunk${chapters.length === 1 ? '' : 's'})…`);
+      
+      // Send audit request for each chunk and merge results
+      const chunkPlans: ImprovementPlan[] = [];
+      for (let i = 0; i < chapters.length; i++) {
+        if (spinner && chapters.length > 1) {
+          update(`Running audit chunk ${i + 1}/${chapters.length}…`);
+        }
+        const chunkMessage = `[CONTEXT CHUNK ${i + 1}/${chapters.length}]\n\n${chapters[i].text}`;
+        const chunkResponse = await llmClient.complete(chunkMessage, AUDIT_SYSTEM_PROMPT, {
+          model: config.auditModel,
+        });
+        const chunkPlan = parseImprovementPlan(chunkResponse.content);
+        chunkPlans.push(chunkPlan);
+      }
+      
+      // Merge chunk results: combine improvements, use first non-empty pitch/summary
+      const allImprovements: Improvement[] = [];
+      let mergedPitch = '';
+      let mergedSummary = '';
+      for (const chunkPlan of chunkPlans) {
+        allImprovements.push(...chunkPlan.improvements);
+        if (!mergedPitch && chunkPlan.pitch) mergedPitch = chunkPlan.pitch;
+        if (!mergedSummary && chunkPlan.summary) mergedSummary = chunkPlan.summary;
+      }
+      
+      // Deduplicate improvements by file+description (same file with similar description = duplicate)
+      const seen = new Map<string, Improvement>();
+      for (const imp of allImprovements) {
+        const key = `${imp.file}:${imp.description.substring(0, 100)}`;
+        if (!seen.has(key) || (imp.severity === 'critical' && seen.get(key)!.severity !== 'critical')) {
+          seen.set(key, imp);
+        }
+      }
+      
+      plan = {
+        pitch: mergedPitch || `Analyzed ${chapters.length} context chunk(s) and found ${seen.size} improvement(s).`,
+        summary: mergedSummary || `Merged audit results from ${chapters.length} chunk(s).`,
+        improvements: Array.from(seen.values()),
+      };
+    } else {
+      const response = await llmClient.complete(fullUserMessage, AUDIT_SYSTEM_PROMPT, {
+        model: config.auditModel,
+      });
+      plan = parseImprovementPlan(response.content);
+      if (response.usage && config.verbose) {
+        console.log(chalk.gray(`\nTokens: in=${response.usage.inputTokens} out=${response.usage.outputTokens}`));
+      }
+    }
+
+    let scopeFilteredTotal = 0;
+    if (config.toolRepoScopeFilter) {
+      const { kept, dropped } = filterImprovementsByToolRepoScope(plan.improvements);
+      scopeFilteredTotal = dropped;
+      plan.improvements = kept;
+      if (dropped > 0) {
+        const scopeMsg = `Scope filter: omitted ${dropped.toLocaleString()} suggestion(s) outside this tool repository (likely the PR clone). Set PILL_TOOL_REPO_SCOPE_FILTER=0 to disable.`;
+        if (plan.improvements.length > 0) {
+          plan.summary = `${plan.summary}\n\n(${scopeMsg})`;
+        }
+        if (config.verbose) {
+          console.log(chalk.gray(scopeMsg));
+        } else if (spinner && plan.improvements.length > 0) {
+          spinner.info(`Pill: ${scopeMsg}`);
+        }
+      }
+    }
+
+    if (config.verbose) {
+      displayPlan(plan);
+    }
+    // Note: Token usage logging is only available for single-request audits (not chunked)
+    // When chunking, we make multiple requests and don't aggregate token usage
+
+    if (plan.improvements.length === 0) {
+      if (scopeFilteredTotal > 0) {
+        if (spinner) {
+          spinner.info(
+            `Pill: All ${scopeFilteredTotal.toLocaleString()} suggestion(s) were outside tool-repo paths; nothing written. Set PILL_TOOL_REPO_SCOPE_FILTER=0 to include clone-target ideas.`,
+          );
+        }
+        recordNoImprovements('all_filtered_tool_scope', { filteredCount: scopeFilteredTotal });
+        return { result: null, reason: 'all_filtered_tool_scope', filteredCount: scopeFilteredTotal };
+      }
+      if (spinner) spinner.succeed('Pill: LLM returned zero improvements (audit ran successfully).');
+      recordNoImprovements('zero_improvements_from_llm');
+      return { result: null, reason: 'zero_improvements_from_llm' };
+    }
+
+    if (spinner) update('Writing results…');
+
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
+    // Use logPrefix so pill labels split-exec, split-plan, story, etc. correctly; default 'prr' when no prefix (main prr logs).
+    const source = (config.logPrefix?.trim()) ? config.logPrefix : 'prr';
+    const meta: PillOutputMeta = { date: dateStr, source };
+
+    const instructionsPathOverride = config.instructionsOut;
+    const { instructionsPath, summaryPath } = config.dryRun
+      ? { instructionsPath: join(config.targetDir, 'pill-output.md'), summaryPath: join(config.targetDir, 'pill-summary.md') }
+      : appendPillOutput(config.targetDir, plan, meta, instructionsPathOverride);
+
+    if (spinner) spinner.succeed(`${plan.improvements.length.toLocaleString()} improvement(s) recorded`);
+
+    return {
+      result: {
+        pitch: plan.pitch,
+        plan,
+        instructionsPath,
+        summaryPath,
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const is504 = /504|FUNCTION_INVOCATION_TIMEOUT|timeout/i.test(msg);
+    if (spinner) {
+      if (is504) {
+        spinner.fail(
+          `Pill audit timed out (504) — request too large or slow. Try: PILL_AUDIT_MAX_USER_CHARS=8000, PILL_CONTEXT_BUDGET_TOKENS=20000, PILL_OUTPUT_LOG_MAX_CHARS=20000, or a lighter PILL_AUDIT_MODEL (e.g. sonnet).`,
+        );
+      } else {
+        spinner.fail(msg);
+      }
+    }
+    recordNoImprovements('api_call_failed');
+    // Return instead of throw so callers can log reason (pill-output.md #3)
+    return { result: null, reason: 'api_call_failed', errorMessage: msg };
+  } finally {
+    if (spinner && spinner.isSpinning) spinner.stop();
+  }
 }

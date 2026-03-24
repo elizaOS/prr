@@ -7,10 +7,13 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { existsSync, statSync } from 'fs';
 import type { PillConfig } from './types.js';
-import type { CLIOptions, ToolOption } from './cli.js';
+import { resolveToolRepoScopeFilter } from './tool-repo-scope.js';
 
-const DEFAULT_AUDIT_MODEL = 'claude-opus-4-0-20250514';
+const DEFAULT_AUDIT_MODEL = 'claude-opus-4-6';
 const DEFAULT_LLM_MODEL = 'claude-sonnet-4-5-20250929';
+
+/** Default max context tokens for pill audit. Change this to alter the default (e.g. 20_000 for small-context models). Overridable via PILL_CONTEXT_BUDGET_TOKENS. */
+export const DEFAULT_PILL_CONTEXT_BUDGET_TOKENS = 35_000;
 
 function getEnv(key: string): string | undefined {
   const raw = process.env[key];
@@ -37,16 +40,13 @@ function isValidModel(name: string): boolean {
 
 export interface LoadConfigInput {
   targetDir: string;
-  tool: ToolOption;
-  model?: string;
   auditModel: string;
-  maxCycles: number;
   outputOnly: boolean;
   promptsOnly: boolean;
-  commit: boolean;
-  force: boolean;
   dryRun: boolean;
   verbose: boolean;
+  logPrefix?: string;
+  instructionsOut?: string;
 }
 
 /**
@@ -85,21 +85,44 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     throw new Error('Invalid model name in config or env. Use only letters, numbers, dots, slashes, hyphens.');
   }
 
+  // WHY configurable: Small-context models (e.g. 20k) need a lower budget to avoid 504/timeout; default 35k suits larger models.
+  const contextBudgetEnv = getEnv('PILL_CONTEXT_BUDGET_TOKENS');
+  const contextBudgetTokens =
+    contextBudgetEnv !== undefined && contextBudgetEnv !== ''
+      ? (() => {
+          const n = parseInt(contextBudgetEnv, 10);
+          if (!Number.isFinite(n) || n < 8_000 || n > 128_000) return undefined;
+          return n;
+        })()
+      : undefined;
+
+  const auditMaxUserEnv = getEnv('PILL_AUDIT_MAX_USER_CHARS');
+  const auditMaxUserChars =
+    auditMaxUserEnv !== undefined && auditMaxUserEnv !== ''
+      ? (() => {
+          const n = parseInt(auditMaxUserEnv, 10);
+          if (!Number.isFinite(n) || n < 6_000 || n > 80_000) return undefined;
+          return n;
+        })()
+      : undefined;
+
+  const toolRepoScopeFilter = resolveToolRepoScopeFilter(input.targetDir, getEnv('PILL_TOOL_REPO_SCOPE_FILTER'));
+
   const config: PillConfig = {
     targetDir: input.targetDir,
     llmProvider,
     auditModel,
     llmModel,
-    tool: input.tool,
-    fixerModel: input.model,
-    maxCycles: input.maxCycles,
+    logPrefix: input.logPrefix,
+    contextBudgetTokens,
+    auditMaxUserChars,
+    toolRepoScopeFilter,
     outputOnly: input.outputOnly,
     promptsOnly: input.promptsOnly,
-    commit: input.commit,
-    force: input.force,
     dryRun: input.dryRun,
     verbose: input.verbose,
   };
+  config.instructionsOut = input.instructionsOut;
 
   if (llmProvider === 'elizacloud') {
     config.elizacloudApiKey = getEnvOrThrow('ELIZACLOUD_API_KEY');
@@ -117,4 +140,27 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
   if (otherOpenai && !config.openaiApiKey) config.openaiApiKey = otherOpenai;
 
   return config;
+}
+
+/**
+ * Load pill config for use from shared logger hook. Returns null on missing API key or invalid dir.
+ * Never throws — allows prr/story to run pill analysis optionally.
+ */
+export function tryLoadPillConfig(input: {
+  targetDir: string;
+  logPrefix?: string;
+}): PillConfig | null {
+  try {
+    return loadConfig({
+      targetDir: input.targetDir,
+      auditModel: 'claude-opus-4-6',
+      outputOnly: false,
+      promptsOnly: false,
+      dryRun: false,
+      verbose: false,
+      logPrefix: input.logPrefix,
+    });
+  } catch {
+    return null;
+  }
 }

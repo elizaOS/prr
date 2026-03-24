@@ -1,11 +1,36 @@
 # LLM Models Reference
 
-This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits (e.g. `src/llm/model-context-limits.ts`).
+This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits in **`shared/llm/model-context-limits.ts`** (re-exported from `tools/prr/llm/model-context-limits.ts`).
 
 **Sources (check for latest):**
 
 - **Claude:** [Models overview](https://platform.claude.com/docs/en/about-claude/models/overview)
-- **OpenAI:** [Models](https://developers.openai.com/api/docs/models)
+- **OpenAI:** [Models](https://developers.openai.com/api/docs/models) — full ID list for scraping lives on [All models](https://developers.openai.com/api/docs/models/all)
+
+### Machine-readable catalog (for PRR / automation)
+
+Vendor doc pages change often; review bots may lag and suggest wrong renames (e.g. “use `gpt-4-mini`” when `gpt-5-mini` exists).
+
+| Artifact | Purpose |
+|----------|---------|
+| **`generated/model-provider-catalog.json`** | `fetchedAtIso`, `recommendedRefreshDays` (7), per-provider `apiIds[]`, and `lookup.openaiHyphenless` / `anthropicHyphenless` for loose matching |
+| **`shared/model-catalog.ts`** | `loadModelProviderCatalog()`, `resolveCatalogModelId()`, `isKnownOpenAiModelId()`, `isModelCatalogStale()` |
+| **`tools/model-catalog/fetch-provider-catalog.ts`** | Fetches the two doc URLs above and regenerates the JSON (no API keys) |
+
+**Refresh:** `npm run update-model-catalog`. **Weekly:** GitHub Action `refresh-model-catalog.yml`. **Override file path:** `PRR_MODEL_CATALOG_PATH`.
+
+**PRR behavior:** Outdated bot comments that call a catalog-valid id a “typo” and suggest another id are **dismissed** (`assessSolvability`, check **0a6**) and optionally **auto-healed** in the workdir before issue analysis.
+
+| Mechanism | WHY |
+|-----------|-----|
+| **Dismiss in solvability** | Stops non-actionable “rename valid A → valid B” advice from entering the LLM analysis/fix queue. |
+| **Heal before hashes / cache** | Analysis reuse keys off file content; correcting a bad string first avoids stale “still broken” conclusions. |
+| **Quoted literals only + line window** | Replacing bare tokens file-wide could hit unrelated code or prose; quotes/backticks near the review line target typical `model: '…'` / `` `…` `` constants safely. |
+| **`markVerified` + commit when all resolved** | The normal commit gate requires verified session ids; deterministic heals must satisfy the same rule so we do not commit unrelated dirty trees. |
+
+**Environment:** `PRR_MODEL_CATALOG_PATH` (override JSON path). **Disable pieces:** `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1` (no 0a6 dismissal), `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1` (no file rewrite; dismissal still applies if solvability is on). Full narrative: `DEVELOPMENT.md` — *Commit gate and catalog model auto-heal*.
+
+**Limitations (intentional):** Detection requires **framing** (“typo”, “invalid model”, etc.) so neutral suggestions (“prefer X for cost”) are not auto-dismissed. Parsing needs a confident **pair** of ids (`change A to B`, `use B instead of A`, `replace … with …`, quoted `A → B`, or a **heading** like `### Model name typo \`gpt-5-mini\`` with a later `use \`gpt-4o-mini\`` / `recommended \`…\`` in the same body). Summary tables that only say “FIXED → `gpt-4o-mini`” without an explicit wrong id may **not** match — extend `parseModelRenameAdvice` if another stable pattern appears.
 
 ---
 
@@ -90,13 +115,14 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ## Using this in PRR
 
-- **ElizaCloud / context limits:** When adding or changing models in `src/llm/model-context-limits.ts`, use the **input** context (e.g. 200K tokens for Claude, 128K for GPT-4o) and leave headroom for completion (~20%).
+- **ElizaCloud / context limits:** Edit **`ELIZACLOUD_MODEL_CONTEXT`** in `shared/llm/model-context-limits.ts`. Each entry sets **`maxContextTokens`** (total context window for that API model ID). PRR derives fix-prompt char caps from that (small contexts use a denser tokenization estimate). Optional **`maxFixPromptCharsCap`** tightens the derived value when the gateway still times out. Unknown gateway models use a conservative default until you add a row. Use **`ELIZACLOUD_MODEL_ID_ALIASES`** and pattern aliases in that file when the same physical model appears under multiple strings (e.g. `Qwen/Qwen3-14B` → `alibaba/qwen-3-14b`).
 - **Model IDs:** Prefer stable snapshot IDs (e.g. `claude-sonnet-4-5-20250929`) when you need reproducible behavior; use aliases (e.g. `claude-sonnet-4-6`) for "latest" behavior.
 - **Claude 4.6:** See [Migrating to Claude 4.6](https://platform.claude.com/docs/en/about-claude/models/migration-guide) when moving from older Claude versions.
 
 ### Rotation order and skip list
 
-- **llm-api / elizacloud:** Default rotation in `src/runners/types.ts` is ordered by observed fix success (Claude first, then GPT). Models that 500/timeout or have 0% fix rate in practice are in **ELIZACLOUD_SKIP_MODELS** in `src/models/rotation.ts` and are never selected (e.g. `gpt-4.1`, `claude-sonnet-4.5`, `gpt-5.1-codex-max`, `claude-3-opus`). Add new models there when audits show repeated errors or zero success. **Why:** Audit showed 0%-success and error-prone models wasting rotation slots; leading with best performers and skipping known-bad models improves fix throughput.
-- **Per-run performance:** Success/failure is recorded in `state-performance`; rotation prefers better-performing models within the same run. Performance is not yet persisted across PRs.
+- **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from `shared/constants.ts`. Do not assume the static table in `types.ts` is the exact live order.
+- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in `shared/constants.ts` — currently includes `openai/gpt-5.2-codex`, `anthropic/claude-3-opus`, `openai/gpt-4.1`, `anthropic/claude-sonnet-4.5`, `openai/gpt-5.1-codex-max`, `anthropic/claude-3.7-sonnet`, `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`. **`ELIZACLOUD_SKIP_REASON`** marks some as **`timeout`** vs **`zero-fix-rate`** (timeout skips may be worth retrying if the gateway was flaky). **Override:** **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated) removes matching IDs from the effective skip set. See README Configuration.
+- **Per-run performance:** Success/failure is recorded in state; rotation can prefer better-performing models within the same run. Performance is not yet persisted across PRs.
 
-*Last updated from provider docs; verify on the linked pages for current IDs and pricing.*
+*Provider model tables: last curated from linked docs; verify there for current IDs and pricing. PRR integration bullets above: align with `shared/constants.ts` as of repo checkout — if they drift, trust the source file.*

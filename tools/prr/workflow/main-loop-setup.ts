@@ -1,13 +1,14 @@
 /**
  * Main loop setup and comment processing
- * 
+ *
  * Handles the outer push iteration loop:
  * 1. Fetch review comments
- * 2. Handle no-comments case
- * 3. Analyze unresolved issues
- * 4. Check for new comments added during cycle
- * 5. Run final audit if all resolved
- * 6. Handle dry-run mode
+ * 2. **Catalog model auto-heal** (before path hashes — see applyCatalogModelAutoHeals)
+ * 3. Handle no-comments case
+ * 4. Analyze unresolved issues
+ * 5. Check for new comments added during cycle
+ * 6. Run final audit if all resolved
+ * 7. Handle dry-run mode
  */
 
 import chalk from 'chalk';
@@ -19,7 +20,6 @@ import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
-import * as Verification from '../state/state-verification.js';
 import * as Dismissed from '../state/state-dismissed.js';
 import * as Iterations from '../state/state-iterations.js';
 import * as Lessons from '../state/state-lessons.js';
@@ -31,19 +31,24 @@ import type { Config } from '../../../shared/config.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber, formatDuration, setTokenPhase } from '../../../shared/logger.js';
 import * as ResolverProc from '../resolver-proc.js';
 import { computeLineMapFromDiff } from '../../../shared/git/git-diff.js';
+import { hashFileContent } from '../../../shared/utils/file-hash.js';
+import { createHash } from 'crypto';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
+import { hasChanges } from '../../../shared/git/git-clone-index.js';
+import { applyCatalogModelAutoHeals } from './catalog-model-autoheal.js';
 
 /**
  * Process comments and determine if fix loop should run
  * 
  * WORKFLOW:
  * 1. Fetch all review comments from GitHub
- * 2. If no comments, handle via workflow (merge base, exit)
- * 3. Analyze which issues are still unresolved
- * 4. If all resolved, check for new comments during cycle
- * 5. If still all resolved, run final audit
- * 6. If audit fails, re-enter fix loop with failed items
- * 7. If dry-run, just print issues and exit
+ * 2. Catalog model auto-heal (quoted literals near review lines, before analysis hashes)
+ * 3. If no comments, handle via workflow (merge base, exit)
+ * 4. Analyze which issues are still unresolved
+ * 5. If all resolved, check for new comments during cycle
+ * 6. If still all resolved, run final audit
+ * 7. If audit fails, re-enter fix loop with failed items
+ * 8. If dry-run, just print issues and exit
  * 
  * @returns Comments, unresolved issues, and control flow signals
  */
@@ -75,8 +80,8 @@ export async function processCommentsAndPrepareFixLoop(
    *  WHY: Avoids re-fetching 200+ comments (3 GraphQL pages, ~3s) when
    *  the CodeRabbit check already did the exact same API call. */
   prefetchedComments?: ReviewComment[],
-  /** When set, reuse cached analysis if comment count and prInfo.headSha unchanged. */
-  analysisCacheRef?: { current: { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null }
+  /** When set, reuse cached analysis if comment IDs, headSha, and file hashes for comment paths unchanged (output.log audit). */
+  analysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null }
 ): Promise<{
   comments: ReviewComment[];
   unresolvedIssues: UnresolvedIssue[];
@@ -117,6 +122,46 @@ export async function processCommentsAndPrepareFixLoop(
   // against the actual comment set (stale IDs from previous HEAD revisions are excluded).
   stateContext.currentCommentIds = new Set(comments.map(c => c.id));
 
+  if (stateContext.state && stateContext.currentCommentIds.size > 0) {
+    const pruned = State.pruneVerifiedToCurrentCommentIds(stateContext.state, stateContext.currentCommentIds);
+    if (pruned.removedVerified > 0 || pruned.removedVerifiedComments > 0) {
+      const recovered = stateContext.gitRecoveredVerificationCount;
+      const recoveredHint =
+        recovered != null && recovered > 0
+          ? ` (${formatNumber(recovered)} ID(s) recovered from git this run; pruned entries are absent from the ${formatNumber(comments.length)} current PR comment(s).)`
+          : '';
+      console.log(
+        chalk.gray(
+          `  Pruned stale verification: ${formatNumber(pruned.removedVerified)} ID(s) from verifiedFixed, ${formatNumber(pruned.removedVerifiedComments)} from verifiedComments (not in current PR comments).${recoveredHint}`,
+        ),
+      );
+      await State.saveState(stateContext);
+    }
+    delete stateContext.gitRecoveredVerificationCount;
+  }
+
+  // Restore catalog-correct model strings before analysis. Order matters: solvability dismisses
+  // outdated advice, but the workdir may still carry a prior bad rename — heal first so snippets
+  // and fileHashesKey below reflect corrected source. WHY saveState: markVerified updates verification state.
+  debug('[Auto-heal] Starting catalog model auto-heal phase', { 
+    workdir, 
+    commentCount: comments.length,
+    verifiedThisSessionSize: stateContext.verifiedThisSession?.size ?? 0,
+  });
+  const catalogHeal = applyCatalogModelAutoHeals(workdir, comments, stateContext);
+  if (catalogHeal.modifiedPaths.length > 0) {
+    debug('[Auto-heal] Catalog model auto-heal applied', {
+      paths: catalogHeal.modifiedPaths,
+      count: catalogHeal.modifiedPaths.length,
+      verifiedThisSessionSize: stateContext.verifiedThisSession?.size ?? 0,
+    });
+  }
+  if (catalogHeal.verificationTouched) {
+    await State.saveState(stateContext);
+  } else if (catalogHeal.modifiedPaths.length === 0) {
+    debug('[Auto-heal] No files healed and no catalog verification updates');
+  }
+
   if (comments.length === 0) {
     const noCommentsResult = await ResolverProc.handleNoComments(
       git,
@@ -138,18 +183,34 @@ export async function processCommentsAndPrepareFixLoop(
     }
   }
 
-  // Reuse cached analysis when comment set and HEAD unchanged (saves ~1–4 min of LLM analysis).
+  // Reuse cached analysis when comment set, HEAD, and file content for comment paths unchanged (output.log audit: key by comment IDs + file hashes).
   const headSha = prInfo.headSha ?? '';
   const cache = analysisCacheRef?.current;
+  const currentCommentIds = comments.map((c) => c.id).sort().join(',');
+  const uniquePaths = [...new Set(comments.map((c) => c.path).filter(Boolean))];
+  const pathHashes = await Promise.all(
+    uniquePaths.map(async (p) => ({ path: p, hash: await hashFileContent(workdir, p) }))
+  );
+  const fileHashesKey = pathHashes
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(({ path, hash }) => `${path}:${hash}`)
+    .join('|');
+  const fileHashesKeyDigest = createHash('sha256').update(fileHashesKey).digest('hex').slice(0, 16);
+
   let unresolvedIssues: UnresolvedIssue[];
   let duplicateMap: Map<string, string[]>;
   let analyzeTime: number;
-  if (cache && cache.commentCount === comments.length && cache.headSha === headSha) {
+  const cacheHit =
+    cache &&
+    cache.headSha === headSha &&
+    (cache.commentIds != null ? cache.commentIds === currentCommentIds : cache.commentCount === comments.length) &&
+    (cache.fileHashesKeyDigest != null ? cache.fileHashesKeyDigest === fileHashesKeyDigest : true);
+  if (cacheHit) {
     unresolvedIssues = cache.unresolvedIssues;
     duplicateMap = cache.duplicateMap;
     analyzeTime = 0;
-    console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, same as previous iteration)`));
-    debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7) });
+    console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, same IDs + file hashes)`));
+    debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7), fileHashesDigest: fileHashesKeyDigest });
   } else {
     debugStep('ANALYZING ISSUES');
     setPhase(stateContext, 'analyzing');
@@ -182,7 +243,15 @@ export async function processCommentsAndPrepareFixLoop(
     duplicateMap = analysisResult.duplicateMap;
     analyzeTime = endTimer('Analyze issues');
     if (analysisCacheRef) {
-      analysisCacheRef.current = { commentCount: comments.length, headSha, unresolvedIssues: [...unresolvedIssues], comments: [...comments], duplicateMap: new Map(duplicateMap) };
+      analysisCacheRef.current = {
+        commentCount: comments.length,
+        headSha,
+        commentIds: currentCommentIds,
+        fileHashesKeyDigest,
+        unresolvedIssues: [...unresolvedIssues],
+        comments: [...comments],
+        duplicateMap: new Map(duplicateMap),
+      };
     }
   }
 
@@ -230,17 +299,12 @@ export async function processCommentsAndPrepareFixLoop(
       options,
       spinner,
       getCodeSnippet,
-      getFullFile
+      getFullFile,
+      workdir // Pill cycle 2 #4: Pass workdir for Rule 6 validation
     );
     
     if (auditResult.failedAudit.length > 0) {
-      // Invalidate verification cache for issues the audit says are still unfixed.
-      // WHY: Without unmarkVerified(), the next iteration's verifyFixes still sees
-      // these as "already verified" and skips them, so Changed files → [] and
-      // zero progress — the loop re-enters forever (e.g. 30+ min runs).
-      for (const { comment } of auditResult.failedAudit) {
-        Verification.unmarkVerified(stateContext, comment.id);
-      }
+      // runFinalAudit() already unmarked every failed-audit comment (single place — avoids duplicate unmark logs).
       // Re-run solvability on audit-failed items so we don't re-enter with unsolvable issues (e.g. (PR comment), deleted file).
       const { assessSolvability } = await import('./helpers/solvability.js');
       unresolvedIssues.length = 0;
@@ -324,6 +388,30 @@ export async function processCommentsAndPrepareFixLoop(
   // Skip fix loop if there are no issues to fix
   if (unresolvedIssues.length === 0) {
     debug('No unresolved issues - skipping fix loop');
+    // Heal-only run: no LLM fixes, but catalog auto-heal may have written files + verifiedThisSession.
+    // WHY same entry as post-audit commit: commit gate requires verified session ids + dirty tree;
+    // without this branch, users would see a clean analysis but an uncommitted workdir.
+    const vs = stateContext.verifiedThisSession;
+    if (
+      vs &&
+      vs.size > 0 &&
+      !options.dryRun &&
+      !options.noCommit &&
+      (await hasChanges(git))
+    ) {
+      await ResolverProc.commitAndPushChanges(
+        git,
+        prInfo,
+        comments,
+        stateContext,
+        lessonsContext,
+        options,
+        config,
+        workdir,
+        spinner,
+        resolveConflictsWithLLM,
+      );
+    }
     console.log(chalk.green('\n✓ All issues resolved - nothing to fix'));
     return {
       comments,

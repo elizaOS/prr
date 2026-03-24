@@ -28,13 +28,19 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
-import { formatNumber, debugStep, startTimer, endTimer, debug } from '../../../shared/logger.js';
-import { COULD_NOT_INJECT_DISMISS_THRESHOLD, DELETE_ENTIRELY_DISMISS_THRESHOLD } from '../../../shared/constants.js';
+import { formatNumber, debugStep, startTimer, endTimer, debug, warn } from '../../../shared/logger.js';
+import {
+  COULD_NOT_INJECT_CREATE_FILE_THRESHOLD,
+  COULD_NOT_INJECT_DISMISS_THRESHOLD,
+  DELETE_ENTIRELY_DISMISS_THRESHOLD,
+  getDiminishingReturnsIterationThreshold,
+} from '../../../shared/constants.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { assessSolvability, recheckSolvability } from './helpers/solvability.js';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
+import { looksLikeCreateFileIssue } from './utils.js';
 
 /** Git and GitHub context for a push iteration */
 export interface PushIterationGitContext {
@@ -79,10 +85,12 @@ export interface PushIterationContexts {
   /** CodeRabbit mode from setup so post-push trigger reuses it (avoids manual→unknown flip). */
   codeRabbitMode?: string;
   /**
-   * Cache of last analysis result (comment count + headSha → unresolved, duplicateMap).
-   * When comment count and head SHA unchanged, reuse to skip expensive findUnresolvedIssues.
+   * Cache of last analysis result (comment IDs + headSha + file hashes → unresolved, duplicateMap).
+   * When comment set and file content for comment paths unchanged, reuse to skip expensive findUnresolvedIssues (output.log audit).
    */
-  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
+  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
+  /** Thread IDs we have already replied to this run (one reply per thread). */
+  repliedThreadIds: Set<string>;
 }
 
 /** Callback functions used during push iteration */
@@ -225,7 +233,15 @@ export async function executePushIteration(
   // WHY log string: JSON.stringify(Infinity) is null; log "unlimited" so debug output is clear (audit: logs showed effectiveMaxFixIterations: null).
   debug('Fix loop config', { pushIteration, maxFixIterations: options.maxFixIterations, effectiveMaxFixIterations: effectiveMaxFixIterations === Infinity ? 'unlimited' : effectiveMaxFixIterations, unresolvedCount: unresolvedIssues.length });
   const loopState = ResolverProc.initializeFixLoop(comments.map(c => c.id));
-  let { fixIteration, allFixed, verifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
+  let { fixIteration, allFixed, verifiedThisSession: initialVerifiedThisSession, alreadyCommitted, existingCommentIds } = loopState;
+
+  // Persist verifiedThisSession across push iterations so RESULTS SUMMARY "N this session" is correct.
+  // WHY: initializeFixLoop() creates a new Set each time; without this, fixes verified in push iter N
+  // are lost when push iter N+1 starts, so we'd show "0 new this session" despite fixes this run (output.log audit).
+  const verifiedThisSession = stateContext.verifiedThisSession instanceof Set
+    ? stateContext.verifiedThisSession
+    : initialVerifiedThisSession;
+  stateContext.verifiedThisSession = verifiedThisSession;
 
   // Reset stalemate counter at the start of each push iteration's fix loop.
   // WHY: noProgressCycles persists in state across push iterations. Without this,
@@ -233,14 +249,11 @@ export async function executePushIteration(
   // iteration N+1 bails immediately on its first cycle (even if that cycle was
   // timeout-only and should not count as stalemate).
   Bailout.resetNoProgressCycles(stateContext);
-  
-  // Expose verifiedThisSession on stateContext so reporters can use the actual
-  // session verification count instead of unreliable delta counting.
-  stateContext.verifiedThisSession = verifiedThisSession;
 
   let exitReason = '';
   let exitDetails = '';
   let committedThisIteration = false;
+  const filesModifiedThisRun = new Set<string>();
 
   // This is the primary fix iteration loop - runs until we've fixed all issues or hit max iterations
   while (fixIteration < effectiveMaxFixIterations && !allFixed) {
@@ -266,9 +279,11 @@ export async function executePushIteration(
     // WHY: The threshold is also checked in findUnresolvedIssues, but that only runs at the start of
     // a push iteration. Inside the fix loop we keep retrying single-issue focus without re-running
     // analysis, so we must apply the same dismissal here to stop burning tokens (output.log audit).
-    const couldNotInjectDismiss = unresolvedIssues.filter(
-      (i) => (stateContext.state?.couldNotInjectCountByCommentId?.[i.comment.id] ?? 0) >= COULD_NOT_INJECT_DISMISS_THRESHOLD
-    );
+    const couldNotInjectDismiss = unresolvedIssues.filter((i) => {
+      const count = stateContext.state?.couldNotInjectCountByCommentId?.[i.comment.id] ?? 0;
+      const threshold = looksLikeCreateFileIssue(i.comment) ? COULD_NOT_INJECT_CREATE_FILE_THRESHOLD : COULD_NOT_INJECT_DISMISS_THRESHOLD;
+      return count >= threshold;
+    });
     if (couldNotInjectDismiss.length > 0) {
       const reason = 'Target file could not be resolved in the repository (repeated could-not-inject + no-change cycles)';
       const dismissedIds = new Set(couldNotInjectDismiss.map((i) => i.comment.id));
@@ -276,8 +291,12 @@ export async function executePushIteration(
         Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'file-unchanged', getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body, undefined);
       }
       unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
-      console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after ${COULD_NOT_INJECT_DISMISS_THRESHOLD}+ attempts)`));
-      debug('Dismissed issues at couldNotInject threshold (in fix loop)', { count: couldNotInjectDismiss.length, commentIds: [...dismissedIds] });
+      console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after repeated could-not-inject + no-change cycles)`));
+      debug('Dismissed issues at couldNotInject threshold (in fix loop)', {
+        count: couldNotInjectDismiss.length,
+        commentIds: [...dismissedIds],
+        resolvedPaths: couldNotInjectDismiss.map((i) => getIssuePrimaryPath(i)),
+      });
       // WHY: If every remaining issue was couldNotInject, queue is now empty; treat as all fixed and exit instead of running fixer with no issues.
       if (unresolvedIssues.length === 0) {
         allFixed = true;
@@ -376,7 +395,8 @@ export async function executePushIteration(
       return { shouldBreak: true, exitReason: iterResult.exitReason || 'bail_out', exitDetails: iterResult.exitDetails || 'Fix iteration requested early exit', updatedRapidFailureCount: rapidFailureCount, updatedLastFailureTime: lastFailureTime, updatedConsecutiveFailures: consecutiveFailures, updatedModelFailuresInCycle: modelFailuresInCycle, updatedProgressThisCycle: progressThisCycle, committedThisIteration: false };
     }
     if (iterResult.shouldBreak) {
-      exitReason = iterResult.exitReason || '';
+      // Non-empty reason for analytics (output.log audit: avoid empty exitReason on push iteration).
+      exitReason = iterResult.exitReason || 'no_progress';
       exitDetails = iterResult.exitDetails || '';
       break;
     }
@@ -390,8 +410,14 @@ export async function executePushIteration(
       continue;
     }
 
-    // Verify fixes
-    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = await ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir, getCurrentModel, getRunner);
+    // Verify fixes; run git fetch in parallel so refs are warm for the next iteration.
+    // WHY: Verification result is what we need; fetch has no shared mutable state with it.
+    // Best-effort fetch so a network blip does not fail the iteration.
+    const [verifyResult] = await Promise.all([
+      ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir, getCurrentModel, getRunner, filesModifiedThisRun),
+      git.fetch().catch(() => {}),
+    ]);
+    const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = verifyResult;
     const totalIssues = unresolvedIssues.length;
     const currentModel = getCurrentModel();
 
@@ -402,6 +428,7 @@ export async function executePushIteration(
     // iteration's findUnresolvedIssues will re-analyze only these comments
     // instead of the entire set.
     if (changedFiles.length > 0) {
+      for (const f of changedFiles) filesModifiedThisRun.add(f);
       const invalidated = CommentStatusAPI.invalidateForFiles(stateContext, changedFiles);
       if (invalidated > 0) {
         debug(`Invalidated ${invalidated} comment status(es) for ${changedFiles.length} changed file(s)`);
@@ -436,11 +463,30 @@ export async function executePushIteration(
     }
     
     // Handle iteration cleanup
+    const threadReplyContext = options.replyToThreads
+      ? { comments, prInfo, github: gitCtx.github, repliedThreadIds: contexts.repliedThreadIds }
+      : undefined;
     const cleanupResult = await ResolverProc.handleIterationCleanup(verifiedCount, failedCount, totalIssues, changedIssues, unchangedIssues, getRunner(), currentModel,
-      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, workdir, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime, progressThisCycle);
+      stateContext, lessonsContext, verifiedThisSession, alreadyCommitted, lessonsBeforeFix, fixIteration, git, workdir, prInfo.branch, config.githubToken, options, calculateExpectedBotResponseTime, progressThisCycle, threadReplyContext);
     
     progressThisCycle += cleanupResult.progressMade;
     if (cleanupResult.expectedBotResponseTime !== undefined) expectedBotResponseTimeRef.current = cleanupResult.expectedBotResponseTime;
+
+    const drThreshold = getDiminishingReturnsIterationThreshold();
+    if (drThreshold > 0) {
+      if (cleanupResult.progressMade <= 0) {
+        stateContext.diminishingReturnsZeroVerifyStreak = (stateContext.diminishingReturnsZeroVerifyStreak ?? 0) + 1;
+        if (!stateContext.diminishingReturnsWarned && stateContext.diminishingReturnsZeroVerifyStreak >= drThreshold) {
+          stateContext.diminishingReturnsWarned = true;
+          warn(
+            `No new verified fixes in the last ${formatNumber(drThreshold)} iteration(s) — consider a stronger fixer model, manual review, or dismissing non-actionable comments. ` +
+              `(Set PRR_DIMINISHING_RETURNS_ITERATIONS=0 to disable.)`,
+          );
+        }
+      } else {
+        stateContext.diminishingReturnsZeroVerifyStreak = 0;
+      }
+    }
 
     // Remove verified issues from the queue so "all fixed" and next iteration see the true remaining set.
     // WHY: allFixed was previously (failedCount === 0), which is true when no verification failures
@@ -578,7 +624,7 @@ export async function executePushIteration(
     const isBailOut = exitReason === 'bail_out';
     const skipBotWait = isBailOut || (options.noWaitBot ?? false);
     const commitResult = await ResolverProc.handleCommitAndPush(git, prInfo, owner, repo, number, comments, stateContext, lessonsContext, options, config.githubToken, github, workdir, spinner, services.llm, pushIteration, maxPushIterations,
-      resolveConflictsWithLLM, waitForBotReviews, allFixed, skipBotWait, contexts.codeRabbitMode);
+      resolveConflictsWithLLM, waitForBotReviews, allFixed, skipBotWait, contexts.codeRabbitMode, options.replyToThreads ? contexts.repliedThreadIds : undefined);
     if (commitResult.shouldBreak) {
       // Ensure AAR has remaining issues when we exit (e.g. bail-out with no committable changes)
       if (unresolvedIssues.length > 0) {
@@ -645,7 +691,7 @@ export async function executePushIteration(
     const noChangesDetails =
       stillNeedAttention > 0
         ? `No changes to commit (fixer made no modifications); ${formatNumber(stillNeedAttention)} issue${stillNeedAttention === 1 ? '' : 's'} still ${stillNeedAttention === 1 ? 'needs' : 'need'} attention`
-        : 'No changes to commit (fixer made no modifications)';
+        : 'All issues were already resolved (fixed or dismissed); nothing new to commit or push.';
     return {
       shouldBreak: true,
       exitReason: preserveExitReason ? exitReason : 'no_changes',

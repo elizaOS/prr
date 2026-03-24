@@ -1,3 +1,8 @@
+/**
+ * Tests for normalizeLessonText from tools/prr/state/lessons-normalize.ts.
+ * Assertions match current implementation behavior (fence/header/code-line removal,
+ * "Fix for" handling, trailing colon/dash stripping, made-no-changes normalization).
+ */
 import { describe, it, expect } from 'vitest';
 import { normalizeLessonText } from '../tools/prr/state/lessons-normalize.js';
 
@@ -284,6 +289,14 @@ describe('normalizeLessonText', () => {
     it('returns null for whitespace-only strings', () => {
       expect(normalize('   ')).toBeNull();
     // Review: normalizes only non-empty, non-whitespace inputs for consistency in processing
+    });
+  });
+
+  describe('wrong-file empty allowed list (Pill)', () => {
+    it('rejects lessons with "need to modify one of: ." or empty target list', () => {
+      expect(normalize('Fix for benchmarks/bfcl/reporting.py:42 - tool modified wrong files (reporting.py), need to modify one of: . Do NOT edit benchmarks/bfcl/reporting.py')).toBeNull();
+      expect(normalize('Fix for path - tool modified wrong files (X), need to modify one of: .')).toBeNull();
+      expect(normalize('need to modify one of: . Do NOT edit foo.ts')).toBeNull();
     });
   });
 

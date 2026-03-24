@@ -8,7 +8,7 @@ import type { Ora } from 'ora';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { LLMClient } from '../llm/client.js';
+import { type LLMClient, snippetShowsUuidCommentAlignedWithVersionRange } from '../llm/client.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
@@ -244,14 +244,26 @@ export async function checkForNewComments(
     );
     for (let i = 0; i < solvableComments.length; i++) {
       const comment = solvableComments[i];
-      updatedUnresolvedIssues.push({
-        comment,
-        codeSnippet: newSnippets[i],
-        stillExists: true,
-        explanation: 'New comment added during fix cycle',
-        triage: { importance: 3, ease: 3 },
-        resolvedPath: resolvedPaths.get(comment.id),
-      });
+        updatedUnresolvedIssues.push({
+          comment,
+          codeSnippet: newSnippets[i],
+          stillExists: true,
+          explanation: 'New comment added during fix cycle',
+          triage: { importance: 3, ease: 3 },
+          resolvedPath: resolvedPaths.get(comment.id),
+        });
+        // Pill #4: Log warning for late-cycle comments (not just debug)
+        console.warn(
+          chalk.yellow(
+            `  ⚠ Late-cycle comment detected: ${comment.path}:${comment.line || '?'} — added during fix cycle, will be processed in next run`,
+          ),
+        );
+        debug('Late-cycle comment added to queue', {
+          commentId: comment.id,
+          path: comment.path,
+          line: comment.line,
+          author: comment.author,
+        });
     }
     
     console.log(chalk.yellowBright(`\n┌─ QUEUE: +${formatNumber(solvableComments.length)} new issue(s) added mid-cycle ─┐`));
@@ -289,7 +301,9 @@ export async function runFinalAudit(
   spinner: Ora,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   /** When set, use full file content instead of snippets so the audit has complete context. */
-  getFullFile?: (path: string) => Promise<string>
+  getFullFile?: (path: string) => Promise<string>,
+  /** Pill cycle 2 #4: When set, validate Rule 6 (file deleted) by checking git ls-tree before accepting FIXED verdict. */
+  workdir?: string
 ): Promise<{
   failedAudit: Array<{ comment: ReviewComment; explanation: string }>;
   auditPassed: boolean;
@@ -300,10 +314,26 @@ export async function runFinalAudit(
   
   // Review: Verification cache is intentionally NOT cleared before audit.
   // Pass/fail results are applied per-comment below (markVerified calls).
-  // If audit fails for some comments, the caller unmarks those so the next
-  // iteration re-verifies; clearing everything would lose valid verifications.
+  // If audit fails for some comments, we unmark those once at the end of this
+  // function so the next iteration re-verifies; clearing everything would lose valid verifications.
   debug('Starting final audit (verification cache not cleared - results are additive)');
-  
+
+  // Pill-output #11: runtime overlap check (load() also repairs; this surfaces bugs in-session)
+  const verifiedSet = new Set(Verification.getVerifiedComments(stateContext));
+  const dismissedIds = Dismissed.getDismissedIssues(stateContext).map((d) => d.commentId);
+  const overlapIds = dismissedIds.filter((id) => verifiedSet.has(id));
+  if (overlapIds.length > 0) {
+    debug('Invariant: comment ID(s) in both verified and dismissed — should be empty after load/markVerified', {
+      count: overlapIds.length,
+      sample: overlapIds.slice(0, 8),
+    });
+    console.warn(
+      chalk.yellow(
+        `  ⚠ ${formatNumber(overlapIds.length)} comment ID(s) appear in both verified and dismissed — state may be inconsistent; see debug log`,
+      ),
+    );
+  }
+
   spinner.start('Running final audit on all issues...');
   
   // Gather all comments with their current code. Use full file when provided so the audit
@@ -320,9 +350,10 @@ export async function runFinalAudit(
     codeSnippet: auditSnippets[i],
   }));
   
-  const auditResults = await llm.finalAudit(allIssuesForAudit, options.maxContextChars);
+  const auditResults = await llm.finalAudit(allIssuesForAudit, options.maxContextChars, 'final-audit');
   // L1: Respect verified-fixed verdict — don't let final audit override earlier verification (e.g. stronger model).
   const alreadyVerifiedIds = new Set(Verification.getVerifiedComments(stateContext));
+  if (!stateContext.auditOverridesThisRun) stateContext.auditOverridesThisRun = [];
   // Find issues that failed the audit - mark passing ones as verified
   const failedAudit: Array<{ comment: ReviewComment; explanation: string }> = [];
   let filteredNoAction = 0;
@@ -331,8 +362,67 @@ export async function runFinalAudit(
     if (result) {
       if (result.stillExists) {
         if (alreadyVerifiedIds.has(comment.id)) {
-          debug('L1: final audit said UNFIXED but comment was already verified — trusting verification', { commentId: comment.id, path: comment.path });
-          Verification.markVerified(stateContext, comment.id);
+          // Pill cycle 2 #3: When audit overrides ALREADY_FIXED, require specific code-level contradiction
+          // Check if fixer marked this as ALREADY_FIXED multiple times
+          const alreadyFixedCount = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
+          const codeSnippet = auditSnippets[comments.indexOf(comment)] ?? '';
+
+          // Cycle 64 M2: If inline verify already passed this session and the snippet shows UUID
+          // regex + version-range comment alignment, don't let a flaky final audit re-open the issue
+          // (defense in depth alongside client-side post-parse demotion).
+          if (
+            stateContext.verifiedThisSession?.has(comment.id) &&
+            snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet)
+          ) {
+            debug(
+              'Final audit tie-break: UUID/comment alignment in snippet + verified this session — keeping verified',
+              { commentId: comment.id, path: comment.path },
+            );
+            console.warn(
+              chalk.yellow(
+                `  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but code shows UUID/comment alignment — keeping verified (verified this session).`,
+              ),
+            );
+            continue;
+          }
+
+          // Require code contradiction: audit must cite specific line numbers + pattern still present
+          const hasCodeContradiction = /(?:line|lines)\s+\d+.*(?:still|contains|has)\s+(?:incorrect|wrong|the\s+bug|missing)/i.test(result.explanation);
+          const mentionsPattern = /(?:still|contains|has)\s+["']?[a-z0-9-]+["']?/i.test(result.explanation);
+          
+          if (alreadyFixedCount >= 2 && !hasCodeContradiction && !mentionsPattern) {
+            // Fixer said ALREADY_FIXED multiple times, audit says UNFIXED but lacks code evidence — keep ALREADY_FIXED
+            debug('Final audit UNFIXED lacks code contradiction for multi-ALREADY_FIXED issue — keeping ALREADY_FIXED', {
+              commentId: comment.id,
+              path: comment.path,
+              alreadyFixedCount,
+              auditExplanation: result.explanation?.slice(0, 200),
+            });
+            console.warn(
+              chalk.yellow(
+                `  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but lacks code-level contradiction (fixer said ALREADY_FIXED ${alreadyFixedCount}×) — keeping verified.`
+              )
+            );
+            // Don't unmark — keep as verified
+            continue;
+          }
+          
+          // Pill #2: safe over sorry — when final audit says UNFIXED, do not trust prior verification; re-queue.
+          debug('L1: final audit said UNFIXED for previously verified comment — unmarking and re-queuing (safe over sorry)', {
+            commentId: comment.id,
+            path: comment.path,
+            auditExplanation: result.explanation?.slice(0, 300) ?? '(none)',
+          });
+          stateContext.auditOverridesThisRun.push({
+            commentId: comment.id,
+            path: comment.path,
+            line: comment.line,
+            explanation: result.explanation?.slice(0, 200),
+          });
+          console.warn(
+            chalk.yellow(`  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} — re-queuing (was verified earlier; safe over sorry).`)
+          );
+          failedAudit.push({ comment, explanation: result.explanation ?? 'Audit said UNFIXED' });
           continue;
         }
         if (isAuditNoActionNeeded(result.explanation)) {
@@ -348,6 +438,39 @@ export async function runFinalAudit(
         }
       } else {
         // Audit confirmed this is fixed - add to cache
+        // Pill cycle 2 #4: Validate Rule 6 (file deleted) — check git ls-tree before accepting FIXED verdict
+        const isRule6Fixed = /(?:file deleted|file no longer exists|thread outdated)/i.test(result.explanation);
+        if (isRule6Fixed && workdir && comment.path && comment.path !== '(PR comment)') {
+          try {
+            const { execFileSync } = await import('child_process');
+            const { join } = await import('path');
+            // Check if file exists in git tree (not just workdir — file may not be checked out)
+            const gitPath = comment.path.replace(/\\/g, '/');
+            try {
+              execFileSync('git', ['ls-tree', '--name-only', 'HEAD', gitPath], { cwd: workdir, encoding: 'utf8', stdio: 'pipe' });
+              // File exists in git — Rule 6 doesn't apply, demote to UNFIXED
+              debug('Rule 6 validation failed: file exists in git tree', {
+                commentId: comment.id,
+                path: comment.path,
+                explanation: result.explanation,
+              });
+              failedAudit.push({
+                comment,
+                explanation: `File exists in git tree — Rule 6 (file deleted) does not apply. ${result.explanation}`,
+              });
+              continue;
+            } catch {
+              // File not in git tree — Rule 6 applies, accept FIXED
+              debug('Rule 6 validation passed: file not in git tree', {
+                commentId: comment.id,
+                path: comment.path,
+              });
+            }
+          } catch {
+            // Git check failed — fall through to accept FIXED (conservative)
+            debug('Rule 6 validation skipped: git check failed', { commentId: comment.id, path: comment.path });
+          }
+        }
         Verification.markVerified(stateContext, comment.id);
       }
     } else {
@@ -355,6 +478,12 @@ export async function runFinalAudit(
       failedAudit.push({ comment, explanation: 'Audit did not return a result for this issue' });
     }
   }
+
+  // Single unmark pass for all failed-audit comments (WHY: main-loop-setup used to unmark too → duplicate logs).
+  for (const { comment } of failedAudit) {
+    Verification.unmarkVerified(stateContext, comment.id);
+  }
+
   if (filteredNoAction > 0) {
     debug('Audit filtered no-action-needed', { count: filteredNoAction });
   }

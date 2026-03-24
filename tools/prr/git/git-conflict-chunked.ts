@@ -12,6 +12,15 @@ import {
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   ASYMMETRIC_CONFLICT_SIDE_RATIO,
+  MAX_SINGLE_CHUNK_CHARS,
+  FILE_OVERVIEW_SEGMENT_CHARS,
+  FILE_OVERVIEW_MIN_CHUNKS,
+  FILE_OVERVIEW_MIN_FILE_CHARS,
+  TOP_TAILS_FALLBACK_MAX_CHUNK_LINES,
+  TOP_TAILS_CONTEXT_LINES,
+  TOP_TAILS_TOP_CONFLICT_LINES,
+  TOP_TAILS_TAIL_LINES,
+  TOP_TAILS_TWO_PASS_THRESHOLD_LINES,
 } from '../../../shared/constants.js';
 
 /**
@@ -30,6 +39,103 @@ export interface ConflictChunk {
   contextAfter: string[];
   /** All lines as single string for LLM */
   fullContent: string;
+}
+
+/**
+ * Reconstruct the full file as "ours" (each conflict region replaced by our side) and "theirs".
+ * WHY: For single-chunk (whole-file) resolution the LLM client needs base + full ours + full theirs,
+ * not the raw conflicted content with markers; this gives the model three complete file versions.
+ */
+export function getFullFileSides(content: string): { ours: string; theirs: string } {
+  const lines = content.split('\n');
+  const chunks = extractConflictChunks(content, 0);
+  if (chunks.length === 0) return { ours: content, theirs: content };
+  const oursLines: string[] = [];
+  const theirsLines: string[] = [];
+  let i = 0;
+  for (const chunk of chunks.sort((a, b) => a.startLine - b.startLine)) {
+    while (i < chunk.startLine) {
+      const line = lines[i]!;
+      oursLines.push(line);
+      theirsLines.push(line);
+      i++;
+    }
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    oursLines.push(...ours);
+    theirsLines.push(...theirs);
+    i = chunk.endLine + 1;
+  }
+  while (i < lines.length) {
+    const line = lines[i]!;
+    oursLines.push(line);
+    theirsLines.push(line);
+    i++;
+  }
+  return { ours: oursLines.join('\n'), theirs: theirsLines.join('\n') };
+}
+
+/**
+ * Derive the base file segment corresponding to a conflict chunk.
+ * WHY content extent: We use max(ours.length, theirs.length) so we don't rely on marker line count; the
+ * conflicted file has extra lines (<<<<<<<, =======, >>>>>>>) so base line range is content-based.
+ * WHY chunk.startLine: In the base file the same logical region starts at the same line index when
+ * pre-conflict lines are unchanged; when base is shorter we slice up to baseLines.length.
+ */
+export function getBaseSegmentForChunk(baseContent: string, chunk: ConflictChunk): string {
+  const baseLines = baseContent.split('\n');
+  if (baseLines.length === 0) return '';
+  const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+  const extent = Math.max(ours.length, theirs.length);
+  const start = chunk.startLine;
+  const end = Math.min(start + extent, baseLines.length);
+  if (start >= baseLines.length) return '';
+  return baseLines.slice(start, end).join('\n');
+}
+
+/**
+ * Build a 3-way merge resolution prompt: BASE + OURS + THEIRS.
+ * WHY: Correct merge resolution requires the common ancestor so the LLM can merge both changes relative to base.
+ * Optional fileOverview: short "story" of the file and what OURS vs THEIRS change (from shared overview step).
+ */
+export function buildConflictResolutionPromptThreeWay(
+  baseSegment: string,
+  oursSegment: string,
+  theirsSegment: string,
+  baseBranch: string,
+  filePath?: string,
+  previousParseError?: string,
+  fileOverview?: string
+): string {
+  const fileHint = filePath ? `FILE: ${filePath}\n` : '';
+  const overviewBlock = fileOverview
+    ? `FILE OVERVIEW (use for context when merging):\n${fileOverview}\n\n`
+    : '';
+  const parseHint = previousParseError
+    ? `\n\nIMPORTANT: A previous resolution attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is complete, valid code (e.g. close all block comments with */, no missing commas or brackets).\n`
+    : '';
+  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}
+
+BASE (common ancestor):
+\`\`\`
+${baseSegment || '(empty)'}
+\`\`\`
+
+OURS (HEAD):
+\`\`\`
+${oursSegment}
+\`\`\`
+
+THEIRS (${baseBranch}):
+\`\`\`
+${theirsSegment}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<resolved lines only>
+\`\`\`
+EXPLANATION: <one sentence>`;
 }
 
 /**
@@ -53,6 +159,154 @@ export function extractConflictSides(conflictLines: string[]): { ours: string[];
 }
 
 /**
+ * First `=======` that belongs to the outermost open conflict (nesting depth === 1).
+ * WHY: Nested `<<<<<<<` (e.g. CHANGELOG) made the old parser treat the inner `>>>>>>>` as the
+ * end of the outer region → broken chunks or zero chunks for valid files.
+ */
+function findOuterConflictSeparatorLine(lines: string[], outerStart: number): number {
+  let depth = 0;
+  for (let i = outerStart; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      // Closed the conflict that opened at outerStart without ever seeing `=======` at depth 1
+      // (two-marker conflict or junk) — do not keep scanning; later `=======` belongs to other regions.
+      if (depth === 0) return -1;
+    } else if (line.startsWith('=======') && depth === 1) return i;
+  }
+  return -1;
+}
+
+/**
+ * Closing `>>>>>>>` for the outer conflict whose `=======` is at `sepIdx`.
+ */
+function findOuterConflictEndLine(lines: string[], sepIdx: number): number {
+  let depth = 1;
+  for (let i = sepIdx + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Trim leading whitespace on lines that are conflict markers so `<<<<<<<` is column 0.
+ * WHY: Editors or bad merges sometimes indent markers; `startsWith('<<<<<<<')` would miss them and
+ * nested-depth parsing would see a different shape than git intended.
+ */
+export function normalizeConflictMarkerLines(content: string): string {
+  return content
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trimStart();
+      if (
+        trimmed.startsWith('<<<<<<<') ||
+        trimmed.startsWith('=======') ||
+        trimmed.startsWith('>>>>>>>')
+      ) {
+        return trimmed;
+      }
+      return line;
+    })
+    .join('\n');
+}
+
+/**
+ * Skip to the line after a conflict block that opened at `startLine` when the block has no valid
+ * outer `=======` / `>>>>>>>` pair (or close is missing). Uses <<<<<<< / >>>>>>> depth counting.
+ * WHY: `i++` on malformed markers rescanned every inner line and spammed debug; it also left the
+ * parser out of sync with real git conflict regions.
+ */
+function advancePastBrokenConflictRegion(lines: string[], startLine: number): number {
+  let depth = 0;
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      if (depth <= 0) return i + 1;
+    }
+  }
+  return lines.length;
+}
+
+/**
+ * Index of the `>>>>>>>` that closes the conflict opened at `startLine` (depth on <<<<<<< / >>>>>>> only).
+ * WHY: Detect two-marker conflicts (`<<<<<<<` … `>>>>>>>` with no `=======`) and nested blocks missing
+ * an outer separator — same balance rule as skipping broken regions.
+ */
+function findMatchingConflictCloseLine(lines: string[], startLine: number): number {
+  let depth = 0;
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.startsWith('<<<<<<<')) depth++;
+    else if (line.startsWith('>>>>>>>')) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Insert missing `=======` before the closing `>>>>>>>` when the outer conflict has no separator at depth 1.
+ * WHY: Botched merges and some tools emit two-marker conflicts; git-shaped three-way text restores parsing.
+ * Valid files pass through unchanged (separator already present). Opt out: `PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR=1`.
+ */
+export function repairMissingConflictSeparators(content: string): string {
+  const lines = normalizeConflictMarkerLines(content).split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!lines[i]!.startsWith('<<<<<<<')) {
+      out.push(lines[i]!);
+      i++;
+      continue;
+    }
+    const start = i;
+    const sepIdx = findOuterConflictSeparatorLine(lines, start);
+    if (sepIdx >= 0) {
+      const endIdx = findOuterConflictEndLine(lines, sepIdx);
+      if (endIdx >= 0) {
+        for (let j = start; j <= endIdx; j++) out.push(lines[j]!);
+        i = endIdx + 1;
+        continue;
+      }
+      for (let j = start; j < lines.length; j++) out.push(lines[j]!);
+      i = lines.length;
+      continue;
+    }
+    const closeIdx = findMatchingConflictCloseLine(lines, start);
+    if (closeIdx < 0) {
+      const nextI = advancePastBrokenConflictRegion(lines, start);
+      for (let j = start; j < nextI; j++) out.push(lines[j]!);
+      i = nextI;
+      continue;
+    }
+    for (let j = start; j < closeIdx; j++) out.push(lines[j]!);
+    out.push('=======');
+    out.push(lines[closeIdx]!);
+    i = closeIdx + 1;
+  }
+  return out.join('\n');
+}
+
+/**
+ * Normalize + optional separator repair before chunk extraction. Used when reading conflicted files.
+ */
+export function preprocessConflictFileContent(content: string): string {
+  if (process.env.PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR?.trim() === '1') {
+    return normalizeConflictMarkerLines(content);
+  }
+  return repairMissingConflictSeparators(content);
+}
+
+/**
  * Extract all conflict regions from a file
  * WHY: Parse once, resolve many - more efficient than regex searching repeatedly
  */
@@ -60,102 +314,213 @@ export function extractConflictChunks(
   content: string,
   contextLines: number = 10
 ): ConflictChunk[] {
-  const lines = content.split('\n');
+  const lines = preprocessConflictFileContent(content).split('\n');
   const chunks: ConflictChunk[] = [];
   let i = 0;
 
   while (i < lines.length) {
-    // Find conflict marker
-    if (lines[i].startsWith('<<<<<<<')) {
-      const startLine = i;
-      const contextBefore = lines.slice(Math.max(0, i - contextLines), i);
-
-      // Find end of conflict (>>>>>>)
-      let endLine = i;
-      const conflictLines: string[] = [];
-
-      while (endLine < lines.length && !lines[endLine].startsWith('>>>>>>>')) {
-        conflictLines.push(lines[endLine]);
-        endLine++;
-      }
-
-      if (endLine < lines.length) {
-        conflictLines.push(lines[endLine]); // Include >>>>>>> line
-        endLine++;
-
-        const contextAfter = lines.slice(endLine, Math.min(lines.length, endLine + contextLines));
-
-        chunks.push({
-          startLine,
-          endLine: endLine - 1,
-          contextBefore,
-          conflictLines,
-          contextAfter,
-          fullContent: [
-            ...contextBefore,
-            ...conflictLines,
-            ...contextAfter
-          ].join('\n')
-        });
-
-        i = endLine;
-      } else {
-        // Malformed conflict (no closing marker)
-        debug('Malformed conflict marker - no closing >>>>>>>', { startLine });
-        i++;
-      }
-    } else {
+    if (!lines[i]!.startsWith('<<<<<<<')) {
       i++;
+      continue;
     }
+
+    const startLine = i;
+    const contextBefore = lines.slice(Math.max(0, i - contextLines), i);
+    const sepIdx = findOuterConflictSeparatorLine(lines, startLine);
+    if (sepIdx < 0) {
+      const nextI = advancePastBrokenConflictRegion(lines, startLine);
+      debug('Malformed conflict marker — no ======= at outer depth', {
+        startLine,
+        skippedToLine: nextI,
+      });
+      i = nextI;
+      continue;
+    }
+
+    const endIdx = findOuterConflictEndLine(lines, sepIdx);
+    if (endIdx < 0) {
+      const nextI = advancePastBrokenConflictRegion(lines, startLine);
+      debug('Malformed conflict marker — no closing >>>>>>> for outer region', {
+        startLine,
+        skippedToLine: nextI,
+      });
+      i = nextI;
+      continue;
+    }
+
+    const conflictLines = lines.slice(startLine, endIdx + 1);
+    const endLine = endIdx;
+    const afterStart = endLine + 1;
+    const contextAfter = lines.slice(afterStart, Math.min(lines.length, afterStart + contextLines));
+
+    chunks.push({
+      startLine,
+      endLine,
+      contextBefore,
+      conflictLines,
+      contextAfter,
+      fullContent: [...contextBefore, ...conflictLines, ...contextAfter].join('\n'),
+    });
+
+    i = afterStart;
   }
 
   return chunks;
 }
 
 /**
- * Resolve a single conflict chunk using LLM
+ * Split content into consecutive full-content segments (no truncation; split at line boundaries).
+ * Used for "full read" story when the file is too large for one request.
+ */
+function splitFileIntoFullSegments(content: string, maxSegmentChars: number): string[] {
+  const segments: string[] = [];
+  const lines = content.split('\n');
+  let current: string[] = [];
+  let currentChars = 0;
+  for (const line of lines) {
+    const lineLen = line.length + 1;
+    if (currentChars + lineLen > maxSegmentChars && current.length > 0) {
+      segments.push(current.join('\n'));
+      current = [];
+      currentChars = 0;
+    }
+    current.push(line);
+    currentChars += lineLen;
+  }
+  if (current.length > 0) segments.push(current.join('\n'));
+  return segments;
+}
+
+/**
+ * Build the prompt for one "full read" story request: full file content (or one full segment) and instructions
+ * to tell the story of the file and what OURS vs THEIRS are changing. No previews or truncation.
+ */
+function buildFileStoryPrompt(
+  filePath: string,
+  baseBranch: string,
+  segmentContent: string,
+  segmentIndex?: number,
+  totalSegments?: number,
+  previousStory?: string
+): string {
+  const header = `File: ${filePath}\nMerging branch: ${baseBranch}\n`;
+  const segmentHint =
+    totalSegments != null && totalSegments > 1
+      ? `This is segment ${(segmentIndex ?? 0) + 1} of ${totalSegments} of the full file (full read, no truncation).\n\n`
+      : 'Below is the full file content.\n\n';
+  const previousBlock =
+    previousStory != null && previousStory.length > 0
+      ? `Story so far:\n${previousStory}\n\n`
+      : '';
+  const instruction =
+    totalSegments != null && totalSegments > 1 && (segmentIndex ?? 0) > 0
+      ? 'Extend the story to include this part. Keep a single coherent summary (2-4 sentences total) of what this file does and what OURS vs THEIRS are changing. Reply with only that summary, no code.'
+      : 'Read the entire content. In 2-4 sentences, tell the story: what is this file\'s purpose and what are OURS vs THEIRS changing? Reply with only that summary, no code.';
+  return `${header}${segmentHint}${previousBlock}\`\`\`\n${segmentContent}\n\`\`\`\n\n${instruction}`;
+}
+
+/**
+ * Fetch a "file story" by doing a full read of the file in consecutive full-content segments (no cap;
+ * we always chunk). Each segment is sent in full; the story is built across turns. Returns null if
+ * overview is skipped or the LLM calls fail.
+ */
+export async function getFileConflictOverview(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model?: string
+): Promise<string | null> {
+  const chunks = extractConflictChunks(content);
+  if (chunks.length < FILE_OVERVIEW_MIN_CHUNKS && content.length < FILE_OVERVIEW_MIN_FILE_CHARS) {
+    return null;
+  }
+  return getFileConflictOverviewInternal(llm, filePath, content, baseBranch, model);
+}
+
+/**
+ * Always build file story by chunking the entire file (full read in segments). Used by top+tails fallback
+ * so we "process the entire file" and give every resolution prompt a consistent story.
+ * WHY: When the fallback runs, we want every conflict-resolution prompt to see the same file "map";
+ * getFileConflictOverview() skips small files, but in fallback we always need the story so the model
+ * has context for top+tails resolution.
+ */
+export async function getFileConflictOverviewAlways(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model?: string
+): Promise<string | null> {
+  return getFileConflictOverviewInternal(llm, filePath, content, baseBranch, model);
+}
+
+async function getFileConflictOverviewInternal(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model?: string
+): Promise<string | null> {
+  const opts = { phase: 'conflict-file-story' as const, ...(model ? { model } : {}) };
+  try {
+    const segments = splitFileIntoFullSegments(content, FILE_OVERVIEW_SEGMENT_CHARS);
+    let story = '';
+    for (let i = 0; i < segments.length; i++) {
+      const prompt = buildFileStoryPrompt(
+        filePath,
+        baseBranch,
+        segments[i]!,
+        i,
+        segments.length,
+        story || undefined
+      );
+      const response = await llm.complete(prompt, undefined, opts);
+      const part = response?.content?.trim();
+      if (!part) return null;
+      story = part.length <= 2000 ? part : part.slice(0, 2000);
+    }
+    return story || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a single conflict chunk using LLM (3-way: base + ours + theirs).
+ * WHY baseSegment: The model must see the common-ancestor slice for this chunk so it can merge both
+ * sides relative to base; caller passes the result of getBaseSegmentForChunk(baseContent, chunk).
  */
 export async function resolveConflictChunk(
   llm: LLMClient,
   filePath: string,
   chunk: ConflictChunk,
   baseBranch: string,
-  model?: string
+  model?: string,
+  baseSegment?: string,
+  previousParseError?: string,
+  fileOverview?: string
 ): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
-  const prompt = `Resolve this single Git merge conflict region in ${filePath}.
+  const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+  const oursSegment = ours.join('\n');
+  const theirsSegment = theirs.join('\n');
+  const base = baseSegment ?? '';
 
-MERGING: ${baseBranch}
-
-Context before:
-\`\`\`
-${chunk.contextBefore.join('\n')}
-\`\`\`
-
-Conflict:
-\`\`\`
-${chunk.conflictLines.join('\n')}
-\`\`\`
-
-Context after:
-\`\`\`
-${chunk.contextAfter.join('\n')}
-\`\`\`
-
-Return exactly:
-RESOLVED:
-\`\`\`
-<resolved lines only for this region>
-\`\`\`
-EXPLANATION: <one sentence describing what you kept or merged>
-
-Rules:
-- Remove all conflict markers.
-- Output only the resolved lines for this region, not the whole file.
-- Preserve valid syntax and indentation.
-- Do not use placeholder text in the explanation.`;
+  const prompt = buildConflictResolutionPromptThreeWay(
+    base,
+    oursSegment,
+    theirsSegment,
+    baseBranch,
+    filePath,
+    previousParseError,
+    fileOverview
+  );
 
   try {
-    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
+    const response = await llm.complete(prompt, undefined, {
+      phase: 'conflict-chunk',
+      ...(model ? { model } : {}),
+    });
     if (!response || typeof response.content !== 'string') {
       return {
         resolved: false,
@@ -241,18 +606,252 @@ Rules:
   }
 }
 
+/** Max lines per forced segment when no blank-line boundary in fallback. */
+const FALLBACK_MAX_LINES_PER_SEGMENT = 150;
+
 /**
- * Resolve all conflicts in a large file using chunked strategy
- *
- * WHY: This is the main entry point for large file resolution.
- * It orchestrates extraction, resolution, and reconstruction.
+ * Find safe chunk boundaries (AST or fallback) so each segment is <= maxSegmentChars.
+ * Returns [0, e1, e2, ..., lines.length] with each lines.slice(edges[i], edges[i+1]) ≤ maxSegmentChars.
+ * WHY AST for TS/JS: Splitting mid-statement would send invalid code and produce broken merges; statement
+ * boundaries keep each segment parseable. WHY fallback: When parse fails or language has no parser we use
+ * blank lines or a line cap so we still bound segment size and avoid one giant prompt.
  */
+export async function findConflictChunkEdges(
+  lines: string[],
+  filePath: string,
+  maxSegmentChars: number
+): Promise<number[]> {
+  const content = lines.join('\n');
+  const ext = filePath.replace(/^.*\./, '').toLowerCase();
+
+  // TypeScript/JavaScript: use AST statement boundaries
+  if (['ts', 'tsx', 'js', 'jsx'].includes(ext)) {
+    try {
+      const ts = await import('typescript').then(m => (m as { default?: unknown }).default ?? m) as typeof import('typescript');
+      const sf = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true);
+      if (content.trim().length > 0 && sf.statements.length === 0) {
+        debug('AST produced no statements (parse error?), using fallback edges', { filePath });
+        return findConflictChunkEdgesFallback(lines, maxSegmentChars);
+      }
+      const lineStarts = getLineStarts(content);
+      const statementStarts: number[] = [];
+      for (const stmt of sf.statements) {
+        const lineIdx = offsetToLineIndex(stmt.getStart(sf), lineStarts);
+        if (lineIdx >= 0 && lineIdx <= lines.length && !statementStarts.includes(lineIdx)) {
+          statementStarts.push(lineIdx);
+        }
+      }
+      statementStarts.sort((a, b) => a - b);
+      if (statementStarts.length === 0) statementStarts.push(0);
+      if (statementStarts[statementStarts.length - 1] !== lines.length) {
+        statementStarts.push(lines.length);
+      }
+      return coalesceEdgesBySize(lines, statementStarts, maxSegmentChars);
+    } catch (e) {
+      debug('TypeScript parse failed, using fallback edges', { filePath, error: e });
+      return findConflictChunkEdgesFallback(lines, maxSegmentChars);
+    }
+  }
+
+  // Python: boundaries at def/class/async def or blank line at indent 0
+  if (ext === 'py') {
+    const boundaries: number[] = [0];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      const trimmed = line.trimStart();
+      const indent = line.length - trimmed.length;
+      if (indent === 0 && (trimmed === '' || /^(def |class |async def )/.test(trimmed))) {
+        boundaries.push(i);
+      }
+    }
+    boundaries.push(lines.length);
+    const merged = [...new Set(boundaries)].sort((a, b) => a - b);
+    return coalesceEdgesBySize(lines, merged, maxSegmentChars);
+  }
+
+  return findConflictChunkEdgesFallback(lines, maxSegmentChars);
+}
+
+function getLineStarts(content: string): number[] {
+  const out: number[] = [0];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\n') out.push(i + 1);
+  }
+  return out;
+}
+
+function offsetToLineIndex(offset: number, lineStarts: number[]): number {
+  for (let i = lineStarts.length - 1; i >= 0; i--) {
+    if (lineStarts[i]! <= offset) return i;
+  }
+  return 0;
+}
+
+function coalesceEdgesBySize(lines: string[], boundaries: number[], maxSegmentChars: number): number[] {
+  const edges: number[] = [boundaries[0]!];
+
+  for (let i = 1; i < boundaries.length; i++) {
+    const boundary = boundaries[i]!;
+    const lastEdge = edges[edges.length - 1]!;
+    let segmentChars = 0;
+    for (let j = lastEdge; j < boundary; j++) {
+      segmentChars += (lines[j]?.length ?? 0) + 1;
+    }
+    if (segmentChars > maxSegmentChars && lastEdge !== boundaries[i - 1]) {
+      edges.push(boundaries[i - 1]!);
+    }
+  }
+  if (edges[edges.length - 1] !== lines.length) edges.push(lines.length);
+  return [...new Set(edges)].sort((a, b) => a - b);
+}
+
+function findConflictChunkEdgesFallback(lines: string[], maxSegmentChars: number): number[] {
+  const boundaries: number[] = [0];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]?.trim() === '') boundaries.push(i);
+  }
+  boundaries.push(lines.length);
+  const merged = [...new Set(boundaries)].sort((a, b) => a - b);
+  const edges = coalesceEdgesBySize(lines, merged, maxSegmentChars);
+  // If any segment still too large (no blank line), force split every N lines
+  const result: number[] = [0];
+  for (let i = 1; i < edges.length; i++) {
+    const start = edges[i - 1]!;
+    const end = edges[i]!;
+    const segmentLines = lines.slice(start, end);
+    const segmentChars = segmentLines.join('\n').length;
+    if (segmentChars > maxSegmentChars) {
+      for (let j = start + FALLBACK_MAX_LINES_PER_SEGMENT; j < end; j += FALLBACK_MAX_LINES_PER_SEGMENT) {
+        result.push(j);
+      }
+    }
+    result.push(end);
+  }
+  return [...new Set(result)].sort((a, b) => a - b);
+}
+
+/**
+ * Resolve one sub-chunk with 3-way prompt (base + ours + theirs segment).
+ * WHY 3-way per segment: Each sub-chunk is a slice of the conflict; the model still needs the
+ * corresponding base slice so it can merge both sides relative to base, not guess.
+ */
+async function resolveOneSubChunk(
+  llm: LLMClient,
+  filePath: string,
+  baseSegment: string,
+  oursSegment: string,
+  theirsSegment: string,
+  baseBranch: string,
+  model?: string,
+  previousParseError?: string,
+  fileOverview?: string
+): Promise<{ resolved: boolean; resolvedLines: string[] }> {
+  const prompt = buildConflictResolutionPromptThreeWay(
+    baseSegment,
+    oursSegment,
+    theirsSegment,
+    baseBranch,
+    filePath,
+    previousParseError,
+    fileOverview
+  );
+  try {
+    const response = await llm.complete(prompt, undefined, {
+      phase: 'conflict-subchunk',
+      ...(model ? { model } : {}),
+    });
+    const content = response?.content ?? '';
+    const codeMatch = content.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+    if (!codeMatch) {
+      return { resolved: false, resolvedLines: [] };
+    }
+    const resolvedCode = codeMatch[1].trim();
+    if (/^(<{7}|={7}|>{7})/m.test(resolvedCode)) {
+      return { resolved: false, resolvedLines: [] };
+    }
+    return { resolved: true, resolvedLines: resolvedCode.split('\n') };
+  } catch {
+    return { resolved: false, resolvedLines: [] };
+  }
+}
+
+/**
+ * Resolve an oversized conflict by sub-chunking at AST/fallback edges and merging with base.
+ */
+async function resolveOversizedChunk(
+  llm: LLMClient,
+  filePath: string,
+  chunk: ConflictChunk,
+  baseBranch: string,
+  model: string | undefined,
+  baseContent: string,
+  maxSegmentChars: number,
+  previousParseError?: string,
+  fileOverview?: string
+): Promise<{ resolved: boolean; resolvedLines: string[]; explanation: string }> {
+  const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+  // WHY conflict's base segment: Edges are indices within the conflict (0..linesForEdges.length). We must
+  // slice the conflict's base segment by those indices, not the full file, or we'd send wrong lines for
+  // multi-conflict files or when the conflict doesn't start at line 0.
+  const baseSegmentForChunk = getBaseSegmentForChunk(baseContent, chunk);
+  const baseSegmentLines = baseSegmentForChunk.split('\n');
+  const linesForEdges = ours.length >= theirs.length ? ours : theirs;
+  const edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
+
+  if (edges.length <= 2) {
+    return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk, previousParseError, fileOverview);
+  }
+
+  const segmentCount = edges.length - 1;
+  if (segmentCount > 20) {
+    debug('Many sub-chunks for oversized conflict', { filePath, segmentCount });
+  }
+
+  const resolvedSegments: string[] = [];
+  for (let i = 0; i < edges.length - 1; i++) {
+    const start = edges[i]!;
+    const end = edges[i + 1]!;
+    const oursSeg = ours.slice(start, end).join('\n');
+    const theirsSeg = theirs.slice(start, end).join('\n');
+    const baseSeg = baseSegmentLines.slice(start, Math.min(end, baseSegmentLines.length)).join('\n');
+
+    const result = await resolveOneSubChunk(
+      llm,
+      filePath,
+      baseSeg,
+      oursSeg,
+      theirsSeg,
+      baseBranch,
+      model,
+      previousParseError,
+      fileOverview
+    );
+    if (!result.resolved) {
+      return {
+        resolved: false,
+        resolvedLines: chunk.conflictLines,
+        explanation: `Sub-chunk ${i + 1}/${segmentCount} failed to resolve`,
+      };
+    }
+    resolvedSegments.push(...result.resolvedLines);
+  }
+
+  return {
+    resolved: true,
+    resolvedLines: resolvedSegments,
+    explanation: `Resolved oversized conflict in ${segmentCount} sub-chunk(s)`,
+  };
+}
+
 export async function resolveConflictsChunked(
   llm: LLMClient,
   filePath: string,
   content: string,
   baseBranch: string,
-  model?: string
+  model?: string,
+  baseContent?: string,
+  maxSegmentChars?: number,
+  previousParseError?: string
 ): Promise<{ resolved: boolean; content: string; explanation: string }> {
   const wholeFileGeneratedResolution = tryResolveWholeFileGeneratedConflict(filePath, content);
   if (wholeFileGeneratedResolution) {
@@ -275,14 +874,32 @@ export async function resolveConflictsChunked(
     totalLines: content.split('\n').length
   });
 
+  // Build a short "file overview" (story) when multiple conflicts or large file, then inject into each chunk prompt.
+  const fileOverview = await getFileConflictOverview(llm, filePath, content, baseBranch, model);
+  if (fileOverview) debug('File conflict overview', { filePath, overviewLength: fileOverview.length });
+
   const lines = content.split('\n');
   const resolutions = new Map<number, string[]>(); // startLine -> resolved lines
   const explanations: string[] = [];
   let allResolved = true;
 
-  // Resolve each chunk (pass model so we use same as attempt 1, not weak default)
+  const baseContentNorm = baseContent ?? '';
+  const segmentCap = maxSegmentChars ?? MAX_SINGLE_CHUNK_CHARS;
+
+  // WHY check oversized per chunk: A single conflict region can be 50k+ lines; sending it in one prompt
+  // would exceed context and cause 504/truncation. We sub-chunk at AST boundaries and resolve each segment.
   for (const chunk of chunks) {
-    const result = await resolveConflictChunk(llm, filePath, chunk, baseBranch, model);
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const largerSideChars = Math.max(ours.join('\n').length, theirs.join('\n').length);
+    const isOversized = largerSideChars > segmentCap;
+
+    const overview = fileOverview ?? undefined;
+    const result = isOversized
+      ? await resolveOversizedChunk(llm, filePath, chunk, baseBranch, model, baseContentNorm, segmentCap, previousParseError, overview)
+      : await (async () => {
+          const baseSegment = getBaseSegmentForChunk(baseContentNorm, chunk);
+          return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegment, previousParseError, overview);
+        })();
 
     if (result.resolved) {
       resolutions.set(chunk.startLine, result.resolvedLines);
@@ -336,6 +953,292 @@ export async function resolveConflictsChunked(
     resolved: true,
     content: resolvedLines.join('\n'),
     explanation: `Resolved ${chunks.length} conflict(s):\n${explanations.join('\n')}`
+  };
+}
+
+/**
+ * Build prompt for top+tails fallback: merge conflict using top of conflict + tail of OURS + tail of THEIRS (and base top/tail).
+ * WHY: When the main strategy (full region or AST sub-chunk) fails, we try this so we don't process the entire file
+ * unless we need to; the model sees how the conflict starts and how each side ends and produces a full resolution.
+ */
+function buildTopTailsConflictPrompt(
+  topConflict: string,
+  tailOurs: string,
+  tailTheirs: string,
+  baseTop: string,
+  baseTail: string,
+  baseBranch: string,
+  filePath: string,
+  fileOverview?: string,
+  previousParseError?: string
+): string {
+  const overviewBlock = fileOverview
+    ? `FILE OVERVIEW (use for context when merging):\n${fileOverview}\n\n`
+    : '';
+  const parseHint = previousParseError
+    ? `\nIMPORTANT: A previous attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is valid (close block comments with */, no missing commas).\n\n`
+    : '';
+  return `FILE: ${filePath}
+${overviewBlock}${parseHint}Merge this conflict using only the TOP (start of conflict) and TAILS (how each side ends). Produce the FULL resolved conflict content (no conflict markers).
+
+TOP OF CONFLICT (context + start):
+\`\`\`
+${topConflict || '(empty)'}
+\`\`\`
+
+BASE (common ancestor) — TOP:
+\`\`\`
+${baseTop || '(empty)'}
+\`\`\`
+
+BASE — TAIL:
+\`\`\`
+${baseTail || '(empty)'}
+\`\`\`
+
+OURS (HEAD) — TAIL (last lines):
+\`\`\`
+${tailOurs || '(empty)'}
+\`\`\`
+
+THEIRS (${baseBranch}) — TAIL (last lines):
+\`\`\`
+${tailTheirs || '(empty)'}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<full resolved conflict lines only, no markers>
+\`\`\`
+EXPLANATION: <one sentence>`;
+}
+
+/**
+ * Two-pass: prompt for resolving the HEAD (first portion) of a conflict from top + base top.
+ * WHY two-pass: For conflicts > 150 lines, one-shot (top + tails → full resolution) would ask the model
+ * to invent the middle; splitting into head then tail keeps each request bounded and avoids hallucinated middle.
+ */
+function buildTopTailsHeadPrompt(
+  topConflict: string,
+  baseTop: string,
+  baseBranch: string,
+  filePath: string,
+  fileOverview?: string,
+  previousParseError?: string
+): string {
+  const overviewBlock = fileOverview ? `FILE OVERVIEW:\n${fileOverview}\n\n` : '';
+  const parseHint = previousParseError ? `\nIMPORTANT: Fix this parse error in your output: "${previousParseError}"\n\n` : '';
+  return `FILE: ${filePath}
+${overviewBlock}${parseHint}Merge the START of this conflict. Produce only the first portion of the resolved conflict (same approximate length as the TOP below). No conflict markers. This will be followed by a second request to merge the ending.
+
+TOP OF CONFLICT (context + start):
+\`\`\`
+${topConflict || '(empty)'}
+\`\`\`
+
+BASE (common ancestor) — TOP:
+\`\`\`
+${baseTop || '(empty)'}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<resolved head lines only>
+\`\`\`
+EXPLANATION: <one sentence>`;
+}
+
+/**
+ * Two-pass: prompt for resolving the TAIL (rest of conflict) given resolved head + tail OURS + tail THEIRS.
+ * WHY: The model sees the already-resolved start and the last lines of both sides; it outputs only the
+ * continuation so we can reassemble head + tail without overlap or gap.
+ */
+function buildTopTailsTailPrompt(
+  resolvedHead: string,
+  tailOurs: string,
+  tailTheirs: string,
+  baseTail: string,
+  baseBranch: string,
+  filePath: string,
+  fileOverview?: string,
+  previousParseError?: string
+): string {
+  const overviewBlock = fileOverview ? `FILE OVERVIEW:\n${fileOverview}\n\n` : '';
+  const parseHint = previousParseError ? `\nIMPORTANT: Fix this parse error in your output: "${previousParseError}"\n\n` : '';
+  return `FILE: ${filePath}
+${overviewBlock}${parseHint}Merge the END of this conflict. You are given the already-resolved START. Produce the REMAINING lines that continue from the start and merge how OURS and THEIRS end. No conflict markers. Output only the continuation (do not repeat the head).
+
+RESOLVED START (already merged):
+\`\`\`
+${resolvedHead || '(empty)'}
+\`\`\`
+
+BASE — TAIL:
+\`\`\`
+${baseTail || '(empty)'}
+\`\`\`
+
+OURS (HEAD) — TAIL (last lines):
+\`\`\`
+${tailOurs || '(empty)'}
+\`\`\`
+
+THEIRS (${baseBranch}) — TAIL (last lines):
+\`\`\`
+${tailTheirs || '(empty)'}
+\`\`\`
+
+Return exactly:
+RESOLVED:
+\`\`\`
+<resolved tail lines only, continuation from head>
+\`\`\`
+EXPLANATION: <one sentence>`;
+}
+
+/**
+ * Fallback: resolve conflicts using top-of-conflict + tail of OURS + tail of THEIRS (and base top/tail).
+ * Only used when the main strategy (chunked or single-shot) has already failed for this file.
+ * WHY: We don't process the entire file with this strategy unless we need to; it's a fallback only.
+ * Complete implementation: always chunk the entire file and build the story; then per conflict use top+tails,
+ * with two-pass (head then tail) when the conflict is large.
+ */
+export async function resolveConflictsWithTopTailsFallback(
+  llm: LLMClient,
+  filePath: string,
+  content: string,
+  baseBranch: string,
+  model: string | undefined,
+  baseContent: string,
+  fileOverview?: string | null,
+  previousParseError?: string
+): Promise<{ resolved: boolean; content: string; explanation: string }> {
+  const chunks = extractConflictChunks(content);
+  if (chunks.length === 0) {
+    return { resolved: false, content, explanation: 'No conflict markers' };
+  }
+
+  // WHY cap: Asking the model to produce a full resolution from only top+tails works when the conflict
+  // is small enough that the model can infer the middle; above 280 lines we'd get hallucinated or truncated output.
+  for (const chunk of chunks) {
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const maxLines = Math.max(ours.length, theirs.length);
+    if (maxLines > TOP_TAILS_FALLBACK_MAX_CHUNK_LINES) {
+      debug('Top+tails fallback skipped: chunk too large', { filePath, maxLines, limit: TOP_TAILS_FALLBACK_MAX_CHUNK_LINES });
+      return { resolved: false, content, explanation: `Conflict region too large for top+tails fallback (${maxLines} > ${TOP_TAILS_FALLBACK_MAX_CHUNK_LINES} lines)` };
+    }
+  }
+
+  // Always build file story by chunking the entire file (complete implementation: process entire file in fallback).
+  const overview = fileOverview ?? await getFileConflictOverviewAlways(llm, filePath, content, baseBranch, model);
+  if (!overview) debug('Top+tails fallback: file overview (story) unavailable; resolving without it', { filePath });
+
+  const lines = content.split('\n');
+  const resolutions = new Map<number, string[]>();
+  const explanations: string[] = [];
+  const opts = { phase: 'conflict-top-tails' as const, ...(model ? { model } : {}) };
+
+  for (const chunk of chunks) {
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    const maxLines = Math.max(ours.length, theirs.length);
+    const baseSegment = getBaseSegmentForChunk(baseContent ?? '', chunk);
+    const baseLines = baseSegment.split('\n');
+
+    const topConflictLines = chunk.conflictLines.slice(0, TOP_TAILS_TOP_CONFLICT_LINES);
+    const topConflict = [...chunk.contextBefore, ...topConflictLines].join('\n');
+    const tailOurs = ours.slice(-TOP_TAILS_TAIL_LINES).join('\n');
+    const tailTheirs = theirs.slice(-TOP_TAILS_TAIL_LINES).join('\n');
+    const baseTop = baseLines.slice(0, TOP_TAILS_TOP_CONFLICT_LINES).join('\n');
+    const baseTail = baseLines.slice(-TOP_TAILS_TAIL_LINES).join('\n');
+
+    // WHY 150-line threshold: Below that, one-shot (top + tails → full) is reliable; above it the model
+    // would invent too much middle from partial input, so we split into head then tail.
+    const useTwoPass = maxLines > TOP_TAILS_TWO_PASS_THRESHOLD_LINES;
+
+    try {
+      let resolvedLines: string[];
+      if (useTwoPass) {
+        const headPrompt = buildTopTailsHeadPrompt(topConflict, baseTop, baseBranch, filePath, overview ?? undefined, previousParseError);
+        const headResponse = await llm.complete(headPrompt, undefined, opts);
+        const headBody = headResponse?.content ?? '';
+        const headMatch = headBody.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+        if (!headMatch) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): LLM did not return RESOLVED block for head' };
+        }
+        const resolvedHead = headMatch[1].trim();
+        if (/^(<{7}|={7}|>{7})/m.test(resolvedHead)) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): head still had conflict markers' };
+        }
+
+        const tailPrompt = buildTopTailsTailPrompt(resolvedHead, tailOurs, tailTheirs, baseTail, baseBranch, filePath, overview ?? undefined, previousParseError);
+        const tailResponse = await llm.complete(tailPrompt, undefined, opts);
+        const tailBody = tailResponse?.content ?? '';
+        const tailMatch = tailBody.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+        if (!tailMatch) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): LLM did not return RESOLVED block for tail' };
+        }
+        const resolvedTail = tailMatch[1].trim();
+        if (/^(<{7}|={7}|>{7})/m.test(resolvedTail)) {
+          return { resolved: false, content, explanation: 'Top+tails fallback (two-pass): tail still had conflict markers' };
+        }
+
+        resolvedLines = [...resolvedHead.split('\n'), ...resolvedTail.split('\n')];
+        explanations.push(`Lines ${chunk.startLine}-${chunk.endLine}: top+tails (two-pass)`);
+      } else {
+        const prompt = buildTopTailsConflictPrompt(
+          topConflict,
+          tailOurs,
+          tailTheirs,
+          baseTop,
+          baseTail,
+          baseBranch,
+          filePath,
+          overview ?? undefined,
+          previousParseError
+        );
+        const response = await llm.complete(prompt, undefined, opts);
+        const body = response?.content ?? '';
+        const codeMatch = body.match(/RESOLVED:\s*```[^\n]*\n([\s\S]*?)```/);
+        if (!codeMatch) {
+          return { resolved: false, content, explanation: 'Top+tails fallback: LLM did not return RESOLVED block' };
+        }
+        const resolvedCode = codeMatch[1].trim();
+        if (/^(<{7}|={7}|>{7})/m.test(resolvedCode)) {
+          return { resolved: false, content, explanation: 'Top+tails fallback: resolution still had conflict markers' };
+        }
+        resolvedLines = resolvedCode.split('\n');
+        explanations.push(`Lines ${chunk.startLine}-${chunk.endLine}: top+tails`);
+      }
+      resolutions.set(chunk.startLine, resolvedLines);
+    } catch (e) {
+      debug('Top+tails fallback LLM error', { filePath, error: e });
+      return { resolved: false, content, explanation: `Top+tails fallback failed: ${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
+  const resolvedLines: string[] = [];
+  let i = 0;
+  for (const chunk of chunks.sort((a, b) => a.startLine - b.startLine)) {
+    while (i < chunk.startLine) {
+      resolvedLines.push(lines[i]!);
+      i++;
+    }
+    const resolved = resolutions.get(chunk.startLine);
+    if (resolved) resolvedLines.push(...resolved);
+    else resolvedLines.push(...chunk.conflictLines);
+    i = chunk.endLine + 1;
+  }
+  while (i < lines.length) {
+    resolvedLines.push(lines[i]!);
+    i++;
+  }
+
+  return {
+    resolved: true,
+    content: resolvedLines.join('\n'),
+    explanation: `Resolved ${chunks.length} conflict(s) via top+tails fallback:\n${explanations.join('\n')}`
   };
 }
 
@@ -866,7 +1769,10 @@ NO_ADDITIONS - if the smaller side has nothing meaningful beyond what the larger
 ADDITIONS_FOUND: <brief description of what unique content exists>`;
 
   try {
-    const response = await llm.complete(prompt, undefined, model ? { model } : undefined);
+    const response = await llm.complete(prompt, undefined, {
+      phase: 'conflict-asymmetric-check',
+      ...(model ? { model } : {}),
+    });
     const responseText = response.content.trim();
 
     if (responseText.startsWith('NO_ADDITIONS')) {

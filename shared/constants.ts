@@ -8,6 +8,16 @@
  */
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CLONE / FETCH
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * Clone timeout in ms. Configurable via PRR_CLONE_TIMEOUT_MS (default 900s).
+ * WHY: Large repos (e.g. 1.6GB) can block indefinitely; timeout + progress feedback avoid silent hang (pill-output #1).
+ */
+export const DEFAULT_CLONE_TIMEOUT_MS = 900_000;
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // LLM TOKEN LIMITS & PROMPT SIZE
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -67,7 +77,8 @@ export const REWRITE_ESCALATION_RESERVE_CHARS = 2_000;
  * keeps total request under gateway limits (e.g. 500 on 690k). Audit: 449k base
  * + injection → 638k → some models 500.
  */
-export const MAX_FIX_PROMPT_CHARS = 200_000;
+/** Cap fix prompt size to reduce gateway timeouts (prompts.log audit: 194k chars caused risk). First attempt uses FIRST_ATTEMPT_MAX_PROMPT_CHARS. */
+export const MAX_FIX_PROMPT_CHARS = 100_000;
 
 /**
  * Conservative cap for the first fix attempt to avoid gateway timeouts (90s).
@@ -115,6 +126,9 @@ export const MAX_SNIPPET_LINES = 500;
  */
 export const MAX_CONFLICT_RESOLUTION_FILE_SIZE = 50000;
 
+/** Same as MAX_CONFLICT_RESOLUTION_FILE_SIZE — max chars for one-shot LLM merge prompts (tools/prr/llm/client.ts). */
+export const MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS = MAX_CONFLICT_RESOLUTION_FILE_SIZE;
+
 /**
  * Use chunked resolution for conflict files above this size (chars) instead of
  * trying full-file first. Reduces 504/timeouts on 22–50KB files.
@@ -128,6 +142,55 @@ export const CONFLICT_USE_CHUNKED_FIRST_CHARS = 22_000;
  * 1-2KB chunk prompts than as a single 20KB whole-file conflict prompt.
  */
 export const CONFLICT_USE_CHUNKED_FIRST_CHUNKS = 5;
+
+/**
+ * Reserve for 3-way conflict prompt: system/instructions + model response.
+ * WHY: Each request sends base + ours + theirs (3× segment) + this overhead. We derive segment cap as
+ * (effectiveMaxChars - this) / 3 so input + output stays within the model's context window.
+ */
+export const CONFLICT_PROMPT_OVERHEAD_CHARS = 12_000;
+
+/**
+ * File-overview ("story") for chunked conflict resolution: we do a full read of the file (no preview/truncation),
+ * in consecutive full-content segments; the LLM tells a story across turns; that story is injected into each
+ * chunk-resolution prompt.
+ */
+/** Size of each full-content segment when we chunk the file for the story read (no cap — we always chunk). */
+export const FILE_OVERVIEW_SEGMENT_CHARS = 40_000;
+/** Trigger overview when file has at least this many conflict regions. */
+export const FILE_OVERVIEW_MIN_CHUNKS = 2;
+/** Trigger overview when file size exceeds this (even with one conflict). */
+export const FILE_OVERVIEW_MIN_FILE_CHARS = 15_000;
+
+/**
+ * Default max chars per segment when model context is unknown.
+ * WHY override in resolve path: When we know the model we use (effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3
+ * so small-context models get smaller segments; this default is used only when model is not available.
+ */
+export const MAX_EDGE_SEGMENT_CHARS_DEFAULT = 12_000;
+
+/**
+ * Conflict region above this size triggers sub-chunking at AST/fallback edges.
+ * WHY same as segment default: We sub-chunk when the region would exceed one segment cap, so we never
+ * send a single request with more than one segment's worth of content (keeps context bounded).
+ */
+export const MAX_SINGLE_CHUNK_CHARS = 12_000;
+
+/**
+ * Max file size (chars) embedded in the post-resolution "syntax fix" LLM pass (full file in prompt).
+ * Larger files skip that pass — avoids gateway 504 / multi-minute timeouts (audit: ~214k-char prompt).
+ */
+export const MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS = 45_000;
+
+/**
+ * Half-window line count (above + below center) for **windowed** conflict syntax-fix when the file
+ * exceeds MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS. WHY: Large files (e.g. 200k+ chars) still fail parse
+ * with leftover markers; a local fragment prompt avoids 504s while fixing the error line.
+ */
+export const CONFLICT_SYNTAX_FIX_WINDOW_HALF_LINES = 140;
+
+/** Max chars for that fragment (prompt + response headroom). */
+export const CONFLICT_SYNTAX_FIX_WINDOW_MAX_CHARS = 32_000;
 
 /**
  * Minimum ratio of resolved content lines to the larger conflict side's lines.
@@ -145,6 +208,26 @@ export const MIN_CONFLICT_RESOLUTION_SIZE_RATIO = 0.1; // 10%
  * to 1 line is fine).
  */
 export const MIN_LINES_FOR_SIZE_REGRESSION_CHECK = 100;
+
+/**
+ * Top+tails fallback: only try when no conflict chunk exceeds this line count (larger side).
+ * WHY: We ask the model to produce the full resolved conflict from partial input (top + tails);
+ * very large conflicts would require the model to invent too much middle content.
+ */
+export const TOP_TAILS_FALLBACK_MAX_CHUNK_LINES = 280;
+
+/** Lines of context before conflict to include in "top" for top+tails fallback. */
+export const TOP_TAILS_CONTEXT_LINES = 15;
+/** First N lines of the conflict block (with markers) to include in "top". */
+export const TOP_TAILS_TOP_CONFLICT_LINES = 80;
+/** Last N lines of OURS/THEIRS (and base) to include as "tail". */
+export const TOP_TAILS_TAIL_LINES = 80;
+
+/**
+ * Above this line count (larger side), use two-pass resolution in top+tails fallback: resolve head, then tail.
+ * Below this, one shot (top + tails → full resolution). Keeps one-shot for small conflicts.
+ */
+export const TOP_TAILS_TWO_PASS_THRESHOLD_LINES = 150;
 
 /**
  * Size ratio threshold for detecting asymmetric conflicts in generated files.
@@ -207,13 +290,90 @@ export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 export const DEFAULT_ELIZACLOUD_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
 
 /**
+ * Fallback model when DEFAULT_ELIZACLOUD_MODEL is unavailable (e.g. timeout/skip list).
+ * Single source of truth for the default fallback; index.ts and rotation use this when needed.
+ * WHY not claude-3.5-sonnet: that ID is in ELIZACLOUD_SKIP_MODEL_IDS (low fix rate in audits); fallback must be non-skipped.
+ */
+export const ELIZACLOUD_FALLBACK_MODEL = 'anthropic/claude-sonnet-4-5-20250929';
+
+/**
  * ElizaCloud API base URL (OpenAI-compatible).
  */
 // Note: API base URL aligns with Eliza Cloud's design for consistency in requests.
 export const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
 
+/** Skip reason per model: timeout/504 (transient possible) vs zero-fix-rate (audit). Pill #2: separate so timeout-skipped can be retried. */
+export type ElizaCloudSkipReason = 'timeout' | 'zero-fix-rate';
+
 /**
- * Max concurrent requests to ElizaCloud API.
+ * Model IDs to skip when using ElizaCloud, with reason. WHY: Audits showed these models
+ * 500/timeout repeatedly or had 0% fix rate. Timeout-only models may be retried after cooldown
+ * (transient gateway issues); zero-fix-rate are skipped for audit (pill-output #2).
+ */
+export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
+  'openai/gpt-5.2-codex',
+  'anthropic/claude-3-opus',
+  'openai/gpt-4.1',
+  'anthropic/claude-sonnet-4.5',
+  'openai/gpt-5.1-codex-max',
+  'anthropic/claude-3.7-sonnet',
+  'openai/gpt-4o',
+  'openai/gpt-4o-mini',
+  /** Pill audits: ~25% fix success vs stronger models; wastes rotation slots. Re-enable with PRR_ELIZACLOUD_INCLUDE_MODELS. */
+  'anthropic/claude-3.5-sonnet',
+];
+
+/** Per-model skip reason. Default 'timeout' for models known to 504/timeout; 'zero-fix-rate' for 0% fix rate in audits. */
+export const ELIZACLOUD_SKIP_REASON: Record<string, ElizaCloudSkipReason> = {
+  'anthropic/claude-3.7-sonnet': 'timeout',
+  'openai/gpt-4o': 'timeout',
+  'openai/gpt-4o-mini': 'zero-fix-rate',
+  'anthropic/claude-3.5-sonnet': 'zero-fix-rate',
+};
+
+export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {
+  return ELIZACLOUD_SKIP_REASON[modelId] ?? 'timeout';
+}
+
+/**
+ * Effective skip list for ElizaCloud: ELIZACLOUD_SKIP_MODEL_IDS minus any model in
+ * PRR_ELIZACLOUD_INCLUDE_MODELS (comma-separated). WHY: Lets operators re-enable a skipped
+ * model when timeouts were transient or environment-specific (see output.log audit §9).
+ */
+let loggedElizacloudIncludeModels = false;
+
+let loggedElizacloudExtraSkip = false;
+
+export function getEffectiveElizacloudSkipModelIds(): string[] {
+  const extraRaw = process.env.PRR_ELIZACLOUD_EXTRA_SKIP_MODELS?.trim();
+  const extraIds = extraRaw
+    ? extraRaw.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+  const mergedBase = [...new Set([...ELIZACLOUD_SKIP_MODEL_IDS, ...extraIds])];
+  if (extraIds.length > 0 && !loggedElizacloudExtraSkip) {
+    loggedElizacloudExtraSkip = true;
+    console.log(
+      `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS: added ${extraIds.length.toLocaleString()} extra id(s) to ElizaCloud skip list (see shared/constants.ts for built-in list).`,
+    );
+  }
+
+  const raw = process.env.PRR_ELIZACLOUD_INCLUDE_MODELS?.trim();
+  if (!raw) return mergedBase;
+  const include = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  const match = (id: string) => include.has(id) || include.has(id.replace(/^(openai|anthropic|google)\//, ''));
+  const filtered = mergedBase.filter(id => !match(id));
+  if (!loggedElizacloudIncludeModels) {
+    loggedElizacloudIncludeModels = true;
+    const before = mergedBase.length;
+    console.log(
+      `PRR_ELIZACLOUD_INCLUDE_MODELS: skip list narrowed from ${before.toLocaleString()} to ${filtered.length.toLocaleString()} model id(s).`,
+    );
+  }
+  return filtered;
+}
+
+/**
+ * Max concurrent requests to ElizaCloud API (legacy; use getEffectiveMaxConcurrentLLM()).
  * WHY: ElizaCloud returns 429 when too many in flight. 1 = one request at a time.
  */
 export const ELIZACLOUD_MAX_CONCURRENT_REQUESTS = 1;
@@ -221,8 +381,66 @@ export const ELIZACLOUD_MAX_CONCURRENT_REQUESTS = 1;
 /**
  * Min ms between starting successive ElizaCloud requests (per slot).
  * WHY: 6s spacing keeps request rate under ElizaCloud limit of 10 req/min; avoids 429 bursts.
+ * Overridable via PRR_LLM_MIN_DELAY_MS; use getEffectiveMinDelayMs() for runtime value.
  */
 export const ELIZACLOUD_MIN_DELAY_MS = 6000;
+
+const MIN_CONCURRENT = 1;
+const MAX_CONCURRENT = 32;
+
+let warnedInvalidMaxConcurrentLlm = false;
+
+function parseEnvConcurrent(): number {
+  const raw = process.env.PRR_MAX_CONCURRENT_LLM;
+  if (raw === undefined || raw === '') return MIN_CONCURRENT;
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < MIN_CONCURRENT || n > MAX_CONCURRENT) {
+    if (!warnedInvalidMaxConcurrentLlm) {
+      warnedInvalidMaxConcurrentLlm = true;
+      console.warn(
+        `PRR_MAX_CONCURRENT_LLM="${raw}" is invalid; using ${MIN_CONCURRENT.toLocaleString()} (allowed range ${MIN_CONCURRENT.toLocaleString()}–${MAX_CONCURRENT.toLocaleString()}, integers only).`,
+      );
+    }
+    return MIN_CONCURRENT;
+  }
+  return n;
+}
+
+function parseEnvMinDelayMs(): number | null {
+  const raw = process.env.PRR_LLM_MIN_DELAY_MS;
+  if (raw === undefined || raw === '') return null;
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 0) return null;
+  return n;
+}
+
+let effectiveMaxConcurrentLLM: number | undefined;
+let effectiveMinDelayMs: number | undefined;
+
+/**
+ * Effective max concurrent LLM requests (single source of truth for all parallelism caps).
+ * WHY: PRR_MAX_CONCURRENT_LLM lets operators tune without code change; default 1 keeps deployments safe.
+ * Range [1, 32]; invalid or unset => 1.
+ */
+export function getEffectiveMaxConcurrentLLM(): number {
+  if (effectiveMaxConcurrentLLM === undefined) {
+    effectiveMaxConcurrentLLM = parseEnvConcurrent();
+  }
+  return effectiveMaxConcurrentLLM;
+}
+
+/**
+ * Effective min delay (ms) between starting successive requests per slot.
+ * Uses PRR_LLM_MIN_DELAY_MS if set and non-negative; else ELIZACLOUD_MIN_DELAY_MS.
+ * WHY override: Operators can tune for a specific gateway without code change.
+ */
+export function getEffectiveMinDelayMs(): number {
+  if (effectiveMinDelayMs === undefined) {
+    const env = parseEnvMinDelayMs();
+    effectiveMinDelayMs = env !== null ? env : ELIZACLOUD_MIN_DELAY_MS;
+  }
+  return effectiveMinDelayMs;
+}
 
 /**
  * Max concurrent LLM dedup calls (per-file).
@@ -270,6 +488,9 @@ export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && proce
  * WHY: When the fix requires a different file than the comment's path (e.g. duplicate interface in commit.ts
  * but comment is on git-push.ts), the fixer correctly refuses to change the wrong file and we burn through
  * all models. Exhausting after 2 wrong-file lessons defers to human and saves ~5 min of LLM calls.
+ * Pill audit: when allowedPaths was empty, every edit was falsely reported as wrong-file; we now ensure
+ * single-issue mode always includes the issue's path and do not count edits to the issue's target as wrong.
+ * If false positives persist, consider raising to 3.
  */
 export const WRONG_FILE_EXHAUST_THRESHOLD = 2;
 
@@ -279,6 +500,19 @@ export const WRONG_FILE_EXHAUST_THRESHOLD = 2;
  * 2 is enough to confirm the issue is about another file or stale context — defers to human and saves tokens.
  */
 export const WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD = 2;
+
+/**
+ * Apply failures (search/replace did not match) before dismissing as chronic-failure.
+ * WHY: output.log audit — earlier dismissal with "output did not match file after N attempts" so the loop
+ * doesn't burn many iterations; handoff note makes it clear for human review.
+ */
+export const APPLY_FAILURE_DISMISS_THRESHOLD = 2;
+
+/**
+ * Consecutive no-changes (same issue set) before dismissing as remaining and continuing with others.
+ * WHY: output.log audit §3 — earlier bail-out (2 instead of 3) so we don't burn iterations on the same set.
+ */
+export const NO_PROGRESS_DISMISS_THRESHOLD = 2;
 
 /**
  * Number of consecutive ALREADY_FIXED results (same explanation) before we dismiss as not-an-issue.
@@ -317,6 +551,20 @@ export const CANNOT_FIX_MISSING_CONTENT_THRESHOLD = 2;
 export const COULD_NOT_INJECT_DISMISS_THRESHOLD = 3;
 
 /**
+ * Lower threshold for "create this file" issues (e.g. missing test file).
+ * WHY: output.log audit §4 — couldNotInject on create-file paths retried 2–3 times with no file created; dismiss after 1 failure.
+ */
+export const COULD_NOT_INJECT_CREATE_FILE_THRESHOLD = 1;
+
+/**
+ * Consecutive "file not modified" count before dismissing as file-unchanged.
+ * WHY: output.log audit — fix iter 1 dismissed 6 issues (file not modified); fix iter 2 then
+ * modified those files and fixed them. Defer dismissal until 2nd occurrence so one fix iteration
+ * can touch multiple files and we don't dismiss too early.
+ */
+export const FILE_UNCHANGED_DISMISS_THRESHOLD = 2;
+
+/**
  * Verifier verdicts saying "delete entirely" / "remove from repo" before we dismiss (Cycle 13 M2).
  * Gives the model 2 chances to output <deletefile> before deferring to handoff.
  */
@@ -324,9 +572,9 @@ export const DELETE_ENTIRELY_DISMISS_THRESHOLD = 2;
 
 /**
  * Per-file search/replace (or hallucinated-stub) failure count before dismissing issues targeting that file as remaining.
- * WHY: output.log audit H3 — wallet-auth.ts had 26 failures and was still retried; dismiss so we stop burning tokens.
+ * WHY: output.log audit H3 — wallet-auth.ts had 26 failures and was still retried. Lowered from 5 to 3 for earlier dismissal (output.log audit §2).
  */
-export const HALLUCINATION_DISMISS_THRESHOLD = 5;
+export const HALLUCINATION_DISMISS_THRESHOLD = 3;
 
 /**
  * Number of consecutive CANNOT_FIX results (any reason) before we dismiss as not-an-issue.
@@ -522,3 +770,26 @@ export const LOCK_FILENAME = '.prr-lock.json';
  * WHY: Detect infinite loops/generation issues.
  */
 export const MAX_WHITESPACE_IN_RUNNER_OUTPUT = 1000;
+
+/**
+ * Cumulative verification failures (per tool/model, this process) with zero verified fixes before skipping that model for the rest of the run.
+ * WHY: Pill — chronic 0% models still consume rotation slots; session skip saves tokens. Set `PRR_SESSION_MODEL_SKIP_FAILURES=0` to disable.
+ */
+export function getSessionModelSkipFailureThreshold(): number {
+  const raw = process.env.PRR_SESSION_MODEL_SKIP_FAILURES?.trim();
+  if (raw === '0') return 0;
+  if (raw === undefined || raw === '') return 4;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 4;
+}
+
+/**
+ * Consecutive fix iterations with no new verified fixes before emitting one warning. Set `PRR_DIMINISHING_RETURNS_ITERATIONS=0` to disable.
+ */
+export function getDiminishingReturnsIterationThreshold(): number {
+  const raw = process.env.PRR_DIMINISHING_RETURNS_ITERATIONS?.trim();
+  if (raw === '0') return 0;
+  if (raw === undefined || raw === '') return 10;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 10;
+}

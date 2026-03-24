@@ -1,4 +1,4 @@
-import { strict as assert } from 'node:assert';
+import { describe, expect, it } from 'vitest';
 import { LessonsManager } from '../tools/prr/state/lessons.js';
 
 function normalize(lesson: string): string | null {
@@ -6,60 +6,79 @@ function normalize(lesson: string): string | null {
   return (manager as any).normalizeLessonText(lesson) as string | null;
 }
 
-async function run(): Promise<void> {
-  assert.equal(
-    normalize('```ts\nconst x = 1;\n```\n# Header\n**Bold line**\n- Keep this lesson text for later reference'),
-    'Keep this lesson text for later reference'
-  );
-  assert.equal(normalize('```ts\ncode\n```\n# Header\n**Bold line**'), null);
+describe('normalizeLessonText (direct)', () => {
+  it('strips code blocks and keeps lesson text or returns null', () => {
+    expect(
+      normalize('```ts\nconst x = 1;\n```\n# Header\n**Bold line**\n- Keep this lesson text for later reference')
+    ).toBe('Keep this lesson text for later reference');
+    expect(normalize('```ts\ncode\n```\n# Header\n**Bold line**')).toBe(null);
+  });
 
-  assert.equal(normalize('1. item one\n2. item two\n- bullet\n+ plus\n* star'), 'item one item two bullet plus');
-  assert.equal(normalize('- **bold bullet**\n- kept lesson about sync errors'), 'kept lesson about sync errors');
+  it('normalizes lists and bullets to single line', () => {
+    expect(normalize('1. item one\n2. item two\n- bullet\n+ plus\n* star')).toBe('item one item two bullet plus');
+    expect(normalize('- **bold bullet**\n- kept lesson about sync errors')).toBe('kept lesson about sync errors');
+  });
 
-  assert.equal(normalize('// comment only'), null);
-  assert.equal(normalize('// comment only\n- keep this lesson about conflict resolution'), 'keep this lesson about conflict resolution');
-  assert.equal(normalize('/* comment */\n1. keep this lesson about merge failures'), 'keep this lesson about merge failures');
+  it('strips comment-only lines but keeps lesson after', () => {
+    expect(normalize('// comment only')).toBe(null);
+    expect(normalize('// comment only\n- keep this lesson about conflict resolution')).toBe(
+      'keep this lesson about conflict resolution'
+    );
+    expect(normalize('/* comment */\n1. keep this lesson about merge failures')).toBe(
+      'keep this lesson about merge failures'
+    );
+  });
 
-  assert.equal(normalize('private isShuttingDown = false;\n- keep this lesson about safe shutdowns'), 'keep this lesson about safe shutdowns');
-  assert.equal(normalize('const foo = 1;\n- keep this lesson about timeouts'), 'keep this lesson about timeouts');
-  assert.equal(normalize('class Foo {}\n- keep this lesson about retries'), 'keep this lesson about retries');
-  assert.equal(normalize('import { foo } from "bar"\n- keep this lesson about error handling'), 'keep this lesson about error handling');
+  it('strips code-like lines but keeps lesson on same input', () => {
+    expect(normalize('private isShuttingDown = false;\n- keep this lesson about safe shutdowns')).toBe(
+      'keep this lesson about safe shutdowns'
+    );
+    expect(normalize('const foo = 1;\n- keep this lesson about timeouts')).toBe('keep this lesson about timeouts');
+    expect(normalize('class Foo {}\n- keep this lesson about retries')).toBe('keep this lesson about retries');
+    expect(normalize('import { foo } from "bar"\n- keep this lesson about error handling')).toBe(
+      'keep this lesson about error handling'
+    );
+  });
 
-  assert.equal(normalize('use this (inferred) before publishing changes'), 'use this before publishing changes');
+  it('strips (inferred) suffix', () => {
+    expect(normalize('use this (inferred) before publishing changes')).toBe('use this before publishing changes');
+  });
 
-  assert.equal(normalize('Always validate user input - ts'), 'Always validate user input');
-  assert.equal(normalize('Always validate user input - js'), 'Always validate user input');
-  assert.equal(normalize('Always validate user input - md'), 'Always validate user input');
-  assert.equal(normalize('Always validate user input - json'), 'Always validate user input');
-  assert.equal(normalize('Always validate user input - yml'), 'Always validate user input');
+  it('strips file extension suffixes like - ts, - js, - ts:8', () => {
+    expect(normalize('Always validate user input - ts')).toBe('Always validate user input');
+    expect(normalize('Always validate user input - js')).toBe('Always validate user input');
+    expect(normalize('Always validate user input - md')).toBe('Always validate user input');
+    expect(normalize('Always validate user input - json')).toBe('Always validate user input');
+    expect(normalize('Always validate user input - yml')).toBe('Always validate user input');
+    expect(normalize('Always validate user input - ts:8')).toBe('Always validate user input');
+    expect(normalize('ts:8` already includes all runners')).toBe('already includes all runners');
+    expect(normalize('Always document decisions - a:123')).toBe('Always document decisions');
+    expect(normalize('Always document decisions - a.ts:123')).toBe('Always document decisions - a.ts:123');
+  });
 
-  assert.equal(normalize('Always validate user input - ts:8'), 'Always validate user input');
-  assert.equal(normalize('ts:8` already includes all runners'), 'already includes all runners');
-  assert.equal(normalize('Always document decisions - a:123'), 'Always document decisions');
-  assert.equal(normalize('Always document decisions - a.ts:123'), 'Always document decisions - a.ts:123');
+  it('normalizes tool-made-no-changes phrasing', () => {
+    expect(
+      normalize('claude-code with gpt-5-mini made no changes: without explanation - trying different approach')
+    ).toBe('tool made no changes without explanation - trying different approach');
+    expect(normalize('tool made no changes, tool made no changes and tool made no changes')).toBe(
+      'tool made no changes'
+    );
+  });
 
-  assert.equal(
-    normalize('claude-code with gpt-5-mini made no changes: without explanation - trying different approach'),
-    'tool made no changes without explanation - trying different approach'
-  );
-  assert.equal(normalize('tool made no changes, tool made no changes and tool made no changes'), 'tool made no changes');
+  it('preserves or drops Fix for / rejected lines as expected', () => {
+    expect(
+      normalize('Fix for README.md:null rejected: The diff only adds an import for `rm` from fs/promises')
+    ).toBe('Fix for README.md rejected: The diff only adds an import for `rm` from fs/promises');
+    expect(normalize('Fix for src/resolver.ts:null - (inferred) : string;')).toBe(null);
+    expect(normalize('Do NOT repeat them:')).toBe(null);
+    expect(normalize('chars truncated')).toBe(null);
+  });
 
-  assert.equal(
-    normalize('Fix for README.md:null rejected: The diff only adds an import for `rm` from fs/promises'),
-    'Fix for README.md rejected: The diff only adds an import for `rm` from fs/promises'
-  );
-  assert.equal(normalize('Fix for src/resolver.ts:null - (inferred) : string;'), null);
-  assert.equal(normalize('Do NOT repeat them:'), null);
-  assert.equal(normalize('chars truncated'), null);
-
-  assert.equal(normalize('Always document decisions:'), 'Always document decisions');
-  assert.equal(normalize('Always document decisions -'), 'Always document decisions');
-  assert.equal(normalize('Fix for README.md. rejected: ok'), 'Fix for README.md rejected: ok');
-  assert.equal(normalize('123'), null);
-  assert.equal(normalize('123.'), null);
-}
-
-run().catch(error => {
-  console.error(error);
-  process.exit(1);
+  it('handles edge cases', () => {
+    expect(normalize('Always document decisions:')).toBe('Always document decisions');
+    expect(normalize('Always document decisions -')).toBe('Always document decisions');
+    expect(normalize('Fix for README.md. rejected: ok')).toBe('Fix for README.md rejected: ok');
+    expect(normalize('123')).toBe(null);
+    expect(normalize('123.')).toBe(null);
+  });
 });

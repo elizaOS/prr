@@ -1,0 +1,46 @@
+═══════════════════════════════════════════
+  PRR RUN SUMMARY
+═══════════════════════════════════════════
+
+📊 Session Statistics
+  • Issues analyzed: 10
+  • Issues fixed: 8
+  • Issues dismissed: 2
+  • Duplicates grouped: 1
+
+⏱️ Timing
+  • Total time: 5m 23s
+  • Fetch comments: 2.1s
+  • Analyze issues: 8.5s
+  • Fix iterations: 4m 12s
+  • Verify fixes: 15.3s
+
+🤖 Model Performance
+  claude-sonnet-4-5: 6 fixed, 1 failed
+  gpt-4o: 2 fixed, 0 failed
+
+💰 Token Usage
+  Total: 1.2M tokens
+  Analysis: 300K
+  Fixing: 800K
+  Verification: 100K
+
+📚 Lessons Learned: 3
+  • 2 global lessons
+  • 1 file-specific lesson
+
+═══════════════════════════════════════════
+  ISSUES
+═══════════════════════════════════════════
+
+Fixed:
+  ✓ c1: Use nullish coalescing (src/utils.ts:10)
+  ✓ c2: Add error handling (src/api.ts:45)
+  ✓ c3: Fix type annotation (src/types.ts:12)
+
+Dismissed:
+  - c4: File no longer exists (src/old.ts:5)
+  - c5: Already fixed in previous commit
+
+Remaining:
+  ⚠ c6: Complex refactoring needed (src/core.ts:100)

@@ -4,8 +4,17 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import type { LLMClient } from '../tools/prr/llm/client.js';
 import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../shared/constants.js';
-import { buildConflictResolutionPromptWithContent } from '../tools/prr/git/git-conflict-prompts.js';
-import { extractConflictChunks, resolveConflictChunk } from '../tools/prr/git/git-conflict-chunked.js';
+import {
+  buildConflictResolutionPromptWithContent,
+  splitConflictFilesIntoBatches,
+} from '../tools/prr/git/git-conflict-prompts.js';
+import {
+  extractConflictChunks,
+  extractConflictSides,
+  findConflictChunkEdges,
+  getBaseSegmentForChunk,
+  resolveConflictChunk,
+} from '../tools/prr/git/git-conflict-chunked.js';
 
 const tempDirs: string[] = [];
 
@@ -53,6 +62,33 @@ describe('conflict resolution prompt improvements', () => {
     expect(prompt).not.toContain('--- FILE: demo.ts ---\nbefore_0');
   });
 
+  it('splits conflict files into multiple batches when a single prompt would exceed the batch char cap', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-conflicts-split-'));
+    tempDirs.push(dir);
+
+    const small = `line\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n`;
+    writeFileSync(join(dir, 'one.ts'), small, 'utf-8');
+    writeFileSync(join(dir, 'two.ts'), small, 'utf-8');
+    writeFileSync(join(dir, 'three.ts'), small, 'utf-8');
+
+    const maxTotal = 200_000;
+    const full = buildConflictResolutionPromptWithContent(['one.ts', 'two.ts', 'three.ts'], 'main', dir, maxTotal);
+    const oneOnly = buildConflictResolutionPromptWithContent(['one.ts'], 'main', dir, maxTotal).length;
+    const twoFiles = buildConflictResolutionPromptWithContent(['one.ts', 'two.ts'], 'main', dir, maxTotal).length;
+    expect(twoFiles).toBeGreaterThan(oneOnly);
+    const tightBatch = oneOnly + Math.floor((twoFiles - oneOnly) / 2);
+    expect(full.length).toBeGreaterThan(tightBatch);
+    expect(oneOnly).toBeLessThanOrEqual(tightBatch);
+    expect(twoFiles).toBeGreaterThan(tightBatch);
+
+    const batches = splitConflictFilesIntoBatches(['one.ts', 'two.ts', 'three.ts'], 'main', dir, maxTotal, tightBatch);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      expect(buildConflictResolutionPromptWithContent(batch, 'main', dir, maxTotal).length).toBeLessThanOrEqual(tightBatch);
+    }
+    expect(new Set(batches.flat())).toEqual(new Set(['one.ts', 'two.ts', 'three.ts']));
+  });
+
   it('omits a chunked file entirely when all sections will not fit in the prompt budget', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prr-conflicts-'));
     tempDirs.push(dir);
@@ -89,10 +125,56 @@ const merged = true;
 >>>>>>> main
 suffix`)[0];
 
-    const result = await resolveConflictChunk(llm, 'demo.ts', chunk, 'main');
+    const result = await resolveConflictChunk(llm, 'demo.ts', chunk, 'main', undefined, 'const merged = false;');
 
     expect(result.resolved).toBe(true);
     expect(result.resolvedLines).toEqual(['const merged = true;']);
     expect(result.explanation).toBe('Resolved');
+  });
+});
+
+describe('findConflictChunkEdges', () => {
+  it('returns edges at statement boundaries for TS', async () => {
+    const lines = [
+      'const a = 1;',
+      'const b = 2;',
+      'function f() { return 3; }',
+      'export {};',
+    ];
+    const edges = await findConflictChunkEdges(lines, 'file.ts', 1000);
+    expect(edges[0]).toBe(0);
+    expect(edges).toContain(lines.length);
+    expect(edges.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('fallback forces split when no blank lines and segment too large', async () => {
+    const lines = Array.from({ length: 200 }, (_, i) => `line${i}`);
+    const edges = await findConflictChunkEdges(lines, 'file.txt', 500);
+    expect(edges[0]).toBe(0);
+    expect(edges).toContain(lines.length);
+    expect(edges.length).toBeGreaterThan(2);
+  });
+});
+
+describe('getBaseSegmentForChunk', () => {
+  it('slices base by chunk start and content extent', () => {
+    const baseContent = 'line0\nline1\nline2\nline3';
+    const chunk = extractConflictChunks(
+      'pre\n<<<<<<<\nours1\nours2\n=======\ntheirs1\n>>>>>>>\npost'
+    )[0]!;
+    const segment = getBaseSegmentForChunk(baseContent, chunk);
+    const baseLines = baseContent.split('\n');
+    const { ours } = extractConflictSides(chunk.conflictLines);
+    expect(ours.length).toBe(2);
+    expect(segment).toBe(baseLines.slice(chunk.startLine, chunk.startLine + 2).join('\n'));
+  });
+
+  it('returns truncated segment when base has fewer lines than chunk extent', () => {
+    const baseContent = 'only';
+    const chunk = extractConflictChunks(
+      'pre\n<<<<<<<\nours1\nours2\n=======\ntheirs1\n>>>>>>>\npost'
+    )[0]!;
+    const segment = getBaseSegmentForChunk(baseContent, chunk);
+    expect(segment).toBe('');
   });
 });

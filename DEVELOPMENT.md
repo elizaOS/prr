@@ -15,6 +15,73 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 **Why human-in-the-loop drives the design:** When the human can interrupt (Ctrl+C), inspect the workdir, and decide when to push, the system must persist state, avoid silent failures, and keep the workdir usable. That’s why we save state on signal, close logs before exit, and never assume the process runs to completion.
 
+### Terminology: **clone workdir** vs **process cwd** vs **this repo**
+
+- **Clone workdir** — Absolute path to the **PR under review** checkout (where PRR clones the target repo, typically under `~/.prr/work/...`). **`SimpleGit`** is bound here; **`pathExists(relative)`** and **`tryResolvePathWithExtensionVariants(workdir, ...)`** use this root. State for that PR often lives under **`<clone>/.pr-resolver-state.json`** (or configured base).
+- **Process cwd (`process.cwd()`)** — Where the user invoked `prr`; may be anything. **Do not** assume it equals the clone workdir.
+- **This repository** — The **prr** package (`tools/prr/`, `shared/`). Not the clone; editing paths under `tools/prr/` in docs refers to the tool, not the customer’s PR files.
+
+Audits and agents sometimes conflate these when logs mention “workdir” next to paths like `tools/prr/...` — the latter are almost always **this** tree; the former is the **target** checkout.
+
+## Pill output triage (`pill-output.md`)
+
+**What it is:** Optional artifact from **pill** after auditing a run’s `output.log`. This repo may keep a copy at **`pill-output.md`** for traceability.
+
+**Tool-repo scope filter (default on here):** When pill’s **`targetDir`** contains **`tools/prr`**, only improvements whose **`file`** is under **`tools/`**, **`shared/`**, **`tests/`**, **`docs/`**, **`generated/`**, **`.cursor/`**, **`.github/`**, or an allowlisted root file (e.g. **`README.md`**, **`package.json`**) are **appended** to **`pill-output.md`**. Clone-shaped paths (`src/`, `packages/`, `apps/`, …) are dropped (with console / summary notes). **`PILL_TOOL_REPO_SCOPE_FILTER=0`** turns filtering off. **`PILL_TOOL_REPO_SCOPE_FILTER=1`** forces it on even when **`tools/prr`** is absent (rare).
+
+**Pill conflates two targets (LLM view):** The analyzed log is from PRR working on **someone else’s repo** (the **clone**), so the model may still *propose* fixes for that codebase. The filter above keeps **written** pill-output focused on **this** repo when you run from the prr tree; hand-triage with **N/A (external)** vs **Done (prr)** still applies to older sections or when filtering is off.
+
+**Mixed sources:** Items that reference **`src/`** or **`packages/`** usually mean **that other repository**, not prr’s layout — treat as **N/A (external)** when porting fixes into **this** repo. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state under **`tools/prr/state`**, not root **`src/state.ts`**). **In this repo’s docs,** lesson examples mostly use **`tools/prr/`** / **`shared/`**; a few **downstream-style** snippets (e.g. eliza **`src/runtime.rs`**) illustrate foreign-repo lesson files — not paths in this tree.
+
+**Per-item status:** Each improvement line includes **`**Status:** …`** and a legend at the top of **`pill-output.md`** (`Done (prr)`, `Partial (prr)`, `Open (prr)`, `N/A (external)`, etc.).
+
+**WHY document this here:** Contributors otherwise grep for `src/` in pill text and assume missing files are a bug in prr. The status lines record what was implemented in **this** tree vs. what was eliza/downstream-only.
+
+**Where the prr-side work landed (pointers):** Path fragments vs `missing-file` and extension variants — **`shared/path-utils.ts`**, solvability; verified/dismissed overlap and head cleanup — **`tools/prr/state`**; session model skip / diminishing-returns warning — **`shared/constants.ts`**, **`tools/prr/models/rotation.ts`**, **`tools/prr/workflow/push-iteration-loop.ts`**; committed-fix scan cache — **`shared/git/git-commit-scan.ts`**; 429 concurrency restore — **`shared/llm/rate-limit.ts`**; dirty / unmergeable PR warning — setup phase (see **AGENTS.md**). Full bullets: **CHANGELOG [Unreleased]**.
+
+### Pill `N/A (external)` items → what to do in **this** repo
+
+Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or **`packages/typescript/...`**. Those paths name the **PR clone** (e.g. eliza), not **prr**. They are **not missing files** in this tree. Use this map to turn them into **prr** work (code, docs, or “close as downstream”):
+
+| External theme (pill path) | Action in prr monorepo |
+|----------------------------|-------------------------|
+| **`src/config.ts`** skip models | **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`), **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`**, **`PRR_ELIZACLOUD_INCLUDE_MODELS`**, **`validateAndFilterModels`** warning in **`tools/prr/models/rotation.ts`**. |
+| **`src/state.ts`** verified ∩ dismissed | **`tools/prr/state/`** (`StateManager.load`, **`markVerified`** / **`markDismissed`**, overlap warnings in **`analysis.ts`**). |
+| **`src/commit.ts`** emoji / noun phrase in commits | **`shared/git/git-commit-message.ts`** (`stripMarkdownForCommit`, **`generateCommitFirstLine`**). |
+| **`src/lessons.ts`** lesson bloat | **`.prr/lessons.md`** + **`tools/prr/state/lessons-prune.ts`**, **`compactLessons`**, **`prr --tidy-lessons`**. |
+| **`src/git.ts` / `scanCommittedFixes` / `baseBranch: null`** | **`shared/git/git-commit-scan.ts`**: pass **`prBaseBranch`** from the GitHub PR (wired from **`recoverVerificationState`** in **`run-setup-phase.ts`**) so `git log` uses `origin/<base>..branch` when the clone isn’t `main`/`master`/`develop`. |
+| **`src/coderabbit.ts`** stale bot SHA | **`tools/prr/workflow/startup.ts`** (HEAD vs bot review SHA), **`extractFullCommitShaFromText`** on issue comments (**`tools/prr/github/types.ts`**, **`api.ts`**). |
+| **`src/resolveComment.ts` / `src/path-resolver.ts`** paths | **`shared/path-utils.ts`**, **`tools/prr/workflow/helpers/solvability.ts`**. |
+| **`src/mergeBase.ts`** / merge conflicts in the clone | **`tools/prr/CONFLICT-RESOLUTION.md`**, **`tools/prr/git/git-conflict-*.ts`**, split-exec **`pushWithRetry`** conflict UX — not eliza’s merge driver. |
+| **`src/runners/llm-api.ts`** diminishing returns | **`PRR_DIMINISHING_RETURNS_ITERATIONS`** in **`push-iteration-loop.ts`**. |
+| **`src/fixes.ts`** recovery / **`markVerified`** churn | **`recoverVerificationState`** + scan cache; skip **`markVerified`** when already verified. |
+| Runtime / embedding / batch API / serverless / **`packages/core`** | **Product code** under review — open issues in **that** repository; prr only sees them via logs. |
+| **`CHANGELOG.md` / `ROADMAP.md`** conflicts in pill | Were **eliza** merge artifacts — maintain **`CHANGELOG.md`** and **`docs/ROADMAP.md`** here separately. |
+| **`AGENTS.md`** “companion architecture” | Describes **eliza** — **root `AGENTS.md` here** documents **prr**, pill, clone workdir, state/path rules. |
+| **CodeRabbit SHA ≠ HEAD** | Warn by default; **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** exits after workdir setup **before clone** (**`run-setup-phase.ts`**). |
+| **GitHub mergeable false / dirty** | Warn after clone by default; **`PRR_EXIT_ON_UNMERGEABLE=1`** exits **before clone** when **`--merge-base` is not set**. |
+| **Clear all dismissals on rebase** | Default: only **`already-fixed`** cleared on HEAD change; **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears entire **`dismissedIssues`** (**`state-core.ts`** / **`manager.ts`**). |
+| **“path-fragment” in pill** | Same as **`path-unresolved`** in state — see **AGENTS.md** path rules (no separate category value). |
+| **merge-tree / latent conflicts (pill #32)** | **`shared/git/git-conflicts.ts`**: after fetch, **`probeLatentMergeConflictsWithOrigin`** runs **`git merge-tree`** for **`HEAD`** vs **`origin/<prBranch>`** and (when **`prBase ≠ prBranch`**) a **second** probe vs **`origin/<prBase>`** (GitHub mergeable/dirty). **`checkAndSyncWithRemote`** warns for each; **`PRR_MATERIALIZE_LATENT_MERGE`** / **`PRR_MATERIALIZE_LATENT_MERGE_BASE`** materialize the corresponding **`git merge --no-commit`**. Skip: **`PRR_DISABLE_LATENT_MERGE_PROBE`**, **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE`**. |
+
+**Fix-loop lifecycle (short):** Setup → clone/sync → **`recoverVerificationState`** (scan `prr-fix:` markers, optional **`prBaseBranch`**) → analysis → solvability/dismissals → fix iterations (push cycles, verification, rotation) → final audit → optional thread replies. **Resolver state file:** **`<clone workdir>/.pr-resolver-state.json`** (see **`tools/prr/state/manager.ts`**). Lessons and other artifacts may live under **`<clone>/.prr/`** — do not confuse that folder with the resolver JSON path. **Diagram:** **AGENTS.md** (mermaid under “Fix-loop lifecycle”).
+
+### State invariants, paths, and skip-list (operator reference)
+
+**Verified vs dismissed:** A comment ID must not appear in both **verified** (`verifiedFixed` / `verifiedComments`) and **`dismissedIssues`**. **`markVerified`** / **`dismissIssue`** remove the ID from the opposite set; **`StateManager.load`** / **`loadState`** repair legacy overlap (prefer verified). If **RESULTS SUMMARY** still shows overlap at exit, capture **`output.log`** and delete **`.pr-resolver-state.json`** in the workdir — see **README.md** (Troubleshooting).
+
+**HEAD change:** When GitHub PR **head SHA** changes, **verified** state is cleared so fixes are re-checked; **`already-fixed`** dismissals are cleared. **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears **all** dismissals (aggressive, e.g. after a messy rebase). See **AGENTS.md** and **`tools/prr/state/state-core.ts`**.
+
+**Path resolution (review comments):** Extension fallbacks (**`tryResolvePathWithExtensionVariants`** in **`shared/path-utils.ts`**) and fragment handling (**`isReviewPathFragment`**, **`pathDismissCategoryForNotFound`**) keep **one path → one dismissal category**; legacy fragment **`missing-file`** is normalized to **`path-unresolved`** on load. Extend rules in **`path-utils`** / solvability, not ad hoc branches.
+
+**Model skip list (ElizaCloud / llm-api):** Built-in skip IDs and reasons live in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`, `ELIZACLOUD_SKIP_REASON`). Operators can add removals via **`PRR_ELIZACLOUD_INCLUDE_MODELS`** or extra skips via **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** (see **README** / **`.env.example`**). **Session-level** skip after repeated zero-fix failures: **`PRR_SESSION_MODEL_SKIP_FAILURES`** (**`tools/prr/models/rotation.ts`**). **Maintainer cadence:** Refresh the static list from **Model Performance** tables in **`output.log`** when audits show persistent 0% success — there is no automatic PR for that.
+
+**Fetch / concurrent LLM pool:** **`PRR_FETCH_TIMEOUT_MS`** — non-integer values use the default; with **`--verbose`**, a debug line records the bad value (**`parseFetchTimeoutMs`** in **`shared/git/git-conflicts.ts`**). Branch names for fetch use **`isBranchRefSafeForOriginFetch`** (**`git check-ref-format --branch`**). **`fetchOriginBranch`** logs (verbose) why one-shot HTTPS auth was skipped; spawn **`error`** messages are redacted. **`PRR_LLM_TASK_TIMEOUT_MS`** — optional per-slot wall clock for **`runWithConcurrency`** / **`runWithConcurrencyAllSettled`** (**`shared/run-with-concurrency.ts`**); see **README** Troubleshooting.
+
+**Partial base-merge cache:** State may hold **`partialConflictResolutions`** and **`partialConflictSavedOriginBaseSha`** (tip of **`origin/<base>`** when merge failed part-way). If the base tip changes before the next run, partials are cleared (**`tools/prr/workflow/base-merge.ts`**). Cleared on PR **HEAD** change (**`StateManager`**, **`state-core`**).
+
+**Final audit vs queue:** When the final adversarial audit returns **UNFIXED** for an issue that was **verified** earlier in the run, PRR **re-queues** it (removes from verified, fix loop again). **RESULTS SUMMARY** and the GitHub review summary report **how many** were re-queued (**`auditOverridesThisRun`**). **WHY:** Documented as “safe over sorry” in **README** / **AGENTS.md**.
+
 **Technical implications**:
 - State persistence is critical (resume after interruption)
 - Workdir preservation by default (inspect before pushing)
@@ -25,13 +92,13 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                           CLI (index.ts)                        │
+│                    CLI (tools/prr/index.ts)                     │
 │  - Entry point, signal handling, graceful shutdown              │
 └─────────────────────────────────────────────────────────────────┘
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                       PRResolver (resolver.ts)                  │
+│            PRResolver (tools/prr/resolver.ts)                   │
 │  - Main orchestration logic                                     │
 │  - Fix loop: analyze → fix → verify → commit                    │
 │  - Tool rotation and escalation strategies                      │
@@ -41,8 +108,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
         ▼                       ▼                       ▼
 ┌───────────────┐    ┌───────────────────┐    ┌───────────────────┐
 │  GitHub API   │    │   Fixer Runners   │    │    LLM Client     │
-│  (github/)    │    │   (runners/)      │    │   (llm/client.ts) │
-│               │    │                   │    │                   │
+│(tools/prr/    │    │ (shared/runners/) │    │(tools/prr/llm/    │
+│  github/)     │    │                   │    │  client.ts)       │
 │ - PR info     │    │ - CursorRunner    │    │ - Verification    │
 │ - Comments    │    │ - ClaudeCodeRunner│    │ - Issue detection │
 │ - Status      │    │ - AiderRunner     │    │ - Conflict res.   │
@@ -55,24 +122,47 @@ This contrasts with fully autonomous agents that create PRs without human involv
         └───────────────────────┼───────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        State Management                         │
-│  - StateManager (state/manager.ts) - workdir state              │
-│  - LessonsManager (state/lessons.ts) - branch-permanent lessons │
+│                     State Management                            │
+│  (tools/prr/state/manager.ts, state/lessons.ts)                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Commit gate and catalog model auto-heal
+
+Review bots sometimes claim a **valid** vendor model id is a “typo” and tell authors to switch to another valid id (e.g. “change `gpt-5-mini` to `gpt-4o-mini`”). That is not actionable PRR work when **both** spellings appear in the committed **`generated/model-provider-catalog.json`**: the PR is already aligned with public API ids.
+
+**WHY dismiss in solvability (0a6):** Those comments would otherwise enter analysis and the fix loop, wasting iterations and risking the fixer “helpfully” applying the bot’s bad rename.
+
+**WHY auto-heal (optional, default on):** If a prior edit already replaced the good id with the bot’s suggestion, we restore the **catalog-correct** string in the workdir **deterministically** (no LLM) so the branch matches vendor reality before analysis.
+
+**WHY quoted literals only + line window:** Replacing bare substrings across a whole file could hit unrelated identifiers or prose. Restricting to `"…"`, `'…'`, and `` `…` `` near the review line bounds blast radius while still fixing typical `model: 'gpt-4o-mini'` style constants.
+
+**WHY heal runs before file hashes / analysis cache:** Cached “unresolved” results key off path content; healing after a bad bot rename must happen **before** hashing so the LLM sees corrected code and we do not reuse a stale “still wrong” analysis.
+
+**WHY `markVerified` + `verifiedThisSession`:** The normal commit path requires verified session ids so we do not commit unrelated dirty trees (*Skipping commit: no newly verified fixes*). Catalog heal is a verified, deterministic fix for that comment, so it participates in the same gate.
+
+**Push-iteration commit** ([`tools/prr/workflow/commit-and-push-loop.ts`](tools/prr/workflow/commit-and-push-loop.ts) `handleCommitAndPush`, and [`tools/prr/workflow/push-iteration-loop.ts`](tools/prr/workflow/push-iteration-loop.ts) before it): a commit runs only when `stateContext.verifiedThisSession` is **non-empty** and (in the push loop) the ids are not yet in `alreadyCommitted`. If the worktree is dirty but **no** comment id was added to `verifiedThisSession` this iteration, PRR logs *Skipping commit: no newly verified fixes* and leaves changes uncommitted.
+
+**Heal-only / all-dismissed path** ([`tools/prr/workflow/main-loop-setup.ts`](tools/prr/workflow/main-loop-setup.ts)): when **catalog model auto-heal** ([`tools/prr/workflow/catalog-model-autoheal.ts`](tools/prr/workflow/catalog-model-autoheal.ts)) rewrites files, it **`markVerified`** each affected review comment and adds its id to **`verifiedThisSession`**. If analysis then finds **no unresolved issues** (`unresolvedIssues.length === 0`), the setup path calls **`commitAndPushChanges`** when `verifiedThisSession` is non-empty, `hasChanges(git)`, not `--dry-run`, and not `--no-commit` — so deterministic heals still land without a fixer verification round (same idea as the post–final-audit commit path).
+
+**Dismissal** for outdated bot model “typos” is **`assessSolvability`** check 0a6 via [`tools/prr/workflow/helpers/outdated-model-advice.ts`](tools/prr/workflow/helpers/outdated-model-advice.ts). **Disable:** `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1`, `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1`.
+
+**Limitations (by design):** Parsing needs an explicit **pair** (e.g. `change A to B`, `use B instead of A`, quoted arrow). Table-only lines like “FIXED → `gpt-4o-mini`” without a parseable wrong→suggested pair may not dismiss or heal. Framing regex requires “invalid / typo / wrong model” style language — neutral cost/perf suggestions are intentionally not touched.
+
 ## Key Files
+
+Paths below are relative to the repo root. PRR-specific code lives under `tools/prr/`; shared modules (logger, git) under `shared/` (pill-output.md #8).
 
 ### Core
 
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | CLI entry point, signal handlers |
-| `src/cli.ts` | Argument parsing, validation |
-| `src/config.ts` | Environment/config loading |
-| `src/resolver.ts` | Main orchestration (delegates to workflow/) |
-| `src/logger.ts` | Logging, timing, token tracking |
+| `tools/prr/index.ts` | CLI entry point, signal handlers |
+| `tools/prr/cli.ts` | Argument parsing, validation |
+| `shared/config.ts` | Environment/config loading |
+| `tools/prr/resolver.ts` | Main orchestration (delegates to workflow/) |
+| `shared/logger.ts` | Logging, timing, token tracking |
 
 
 ### GitHub Integration
@@ -80,8 +170,10 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/github/api.ts` | Octokit wrapper, GraphQL queries |
-| `src/github/types.ts` | PRInfo, ReviewComment, etc. |
+| `tools/prr/github/api.ts` | Octokit wrapper, GraphQL queries, replyToReviewThread, resolveReviewThread, getThreadComments |
+| `tools/prr/github/types.ts` | PRInfo, ReviewComment (with databaseId), etc. |
+
+**Thread replies:** When `--reply-to-threads` is set, PRR posts a short reply on each review thread when it fixes or dismisses. **WHY:** Gives reviewers visible feedback in the PR; one reply per thread keeps noise low. Orchestration: `tools/prr/workflow/thread-replies.ts` (postThreadReplies); called from iteration-cleanup (after push), commit-and-push-loop (squash push), and final-cleanup (dismissed). See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
 
 
 ### Git Operations
@@ -89,9 +181,9 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase |
-| `src/git/commit.ts` | Squash commit, push with retry, token injection |
-| `src/git/workdir.ts` | Hash-based workdir management |
+| `shared/git/git-clone-index.ts` (+ core, pull, merge, etc.) | Clone, fetch, conflict detection, pullLatest with auto-rebase. Base branch and additionalBranches use explicit refspecs so tracking refs are updated on --single-branch clones (WHY: see CHANGELOG "Base branch fetch on single-branch clones"). |
+| `shared/git/commit.ts` | Squash commit, push with retry, token injection |
+| `shared/git/workdir.ts` | Hash-based workdir management |
 
 
 ### Fixer Tool Runners
@@ -99,14 +191,14 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/runners/index.ts` | Auto-detection, rotation |
-| `src/runners/cursor.ts` | Cursor Agent CLI |
-| `src/runners/claude-code.ts` | Claude Code CLI |
-| `src/runners/aider.ts` | Aider CLI |
-| `src/runners/opencode.ts` | OpenCode CLI |
-| `src/runners/codex.ts` | OpenAI Codex CLI |
-| `src/runners/gemini.ts` | Google Gemini CLI |
-| `src/runners/llm-api.ts` | Direct API (fallback) |
+| `shared/runners/detect.ts` | Auto-detection, rotation |
+| `shared/runners/cursor.ts` | Cursor Agent CLI |
+| `shared/runners/claude-code.ts` | Claude Code CLI |
+| `shared/runners/aider.ts` | Aider CLI |
+| `shared/runners/opencode.ts` | OpenCode CLI |
+| `shared/runners/codex.ts` | OpenAI Codex CLI |
+| `shared/runners/gemini.ts` | Google Gemini CLI |
+| `shared/runners/llm-api.ts` | Direct API (fallback) |
 
 
 ### LLM Verification
@@ -114,7 +206,7 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/llm/client.ts` | Anthropic/OpenAI for verification |
+| `tools/prr/llm/client.ts` | Anthropic/OpenAI for verification |
 
 
 ### State Persistence
@@ -122,10 +214,25 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
-// Review: clearly distinguishes per-workdir state from persistent lessons for clarity.
-| `src/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
-| `src/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
+| `tools/prr/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
+| `tools/prr/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
+| `tools/prr/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
+
+
+### Split tools (split-plan, split-rewrite-plan, split-exec)
+
+Three-phase pipeline: **split-plan** produces `.split-plan.md` (group plan); **split-rewrite-plan** clones repo and produces `.split-rewrite-plan.yaml` (ordered ops per split); **split-exec** runs the rewrite plan when present (rebuild branches, then optional `--promote`) or falls back to one commit per split from **Files:**. Implementation audited 2025-03-18 against `.cursor/plans/split_rewrite_plan_phased_15c5c9ae.plan.md`: correct; one edge case fixed — when a rewrite plan is loaded but a group-plan split has no matching rewrite entry (e.g. typo in branchName), split-exec now skips that split with a warning instead of falling back to file-based and pushing to the original branch name.
+
+
+### Catalog model advice (vendor API ids)
+
+
+| File | Purpose |
+|------|---------|
+| `tools/prr/workflow/helpers/outdated-model-advice.ts` | Framing + parse rename pair + catalog check; pure logic (no I/O except catalog load in dismissal helper) |
+| `tools/prr/workflow/catalog-model-autoheal.ts` | Windowed quoted literal restore; `markVerified` + `verifiedThisSession` |
+| `shared/model-catalog.ts` | Load JSON, `resolveCatalogModelId`, staleness |
+| `generated/model-provider-catalog.json` | Scraped Anthropic + OpenAI API ids (refresh: `npm run update-model-catalog`) |
 
 
 ### Prompt Building
@@ -133,8 +240,8 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 | File | Purpose |
 |------|---------|
-| `src/analyzer/prompt-builder.ts` | Build fix prompts with context |
-| `src/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
+| `tools/prr/analyzer/prompt-builder.ts` | Build fix prompts with context |
+| `tools/prr/analyzer/types.ts` | UnresolvedIssue, FixPrompt |
 
 ## Key Design Decisions
 
@@ -257,7 +364,7 @@ Data flows between subsystems so the next step has the right context. Improving 
 
 - Verifier → Fixer: `fix-verification.ts` (sets `verifierContradiction`), `prompt-builder.ts` and `workflow/utils.ts` (VERIFIER DISAGREES block).
 - Analyzer → Fixer: `issue-analysis.ts` (builds issues with snippets), `fix-loop-utils.ts` / `recheckSolvability` (refresh after verify). When refreshing snippets, `recheckSolvability` preserves `verifierContradiction` via `{ ...issue, codeSnippet }` so the next fix prompt and AAR see it.
-- AAR "Verifier said": `push-iteration-loop.ts` sets `finalUnresolvedIssuesRef.current` from the same issue refs (so `verifierContradiction` is preserved); `final-cleanup.ts` passes them to `printAfterActionReport`. See `docs/audit-run-2026-02-22.md` (Actions executed).
+- AAR "Verifier said": `push-iteration-loop.ts` sets `finalUnresolvedIssuesRef.current` from the same issue refs (so `verifierContradiction` is preserved); `final-cleanup.ts` passes them to `printAfterActionReport`. See tools/prr/AUDIT-CYCLES.md for audit findings; AAR and verifier flow in push-iteration-loop and final-cleanup.
 - Dismissal: `workflow/dismissal-comments.ts` (effectiveLine, surroundingCode), `llm/client.ts` (`generateDismissalComment` prompt).
 
 ### 4. Model & Tool Rotation with Single-Issue Focus
@@ -348,7 +455,7 @@ Strategy per failure:
 **Solution**: Halve the batch size after each consecutive zero-fix iteration:
 
 ```typescript
-// src/analyzer/prompt-builder.ts
+// tools/prr/analyzer/prompt-builder.ts
 export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number): number {
   if (consecutiveZeroFixIterations <= 0) return MAX_ISSUES_PER_PROMPT;  // 50
   const reduced = Math.floor(MAX_ISSUES_PER_PROMPT / Math.pow(2, consecutiveZeroFixIterations));
@@ -377,7 +484,7 @@ export function computeEffectiveBatchSize(consecutiveZeroFixIterations: number):
 **Solution**: LLM-based importance and difficulty assessment during the existing analysis phase:
 
 ```typescript
-// src/llm/client.ts - Extended response format
+// tools/prr/llm/client.ts - Extended response format
 // OLD: ISSUE_ID: YES|NO|STALE: explanation
 // NEW: ISSUE_ID: YES|NO|STALE: I<1-5>: D<1-5>: explanation
 
@@ -415,7 +522,7 @@ if (match) {
 **Data flow** (11 construction sites):
 
 ```typescript
-// src/analyzer/types.ts
+// tools/prr/analyzer/types.ts
 export interface IssueTriage {
   importance: number;  // 1-5
   ease: number;        // 1-5
@@ -446,7 +553,7 @@ export interface UnresolvedIssue {
 
 **NOT** `llm/client.ts` audit site (~line 942): That constructs audit result objects `{ stillExists, explanation }`, NOT `UnresolvedIssue` — different type.
 
-**Sorting** (`src/analyzer/severity.ts`):
+**Sorting** (`tools/prr/analyzer/severity.ts`):
 
 ```typescript
 export type PriorityOrder =
@@ -479,7 +586,7 @@ export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder):
 
 If we mutated, single-issue randomization and priority sort would fight each other on alternate iterations. Returning a new array means each consumer gets its own ordering.
 
-**Where sorting happens** (`src/workflow/prompt-building.ts`):
+**Where sorting happens** (`tools/prr/workflow/prompt-building.ts`):
 
 ```typescript
 // WHY sort here, not in issue-analysis:
@@ -490,7 +597,7 @@ const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
 const { prompt, detailedSummary } = buildPrompt(sortedIssues, lessons, { maxIssues: effectiveMax });
 ```
 
-**Triage labels in prompts** (`src/analyzer/prompt-builder.ts`):
+**Triage labels in prompts** (`tools/prr/analyzer/prompt-builder.ts`):
 
 ```typescript
 // WHY tell the fixer: The model should know which issues are critical
@@ -501,7 +608,7 @@ const triageLabel = issue.triage
 parts.push(`### Issue ${i + 1}: ${issue.comment.path}${triageLabel}\n`);
 ```
 
-**Console display** (`src/workflow/prompt-building.ts`):
+**Console display** (`tools/prr/workflow/prompt-building.ts`):
 
 ```typescript
 // Console shows breakdown:
@@ -511,7 +618,7 @@ const moderate = triaged.filter(i => i.triage!.importance === 3).length;
 const minor = triaged.filter(i => i.triage!.importance >= 4).length;
 ```
 
-**Per-batch debug logging** (`src/llm/client.ts`):
+**Per-batch debug logging** (`tools/prr/llm/client.ts`):
 
 ```typescript
 // Added to existing per-batch summary:
@@ -546,11 +653,13 @@ Lessons store: ~/.prr/lessons/<owner>/<repo>/<branch>.json
 {
   "global": [],
   "files": {
-    "src/auth.ts": ["Fix rejected: try/catch doesn't handle the edge case - need early return"],
-    "src/api.ts:45": ["Validation must preserve backward compatibility - don't change function signature"]
+    "tools/prr/cli.ts": ["Fix rejected: try/catch doesn't handle the edge case - need early return"],
+    "shared/config.ts:45": ["Validation must preserve backward compatibility - don't change function signature"]
   }
-  }
+}
 ```
+
+*(Example paths illustrate this repo’s layout; lessons for a target PR use that repo’s paths, often under `src/`.)*
 
 **Why LLM-analyzed lessons?** Generic "tool failed" messages aren't actionable:
 - BAD: "cursor failed: Process exited with code 1"
@@ -701,18 +810,18 @@ if (existsSync('.cursor/rules/')) {
 **Solution layers**:
 
 ```text
-Layer 1: Clean runner output (src/runners/cursor.ts)
+Layer 1: Clean runner output (shared/runners/cursor.ts)
   └─ Extract only text content from JSON stream
   └─ WHY: Prevents downstream pattern matching against protocol metadata
 
-Layer 2: Regurgitation detection (src/workflow/utils.ts)
+Layer 2: Regurgitation detection (tools/prr/workflow/utils.ts)
   └─ PROMPT_REGURGITATION_MARKERS = known instruction fragments
   └─ If output matches known template text → reject as invalid
   └─ WHY: When overwhelmed, models echo "Issue 1 is already fixed -
      Line 45 has null check" verbatim from the instruction template.
      This looks like a valid explanation but isn't.
 
-Layer 3: Strict "already fixed" patterns (src/workflow/no-changes-verification.ts)
+Layer 3: Strict "already fixed" patterns (tools/prr/workflow/no-changes-verification.ts)
   └─ Replaced .includes('has') with /\balready\s+fixed\b/
   └─ WHY: includes('has') matches "This has not been resolved";
      includes('exists') matches "The file no longer exists".
@@ -733,6 +842,37 @@ const SPOT_CHECK_PASS_THRESHOLD = 0.4;  // 40% must pass to justify full check
 ```
 
 **Why 40% threshold?** If the fixer legitimately believes issues are fixed, at least 2/5 sampled issues should verify. Below that, the "already fixed" claim is almost certainly wrong and full verification would be wasted work.
+
+#### Fix loop audits (output.log)
+
+The following pain points and improvements come from auditing real runs (e.g. elizaOS/eliza#6562; run metrics and timing are recorded in `tools/prr/AUDIT-CYCLES.md` when we add a cycle). Constants live in `shared/constants.ts`; behavior in `shared/runners/llm-api.ts`, `tools/prr/workflow/execute-fix-iteration.ts`, and related workflow files.
+
+**Implemented (current behavior):**
+
+- **Empty diff / no meaningful changes:** When the fixer attempted changes but wrote no files (all no-ops or all search/replace failed to match), the runner returns `noMeaningfulChanges: true` and, when S/R failed, `applyFailureSummary` with failed file list. **WHY:** Skip verification (nothing to verify); workflow goes straight to rotation; summary is persisted as `lastApplyError` so the next fix prompt gets "Previous attempt: search/replace failed to match in: …".
+- **Last apply error in retry:** `lastApplyErrorByCommentId` and `applyFailureCountByCommentId` are set when the fixer errors or when `noMeaningfulChanges` + `applyFailureSummary`; the fix prompt receives "Previous attempt: …". **WHY:** The model wasn't getting explicit feedback that apply failed; passing the failure reason into the next attempt lets it adjust (exact content, shorter search block).
+- **Thresholds:** `HALLUCINATION_DISMISS_THRESHOLD = 3` (per-file S/R failure count before dismissing as remaining). `NO_PROGRESS_DISMISS_THRESHOLD = 2` (consecutive no-changes for same issue set). `COULD_NOT_INJECT_CREATE_FILE_THRESHOLD = 1` (dismiss after one couldNotInject for create-file issues). **WHY:** Earlier bail-out stops the loop from burning iterations on unreachable targets; handoff note makes it clear for human review.
+
+**Audit pain points (reference; status below):**
+
+1. **Mass unmark verified at start of push iteration** — **Done:** `recoveredFromGitCommentIds`; first analysis excludes them from stale re-check; when `changedFiles` provided, only re-check stale verifications whose file changed. See AUDIT-CYCLES Cycle 40.
+2. **"Output did not match file"** — **Done:** Last apply error in retry prompt; `applyFailureSummary`; `HALLUCINATION_DISMISS_THRESHOLD = 3`; `APPLY_FAILURE_DISMISS_THRESHOLD = 2`.
+3. **Duplicate prompt skip + many no-changes** — **Done:** `NO_PROGRESS_DISMISS_THRESHOLD = 2`; single-issue / rotation already try different prompt shape after no progress.
+4. **couldNotInject for create-file** — **Done:** `COULD_NOT_INJECT_CREATE_FILE_THRESHOLD = 1`.
+5. **Verifier: "The code diff is empty"** — **Done:** Fixer reports changes but diff empty → `noMeaningfulChanges`, skip verification, rotate; verifier empty-diff already adds lesson and skips escalate (fix-verification.ts, recovery.ts).
+6. **Analyze issues / fetch comments repeated** — **Optional:** Cache analysis by comment IDs + file hashes; reuse when unchanged. Partially: `findUnresolvedIssuesOptions` supports `changedFiles` and analysis cache key; full reuse is a larger change.
+7. **Thread reply Validation Failed** — **Done:** Full error logging; retry with shortened message; stop after 3 consecutive 422s; user-visible summary when replied < 10% attempted. See CHANGELOG and docs/THREAD-REPLIES.md. AUDIT-CYCLES 43–45.
+8. **Empty exitReason on push iteration** — **Done:** push-iteration-loop sets `exitReason = iterResult.exitReason || 'no_progress'` so analytics and logs never show empty reason when loop breaks without all_fixed.
+9. **CI 0/0 checks** — **Done:** When `totalChecks === 0`, startup shows "No status checks reported for this ref" (tools/prr/workflow/startup.ts).
+10. **Pill 504** — **Done:** Chunk/summarize at 30k tokens or 100k chars; 50k char cap; no-LLM fallback. Audit request uses 60k token context budget so the assembled context stays under limit and avoids FUNCTION_INVOCATION_TIMEOUT. See tools/pill/README.md, CHANGELOG; AUDIT-CYCLES Cycle 41.
+11. **Concurrency and model skip list** — **Done:** Documented why models are skipped; `PRR_ELIZACLOUD_INCLUDE_MODELS` override. See docs/MODELS.md, shared/constants.ts.
+12. **Overlap verified ∩ dismissed** — **Done:** On state load, remove from `dismissedIssues` any commentId in `verifiedFixed` so counts and AAR stay correct. AUDIT-CYCLES Cycle 41.
+13. **Prompts.log prompt/response pairing** — **Done:** `debugPrompt` returns slug; `debugResponse(slug, …)` and `debugPromptError(slug, …)` use it so PROMPT and RESPONSE stay paired when many requests in flight. AUDIT-CYCLES Cycle 42.
+14. **Very large fix prompts** — **Done:** `MAX_FIX_PROMPT_CHARS` 200k → 100k to reduce timeout risk; first attempt still uses `FIRST_ATTEMPT_MAX_PROMPT_CHARS` (80k). AUDIT-CYCLES Cycle 42.
+15. **"File no longer exists" skip reason** — **Done:** Dismissal-comments debug messages now state "no place to insert comment" so operators don't confuse with file-not-found during fix; full-path normalization for dismissal metadata deferred. AUDIT-CYCLES Cycle 43.
+16. **Prompts.log (crash flush, batch tokens)** — **Done:** writeToPromptLog uses cork/uncork so each entry is flushed as a unit (reduces truncated last entry on crash). Batch analysis: one snippet per file so multiple issues on the same file share one snippet (Cycle 38 Low; AUDIT-CYCLES Cycle 46).
+
+**Pill and log audit limits:** When output.log exceeds the token threshold it is story-read (summarized by chapters), so single-line DEBUG stats and compact tables (e.g. overlap counts, Model Performance) may not survive the digest — pill can miss them. For critical runs, inspect output.log manually for RESULTS SUMMARY and Model Performance, or consider future pill improvements: structured extraction of key lines before story-read, always include head+tail of output.log in full, extend audit prompt to ask explicitly for state overlap and per-model success suggestions. See AUDIT-CYCLES Cycle 41 Notes.
 
 ### 5. Context Size Management
 
@@ -1258,6 +1398,16 @@ The old code had ~250 lines duplicated. Now all share `resolveConflictsWithLLM()
 - They might try to "fix" the conflict markers as if they were code issues
 - Better to detect and resolve conflicts upfront
 
+**Nested conflict markers:** `extractConflictChunks` uses nesting depth so the **outer** `=======` / `>>>>>>>` pair is found; a second `<<<<<<<` inside the ours section no longer terminates the region at the inner `>>>>>>>`.
+
+**Separator scan:** `findOuterConflictSeparatorLine` stops when a `>>>>>>>` closes the opening conflict **before** any `=======` at depth 1 (two-marker / botched blocks). That prevents a **later** conflict’s `=======` from being mistaken for the first block’s separator.
+
+**Separator repair:** `preprocessConflictFileContent` (on conflicted reads) inserts a missing `=======` before the closing `>>>>>>>` when needed. Opt out: **`PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR=1`**.
+
+**Large-file syntax fix:** If post-merge parse fails and the file exceeds **`MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS`**, PRR tries a **windowed** LLM pass around the error line (or first `<<<<<<<`) before giving up. Tunables: **`CONFLICT_SYNTAX_FIX_WINDOW_HALF_LINES`**, **`CONFLICT_SYNTAX_FIX_WINDOW_MAX_CHARS`**.
+
+**Markerless unmerged paths:** If git still lists a file as conflicted but the working tree has no standard markers (e.g. after a partial tool write), PRR may resolve **TypeScript/JavaScript** sources from the index: **stage 2 (ours / PR branch)** by default. Set **`PRR_MARKERLESS_CONFLICT_PREFER=theirs`** to take **stage 3 (incoming / base)** instead.
+
 **Lock file handling** (`handleLockFileConflicts`):
 
 ```typescript
@@ -1478,7 +1628,7 @@ Both commit paths use this: `squashCommit` (main fix loop) and `commitIteration`
 fix: address review comments
 
 Issues addressed:
-- src/cli.ts: _⚠️ Potential issue_ | _🔴 Critical_
+- tools/prr/cli.ts: _⚠️ Potential issue_ | _🔴 Critical_
 <details><summary>...
 ```
 
@@ -1586,6 +1736,8 @@ if (hasForbidden) {
 }
 ```
 
+*(Shape is real; `src/runtime.rs` is an example target-repo path, not this package’s layout.)*
+
 ## CLI Implementation Notes
 
 ### Commander.js `--no-*` Options
@@ -1628,10 +1780,10 @@ noCommit: !opts.commit,  // --no-commit -> opts.commit=false -> noCommit=true
 bun install
 
 # Build
-bun run build
+bun run typecheck
 
 # Run locally
-bun dist/index.js https://github.com/owner/repo/pull/123
+bun dist/tools/prr/index.js https://github.com/owner/repo/pull/123
 
 # Or link globally
 bun link
@@ -1639,6 +1791,41 @@ prr --help
 ```
 
 ## Testing Tips
+
+### Git HTTPS push + token (CI-style, no credential helper)
+
+PRR can push with a **one-shot URL** (`https://<token>@github.com/...`) and credential helpers disabled so Git never prompts. **Unit tests** (no network, no secrets) cover URL building:
+
+```bash
+npm test -- tests/git-push-auth-url.test.ts
+```
+
+**Manual smoke (real token, real remote):** use a throwaway branch on a repo you own. Prefer env + a subshell so the token is not hard-coded in the command string.
+
+```bash
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+git init -b main
+git commit --allow-empty -m "smoke"
+git remote add origin https://github.com/YOUR_ORG/YOUR_REPO.git
+export GITHUB_TOKEN   # PAT with push access
+# Same shape PRR uses: push URL carries the token; credential helpers off; no prompt.
+git -c credential.helper= -c credential.https://github.com.helper= \
+  push "https://${GITHUB_TOKEN}@github.com/YOUR_ORG/YOUR_REPO.git" \
+  HEAD:refs/heads/prr-ci-push-smoke
+cd - && rm -rf "$tmpdir"
+```
+
+To exercise the **exact** URL encoder PRR uses (tokens with `:` / `@`), from the **prr** repo after `npm run typecheck`:
+
+```bash
+cd /path/to/prr
+TOKEN_URL=$(node --input-type=module -e "import { buildHttpsPushUrlWithToken } from './dist/shared/git/git-push-auth-url.js'; console.log(buildHttpsPushUrlWithToken('https://github.com/YOUR_ORG/YOUR_REPO.git', process.env.GITHUB_TOKEN));")
+# then in the temp clone:
+git -c credential.helper= -c credential.https://github.com.helper= push "$TOKEN_URL" HEAD:refs/heads/prr-ci-push-smoke
+```
+
+Delete remote branch `prr-ci-push-smoke` after a successful push. If this works but CI fails, compare `git remote get-url origin` in CI (a stale or masked token in `origin` used to break pushes before one-shot URLs).
 
 ```bash
 # Dry run (no changes)
@@ -1691,6 +1878,8 @@ If conflicts persist after all attempts:
 1. prr aborts the merge and continues with review fixes
 2. Human must resolve base branch conflicts manually
 3. Check `git status` in workdir for conflict markers
+
+**PR stays "dirty" on GitHub:** PRR fetches the base branch with an explicit refspec so the merge sees the latest base tip (see CHANGELOG "Base branch fetch on single-branch clones" and README Git Integration). If the PR still shows mergeable: false, ensure the base branch exists on the remote.
 
 ### Push Timeout or Rejection
 **Symptoms**: "Push timed out after 30 seconds" or "Push rejected: remote has newer commits"
@@ -1865,7 +2054,7 @@ if (!safe) {
 
 ## Adding a New Runner
 
-1. Create `src/runners/<name>.ts`:
+1. Create `shared/runners/<name>.ts`:
 ```typescript
 export class MyRunner implements Runner {
   name = 'myrunner';
@@ -1877,7 +2066,7 @@ export class MyRunner implements Runner {
 }
 ```
 
-2. Add to `src/runners/index.ts`:
+2. Add to `shared/runners/detect.ts` (runner registry):
 ```typescript
 import { MyRunner } from './myrunner.js';
 export const ALL_RUNNERS: Runner[] = [
@@ -1886,7 +2075,7 @@ export const ALL_RUNNERS: Runner[] = [
 ];
 ```
 
-3. Update `src/config.ts` FixerTool type if needed
+3. Update `shared/config.ts` FixerTool type if needed
 
 **Security Checklist for New Runners**:
 - [ ] Use `spawn(binary, args)` NOT `spawn('sh', ['-c', cmd])`
@@ -1902,7 +2091,7 @@ Tokens are tracked per phase:
 - `Resolve conflicts` - direct LLM conflict resolution
 - `Direct LLM fix` - fallback fixer
 
-**Session vs Overall Stats** (`logger.ts`):
+**Session vs Overall Stats** (`shared/logger.ts`):
 
 ```typescript
 // WHY: Distinguish "what happened this run" from "cumulative history"
@@ -1945,7 +2134,7 @@ Cost estimate uses rough rates:
 **Solution**: Monkey-patch `process.stdout.write` and `process.stderr.write` at startup to mirror all output to `~/.prr/output.log`:
 
 ```typescript
-// src/logger.ts
+// shared/logger.ts
 export function initOutputLog(): void {
   const logPath = path.join(os.homedir(), '.prr', 'output.log');
   // Truncate on each run start — always latest session only
@@ -1968,7 +2157,7 @@ export function initOutputLog(): void {
 **Why truncate on start, not append?** Appending would require the user to figure out where the latest run begins. Truncation means the file always contains exactly one session — the most recent one. If you need historical output, use `--verbose` with dedicated debug log files.
 
 **Lifecycle**:
-1. `initOutputLog()` called at the top of `src/index.ts` (before any output)
+1. `initOutputLog()` called at the top of `tools/prr/index.ts` (before any output)
 2. `closeOutputLog()` called in success path, error handler, and signal handlers
 3. Path printed at end: `Full output log: ~/.prr/output.log`
 

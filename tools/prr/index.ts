@@ -15,14 +15,27 @@ import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { validateElizaCloudKey, fetchAvailableElizaCloudModels, validateOpenAIKey } from './llm/client.js';
+import { ELIZACLOUD_FALLBACK_MODEL, getEffectiveElizacloudSkipModelIds, getEffectiveMaxConcurrentLLM } from '../../shared/constants.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
-import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled, formatNumber } from '../../shared/logger.js';
+import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
-  initOutputLog();
+  initOutputLog({});
+  // WHY print at startup: Logs are written to process.cwd(); if the user ran prr from elsewhere they need to see where to find them.
+  const outPath = getOutputLogPath();
+  const promptPath = getPromptLogPath();
+  if (outPath) console.log(chalk.gray(`  Output log:  ${outPath}`));
+  if (promptPath) {
+    console.log(
+      chalk.gray(
+        `  Prompts log: ${promptPath} (full prompts when in-process LLM runs; use PRR_DEBUG_PROMPTS=1 for ~/.prr/debug files)`,
+      ),
+    );
+  }
 } catch (err) {
   // Non-fatal: log tee unavailable (e.g., read-only CWD), continue without it
   console.warn('Warning: Could not initialize output log:', err);
@@ -83,6 +96,7 @@ async function main(): Promise<void> {
     // Parse CLI arguments
     const program = createCLI();
     const { prUrl, options } = parseArgs(program);
+    setPillEnabled(options.pill);
 
     // Handle --check-tools mode (exit after showing status)
     if (options.checkTools) {
@@ -126,22 +140,25 @@ async function main(): Promise<void> {
       await validateElizaCloudKey(config.elizacloudApiKey);
       const available = await fetchAvailableElizaCloudModels(config.elizacloudApiKey);
       if (available.size > 0 && !available.has(config.llmModel)) {
+        const skipSet = new Set<string>(getEffectiveElizacloudSkipModelIds());
         const PREFERRED_ELIZACLOUD_MODELS = [
           'anthropic/claude-sonnet-4-5-20250929',
-          'anthropic/claude-3.7-sonnet',
-          'anthropic/claude-3.5-sonnet',
+          ELIZACLOUD_FALLBACK_MODEL,
           // Short names for gateways that don't use owner/ prefix
           'claude-sonnet-4-5-20250929',
           'claude-3-5-sonnet-20241022',
           'claude-3-5-haiku-20241022',
         ];
-        const chosen = PREFERRED_ELIZACLOUD_MODELS.find(m => available.has(m))
+        const chosen = PREFERRED_ELIZACLOUD_MODELS.find(m => available.has(m) && !skipSet.has(m))
+          ?? Array.from(available).filter(m => !skipSet.has(m)).sort()[0]
           ?? Array.from(available).sort()[0];
         config.llmModel = chosen;
-        if (PREFERRED_ELIZACLOUD_MODELS.some(m => available.has(m))) {
-          console.log(chalk.gray(`  Using ElizaCloud model: ${chosen} (configured default unavailable)`));
+        // WHY: Distinguish "no model configured" from "configured model unavailable" (pill-output audit).
+        const userSetModel = process.env.PRR_LLM_MODEL?.trim();
+        if (userSetModel) {
+          console.warn(chalk.yellow(`  Configured model unavailable; using: ${chosen}. Set PRR_LLM_MODEL to pin.`));
         } else {
-          console.warn(chalk.yellow(`  ElizaCloud fallback model: ${chosen} (rotation may use other models). Set PRR_LLM_MODEL to pin.`));
+          console.warn(chalk.yellow(`  No model configured; defaulting to: ${chosen}. Set PRR_LLM_MODEL to pin.`));
         }
       }
     }
@@ -151,6 +168,17 @@ async function main(): Promise<void> {
     // We only set options.tool from config if it's explicitly configured.
     if (!options.tool && config.defaultTool) {
       options.tool = config.defaultTool;
+    }
+
+    const maxConcurrent = getEffectiveMaxConcurrentLLM();
+    console.log(chalk.gray(`  LLM concurrency: ${maxConcurrent === 1 ? '1 (default)' : maxConcurrent} — set PRR_MAX_CONCURRENT_LLM to tune`));
+
+    if (options.replyToThreads && !process.env.PRR_BOT_LOGIN?.trim()) {
+      console.warn(
+        chalk.yellow(
+          '  --reply-to-threads: PRR_BOT_LOGIN is not set — cross-run idempotency is off; re-runs may post duplicate thread replies. Set PRR_BOT_LOGIN to your bot GitHub login.',
+        ),
+      );
     }
 
     // Create and run resolver
@@ -163,6 +191,20 @@ async function main(): Promise<void> {
     }
     await closeOutputLog();
 
+    const strictFinalAudit =
+      process.env.PRR_STRICT_FINAL_AUDIT?.trim() === 'true' || process.env.PRR_STRICT_FINAL_AUDIT === '1';
+    if (resolver && strictFinalAudit && resolver.getAuditOverrideCount() > 0) {
+      console.warn(
+        chalk.yellow(
+          `\nStrict final audit: ${formatNumber(resolver.getAuditOverrideCount())} issue(s) kept verified despite audit UNFIXED — exiting with code 2 (PRR_STRICT_FINAL_AUDIT).`,
+        ),
+      );
+      process.exit(2);
+    }
+
+    if (isFailureExitReason(resolver.getExitReason())) {
+      process.exit(1);
+    }
   } catch (error) {
     resolver?.abortRun();
     if (error instanceof Error) {

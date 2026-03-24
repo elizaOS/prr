@@ -25,9 +25,9 @@ import type { StateContext } from './state/state-context.js';
 import type { LessonsContext } from './state/lessons-context.js';
 import type { LockConfig } from './state/lock-functions.js';
 import { ensureWorkdir, cleanupWorkdir, getWorkdirInfo } from '../../shared/git/workdir.js';
-import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkForConflicts, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../shared/git/git-clone-index.js';
+import { cloneOrUpdate, getChangedFiles, getDiffForFile, hasChanges, checkRemoteAhead, pullLatest, abortMerge, mergeBaseBranch, startMergeForConflictResolution, markConflictsResolved, completeMerge, isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../shared/git/git-clone-index.js';
 import type { SimpleGit } from 'simple-git';
-import { squashCommit, pushWithRetry, commitIteration, scanCommittedFixes } from '../../shared/git/git-commit-index.js';
+import { squashCommit, pushWithRetry, commitIteration } from '../../shared/git/git-commit-index.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../../shared/runners/detect.js';
 import { debug, debugStep, setVerbose, warn, info, startTimer, endTimer, formatDuration, printTimingSummary, resetTimings, setTokenPhase, printTokenSummary, resetTokenUsage, formatNumber } from '../../shared/logger.js';
 import * as Reporter from './ui/reporter.js';
@@ -107,8 +107,36 @@ export class PRResolver {
     Reporter.printFinalSummary(this.stateContext, this.exitReason, this.exitDetails, remainingCount);
   }
   private getExitReasonDisplay(): { label: string; icon: string; color: (text: string) => string } { return Reporter.getExitReasonDisplay(this.exitReason); }
-  private printHandoffPrompt(unresolvedIssues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]): void { Reporter.printHandoffPrompt(unresolvedIssues, this.options.noHandoffPrompt, exhaustedIssues ?? []); }
-  private async printAfterActionReport(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { return Reporter.printAfterActionReport(unresolvedIssues, comments, this.options.noAfterAction, this.stateContext, this.lessonsContext); }
+  private printHandoffPrompt(
+    unresolvedIssues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ): void {
+    Reporter.printHandoffPrompt(
+      unresolvedIssues,
+      this.options.noHandoffPrompt,
+      exhaustedIssues ?? [],
+      exitReason ?? this.exitReason,
+      exitDetails ?? this.exitDetails
+    );
+  }
+  private async printAfterActionReport(
+    unresolvedIssues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ): Promise<void> {
+    return Reporter.printAfterActionReport(
+      unresolvedIssues,
+      comments,
+      this.options.noAfterAction,
+      this.stateContext,
+      this.lessonsContext,
+      exitReason ?? this.exitReason,
+      exitDetails ?? this.exitDetails
+    );
+  }
   private getModelsForRunner(runner: Runner): string[] { return Rotation.getModelsForRunner(runner); }
   private getCurrentModel(): string | undefined { const ctx = this.getRotationContext(); return Rotation.getCurrentModel(ctx, this.options); }
   private isModelAvailableForRunner(model: string): boolean { const ctx = this.getRotationContext(); return Rotation.isModelAvailableForRunner(ctx, model); }
@@ -134,7 +162,8 @@ export class PRResolver {
       codeSnippetOverride = await getFullFileContentForSingleIssue(this.workdir, primaryPath) ?? undefined;
     }
     const pathExists = options?.pathExists ?? (this.workdir ? ((p: string) => existsSync(join(this.workdir, p))) : undefined);
-    return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride, { pathExists });
+    const lastApplyError = this.stateContext.state?.lastApplyErrorByCommentId?.[issue.comment.id];
+    return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride, { pathExists, lastApplyError });
   }
   private async tryDirectLLMFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.tryDirectLLMFix(issues, git, this.workdir, this.config.llmProvider, this.llm, this.stateContext, verifiedThisSession, this.lessonsContext); }
   async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateContext, () => this.printModelPerformance(), () => this.printFinalSummary()); }
@@ -179,16 +208,19 @@ export class PRResolver {
       waitForBotReviews: (o, r, n, sha) => this.waitForBotReviews(o, r, n, sha), 
       cleanupCreatedSyncTargets: (git) => this.cleanupCreatedSyncTargets(git), 
       printModelPerformance: () => this.printModelPerformance(), 
-      printHandoffPrompt: (issues, exhausted) => this.printHandoffPrompt(issues, exhausted), 
-      printAfterActionReport: (issues, comments) => this.printAfterActionReport(issues, comments), 
+      printHandoffPrompt: (issues, exhausted, er, ed) => this.printHandoffPrompt(issues, exhausted, er, ed),
+      printAfterActionReport: (issues, comments, er, ed) => this.printAfterActionReport(issues, comments, er, ed),
       printFinalSummary: (remainingCount?: number) => this.printFinalSummary(remainingCount), 
       ringBell: (times) => this.ringBell(times), 
       runCleanupMode: (url, o, r, n) => this.runCleanupMode(url, o, r, n),
-      submitReview: async (body, prInfo) => {
-        await this.github.submitPullRequestReview(prInfo.owner, prInfo.repo, prInfo.number, 'COMMENT', body);
-        await this.github.postComment(prInfo.owner, prInfo.repo, prInfo.number, body);
-      },
     };
+    // Only submit a PR review when explicitly requested (e.g. manual workflow_dispatch); never when run from CLI or on label/review_requested.
+    // Submit as review only (not also as issue comment) to avoid duplicate summary on the PR.
+    if (process.env.PRR_SUBMIT_REVIEW === 'true') {
+      callbacks.submitReview = async (body, prInfo) => {
+        await this.github.submitPullRequestReview(prInfo.owner, prInfo.repo, prInfo.number, 'COMMENT', body);
+      };
+    }
     const result = await ResolverProc.executeRun(prUrl, this.config, this.options, this.github, this.llm, ora(), callbacks, state);
     this.llm.setRunAbortSignal(null);
     this.runAbortController = null;
@@ -213,6 +245,15 @@ export class PRResolver {
     this.exitDetails = result.exitDetails;
     this.finalUnresolvedIssues = result.finalUnresolvedIssues;
     this.finalComments = result.finalComments;
+  }
+
+  getExitReason(): string {
+    return this.exitReason;
+  }
+
+  /** For PRR_STRICT_FINAL_AUDIT: how many issues stayed verified despite final audit UNFIXED. */
+  getAuditOverrideCount(): number {
+    return this.stateContext?.auditOverridesThisRun?.length ?? 0;
   }
 
   private async setupRunner(): Promise<Runner> { const result = await Rotation.setupRunner(this.options, this.config); this.runners = result.all; return result.primary; }
