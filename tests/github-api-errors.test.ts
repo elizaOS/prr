@@ -34,9 +34,8 @@ describe('summarizeGitHubError', () => {
 });
 
 describe('logGitHubApiFailure', () => {
-  it('does not throw', () => {
-    expect(() =>
-      logGitHubApiFailure('test-phase', new Error('500 status code (no body)'), { pr: 1 }),
-    ).not.toThrow();
+  it('does not throw (4xx avoids server-error warn)', () => {
+    const err = Object.assign(new Error('Not Found'), { status: 404 });
+    expect(() => logGitHubApiFailure('test-phase', err, { pr: 1 })).not.toThrow();
   });
 });

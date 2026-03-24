@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GitHub API failures:** **`tools/prr/github/github-api-errors.ts`** — **`logGitHubApiFailure`** / **`summarizeGitHubError`**; **`debug`** payload includes phase, **`x-github-request-id`**, method, URL, response preview; **`warn`** on **5xx** / gateway-style messages and **429**. Used from **`tools/prr/github/api.ts`** on **`pulls.get`**, **`pulls.createReview`**, **`issues.createComment`**, GraphQL **reviewThreads** (per page), **reply** / **resolve** thread. Tests: **`tests/github-api-errors.test.ts`**. **DEVELOPMENT.md** — table row.
 - **Conflict resolution (verbose):** **`debug()`** lines **`Conflict resolution: file snapshot`**, **`Conflict index stage-2 (ours) OK`**, expanded index-failure / line-parser marker context, and **`Deterministic merge outcome`** with **`strategy`** (**`tools/prr/git/git-conflict-resolve.ts`**).
 - **`fetchOriginBranch`:** **`isBranchRefSafeForOriginFetch`** uses **`git check-ref-format --branch`** after quick sanity checks (**`shared/git/git-conflicts.ts`**).
 - **`PROMPTLOG_EMPTY_BODY`:** Log line includes **`phase=...`** when **`writeToPromptLog`** metadata carries **`phase`** (**`shared/logger.ts`**).

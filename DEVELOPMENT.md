@@ -171,6 +171,7 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 | File | Purpose |
 |------|---------|
 | `tools/prr/github/api.ts` | Octokit wrapper, GraphQL queries, replyToReviewThread, resolveReviewThread, getThreadComments |
+| `tools/prr/github/github-api-errors.ts` | **`logGitHubApiFailure` / `summarizeGitHubError`** — on REST/GraphQL failures, **`debug`** logs phase, context, HTTP status, **`x-github-request-id`**, method/URL, response preview; **`warn`** on HTTP ≥500 / gateway-style messages or **429**. Wired around **`getPRInfo`**, **`submitPullRequestReview`**, **`postComment`**, **`getReviewThreads`** (each page), **`replyToReviewThread`** (non-404), **`resolveReviewThread`**. Use **`--verbose`** to see **`GitHub API request failed`** lines in **`output.log`**. |
 | `tools/prr/github/types.ts` | PRInfo, ReviewComment (with databaseId), etc. |
 
 **Thread replies:** When `--reply-to-threads` is set, PRR posts a short reply on each review thread when it fixes or dismisses. **WHY:** Gives reviewers visible feedback in the PR; one reply per thread keeps noise low. Orchestration: `tools/prr/workflow/thread-replies.ts` (postThreadReplies); called from iteration-cleanup (after push), commit-and-push-loop (squash push), and final-cleanup (dismissed). See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
