@@ -188,6 +188,7 @@ story --help      # PR narrative & changelog
 | Variable | Purpose |
 |----------|---------|
 | `GITHUB_TOKEN` | GitHub API access |
+| `PRR_GIT_SHA` / `PRR_SOURCE_COMMIT` | Optional — stamp startup/`output.log` when the prr tree has **no** `.git` (vendored install). If `.git` exists in the prr package root, revision comes from `git rev-parse` instead. **Not** `GITHUB_SHA` (host repo). |
 | `ELIZACLOUD_API_KEY` / provider keys | LLM gateway or direct API |
 | `PRR_LLM_MODEL` | Pin the primary fixer/verifier model |
 | `PRR_VERIFIER_MODEL` | Stronger model for batch verification (when default is weak) |

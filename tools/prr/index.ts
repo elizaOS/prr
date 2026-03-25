@@ -2,8 +2,9 @@
 /**
  * PRR entry point: CLI wiring, config load, signal handling, resolver run.
  *
- * WHY initOutputLog() at top: We tee console output to ./output.log from the
- * first line so every run has a full audit trail even if we exit early or crash.
+ * WHY initOutputLog() before other console output: We tee console output to ./output.log
+ * so every run has a full audit trail; the first tee’d lines are PRR version/revision
+ * (see shared/prr-runtime-meta.ts), then log paths.
  * WHY closeOutputLog() before every return/exit: Flush and close the log file
  * so the user can read it immediately; without it the last lines may be lost.
  * WHY API keys on process.env: Spawned fixer tools (Codex, llm-api, etc.) read
@@ -20,11 +21,24 @@ import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled, formatNumber } from '../../shared/logger.js';
+import {
+  formatPrrStartupVersionLine,
+  shouldSuggestPrrGitShaInCi,
+} from '../../shared/prr-runtime-meta.js';
 import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
   initOutputLog({});
+  // First tee'd lines: tool version/revision (package.json + git in prr root, or PRR_GIT_SHA / PRR_SOURCE_COMMIT).
+  console.log(chalk.gray(`  ${formatPrrStartupVersionLine()}`));
+  if (shouldSuggestPrrGitShaInCi()) {
+    console.log(
+      chalk.gray(
+        `  CI: set PRR_GIT_SHA to the prr commit SHA if .git is missing (reproducible logs for vendored/copied installs).`,
+      ),
+    );
+  }
   // WHY print at startup: Logs are written to process.cwd(); if the user ran prr from elsewhere they need to see where to find them.
   const outPath = getOutputLogPath();
   const promptPath = getPromptLogPath();
