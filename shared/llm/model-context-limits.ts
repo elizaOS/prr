@@ -160,12 +160,45 @@ export function getMaxFixPromptCharsForModel(
 }
 
 /**
+ * True when we use the small-window tokenization path (≤32k context) in this module.
+ */
+function isElizacloudSmallContextWindow(spec: ElizaCloudModelContextSpec): boolean {
+  return spec.maxContextTokens <= 32_000;
+}
+
+/**
+ * Unified **system + user** char ceiling for small-context ElizaCloud models: assume worst-case
+ * {@link ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS} and {@link ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS},
+ * same ~1.6 chars/token as {@link deriveMaxFixPromptCharsFromContext}.
+ *
+ * WHY: `getMaxFixPromptCharsForModel` + {@link ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS} **double-counted**
+ * (fix budget already assumed most input tokens; +14k system chars still tokenize) so preflight allowed
+ * ~42k chars while **input + max_completion** blew past **24,576** (opaque 500).
+ */
+function getMaxElizacloudTotalInputCharsSmallContextUnified(model: string): number | null {
+  const spec = getElizaCloudModelContextSpec(model);
+  if (!isElizacloudSmallContextWindow(spec)) return null;
+  const assumedCharsPerToken = 1.6;
+  const maxInputTokens =
+    spec.maxContextTokens -
+    ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS -
+    ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS;
+  if (maxInputTokens < 1024) return 1024;
+  return Math.floor(maxInputTokens * assumedCharsPerToken);
+}
+
+/**
  * Max total characters (system + user) for one ElizaCloud chat completion for this model.
  * WHY: Gateways often return HTTP 500 with no body when upstream rejects oversized input;
  * failing fast avoids useless retries and matches the budget already logged in debug fields.
+ *
+ * Small-context models (≤32k): **min**(legacy fix+overhead, unified token budget) so batching and
+ * preflight match real context limits.
  */
 export function getMaxElizacloudLlmCompleteInputChars(model: string): number {
-  return getMaxFixPromptCharsForModel('elizacloud', model) + ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS;
+  const legacy = getMaxFixPromptCharsForModel('elizacloud', model) + ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS;
+  const unified = getMaxElizacloudTotalInputCharsSmallContextUnified(model);
+  return unified != null ? Math.min(legacy, unified) : legacy;
 }
 
 /**
