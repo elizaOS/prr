@@ -40,6 +40,27 @@ export const DEFAULT_MAX_CONTEXT_CHARS = 400_000;
 export const BATCH_CHECK_MAX_CONTEXT_CHARS = 150000;
 
 /**
+ * ElizaCloud `LLMClient.complete()` inner loop: retries after 500/502/504 (and similar) before surfacing failure.
+ * The loop runs `attempt504` from 0 through N inclusive → **N + 1** HTTP attempts, with 10s / 20s / … backoff
+ * (the last delay repeats for further attempts).
+ *
+ * - **Default 2** (3 attempts) when not in CI — balances flaky gateways vs long hangs.
+ * - **Default 4** (5 attempts) when **`CI=true`** and **`PRR_ELIZACLOUD_SERVER_ERROR_RETRIES`** is unset — Actions often sees transient empty 500s.
+ * - **`PRR_ELIZACLOUD_SERVER_ERROR_RETRIES`**: explicit override, integer **0–15**. Per-call **`complete(..., { max504Retries })`** still wins.
+ */
+const ELIZACLOUD_SERVER_ERROR_RETRIES_CAP = 15;
+
+export function getElizacloudServerErrorMaxRetries(): number {
+  const raw = process.env.PRR_ELIZACLOUD_SERVER_ERROR_RETRIES?.trim();
+  if (raw != null && raw !== '') {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0 && n <= ELIZACLOUD_SERVER_ERROR_RETRIES_CAP) return n;
+  }
+  if (process.env.CI === 'true') return 4;
+  return 2;
+}
+
+/**
  * Maximum issues to include in a single fix prompt.
  * With truncation (2k per comment + 500 lines per snippet),
  * 50 issues ≈ 100k chars ≈ 25k tokens.

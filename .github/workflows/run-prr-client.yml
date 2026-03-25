@@ -59,10 +59,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: package-lock.json
 
-      - name: Install and build PRR
+      # dist/ is gitignored — must compile before node dist/tools/prr/index.js (not a redundant typecheck).
+      - name: Install and compile PRR
         run: |
           npm ci
-          npm run typecheck
+          npm run build
 
       - name: Configure Git
         run: |

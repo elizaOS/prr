@@ -20,6 +20,7 @@ import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError,
 import {
   ELIZACLOUD_API_BASE_URL,
   getEffectiveMaxConcurrentLLM,
+  getElizacloudServerErrorMaxRetries,
   MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS,
 } from '../../../shared/constants.js';
 import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
@@ -30,6 +31,9 @@ import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunk
 import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
 import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
 import {
+  ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS,
+  ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
+  estimateElizacloudInputTokensFromCharLength,
   getElizaCloudModelContextSpec,
   getMaxElizacloudLlmCompleteInputChars,
   getMaxFixPromptCharsForModel,
@@ -88,6 +92,13 @@ function elizaCloudServerErrorExpectationDebug(
   const canonical = resolveElizaCloudCanonicalModelId(model);
   const sysLen = systemPrompt?.length ?? 0;
   const total = prompt.length + sysLen;
+  const { approxTokens: estIn, assumedCharsPerToken } = estimateElizacloudInputTokensFromCharLength(model, total);
+  const headroom = spec.maxContextTokens - estIn - ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS;
+  const cappedCompletion = Math.min(
+    ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
+    Math.max(256, headroom),
+  );
+  const worstDefault = estIn + ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
   return {
     expectedMaxContextTokens: formatNumber(spec.maxContextTokens),
     expectedMaxFixPromptChars: formatNumber(getMaxFixPromptCharsForModel('elizacloud', model)),
@@ -95,6 +106,12 @@ function elizaCloudServerErrorExpectationDebug(
     requestUserChars: formatNumber(prompt.length),
     requestSystemChars: formatNumber(sysLen),
     requestTotalChars: formatNumber(total),
+    estimatedInputTokensApprox: formatNumber(estIn),
+    tokenizerAssumptionCharsPerToken: String(assumedCharsPerToken),
+    maxCompletionTokensDefault: formatNumber(ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS),
+    estimatedInputPlusDefaultMaxOutputApprox: formatNumber(worstDefault),
+    estimatedExceedsContextWithDefaultMaxOut: worstDefault > spec.maxContextTokens,
+    effectiveMaxCompletionAfterContextCap: formatNumber(cappedCompletion),
     usingUnknownModelContextDefault: canonical === null,
     ...(canonical != null ? { canonicalModelId: canonical } : {}),
   };
@@ -669,10 +686,27 @@ export class LLMClient {
     // but some callers (like tryDirectLLMFix) need a stronger model for code fixing
     const chosenModel = options?.model ?? this.model;
 
-    debug(`LLM request to ${this.provider}/${chosenModel}`, {
+    const baseDebug: Record<string, unknown> = {
       promptLength: prompt.length,
       hasSystemPrompt: !!systemPrompt,
-    });
+    };
+    if (this.provider === 'elizacloud') {
+      const sysLen = systemPrompt?.length ?? 0;
+      const totalChars = prompt.length + sysLen;
+      const { approxTokens, assumedCharsPerToken } = estimateElizacloudInputTokensFromCharLength(
+        chosenModel,
+        totalChars,
+      );
+      const spec = getElizaCloudModelContextSpec(chosenModel);
+      const worstOut = approxTokens + ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
+      baseDebug.requestTotalChars = totalChars;
+      baseDebug.estimatedInputTokensApprox = approxTokens;
+      baseDebug.tokenizerAssumptionCharsPerToken = assumedCharsPerToken;
+      baseDebug.maxCompletionTokensDefault = ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
+      baseDebug.estimatedInputPlusDefaultMaxOutputApprox = worstOut;
+      baseDebug.estimatedExceedsContextWithDefaultMaxOut = worstOut > spec.maxContextTokens;
+    }
+    debug(`LLM request to ${this.provider}/${chosenModel}`, baseDebug);
 
     // ElizaCloud: fail fast when total input exceeds configured budget. Gateways often
     // return 500 (no body) for oversize upstream — retries waste minutes (audit: qwen 93k vs ~42k cap).
@@ -715,7 +749,9 @@ export class LLMClient {
         elizaAcquired = true;
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
-      const max504Retries = options?.max504Retries ?? (this.provider === 'elizacloud' ? 2 : 0);
+      const max504Retries =
+        options?.max504Retries ??
+        (this.provider === 'elizacloud' ? getElizacloudServerErrorMaxRetries() : 0);
       const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
       const backoff504Ms = this.provider === 'elizacloud' ? [10_000, 20_000] : [10_000];
       // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
@@ -1018,9 +1054,36 @@ export class LLMClient {
     
     messages.push({ role: 'user', content: prompt });
 
-    // Cap completion tokens so input + completion stays under small-context model limits
-    // (e.g. Qwen3-14B has 40,960 total; gateway often defaults to 16k output → over limit).
-    const maxCompletionTokens = 8192;
+    // Cap completion so estimated input + max_output stays under model context.
+    // WHY: Char preflight uses a separate budget; OpenAI-style APIs still validate **tokens**.
+    // Qwen3-14B is 24,576 ctx — ~32k chars ≈ ~20k input tok + 8192 max out → opaque HTTP 500 (audit).
+    const systemMessageChars = systemPrompt
+      ? (systemPrompt + noThinkSuffix).length
+      : noThinkSuffix
+        ? noThinkSuffix.trim().length
+        : 0;
+    const totalInputChars = systemMessageChars + prompt.length;
+
+    let maxCompletionTokens = ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
+    if (this.provider === 'elizacloud') {
+      const spec = getElizaCloudModelContextSpec(chosenModel);
+      const { approxTokens } = estimateElizacloudInputTokensFromCharLength(chosenModel, totalInputChars);
+      const headroom = spec.maxContextTokens - approxTokens - ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS;
+      const capped = Math.min(
+        ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
+        Math.max(256, headroom),
+      );
+      if (capped < ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS) {
+        debug('ElizaCloud: capping max_completion_tokens for context window', {
+          model: chosenModel,
+          estimatedInputTokensApprox: approxTokens,
+          maxContextTokens: spec.maxContextTokens,
+          maxCompletionTokens: capped,
+        });
+      }
+      maxCompletionTokens = capped;
+    }
+
     const requestOpts = this.runAbortSignal ? { signal: this.runAbortSignal } : undefined;
     const response = await this.openai.chat.completions.create(
       { model: chosenModel, messages, max_completion_tokens: maxCompletionTokens },

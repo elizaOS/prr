@@ -169,6 +169,38 @@ export function getMaxElizacloudLlmCompleteInputChars(model: string): number {
 }
 
 /**
+ * Default `max_completion_tokens` for ElizaCloud OpenAI-style chat completions.
+ * WHY centralized: must align with token estimates and context-window capping in `LLMClient.completeOpenAI`.
+ */
+export const ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS = 8192;
+
+/**
+ * Subtracted from `maxContextTokens - estimatedInput` when capping completion so tokenizer skew
+ * and special tokens do not push the sum over the provider window.
+ */
+export const ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS = 512;
+
+/**
+ * Rough **input** token estimate from system+user character length (same assumption as
+ * {@link deriveMaxFixPromptCharsFromContext}: small windows ≤32k use **~1.6 chars/token** code-heavy;
+ * larger contexts use **~4 chars/token**).
+ *
+ * WHY: Char-only preflight (`getMaxElizacloudLlmCompleteInputChars`) can pass while
+ * **input tokens + max_completion_tokens** still exceeds the model context — gateways often return **HTTP 500 (no body)**.
+ * Logs use this to compare against `maxContextTokens` and to cap completion.
+ */
+export function estimateElizacloudInputTokensFromCharLength(
+  model: string,
+  totalCharLength: number
+): { approxTokens: number; assumedCharsPerToken: number } {
+  const spec = getElizaCloudModelContextSpec(model);
+  const isSmall = spec.maxContextTokens <= 32_000;
+  const assumedCharsPerToken = isSmall ? 1.6 : 4;
+  const approxTokens = Math.ceil(totalCharLength / assumedCharsPerToken);
+  return { approxTokens, assumedCharsPerToken };
+}
+
+/**
  * Lower the effective cap for this model after a 504 / timeout / context overflow.
  */
 export function lowerModelMaxPromptChars(

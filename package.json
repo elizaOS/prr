@@ -14,6 +14,7 @@
     "eval": "./dist/tools/eval/index.js"
   },
   "scripts": {
+    "build": "tsc",
     "typecheck": "tsc",
     "typecheck:noemit": "tsc --noEmit",
     "start": "node dist/tools/prr/index.js",

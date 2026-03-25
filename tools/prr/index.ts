@@ -35,7 +35,7 @@ try {
   if (shouldSuggestPrrGitShaInCi()) {
     console.log(
       chalk.gray(
-        `  CI: set PRR_GIT_SHA to the prr commit SHA if .git is missing (reproducible logs for vendored/copied installs).`,
+        `  CI: prr package dir has no .git (normal when prr is a subfolder of another repo). Set PRR_GIT_SHA to the prr commit for reproducible logs; GITHUB_SHA is the host repo, not prr.`,
       ),
     );
   }

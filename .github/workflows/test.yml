@@ -22,8 +22,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run typecheck
+      - name: Compile (emit dist/)
+        run: npm run build
 
       - name: Run unit tests
         run: npm test -- tests/ --run
@@ -41,8 +41,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run typecheck
+      - name: Compile (emit dist/)
+        run: npm run build
 
       - name: Run scenario tests
         run: npm test -- tests/scenarios/ --run
@@ -60,8 +60,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run typecheck
+      - name: Compile (emit dist/)
+        run: npm run build
 
       - name: Run deterministic tool tests
         run: npm test -- tests/split-rewrite-plan/ tests/split-exec/ --run

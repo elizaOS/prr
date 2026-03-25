@@ -85,7 +85,7 @@ export function getPrrSourceRevision(): string | undefined {
   }
 }
 
-/** CI hint only when prr isn’t a git checkout and no env stamp — vendored/copied install. */
+/** CI hint only when prr package root has no `.git` and no env stamp (e.g. prr as subfolder of another repo). */
 export function shouldSuggestPrrGitShaInCi(): boolean {
   if (process.env.CI !== 'true') return false;
   if (process.env.PRR_GIT_SHA?.trim() || process.env.PRR_SOURCE_COMMIT?.trim()) return false;
