@@ -1842,6 +1842,64 @@ ${codeSnippet}
     };
   }
 
+  /** One file-group inside a final-audit batch (mirrors `finalAudit` batch structure). */
+  private buildFinalAuditBatchPrompt(
+    headerParts: string[],
+    groups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+    batchIssueCount: number,
+    commentMax: number,
+    maxSnippetChars?: number,
+  ): string {
+    const clip = (s: string) => {
+      if (maxSnippetChars == null || s.length <= maxSnippetChars) return s;
+      return `${s.slice(0, maxSnippetChars)}\n... (truncated for model context limit — final audit)`;
+    };
+    const promptParts: string[] = [...headerParts];
+    let issueNum = 0;
+    for (const group of groups) {
+      promptParts.push(`## File: ${group.filePath}`);
+      const snippets = group.issues.map((i) => group.snippets.get(i.id) ?? '');
+      const firstSnippet = snippets[0] ?? '';
+      const allSameSnippet = snippets.length > 0 && snippets.every((s) => s === firstSnippet);
+      if (allSameSnippet && firstSnippet.length > 0) {
+        promptParts.push('```');
+        promptParts.push(clip(firstSnippet));
+        promptParts.push('```');
+        promptParts.push('');
+      }
+      for (const issue of group.issues) {
+        issueNum++;
+        promptParts.push(`### [${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''}`);
+        if (!allSameSnippet) {
+          const snippet = group.snippets.get(issue.id) ?? '';
+          promptParts.push('```');
+          promptParts.push(clip(snippet));
+          promptParts.push('```');
+        }
+        const preview = sanitizeCommentForPrompt(issue.comment);
+        const short =
+          preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
+        promptParts.push(`Comment: ${short}`);
+        promptParts.push('');
+      }
+    }
+    promptParts.push('---');
+    promptParts.push(
+      `Respond with exactly ${batchIssueCount} lines, one per issue [1] through [${batchIssueCount}]:`,
+    );
+    return promptParts.join('\n');
+  }
+
   /**
    * Final audit: Re-verify ALL issues with an adversarial, stricter prompt.
    * 
@@ -1925,8 +1983,8 @@ ${codeSnippet}
     ];
     const headerSize = headerParts.join('\n').length;
     const footerSize = 100; // Reserve space for closing instructions
-    // Slack for ``` fences, `## File:` lines, and `### [n]` headers (estimate is per-issue/snippet only).
-    const structureSlack = this.provider === 'elizacloud' ? 2_500 : 0;
+    // Slack for ``` fences, `## File:` lines, `### [n]` headers, and long paths (estimate vs actual was ~15k short).
+    const structureSlack = this.provider === 'elizacloud' ? 6_000 : 0;
     const availableForIssues = Math.max(
       0,
       effectiveMaxContextChars - headerSize - footerSize - structureSlack,
@@ -1940,7 +1998,8 @@ ${codeSnippet}
       byFile.set(issue.filePath, list);
     }
 
-    const ISSUE_HEADER_APPROX = 180; // "[N] path:line — comment preview" without code
+    // `### [n] path:line` + Comment + newlines can exceed 180; stay conservative for small-model batching.
+    const ISSUE_HEADER_APPROX = 380;
     const COMMENT_PREVIEW_MAX = 500;
     const batches: Array<{ groups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> }> = [];
     let currentGroups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> = [];
@@ -2008,40 +2067,78 @@ ${codeSnippet}
       const { groups } = batches[batchIdx];
       const batchIssues = groups.flatMap(g => g.issues);
 
-      const promptParts: string[] = [...headerParts];
-      let issueNum = 0;
       const commentMax = 500;
-      for (const group of groups) {
-        promptParts.push(`## File: ${group.filePath}`);
-        const snippets = group.issues.map(i => group.snippets.get(i.id) ?? '');
-        const firstSnippet = snippets[0] ?? '';
-        const allSameSnippet = snippets.length > 0 && snippets.every(s => s === firstSnippet);
-        if (allSameSnippet && firstSnippet.length > 0) {
-          // WHY: prompts.log audit — same file was sent twice (21k+ chars) for two issues; send once per file.
-          promptParts.push('```');
-          promptParts.push(firstSnippet);
-          promptParts.push('```');
-          promptParts.push('');
-        }
-        for (const issue of group.issues) {
-          issueNum++;
-          promptParts.push(`### [${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''}`);
-          if (!allSameSnippet) {
-            const snippet = group.snippets.get(issue.id) ?? '';
-            promptParts.push('```');
-            promptParts.push(snippet);
-            promptParts.push('```');
+      let promptText = this.buildFinalAuditBatchPrompt(
+        headerParts,
+        groups,
+        batchIssues.length,
+        commentMax,
+        undefined,
+      );
+
+      const hardCap =
+        this.provider === 'elizacloud'
+          ? getMaxElizacloudLlmCompleteInputChars(auditModel)
+          : Number.MAX_SAFE_INTEGER;
+
+      if (promptText.length > hardCap) {
+        let maxSnip = 0;
+        for (const g of groups) {
+          for (const i of g.issues) {
+            const s = g.snippets.get(i.id) ?? '';
+            if (s.length > maxSnip) maxSnip = s.length;
           }
-          const preview = sanitizeCommentForPrompt(issue.comment);
-          const short = preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
-          promptParts.push(`Comment: ${short}`);
-          promptParts.push('');
+        }
+        let lo = 400;
+        let hi = Math.max(maxSnip, lo);
+        let ans = lo;
+        while (lo <= hi) {
+          const mid = (lo + hi + 1) >> 1;
+          const cand = this.buildFinalAuditBatchPrompt(
+            headerParts,
+            groups,
+            batchIssues.length,
+            commentMax,
+            mid,
+          );
+          if (cand.length <= hardCap) {
+            ans = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        promptText = this.buildFinalAuditBatchPrompt(
+          headerParts,
+          groups,
+          batchIssues.length,
+          commentMax,
+          ans,
+        );
+        if (promptText.length > hardCap) {
+          promptText = this.buildFinalAuditBatchPrompt(
+            headerParts,
+            groups,
+            batchIssues.length,
+            commentMax,
+            200,
+          );
+        }
+        if (promptText.length > hardCap) {
+          warn(
+            `Final audit batch ${formatNumber(batchIdx + 1)} still exceeds ${formatNumber(hardCap)} chars after truncation — set PRR_FINAL_AUDIT_MODEL to a larger-context model.`,
+          );
+        } else if (maxSnip > ans) {
+          debug('Final audit truncated code snippets to fit model input cap', {
+            batchIndex: batchIdx + 1,
+            promptChars: formatNumber(promptText.length),
+            hardCap: formatNumber(hardCap),
+            maxSnippetChars: ans,
+            model: auditModel,
+          });
         }
       }
-      promptParts.push('---');
-      promptParts.push(`Respond with exactly ${batchIssues.length} lines, one per issue [1] through [${batchIssues.length}]:`);
 
-      const promptText = promptParts.join('\n');
       if (promptText.length > 280_000) {
         debug('Final audit batch prompt very large (risk of 0-parsed or 504)', {
           batchIndex: batchIdx + 1,
