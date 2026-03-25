@@ -196,6 +196,7 @@ story --help      # PR narrative & changelog
 | `PRR_STRICT_FINAL_AUDIT` | `1` / `true` — exit **2** when final audit overrides keep issues verified |
 | `PRR_MAX_CONCURRENT_LLM` | In-flight LLM cap (default `1`) |
 | `PRR_ELIZACLOUD_SERVER_ERROR_RETRIES` | ElizaCloud only: inner **500/502/504** retry index per `complete()` call (**0–15**). Unset: **3** HTTP attempts locally, **5** when **`CI=true`**. Override in CI for flaky gateways (e.g. empty 500 bodies on batch check). |
+| `PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS` | ElizaCloud only: comma-separated model ids tried **after** **2** consecutive gateway/server-class errors on the current model in one `complete()` (e.g. DeepInfra **502** on Qwen). **`off`** / **`none`** / **`0`** disables. Default chain skips ids in the built-in skip list unless **`PRR_ELIZACLOUD_INCLUDE_MODELS`** re-enables them. **`getElizacloudGatewayFallbackModels`** in **`shared/constants.ts`**. |
 | `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` | Comma-separated ids **added** to the built-in ElizaCloud skip list (`shared/constants.ts` **`ELIZACLOUD_SKIP_MODEL_IDS`**) |
 | `PRR_ELIZACLOUD_INCLUDE_MODELS` | Comma-separated ids to **remove** from the built-in skip list (re-enable after transient timeouts) |
 | `PRR_SESSION_MODEL_SKIP_FAILURES` | Skip a model for the rest of the run after N zero-fix verification failures (`0` = off) |

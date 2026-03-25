@@ -13,6 +13,7 @@
  * are more reliable.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import chalk from 'chalk';
 import OpenAI from 'openai';
 import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../../../shared/config.js';
@@ -20,6 +21,7 @@ import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError,
 import {
   ELIZACLOUD_API_BASE_URL,
   getEffectiveMaxConcurrentLLM,
+  getElizacloudGatewayFallbackModels,
   getElizacloudServerErrorMaxRetries,
   MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS,
 } from '../../../shared/constants.js';
@@ -759,18 +761,24 @@ export class LLMClient {
       for (let attempt = 0; attempt <= max429Retries; attempt++) {
         try {
           let response: LLMResponse | undefined;
+          let requestModel = chosenModel;
+          let consecutiveElizacloudGatewayErrors = 0;
+          let elizacloudFallbackIdx = 0;
+          const elizacloudGatewayFallbackChain =
+            this.provider === 'elizacloud' ? getElizacloudGatewayFallbackModels(chosenModel) : [];
+
           for (let attempt504 = 0; attempt504 <= max504Retries; attempt504++) {
             try {
               response = this.provider === 'anthropic'
                 ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
-                : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
+                : await this.completeOpenAI(prompt, systemPrompt, requestModel);
               break;
             } catch (e504) {
               if (this.provider === 'elizacloud') {
                 const base504 = getElizaCloudErrorContext(e504);
                 const payload504 =
                   isElizaCloudServerClassError(e504)
-                    ? { ...base504, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+                    ? { ...base504, ...elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt) }
                     : base504;
                 debug('ElizaCloud error (response context)', payload504);
               }
@@ -779,15 +787,42 @@ export class LLMClient {
               const totalChars = prompt.length + (systemPrompt?.length ?? 0);
               const overConfiguredBudget =
                 this.provider === 'elizacloud' &&
-                totalChars > getMaxElizacloudLlmCompleteInputChars(chosenModel);
+                totalChars > getMaxElizacloudLlmCompleteInputChars(requestModel);
               if (contextOverflow && this.provider === 'elizacloud') {
-                lowerModelMaxPromptChars('elizacloud', chosenModel, prompt.length);
+                lowerModelMaxPromptChars('elizacloud', requestModel, prompt.length);
                 debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
-                  model: chosenModel,
+                  model: requestModel,
                   promptLength: formatNumber(prompt.length),
-                  ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt),
+                  ...elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt),
                 });
               }
+
+              const gatewayClassRetry =
+                this.provider === 'elizacloud' && (isServerError(e504) || timeoutMsg);
+              if (gatewayClassRetry) {
+                consecutiveElizacloudGatewayErrors++;
+              } else {
+                consecutiveElizacloudGatewayErrors = 0;
+              }
+
+              if (
+                this.provider === 'elizacloud' &&
+                consecutiveElizacloudGatewayErrors >= 2 &&
+                elizacloudFallbackIdx < elizacloudGatewayFallbackChain.length
+              ) {
+                const nextModel = elizacloudGatewayFallbackChain[elizacloudFallbackIdx]!;
+                elizacloudFallbackIdx++;
+                console.warn(
+                  chalk.yellow(
+                    `ElizaCloud: ${formatNumber(2)} consecutive gateway/server errors on ${requestModel} — trying fallback model ${nextModel} (override chain: PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS; disable: off).`,
+                  ),
+                );
+                requestModel = nextModel;
+                consecutiveElizacloudGatewayErrors = 0;
+                attempt504--;
+                continue;
+              }
+
               if (
                 attempt504 < max504Retries &&
                 (isServerError(e504) || timeoutMsg) &&
@@ -799,8 +834,9 @@ export class LLMClient {
                   attempt: attempt504 + 1,
                   maxRetries: max504Retries,
                   delayMs,
+                  model: this.provider === 'elizacloud' ? requestModel : chosenModel,
                   ...(this.provider === 'elizacloud'
-                    ? elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt)
+                    ? elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt)
                     : {}),
                 });
                 await new Promise(r => setTimeout(r, delayMs));
@@ -823,7 +859,7 @@ export class LLMClient {
           if (!responseContent && response.usage?.outputTokens && response.usage.outputTokens > 0) {
             debug('WARNING: LLM response has usage tokens but empty content — possible streaming accumulation bug', {
               provider: this.provider,
-              model: chosenModel,
+              model: requestModel,
               outputTokens: response.usage.outputTokens,
             });
           }
@@ -839,14 +875,14 @@ export class LLMClient {
               `llm-${this.provider}`,
               'Empty or whitespace-only response body (HTTP success but no text; prompts.log would not record a RESPONSE).',
               {
-                model: chosenModel,
+                model: requestModel,
                 usage: response.usage,
                 ...(options?.phase != null ? { phase: options.phase } : {}),
                 emptyBody: true,
               }
             );
           } else {
-            const responseMeta: Record<string, unknown> = { model: chosenModel, usage: response.usage };
+            const responseMeta: Record<string, unknown> = { model: requestModel, usage: response.usage };
             if (options?.phase != null) responseMeta.phase = options.phase;
             debugResponse(promptSlug, `llm-${this.provider}`, responseContent, responseMeta);
           }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ElizaCloud gateway fallback:** After **2** consecutive **5xx/502** (or timeout) failures on the same model inside one **`LLMClient.complete()`** retry loop, PRR switches to the next id from **`getElizacloudGatewayFallbackModels`** (default chain: mini → haiku → sonnet → 4o, minus skip list). Override with **`PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS`**; **`off`** disables. **`tools/prr/llm/client.ts`**, **`tests/elizacloud-gateway-fallback.test.ts`**, **README**.
+
 ### Fixed
 
 - **ElizaCloud small-context char preflight:** **`getMaxElizacloudLlmCompleteInputChars`** for **≤32k** windows is now **`min`(legacy fix+14k overhead, unified budget)** — `floor((maxContext − 8192 completion − 512 reserve) × 1.6)` for **system+user** total. The legacy sum **double-counted** tokens (fix budget + extra 14k system chars both tokenize), so **~32k** chars passed preflight while the model still 500’d; batch check now splits smaller on Qwen-class models. **`tests/model-context-limits.test.ts`**.

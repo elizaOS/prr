@@ -394,6 +394,42 @@ export function getEffectiveElizacloudSkipModelIds(): string[] {
 }
 
 /**
+ * Ordered models to try when ElizaCloud returns repeated gateway/server-class errors (5xx, 502)
+ * on the same model within one `LLMClient.complete()` retry loop.
+ *
+ * - **`PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS`:** comma-separated order; **`off`** / **`0`** / **`none`** disables.
+ * - Default chain prefers fast/cheap then capable ids; entries on {@link getEffectiveElizacloudSkipModelIds} are dropped.
+ */
+export function getElizacloudGatewayFallbackModels(primaryModel: string): string[] {
+  const raw = process.env.PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS?.trim();
+  if (raw && /^(0|off|none|false)$/i.test(raw)) return [];
+
+  const defaults = [
+    'openai/gpt-4o-mini',
+    'anthropic/claude-3-5-haiku-20241022',
+    ELIZACLOUD_FALLBACK_MODEL,
+    'openai/gpt-4o',
+  ];
+  const candidates = raw
+    ? raw.split(',').map((s) => s.trim()).filter(Boolean)
+    : defaults;
+
+  const skip = new Set(getEffectiveElizacloudSkipModelIds().map((s) => s.toLowerCase()));
+  const primaryLower = primaryModel.toLowerCase();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of candidates) {
+    const ml = m.toLowerCase();
+    if (ml === primaryLower) continue;
+    if (skip.has(ml)) continue;
+    if (seen.has(ml)) continue;
+    seen.add(ml);
+    out.push(m);
+  }
+  return out;
+}
+
+/**
  * Max concurrent requests to ElizaCloud API (legacy; use getEffectiveMaxConcurrentLLM()).
  * WHY: ElizaCloud returns 429 when too many in flight. 1 = one request at a time.
  */
