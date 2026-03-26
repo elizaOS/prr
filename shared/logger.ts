@@ -14,6 +14,7 @@ import { writeFileSync, readFileSync, mkdirSync, createWriteStream, appendFileSy
 import { join } from 'path';
 import { homedir } from 'os';
 import { format } from 'node:util';
+import { randomUUID } from 'node:crypto';
 import { finished } from 'stream/promises';
 import type { WriteStream } from 'fs';
 
@@ -33,6 +34,9 @@ let promptLogPath: string | null = null;
 let outputLogExitHandlerRegistered = false;
 // Pill #8: Counter for empty prompt bodies to emit summary at close
 let emptyPromptBodyCount = 0;
+
+/** Same `requestId` on PROMPT + RESPONSE metadata when concurrent LLM calls reorder prompts.log (grep `requestId` to pair). */
+const promptRequestIdBySlug = new Map<string, string>();
 
 /** When true, closeOutputLog() runs pill analysis on the logs we just closed. Set at init or via setPillEnabled() when --pill is passed. */
 let pillAnalysisEnabled = false;
@@ -115,6 +119,7 @@ export function initOutputLog(options?: InitOutputLogOptions): void {
   // to jump from output.log to the exact prompt/response in prompts.log.
   promptLogPath = join(logDir, promptFileName);
   writeFileSync(promptLogPath, '', 'utf-8');
+  promptRequestIdBySlug.clear();
   promptLogStream = createWriteStream(promptLogPath, { flags: 'a', encoding: 'utf-8' });
   promptLogStream.on('error', (err) => {
     if (origErrorRef) origErrorRef('Prompts log stream error:', err);
@@ -428,6 +433,8 @@ function writeToPromptLog(
   // WHY warn on empty: Pill/audit cycles need content between markers; empty entries indicate a logging bug
   // (e.g. elizacloud/LLM client not passing accumulated body after stream, or caller passed marker-only). See AGENTS.md prompts.log.
   if (isEmpty && kind !== 'ERROR') {
+    // No RESPONSE will follow — drop pairing slot (debugPrompt already registered slug).
+    if (kind === 'PROMPT') promptRequestIdBySlug.delete(slug);
     // Pill #8: Increment counter for summary at close
     emptyPromptBodyCount++;
     // Include stack trace to identify the caller (pill #5, #6)
@@ -501,14 +508,20 @@ function writeToPromptLog(
  *
  * prompts.log is written whenever initOutputLog was used (e.g. split-plan-prompts.log).
  * Standalone files and output.log one-liner only when PRR_DEBUG_PROMPTS + verbose (debugLogDir set).
+ *
+ * Each PROMPT entry gets a UUID `requestId` in metadata; the matching RESPONSE/ERROR repeats it
+ * so you can correlate when entries are interleaved (parallel dedup, etc.) — same slug still pairs by number.
  */
 /** Returns the slug so the caller can pass it to debugResponse/debugPromptError for the same request (safe when requests are in flight). */
 export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): string {
   debugLogCounter++;
   const slug = promptSlug(debugLogCounter, label);
+  const requestId = randomUUID();
+  promptRequestIdBySlug.set(slug, requestId);
+  const mergedMeta = { ...metadata, requestId };
 
   // Full content in prompts.log (always when stream exists, so split-plan etc. get a non-empty log)
-  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
+  writeToPromptLog(slug, 'PROMPT', label, prompt, mergedMeta);
 
   if (!debugLogDir) return slug;
 
@@ -517,16 +530,14 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
   const filepath = join(debugLogDir, filename);
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
-  if (metadata) {
-    content += `Metadata: ${safeStringify(metadata, true)}\n`;
-  }
+  content += `Metadata: ${safeStringify(mergedMeta, true)}\n`;
   content += `Length: ${prompt.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
   content += prompt;
   writeFileSync(filepath, content, 'utf-8');
 
   // Searchable one-liner in output.log
-  debug(`PROMPT ${slug}`, { chars: prompt.length });
+  debug(`PROMPT ${slug}`, { chars: prompt.length, requestId });
   return slug;
 }
 
@@ -547,8 +558,12 @@ export function debugResponse(
   response: string,
   metadata?: Record<string, unknown>
 ): void {
+  const requestId = promptRequestIdBySlug.get(slug);
+  const mergedMeta = requestId ? { ...metadata, requestId } : metadata;
+  if (requestId) promptRequestIdBySlug.delete(slug);
+
   // Full content in prompts.log (always when stream exists)
-  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
+  writeToPromptLog(slug, 'RESPONSE', label, response, mergedMeta);
 
   if (!debugLogDir) return;
 
@@ -558,16 +573,14 @@ export function debugResponse(
   const filepath = join(debugLogDir, filename);
   let content = `=== ${label} ===\n`;
   content += `Timestamp: ${new Date().toISOString()}\n`;
-  if (metadata) {
-    content += `Metadata: ${safeStringify(metadata, true)}\n`;
-  }
+  content += `Metadata: ${safeStringify(mergedMeta ?? {}, true)}\n`;
   content += `Length: ${response.length} chars\n`;
   content += `${'='.repeat(50)}\n\n`;
   content += response;
   writeFileSync(filepath, content, 'utf-8');
 
   // Searchable one-liner in output.log
-  debug(`RESPONSE ${slug}`, { chars: response.length });
+  debug(`RESPONSE ${slug}`, { chars: response.length, ...(requestId ? { requestId } : {}) });
 }
 
 /**
@@ -581,9 +594,15 @@ export function debugPromptError(
   metadata?: Record<string, unknown>,
 ): void {
   if (!promptLogStream) return;
-  writeToPromptLog(slug, 'ERROR', label, errorMessage, metadata);
+  const requestId = promptRequestIdBySlug.get(slug);
+  const mergedMeta = requestId ? { ...metadata, requestId } : metadata;
+  if (requestId) promptRequestIdBySlug.delete(slug);
+  writeToPromptLog(slug, 'ERROR', label, errorMessage, mergedMeta);
   if (debugLogDir) {
-    debug(`ERROR ${slug}`, { error: errorMessage.slice(0, 80) });
+    debug(`ERROR ${slug}`, {
+      error: errorMessage.slice(0, 80),
+      ...(requestId ? { requestId } : {}),
+    });
   }
 }
 

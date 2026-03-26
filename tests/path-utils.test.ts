@@ -11,6 +11,7 @@ import {
   isPathAllowedForFix,
   filterAllowedPathsForFix,
   isReviewPathFragment,
+  shouldSkipFinalAuditLlmForPath,
   pathDismissCategoryForNotFound,
 } from '../shared/path-utils.js';
 
@@ -112,6 +113,22 @@ describe('isReviewPathFragment', () => {
   it('does not treat normal paths as fragments', () => {
     expect(isReviewPathFragment('src/foo.ts')).toBe(false);
     expect(isReviewPathFragment('globals.d.ts')).toBe(false);
+  });
+});
+
+describe('shouldSkipFinalAuditLlmForPath', () => {
+  it('skips synthetic PR summary path, empty, and fragments', () => {
+    expect(shouldSkipFinalAuditLlmForPath('(PR comment)')).toBe(true);
+    expect(shouldSkipFinalAuditLlmForPath('')).toBe(true);
+    expect(shouldSkipFinalAuditLlmForPath('   ')).toBe(true);
+    expect(shouldSkipFinalAuditLlmForPath(undefined)).toBe(true);
+    expect(shouldSkipFinalAuditLlmForPath(null)).toBe(true);
+    expect(shouldSkipFinalAuditLlmForPath('.d.ts')).toBe(true);
+  });
+  it('does not skip normal repo paths', () => {
+    expect(shouldSkipFinalAuditLlmForPath('src/foo.ts')).toBe(false);
+    expect(shouldSkipFinalAuditLlmForPath('.env')).toBe(false);
+    expect(shouldSkipFinalAuditLlmForPath('packages/a/b.ts')).toBe(false);
   });
 });
 

@@ -614,6 +614,10 @@ function filterAttemptHistoryToBatch(attemptHistory: string, batchIds: string[])
 }
 
 export class LLMClient {
+  /** Cap noisy per-batch final-audit truncation debug (output.log: dozens of identical lines per run). */
+  private static finalAuditTruncationDebugCount = 0;
+  private static readonly FINAL_AUDIT_TRUNCATION_DEBUG_MAX = 5;
+
   private provider: LLMProvider;
   private model: string;
   /** When set (e.g. PRR_VERIFIER_MODEL), batch verification uses this instead of model to reduce false negatives. */
@@ -1999,6 +2003,237 @@ ${codeSnippet}
     return promptParts.join('\n');
   }
 
+  /** One file-group inside a final-audit batch (same shape as `finalAudit` batch groups). */
+  private regroupFinalAuditIssuesByFile(
+    issueSlice: Array<{
+      id: string;
+      comment: string;
+      filePath: string;
+      line: number | null;
+      codeSnippet: string;
+    }>,
+    sourceGroups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+  ): Array<{
+    filePath: string;
+    snippets: Map<string, string>;
+    issues: Array<{
+      id: string;
+      comment: string;
+      filePath: string;
+      line: number | null;
+      codeSnippet: string;
+    }>;
+  }> {
+    const snippetById = new Map<string, string>();
+    for (const g of sourceGroups) {
+      for (const i of g.issues) {
+        snippetById.set(i.id, g.snippets.get(i.id) ?? i.codeSnippet);
+      }
+    }
+    const byFile = new Map<string, typeof issueSlice>();
+    for (const issue of issueSlice) {
+      const list = byFile.get(issue.filePath) ?? [];
+      list.push(issue);
+      byFile.set(issue.filePath, list);
+    }
+    const out: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: typeof issueSlice;
+    }> = [];
+    for (const [filePath, fileIssues] of byFile) {
+      const snippets = new Map<string, string>();
+      for (const issue of fileIssues) {
+        snippets.set(issue.id, snippetById.get(issue.id) ?? issue.codeSnippet);
+      }
+      out.push({ filePath, snippets, issues: fileIssues });
+    }
+    return out;
+  }
+
+  /**
+   * Shrink snippets (and if needed comment previews) until the prompt fits `hardCap`, or return best effort.
+   * WHY: Small-context models (~42k chars) cannot fit dozens of issues even with tiny snippets — fixed per-issue
+   * overhead (headers + Comment: preview) must be accounted for via batch splitting; this handles truncation
+   * within a batch (output.log audit eliza#6562).
+   */
+  private applyFinalAuditSnippetTruncation(
+    headerParts: string[],
+    groups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+    batchIssueCount: number,
+    commentMax: number,
+    hardCap: number,
+  ): { promptText: string; fits: boolean; truncatedSnippetChars: number | null } {
+    const build = (cm: number, maxSnippetChars?: number) =>
+      this.buildFinalAuditBatchPrompt(headerParts, groups, batchIssueCount, cm, maxSnippetChars);
+
+    let promptText = build(commentMax, undefined);
+    if (promptText.length <= hardCap) {
+      return { promptText, fits: true, truncatedSnippetChars: null };
+    }
+
+    let maxSnip = 0;
+    for (const g of groups) {
+      for (const i of g.issues) {
+        const s = g.snippets.get(i.id) ?? '';
+        if (s.length > maxSnip) maxSnip = s.length;
+      }
+    }
+
+    let truncatedSnippetChars: number | null = null;
+    if (maxSnip > 0) {
+      let lo = 400;
+      let hi = Math.max(maxSnip, lo);
+      let ans = lo;
+      while (lo <= hi) {
+        const mid = (lo + hi + 1) >> 1;
+        const cand = build(commentMax, mid);
+        if (cand.length <= hardCap) {
+          ans = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      promptText = build(commentMax, ans);
+      truncatedSnippetChars = ans;
+      if (promptText.length <= hardCap && maxSnip > ans) {
+        LLMClient.finalAuditTruncationDebugCount += 1;
+        if (LLMClient.finalAuditTruncationDebugCount <= LLMClient.FINAL_AUDIT_TRUNCATION_DEBUG_MAX) {
+          debug('Final audit truncated code snippets to fit model input cap', {
+            promptChars: formatNumber(promptText.length),
+            hardCap: formatNumber(hardCap),
+            maxSnippetChars: ans,
+          });
+        } else if (LLMClient.finalAuditTruncationDebugCount === LLMClient.FINAL_AUDIT_TRUNCATION_DEBUG_MAX + 1) {
+          debug('Final audit truncated code snippets (suppressing further identical debug lines this process)', {
+            suppressedAfter: formatNumber(LLMClient.FINAL_AUDIT_TRUNCATION_DEBUG_MAX),
+          });
+        }
+      }
+    }
+
+    if (promptText.length <= hardCap) {
+      return { promptText, fits: true, truncatedSnippetChars };
+    }
+
+    promptText = build(commentMax, 200);
+    truncatedSnippetChars = Math.min(truncatedSnippetChars ?? 200, 200);
+
+    if (promptText.length <= hardCap) {
+      return { promptText, fits: true, truncatedSnippetChars };
+    }
+
+    const commentSteps = [350, 250, 150, 100, 80, 60];
+    for (const cm of commentSteps) {
+      for (const snipCap of [200, 150, 100, 80, 60, 40]) {
+        promptText = build(cm, snipCap);
+        if (promptText.length <= hardCap) {
+          return { promptText, fits: true, truncatedSnippetChars: snipCap };
+        }
+      }
+    }
+
+    return { promptText, fits: promptText.length <= hardCap, truncatedSnippetChars };
+  }
+
+  /**
+   * Split a batch that is still over `hardCap` after snippet truncation into multiple sub-batches.
+   * WHY: Per-issue comment/header overhead can exceed the whole model budget with many issues.
+   */
+  private splitFinalAuditBatchToFitHardCap(
+    groups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+    headerParts: string[],
+    hardCap: number,
+    commentMax: number,
+  ): Array<(typeof groups)[number][]> {
+    const batchIssues = groups.flatMap(g => g.issues);
+    if (batchIssues.length === 0) {
+      return [];
+    }
+    const full = this.applyFinalAuditSnippetTruncation(
+      headerParts,
+      groups,
+      batchIssues.length,
+      commentMax,
+      hardCap,
+    );
+    if (full.fits) {
+      return [groups];
+    }
+
+    const out: Array<(typeof groups)[number][]> = [];
+    const n = batchIssues.length;
+    let start = 0;
+    while (start < n) {
+      let lo = 1;
+      let hi = n - start;
+      let best = 0;
+      while (lo <= hi) {
+        const count = (lo + hi) >> 1;
+        const subGroups = this.regroupFinalAuditIssuesByFile(batchIssues.slice(start, start + count), groups);
+        const r = this.applyFinalAuditSnippetTruncation(
+          headerParts,
+          subGroups,
+          count,
+          commentMax,
+          hardCap,
+        );
+        if (r.fits) {
+          best = count;
+          lo = count + 1;
+        } else {
+          hi = count - 1;
+        }
+      }
+      if (best === 0) {
+        const one = this.regroupFinalAuditIssuesByFile(batchIssues.slice(start, start + 1), groups);
+        const r = this.applyFinalAuditSnippetTruncation(headerParts, one, 1, commentMax, hardCap);
+        out.push(one);
+        if (!r.fits) {
+          warn(
+            `Final audit: single-issue sub-batch still exceeds model input cap (${formatNumber(r.promptText.length)} > ${formatNumber(hardCap)}) — set PRR_FINAL_AUDIT_MODEL to a larger-context model.`,
+          );
+        }
+        start += 1;
+      } else {
+        out.push(this.regroupFinalAuditIssuesByFile(batchIssues.slice(start, start + best), groups));
+        start += best;
+      }
+    }
+    return out;
+  }
+
   /**
    * Final audit: Re-verify ALL issues with an adversarial, stricter prompt.
    * 
@@ -2042,15 +2277,18 @@ ${codeSnippet}
 
     const auditModel = this.getFinalAuditModel();
     let effectiveMaxContextChars = maxContextChars;
+    let elizacloudInputHardCap: number | undefined;
     if (this.provider === 'elizacloud') {
       const modelCap = Math.min(90_000, getMaxElizacloudLlmCompleteInputChars(auditModel));
       effectiveMaxContextChars = Math.min(maxContextChars, modelCap);
+      elizacloudInputHardCap = getMaxElizacloudLlmCompleteInputChars(auditModel);
     }
 
     debug('Running final audit on all issues', {
       count: issues.length,
       maxContextChars,
       effectiveMaxContextChars,
+      hardCap: elizacloudInputHardCap,
       auditModel,
     });
 
@@ -2159,83 +2397,52 @@ ${codeSnippet}
       groups: batches.map(b => b.groups.length),
     });
 
+    const hardCap =
+      this.provider === 'elizacloud'
+        ? getMaxElizacloudLlmCompleteInputChars(auditModel)
+        : Number.MAX_SAFE_INTEGER;
+
+    const commentMax = 500;
+    const expandedGroupBatches: Array<(typeof batches)[0]['groups']> = [];
+    for (const b of batches) {
+      if (hardCap === Number.MAX_SAFE_INTEGER) {
+        expandedGroupBatches.push(b.groups);
+        continue;
+      }
+      const sub = this.splitFinalAuditBatchToFitHardCap(b.groups, headerParts, hardCap, commentMax);
+      expandedGroupBatches.push(...sub);
+    }
+
+    const expandedIssueCount = expandedGroupBatches.reduce(
+      (sum, g) => sum + g.reduce((s, grp) => s + grp.issues.length, 0),
+      0,
+    );
+    if (expandedGroupBatches.length !== batches.length) {
+      debug('Final audit batches (expanded to model input cap)', {
+        initialBatches: batches.length,
+        subBatches: expandedGroupBatches.length,
+        issues: expandedIssueCount,
+      });
+    }
+
     const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
     let lastAuditResponseContent: string | null = null;
 
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const { groups } = batches[batchIdx];
+    for (let batchIdx = 0; batchIdx < expandedGroupBatches.length; batchIdx++) {
+      const groups = expandedGroupBatches[batchIdx];
       const batchIssues = groups.flatMap(g => g.issues);
 
-      const commentMax = 500;
-      let promptText = this.buildFinalAuditBatchPrompt(
+      const { promptText, fits } = this.applyFinalAuditSnippetTruncation(
         headerParts,
         groups,
         batchIssues.length,
         commentMax,
-        undefined,
+        hardCap,
       );
-
-      const hardCap =
-        this.provider === 'elizacloud'
-          ? getMaxElizacloudLlmCompleteInputChars(auditModel)
-          : Number.MAX_SAFE_INTEGER;
-
-      if (promptText.length > hardCap) {
-        let maxSnip = 0;
-        for (const g of groups) {
-          for (const i of g.issues) {
-            const s = g.snippets.get(i.id) ?? '';
-            if (s.length > maxSnip) maxSnip = s.length;
-          }
-        }
-        let lo = 400;
-        let hi = Math.max(maxSnip, lo);
-        let ans = lo;
-        while (lo <= hi) {
-          const mid = (lo + hi + 1) >> 1;
-          const cand = this.buildFinalAuditBatchPrompt(
-            headerParts,
-            groups,
-            batchIssues.length,
-            commentMax,
-            mid,
-          );
-          if (cand.length <= hardCap) {
-            ans = mid;
-            lo = mid + 1;
-          } else {
-            hi = mid - 1;
-          }
-        }
-        promptText = this.buildFinalAuditBatchPrompt(
-          headerParts,
-          groups,
-          batchIssues.length,
-          commentMax,
-          ans,
+      if (!fits) {
+        warn(
+          `Final audit sub-batch ${formatNumber(batchIdx + 1)} still exceeds ${formatNumber(hardCap)} chars after truncation — set PRR_FINAL_AUDIT_MODEL to a larger-context model.`,
         );
-        if (promptText.length > hardCap) {
-          promptText = this.buildFinalAuditBatchPrompt(
-            headerParts,
-            groups,
-            batchIssues.length,
-            commentMax,
-            200,
-          );
-        }
-        if (promptText.length > hardCap) {
-          warn(
-            `Final audit batch ${formatNumber(batchIdx + 1)} still exceeds ${formatNumber(hardCap)} chars after truncation — set PRR_FINAL_AUDIT_MODEL to a larger-context model.`,
-          );
-        } else if (maxSnip > ans) {
-          debug('Final audit truncated code snippets to fit model input cap', {
-            batchIndex: batchIdx + 1,
-            promptChars: formatNumber(promptText.length),
-            hardCap: formatNumber(hardCap),
-            maxSnippetChars: ans,
-            model: auditModel,
-          });
-        }
       }
 
       if (promptText.length > 280_000) {
@@ -2654,6 +2861,85 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     return joined.length > maxChars ? joined.substring(0, maxChars) + '\n... (truncated)' : joined;
   }
 
+  /**
+   * When post-fix "Current Code" exceeds the verify char budget, keep a window around the review line
+   * instead of truncating from byte 0 (which drops the hunk and leaves only imports — prompts.log audit).
+   */
+  private static truncateVerificationCurrentCode(
+    raw: string,
+    anchorLine: number | null | undefined,
+    maxChars: number,
+  ): string {
+    if (raw.length <= maxChars) return raw;
+    const lines = raw.split('\n');
+    const footerLines: string[] = [];
+    const bodyLines = [...lines];
+    while (bodyLines.length > 0) {
+      const last = bodyLines[bodyLines.length - 1] ?? '';
+      if (
+        /^\(end of file — \d+ lines total\)\s*$/.test(last) ||
+        /^\.\.\. \(truncated — file has \d+ lines total\)\s*$/.test(last)
+      ) {
+        footerLines.unshift(last);
+        bodyLines.pop();
+        continue;
+      }
+      break;
+    }
+    type Row = { lineNum: number; text: string };
+    const rows: Row[] = [];
+    for (let i = 0; i < bodyLines.length; i++) {
+      const text = bodyLines[i] ?? '';
+      const m = text.match(/^(\d+):\s?(.*)$/);
+      if (m) {
+        rows.push({ lineNum: parseInt(m[1]!, 10), text });
+      }
+    }
+    if (rows.length === 0) {
+      return raw.substring(0, Math.max(0, maxChars - 80)) + '\n... (truncated — snippet was cut for prompt size)';
+    }
+    let center = Math.floor(rows.length / 2);
+    if (anchorLine != null && anchorLine > 0) {
+      let best = 0;
+      let bestDist = Infinity;
+      for (let k = 0; k < rows.length; k++) {
+        const d = Math.abs(rows[k].lineNum - anchorLine);
+        if (d < bestDist) {
+          bestDist = d;
+          best = k;
+        }
+      }
+      center = best;
+    }
+    let lo = center;
+    let hi = center;
+    const sliceText = () => rows.slice(lo, hi + 1).map((r) => r.text).join('\n');
+    let chunk = sliceText();
+    const note = '\n... (truncated — centered on review line for prompt budget)';
+    const maxBody = Math.max(400, maxChars - note.length - footerLines.reduce((s, l) => s + l.length + 1, 0));
+    while (chunk.length < maxBody && (lo > 0 || hi < rows.length - 1)) {
+      const canHi = hi < rows.length - 1;
+      const canLo = lo > 0;
+      if (canHi && (!canLo || hi - center <= center - lo)) hi++;
+      else if (canLo) lo--;
+      else if (canHi) hi++;
+      else break;
+      const next = sliceText();
+      if (next.length > maxBody) break;
+      chunk = next;
+    }
+    while (chunk.length > maxBody && lo < hi) {
+      if (hi - center >= center - lo) hi--;
+      else lo--;
+      chunk = sliceText();
+    }
+    if (chunk.length > maxBody) {
+      chunk = chunk.substring(0, Math.max(0, maxBody - 60)) + '\n...';
+    }
+    const footer = footerLines.length > 0 ? '\n' + footerLines.join('\n') : '';
+    return chunk + note + footer;
+  }
+
   private buildBatchVerifyPrompt(
     fixes: Array<{
       id: string;
@@ -2710,9 +2996,12 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       // cases. Emitting an empty ``` block gives the verifier no context and forces guessing. We treat empty/whitespace
       // as missing and emit "Current Code: (unavailable — verify from diff only)" so the model knows to rely on diff.
       const rawCurrent = fix.currentCode?.trim();
-      const currentCode = rawCurrent && rawCurrent.length > 0
-        ? (rawCurrent.length > maxCode ? rawCurrent.substring(0, maxCode) + '\n... (truncated — snippet was cut for prompt size)' : rawCurrent)
-        : undefined;
+      const currentCode =
+        rawCurrent && rawCurrent.length > 0
+          ? rawCurrent.length > maxCode
+            ? LLMClient.truncateVerificationCurrentCode(rawCurrent, fix.line ?? null, maxCode)
+            : rawCurrent
+          : undefined;
       const diff =
         fix.diff.length > maxDiff ? fix.diff.substring(0, maxDiff) + '\n... (truncated)' : fix.diff;
       const rawComment = sanitizeCommentForPrompt(fix.comment);

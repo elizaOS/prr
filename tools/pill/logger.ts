@@ -5,6 +5,7 @@
  */
 import { writeFileSync, appendFileSync, createWriteStream } from 'fs';
 import { join } from 'path';
+import { randomUUID } from 'node:crypto';
 import { format } from 'node:util';
 import { finished } from 'stream/promises';
 import type { WriteStream } from 'fs';
@@ -13,6 +14,9 @@ let outputLogStream: WriteStream | null = null;
 let outputLogPath: string | null = null;
 let promptLogPath: string | null = null;
 let promptLogCounter = 0;
+
+/** Same `requestId` on PROMPT + RESPONSE metadata as `shared/logger` (grep UUID to pair interleaved entries). */
+const promptRequestIdBySlug = new Map<string, string>();
 
 const DELIMITER = '\u2550'.repeat(70); // U+2550 BOX DRAWINGS DOUBLE HORIZONTAL
 
@@ -62,6 +66,7 @@ export function initOutputLog(targetDir: string): void {
 
   promptLogPath = join(targetDir, 'pill-prompts.log');
   writeFileSync(promptLogPath, '', 'utf-8');
+  promptRequestIdBySlug.clear();
 
   const origLog = console.log.bind(console);
   const origWarn = console.warn.bind(console);
@@ -104,6 +109,7 @@ export async function closeOutputLog(): Promise<void> {
     }
   }
   promptLogPath = null;
+  promptRequestIdBySlug.clear();
 }
 
 export function getOutputLogPath(): string | null {
@@ -117,13 +123,19 @@ export function getPromptLogPath(): string | null {
 export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
   promptLogCounter++;
   const slug = promptSlug(promptLogCounter, label);
-  writeToPromptLog(slug, 'PROMPT', label, prompt, metadata);
+  const requestId = randomUUID();
+  promptRequestIdBySlug.set(slug, requestId);
+  const mergedMeta = { ...metadata, requestId };
+  writeToPromptLog(slug, 'PROMPT', label, prompt, mergedMeta);
 }
 
 /** Uses the same counter as the preceding debugPrompt so PROMPT/RESPONSE share a slug for pairing. */
 export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
   const slug = promptSlug(promptLogCounter, label);
-  writeToPromptLog(slug, 'RESPONSE', label, response, metadata);
+  const requestId = promptRequestIdBySlug.get(slug);
+  const mergedMeta = requestId ? { ...metadata, requestId } : metadata;
+  if (requestId) promptRequestIdBySlug.delete(slug);
+  writeToPromptLog(slug, 'RESPONSE', label, response, mergedMeta);
 }
 
 export function debug(_msg: string, _data?: unknown): void {

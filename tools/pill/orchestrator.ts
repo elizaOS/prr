@@ -15,7 +15,7 @@ import { DEFAULT_PILL_CONTEXT_BUDGET_TOKENS } from './config.js';
 import { assembleContext, getContextTokenCounts } from './context.js';
 import { LLMClient } from './llm/client.js';
 import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
-import { extractJson } from './llm/parse-json.js';
+import { extractJsonLenient } from './llm/parse-json.js';
 import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
 import { chunkPlainText } from '../../shared/llm/story-read.js';
 import { filterImprovementsByToolRepoScope } from './tool-repo-scope.js';
@@ -104,7 +104,7 @@ function buildAuditUserMessage(ctx: {
 }
 
 function parseImprovementPlan(raw: string): ImprovementPlan {
-  const obj = extractJson<{ pitch?: string; summary?: string; improvements?: unknown[] }>(raw);
+  const obj = extractJsonLenient<{ pitch?: string; summary?: string; improvements?: unknown[] }>(raw);
   const summary = typeof obj.summary === 'string' ? obj.summary : '';
   const pitch =
     typeof obj.pitch === 'string' ? obj.pitch : typeof obj.summary === 'string' ? obj.summary : '';

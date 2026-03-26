@@ -305,6 +305,7 @@ Layer 3: Final audit (before declaring done)
   └─ Requires citing specific code evidence
   └─ Only audit results determine what's "fixed"
   └─ If audit fails: re-enter fix loop (don't exit!)
+  └─ **Small-context final-audit model:** Batching uses **`getMaxElizacloudLlmCompleteInputChars(finalAuditModel)`**. If a planned batch is still over the cap (many issues × comment previews + snippets), PRR **splits into additional sub-batches** so **`complete()`** is not called with an oversized prompt. Pin **`PRR_FINAL_AUDIT_MODEL`** to a larger window if you want fewer audit HTTP calls.
 ```
 
 **Why clear cache before audit?** Prevents stale false positives from surviving. If an issue was wrongly marked "fixed" 10 iterations ago, the audit catches it.

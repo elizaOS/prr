@@ -377,8 +377,9 @@ type CurrentCodeAtLineOptions = {
  * WHY anchor + size: Audit (prompts.log) showed verifier received first 2000 chars only; for a 204-line
  * file the models array at line 169 was never seen, so verifier wrongly said "still present". We now
  * return full file when small, or a larger anchored window (30/70 lines), and client uses 8k char limit.
- * When expandForTypeSignature, return full file up to MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE so verifier
- * can see function body and call sites (avoids false "role never assigned" etc.).
+ * When expandForTypeSignature and line is null, return the first MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE lines.
+ * When expandForTypeSignature and line is set, return an anchored window around that line (wider than the default
+ * 30/70) so call-site / async issues still see the right region — not lines 1..500 only (prompts.log audit).
  */
 async function getCurrentCodeAtLine(
   workdir: string,
@@ -399,7 +400,23 @@ async function getCurrentCodeAtLine(
         + `\n(end of file — ${lines.length} lines total)`;
     }
 
+    // WHY anchor when line known: expandForTypeSignature used to return lines 1..500 only; batch verify then
+    // took substring(0, 8k) from the start → imports only, missing the real line (prompts.log audit runtime.ts ~1929).
     if (expandForTypeSignature) {
+      if (line != null && line > 0) {
+        const contextBefore = 100;
+        const contextAfter = 160;
+        const start = Math.max(0, line - contextBefore - 1);
+        const end = Math.min(lines.length, line + contextAfter);
+        const snippet = lines
+          .slice(start, end)
+          .map((l, i) => `${start + i + 1}: ${l}`)
+          .join('\n');
+        if (end >= lines.length) {
+          return snippet + `\n(end of file — ${lines.length} lines total)`;
+        }
+        return snippet + `\n... (truncated — file has ${lines.length} lines total)`;
+      }
       return lines
         .slice(0, fullFileLimit)
         .map((l, i) => `${i + 1}: ${l}`)

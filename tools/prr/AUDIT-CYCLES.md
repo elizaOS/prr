@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-24 · **Recorded cycles:** 66 · **Historical (legacy):** 4
+**Last updated:** 2026-03-26 · **Recorded cycles:** 69 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -51,7 +51,7 @@ Improvements should reinforce these, not reverse.
 | **Queue / log clarity** | One clear "still in queue" line, queue subtitle (to-fix vs already-verified), no contradictory "No issues" vs "N in queue". |
 | **Allow-path / test path** | Expand for test-coverage, plausible-path checks, test path at issue build; migration journal in allowedPaths when review mentions it; consolidate-duplicate "other file" when refactor issue. Do *not* add a file when comment only *references* it — use isReferencePathInComment before persisting otherFile from CANNOT_FIX/WRONG_LOCATION. |
 | **Loop prevention** | Counters and thresholds (WRONG_LOCATION/UNCLEAR, wrong-file, verifier rejection, CANNOT_FIX missing content); exhaust and dismiss instead of burning models. Auto-verify when bug pattern absent after N verifier rejections. Apply threshold checks (couldNotInject, ALREADY_FIXED) inside the fix loop, not only at analysis; run solvability on new comments before adding to queue. |
-| **File injection** | Basename fallback for short/fragment paths; placeholder detection before injection; hallucination guard for full-file rewrite output (< 15% of original = reject). |
+| **File injection** | Basename fallback for short/fragment paths; placeholder detection before injection; hallucination guard for full-file rewrite output (< 15% of original = reject). **llm-api:** files over 200k chars or 5k lines get a **line-anchored excerpt** (from `### Issue N: path:line` / `primary:` / `path:line` in the prompt) or a **head excerpt** when no anchors — avoids skipping injection entirely on mega-files (Cycle 67). |
 | **Approval/noise filter** | Summary/meta-review tables, approval comments ("Approve", "LGTM", "All issues resolved"), PR metadata requests — all dismissed in solvability. |
 | **Judge / verifier** | Judge NO must cite specific code or line numbers; format colons. Verifier: LESSON only for NO; for duplicate/shared-util steer to canonical lib/utils/..., not reference file; "Code before fix" empty/artifact → base verdict on Current Code and diff; multi-fix same file → judge by review comment. STALE→YES override when explanation indicates code/snippet not visible or "can't evaluate" (per judge instructions: if you would say "not in excerpt", say YES not STALE). |
 | **Output / UX** | Pluralize (1 file / N files); timing aggregated by phase; model recommendation only when real reasoning; AAR title from first meaningful line. Exhausted issues appear in AAR and handoff until resolved (fix, conversation, or other). |
@@ -72,10 +72,12 @@ Quick checks each audit. Drill into the category that matches what you changed.
 
 **Log vs reality (output.log / prompts.log)**
 - [ ] For runs that report "already verified" or "fixed": spot-check at least one such issue by reading the file at the cited path in the workdir (path from log: `Reusing existing workdir:` / `Workdir preserved:`). Confirm the bug pattern is actually gone. If the log says fixed but the file still has the bug, treat as a finding (stale verification, head change).
+- [ ] **prompts.log (Cycle 67):** PROMPT and RESPONSE JSON metadata share the same **`requestId`** (UUID) when using `shared/logger` — grep `requestId` to pair entries when concurrent calls reorder the file; slug number still pairs by convention.
 - [ ] RESULTS SUMMARY "N issue(s) fixed and verified" counts only verifiedFixed/verifiedComments; it must not include issues dismissed as already-fixed (pill-output.md #2; cycles 33/34).
 - [ ] Base-merge push: when log says "Merged latest X into Y" followed by "Everything up-to-date", the merge was a no-op (already merged). Verify `mergeBaseBranch` returns `alreadyUpToDate: true` so the caller doesn't attempt a pointless push.
 
 **Prompt quality**
+- [ ] Final audit: comments with empty path, **`(PR comment)`**, or **`isReviewPathFragment`** skip the adversarial LLM (`shouldSkipFinalAuditLlmForPath`); merged result still marks verified on synthetic pass (Cycle 69).
 - [ ] Queue line shows to-fix vs already-verified when relevant.
 - [ ] Verification: single "still in queue" line with clear detail (file not modified / failed verification).
 - [ ] Global lessons capped and filtered by path relevance for small batches.
@@ -162,6 +164,59 @@ Copy the block below for each new cycle.
 
 ## Recorded cycles
 
+### Cycle 69 — 2026-03-26 (final audit: skip LLM for synthetic / fragment paths)
+
+**Artifacts audited:** Prior prompts.log / output.log theme — **`(PR comment)`** and unreadable snippets driving bogus **UNFIXED** and wasted final-audit batches.
+
+**Findings:**
+- **Medium:** Final audit sent **all** non-dismissed comments to the adversarial LLM; synthetic paths only produced placeholder snippets → noise and re-queue risk.
+
+**Improvements implemented:** **`shouldSkipFinalAuditLlmForPath`** (**`shared/path-utils.ts`**) — skip LLM when path is empty, **`(PR comment)`**, or **`isReviewPathFragment`**. **`runFinalAudit`** builds LLM batch only for remaining comments; skipped rows get **`stillExists: false`** with a fixed explanation; **`auditSnippets`** aligned by index for downstream tie-break logic. Tests in **`tests/path-utils.test.ts`**. **CHANGELOG** [Unreleased].
+
+**Flip-flop check:** N — additive fast-path; file-backed comments unchanged.
+
+**Notes:** Does not replace solvability / dismissal for those threads; only avoids a meaningless adversarial pass at exit.
+
+---
+
+### Cycle 68 — 2026-03-26 (thread-replies: align `chronic-failure` with docs; locale numbers)
+
+**Artifacts audited:** Pill item (thread-replies / chronic-failure), **AGENTS.md** vs **`tools/prr/workflow/thread-replies.ts`** (code had **`chronic-failure`** in reply set; docs said no reply).
+
+**Findings:**
+- **Medium:** **AGENTS** / **THREAD-REPLIES** said no reply for **`chronic-failure`**, but **`DISMISSED_CATEGORIES_WITH_REPLY`** included it — duplicate “could not fix” class vs **`remaining`/`exhausted`** without the same semantics (batch token-saving dismissals).
+- **Low:** 422 stop **`console.log`** used raw small integer — **number-formatting** rule prefers **`formatNumber`**.
+
+**Improvements implemented:** Removed **`chronic-failure`** from **`DISMISSED_CATEGORIES_WITH_REPLY`** and the dedicated body branch; expanded file comment **WHY**; **`formatNumber`** on stop message; **docs/THREAD-REPLIES.md** list + **WHY** paragraph corrected (no longer claims **`remaining`/`exhausted`** replies are “less useful” — we **do** reply); **AGENTS.md** clause for **`chronic-failure`**; **CHANGELOG** [Unreleased].
+
+**Flip-flop check:** Y — Threads dismissed **`chronic-failure`** lose a bot reply (aligns with long-documented intent); operators who relied on the brief accidental reply lose it.
+
+**Notes:** **`path-unresolved`**, **`missing-file`**, **`duplicate`**, **`file-unchanged`** were already reply-eligible; doc now lists them explicitly. **Follow-up (same day):** **`debugPromptError`** **`debug()`** line includes **`requestId`**; **pill** **`pill-prompts.log`** uses the same **`requestId`** metadata pairing as **`shared/logger`**.
+
+---
+
+### Cycle 67 — 2026-03-26 (audit follow-ups: output.log + prompts.log — RESULTS SUMMARY, final-audit debug, llm-api injection, prompts.log pairing, dedup note)
+
+**Artifacts audited:** Prior **output.log** / **prompts.log** audits (elizaOS/eliza#6562 thread, prompts.log structure). **Code review** of landed changes in **this repo** (no new workdir spot-check for PR “fixed” claims in this cycle).
+
+**Findings:**
+- **High:** (none — changes are observability, UX copy, and fixer context; no state/verification semantics altered except clearer operator messaging.)
+- **Medium:** (none)
+- **Low:** **`debugPromptError`** one-liner to `debug()` when `PRR_DEBUG_PROMPTS` is set does not echo **`requestId`** (metadata still has it in prompts.log ERROR entry) — cosmetic only.
+
+**Improvements implemented:**
+- **RESULTS SUMMARY** (`tools/prr/ui/reporter.ts`): When **final audit re-queue count** ≠ **Remaining**, explain that re-queue is **per thread (comment id)** and Remaining uses **deduped locations** / post-audit verification — same for GitHub review markdown summary and early cyan block when counts differ.
+- **Final audit** (`tools/prr/llm/client.ts`): **Suppress** repeated identical **`Final audit truncated code snippets…`** debug lines after **5** per process, plus one **suppression notice** (reduces output.log noise on huge audits).
+- **llm-api file injection** (`shared/runners/llm-api.ts`): Files **>200k chars** or **>5000 lines** no longer **skipped**; inject **windows around line anchors** parsed from the fix prompt (`### Issue N: path:line`, `primary: path:line`, `path:line`) or a **head excerpt** + label so the model knows content is partial.
+- **prompts.log pairing** (`shared/logger.ts`): Auto **`requestId`** (UUID) on **PROMPT** metadata; **RESPONSE** / **ERROR** repeat it; map **cleared** on **`initOutputLog`**; **empty PROMPT** refusal **deletes** slug from map (no orphan pairing slot). **`debug()`** PROMPT/RESPONSE lines include **`requestId`** when present.
+- **LLM dedup** (`tools/prr/workflow/issue-analysis.ts`): Comment that **`GROUP` + trailing `NONE`** must not discard parsed groups (behavior unchanged; documents prompts.log pattern).
+
+**Flip-flop check:** N — additive logging and UX; injection is **strictly more context** than skip; no reversal of verification or dismissal rules.
+
+**Notes:** **Logic review:** `debugResponse` / `debugPromptError` **remove** slug from `promptRequestIdBySlug` **before** `writeToPromptLog`, so an **empty RESPONSE** refusal does not leak map entries. **llm-api** bare `path:line` regex could theoretically pick extra line numbers if the same path string appears elsewhere in the prompt; risk is low vs previous **no injection**. **Not verified:** eliza PR workdir files for “fixed” this cycle — that remains the rule for **output.log “already verified”** audits, not for this tooling-only cycle.
+
+---
+
 ### Cycle 66 — 2026-03-24 (output.log: elizaOS/eliza#6562 — base merge, ROADMAP index false positive, exit 500)
 
 **Artifacts audited:** `output.log` (~01:54–02:xxZ). PR **elizaOS/eliza#6562** (`odi-dev` vs `v2.0.0`). Workdir **`/root/.prr/work/641c5dac25972ea4`**.
@@ -173,7 +228,7 @@ Copy the block below for each new cycle.
 - **Low (L1):** **ElizaCloud** **timeout/retry** on first conflict-resolution batch (`claude-sonnet-4-5`); recovered on retry — cost/latency.
 - **Low (L2):** **CodeRabbit** review targets older SHA vs PR **HEAD**; **mergeable/dirty** on GitHub — expected noise; latent **merge-tree** probe correctly listed **6** conflicting paths.
 
-**Improvements implemented:** **`hasGitConflictOpenOrCloseMarkers`** in **`shared/git/git-lock-files.ts`** — index **stage-2** check in **`readOursFromConflictIndex`** no longer uses full **`hasConflictMarkers`** (avoids false reject on doc **`=======`**). Tests in **`tests/has-conflict-markers.test.ts`**.
+**Improvements implemented:** **`hasGitConflictOpenOrCloseMarkers`** in **`shared/git/git-lock-files.ts`** — index **stage-2** check in **`readOursFromConflictIndex`** no longer uses full **`hasConflictMarkers`** (avoids false reject on doc **`=======`**). Tests in **`tests/has-conflict-markers.test.ts`**. **H1 (partial):** **`tools/prr/github/github-api-errors.ts`** — **`logGitHubApiFailure`** on key REST/GraphQL paths (**`pulls.get`**, **`createReview`**, **`createComment`**, **reviewThreads** pages, **reply** / **resolve** thread): **`debug`** includes phase, **`x-github-request-id`**, method/URL, response preview; **`warn`** on **5xx** / gateway-style message and **429**. **Still open:** retry/backoff, review-body size split (H1 full ask).
 
 **Flip-flop check:** N — stricter only for rejecting corrupt stage-2; more merges succeed deterministically.
 

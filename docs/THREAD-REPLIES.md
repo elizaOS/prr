@@ -28,9 +28,9 @@ We only know the full set of dismissals at end of run (after audit, bail-out, et
 
 ## WHY only some dismissal categories get a reply
 
-We reply for: `already-fixed`, `stale`, `not-an-issue`, `false-positive`, `remaining`, `exhausted` (for the last two we post "Could not auto-fix; manual review recommended."). We do **not** reply for `chronic-failure`, etc.
+We reply for: `already-fixed`, `stale`, `not-an-issue`, `false-positive`, `remaining`, `exhausted`, `path-unresolved`, `missing-file`, `duplicate`, `file-unchanged` (see `DISMISSED_CATEGORIES_WITH_REPLY` in `tools/prr/workflow/thread-replies.ts`). We do **not** reply for `chronic-failure` (and other categories omitted from that set).
 
-**WHY:** “Already addressed”, “stale”, “not an issue”, “false positive” are clear conclusions that help the reviewer. “Exhausted” or “remaining” mean “we gave up” or “needs human follow-up”; a bot reply there is less useful and can feel like noise. Keeping replies to informative outcomes reduces noise and keeps the thread actionable.
+**WHY:** Clear dismissals (`already-fixed`, `stale`, `not-an-issue`, `false-positive`) give the reviewer a definitive outcome. `remaining` / `exhausted` get a short “Could not auto-fix; manual review recommended.” so threads are not left silent after we stop the fix loop. `path-unresolved` / `missing-file` / `duplicate` / `file-unchanged` get a specific line so the thread shows why PRR stopped. **`chronic-failure` is excluded:** those threads are bulk-dismissed to save tokens without a full fix cycle on each one — replying would add bot noise without the same “we tried and stopped here” story as `remaining`/`exhausted`.
 
 ## WHY in-run and cross-run idempotency
 

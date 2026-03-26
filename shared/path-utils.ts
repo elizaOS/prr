@@ -104,6 +104,19 @@ export function isReviewPathFragment(rawPath: string): boolean {
 }
 
 /**
+ * True when the adversarial **final audit** should not call the LLM for this review path.
+ * WHY: GitHub synthetic paths (`(PR comment)`), empty paths, and path **fragments** (e.g. bare `.d.ts`)
+ * produce only "(file not found or unreadable)"-style snippets — the model cannot verify code and often
+ * returns bogus UNFIXED, wasting tokens (prompts.log / output.log audits).
+ */
+export function shouldSkipFinalAuditLlmForPath(path: string | undefined | null): boolean {
+  const p = path?.trim() ?? '';
+  if (!p) return true;
+  if (p === '(PR comment)') return true;
+  return isReviewPathFragment(p);
+}
+
+/**
  * When a tracked file is not found after resolution, pick a single dismissal category.
  * WHY: Same logical case must not flip between missing-file and path-unresolved (pill-output).
  */

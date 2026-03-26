@@ -21,7 +21,12 @@ import type { CLIOptions } from '../cli.js';
 import { formatNumber } from '../ui/reporter.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../../../shared/logger.js';
+import { shouldSkipFinalAuditLlmForPath } from '../../../shared/path-utils.js';
 import { assessSolvability } from './helpers/solvability.js';
+
+/** Logged when final audit skips the LLM for a comment (synthetic / fragment path). */
+const FINAL_AUDIT_SKIP_LLM_EXPLANATION =
+  'Skipped adversarial LLM: no single on-disk file path (synthetic path, empty path, or path fragment).';
 
 /**
  * Detect audit explanations that say no fix is needed (false positive).
@@ -335,22 +340,56 @@ export async function runFinalAudit(
   }
 
   spinner.start('Running final audit on all issues...');
-  
-  // Gather all comments with their current code. Use full file when provided so the audit
-  // sees complete context and avoids false "UNFIXED" due to truncated snippets.
-  const auditSnippets = getFullFile
-    ? await Promise.all(comments.map(c => getFullFile(c.path)))
-    : await Promise.all(comments.map(c => getCodeSnippet(c.path, c.line, c.body)));
+
+  const llmIndices: number[] = [];
+  const skipLlmIndices: number[] = [];
+  for (let i = 0; i < comments.length; i++) {
+    if (shouldSkipFinalAuditLlmForPath(comments[i].path)) {
+      skipLlmIndices.push(i);
+    } else {
+      llmIndices.push(i);
+    }
+  }
+  if (skipLlmIndices.length > 0) {
+    debug('Final audit: skipping LLM for non-file / fragment paths', {
+      skipped: skipLlmIndices.length,
+      llmCount: llmIndices.length,
+      samplePaths: skipLlmIndices.slice(0, 5).map((i) => comments[i].path),
+    });
+  }
+
+  const llmComments = llmIndices.map((i) => comments[i]);
+  const auditSnippetsLlm = getFullFile
+    ? await Promise.all(llmComments.map((c) => getFullFile(c.path)))
+    : await Promise.all(llmComments.map((c) => getCodeSnippet(c.path, c.line, c.body)));
+
+  const auditSnippets: string[] = new Array(comments.length);
+  for (let j = 0; j < llmIndices.length; j++) {
+    auditSnippets[llmIndices[j]] = auditSnippetsLlm[j]!;
+  }
+  const skipSnippetNote = '(no file context — final audit LLM skipped for non-file path)';
+  for (const i of skipLlmIndices) {
+    auditSnippets[i] = skipSnippetNote;
+  }
+
   const { sanitizeCommentForPrompt } = await import('../analyzer/prompt-builder.js');
-  const allIssuesForAudit = comments.map((comment, i) => ({
+  const allIssuesForAudit = llmComments.map((comment, j) => ({
     id: comment.id,
     comment: sanitizeCommentForPrompt(comment.body),
     filePath: comment.path,
     line: comment.line,
-    codeSnippet: auditSnippets[i],
+    codeSnippet: auditSnippetsLlm[j]!,
   }));
-  
-  const auditResults = await llm.finalAudit(allIssuesForAudit, options.maxContextChars, 'final-audit');
+
+  const auditResults =
+    allIssuesForAudit.length > 0
+      ? await llm.finalAudit(allIssuesForAudit, options.maxContextChars, 'final-audit')
+      : new Map<string, { stillExists: boolean; explanation: string }>();
+
+  for (const i of skipLlmIndices) {
+    const c = comments[i];
+    auditResults.set(c.id, { stillExists: false, explanation: FINAL_AUDIT_SKIP_LLM_EXPLANATION });
+  }
   // L1: Respect verified-fixed verdict — don't let final audit override earlier verification (e.g. stronger model).
   const alreadyVerifiedIds = new Set(Verification.getVerifiedComments(stateContext));
   if (!stateContext.auditOverridesThisRun) stateContext.auditOverridesThisRun = [];

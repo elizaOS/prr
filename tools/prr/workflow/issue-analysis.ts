@@ -672,6 +672,33 @@ function heuristicDedup(
 }
 
 /**
+ * Dedup grouping rules as system prompt — user message is only file + summaries.
+ * WHY: prompts.log audit showed ~2k chars of identical GROUPING RULES repeated per file;
+ * ElizaCloud/OpenAI paths support system+user; reduces tokens and log noise.
+ */
+const LLM_DEDUP_SYSTEM_PROMPT = `You group duplicate GitHub review comments that describe the EXACT SAME underlying problem on one file.
+
+GROUPING RULES (be conservative — wrong merges cause missed fixes):
+- CRITICAL — line alignment: Each comment in the user message may show "(line N)". Every index in one GROUP must share the SAME N. Comments on different line numbers must NOT be in the same GROUP. If a comment has no "(line N)" but includes a short "Code:" excerpt, infer location from that excerpt; when in doubt, do NOT group across likely-different locations.
+- Only group if SAME code location AND SAME specific problem and SAME fix.
+- Comments on DIFFERENT lines, functions, or requiring DIFFERENT fixes must NOT be grouped.
+- "Thematically similar" is NOT enough.
+- Same symbol but DIFFERENT fix = do NOT group. Example: "Method X doesn't exist" (fix: add the method) and "Method X called with wrong cast" (fix: change the call site) are two different fixes — do not group.
+- When in doubt, do NOT group.
+
+For each group of true duplicates, pick the most detailed comment as canonical.
+
+The user message states how many comments K there are. Valid indices are 1 through K only. Never reference an index outside that range. The canonical index MUST be one of the indices listed in its GROUP line.
+
+Before each GROUP line: verify every index in that GROUP shares the same "(line N)" when present.
+
+Reply ONLY with lines like (one per group, no other text):
+GROUP: 1,2 → canonical 2
+GROUP: 1,3 → canonical 3
+
+If no comments are duplicates, reply: NONE`;
+
+/**
  * Phase 2: LLM-based semantic deduplication.
  *
  * Takes candidate groups from Phase 0 that heuristic dedup (Phase 1) didn't merge
@@ -729,38 +756,13 @@ async function llmDedup(
         : '';
       return `[${idx + 1}] ${item.comment.author}${line}: ${preview}${snippet}`;
     }).join('\n\n');
-    // WHY "same method, different fix" rule: Audit found a bad merge — two comments about the same method required
-    // different fixes (add method vs change call site). Grouping them lost nuance; the rule reduces false groupings.
-    // WHY index-range rule: Cycle 16 returned GROUP lines like "2,5,7" for a 3-comment file; telling the model that
-    // only 1..N are valid indices reduces malformed groups before they reach the parser.
-    const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
-You must decide which comments describe the EXACT SAME underlying problem.
+    const userPrompt = `File: ${filePath}
+Comments: ${items.length} (use indices 1–${items.length} only)
 
-${summaries}
-
-GROUPING RULES (be conservative — wrong merges cause missed fixes):
-- CRITICAL: Only group comments that have the SAME line number. Each comment shows "(line N)" — every comment in a GROUP must share the same N. Comments on different lines must NOT be in the same GROUP. Before replying, verify: every index you put in one GROUP has the same (line N); if any two have different line numbers, do NOT put them in the same GROUP.
-- Only group comments if they point to the SAME code location AND fix the SAME specific problem.
-- Comments on DIFFERENT lines, DIFFERENT functions, or that require DIFFERENT fixes must NOT be grouped.
-- "Related" or "thematically similar" is NOT enough — they must be describing the same bug/issue.
-- Same method/symbol but DIFFERENT fix = do NOT group. Example: "Method X doesn't exist" (fix: add the method) and "Method X called with wrong cast" (fix: change the call site) are two different fixes — do not group.
-- When in doubt, do NOT group.
-
-For each group of true duplicates, pick the most detailed comment as canonical.
-
-Valid comment indices in this prompt are 1 through ${items.length} only. Never reference an index outside that range.
-The canonical index MUST be one of the indices listed in its GROUP line.
-
-Before replying: For each GROUP line you write, verify that every index in that GROUP has the same (line N) in the comment text above. If any two indices have different line numbers, do NOT put them in the same GROUP.
-
-Reply ONLY with lines like (one per group, no other text):
-GROUP: 1,2 → canonical 2
-GROUP: 1,3 → canonical 3
-
-If no comments are duplicates, reply: NONE`;
+${summaries}`;
     try {
       // Always use cheap model for dedup — fast and sufficient; avoids slow default (e.g. qwen-3-14b on ElizaCloud).
-      const response = await llm.completeWithCheapModel(prompt);
+      const response = await llm.completeWithCheapModel(userPrompt, LLM_DEDUP_SYSTEM_PROMPT);
       const content = response.content.trim();
       const groups: DedupTaskResult['groups'] = [];
       const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
@@ -805,8 +807,8 @@ If no comments are duplicates, reply: NONE`;
         const dupes = indices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
         groups.push({ canonical, dupes });
       }
-      // Only treat as NONE when no GROUP lines were parsed. Audit: response contained
-      // both "GROUP: 1,2,3 → canonical 3" and "NONE" — the old check discarded valid groups.
+      // Only treat as NONE when no GROUP lines were parsed. Audit (prompts.log): model may output
+      // `GROUP: …` plus a trailing `NONE` line — regex still captures groups; do not discard.
       if (groups.length === 0 && content.toUpperCase().includes('NONE')) {
         return { filePath, groups: [], error: undefined };
       }

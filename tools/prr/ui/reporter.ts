@@ -310,6 +310,17 @@ export function printFinalSummary(
         `\n  ◆ Final audit re-queued: ${formatNumber(auditOverridesEarly.length)} issue(s) (adversarial pass said UNFIXED for previously verified — see After Action Report)`,
       ),
     );
+    if (
+      remainingCount !== undefined &&
+      remainingCount > 0 &&
+      remainingCount !== auditOverridesEarly.length
+    ) {
+      console.log(
+        chalk.gray(
+          `     (If Remaining below differs: re-queue is per thread; Remaining dedupes by file:line and can shrink after fixes.)`,
+        ),
+      );
+    }
   }
   if (overlapIds.length > 0) {
     console.warn(
@@ -441,6 +452,13 @@ export function printFinalSummary(
           `\n  ⚠ ${formatNumber(auditOverrides.length)} issue(s) were re-opened by final audit for re-verification; see Remaining above (${formatNumber(remainingCount)}).`,
         ),
       );
+      if (remainingCount !== auditOverrides.length) {
+        console.log(
+          chalk.gray(
+            `     Re-queue count is per review thread (comment id). Remaining is unresolved issues plus exhausted threads deduped by file:line — some re-queued threads may verify or dismiss again, so the two numbers need not match.`,
+          ),
+        );
+      }
     }
   }
 
@@ -525,6 +543,11 @@ export function buildReviewSummaryMarkdown(
       lines.push(
         `- ⚠ With ${formatNumber(remainingCount)} issue(s) still remaining, review threads above — final audit had re-opened ${formatNumber(auditOverrides.length)} previously verified issue(s).`,
       );
+      if (remainingCount !== auditOverrides.length) {
+        lines.push(
+          `- ℹ Re-queue count is per thread; Remaining dedupes locations and can differ after re-verification or dismissal.`,
+        );
+      }
     } else {
       lines.push(
         `- ⚠ ${formatNumber(unrecovered.length)} of ${formatNumber(auditOverrides.length)} re-queued issue(s) not in verified-fixed — review dismissed/state.`,

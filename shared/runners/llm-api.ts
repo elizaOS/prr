@@ -59,6 +59,89 @@ function isSuspiciousNewFilePath(path: string): boolean {
   return suspiciousBasenames.includes(base);
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 1-based line numbers for this repo-relative path as they appear in fix prompts
+ * (`### Issue N: path:line`, `primary: path:line`, or `path:line`).
+ * WHY: Mega-files skip full injection; windows around these lines keep S/R grounded (output.log eliza#6562).
+ */
+function extractLineAnchorsFromPromptForPath(prompt: string, filePath: string): number[] {
+  const norm = normalizeRepoPath(filePath.replace(/^\.\//, ''));
+  if (!norm) return [];
+  const esc = escapeRegExp(norm);
+  const found = new Set<number>();
+  const add = (raw: string | undefined) => {
+    if (raw == null) return;
+    const n = parseInt(raw, 10);
+    if (n > 0 && n < 10_000_000) found.add(n);
+  };
+  const reIssue = new RegExp(`### Issue \\d+:\\s*${esc}:(\\d+)\\b`, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = reIssue.exec(prompt)) !== null) add(m[1]);
+  const rePrimary = new RegExp(`primary:\\s*${esc}:(\\d+)\\b`, 'gi');
+  while ((m = rePrimary.exec(prompt)) !== null) add(m[1]);
+  const reBare = new RegExp(`\\b${esc}:(\\d+)\\b`, 'g');
+  while ((m = reBare.exec(prompt)) !== null) add(m[1]);
+  return [...found].sort((a, b) => a - b);
+}
+
+function mergeLineRanges(
+  anchors: number[],
+  totalLines: number,
+  before: number,
+  after: number,
+): [number, number][] {
+  const sorted = [...new Set(anchors)].filter((a) => a >= 1 && a <= totalLines).sort((a, b) => a - b);
+  const ranges: [number, number][] = [];
+  for (const a of sorted) {
+    const lo = Math.max(1, a - before);
+    const hi = Math.min(totalLines, a + after);
+    const last = ranges[ranges.length - 1];
+    if (last && lo <= last[1] + 5) {
+      last[1] = Math.max(last[1], hi);
+    } else {
+      ranges.push([lo, hi]);
+    }
+  }
+  return ranges;
+}
+
+function buildExcerptFromRanges(
+  allLines: string[],
+  ranges: [number, number][],
+  maxChars: number,
+): { text: string; rangeDesc: string } {
+  const parts: string[] = [];
+  let total = 0;
+  let rangeDesc = '';
+  for (const [lo, hi] of ranges) {
+    const slice = allLines.slice(lo - 1, hi).join('\n');
+    const header = `--- lines ${lo}-${hi} ---\n`;
+    const piece = header + slice;
+    rangeDesc = rangeDesc ? `${rangeDesc}; ${lo}-${hi}` : `${lo}-${hi}`;
+    if (total + piece.length > maxChars) {
+      const room = Math.max(0, maxChars - total - header.length - 80);
+      if (room < 80) break;
+      parts.push(header + slice.slice(0, room) + '\n[PRR: excerpt truncated to input cap]');
+      break;
+    }
+    parts.push(piece);
+    total += piece.length + 2;
+    if (total >= maxChars) break;
+  }
+  return { text: parts.join('\n\n'), rangeDesc };
+}
+
+function buildHeadExcerpt(content: string, maxChars: number): string {
+  if (content.length <= maxChars) return content;
+  const head = content.slice(0, maxChars);
+  const omitted = content.length - maxChars;
+  return `${head}\n\n[PRR: ${omitted.toLocaleString()} more chars omitted — file too large; use Issue headers for line hints]`;
+}
+
 /** Max retries for 504/gateway timeout only. Do not retry other 5xx or 429. WHY: Single retry was often insufficient for transient gateways; two retries with staggered backoff give the gateway time to recover without excessive delay. */
 const MAX_504_RETRIES = 2;
 /** Backoff in ms before each retry (attempt 0 → 10s, attempt 1 → 20s). */
@@ -730,8 +813,8 @@ Working directory: ${workdir}`;
    * files first improves S/R success. WHY dynamic budget: maxTotalEnrichedChars ties
    * injection to the model's context cap so we don't overshoot small-context or
    * underuse large-context models (was fixed 200k).
-   * Limits: files > 200KB or > 5000 lines are skipped, max 10 files injected,
-   * and total injected content capped so base + injection stays under gateway limits.
+   * Limits: files > 200KB or > 5000 lines get a line-anchored or head excerpt (not skipped);
+   * max 10 files injected; total injected content capped so base + injection stays under gateway limits.
    */
   private injectFileContents(workdir: string, prompt: string, maxTotalEnrichedChars?: number, allowedPathsForInjection?: string[]): { enrichedPrompt: string; injectedPaths: string[] } {
     // WHY skip injection for conflict prompts: buildConflictResolutionPromptWithContent already
@@ -824,19 +907,57 @@ Working directory: ${workdir}`;
           debug('Skipping file injection - placeholder/stub content detected', { filePath: pathToInject, lineCount: content.split('\n').length });
           continue;
         }
-        if (content.length > MAX_FILE_SIZE) {
-          debug('Skipping file injection - too large', { filePath: pathToInject, size: content.length });
-          continue;
+        const rawChars = content.length;
+        const allLines = content.split('\n');
+        const rawLineCount = allLines.length;
+        let injectContent = content;
+        let sectionTitle = pathToInject;
+        const needsWindow = rawChars > MAX_FILE_SIZE || rawLineCount > MAX_LINES;
+        if (needsWindow) {
+          const anchors = extractLineAnchorsFromPromptForPath(prompt, pathToInject);
+          if (anchors.length > 0) {
+            const ranges = mergeLineRanges(anchors, rawLineCount, 100, 150);
+            const budget = MAX_FILE_SIZE - 400;
+            const { text, rangeDesc } = buildExcerptFromRanges(allLines, ranges, budget);
+            if (text.trim().length > 0) {
+              injectContent = text;
+              sectionTitle = `${pathToInject} (excerpt ${rangeDesc} of ${rawLineCount.toLocaleString()} lines)`;
+              debug('Line-anchored file injection excerpt (file over size/line cap)', {
+                filePath: pathToInject,
+                rawChars,
+                rawLineCount,
+                rangeDesc,
+                excerptChars: injectContent.length,
+              });
+            } else {
+              injectContent = buildHeadExcerpt(content, MAX_FILE_SIZE - 400);
+              sectionTitle = `${pathToInject} (head excerpt; ${rawLineCount.toLocaleString()} lines total)`;
+              debug('Anchors out of file range; head excerpt for injection', { filePath: pathToInject, rawChars, rawLineCount });
+            }
+          } else {
+            injectContent = buildHeadExcerpt(content, MAX_FILE_SIZE - 400);
+            sectionTitle = `${pathToInject} (head excerpt; ${rawLineCount.toLocaleString()} lines total)`;
+            debug('Head-only file injection excerpt (file over cap, no line anchors in prompt)', {
+              filePath: pathToInject,
+              rawChars,
+              rawLineCount,
+              excerptChars: injectContent.length,
+            });
+          }
         }
-        const lineCount = content.split('\n').length;
-        if (lineCount > MAX_LINES) {
-          debug('Skipping file injection - too many lines', { filePath: pathToInject, lineCount });
-          continue;
+
+        if (injectContent.length > MAX_FILE_SIZE) {
+          injectContent = injectContent.slice(0, MAX_FILE_SIZE);
+        }
+        let injectLineCount = injectContent.split('\n').length;
+        if (injectLineCount > MAX_LINES) {
+          injectContent = injectContent.split('\n').slice(0, MAX_LINES).join('\n') + '\n[PRR: truncated at line cap]';
+          injectLineCount = MAX_LINES;
         }
 
         // Inject raw file content (no line-number prefixes) so the model copies exact code
         // and does not emit "N | " artifacts in <search>/<replace> output.
-        const section = `### ${pathToInject} (${lineCount} lines)\n\`\`\`\n${content}\n\`\`\``;
+        const section = `### ${sectionTitle} (${injectLineCount.toLocaleString()} lines)\n\`\`\`\n${injectContent}\n\`\`\``;
         if (totalInjectedChars + section.length > maxTotalInjectionChars) {
           debug('Stopping file injection - total would exceed cap', {
             currentTotal: totalInjectedChars,

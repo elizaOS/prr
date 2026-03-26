@@ -9,12 +9,14 @@ import type { ReviewComment } from '../github/types.js';
 import type { PRInfo } from '../github/types.js';
 import type { DismissedIssue } from '../state/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import { debug } from '../../../shared/logger.js';
+import { debug, formatNumber } from '../../../shared/logger.js';
 import chalk from 'chalk';
 
 /**
  * Dismissed categories that get a reply.
  * WHY: When --reply-to-threads is used, every considered thread should get a short reply so reviewers see PRR touched it. Previously only a subset got replies (e.g. remaining/exhausted), so runs that dismissed as path-unresolved or missing-file posted nothing.
+ *
+ * **Not included:** `chronic-failure` — auto-dismissed in batch to save tokens without a focused fix attempt on that thread; a generic reply adds noise vs `remaining`/`exhausted` where we exhausted the fix loop (AGENTS.md, docs/THREAD-REPLIES.md).
  */
 const DISMISSED_CATEGORIES_WITH_REPLY = new Set<string>([
   'already-fixed',
@@ -23,9 +25,8 @@ const DISMISSED_CATEGORIES_WITH_REPLY = new Set<string>([
   'false-positive',
   'remaining',
   'exhausted',
-  'path-unresolved',  // e.g. .d.ts fragment — reply so thread has visible feedback
-  'missing-file',    // file not found — reply so thread has visible feedback
-  'chronic-failure',
+  'path-unresolved', // e.g. .d.ts fragment — reply so thread has visible feedback
+  'missing-file', // file not found — reply so thread has visible feedback
   'duplicate',
   'file-unchanged',
 ]);
@@ -228,7 +229,11 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
           if (result.is422) {
             consecutive422++;
             if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-              console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
+              console.log(
+                chalk.yellow(
+                  `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_422_BEFORE_STOP)} consecutive 422s (Validation Failed).`,
+                ),
+              );
               stopReplyDueTo422 = true;
             }
           } else {
@@ -264,8 +269,6 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       body = 'Could not auto-fix (path unresolved); manual review recommended.';
     } else if (d.category === 'missing-file') {
       body = 'Could not auto-fix (file not found); manual review recommended.';
-    } else if (d.category === 'chronic-failure') {
-      body = 'Could not auto-fix (repeated failures); manual review recommended.';
     } else if (d.category === 'duplicate') {
       body = 'Treated as duplicate of another comment; no separate fix.';
     } else if (d.category === 'file-unchanged') {
@@ -293,7 +296,11 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
           if (result.is422) {
             consecutive422++;
             if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-              console.log(chalk.yellow(`Stopping thread replies after ${MAX_CONSECUTIVE_422_BEFORE_STOP} consecutive 422s (Validation Failed).`));
+              console.log(
+                chalk.yellow(
+                  `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_422_BEFORE_STOP)} consecutive 422s (Validation Failed).`,
+                ),
+              );
               stopReplyDueTo422 = true;
             }
           } else {
