@@ -15,6 +15,11 @@ export interface PillConfig {
   /** Hard cap on user-message chars per audit HTTP request (chunk size). Set via PILL_AUDIT_MAX_USER_CHARS (6000–80000). */
   auditMaxUserChars?: number;
   /**
+   * Max concurrent audit LLM requests when context is chunked (default 4). Set via PILL_AUDIT_CHUNK_CONCURRENCY (1–16).
+   * WHY: Slow models + 12k-char chunks can mean hundreds of sequential HTTP calls → multi-hour runs; parallel chunks are independent.
+   */
+  auditChunkConcurrency: number;
+  /**
    * When true, drop improvements whose `file` is not under this repo’s tool layout (tools/, shared/, tests/, …).
    * Default: on if `tools/prr` exists under targetDir; override with PILL_TOOL_REPO_SCOPE_FILTER.
    */

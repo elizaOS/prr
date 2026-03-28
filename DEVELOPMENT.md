@@ -369,6 +369,20 @@ Data flows between subsystems so the next step has the right context. Improving 
 - AAR "Verifier said": `push-iteration-loop.ts` sets `finalUnresolvedIssuesRef.current` from the same issue refs (so `verifierContradiction` is preserved); `final-cleanup.ts` passes them to `printAfterActionReport`. See tools/prr/AUDIT-CYCLES.md for audit findings; AAR and verifier flow in push-iteration-loop and final-cleanup.
 - Dismissal: `workflow/dismissal-comments.ts` (effectiveLine, surroundingCode), `llm/client.ts` (`generateDismissalComment` prompt).
 
+#### Review comment ingestion and deduplication (WHY)
+
+1. **`getReviewBotIssueComments`** (`tools/prr/github/api.ts`): After bot noise filters, **`isNonReviewContent`** skips bodies that look like pasted README/setup or trivial one-liners **before** **`parseMarkdownReviewIssues`**. **WHY:** Full-doc pastes produced many synthetic **`ic-*`** issues with **`(PR comment)`** paths and wasted snippet I/O.
+
+2. **Same-bot cross-comment collapse:** **`deduplicateSameBotAcrossComments`** (`tools/prr/github/issue-comment-dedup.ts`) buckets by normalized author + path, clusters nearby lines, merges when word-set Jaccard ≥ 0.5, keeps the longest body. **WHY:** Re-posted bot reviews duplicated rows before analysis saw them.
+
+3. **Body normalization for symbols and similarity:** **`stripSeverityFraming`**, **`wordSetJaccard`** (`tools/prr/workflow/helpers/review-body-normalize.ts`) — used in ingestion dedup and in **`issue-analysis.ts`** for **`primarySymbolFromBody`** / **`bodySimilarityForDedup`**. **WHY:** “Critical / High / Medium” prefixes changed which backtick token counted as the primary symbol, breaking heuristic and LLM dedup alignment across bots.
+
+4. **Per-file pipeline** (`issue-analysis.ts`): Heuristic merge → **`llmDedup`** (3+ items, or 2 with different authors + same symbol) → **`crossFileDedup`** when **≥5** survivors, distinct paths, **`GROUP:`** validation. **WHY:** Cross-bot pairs of two need LLM merge; repeated root causes across files need one batched decision.
+
+5. **State:** **`dedupCache.schema === 'dedup-v2'`** required for cache hit. **WHY:** Cross-file phase invalidates pre-schema caches; recompute avoids wrong groupings.
+
+**Note:** Inline GraphQL review comments are **not** merged by **`deduplicateSameBotAcrossComments`** (only synthetic **`ic-*`** from issue comments). Dropping **`ic-*`** ids can orphan resolver state entries; comment-set key changes invalidate dedup cache.
+
 ### 4. Model & Tool Rotation with Single-Issue Focus
 
 **The Problem**: AI tools get stuck. They'll make the same mistake repeatedly.

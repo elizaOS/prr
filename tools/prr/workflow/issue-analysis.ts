@@ -60,6 +60,7 @@ import { looksLikeCreateFileIssue, validateDismissalExplanation } from './utils.
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
 import { assessSolvability, resolveTrackedPath, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { stripSeverityFraming } from './helpers/review-body-normalize.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import { buildLifecycleAwareVerificationSnippet, commentNeedsLifecycleContext } from './fix-verification.js';
 import { printDebugIssueTable } from './debug-issue-table.js';
@@ -285,6 +286,8 @@ function buildConservativeAnalysisSnippet(
  * WHY: In-memory cache reset each run; audit showed all dedup LLM calls returning NONE on repeat runs.
  * Persisting keyed by sorted comment IDs makes the outcome deterministic for the same set, so we skip
  * the dedup LLM and save tokens/latency when the comment set is unchanged (e.g. re-run or next push iteration).
+ * `schema: 'dedup-v2'` is required for a cache hit: cross-file dedup (Phase 3) changed outputs; entries without
+ * schema must recompute so we do not reuse pre-cross-file groupings.
  */
 
 /**
@@ -475,19 +478,20 @@ function logDuplicateCandidates(
 
 /** Extract a primary symbol from comment body (method/function/test target) for same-requirement dedup. */
 function primarySymbolFromBody(body: string): string | null {
-  const backtick = body.match(/`([a-zA-Z_][a-zA-Z0-9_]*)`/);
+  const cleaned = stripSeverityFraming(body);
+  const backtick = cleaned.match(/`([a-zA-Z_][a-zA-Z0-9_]*)`/);
   if (backtick) return backtick[1];
-  const method = body.match(/(?:method|function|tests? for)\s+[`']?([a-zA-Z_][a-zA-Z0-9_]*)/i);
+  const method = cleaned.match(/(?:method|function|tests? for)\s+[`']?([a-zA-Z_][a-zA-Z0-9_]*)/i);
   if (method) return method[1];
-  const has = body.match(/([a-zA-Z_][a-zA-Z0-9_]*)\s+has\s+(?:zero|no)\s+/i);
+  const has = cleaned.match(/([a-zA-Z_][a-zA-Z0-9_]*)\s+has\s+(?:zero|no)\s+/i);
   if (has) return has[1];
   return null;
 }
 
 /** True if both bodies share a same-requirement keyword (avoids merging e.g. "add tests" with "security bug" on same symbol). */
 function bodySimilarityForDedup(body1: string, body2: string, symbol: string | null): boolean {
-  const b1 = body1.toLowerCase();
-  const b2 = body2.toLowerCase();
+  const b1 = stripSeverityFraming(body1).toLowerCase();
+  const b2 = stripSeverityFraming(body2).toLowerCase();
   const keywords = ['test', 'tests', 'coverage', 'missing test', 'add test', 'zero test', 'no test', 'patch', 'fix', 'implement'];
   for (const kw of keywords) {
     if (b1.includes(kw) && b2.includes(kw)) return true;
@@ -724,12 +728,20 @@ async function llmDedup(
     byFile.set(item.comment.path, existing);
   }
 
-  // Process files with 3+ remaining issues. WHY skip LLM for 2: For exactly two comments on a file,
-  // heuristic grouping (same file, line proximity, author) is usually sufficient; the LLM call adds cost with little gain.
-  const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 3);
+  // Files with 3+ issues always get LLM dedup. For exactly 2 items, run only when authors differ and
+  // primarySymbolFromBody matches — catches Claude issue + Cursor Bugbot inline on same bug (elizaOS/cloud#417).
+  const filesToCheck = [...byFile.entries()].filter(([, items]) => {
+    if (items.length >= 3) return true;
+    if (items.length !== 2) return false;
+    const [a, b] = items;
+    if (a.comment.author === b.comment.author) return false;
+    const symA = primarySymbolFromBody(a.comment.body);
+    const symB = primarySymbolFromBody(b.comment.body);
+    return !!(symA && symB && symA === symB);
+  });
   if (filesToCheck.length === 0) return dedupResult;
 
-  debug(`LLM dedup: checking ${filesToCheck.length} file(s) with 3+ issues`);
+  debug(`LLM dedup: checking ${filesToCheck.length} file(s)`);
 
   const newDuplicateMap = new Map(dedupResult.duplicateMap);
   const newDuplicateItems = new Map(dedupResult.duplicateItems);
@@ -771,14 +783,16 @@ ${summaries}`;
       // Applying a filtered subset merges the wrong comments. Reject the entire line when any index is outside [1, N] or canonical not in group.
       const n = items.length;
       while ((match = groupPattern.exec(content)) !== null) {
-        const rawIndices = match[1].split(',').map(s => parseInt(s.trim(), 10));
+        const parsedIndices = match[1].split(',').map(s => parseInt(s.trim(), 10));
         const canonicalOneBased = parseInt(match[2], 10);
         if (canonicalOneBased < 1 || canonicalOneBased > n) continue;
-        const allInRange = rawIndices.every((i) => i >= 1 && i <= n);
-        if (!allInRange || rawIndices.length < 2) continue;
-        if (!rawIndices.includes(canonicalOneBased)) continue;
+        const uniqueOneBased = [...new Set(parsedIndices.filter((i) => Number.isFinite(i)))].sort((a, b) => a - b);
+        if (uniqueOneBased.length < 2) continue;
+        const allInRange = uniqueOneBased.every((i) => i >= 1 && i <= n);
+        if (!allInRange) continue;
+        if (!uniqueOneBased.includes(canonicalOneBased)) continue;
         // Audit (prompts.log): model returned "GROUP: 1,2,5 → canonical 2" but [1],[5] were line 2531 and [2] was line 2493 — different lines must not be merged.
-        const indices = rawIndices.map((i) => i - 1);
+        const indices = uniqueOneBased.map((i) => i - 1);
         const groupLines = indices.map((i) => items[i].comment.line);
         const sameLine = groupLines.every((l) => l === groupLines[0]);
         if (!sameLine) {
@@ -799,7 +813,7 @@ ${summaries}`;
             const dupes = lineIndices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
             groups.push({ canonical: items[canonicalIdx], dupes });
           }
-          debug(`Dedup: GROUP ${rawIndices.join(',')} had mixed line numbers (${groupLines.map((l) => l ?? 'file').join(', ')}); re-split → ${reSplitCount} same-line group(s)`);
+          debug(`Dedup: GROUP ${uniqueOneBased.join(',')} had mixed line numbers (${groupLines.map((l) => l ?? 'file').join(', ')}); re-split → ${reSplitCount} same-line group(s)`);
           continue;
         }
         const canonicalIdx = canonicalOneBased - 1;
@@ -878,6 +892,113 @@ ${summaries}`;
     duplicateMap: newDuplicateMap,
     duplicateItems: newDuplicateItems,
   };
+}
+
+const LLM_CROSS_FILE_DEDUP_SYSTEM_PROMPT = `You group GitHub review issues that appear on DIFFERENT files but describe the EXACT SAME root cause and would be fixed by the SAME code pattern (e.g. same API misused in multiple call sites).
+
+RULES (be very conservative — wrong merges cause missed fixes):
+- Each GROUP must contain indices whose files (shown as "file: ...") are ALL DIFFERENT from each other.
+- Group ONLY if one fix naturally fixes every item (same mistake, same remedy).
+- Do NOT group by broad theme ("type safety", "rate limiting", "tests").
+- Do NOT group items on the same file — those were already deduplicated per file.
+- When in doubt, do NOT group.
+
+The user message states how many issues K there are. Valid indices are 1 through K only.
+
+Reply ONLY with lines like (one per group, no other text):
+GROUP: 1,3,7 → canonical 3
+
+If nothing qualifies, reply: NONE`;
+
+type DedupCheckItem = {
+  comment: ReviewComment;
+  codeSnippet: string;
+  contextHints?: string[];
+  resolvedPath?: string;
+};
+
+/**
+ * Phase 3: Cross-file root-cause dedup (one LLM call). Merges issues on different paths when the model
+ * agrees they share one fix pattern. WHY: Same CoT/temperature mistake across multiple services (PR #417).
+ */
+async function crossFileDedup(dedupResult: DedupResult, llm: LLMClient): Promise<DedupResult> {
+  const items = dedupResult.dedupedToCheck as DedupCheckItem[];
+  if (items.length < 5) return dedupResult;
+
+  const summaries = items.map((item, idx) => {
+    const path = item.resolvedPath ?? item.comment.path;
+    const preview = stripSeverityFraming(sanitizeCommentForPrompt(item.comment.body))
+      .substring(0, 200)
+      .replace(/\n/g, ' ');
+    const line = item.comment.line !== null ? String(item.comment.line) : 'null';
+    return `[${idx + 1}] file: ${path} (line ${line})\n   ${preview}`;
+  }).join('\n\n');
+
+  const k = items.length;
+  // WHY raw `k` in the prompt (not formatNumber): indices must be plain digits 1..k for the model; comma thousands
+  // would break GROUP line parsing for large N (same convention as per-file llmDedup).
+  const userPrompt = `Total issues: ${k}. Use indices 1 through ${k} only.\n\n${summaries}`;
+
+  try {
+    const response = await llm.completeWithCheapModel(userPrompt, LLM_CROSS_FILE_DEDUP_SYSTEM_PROMPT);
+    const content = response.content.trim();
+    const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
+    let match;
+    const newDuplicateMap = new Map(dedupResult.duplicateMap);
+    const newDuplicateItems = new Map(dedupResult.duplicateItems);
+    const newDuplicateIds = new Set<string>();
+
+    while ((match = groupPattern.exec(content)) !== null) {
+      const parsedIndices = match[1].split(',').map(s => parseInt(s.trim(), 10));
+      const canonicalOneBased = parseInt(match[2], 10);
+      if (canonicalOneBased < 1 || canonicalOneBased > k) continue;
+      const uniqueOneBased = [...new Set(parsedIndices.filter(i => Number.isFinite(i)))].sort((a, b) => a - b);
+      if (uniqueOneBased.length < 2) continue;
+      if (!uniqueOneBased.every(i => i >= 1 && i <= k)) continue;
+      if (!uniqueOneBased.includes(canonicalOneBased)) continue;
+
+      const indices = uniqueOneBased.map(i => i - 1);
+      const paths = indices.map(i => items[i]!.resolvedPath ?? items[i]!.comment.path);
+      const uniquePaths = new Set(paths);
+      if (uniquePaths.size !== indices.length) continue;
+
+      const canonicalIdx = canonicalOneBased - 1;
+      const canonical = items[canonicalIdx]!;
+      const dupes = indices.filter(i => i !== canonicalIdx).map(i => items[i]!);
+
+      const otherPaths = [...new Set(dupes.map(d => d.resolvedPath ?? d.comment.path))];
+      const hint = `Cross-file dedup: same root cause also reported on ${otherPaths.map(p => `\`${p}\``).join(', ')} — fix consistently across files.`;
+      canonical.contextHints = [...(canonical.contextHints ?? []), hint];
+
+      const existingDupes = newDuplicateMap.get(canonical.comment.id) || [];
+      for (const dupe of dupes) {
+        if (!existingDupes.includes(dupe.comment.id) && !newDuplicateIds.has(dupe.comment.id)) {
+          existingDupes.push(dupe.comment.id);
+          newDuplicateIds.add(dupe.comment.id);
+          newDuplicateItems.set(dupe.comment.id, dupe);
+        }
+      }
+      newDuplicateMap.set(canonical.comment.id, existingDupes);
+      debug(`Cross-file dedup: merged ${formatNumber(dupes.length)} into ${canonical.comment.path}`);
+    }
+
+    if (newDuplicateIds.size === 0) return dedupResult;
+
+    const updatedDeduped = dedupResult.dedupedToCheck.filter(item => !newDuplicateIds.has(item.comment.id));
+    console.log(chalk.gray(
+      `  Cross-file dedup: merged ${formatNumber(newDuplicateIds.size)} issue(s) into shared root-cause group(s)`,
+    ));
+
+    return {
+      dedupedToCheck: updatedDeduped,
+      duplicateMap: newDuplicateMap,
+      duplicateItems: newDuplicateItems,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warn(`Cross-file dedup failed, proceeding without it: ${msg}`);
+    return dedupResult;
+  }
 }
 
 /**
@@ -1692,7 +1813,12 @@ export async function findUnresolvedIssues(
   // re-ran LLM dedup (~200k chars wasted). Reuse grouping for full set and filter to current toCheck.
   const allCommentIds = comments.map(c => c.id).sort().join(',');
   const persisted = stateContext.state?.dedupCache;
-  const dedupCacheHit = persisted?.commentIds === allCommentIds && Array.isArray(persisted.dedupedIds) && persisted.duplicateMap && typeof persisted.duplicateMap === 'object';
+  const dedupCacheHit =
+    persisted?.commentIds === allCommentIds &&
+    Array.isArray(persisted.dedupedIds) &&
+    persisted.duplicateMap &&
+    typeof persisted.duplicateMap === 'object' &&
+    persisted.schema === 'dedup-v2';
 
   let dedupResult: DedupResult;
 
@@ -1743,13 +1869,19 @@ export async function findUnresolvedIssues(
       };
     }
 
-    // Phase 2: LLM semantic deduplication (catches what heuristics miss)
-    // Only runs when files have 3+ remaining issues — lightweight, typically <2k tokens.
+    // Phase 2: LLM semantic deduplication (catches what heuristics miss).
+    // Phase 3: Cross-file root-cause dedup (gated on 5+ survivors, one cheap-model call).
     // Rate limits: global 1 concurrent + 6s delay + 429 retry backoff keep us under 10/min.
     try {
       dedupResult = await llmDedup(dedupResult, toCheck, llm);
     } catch (err) {
       warn(`LLM dedup failed, proceeding with heuristic-only results: ${err}`);
+    }
+
+    try {
+      dedupResult = await crossFileDedup(dedupResult, llm);
+    } catch (err) {
+      warn(`Cross-file dedup failed, proceeding without it: ${err}`);
     }
 
     // Persist dedup results keyed by full comment set so next run (or push iteration) can skip LLM when comments unchanged.
@@ -1758,6 +1890,8 @@ export async function findUnresolvedIssues(
         commentIds: allCommentIds,
         duplicateMap: Object.fromEntries(dedupResult.duplicateMap),
         dedupedIds: dedupResult.dedupedToCheck.map(item => item.comment.id),
+        // WHY versioned: cross-file phase invalidates caches written before schema existed.
+        schema: 'dedup-v2',
       };
     }
   }

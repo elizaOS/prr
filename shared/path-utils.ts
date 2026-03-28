@@ -15,12 +15,65 @@ const INTERNAL_PATH_SEGMENTS = ['.cursor', '.prr', 'root'];
  */
 const EXTENSION_VARIANT_MAP: Record<string, string[]> = {
   '.js': ['.json', '.ts', '.jsx', '.mjs', '.cjs'],
-  '.ts': ['.tsx', '.js', '.json'],
+  '.ts': ['.tsx', '.js', '.json', '.mts', '.cts'],
   '.tsx': ['.ts', '.jsx'],
   '.jsx': ['.tsx', '.js'],
   '.mjs': ['.js', '.cjs'],
   '.cjs': ['.js', '.mjs'],
 };
+
+/**
+ * First path segment after `a/` or `b/` must look like a repo root for us to strip (pill / review diff paths).
+ * WHY: Avoid turning a real top-level folder literally named `a/` into a wrong path.
+ */
+const GIT_DIFF_PREFIX_STRIP_FIRST_SEGMENTS = new Set([
+  'src',
+  'lib',
+  'app',
+  'apps',
+  'packages',
+  'plugins',
+  'scripts',
+  'test',
+  'tests',
+  'docs',
+  'build',
+  'tools',
+  'shared',
+  '.github',
+  'config',
+  'public',
+  'components',
+  'db',
+  'migrations',
+  'api',
+  'server',
+  'client',
+  'examples',
+  'types',
+  'typings',
+  'benchmarks',
+]);
+
+/**
+ * Strip unified-diff `a/` or `b/` prefix from review paths (e.g. `a/packages/foo/bar.ts` → `packages/foo/bar.ts`).
+ * See solvability / path resolution (pill-output audit).
+ */
+export function stripGitDiffPathPrefix(rawPath: string): string {
+  const t = normalizeRepoPath(rawPath);
+  const m = /^(a|b)\/(.+)$/.exec(t);
+  if (!m) return t;
+  const rest = m[2]!;
+  const first = rest.split('/')[0] ?? '';
+  if (!first) return t;
+  if (GIT_DIFF_PREFIX_STRIP_FIRST_SEGMENTS.has(first) || first.startsWith('@')) {
+    return rest;
+  }
+  if (first === 'package.json' || first === 'pnpm-lock.yaml' || first === 'bun.lockb') {
+    return rest;
+  }
+  return t;
+}
 
 /**
  * Try to resolve a path that doesn't exist by checking common extension variants.
@@ -33,6 +86,7 @@ const EXTENSION_VARIANT_MAP: Record<string, string[]> = {
  * @param path - Repo-relative path from the review comment.
  */
 export function tryResolvePathWithExtensionVariants(workdir: string, path: string): string {
+  path = stripGitDiffPathPrefix(path);
   const full = join(workdir, path);
   if (existsSync(full)) return path;
   if (path.endsWith('.d.ts') || path === '.d.ts') {

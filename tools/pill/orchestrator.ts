@@ -18,6 +18,7 @@ import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJsonLenient } from './llm/parse-json.js';
 import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
 import { chunkPlainText } from '../../shared/llm/story-read.js';
+import { runWithConcurrency } from '../../shared/run-with-concurrency.js';
 import { filterImprovementsByToolRepoScope } from './tool-repo-scope.js';
 
 /** Default hard cap on user message length (chars) per audit HTTP request. Override: PILL_AUDIT_MAX_USER_CHARS.
@@ -401,21 +402,36 @@ export async function runPillAnalysis(config: PillConfig): Promise<
       let chapters = chunkPlainText(fullUserMessage, chunkTokenBudget);
       chapters = enforceMaxChunkChars(chapters, maxChunkBodyChars);
       
-      if (spinner) update(`Running audit (${chapters.length} chunk${chapters.length === 1 ? '' : 's'})…`);
-      
-      // Send audit request for each chunk and merge results
-      const chunkPlans: ImprovementPlan[] = [];
-      for (let i = 0; i < chapters.length; i++) {
-        if (spinner && chapters.length > 1) {
-          update(`Running audit chunk ${i + 1}/${chapters.length}…`);
-        }
-        const chunkMessage = `[CONTEXT CHUNK ${i + 1}/${chapters.length}]\n\n${chapters[i].text}`;
-        const chunkResponse = await llmClient.complete(chunkMessage, AUDIT_SYSTEM_PROMPT, {
-          model: config.auditModel,
-        });
-        const chunkPlan = parseImprovementPlan(chunkResponse.content);
-        chunkPlans.push(chunkPlan);
+      const conc = Math.min(
+        Math.max(1, config.auditChunkConcurrency),
+        chapters.length
+      );
+      if (spinner) {
+        update(
+          conc > 1
+            ? `Running audit (${chapters.length.toLocaleString()} chunks, up to ${conc.toLocaleString()} in parallel)…`
+            : `Running audit (${chapters.length.toLocaleString()} chunk${chapters.length === 1 ? '' : 's'})…`
+        );
       }
+
+      let completedChunks = 0;
+      const chunkTasks = chapters.map((ch, i) => () => {
+        const chunkMessage = `[CONTEXT CHUNK ${i + 1}/${chapters.length}]\n\n${ch.text}`;
+        return llmClient
+          .complete(chunkMessage, AUDIT_SYSTEM_PROMPT, {
+            model: config.auditModel,
+          })
+          .then((chunkResponse) => {
+            completedChunks += 1;
+            if (spinner && chapters.length > 1) {
+              update(
+                `Running audit chunk ${completedChunks.toLocaleString()}/${chapters.length.toLocaleString()}…`
+              );
+            }
+            return parseImprovementPlan(chunkResponse.content);
+          });
+      });
+      const chunkPlans = await runWithConcurrency(chunkTasks, conc);
       
       // Merge chunk results: combine improvements, use first non-empty pitch/summary
       const allImprovements: Improvement[] = [];

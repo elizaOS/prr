@@ -263,6 +263,8 @@ export interface ResolverState {
     commentIds: string;
     duplicateMap: Record<string, string[]>;
     dedupedIds: string[];
+    /** Present on new writes; old state omits it so cache is recomputed after dedup pipeline changes. */
+    schema?: string;
   };
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms

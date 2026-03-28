@@ -57,6 +57,7 @@ Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/
 
 - **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the assembled context (default **35000**). Per-section caps scale with the budget. If you hit 504, try **20000** or lower.
 - **PILL_AUDIT_MAX_USER_CHARS** (optional, **6000–80000**) — Hard cap on **user** message size **per audit HTTP request** (single request or each chunk). If unset: default ceiling **~20k** chars, **~12k** for Opus-class / `o3-` / `gpt-5` (excluding mini/nano) audit models (Vercel invocation timeout). Raise only if you use a direct API (not ElizaCloud) or a fast model.
+- **PILL_AUDIT_CHUNK_CONCURRENCY** (optional, **1–16**, default **4**) — How many **audit** HTTP requests may run in parallel when context is split into chunks. Higher speeds large runs; use **`1`** to restore fully sequential behavior (e.g. strict rate limits).
 - **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars in the audit payload (default **28000**).
 - **PILL_TOOL_REPO_SCOPE_FILTER** (optional) — **`0`** / **`false`** / **`off`** disables dropping clone-only paths; **`1`** / **`true`** forces the filter on. **Unset:** filter is **on** only when **`tools/prr`** exists under **`targetDir`** (typical prr monorepo). **WHY:** Keeps **`pill-output.md`** focused on improving **this** tool repo, not the PR under review.
 

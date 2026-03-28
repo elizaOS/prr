@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseMarkdownReviewIssues } from '../tools/prr/github/api.js';
+import { isNonReviewContent } from '../tools/prr/github/review-ingestion-filters.js';
 import { parseBranchSpec, normalizeCompareBranch } from '../tools/prr/github/types.js';
 
 describe('parseBranchSpec', () => {
@@ -168,6 +169,36 @@ Add tests for \`reply.ts:106\` so the new path is covered.`;
         line: 106,
       }),
     ]);
+  });
+});
+
+describe('isNonReviewContent', () => {
+  it('detects README-style dumps with multiple setup headings', () => {
+    const readme = `## Stack
+Bun
+## Commands
+bun install
+## Project Structure
+apps/
+## Getting Started
+`;
+    expect(isNonReviewContent(readme)).toBe(true);
+  });
+
+  it('returns false for a normal review with Issues section', () => {
+    const review = `## Issues
+
+### 1. Bug in \`foo.ts\`
+The handler should validate input.`;
+    expect(isNonReviewContent(review)).toBe(false);
+  });
+
+  it('filters ultra-short non-actionable text', () => {
+    expect(isNonReviewContent('test')).toBe(true);
+  });
+
+  it('keeps short text when it contains issue keywords', () => {
+    expect(isNonReviewContent('Fix the bug in deploy')).toBe(false);
   });
 });
 

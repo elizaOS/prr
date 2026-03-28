@@ -437,6 +437,11 @@ function writeToPromptLog(
     if (kind === 'PROMPT') promptRequestIdBySlug.delete(slug);
     // Pill #8: Increment counter for summary at close
     emptyPromptBodyCount++;
+    const phaseFromMeta =
+      metadata && typeof metadata === 'object' && metadata !== null && 'phase' in metadata
+        ? String((metadata as { phase?: unknown }).phase ?? '').trim()
+        : '';
+    const phaseHint = phaseFromMeta ? ` phase=${JSON.stringify(phaseFromMeta)}` : '';
     // Include stack trace to identify the caller (pill #5, #6)
     const stack = new Error().stack;
     const stackSnippet = stack
@@ -446,7 +451,7 @@ function writeToPromptLog(
           .map((line) => line.trim())
           .join('\n    ')
       : '(stack unavailable)';
-    const msg = `[logger] prompts.log: ${kind} ${slug} has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed (e.g. after streaming, pass accumulated content).\n    Caller stack:\n    ${stackSnippet}\n`;
+    const msg = `[logger] prompts.log: ${kind} ${slug}${phaseHint} has zero content — refusing to write empty entry; pill/audit need content. Check initOutputLog was called and prompt/response body is passed (e.g. after streaming, pass accumulated content).\n    Caller stack:\n    ${stackSnippet}\n`;
     try {
       if (typeof process !== 'undefined' && process.stderr?.write) {
         process.stderr.write(msg);

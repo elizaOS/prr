@@ -106,6 +106,14 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
         })()
       : undefined;
 
+  const auditChunkConcurrencyEnv = getEnv('PILL_AUDIT_CHUNK_CONCURRENCY');
+  const auditChunkConcurrency = (() => {
+    if (auditChunkConcurrencyEnv === undefined || auditChunkConcurrencyEnv === '') return 4;
+    const n = parseInt(auditChunkConcurrencyEnv, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 16) return 4;
+    return n;
+  })();
+
   const toolRepoScopeFilter = resolveToolRepoScopeFilter(input.targetDir, getEnv('PILL_TOOL_REPO_SCOPE_FILTER'));
 
   const config: PillConfig = {
@@ -116,6 +124,7 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     logPrefix: input.logPrefix,
     contextBudgetTokens,
     auditMaxUserChars,
+    auditChunkConcurrency,
     toolRepoScopeFilter,
     outputOnly: input.outputOnly,
     promptsOnly: input.promptsOnly,

@@ -21,6 +21,7 @@ import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-fil
 import {
   isReviewPathFragment,
   pathDismissCategoryForNotFound,
+  stripGitDiffPathPrefix,
   tryResolvePathWithExtensionVariants,
 } from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
@@ -172,67 +173,72 @@ function isCreateFileCandidate(comment: ReviewComment, resolution: TrackedPathRe
  * which file this meant" when that is the real problem.
  */
 export function resolveTrackedPathDetailed(workdir: string, rawPath: string, commentBody = ''): TrackedPathResolution {
+  const pathIn = stripGitDiffPathPrefix(rawPath);
+  const normalizedInput = rawPath.replace(/\\/g, '/').trim();
+  if (pathIn !== normalizedInput) {
+    debug('Review path: stripped git diff a/b prefix', { rawPath, pathIn });
+  }
   const repoFiles = getTrackedRepoFiles(workdir);
   if (!repoFiles) return { kind: 'missing' };
-  if (isReviewPathFragment(rawPath)) return { kind: 'fragment' };
-  const exact = repoFiles.find((f) => f === rawPath);
+  if (isReviewPathFragment(pathIn)) return { kind: 'fragment' };
+  const exact = repoFiles.find((f) => f === pathIn);
   if (exact) return { kind: 'exact', path: exact };
-  const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + rawPath) || f === rawPath);
+  const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + pathIn) || f === pathIn);
   if (suffixMatches.length === 0) {
     // Config extension variant: review path tsconfig.js but file is tsconfig.json (common bot mistake)
-    if (rawPath.endsWith('tsconfig.js') || rawPath === 'tsconfig.js') {
-      const altPath = rawPath.slice(0, -3) + 'json';
+    if (pathIn.endsWith('tsconfig.js') || pathIn === 'tsconfig.js') {
+      const altPath = pathIn.slice(0, -3) + 'json';
       const altExact = repoFiles.find((f) => f === altPath);
       if (altExact) {
-        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { rawPath, resolved: altExact });
+        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { pathIn, resolved: altExact });
         return { kind: 'suffix', path: altExact };
       }
       const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
       if (altSuffix.length === 1) {
-        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { rawPath, resolved: altSuffix[0] });
+        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { pathIn, resolved: altSuffix[0] });
         return { kind: 'suffix', path: altSuffix[0] };
       }
     }
-    if (rawPath.endsWith('jsconfig.js') || rawPath === 'jsconfig.js') {
-      const altPath = rawPath.slice(0, -3) + 'json';
+    if (pathIn.endsWith('jsconfig.js') || pathIn === 'jsconfig.js') {
+      const altPath = pathIn.slice(0, -3) + 'json';
       const altExact = repoFiles.find((f) => f === altPath);
       if (altExact) {
-        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { rawPath, resolved: altExact });
+        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { pathIn, resolved: altExact });
         return { kind: 'suffix', path: altExact };
       }
       const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
       if (altSuffix.length === 1) {
-        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { rawPath, resolved: altSuffix[0] });
+        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { pathIn, resolved: altSuffix[0] });
         return { kind: 'suffix', path: altSuffix[0] };
       }
     }
     // Prefix variant: review path missing top-level dir (e.g. plugin-personality/... vs plugins/plugin-personality/...)
     const commonPrefixes = ['plugins/', 'packages/', 'benchmarks/', 'tools/', 'shared/', 'examples/'];
     for (const prefix of commonPrefixes) {
-      if (rawPath.startsWith(prefix)) continue;
-      const prefixed = prefix + rawPath;
+      if (pathIn.startsWith(prefix)) continue;
+      const prefixed = prefix + pathIn;
       const exactPrefixed = repoFiles.find((f) => f === prefixed);
       if (exactPrefixed) {
-        debug('Review path resolved with prefix', { rawPath, prefix, resolved: exactPrefixed });
+        debug('Review path resolved with prefix', { pathIn, prefix, resolved: exactPrefixed });
         return { kind: 'suffix', path: exactPrefixed };
       }
       const suffixPrefixed = repoFiles.filter((f) => f.endsWith('/' + prefixed) || f === prefixed);
       if (suffixPrefixed.length === 1) {
-        debug('Review path resolved with prefix', { rawPath, prefix, resolved: suffixPrefixed[0] });
+        debug('Review path resolved with prefix', { pathIn, prefix, resolved: suffixPrefixed[0] });
         return { kind: 'suffix', path: suffixPrefixed[0] };
       }
     }
     // Extension typo: review path .ts but file is .tsx (common bot mistake); pill-output.md #4
-    if (rawPath.endsWith('.ts') && !rawPath.endsWith('.tsx')) {
-      const altPath = rawPath.slice(0, -3) + 'tsx';
+    if (pathIn.endsWith('.ts') && !pathIn.endsWith('.tsx')) {
+      const altPath = pathIn.slice(0, -3) + 'tsx';
       const altExact = repoFiles.find((f) => f === altPath);
       if (altExact) {
-        debug('Review path .ts not found; resolved to .tsx (extension typo)', { rawPath, resolved: altExact });
+        debug('Review path .ts not found; resolved to .tsx (extension typo)', { pathIn, resolved: altExact });
         return { kind: 'suffix', path: altExact };
       }
       const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
       if (altSuffix.length === 1) {
-        debug('Review path .ts not found; resolved to .tsx (extension typo)', { rawPath, resolved: altSuffix[0] });
+        debug('Review path .ts not found; resolved to .tsx (extension typo)', { pathIn, resolved: altSuffix[0] });
         return { kind: 'suffix', path: altSuffix[0] };
       }
     }
@@ -258,7 +264,7 @@ export function resolveTrackedPathDetailed(workdir: string, rawPath: string, com
     return { kind: 'body-hint', path: scored[0].candidate };
   }
 
-  if (!rawPath.includes('/')) {
+  if (!pathIn.includes('/')) {
     return { kind: 'ambiguous', candidates: suffixMatches };
   }
   return { kind: 'suffix', path: suffixMatches.reduce((a, b) => (a.length <= b.length ? a : b)) };

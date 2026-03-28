@@ -13,6 +13,7 @@ import {
   isReviewPathFragment,
   shouldSkipFinalAuditLlmForPath,
   pathDismissCategoryForNotFound,
+  stripGitDiffPathPrefix,
 } from '../shared/path-utils.js';
 
 describe('normalizeRepoPath', () => {
@@ -97,6 +98,23 @@ describe('filterAllowedPathsForFix', () => {
     expect(filterAllowedPathsForFix(['packages/2Fmessage-service.test.ts'])).toEqual([
       'packages/message-service.test.ts',
     ]);
+  });
+});
+
+describe('stripGitDiffPathPrefix', () => {
+  it('strips a/ or b/ when the next segment is a typical repo root', () => {
+    expect(stripGitDiffPathPrefix('a/packages/foo/bar.ts')).toBe('packages/foo/bar.ts');
+    expect(stripGitDiffPathPrefix('b/src/index.ts')).toBe('src/index.ts');
+    expect(stripGitDiffPathPrefix('a/@scope/pkg/x.ts')).toBe('@scope/pkg/x.ts');
+  });
+  it('strips for root package.json-style paths', () => {
+    expect(stripGitDiffPathPrefix('b/package.json')).toBe('package.json');
+  });
+  it('does not strip when the first segment is not a known repo root', () => {
+    expect(stripGitDiffPathPrefix('a/odd-folder/file.ts')).toBe('a/odd-folder/file.ts');
+  });
+  it('leaves normal paths unchanged', () => {
+    expect(stripGitDiffPathPrefix('packages/foo.ts')).toBe('packages/foo.ts');
   });
 });
 

@@ -10,6 +10,8 @@ import {
 } from './types.js';
 import { debug } from '../../../shared/logger.js';
 import { logGitHubApiFailure } from './github-api-errors.js';
+import { deduplicateSameBotAcrossComments } from './issue-comment-dedup.js';
+import { isNonReviewContent } from './review-ingestion-filters.js';
 
 // Static configuration for PR status / bot detection (allocated once, not per call)
 const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
@@ -620,6 +622,10 @@ export class GitHubAPI {
           debug(`Skipping noise comment from ${botLogin}`, { id: comment.id, len: comment.body.length });
           continue;
         }
+        if (isNonReviewContent(comment.body)) {
+          debug(`Skipping non-review content from ${botLogin}`, { id: comment.id, len: comment.body.length });
+          continue;
+        }
 
         const parsed = parseMarkdownReviewIssues(comment.body);
         if (parsed.length > 0) {
@@ -663,6 +669,10 @@ export class GitHubAPI {
     // Same path fallback as bot loop: issue.path / path may be undefined from parser or inferPathLineFromBody.
     for (const c of otherComments) {
       const author = c.user?.login ?? 'unknown';
+      if (isNonReviewContent(c.body)) {
+        debug(`Skipping non-review content from ${author}`, { id: c.id, len: c.body.length });
+        continue;
+      }
       const parsed = parseMarkdownReviewIssues(c.body);
       if (parsed.length > 0) {
         for (let i = 0; i < parsed.length; i++) {
@@ -694,7 +704,11 @@ export class GitHubAPI {
       debug(`Included ${otherComments.length} other issue comment(s) (not from parsed review bots)`);
     }
 
-    return results;
+    // WHY collapse here: duplicate `ic-*` ids would duplicate snippet fetches and queue rows; analysis dedup
+    // runs later and cannot undo I/O already spent. Merging re-posts keeps one row per logical finding.
+    // If we drop an `ic-*` id, resolver state keys for that id may orphan — dedup cache keys on full API id set
+    // so comment-set changes recompute grouping (see issue-analysis `dedupCache`).
+    return deduplicateSameBotAcrossComments(results);
   }
 
   /**
