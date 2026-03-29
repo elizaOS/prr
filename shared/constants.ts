@@ -342,6 +342,12 @@ export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-4o-mini',
   /** Pill audits: ~25% fix success vs stronger models; wastes rotation slots. Re-enable with PRR_ELIZACLOUD_INCLUDE_MODELS. */
   'anthropic/claude-3.5-sonnet',
+  /**
+   * Small-context (24k) + opaque gateway 500s on modest prompts; weak verifier vs shown code (AGENTS final-audit note).
+   * Pill-output / eliza runs used this as default — burns rotation and mis-verifies. Re-enable: PRR_ELIZACLOUD_INCLUDE_MODELS=alibaba/qwen-3-14b
+   */
+  'alibaba/qwen-3-14b',
+  'Qwen/Qwen3-14B',
 ];
 
 /** Per-model skip reason. Default 'timeout' for models known to 504/timeout; 'zero-fix-rate' for 0% fix rate in audits. */
@@ -350,6 +356,8 @@ export const ELIZACLOUD_SKIP_REASON: Record<string, ElizaCloudSkipReason> = {
   'openai/gpt-4o': 'timeout',
   'openai/gpt-4o-mini': 'zero-fix-rate',
   'anthropic/claude-3.5-sonnet': 'zero-fix-rate',
+  'alibaba/qwen-3-14b': 'zero-fix-rate',
+  'Qwen/Qwen3-14B': 'zero-fix-rate',
 };
 
 export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {

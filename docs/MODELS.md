@@ -122,7 +122,31 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 ### Rotation order and skip list
 
 - **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from `shared/constants.ts`. Do not assume the static table in `types.ts` is the exact live order.
-- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in `shared/constants.ts` — currently includes `openai/gpt-5.2-codex`, `anthropic/claude-3-opus`, `openai/gpt-4.1`, `anthropic/claude-sonnet-4.5`, `openai/gpt-5.1-codex-max`, `anthropic/claude-3.7-sonnet`, `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet`. **`ELIZACLOUD_SKIP_REASON`** marks some as **`timeout`** vs **`zero-fix-rate`** (timeout skips may be worth retrying if the gateway was flaky). **Override:** **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated) removes matching IDs from the effective skip set. See README Configuration.
-- **Per-run performance:** Success/failure is recorded in state; rotation can prefer better-performing models within the same run. Performance is not yet persisted across PRs.
+- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`**. The table below is a **snapshot for operators**; if it disagrees with the source array, **trust the source file** and update this table when you change skips.
 
-*Provider model tables: last curated from linked docs; verify there for current IDs and pricing. PRR integration bullets above: align with `shared/constants.ts` as of repo checkout — if they drift, trust the source file.*
+**Last reviewed (skip table):** 2026-03-28 — pill-output / audit follow-up (Qwen 14B default churn, empty-response logging).
+
+| Model id | Reason in **`ELIZACLOUD_SKIP_REASON`** | Notes |
+|----------|----------------------------------------|--------|
+| `openai/gpt-5.2-codex` | *(default `timeout`)* | Gateway / rotation audit |
+| `anthropic/claude-3-opus` | *(default `timeout`)* | |
+| `openai/gpt-4.1` | *(default `timeout`)* | |
+| `anthropic/claude-sonnet-4.5` | *(default `timeout`)* | |
+| `openai/gpt-5.1-codex-max` | *(default `timeout`)* | |
+| `anthropic/claude-3.7-sonnet` | `timeout` | Known timeout/504 on gateway |
+| `openai/gpt-4o` | `timeout` | |
+| `openai/gpt-4o-mini` | `zero-fix-rate` | |
+| `anthropic/claude-3.5-sonnet` | `zero-fix-rate` | Low fix success vs stronger models in audits |
+| `alibaba/qwen-3-14b` | `zero-fix-rate` | Small context + weak verification vs shown code; opaque 500s on modest prompts |
+| `Qwen/Qwen3-14B` | `zero-fix-rate` | Alias of Qwen 14B on some gateways |
+
+**Overrides and maintenance**
+
+- **`PRR_ELIZACLOUD_INCLUDE_MODELS`:** comma-separated — removes matching ids from the effective skip set (retry a timeout-skipped model after infra improves). Hyphenless suffix match is supported (see `getEffectiveElizacloudSkipModelIds`).
+- **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`:** comma-separated — **adds** ids to the built-in skip list for this environment only.
+- **`getElizaCloudSkipReason(id)`:** ids **not** in **`ELIZACLOUD_SKIP_REASON`** use default **`timeout`** so new skip entries still rotate with a sensible debug line until you assign **`zero-fix-rate`**.
+- **Operational habit:** When **RESULTS SUMMARY** / Model Performance shows **0%** fix rate for an ElizaCloud id, add it (with reason + comment) to **`shared/constants.ts`** and bump the “last reviewed” line above — same guidance as **AGENTS.md**.
+
+- **Per-run performance:** Success/failure is recorded in state; rotation can prefer better-performing models within the same run. **`PRR_SESSION_MODEL_SKIP_FAILURES`** skips a tool/model for the rest of the process after repeated verification failures with zero verified fixes.
+
+*Provider model tables: last curated from linked docs; verify there for current IDs and pricing.*

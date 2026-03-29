@@ -27,6 +27,7 @@ import {
 } from '../../../shared/constants.js';
 import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
+import { openAiChatCompletionContentToString } from '../../../shared/llm/openai-chat-content.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
 import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
@@ -885,6 +886,14 @@ export class LLMClient {
                 emptyBody: true,
               }
             );
+            // WHY: Operators and CI often skip prompts.log; one stderr line ties empty LLM output to the ERROR slug.
+            if (this.provider === 'elizacloud') {
+              console.warn(
+                chalk.yellow(
+                  `ElizaCloud: empty response body from ${requestModel} (prompts.log has ERROR for this request).`,
+                ),
+              );
+            }
           } else {
             const responseMeta: Record<string, unknown> = { model: requestModel, usage: response.usage };
             if (options?.phase != null) responseMeta.phase = options.phase;
@@ -1130,7 +1139,7 @@ export class LLMClient {
       requestOpts
     );
 
-    let content = response.choices[0]?.message?.content || '';
+    let content = openAiChatCompletionContentToString(response.choices[0]?.message?.content);
 
     // Strip <think>…</think> reasoning blocks emitted by models like Qwen.
     // WHY: They waste ~30% output tokens and break parsers that expect content to start

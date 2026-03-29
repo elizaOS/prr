@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ElizaCloud skip list (pill-output / audits):** **`alibaba/qwen-3-14b`** and **`Qwen/Qwen3-14B`** added to **`ELIZACLOUD_SKIP_MODEL_IDS`** with **`zero-fix-rate`** in **`ELIZACLOUD_SKIP_REASON`** — **WHY:** Small-context opaque **500**s, weak verification vs shown code, and default-model churn in audited runs; re-enable with **`PRR_ELIZACLOUD_INCLUDE_MODELS`**. **`docs/MODELS.md`** — skip table + **last reviewed** + override/maintenance notes.
+
+- **LLM client (ElizaCloud / OpenAI path):** **`openAiChatCompletionContentToString`** in **`shared/llm/openai-chat-content.ts`** normalizes **`message.content`** when the SDK returns a **text-part array** (was treated as empty). On **HTTP success** with empty/whitespace body, **`console.warn`** (yellow) after **`debugPromptError`** — **WHY:** Operators/CI often miss **prompts.log**; ties empty output to the **ERROR** slug. **`tests/openai-chat-content.test.ts`**.
+
 - **Pill (chunked audit):** When the assembled context exceeds the per-request char cap (e.g. **~12k** for Opus-class audit models), audit chunks are sent with **limited concurrency** (default **4**, **`PILL_AUDIT_CHUNK_CONCURRENCY`** **1–16**) instead of strictly sequential HTTP calls — large logs no longer imply multi-hour wall time from hundreds of serial LLM round-trips. **`tools/pill/orchestrator.ts`**, **`tools/pill/config.ts`**, **`tools/pill/types.ts`**.
 
 - **Thread replies:** Dismissals categorized **`chronic-failure`** no longer receive a GitHub thread reply (matches **AGENTS.md** / **docs/THREAD-REPLIES.md** — batch token-saving dismissals vs `remaining`/`exhausted` where we exhausted the fix loop). **`formatNumber`** on the 422 stop message. **`tools/prr/workflow/thread-replies.ts`**.
