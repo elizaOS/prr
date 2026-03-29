@@ -1435,24 +1435,58 @@ async function buildMissingCreateFileSnippet(
 /**
  * Get full file content for final audit so the LLM sees complete context
  * instead of truncated snippets that can cause false "UNFIXED" verdicts.
+ *
+ * When the file exceeds {@link MAX_FULL_FILE_AUDIT_CHARS}, uses a **line-centered excerpt**
+ * (review line, or keyword anchor from comment, else legacy head slice) so bugs away from
+ * line 1 are still visible — **WHY:** head-only truncation caused false UNFIXED on tail-heavy
+ * files (pill-output / final-audit cluster).
  */
-export async function getFullFileForAudit(workdir: string, path: string): Promise<string> {
+export async function getFullFileForAudit(
+  workdir: string,
+  path: string,
+  line?: number | null,
+  commentBody?: string,
+): Promise<string> {
   try {
     const filePath = join(workdir, path);
     const content = await readFile(filePath, 'utf-8');
-    if (content.length > MAX_FULL_FILE_AUDIT_CHARS) {
-      const lines = content.split('\n');
-      const keep = Math.floor(MAX_FULL_FILE_AUDIT_CHARS / 80);
-      return lines
-        .slice(0, keep)
-        .map((l, i) => `${i + 1}: ${l}`)
-        .join('\n')
-        + `\n... (${lines.length - keep} more lines omitted for size)`;
+    const lines = content.split('\n');
+
+    if (content.length <= MAX_FULL_FILE_AUDIT_CHARS) {
+      return lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
     }
-    return content
-      .split('\n')
-      .map((l, i) => `${i + 1}: ${l}`)
+
+    let anchorLine = line != null && line > 0 && line <= lines.length ? line : null;
+    if (anchorLine === null && commentBody) {
+      anchorLine = findAnchorLineFromCommentKeywords(lines, commentBody);
+    }
+
+    if (anchorLine === null) {
+      const keep = Math.floor(MAX_FULL_FILE_AUDIT_CHARS / 80);
+      return (
+        lines
+          .slice(0, keep)
+          .map((l, i) => `${i + 1}: ${l}`)
+          .join('\n') +
+        `\n... (${formatNumber(lines.length - keep)} more lines omitted — file exceeds ${formatNumber(MAX_FULL_FILE_AUDIT_CHARS)} chars; no line anchor — set review line or cite symbols in comment)`
+      );
+    }
+
+    const contextBefore = 120;
+    const contextAfter = 200;
+    let start = Math.max(0, anchorLine - contextBefore - 1);
+    let end = Math.min(lines.length, anchorLine + contextAfter);
+    let excerpt = lines
+      .slice(start, end)
+      .map((l, i) => `${start + i + 1}: ${l}`)
       .join('\n');
+    excerpt += `\n... (excerpt only — file has ${formatNumber(lines.length)} lines; centered on line ${formatNumber(anchorLine)})`;
+    if (excerpt.length > MAX_FULL_FILE_AUDIT_CHARS) {
+      excerpt =
+        excerpt.slice(0, MAX_FULL_FILE_AUDIT_CHARS - 120) +
+        '\n... (truncated to char budget — final audit excerpt)';
+    }
+    return excerpt;
   } catch {
     return '(file not found or unreadable)';
   }

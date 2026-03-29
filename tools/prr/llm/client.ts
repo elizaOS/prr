@@ -307,6 +307,21 @@ export function snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet: stri
   return /(versions?\s*1[\s–-]8|uuid format.*\(versions 1-8\)|version\s+bits.*1.?8)/i.test(codeSnippet);
 }
 
+/**
+ * True when the final-audit code block is known to be a **partial** view (batch clip, huge-file excerpt, head-only fallback).
+ * Used to demote UNFIXED that lacks line+code citations — **WHY:** Adversarial audit must not re-open the fix loop on
+ * parroted review text when the model never saw the implementation region (pill-output final-audit cluster).
+ */
+export function finalAuditSnippetLooksTruncatedOrExcerpt(snippet: string): boolean {
+  return (
+    /truncated for model context limit — final audit/i.test(snippet) ||
+    /more lines omitted — file exceeds/i.test(snippet) ||
+    /excerpt only — file has/i.test(snippet) ||
+    /\(\d[\d,]* more lines omitted for size\)/i.test(snippet) ||
+    /truncated to char budget — final audit excerpt/i.test(snippet)
+  );
+}
+
 export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
   return (
     /snippet.*(?:truncated|unavailable)/i.test(explanation) ||
@@ -2007,7 +2022,7 @@ ${codeSnippet}
     }
     promptParts.push('---');
     promptParts.push(
-      `Respond with exactly ${batchIssueCount} lines, one per issue [1] through [${batchIssueCount}]:`,
+      `Respond with exactly ${batchIssueCount} lines, one per issue [1] through [${batchIssueCount}] (each line: [n] FIXED:, [n] UNFIXED:, or [n] UNCERTAIN:):`,
     );
     return promptParts.join('\n');
   }
@@ -2319,10 +2334,12 @@ ${codeSnippet}
       'CRITICAL - Read the CODE in this prompt, not the review comment alone:',
       '8. The "Comment:" lines are the ORIGINAL review. They may be stale. If the code block already satisfies what the review asked (e.g. comment and regex both describe UUID versions 1-8 and the pattern uses [1-8]), respond FIXED and quote the lines — do NOT UNFIXED by repeating the review\'s old wording.',
       '9. UNFIXED only when the shown code still exhibits the problem. If you cannot find the problem in the snippet, say FIXED or explain what is missing with line cites from the snippet.',
+      '10. If the code block is explicitly an **excerpt** or **truncated** (footer says "excerpt only", "truncated for model context limit", "omitted for size", etc.) and you cannot verify the issue from what is shown, respond UNCERTAIN — do **not** echo the review comment as UNFIXED without citing specific lines from the snippet.',
       '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
-      '[2] UNFIXED: The validation is still missing',
+      '[2] UNFIXED: Line 42 still has …',
+      '[3] UNCERTAIN: Excerpt does not show the reported region — cannot verify',
       '',
       '---',
       '',
@@ -2473,13 +2490,25 @@ ${codeSnippet}
       // Parse responses - match [N] FIXED/UNFIXED pattern
       const lines = response.content.split('\n');
       for (const line of lines) {
-        const match = line.match(/^\[(\d+)\]\s*(FIXED|UNFIXED):\s*(.*)$/i);
+        const match = line.match(/^\[(\d+)\]\s*(FIXED|UNFIXED|UNCERTAIN):\s*(.*)$/i);
         if (match) {
           const [, numStr, status, explanation] = match;
           const idx = parseInt(numStr, 10) - 1;
           if (idx >= 0 && idx < batchIssues.length) {
             const issue = batchIssues[idx];
-            const isFixed = status.toUpperCase() === 'FIXED';
+            const upper = status.toUpperCase();
+
+            if (upper === 'UNCERTAIN') {
+              allResults.set(issue.id, {
+                stillExists: false,
+                explanation:
+                  explanation.trim() ||
+                  'UNCERTAIN: insufficient visible code for adversarial check — not treating as UNFIXED.',
+              });
+              continue;
+            }
+
+            const isFixed = upper === 'FIXED';
             let finalStatus = !isFixed; // UNFIXED by default
             let finalExplanation = explanation.trim();
 
@@ -2493,6 +2522,26 @@ ${codeSnippet}
                 finalStatus = false;
                 finalExplanation =
                   'FIXED (post-check): Shown code documents UUID versions 1-8 and regex uses [1-8]; prior UNFIXED repeated stale review text.';
+              }
+            }
+
+            // Truncation guard: partial excerpt + UNFIXED without strong code cite (or visibility hedge) → pass.
+            if (
+              !isFixed &&
+              finalAuditSnippetLooksTruncatedOrExcerpt(issue.codeSnippet) &&
+              !snippetShowsUuidCommentAlignedWithVersionRange(issue.codeSnippet)
+            ) {
+              const hasStrongCite =
+                /\bline\s+\d+/i.test(finalExplanation) && /`[^`\n]{2,120}`/.test(finalExplanation);
+              const visibilityHedge = explanationMentionsMissingCodeVisibility(finalExplanation);
+              if (!hasStrongCite || visibilityHedge) {
+                debug('Final audit demotion: excerpt/truncation + weak or hedged UNFIXED → pass', {
+                  issueId: issue.id,
+                });
+                finalStatus = false;
+                finalExplanation =
+                  'FIXED (truncation guard): Partial snippet; UNFIXED lacked line+code citation or admitted limited visibility. ' +
+                  finalExplanation;
               }
             }
             

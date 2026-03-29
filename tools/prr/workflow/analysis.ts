@@ -306,7 +306,7 @@ export async function runFinalAudit(
   spinner: Ora,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   /** When set, use full file content instead of snippets so the audit has complete context. */
-  getFullFile?: (path: string) => Promise<string>,
+  getFullFile?: (path: string, line: number | null, body: string) => Promise<string>,
   /** Pill cycle 2 #4: When set, validate Rule 6 (file deleted) by checking git ls-tree before accepting FIXED verdict. */
   workdir?: string
 ): Promise<{
@@ -360,7 +360,7 @@ export async function runFinalAudit(
 
   const llmComments = llmIndices.map((i) => comments[i]);
   const auditSnippetsLlm = getFullFile
-    ? await Promise.all(llmComments.map((c) => getFullFile(c.path)))
+    ? await Promise.all(llmComments.map((c) => getFullFile(c.path, c.line, c.body)))
     : await Promise.all(llmComments.map((c) => getCodeSnippet(c.path, c.line, c.body)));
 
   const auditSnippets: string[] = new Array(comments.length);

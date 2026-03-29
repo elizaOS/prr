@@ -291,7 +291,8 @@ export async function processCommentsAndPrepareFixLoop(
   if (unresolvedIssues.length === 0) {
     // Audit only comments that are not already dismissed (output.log audit: dismissed (PR comment) issues were re-audited and re-entered fix loop, wasting 10 iterations).
     const auditComments = comments.filter((c) => !Dismissed.isCommentDismissed(stateContext, c.id));
-    const getFullFile = (path: string) => ResolverProc.getFullFileForAudit(workdir, path);
+    const getFullFile = (path: string, line: number | null, body: string) =>
+      ResolverProc.getFullFileForAudit(workdir, path, line, body);
     const auditResult = await ResolverProc.runFinalAudit(
       llm,
       stateContext,

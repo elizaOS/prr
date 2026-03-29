@@ -36,6 +36,8 @@ These are created by tools and should not be committed: `.split-plan.md`, `.spli
 
 **Final audit and verified state:** When the **final audit** reports an issue as UNFIXED, PRR **re-queues** that issue (removes it from verified and re-enters the fix loop) even if a prior iteration had marked it verified. This is **safe over sorry**: we do not trust prior verification over the final audit. The RESULTS SUMMARY and AAR list these as "re-queued: audit said UNFIXED (were previously verified)". See README philosophy ("Safe over sorry verification") and `tools/prr/workflow/analysis.ts` (final audit loop).
 
+**Final audit vs truncated snippets:** The model may answer **`[n] UNCERTAIN:`** when the code block is an excerpt; that **passes** the audit (does not re-queue). **`UNCERTAIN`** and a **truncation guard** in **`tools/prr/llm/client.ts`** demote **UNFIXED** when the prompt snippet was batch- or file-excerpt-truncated and the answer lacks line-level code evidence — **WHY:** Avoid re-opening the fix loop on parroted review text. Large files use **line-centered** excerpts in **`getFullFileForAudit`** (`tools/prr/workflow/issue-analysis.ts`). ElizaCloud **`complete()`** uses **non-streaming** `chat.completions`; empty-body handling is centralized there (no separate streaming path in this tree).
+
 ## Repo layout
 
 - **`tools/prr/`** — PR Resolver (main CLI): entry point, workflow, GitHub, LLM, state, runners integration.
