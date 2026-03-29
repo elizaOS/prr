@@ -143,7 +143,7 @@ Root **`pill-output.md`** (when present) is a **pill** improvement list from a c
 | PRR CLI            | `tools/prr/index.ts`, `tools/prr/cli.ts` |
 | PRR orchestration  | `tools/prr/resolver.ts`, `tools/prr/workflow/` |
 | GitHub API         | `tools/prr/github/api.ts` |
-| Review ingestion / dedup | `tools/prr/github/review-ingestion-filters.ts`, `tools/prr/github/issue-comment-dedup.ts`, `tools/prr/workflow/helpers/review-body-normalize.ts`, `workflow/issue-analysis.ts` (heuristic + LLM + cross-file dedup, **`dedup-v2`** cache) |
+| Review ingestion / dedup | `tools/prr/github/review-ingestion-filters.ts`, `tools/prr/github/issue-comment-dedup.ts`, `tools/prr/github/bot-author-normalize.ts`, `tools/prr/workflow/helpers/review-body-normalize.ts`, `workflow/issue-analysis.ts` (heuristic + LLM + cross-file dedup, **`dedup-v2`** cache) |
 | LLM / rotation     | `tools/prr/llm/`, `tools/prr/models/rotation.ts`, `shared/llm/` (rate-limit, model-context-limits, elizacloud) |
 | Catalog model advice (dismiss + auto-heal) | `tools/prr/workflow/helpers/outdated-model-advice.ts`, `tools/prr/workflow/catalog-model-autoheal.ts`, `shared/model-catalog.ts`, `generated/model-provider-catalog.json` |
 | State, lessons      | `tools/prr/state/` |

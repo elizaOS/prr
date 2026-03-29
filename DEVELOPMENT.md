@@ -373,7 +373,7 @@ Data flows between subsystems so the next step has the right context. Improving 
 
 1. **`getReviewBotIssueComments`** (`tools/prr/github/api.ts`): After bot noise filters, **`isNonReviewContent`** skips bodies that look like pasted README/setup or trivial one-liners **before** **`parseMarkdownReviewIssues`**. **WHY:** Full-doc pastes produced many synthetic **`ic-*`** issues with **`(PR comment)`** paths and wasted snippet I/O.
 
-2. **Same-bot cross-comment collapse:** **`deduplicateSameBotAcrossComments`** (`tools/prr/github/issue-comment-dedup.ts`) buckets by normalized author + path, clusters nearby lines, merges when word-set Jaccard ≥ 0.5, keeps the longest body. **WHY:** Re-posted bot reviews duplicated rows before analysis saw them.
+2. **Same-bot cross-comment collapse:** **`deduplicateSameBotAcrossComments`** (`tools/prr/github/issue-comment-dedup.ts`) buckets by **`normalizeReviewBotAuthorLabel`** (`tools/prr/github/bot-author-normalize.ts`) + path, clusters nearby lines, merges when word-set Jaccard ≥ 0.5, keeps the longest body; **`debug()`** can list **`removedIdsSample`** when rows merge. **WHY:** Re-posted bot reviews duplicated rows; **`cursor[bot]`** vs **`Cursor`** (and similar) must share one bucket.
 
 3. **Body normalization for symbols and similarity:** **`stripSeverityFraming`**, **`wordSetJaccard`** (`tools/prr/workflow/helpers/review-body-normalize.ts`) — used in ingestion dedup and in **`issue-analysis.ts`** for **`primarySymbolFromBody`** / **`bodySimilarityForDedup`**. **WHY:** “Critical / High / Medium” prefixes changed which backtick token counted as the primary symbol, breaking heuristic and LLM dedup alignment across bots.
 

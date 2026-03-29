@@ -38,11 +38,22 @@ describe('deduplicateSameBotAcrossComments', () => {
     expect(out[0]!.body.length).toBeGreaterThan(a.body.length);
   });
 
-  it('does not merge different authors on same path', () => {
+  it('does not merge different bot families on same path', () => {
     const a = ic('ic-1-0', 'Claude', 'foo.ts', null, '`_multiplier` broken in presets same text repeated');
     const b = ic('ic-2-0', 'cursor[bot]', 'foo.ts', null, '`_multiplier` broken in presets same text repeated');
     const out = deduplicateSameBotAcrossComments([a, b]);
     expect(out).toHaveLength(2);
+  });
+
+  it('merges cursor[bot] label vs Cursor display name when bodies are similar', () => {
+    const body =
+      '`_multiplier` undefined in rate-limit RELAXED CRITICAL BURST presets variable renamed rateLimitMultiplier';
+    const a = ic('ic-1-0', 'cursor[bot]', 'foo.ts', null, body);
+    const b = ic('ic-2-0', 'Cursor', 'foo.ts', null, `${body} extra tail for length`);
+    const out = deduplicateSameBotAcrossComments([a, b]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.author).toBe('Cursor');
+    expect(out[0]!.id).toBe('ic-2-0');
   });
 
   it('passes through single item', () => {

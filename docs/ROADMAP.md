@@ -4,14 +4,6 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 **Completed work belongs in [CHANGELOG](../CHANGELOG.md), not here.** When an item is done, add it to CHANGELOG and remove it from this file. See `.cursor/rules/roadmap-vs-changelog.mdc`.
 
-## Bot review dedup: optional follow-ups
-
-**Idea:** Normalize **inline** review **`author.login`** (GraphQL) with **issue-comment** author normalization so same physical bot always buckets together in **`deduplicateSameBotAcrossComments`** (today issue rows may use **`Claude`** while inline uses **`cursor[bot]`**-style strings).
-
-**Optional:** Verbose **`debug()`** when **`ic-*`** rows are merged or dropped, listing removed ids — helps audit orphaned **`.pr-resolver-state.json`** keys after ingestion changes.
-
-**WHY:** Ingestion dedup only applies to synthetic **`ic-*`** from **`getReviewBotIssueComments`**; author string mismatches or silent id drops can surprise operators debugging state.
-
 ## Thread replies: single batch GraphQL for idempotency (optional)
 
 **Idea:** Today we call `getThreadComments` once per candidate thread in parallel (`Promise.all`). A possible optimization is one batched GraphQL request (e.g. multiple `node(id: $id)` aliases in a single query) to fetch all thread comment authors in one round-trip.

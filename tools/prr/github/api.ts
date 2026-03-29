@@ -11,6 +11,7 @@ import {
 import { debug } from '../../../shared/logger.js';
 import { logGitHubApiFailure } from './github-api-errors.js';
 import { deduplicateSameBotAcrossComments } from './issue-comment-dedup.js';
+import { normalizeReviewBotAuthorLabel } from './bot-author-normalize.js';
 import { isNonReviewContent } from './review-ingestion-filters.js';
 
 // Static configuration for PR status / bot detection (allocated once, not per call)
@@ -536,12 +537,7 @@ export class GitHubAPI {
    * used as identity keys for dedup and verification tracking.
    */
   private normalizeBotName(login: string): string {
-    const lower = login.toLowerCase();
-    if (lower.includes('claude')) return 'Claude';
-    if (lower.includes('greptile')) return 'Greptile';
-    if (lower.includes('copilot')) return 'Copilot';
-    if (lower.includes('cursor')) return 'Cursor';
-    return login.replace(/\[bot\]$/, '');
+    return normalizeReviewBotAuthorLabel(login);
   }
 
   /**
@@ -668,7 +664,7 @@ export class GitHubAPI {
     );
     // Same path fallback as bot loop: issue.path / path may be undefined from parser or inferPathLineFromBody.
     for (const c of otherComments) {
-      const author = c.user?.login ?? 'unknown';
+      const author = normalizeReviewBotAuthorLabel(c.user?.login ?? 'unknown');
       if (isNonReviewContent(c.body)) {
         debug(`Skipping non-review content from ${author}`, { id: c.id, len: c.body.length });
         continue;

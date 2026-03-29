@@ -3,8 +3,9 @@
  * WHY: Same bot re-posting reviews (e.g. Claude ×25) explodes `ic-*` rows; heuristic dedup runs too late (after I/O).
  */
 
-import { debug } from '../../../shared/logger.js';
+import { debug, formatNumber } from '../../../shared/logger.js';
 import type { ReviewComment } from './types.js';
+import { normalizeReviewBotAuthorLabel } from './bot-author-normalize.js';
 import { wordSetJaccard } from '../workflow/helpers/review-body-normalize.js';
 
 const LINE_PROXIMITY = 5;
@@ -68,7 +69,10 @@ function dedupeLineCluster(cluster: ReviewComment[]): ReviewComment[] {
     const canonical = group.reduce((best, cur) =>
       cur.body.length > best.body.length ? cur : best,
     );
-    kept.push(canonical);
+    const label = normalizeReviewBotAuthorLabel(canonical.author);
+    kept.push(
+      label === canonical.author ? canonical : { ...canonical, author: label },
+    );
   }
   return kept;
 }
@@ -82,7 +86,7 @@ export function deduplicateSameBotAcrossComments(results: ReviewComment[]): Revi
 
   const byKey = new Map<string, ReviewComment[]>();
   for (const r of results) {
-    const key = `${r.author}\0${r.path}`;
+    const key = `${normalizeReviewBotAuthorLabel(r.author)}\0${r.path}`;
     const list = byKey.get(key);
     if (list) list.push(r);
     else byKey.set(key, [r]);
@@ -90,22 +94,34 @@ export function deduplicateSameBotAcrossComments(results: ReviewComment[]): Revi
 
   const kept: ReviewComment[] = [];
   let dropped = 0;
+  const removedIds: string[] = [];
 
   for (const [, bucket] of byKey) {
     if (bucket.length < 2) {
-      kept.push(...bucket);
+      for (const r of bucket) {
+        const label = normalizeReviewBotAuthorLabel(r.author);
+        kept.push(label === r.author ? r : { ...r, author: label });
+      }
       continue;
     }
     const lineClusters = clusterByLineProximity(bucket);
     for (const lc of lineClusters) {
       const survivors = dedupeLineCluster(lc);
       dropped += lc.length - survivors.length;
+      const survivorId = new Set(survivors.map((s) => s.id));
+      for (const row of lc) {
+        if (!survivorId.has(row.id)) removedIds.push(row.id);
+      }
       kept.push(...survivors);
     }
   }
 
   if (dropped > 0) {
-    debug(`Cross-comment dedup: dropped ${dropped} duplicate(s) from same author/path buckets`);
+    debug('Cross-comment dedup: merged duplicate synthetic issue rows', {
+      droppedCount: formatNumber(dropped),
+      removedIdsSample: removedIds.slice(0, 20),
+      removedIdsTotal: formatNumber(removedIds.length),
+    });
   }
 
   return kept;
