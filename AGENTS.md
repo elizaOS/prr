@@ -52,6 +52,8 @@ These are created by tools and should not be committed: `.split-plan.md`, `.spli
 - **`tools/story/`** — PR/branch narrative and changelog.
 - **`shared/`** — Shared code: logger, config, git helpers, runners (detect, types), constants.
 
+**Pre-commit hooks:** This monorepo does **not** ship **`shared/git/git-hooks.ts`** or a bundled pre-commit hook for PRR (pill-output sometimes cited that path from **foreign** repos). Install hooks in **your application repository** if you need staged-file checks.
+
 Entry points: `tools/<tool>/index.ts` (e.g. `tools/prr/index.js` after build). Build output: `dist/tools/<tool>/index.js`.
 
 ## Clone workdir (don’t confuse with CWD or the prr repo)

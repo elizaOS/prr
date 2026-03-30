@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** Every N completed fix iterations, clear **session** skipped model keys so rotation can retry them without restarting the process (**`maybeResetSessionSkippedModelsAfterFixIteration`** in **`tools/prr/models/rotation.ts`**, **`push-iteration-loop.ts`**). **WHY:** Pill-output #847 — long runs otherwise never revisit models skipped early. **README**, **`.env.example`**, **`docs/MODELS.md`**, **DEVELOPMENT.md**.
+
+- **`PRR_THINKING_BUDGET` clamp:** Values above **500,000** clamp with a **`console.warn`** (typo guard; pill-output). **`shared/config.ts`**, **`.env.example`**.
+
+- **AGENTS.md:** Note that **`shared/git/git-hooks.ts`** is not shipped here (pill-output foreign-path triage).
+
 - **Unit tests (audit-derived helpers):** **`getMigrationJournalPath`** (`tests/migration-journal-path.test.ts`), **`getFixedIssueTitle`** (`tests/fixed-issue-title.test.ts`; **`getFixedIssueTitle`** exported from **`tools/prr/ui/reporter.ts`**), **`pluralize`** (`tests/pluralize.test.ts`), **`isCodeRabbitMetaComment`** (`tests/coderabbit-meta-comment.test.ts`; function exported from **`tools/prr/github/api.ts`**).
 
 - **Lessons vs issue path:** **`lessonForbidsEditingIssuePath`** filters **`getLessonsForIssue`** so lessons that say **do not edit** the current issue path (in the same negated clause) are not injected into fix prompts. **`pruneLessonsForbiddingOwnTargetPath`** removes file-scoped lessons under a path that forbid editing that path on load. **`tests/lesson-forbid-path.test.ts`**.

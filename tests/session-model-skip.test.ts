@@ -63,3 +63,26 @@ describe('recordSessionModelVerificationOutcome', () => {
     expect(modelIndices.get('llm-api')).toBe(1);
   });
 });
+
+describe('maybeResetSessionSkippedModelsAfterFixIteration', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('clears session skips when fix iteration is a multiple of N', () => {
+    vi.stubEnv('PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS', '2');
+    const stateContext = createStateContext('/tmp/w');
+    ensureRotationSession(stateContext).skippedModelKeys.add('llm-api/x');
+    Rotation.maybeResetSessionSkippedModelsAfterFixIteration(stateContext, 1);
+    expect(ensureRotationSession(stateContext).skippedModelKeys.has('llm-api/x')).toBe(true);
+    Rotation.maybeResetSessionSkippedModelsAfterFixIteration(stateContext, 2);
+    expect(ensureRotationSession(stateContext).skippedModelKeys.size).toBe(0);
+  });
+
+  it('does nothing when env unset or iteration not on boundary', () => {
+    const stateContext = createStateContext('/tmp/w');
+    ensureRotationSession(stateContext).skippedModelKeys.add('llm-api/x');
+    Rotation.maybeResetSessionSkippedModelsAfterFixIteration(stateContext, 3);
+    expect(ensureRotationSession(stateContext).skippedModelKeys.size).toBe(1);
+  });
+});

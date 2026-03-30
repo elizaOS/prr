@@ -140,6 +140,8 @@ export function loadConfig(): Config {
   // Parse and validate thinking budget if set
   const thinkingBudgetStr = process.env.PRR_THINKING_BUDGET;
   let thinkingBudget: number | undefined;
+  /** Guard absurd values (typos / pasted context sizes). Anthropic budgets are large but not unbounded. */
+  const MAX_PRR_THINKING_BUDGET = 500_000;
   if (thinkingBudgetStr) {
     if (!/^\d+$/.test(thinkingBudgetStr)) {
       throw new Error(`Invalid PRR_THINKING_BUDGET: "${thinkingBudgetStr}". Must be a positive integer.`);
@@ -148,7 +150,14 @@ export function loadConfig(): Config {
     if (!Number.isSafeInteger(parsed) || parsed <= 0) {
       throw new Error(`Invalid PRR_THINKING_BUDGET: "${thinkingBudgetStr}". Must be a positive integer.`);
     }
-    thinkingBudget = parsed;
+    if (parsed > MAX_PRR_THINKING_BUDGET) {
+      console.warn(
+        `PRR_THINKING_BUDGET ${parsed.toLocaleString()} exceeds max ${MAX_PRR_THINKING_BUDGET.toLocaleString()} — clamping (pill-output: typo guard).`,
+      );
+      thinkingBudget = MAX_PRR_THINKING_BUDGET;
+    } else {
+      thinkingBudget = parsed;
+    }
   }
 
   // Default model based on provider

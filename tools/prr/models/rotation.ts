@@ -16,6 +16,7 @@ import {
   getEffectiveElizacloudSkipModelIds,
   getElizaCloudSkipReason,
   getSessionModelSkipFailureThreshold,
+  getSessionModelSkipResetAfterFixIterations,
   MAX_MODELS_PER_TOOL_ROUND,
 } from '../../../shared/constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
@@ -62,6 +63,25 @@ function isSessionModelSkipped(ctx: RotationContext, model: string): boolean {
  * After verification, update session stats; skip models with enough failures and zero fixes this run.
  * WHY: Pill — 0% models waste rotation until manual skip list update.
  */
+/**
+ * Optional periodic clear of session-skipped models (pill-output #847).
+ * Call once per completed fix iteration with that iteration’s 1-based index.
+ */
+export function maybeResetSessionSkippedModelsAfterFixIteration(
+  stateContext: StateContext,
+  fixIteration: number,
+): void {
+  const every = getSessionModelSkipResetAfterFixIterations();
+  if (every <= 0 || fixIteration <= 0 || fixIteration % every !== 0) return;
+  const skipped = stateContext.rotationSession?.skippedModelKeys;
+  if (!skipped?.size) return;
+  const n = skipped.size;
+  skipped.clear();
+  warn(
+    `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS (${formatNumber(every)}): cleared ${formatNumber(n)} session-skipped model key(s) — rotation may retry those models this run.`,
+  );
+}
+
 export function recordSessionModelVerificationOutcome(
   stateContext: StateContext,
   runnerName: string,

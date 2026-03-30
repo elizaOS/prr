@@ -148,5 +148,6 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 - **Operational habit:** When **RESULTS SUMMARY** / Model Performance shows **0%** fix rate for an ElizaCloud id, add it (with reason + comment) to **`shared/constants.ts`** and bump the “last reviewed” line above — same guidance as **AGENTS.md**.
 
 - **Per-run performance:** Success/failure is recorded in state; rotation can prefer better-performing models within the same run. **`PRR_SESSION_MODEL_SKIP_FAILURES`** skips a tool/model for the rest of the process after repeated verification failures with zero verified fixes.
+- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** positive integer — every N completed **fix** iterations (inner loop inside a push iteration), clear **session** skips so rotation can retry those models **without** restarting the process. **`0`** / unset = off. **WHY:** Long runs otherwise never revisit a model skipped early for transient failures (pill-output #847).
 
 *Provider model tables: last curated from linked docs; verify there for current IDs and pricing.*

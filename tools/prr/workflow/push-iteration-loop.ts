@@ -35,6 +35,7 @@ import {
   DELETE_ENTIRELY_DISMISS_THRESHOLD,
   getDiminishingReturnsIterationThreshold,
 } from '../../../shared/constants.js';
+import { maybeResetSessionSkippedModelsAfterFixIteration } from '../models/rotation.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
@@ -258,7 +259,8 @@ export async function executePushIteration(
   // This is the primary fix iteration loop - runs until we've fixed all issues or hit max iterations
   while (fixIteration < effectiveMaxFixIterations && !allFixed) {
     fixIteration++;
-    
+    maybeResetSessionSkippedModelsAfterFixIteration(stateContext, fixIteration);
+
     // Pre-iteration checks
     const preChecks = await ResolverProc.executePreIterationChecks(
       fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, getRunner(), options,

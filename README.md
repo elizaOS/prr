@@ -207,6 +207,7 @@ story --help      # PR narrative & changelog
 | `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` | Comma-separated ids **added** to the built-in ElizaCloud skip list (`shared/constants.ts` **`ELIZACLOUD_SKIP_MODEL_IDS`**) |
 | `PRR_ELIZACLOUD_INCLUDE_MODELS` | Comma-separated ids to **remove** from the built-in skip list (re-enable after transient timeouts) |
 | `PRR_SESSION_MODEL_SKIP_FAILURES` | Skip a model for the rest of the run after N zero-fix verification failures (`0` = off) |
+| `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS` | Every N fix iterations, clear session skips so rotation retries those models (`0` / unset = off) |
 | `PRR_DIMINISHING_RETURNS_ITERATIONS` | Warn after N consecutive iterations with no new verified fixes (`0` = off) |
 | `PRR_EXIT_ON_STALE_BOT_REVIEW` | `1` / `true` — exit setup **before clone** if bot review SHA ≠ PR HEAD (stale inline comments) |
 | `PRR_EXIT_ON_UNMERGEABLE` | `1` / `true` — exit setup **before clone** when GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set** |
@@ -256,6 +257,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 
 **Fix-loop hygiene (optional)**  
 - **`PRR_SESSION_MODEL_SKIP_FAILURES`** (integer, default **4**; set **`0`** to disable): After this many cumulative verification failures for a tool/model pair **with no verified fix in this process**, skip that model until the next run; a verified fix clears the skip. **WHY:** Audit runs showed 0%-success models still consuming rotation slots; skipping for the rest of the session saves tokens without editing the static skip list in code.  
+- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`** (integer; unset = off): Every N completed fix iterations, clear **session** skips so those models can rotate again **without** restarting PRR. **WHY:** Pill-output #847 — otherwise a model skipped early is dead until process exit; periodic reset gives one more chance after other models have run.  
 - **`PRR_DIMINISHING_RETURNS_ITERATIONS`** (integer, default **10**; set **`0`** to disable): Emit one **warning** when this many consecutive fix iterations produce **no** new verified fixes. **WHY:** Gives operators a visible cue to intervene (merge base, manual edits, or stop) instead of burning API budget quietly.
 
 **Clone / fetch (optional)**  
