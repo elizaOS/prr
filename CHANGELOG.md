@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Single-issue recovery vs batch `allowedPaths`:** **`trySingleIssueFix`** (`tools/prr/workflow/helpers/recovery.ts`) now adds **`getRenameTargetPath`** and the same **`issueRequestsTests` / `__tests__/` co-located test hint** as **`getAllowedPathsForIssues`** in **`execute-fix-iteration.ts`** — **WHY:** Focus mode could reject runner edits the batch path would allow (rename + “add tests” reviews). **`REPO_TOP_LEVEL`** (`shared/path-utils.ts`) includes **`e2e`**, **`playwright`**, **`cypress`**, **`fixtures`**, **`integration`**, **`wdio`** so those trees are not misclassified as external package roots.
+
 - **Basename paths, empty-queue accounting, and AAR noise (output.log audit — e.g. multi-file TestCafe PR):**
   - **`resolveTrackedPathWithPrFiles`** (`tools/prr/workflow/helpers/solvability.ts`) — **WHY:** Bots sometimes anchor comments on a **bare filename** (e.g. `smoke.testcafe.js`) while `git ls-files` finds **multiple** tracked matches. Picking arbitrarily would edit the wrong file. When **exactly one** of those candidates appears in the PR’s changed-file list (`git diff --name-only` vs base), that path is treated as **`resolvedPath`**. If zero or several PR files match, behavior stays conservative (no guess).
   - **`findUnresolvedIssues`** uses **`resolveTrackedPathWithPrFiles`** after **`resolvePathFromDiff`** — **WHY:** Same disambiguation during normal analysis so snippets and **`allowedPaths`** align with the file the PR actually touches.

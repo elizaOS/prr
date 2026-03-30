@@ -12,9 +12,11 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 ## Single-issue focus: allowedPaths must include issue target
 
-**Idea:** Ensure single-issue focus mode always includes the issue's own target file (`comment.path` / `resolvedPath`) in the allowed set passed to the runner. When `allowedPaths` is empty or filtered to empty (e.g. path under a top-level not in `REPO_TOP_LEVEL`), the runner rejects every change and wrong-file counter can fire falsely, leading to premature dismissal.
+**Status:** **Improved** — **`trySingleIssueFix`** mirrors **`getAllowedPathsForIssues`** for **`getRenameTargetPath`** and **`issueRequestsTests` → `__tests__/…`** (same as batch). **`REPO_TOP_LEVEL`** includes common e2e roots (`e2e`, `playwright`, `cypress`, `fixtures`, `integration`, `wdio`). Empty-after-filter still falls back to **`[primaryPath]`**.
 
-**WHY:** Pill audit (output.log) showed `expectedPaths: []` for single-issue fixes; the fixer correctly edited the target file but the runner rejected edits. We now add `plugins` and `benchmarks` to `REPO_TOP_LEVEL`, fallback to `[primaryPath]` when filter yields empty in recovery, and do not count edits to the issue's target as wrong-file. Tracked here so the fix stays thorough and tested across runners.
+**Idea (ongoing):** Ensure single-issue focus always passes a runner-compatible allow set. When `allowedPaths` is empty or filtered to empty (e.g. path under a top-level not in `REPO_TOP_LEVEL`), the runner rejects every change and wrong-file counter can fire falsely.
+
+**WHY:** Pill audit (output.log) showed `expectedPaths: []` for single-issue fixes; the fixer correctly edited the target file but the runner rejected edits. We add top-level dirs as audits surface them, fallback to `[primaryPath]` when filter yields empty in recovery, and do not count edits to the issue's target as wrong-file.
 
 ## State consistency: verifiedFixed vs dismissedIssues (mutual exclusivity)
 

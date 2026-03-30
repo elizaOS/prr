@@ -116,6 +116,8 @@ const REPO_TOP_LEVEL = new Set([
   'src', 'lib', 'app', 'apps', 'packages', 'plugins', 'scripts', 'test', 'tests', 'docs', 'build', 'tools', 'shared',
   '.github', 'config', 'public', 'components', 'db', 'migrations', 'api', 'server', 'client', 'examples',
   'types', 'typings', 'benchmarks',
+  /** Common e2e / integration roots (TestCafe, Playwright, Cypress, etc.) — WHY: otherwise `isPathAllowedForFix` treats first segment as external package-like and strips paths from TARGET FILE(S). */
+  'e2e', 'playwright', 'cypress', 'fixtures', 'integration', 'wdio',
 ]);
 
 /**

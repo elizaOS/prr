@@ -7,7 +7,7 @@
  */
 
 import chalk from 'chalk';
-import { join, resolve, sep } from 'path';
+import { basename, join, resolve, sep } from 'path';
 import type { SimpleGit } from 'simple-git';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
 import type { StateContext } from '../../state/state-context.js';
@@ -35,6 +35,8 @@ import {
   getImplPathForTestFileIssue,
   getPathsToDeleteFromComment,
   getSiblingFilePathsFromComment,
+  getRenameTargetPath,
+  issueRequestsTests,
   reviewSuggestsFixInTest,
 } from '../../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../../shared/path-utils.js';
@@ -121,7 +123,7 @@ export async function trySingleIssueFix(
     console.log(chalk.gray(`    "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
     
     try {
-    // Compute allowed paths once (needed for enrichment and runner). Mirror buildSingleIssuePrompt / execute-fix-iteration so basename-collision and docs issues are allowed.
+    // Compute allowed paths once (needed for enrichment and runner). Mirror buildSingleIssuePrompt / getAllowedPathsForIssues so runner and prompt agree (ROADMAP single-issue).
     let allowedForIssue = issue.allowedPaths?.length ? filterAllowedPathsForFix(issue.allowedPaths) : [primaryPath];
     const journalPath = getMigrationJournalPath(issue);
     if (journalPath && isPathAllowedForFix(journalPath) && !allowedForIssue.includes(journalPath)) allowedForIssue = [...allowedForIssue, journalPath];
@@ -131,6 +133,10 @@ export async function trySingleIssueFix(
     if (referencedFull && isPathAllowedForFix(referencedFull) && !allowedForIssue.includes(referencedFull)) allowedForIssue = [...allowedForIssue, referencedFull];
     const docPath = getDocumentationPathFromComment(issue);
     if (docPath && isPathAllowedForFix(docPath) && !allowedForIssue.includes(docPath)) allowedForIssue = [...allowedForIssue, docPath];
+    const renameTarget = getRenameTargetPath(issue);
+    if (renameTarget && isPathAllowedForFix(renameTarget) && !allowedForIssue.includes(renameTarget)) {
+      allowedForIssue = [...allowedForIssue, renameTarget];
+    }
     for (const sibling of getSiblingFilePathsFromComment(issue)) {
       if (!allowedForIssue.includes(sibling)) allowedForIssue = [...allowedForIssue, sibling];
     }
@@ -140,11 +146,23 @@ export async function trySingleIssueFix(
     const implPath = getImplPathForTestFileIssue(issue, undefined);
     if (implPath && isPathAllowedForFix(implPath) && !allowedForIssue.includes(implPath)) allowedForIssue = [...allowedForIssue, implPath];
     const pathExists = (p: string) => fs.existsSync(join(workdir, p));
+    const forceTestPath = reviewSuggestsFixInTest(issue.comment.body ?? '');
     const testPath = getTestPathForSourceFileIssue(issue, {
       pathExists,
-      forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
+      forceTestPath,
     });
     if (testPath && isPathAllowedForFix(testPath) && !allowedForIssue.includes(testPath)) allowedForIssue = [...allowedForIssue, testPath];
+    if (issueRequestsTests(issue) || forceTestPath) {
+      const srcPath = issue.resolvedPath ?? issue.comment.path ?? '';
+      if (/\.(?:ts|tsx|js|jsx)$/.test(srcPath)) {
+        const stem = basename(srcPath).replace(/\.(ts|tsx|js|jsx)$/i, '');
+        const ext = (srcPath.match(/\.(ts|tsx|js|jsx)$/i) ?? [])[1] ?? 'ts';
+        const testsRootPath = `__tests__/${stem}.test.${ext}`;
+        if (isPathAllowedForFix(testsRootPath) && !allowedForIssue.includes(testsRootPath)) {
+          allowedForIssue = [...allowedForIssue, testsRootPath];
+        }
+      }
+    }
     for (const hiddenTestPath of getMentionedTestFilePaths(issue, { pathExists })) {
       if (isPathAllowedForFix(hiddenTestPath) && !allowedForIssue.includes(hiddenTestPath)) {
         allowedForIssue = [...allowedForIssue, hiddenTestPath];

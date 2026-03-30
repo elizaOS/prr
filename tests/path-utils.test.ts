@@ -79,6 +79,10 @@ describe('isPathAllowedForFix', () => {
     expect(isPathAllowedForFix('tools/prr/index.ts')).toBe(true);
     expect(isPathAllowedForFix('shared/logger.ts')).toBe(true);
     expect(isPathAllowedForFix('packages/a/b.ts')).toBe(true);
+    expect(isPathAllowedForFix('e2e/smoke.spec.ts')).toBe(true);
+    expect(isPathAllowedForFix('playwright/foo.ts')).toBe(true);
+    expect(isPathAllowedForFix('cypress/e2e/x.cy.ts')).toBe(true);
+    expect(isPathAllowedForFix('fixtures/data.json')).toBe(true);
   });
   it('allows types and typings top-level', () => {
     expect(isPathAllowedForFix('types/index.d.ts')).toBe(true);
