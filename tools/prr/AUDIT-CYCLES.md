@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-26 · **Recorded cycles:** 69 · **Historical (legacy):** 4
+**Last updated:** 2026-03-28 · **Recorded cycles:** 70 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -163,6 +163,23 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 70 — 2026-03-28 (basename + PR diff, repopulate resolvedPath, dedup-cluster ALREADY_FIXED, AAR)
+
+**Artifacts audited:** output.log / handoff from milady-ai/milady#1511-style run (workdir `~/.prr/work/f4b02ae0e531442b`); themes: bare **`smoke.testcafe.js`**, empty **`unresolvedIssues`** vs unaccounted duplicate IDs, misleading “remaining”.
+
+**Findings:**
+- **Medium:** Ambiguous basename skipped real file; **`checkEmptyIssues`** repopulate lacked **`resolvedPath`** → same skip next iteration.
+- **Medium:** Single-row **`ALREADY_FIXED`** with no disk edit left dedup-cluster siblings unaccounted.
+- **Low:** AAR “Fixed this session” repeated boilerplate / duplicate threads.
+
+**Improvements implemented:** **`resolveTrackedPathWithPrFiles`** + use in **`findUnresolvedIssues`** / repopulate; analysis cache **`changedFiles`** into **`checkEmptyIssues`**; **`getDuplicateClusterCommentIds`** + **`handleNoChangesWithVerification`** cluster dismiss; **`printAfterActionReport`** suppression + count line; tests **`resolve-tracked-path-pr-files`**, **`duplicate-cluster-ids`**; **CHANGELOG**, **README**, **DEVELOPMENT.md**, **AGENTS.md**, **docs/ROADMAP.md**.
+
+**Flip-flop check:** N — additive path resolution and accounting; conservative when PR diff does not uniquely pick a basename.
+
+**Notes:** Spot-checks on cited workdir (prior audit): port/BASE, error-count, shebang, ClientFunction fixes present. Dedup false-merge risk documented in DEVELOPMENT.md (same as canonical dedup assumption).
+
+---
 
 ### Cycle 69 — 2026-03-26 (final audit: skip LLM for synthetic / fragment paths)
 

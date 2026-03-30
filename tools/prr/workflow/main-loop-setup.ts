@@ -81,7 +81,7 @@ export async function processCommentsAndPrepareFixLoop(
    *  the CodeRabbit check already did the exact same API call. */
   prefetchedComments?: ReviewComment[],
   /** When set, reuse cached analysis if comment IDs, headSha, and file hashes for comment paths unchanged (output.log audit). */
-  analysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null }
+  analysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]>; changedFiles?: string[] } | null }
 ): Promise<{
   comments: ReviewComment[];
   unresolvedIssues: UnresolvedIssue[];
@@ -90,6 +90,8 @@ export async function processCommentsAndPrepareFixLoop(
   exitReason?: string;
   exitDetails?: string;
   duplicateMap: Map<string, string[]>;
+  /** Paths changed vs base (for basename disambiguation when bug-detection repopulates issues). */
+  changedFiles?: string[];
 }> {
   // Fetch review comments (reuse prefetched if available)
   // WHY reuse: The CodeRabbit polling phase already fetches all comments via the same
@@ -179,6 +181,7 @@ export async function processCommentsAndPrepareFixLoop(
         exitReason: noCommentsResult.exitReason,
         exitDetails: noCommentsResult.exitDetails,
         duplicateMap: new Map(),
+        changedFiles: undefined,
       };
     }
   }
@@ -200,6 +203,7 @@ export async function processCommentsAndPrepareFixLoop(
   let unresolvedIssues: UnresolvedIssue[];
   let duplicateMap: Map<string, string[]>;
   let analyzeTime: number;
+  let prChangedFiles: string[] | undefined;
   const cacheHit =
     cache &&
     cache.headSha === headSha &&
@@ -208,6 +212,7 @@ export async function processCommentsAndPrepareFixLoop(
   if (cacheHit) {
     unresolvedIssues = cache.unresolvedIssues;
     duplicateMap = cache.duplicateMap;
+    prChangedFiles = cache.changedFiles;
     analyzeTime = 0;
     console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, same IDs + file hashes)`));
     debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7), fileHashesDigest: fileHashesKeyDigest });
@@ -226,6 +231,7 @@ export async function processCommentsAndPrepareFixLoop(
     } catch {
       // Base ref may not exist (e.g. first push)
     }
+    prChangedFiles = changedFiles.length > 0 ? changedFiles : undefined;
     console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
     const getFileContentFromRepo = async (path: string): Promise<string | null> => {
       try {
@@ -237,7 +243,7 @@ export async function processCommentsAndPrepareFixLoop(
     const analysisResult = await findUnresolvedIssues(comments, comments.length, {
       lineMap: lineMap.size > 0 ? lineMap : undefined,
       getFileContentFromRepo,
-      changedFiles: changedFiles.length > 0 ? changedFiles : undefined,
+      changedFiles: prChangedFiles,
     });
     unresolvedIssues = analysisResult.unresolved;
     duplicateMap = analysisResult.duplicateMap;
@@ -251,6 +257,7 @@ export async function processCommentsAndPrepareFixLoop(
         unresolvedIssues: [...unresolvedIssues],
         comments: [...comments],
         duplicateMap: new Map(duplicateMap),
+        changedFiles: prChangedFiles,
       };
     }
   }
@@ -368,6 +375,7 @@ export async function processCommentsAndPrepareFixLoop(
         exitReason: 'audit_passed',
         exitDetails: 'Final audit passed - all issues verified fixed',
         duplicateMap,
+        changedFiles: prChangedFiles,
       };
     }
   }
@@ -383,6 +391,7 @@ export async function processCommentsAndPrepareFixLoop(
       exitReason: 'dry_run',
       exitDetails: `Dry run mode - showed ${formatNumber(unresolvedIssues.length)} issue(s) without fixing`,
       duplicateMap,
+      changedFiles: prChangedFiles,
     };
   }
 
@@ -422,6 +431,7 @@ export async function processCommentsAndPrepareFixLoop(
       exitReason: 'all_resolved',
       exitDetails: 'All issues were already resolved before fix loop',
       duplicateMap,
+      changedFiles: prChangedFiles,
     };
   }
 
@@ -432,5 +442,6 @@ export async function processCommentsAndPrepareFixLoop(
     shouldBreak: false,
     shouldRunFixLoop: true,
     duplicateMap,
+    changedFiles: prChangedFiles,
   };
 }

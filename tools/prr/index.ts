@@ -216,6 +216,18 @@ async function main(): Promise<void> {
       process.exit(2);
     }
 
+    const strictFinalAuditUncertain =
+      process.env.PRR_STRICT_FINAL_AUDIT_UNCERTAIN?.trim() === 'true' ||
+      process.env.PRR_STRICT_FINAL_AUDIT_UNCERTAIN === '1';
+    if (resolver && strictFinalAuditUncertain && resolver.getFinalAuditUncertainCount() > 0) {
+      console.warn(
+        chalk.yellow(
+          `\nStrict final audit (uncertain): ${formatNumber(resolver.getFinalAuditUncertainCount())} issue(s) passed via UNCERTAIN or truncation guard — exiting with code 2 (PRR_STRICT_FINAL_AUDIT_UNCERTAIN).`,
+        ),
+      );
+      process.exit(2);
+    }
+
     if (isFailureExitReason(resolver.getExitReason())) {
       process.exit(1);
     }

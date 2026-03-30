@@ -22,7 +22,9 @@ import { formatNumber } from '../ui/reporter.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../../../shared/logger.js';
 import { shouldSkipFinalAuditLlmForPath } from '../../../shared/path-utils.js';
-import { assessSolvability } from './helpers/solvability.js';
+import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { classifyFinalAuditUncertainExplanation } from './helpers/final-audit-uncertain.js';
+import { pathTrackedAtGitHead } from './helpers/git-path-at-head.js';
 
 /** Logged when final audit skips the LLM for a comment (synthetic / fragment path). */
 const FINAL_AUDIT_SKIP_LLM_EXPLANATION =
@@ -323,6 +325,8 @@ export async function runFinalAudit(
   // function so the next iteration re-verifies; clearing everything would lose valid verifications.
   debug('Starting final audit (verification cache not cleared - results are additive)');
 
+  stateContext.finalAuditUncertainThisRun = [];
+
   // Pill-output #11: runtime overlap check (load() also repairs; this surfaces bugs in-session)
   const verifiedSet = new Set(Verification.getVerifiedComments(stateContext));
   const dismissedIds = Dismissed.getDismissedIssues(stateContext).map((d) => d.commentId);
@@ -373,18 +377,61 @@ export async function runFinalAudit(
   }
 
   const { sanitizeCommentForPrompt } = await import('../analyzer/prompt-builder.js');
-  const allIssuesForAudit = llmComments.map((comment, j) => ({
-    id: comment.id,
-    comment: sanitizeCommentForPrompt(comment.body),
-    filePath: comment.path,
-    line: comment.line,
-    codeSnippet: auditSnippetsLlm[j]!,
-  }));
+
+  const syntheticAuditResults = new Map<string, { stillExists: boolean; explanation: string }>();
+  const issuesForLlm: Array<{
+    id: string;
+    comment: string;
+    filePath: string;
+    line: number | null;
+    codeSnippet: string;
+  }> = [];
+
+  for (let j = 0; j < llmComments.length; j++) {
+    const comment = llmComments[j]!;
+    const snippet = auditSnippetsLlm[j]!;
+    if (
+      workdir &&
+      snippet === SNIPPET_PLACEHOLDER &&
+      comment.path &&
+      comment.path !== '(PR comment)' &&
+      !shouldSkipFinalAuditLlmForPath(comment.path)
+    ) {
+      const tracked = pathTrackedAtGitHead(workdir, comment.path);
+      if (tracked === false) {
+        syntheticAuditResults.set(comment.id, {
+          stillExists: false,
+          explanation:
+            'FIXED (git check): Path not present at HEAD — file removed; final audit shortcut (no adversarial LLM).',
+        });
+        debug('Final audit: skipped adversarial LLM — path absent at HEAD and snippet is unreadable placeholder', {
+          commentId: comment.id,
+          path: comment.path,
+        });
+        continue;
+      }
+    }
+    const baseComment = sanitizeCommentForPrompt(comment.body);
+    const commentForAudit = comment.outdated
+      ? `[GitHub: thread OUTDATED — diff hunk moved; judge from the shown file/excerpt, not stale line anchors.]\n${baseComment}`
+      : baseComment;
+    issuesForLlm.push({
+      id: comment.id,
+      comment: commentForAudit,
+      filePath: comment.path,
+      line: comment.line,
+      codeSnippet: snippet,
+    });
+  }
 
   const auditResults =
-    allIssuesForAudit.length > 0
-      ? await llm.finalAudit(allIssuesForAudit, options.maxContextChars, 'final-audit')
+    issuesForLlm.length > 0
+      ? await llm.finalAudit(issuesForLlm, options.maxContextChars, 'final-audit')
       : new Map<string, { stillExists: boolean; explanation: string }>();
+
+  for (const [id, row] of syntheticAuditResults) {
+    auditResults.set(id, row);
+  }
 
   for (const i of skipLlmIndices) {
     const c = comments[i];
@@ -401,6 +448,26 @@ export async function runFinalAudit(
     if (result) {
       if (result.stillExists) {
         if (alreadyVerifiedIds.has(comment.id)) {
+          const commentIdx = comments.indexOf(comment);
+          const codeSnippetEarly = auditSnippets[commentIdx] ?? '';
+          if (
+            workdir &&
+            comment.path &&
+            comment.path !== '(PR comment)' &&
+            codeSnippetEarly === SNIPPET_PLACEHOLDER &&
+            pathTrackedAtGitHead(workdir, comment.path) === false
+          ) {
+            debug(
+              'Final audit tie-break: UNFIXED but path absent from HEAD + unreadable snippet — keeping verified (deleted file)',
+              { commentId: comment.id, path: comment.path },
+            );
+            console.warn(
+              chalk.yellow(
+                `  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but path is gone from HEAD — keeping verified (deleted file).`,
+              ),
+            );
+            continue;
+          }
           // Pill cycle 2 #3: When audit overrides ALREADY_FIXED, require specific code-level contradiction
           // Check if fixer marked this as ALREADY_FIXED multiple times
           const alreadyFixedCount = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
@@ -477,38 +544,46 @@ export async function runFinalAudit(
         }
       } else {
         // Audit confirmed this is fixed - add to cache
-        // Pill cycle 2 #4: Validate Rule 6 (file deleted) — check git ls-tree before accepting FIXED verdict
-        const isRule6Fixed = /(?:file deleted|file no longer exists|thread outdated)/i.test(result.explanation);
-        if (isRule6Fixed && workdir && comment.path && comment.path !== '(PR comment)') {
-          try {
-            const { execFileSync } = await import('child_process');
-            const { join } = await import('path');
-            // Check if file exists in git tree (not just workdir — file may not be checked out)
-            const gitPath = comment.path.replace(/\\/g, '/');
-            try {
-              execFileSync('git', ['ls-tree', '--name-only', 'HEAD', gitPath], { cwd: workdir, encoding: 'utf8', stdio: 'pipe' });
-              // File exists in git — Rule 6 doesn't apply, demote to UNFIXED
-              debug('Rule 6 validation failed: file exists in git tree', {
-                commentId: comment.id,
-                path: comment.path,
-                explanation: result.explanation,
-              });
-              failedAudit.push({
-                comment,
-                explanation: `File exists in git tree — Rule 6 (file deleted) does not apply. ${result.explanation}`,
-              });
-              continue;
-            } catch {
-              // File not in git tree — Rule 6 applies, accept FIXED
-              debug('Rule 6 validation passed: file not in git tree', {
-                commentId: comment.id,
-                path: comment.path,
-              });
-            }
-          } catch {
-            // Git check failed — fall through to accept FIXED (conservative)
-            debug('Rule 6 validation skipped: git check failed', { commentId: comment.id, path: comment.path });
+        // Pill cycle 2 #4: Validate Rule 6 (file deleted / outdated thread) — confirm path absent at HEAD before accepting FIXED
+        const isRule6Style = /(?:file deleted|file no longer exists|thread outdated)/i.test(result.explanation);
+        if (isRule6Style && workdir && comment.path && comment.path !== '(PR comment)') {
+          const tracked = pathTrackedAtGitHead(workdir, comment.path);
+          if (tracked === true) {
+            debug('Rule 6 validation failed: path still tracked at HEAD', {
+              commentId: comment.id,
+              path: comment.path,
+              explanation: result.explanation,
+            });
+            failedAudit.push({
+              comment,
+              explanation: `File exists in git tree — Rule 6 (file deleted / outdated) does not apply. ${result.explanation}`,
+            });
+            continue;
           }
+          if (tracked === null) {
+            debug('Rule 6 validation inconclusive: git ls-tree check failed — accepting FIXED', {
+              commentId: comment.id,
+              path: comment.path,
+            });
+          } else {
+            debug('Rule 6 validation passed: path not at HEAD', {
+              commentId: comment.id,
+              path: comment.path,
+            });
+          }
+        }
+        const uncertainKind = classifyFinalAuditUncertainExplanation(result.explanation ?? '');
+        if (uncertainKind) {
+          if (!stateContext.finalAuditUncertainThisRun) {
+            stateContext.finalAuditUncertainThisRun = [];
+          }
+          stateContext.finalAuditUncertainThisRun.push({
+            commentId: comment.id,
+            path: comment.path,
+            line: comment.line,
+            kind: uncertainKind,
+            explanation: result.explanation?.slice(0, 200),
+          });
         }
         Verification.markVerified(stateContext, comment.id);
       }
@@ -556,6 +631,15 @@ export async function runFinalAudit(
     // Final audit passed - all issues verified fixed
     spinner.succeed('Final audit passed - all issues verified fixed!');
     console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
+
+    const uncertain = stateContext.finalAuditUncertainThisRun ?? [];
+    if (uncertain.length > 0) {
+      console.log(
+        chalk.yellow(
+          `  ℹ Final audit: ${formatNumber(uncertain.length)} issue(s) passed via UNCERTAIN or truncation guard (see explanations in prompts.log). Set PRR_STRICT_FINAL_AUDIT_UNCERTAIN=1 to exit 2 on these.`,
+        ),
+      );
+    }
     
     // Report summary of dismissed issues
     const dismissedIssues = Dismissed.getDismissedIssues(stateContext);

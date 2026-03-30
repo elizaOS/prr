@@ -37,9 +37,11 @@ From root **`pill-output.md`** triage — **prr** scope only:
 
 ## Lesson staleness / conflict detection
 
-**Idea:** Detect when a file-specific lesson contradicts the issue's target file (e.g. "Do NOT edit benchmarks/bfcl/reporting.py" for an issue on that same file) and either clear it, flag it for human review, or normalize it so the fixer is not permanently blocked from editing the correct file.
+**Status (partial):** **`lessonForbidsEditingIssuePath`** in **`tools/prr/state/lessons-retrieve.ts`** — **`getLessonsForIssue`** drops lessons whose text forbids editing the issue path in the same negated clause (path must appear in the `do not edit …` span before `,` / `;` / `—`, so “don’t edit **bar**; bug is in **foo**” does not drop lessons for **foo**). **`pruneLessonsForbiddingOwnTargetPath`** on lesson load removes file-scoped rows that forbid editing their own key. **`tests/lesson-forbid-path.test.ts`**.
 
-**WHY:** Pill audit showed wrong-file lessons with an empty "need to modify one of:" list caused the fixer to refuse to edit the target file; we now prevent creating such lessons and normalize/reject them on load. A design-level solution would detect any lesson that forbids editing the issue's primary path and downgrade or remove it so batch mode can succeed without relying only on single-issue injection.
+**Remaining (optional):** Lessons that forbid **`allowedPaths`** alternates without matching the primary path; richer NLP for “this file” without a literal path.
+
+**WHY (original):** Wrong-file lessons keyed under the same path blocked the fixer; load-time prune + prompt-time filter reduce reliance on single-issue-only workarounds.
 
 ## Blast radius and focus masking
 
@@ -55,21 +57,21 @@ Would require: PR changed-file list (`git diff base...HEAD --name-only`), a depe
 
 ## Final audit: deleted files and outdated threads
 
-**Idea:** Improve final-audit handling when the issue's file was deleted by the fixer or the GitHub thread is marked "outdated". Today the audit may return UNFIXED (no file content to check); L1 (trust existing verification) overrides that, but the audit prompt should explicitly handle these cases so we don't depend on the override.
+**Status (partial):** **`runFinalAudit`** now (1) skips the adversarial LLM when the full-file snippet is **`(file not found or unreadable)`** and **`git ls-tree HEAD -- path`** shows the path is **not** at HEAD — synthetic **FIXED (git check)**; (2) **L1 tie-break:** if the model still says **UNFIXED** for a previously verified comment in that situation, we **keep verified** instead of re-queueing; (3) **Rule 6** post-check uses the same **`pathTrackedAtGitHead`** helper (non-empty `ls-tree` output = still tracked) instead of relying on `ls-tree` throwing; (4) **outdated** threads: a short **`[GitHub: thread OUTDATED …]`** prefix is prepended to the review text in the audit prompt. **`tools/prr/workflow/helpers/git-path-at-head.ts`**, **`tests/git-path-at-head.test.ts`**.
 
-- **Deleted file:** When the snippet is "(file not found or unreadable)" or the file was removed in a fix, the audit should mark FIXED with explanation "File deleted; issue was resolved by removal" (or similar) instead of UNFIXED.
-- **Outdated thread:** When GitHub marks the thread outdated (diff hunk moved), the audit should still have context (e.g. "thread outdated" in the prompt) so it can mark FIXED when the fix is present in current code.
+**Remaining (optional):** Richer “outdated” handling (e.g. cross-hunk verification), and further prompt tuning if audits still parrot **UNFIXED** when the file exists but the anchor line moved.
 
-**WHY:** pill-output.md (eliza run) showed final audit returning UNFIXED for all 3 issues (two on a deleted file), overridden only by L1. Without the override, the run would re-enter the fix loop incorrectly. Teaching the audit about deletions and staleness reduces reliance on L1 and makes behavior auditable.
+**WHY (original):** Runs showed final audit **UNFIXED** on deleted files, relying on overrides; git-backed shortcuts make the behavior explicit in **`output.log`** / state.
 
 ## Audit-derived follow-ups (optional)
 
 From [tools/prr/AUDIT-CYCLES.md](../tools/prr/AUDIT-CYCLES.md) consolidated findings; not committed, low priority.
 
-- **getConsolidateDuplicateTargetPath:** Iterate all path matches in comment body and return the first that is not `comment.path` and not `lib/utils/db-errors.(ts|js)` (today we use first match only, so if db-errors is mentioned first we return null). **WHY:** When the canonical duplicate file is listed after db-errors, fixer could get allowed path for the right file.
+- **Ambiguous basename + PR diff / bug-repopulate / duplicate-cluster ALREADY_FIXED:** **Done** (see CHANGELOG [Unreleased], **DEVELOPMENT.md** path accounting, **Cycle 70** in AUDIT-CYCLES) — **`resolveTrackedPathWithPrFiles`** ties bare filenames to the unique path in the PR diff when possible; **`checkEmptyIssues`** restores **`resolvedPath`** on repopulate; **`ALREADY_FIXED`** dismisses full LLM dedup clusters; AAR suppresses boilerplate duplicate lines. **WHY:** Prevents wrong-file skips, “empty queue but 1 unaccounted comment”, and misleading handoff text (audited milady-style run).
+
 - **pathExists for single-issue prompt:** **Done** (see CHANGELOG) — resolver/recovery pass `pathExists` into `buildSingleIssuePrompt` and no-changes verification.
-- **Path normalization:** In runner `allowedSet`, add `.replace(/\\/g, '/')` so Windows-style paths match. **WHY:** Avoid cross-platform mismatches when comparing paths.
-- **Tests:** Unit tests for `getMigrationJournalPath`, `getConsolidateDuplicateTargetPath`, `getFixedIssueTitle`, `pluralize`, `shared/path-utils.ts` (e.g. `isPathAllowedForFix`, `filterAllowedPathsForFix`), and optionally `isCodeRabbitMetaComment`. **WHY:** Future refactors don't break behavior.
+- **Path normalization (runner allowlist):** **Already covered** — **`normalizePathForAllow`** applies **`normalizeRepoPath`** in **`shared/runners/llm-api.ts`** (backslashes and repo-relative form align with allow checks).
+- **Tests:** **`getMigrationJournalPath`:** **`tests/migration-journal-path.test.ts`**. **`getFixedIssueTitle`:** **`tests/fixed-issue-title.test.ts`** (exported from **`tools/prr/ui/reporter.ts`**). **`pluralize`:** **`tests/pluralize.test.ts`**. **`isCodeRabbitMetaComment`:** **`tests/coderabbit-meta-comment.test.ts`** (exported from **`tools/prr/github/api.ts`**). **`shared/path-utils.ts`** (`isPathAllowedForFix`, `filterAllowedPathsForFix`): **`tests/path-utils.test.ts`**. **`getConsolidateDuplicateTargetPath`:** **`tests/consolidate-duplicate-path.test.ts`**. **Remaining (optional):** `getFixedIssueTitle` / meta-comment edge cases as audits surface them. **WHY:** Future refactors don't break behavior.
 
 ## Dismissal feedback loop (generator-judge learning)
 

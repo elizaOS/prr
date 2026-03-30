@@ -249,7 +249,7 @@ export async function executeRun(
     const expectedBotResponseTimeRef = { current: state.expectedBotResponseTime };
     // Pass prefetched comments from setup phase to avoid redundant fetch on first iteration.
     // The push iteration loop clears this after consuming it once.
-    const lastAnalysisCacheRef = { current: null as { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
+    const lastAnalysisCacheRef = { current: null as { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]>; changedFiles?: string[] } | null };
     const repliedThreadIds = new Set<string>();
     const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments, codeRabbitMode: setupResult.codeRabbitMode, lastAnalysisCacheRef, repliedThreadIds };
     while (pushIteration < maxPushIterations) {

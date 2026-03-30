@@ -2,7 +2,12 @@ import type { UnresolvedIssue, FixPrompt } from './types.js';
 import type { BotRiskEntry } from '../workflow/bot-risk.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
 import { MAX_ISSUES_PER_PROMPT, MIN_ISSUES_PER_PROMPT, MAX_COMMENT_CHARS, MAX_SNIPPET_LINES } from '../../../shared/constants.js';
-import { filterAllowedPathsForFix, isPathAllowedForFix, tryResolvePathWithExtensionVariants } from '../../../shared/path-utils.js';
+import {
+  filterAllowedPathsForFix,
+  isPathAllowedForFix,
+  normalizeRepoPath,
+  tryResolvePathWithExtensionVariants,
+} from '../../../shared/path-utils.js';
 import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
 import { estimateTokens } from '../../../shared/utils/tokens.js';
 import { getTestPathForIssueLike, issueRequestsTestsText } from './test-path-inference.js';
@@ -264,14 +269,16 @@ export function commentAsksForAccessibility(body: string | undefined): boolean {
 /** When the issue is about consolidating a duplicate (extract to shared / remove duplication) and the comment names another file that contains the duplicate, return that path so we can add it to allowedPaths. Enables fixer to remove the duplicate from both files. */
 export function getConsolidateDuplicateTargetPath(issue: UnresolvedIssue): string | null {
   if (!issueRequiresRefactor(issue)) return null;
-  const commentPath = issue.comment.path ?? '';
+  const commentPath = normalizeRepoPath(issue.comment.path ?? '');
   const body = issue.comment.body ?? '';
-  // Match all repo-relative paths (e.g. lib/.../file.ts); return first that is not comment.path and not the shared util
-  const pathRegex = /(?:lib|app|tools|src)\/[a-zA-Z0-9/_.-]+\.(?:ts|tsx|js|jsx)/g;
+  // Scan **all** path-like mentions in body order — skip comment path and the db-errors util only.
+  // WHY: A narrow prefix list (`lib|app|tools|src`) missed `packages/*`, `shared/*`, `benchmarks/*`;
+  // stopping at the first match could yield null when `lib/utils/db-errors.ts` appears before the real duplicate (ROADMAP).
+  const pathRegex =
+    /(?:benchmarks|lib|app|apps|packages|pkg|src|tools|shared)\/[a-zA-Z0-9/_.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py)/gi;
   for (const m of body.matchAll(pathRegex)) {
-    const candidate = m[0];
-    if (candidate === commentPath) continue;
-    // Don't add the shared util itself (e.g. db-errors.ts) — we're adding the "other file" that has the duplicate
+    const candidate = normalizeRepoPath(m[0]);
+    if (!candidate || candidate === commentPath) continue;
     if (/lib\/utils\/db-errors\.(ts|js)$/i.test(candidate)) continue;
     return candidate;
   }

@@ -13,12 +13,12 @@ import { debug, formatNumber } from '../../../shared/logger.js';
 import chalk from 'chalk';
 
 /**
- * Dismissed categories that get a reply.
- * WHY: When --reply-to-threads is used, every considered thread should get a short reply so reviewers see PRR touched it. Previously only a subset got replies (e.g. remaining/exhausted), so runs that dismissed as path-unresolved or missing-file posted nothing.
+ * Base dismissed categories that get a reply.
+ * WHY: When --reply-to-threads is used, every considered thread should get a short reply so reviewers see PRR touched it.
  *
- * **Not included:** `chronic-failure` — auto-dismissed in batch to save tokens without a focused fix attempt on that thread; a generic reply adds noise vs `remaining`/`exhausted` where we exhausted the fix loop (AGENTS.md, docs/THREAD-REPLIES.md).
+ * **`chronic-failure`:** excluded by default (batch token-saving dismissals). Opt in with **`PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE=1`** — see **`dismissedCategoriesWithReply()`**.
  */
-const DISMISSED_CATEGORIES_WITH_REPLY = new Set<string>([
+const DISMISSED_CATEGORIES_BASE = new Set<string>([
   'already-fixed',
   'stale',
   'not-an-issue',
@@ -30,6 +30,18 @@ const DISMISSED_CATEGORIES_WITH_REPLY = new Set<string>([
   'duplicate',
   'file-unchanged',
 ]);
+
+/** Categories that receive a dismissed-thread reply for this process (base set + optional chronic-failure). */
+export function dismissedCategoriesWithReply(): Set<string> {
+  const s = new Set(DISMISSED_CATEGORIES_BASE);
+  if (
+    process.env.PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE?.trim() === 'true' ||
+    process.env.PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE === '1'
+  ) {
+    s.add('chronic-failure');
+  }
+  return s;
+}
 
 export interface PostThreadRepliesOptions {
   comments: ReviewComment[];
@@ -140,6 +152,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   } = opts;
   const { owner, repo, number: prNumber } = prInfo;
   const short = shortSha(commitSha);
+  const dismissedWithReply = dismissedCategoriesWithReply();
 
   // commentId -> { threadId, databaseId } for replyable threads only.
   // WHY skip ic-*: Synthetic issue-comment threads have no real inline thread to reply to; posting would fail or confuse.
@@ -174,7 +187,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     if (entry && !repliedThreadIds.has(entry.threadId)) candidateThreadIds.add(entry.threadId);
   }
   for (const d of dismissedIssues) {
-    if (!DISMISSED_CATEGORIES_WITH_REPLY.has(d.category)) continue;
+    if (!dismissedWithReply.has(d.category)) continue;
     const entry = getThreadEntry(d.commentId);
     if (entry && !repliedThreadIds.has(entry.threadId)) candidateThreadIds.add(entry.threadId);
   }
@@ -252,7 +265,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   // Pill #10: Batch dismissed replies with concurrency limit
   const dismissedReplies: Array<{ entry: { threadId: string; databaseId: number }; body: string }> = [];
   for (const d of dismissedIssues) {
-    if (!DISMISSED_CATEGORIES_WITH_REPLY.has(d.category)) continue;
+    if (!dismissedWithReply.has(d.category)) continue;
     const entry = getThreadEntry(d.commentId);
     if (!entry) continue;
     if (repliedThreadIds.has(entry.threadId)) continue;
@@ -265,6 +278,8 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       body = 'No changes needed — already addressed before this run.';
     } else if (d.category === 'remaining' || d.category === 'exhausted') {
       body = 'Could not auto-fix (wrong file or repeated failures); manual review recommended.';
+    } else if (d.category === 'chronic-failure') {
+      body = 'Could not auto-verify after repeated failures; batch-dismissed. Manual review if still needed.';
     } else if (d.category === 'path-unresolved') {
       body = 'Could not auto-fix (path unresolved); manual review recommended.';
     } else if (d.category === 'missing-file') {

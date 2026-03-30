@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { postThreadReplies, type PostThreadRepliesOptions, type PostThreadRepliesResult } from '../tools/prr/workflow/thread-replies.js';
+import {
+  postThreadReplies,
+  dismissedCategoriesWithReply,
+  type PostThreadRepliesOptions,
+  type PostThreadRepliesResult,
+} from '../tools/prr/workflow/thread-replies.js';
 import type { GitHubAPI } from '../tools/prr/github/api.js';
 import type { ReviewComment, PRInfo } from '../tools/prr/github/types.js';
 import type { DismissedIssue } from '../tools/prr/state/types.js';
@@ -284,6 +289,30 @@ describe('postThreadReplies', () => {
     expect(result).toBeUndefined();
   });
 
+  it('does not post for chronic-failure dismissal by default', async () => {
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    await run({
+      replyToThreads: true,
+      comments,
+      dismissedIssues: [makeDismissed('c1', 'chronic-failure', 'Batch skip.')],
+    });
+    expect(replyCalls).toHaveLength(0);
+  });
+
+  it('posts chronic-failure reply when PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE=1', async () => {
+    vi.stubEnv('PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE', '1');
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    await run({
+      replyToThreads: true,
+      comments,
+      dismissedIssues: [makeDismissed('c1', 'chronic-failure', 'Batch skip.')],
+    });
+    expect(replyCalls).toHaveLength(1);
+    expect(replyCalls[0].body).toBe(
+      'Could not auto-verify after repeated failures; batch-dismissed. Manual review if still needed.',
+    );
+  });
+
   it('returns attempted > 0 and replied === 0 when all replies fail with 422', async () => {
     const err422 = Object.assign(new Error('Validation Failed'), { status: 422 });
     const replyMock = vi.fn(async () => {
@@ -302,5 +331,17 @@ describe('postThreadReplies', () => {
     });
     expect(result).toEqual({ attempted: 2, replied: 0 });
     expect(replyMock).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('dismissedCategoriesWithReply', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('excludes chronic-failure unless env is set', () => {
+    expect(dismissedCategoriesWithReply().has('chronic-failure')).toBe(false);
+    vi.stubEnv('PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE', 'true');
+    expect(dismissedCategoriesWithReply().has('chronic-failure')).toBe(true);
   });
 });

@@ -275,6 +275,32 @@ export function resolveTrackedPath(workdir: string, rawPath: string, commentBody
   return 'path' in resolved ? resolved.path : null;
 }
 
+/**
+ * Like {@link resolveTrackedPath}, but when the basename is ambiguous in the repo,
+ * picks the unique candidate that appears in `prChangedFiles` (PR diff vs base).
+ * WHY: output.log audit (milady#1511) — `smoke.testcafe.js` matched multiple paths;
+ * the file touched by the PR is the intended target for issue comments.
+ * If zero or several candidates appear in `prChangedFiles`, falls back to `resolveTrackedPath`
+ * (no guess) — **WHY:** avoid wrong-file edits when the PR touches multiple same-named files or none.
+ */
+export function resolveTrackedPathWithPrFiles(
+  workdir: string,
+  rawPath: string,
+  commentBody = '',
+  prChangedFiles?: string[] | undefined,
+): string | null {
+  const det = resolveTrackedPathDetailed(workdir, rawPath, commentBody);
+  if (det.kind === 'ambiguous' && prChangedFiles?.length) {
+    const set = new Set(prChangedFiles);
+    const hits = det.candidates.filter((c) => set.has(c));
+    if (hits.length === 1) {
+      debug('Review path: ambiguous basename disambiguated via PR changed files', { rawPath, resolved: hits[0] });
+      return hits[0]!;
+    }
+  }
+  return resolveTrackedPath(workdir, rawPath, commentBody);
+}
+
 export interface SolvabilityResult {
   solvable: boolean;
   reason?: string;                    // For logging

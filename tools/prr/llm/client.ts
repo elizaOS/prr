@@ -2499,11 +2499,12 @@ ${codeSnippet}
             const upper = status.toUpperCase();
 
             if (upper === 'UNCERTAIN') {
+              const rest = explanation.trim();
               allResults.set(issue.id, {
                 stillExists: false,
-                explanation:
-                  explanation.trim() ||
-                  'UNCERTAIN: insufficient visible code for adversarial check — not treating as UNFIXED.',
+                explanation: rest
+                  ? `UNCERTAIN (audit pass): ${rest}`
+                  : 'UNCERTAIN (audit pass): insufficient visible code for adversarial check — not treating as UNFIXED.',
               });
               continue;
             }

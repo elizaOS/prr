@@ -38,6 +38,14 @@ export interface StateContext {
   forceNextBatchSizeReduce?: boolean;
   /** Comments that were previously verified but final audit said UNFIXED — we re-queued them (safe over sorry). Used for AAR/visibility. */
   auditOverridesThisRun?: Array<{ commentId: string; path: string; line?: number | null; explanation?: string }>;
+  /** Final audit passed but via UNCERTAIN or truncation guard — for strict exit / visibility (`PRR_STRICT_FINAL_AUDIT_UNCERTAIN`). Ephemeral per run. */
+  finalAuditUncertainThisRun?: Array<{
+    commentId: string;
+    path: string;
+    line?: number | null;
+    kind: 'uncertain' | 'truncation-guard';
+    explanation?: string;
+  }>;
   /** Set during git recovery; consumed when logging prune so operators see recovered vs pruned context. */
   gitRecoveredVerificationCount?: number;
   /** Ephemeral: skip tool/model for rest of run after threshold failures with no fixes (see PRR_SESSION_MODEL_SKIP_FAILURES). */

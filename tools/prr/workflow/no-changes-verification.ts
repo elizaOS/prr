@@ -21,7 +21,8 @@ import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
-import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from './utils.js';
+import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment, getDuplicateClusterCommentIds } from './utils.js';
+import type { ReviewComment } from '../github/types.js';
 import { getMentionedTestFilePaths, getTestPathForSourceFileIssue, reviewSuggestsFixInTest, reviewTargetsMentionedTestFile } from '../analyzer/prompt-builder.js';
 import * as Dismissed from '../state/state-dismissed.js';
 
@@ -90,19 +91,22 @@ function persistInferredTestTargets(
 }
 
 /**
- * Handle no-changes scenario after fixer runs
- * 
- * WHY: When a fixer makes no changes, it could mean:
- * - Issues are already fixed (need to verify)
- * - Fixer couldn't understand the issue (need different approach)
- * - Fixer hit a limitation (need rotation)
- * 
+ * Handle no-changes scenario after fixer runs.
+ *
+ * WHY: When a fixer makes no changes, it could mean: issues already fixed (verify), fixer confused
+ * (different approach), or limitation (rotation).
+ *
  * WORKFLOW:
  * 1. Parse fixer's explanation for why no changes were made
  * 2. If fixer claims "already fixed", verify each issue with LLM
  * 3. Mark verified issues as fixed and remove from unresolved list
  * 4. Track no-changes for performance stats
  * 5. Return whether to continue, break, or proceed to rotation
+ *
+ * Pass `comments` + `duplicateMap` so single-issue **ALREADY_FIXED** and **ALREADY_FIXED any-threshold**
+ * dismiss the **entire dedup cluster** (`getDuplicateClusterCommentIds`). **WHY:** Auto-verify on real
+ * fixes already marks duplicates when one canonical change lands; the no-change path used to dismiss
+ * only the queued row, leaving cluster siblings neither verified nor dismissed → BUG DETECTED repopulate.
  */
 export async function handleNoChangesWithVerification(
   unresolvedIssues: UnresolvedIssue[],
@@ -115,7 +119,10 @@ export async function handleNoChangesWithVerification(
   verifiedThisSession: Set<string>,
   parseNoChangesExplanation: (output: string) => string | null,
   /** When provided, CANNOT_FIX/WRONG_LOCATION responses can persist other-file paths for retry. When omitted, persistence is skipped. */
-  workdir?: string
+  workdir?: string,
+  /** Full PR comment list — used to dismiss duplicate-cluster siblings on ALREADY_FIXED. */
+  comments?: ReviewComment[],
+  duplicateMap?: Map<string, string[]>,
 ): Promise<{
   shouldBreak: boolean;
   shouldContinue: boolean;
@@ -141,22 +148,38 @@ export async function handleNoChangesWithVerification(
           const detail = (structuredResult.resultDetail ?? 'ALREADY_FIXED').trim().substring(0, 120);
           // Prompts.log audit: single-issue ALREADY_FIXED with no code blocks was re-sent (duplicate 78k prompt). Dismiss immediately so we don't retry the same prompt.
           if (unresolvedIssues.length === 1) {
-            Dismissed.dismissIssue(
-              stateContext,
-              firstIssueAf.comment.id,
-              `ALREADY_FIXED — ${detail || 'fixer confirmed no changes needed'}`,
-              'already-fixed',
-              firstIssueAf.comment.path,
-              firstIssueAf.comment.line,
-              firstIssueAf.comment.body,
-              undefined
-            );
+            const detailMsg = detail || 'fixer confirmed no changes needed';
+            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const dismissText = `ALREADY_FIXED — ${detailMsg}`;
+            for (const cid of clusterIds) {
+              if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
+                continue;
+              }
+              const c =
+                comments?.find((co) => co.id === cid) ??
+                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              if (!c) {
+                debug('ALREADY_FIXED cluster: skip dismiss (no comment row)', { commentId: cid });
+                continue;
+              }
+              Dismissed.dismissIssue(
+                stateContext,
+                cid,
+                dismissText,
+                'already-fixed',
+                c.path,
+                c.line,
+                c.body,
+                undefined,
+              );
+            }
+            const clusterSet = new Set(clusterIds);
             Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
             return {
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: [],
+              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
               progressMade: 0,
             };
           }
@@ -180,22 +203,25 @@ export async function handleNoChangesWithVerification(
           debug('ALREADY_FIXED any-counter', { commentId: firstIssueAf.comment.id, anyCount, threshold: ALREADY_FIXED_ANY_THRESHOLD });
           if (anyCount >= ALREADY_FIXED_ANY_THRESHOLD) {
             debug('ALREADY_FIXED dismiss: any-threshold reached', { commentId: firstIssueAf.comment.id, anyCount });
-            Dismissed.dismissIssue(
-              stateContext,
-              firstIssueAf.comment.id,
-              `ALREADY_FIXED ${anyCount}× (multiple models) — dismissing as already-fixed`,
-              'already-fixed',
-              firstIssueAf.comment.path,
-              firstIssueAf.comment.line,
-              firstIssueAf.comment.body,
-              undefined
-            );
+            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const dismissText = `ALREADY_FIXED ${anyCount}× (multiple models) — dismissing as already-fixed`;
+            const clusterSet = new Set(clusterIds);
+            for (const cid of clusterIds) {
+              if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
+                continue;
+              }
+              const c =
+                comments?.find((co) => co.id === cid) ??
+                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              if (!c) continue;
+              Dismissed.dismissIssue(stateContext, cid, dismissText, 'already-fixed', c.path, c.line, c.body, undefined);
+            }
             Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
             return {
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssueAf.comment.id),
+              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
               progressMade: 0,
             };
           }

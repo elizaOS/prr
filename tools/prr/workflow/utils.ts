@@ -263,6 +263,30 @@ export function parseResultCode(output: string): {
   return { resultCode, resultDetail, ...(caveat ? { caveat } : {}) };
 }
 
+/**
+ * All comment IDs in the same LLM/heuristic dedup cluster as `commentId` (canonical + dupes).
+ * WHY: When we dismiss one member for ALREADY_FIXED, siblings must not stay open — they caused
+ * empty-queue / BUG DETECTED repopulate (output.log audit milady#1511).
+ */
+/**
+ * Canonical comment id plus every id merged into it by LLM/heuristic dedup (or the full cluster if `commentId` is a dupe).
+ * WHY: Dismissing or verifying only one row leaves sibling thread IDs “unaccounted” while the queue is empty
+ * (e.g. no-change ALREADY_FIXED) — see `handleNoChangesWithVerification` and DEVELOPMENT.md path accounting.
+ */
+export function getDuplicateClusterCommentIds(
+  commentId: string,
+  duplicateMap: Map<string, string[]> | undefined,
+): string[] {
+  if (!duplicateMap || duplicateMap.size === 0) return [commentId];
+  if (duplicateMap.has(commentId)) {
+    return [commentId, ...(duplicateMap.get(commentId) ?? [])];
+  }
+  for (const [canonical, dupes] of duplicateMap) {
+    if (dupes.includes(commentId)) return [canonical, ...dupes];
+  }
+  return [commentId];
+}
+
 /** Match path-like tokens (e.g. "build.ts", "src/service.ts") in CANNOT_FIX/WRONG_LOCATION detail text. */
 const OTHER_FILE_PATTERN = /\b([a-zA-Z0-9_][a-zA-Z0-9_.\/-]*\.(?:ts|tsx|js|jsx|mjs|cjs|json|py|go|rs|java|kt))\b/g;
 

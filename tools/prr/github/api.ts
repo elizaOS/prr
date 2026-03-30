@@ -38,7 +38,7 @@ const BOT_PATTERNS = [
  * Exclude from fixable/grouping so we don't send them to the fix loop.
  * WHY: Those blurbs are not code reviews; treating them as issues wasted 4+ iterations and produced only UNCLEAR/WRONG_LOCATION.
  */
-function isCodeRabbitMetaComment(comment: { author: string; body: string }): boolean {
+export function isCodeRabbitMetaComment(comment: { author: string; body: string }): boolean {
   if (!/coderabbitai\[bot\]/i.test(comment.author)) return false;
   const b = comment.body.trim();
   if (/^ℹ️\s*Recent review info/i.test(b)) return true;

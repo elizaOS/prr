@@ -88,7 +88,7 @@ export interface PushIterationContexts {
    * Cache of last analysis result (comment IDs + headSha + file hashes → unresolved, duplicateMap).
    * When comment set and file content for comment paths unchanged, reuse to skip expensive findUnresolvedIssues (output.log audit).
    */
-  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
+  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]>; changedFiles?: string[] } | null };
   /** Thread IDs we have already replied to this run (one reply per thread). */
   repliedThreadIds: Set<string>;
 }
@@ -198,7 +198,7 @@ export async function executePushIteration(
     contexts.lastAnalysisCacheRef
   );
   
-  const { comments, unresolvedIssues, duplicateMap } = loopResult;
+  const { comments, unresolvedIssues, duplicateMap, changedFiles: prChangedFiles } = loopResult;
   debug('Push iteration: comments processed', {
     pushIteration,
     commentCount: comments.length,
@@ -263,7 +263,8 @@ export async function executePushIteration(
     const preChecks = await ResolverProc.executePreIterationChecks(
       fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, getRunner(), options,
       checkForNewBotReviews, getCodeSnippet, getCurrentModel, config.githubToken,
-      workdir
+      workdir,
+      prChangedFiles,
     );
     
     if (preChecks.shouldBreak) {
@@ -371,6 +372,7 @@ export async function executePushIteration(
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut,
       fixIteration,
+      duplicateMap,
       callbacks.onDisableRunner
     );
     

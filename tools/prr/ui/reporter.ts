@@ -9,6 +9,20 @@ import type { StateContext } from '../state/state-context.js';
 import { getState } from '../state/state-context.js';
 import * as Performance from '../state/state-performance.js';
 import * as Verification from '../state/state-verification.js';
+
+/**
+ * Omit PR-description boilerplate and auto-verified duplicate threads from AAR per-thread previews.
+ * WHY: `### What this adds` bodies dominate the handoff without actionable signal; duplicate-of-canonical
+ * rows repeat the same fix — the header count + gray “detail omitted” line keeps totals honest.
+ */
+function shouldSuppressFixedThisSessionDetail(comment: ReviewComment, stateContext: StateContext | null): boolean {
+  const body = sanitizeCommentForDisplay(comment.body).trim();
+  if (/^###\s*what this adds\b/im.test(body)) return true;
+  if (stateContext && Verification.getVerificationRecord(stateContext, comment.id)?.autoVerifiedFrom) {
+    return true;
+  }
+  return false;
+}
 import * as Dismissed from '../state/state-dismissed.js';
 import type { DismissedIssue } from '../state/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
@@ -117,8 +131,8 @@ export function sanitizeCommentForDisplay(body: string): string {
   return text;
 }
 
-/** First line suitable for "Fixed This Session" — strip markdown headings, skip generic "Summary" etc. */
-function getFixedIssueTitle(sanitizedBody: string): string {
+/** First line suitable for "Fixed This Session" — strip markdown headings, skip generic "Summary" etc. Exported for unit tests. */
+export function getFixedIssueTitle(sanitizedBody: string): string {
   const lines = sanitizedBody.split('\n').map(l => l.trim()).filter(Boolean);
   const genericFirstLines = /^(#+\s*)?(Summary|Done|Fixed|Overview)$/i;
   for (const line of lines) {
@@ -748,12 +762,23 @@ export async function printAfterActionReport(
 
   // --- Fixed this session ---
   if (fixedThisSessionComments.length > 0) {
+    const prominent = fixedThisSessionComments.filter(
+      (c) => !shouldSuppressFixedThisSessionDetail(c, stateContext),
+    );
+    const suppressed = fixedThisSessionComments.length - prominent.length;
     console.log(chalk.green(`\n━━━ Fixed This Session (${formatNumber(fixedThisSessionComments.length)}) ━━━`));
-    for (const comment of fixedThisSessionComments) {
+    for (const comment of prominent) {
       const preview = getFixedIssueTitle(sanitizeCommentForDisplay(comment.body));
       const truncated = preview.length > 100 ? preview.substring(0, 100) + '...' : preview;
       console.log(chalk.green(`  ✓ ${formatCommentLocation(comment)}`));
       console.log(chalk.gray(`    ${truncated}`));
+    }
+    if (suppressed > 0) {
+      console.log(
+        chalk.gray(
+          `  … and ${formatNumber(suppressed)} duplicate or meta thread(s) verified this session (detail omitted).`,
+        ),
+      );
     }
   }
 

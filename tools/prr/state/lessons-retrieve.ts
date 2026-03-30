@@ -37,12 +37,42 @@ function extractLessonTargetPaths(lesson: string): string[] {
   return out;
 }
 
+/** Path appears in the same "do not edit …" clause (before `,` / `;` / em-dash), not only in a later hint. */
+function forbidEditClauseTouchesPath(lesson: string, pathNorm: string): boolean {
+  const flat = lesson.replace(/\\/g, '/');
+  const esc = pathNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `\\b(?:do\\s+not|don't|must\\s+not|should\\s+not|never)\\s+(?:edit|modify|change|touch)\\s+[^,;—\\n]{0,240}?${esc}`,
+    'i',
+  ).test(flat);
+}
+
+/**
+ * True when the lesson tells the fixer not to edit `issueFilePath` (same path as the current issue).
+ * **WHY:** File-scoped or global lessons sometimes record "wrong file — do not edit X" while keyed under X,
+ * which blocks batch fixes until load/prune or single-issue filtering removes them (ROADMAP lesson conflict).
+ */
+export function lessonForbidsEditingIssuePath(lesson: string, issueFilePath: string): boolean {
+  const p = Normalize.sanitizeFilePathHeader(issueFilePath);
+  if (!p) return false;
+  if (
+    !/\b(?:do\s+not|don't|must\s+not|should\s+not|never)\s+(?:edit|modify|change|touch)\b/i.test(lesson)
+  ) {
+    return false;
+  }
+  const targets = extractLessonTargetPaths(lesson);
+  if (!targets.includes(p)) return false;
+  return forbidEditClauseTouchesPath(lesson, p.replace(/\\/g, '/'));
+}
+
 function lessonMatchesIssueContext(
   lesson: string,
   issueFilePath: string,
   commentBody: string,
   allowedPaths: string[] = []
 ): boolean {
+  if (lessonForbidsEditingIssuePath(lesson, issueFilePath)) return false;
+
   const cleanedIssue = Normalize.sanitizeFilePathHeader(issueFilePath);
   const currentPaths = new Set(
     [cleanedIssue, ...allowedPaths.map((p) => Normalize.sanitizeFilePathHeader(p))].filter(Boolean)

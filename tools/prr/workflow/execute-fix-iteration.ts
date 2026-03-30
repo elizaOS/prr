@@ -207,6 +207,8 @@ export async function executeFixIteration(
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
   /** Current fix iteration (1-based). When 1, use conservative prompt cap to avoid timeout (audit). */
   fixIteration: number,
+  /** LLM dedup: dismiss duplicate-cluster siblings when canonical gets ALREADY_FIXED (no-changes path). */
+  duplicateMap?: Map<string, string[]>,
   onDisableRunner?: (runnerName: string) => void
 ): Promise<{
   shouldContinue: boolean;
@@ -779,7 +781,20 @@ export async function executeFixIteration(
       );
     }
     // Handle no-changes scenario with verification
-    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(workingUnresolved, runner.name, currentModel, result.output || '', llm, stateContext, lessonsContext, verifiedThisSession, parseNoChangesExplanation, workdir);
+    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(
+      workingUnresolved,
+      runner.name,
+      currentModel,
+      result.output || '',
+      llm,
+      stateContext,
+      lessonsContext,
+      verifiedThisSession,
+      parseNoChangesExplanation,
+      workdir,
+      comments,
+      duplicateMap,
+    );
     
     let updatedConsecutiveFailures = consecutiveFailures;
     let updatedModelFailuresInCycle = modelFailuresInCycle;

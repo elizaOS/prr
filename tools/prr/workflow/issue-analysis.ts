@@ -59,7 +59,7 @@ import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
 import { looksLikeCreateFileIssue, validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
-import { assessSolvability, resolveTrackedPath, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { assessSolvability, resolveTrackedPathWithPrFiles, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
 import { stripSeverityFraming } from './helpers/review-body-normalize.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import { buildLifecycleAwareVerificationSnippet, commentNeedsLifecycleContext } from './fix-verification.js';
@@ -1793,9 +1793,12 @@ export async function findUnresolvedIssues(
         'This is a lifecycle/order-sensitive issue. Answer NO only if the shown code provides concrete evidence that the full behavior is now correct.',
       ];
     }
+    // resolvedPath: solvability first, then rename/diff hints, then PR-scoped basename tie-break.
+    // WHY resolveTrackedPathWithPrFiles last: bare filenames can match many tracked files; the PR
+    // diff list disambiguates to the path actually changed on this branch (DEVELOPMENT.md — path accounting).
     const resolvedPath = solvability.resolvedPath
       ?? resolvePathFromDiff(comment.path, changedFiles)
-      ?? resolveTrackedPath(workdir, comment.path, comment.body)
+      ?? resolveTrackedPathWithPrFiles(workdir, comment.path, comment.body ?? '', changedFiles)
       ?? undefined;
     needSnippets.push({ comment, snippetLine, contextHints, resolvedPath });
   }

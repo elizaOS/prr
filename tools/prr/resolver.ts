@@ -256,6 +256,11 @@ export class PRResolver {
     return this.stateContext?.auditOverridesThisRun?.length ?? 0;
   }
 
+  /** For PRR_STRICT_FINAL_AUDIT_UNCERTAIN: UNCERTAIN or truncation-guard passes (audit did not affirm a normal FIXED). */
+  getFinalAuditUncertainCount(): number {
+    return this.stateContext?.finalAuditUncertainThisRun?.length ?? 0;
+  }
+
   private async setupRunner(): Promise<Runner> { const result = await Rotation.setupRunner(this.options, this.config); this.runners = result.all; return result.primary; }
   private buildConflictResolutionPrompt(conflictedFiles: string[], baseBranch: string): string { return GitOps.buildConflictResolutionPrompt(conflictedFiles, baseBranch); }
 
