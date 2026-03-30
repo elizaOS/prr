@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **RESULTS SUMMARY (pill-output #18):** **◆ Final audit re-queued** ( **`auditOverridesThisRun`** count) is printed **after** fixed/dismissed outcome lines instead of only above **Exit** — **WHY:** Operators scanning the summary see re-queue volume with other counts; follow-up lines still explain recovery vs **Remaining**. **DEVELOPMENT.md** — state repair quick ref + final-audit wording (pill #24 overlap messaging).
+
 - **Single-issue recovery vs batch `allowedPaths`:** **`trySingleIssueFix`** (`tools/prr/workflow/helpers/recovery.ts`) now adds **`getRenameTargetPath`** and the same **`issueRequestsTests` / `__tests__/` co-located test hint** as **`getAllowedPathsForIssues`** in **`execute-fix-iteration.ts`** — **WHY:** Focus mode could reject runner edits the batch path would allow (rename + “add tests” reviews). **`REPO_TOP_LEVEL`** (`shared/path-utils.ts`) includes **`e2e`**, **`playwright`**, **`cypress`**, **`fixtures`**, **`integration`**, **`wdio`** so those trees are not misclassified as external package roots.
 
 - **Basename paths, empty-queue accounting, and AAR noise (output.log audit — e.g. multi-file TestCafe PR):**

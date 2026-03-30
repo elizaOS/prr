@@ -72,6 +72,8 @@ Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or *
 
 **HEAD change:** When GitHub PR **head SHA** changes, **verified** state is cleared so fixes are re-checked; **`already-fixed`** dismissals are cleared. **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears **all** dismissals (aggressive, e.g. after a messy rebase). See **AGENTS.md** and **`tools/prr/state/state-core.ts`**.
 
+**State repair quick ref (pill / audits):** On load, **`StateManager.load`** / **`loadState`** may log **Cleaned N overlap** or **removed … from verifiedFixed** — that is automatic repair of legacy **`verified ∩ dismissed`**; a one-time message is normal. If **RESULTS SUMMARY** still warns **verified ∩ dismissed** at exit, delete **`<clone>/.pr-resolver-state.json`**, keep **`output.log`**, re-run (**README** Troubleshooting). After a messy rebase, consider **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** once. **`prr --clean-state`** removes state accidentally committed in the workdir.
+
 **Path resolution (review comments):** Extension fallbacks (**`tryResolvePathWithExtensionVariants`** in **`shared/path-utils.ts`**) and fragment handling (**`isReviewPathFragment`**, **`pathDismissCategoryForNotFound`**) keep **one path → one dismissal category**; legacy fragment **`missing-file`** is normalized to **`path-unresolved`** on load. Extend rules in **`path-utils`** / solvability, not ad hoc branches.
 
 **Ambiguous basename + PR diff (`resolveTrackedPathWithPrFiles`):** **`resolveTrackedPathDetailed`** may return **`ambiguous`** when the review path is a bare filename and **`git ls-files`** finds several matches. **`resolveTrackedPathWithPrFiles`** (in **`tools/prr/workflow/helpers/solvability.ts`**) intersects those candidates with the PR’s **`changedFiles`** list (**`git diff --name-only`** `origin/<base>...HEAD` from **`processCommentsAndPrepareFixLoop`**). **WHY:** The PR almost always intends the file it modifies; guessing another same-named file would be wrong-file fixes or “path does not exist” skips. If **0** or **2+** candidates lie in **`changedFiles`**, resolution stays unset (conservative).
@@ -88,7 +90,7 @@ Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or *
 
 **Partial base-merge cache:** State may hold **`partialConflictResolutions`** and **`partialConflictSavedOriginBaseSha`** (tip of **`origin/<base>`** when merge failed part-way). If the base tip changes before the next run, partials are cleared (**`tools/prr/workflow/base-merge.ts`**). Cleared on PR **HEAD** change (**`StateManager`**, **`state-core`**).
 
-**Final audit vs queue:** When the final adversarial audit returns **UNFIXED** for an issue that was **verified** earlier in the run, PRR **re-queues** it (removes from verified, fix loop again). **RESULTS SUMMARY** and the GitHub review summary report **how many** were re-queued (**`auditOverridesThisRun`**). **WHY:** Documented as “safe over sorry” in **README** / **AGENTS.md**.
+**Final audit vs queue:** When the final adversarial audit returns **UNFIXED** for an issue that was **verified** earlier in the run, PRR **re-queues** it (removes from verified, fix loop again). **RESULTS SUMMARY** prints **◆ Final audit re-queued: N** next to fixed/dismissed outcome lines (**`auditOverridesThisRun`**); follow-up gray/yellow lines explain recovery vs **Remaining**. **WHY:** Scannable counts (pill-output #18); “safe over sorry” in **README** / **AGENTS.md**.
 
 **Technical implications**:
 - State persistence is critical (resume after interruption)

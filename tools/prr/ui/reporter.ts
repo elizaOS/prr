@@ -317,25 +317,8 @@ export function printFinalSummary(
   console.log(chalk.cyan('                      RESULTS SUMMARY                         '));
   console.log(chalk.cyan('════════════════════════════════════════════════════════════'));
 
-  const auditOverridesEarly = stateContext.auditOverridesThisRun ?? [];
-  if (auditOverridesEarly.length > 0) {
-    console.log(
-      chalk.cyan(
-        `\n  ◆ Final audit re-queued: ${formatNumber(auditOverridesEarly.length)} issue(s) (adversarial pass said UNFIXED for previously verified — see After Action Report)`,
-      ),
-    );
-    if (
-      remainingCount !== undefined &&
-      remainingCount > 0 &&
-      remainingCount !== auditOverridesEarly.length
-    ) {
-      console.log(
-        chalk.gray(
-          `     (If Remaining below differs: re-queue is per thread; Remaining dedupes by file:line and can shrink after fixes.)`,
-        ),
-      );
-    }
-  }
+  const auditOverridesThisRun = stateContext.auditOverridesThisRun ?? [];
+
   if (overlapIds.length > 0) {
     console.warn(
       chalk.yellow(
@@ -397,6 +380,26 @@ export function printFinalSummary(
     }
   }
 
+  // Pill-output #18: keep final-audit re-queue count with other outcome lines (fixed / dismissed), not only above Exit.
+  if (auditOverridesThisRun.length > 0) {
+    console.log(
+      chalk.cyan(
+        `\n  ◆ Final audit re-queued: ${formatNumber(auditOverridesThisRun.length)} issue(s) (adversarial pass said UNFIXED for previously verified — see After Action Report)`,
+      ),
+    );
+    if (
+      remainingCount !== undefined &&
+      remainingCount > 0 &&
+      remainingCount !== auditOverridesThisRun.length
+    ) {
+      console.log(
+        chalk.gray(
+          `     (If Remaining below differs: re-queue is per thread; Remaining dedupes by file:line and can shrink after fixes.)`,
+        ),
+      );
+    }
+  }
+
   // Remaining = unresolved + exhausted/chronic-failure (we gave up after repeated failures; they need human follow-up).
   if (remainingCount !== undefined) {
     if (remainingCount === 0) {
@@ -436,8 +439,8 @@ export function printFinalSummary(
   }
 
   // Mid-run final audit re-opened these for re-verification (auditOverridesThisRun). Wording depends on end state (Cycle 64 M1).
-  const auditOverrides = stateContext.auditOverridesThisRun ?? [];
-  if (auditOverrides.length > 0) {
+  if (auditOverridesThisRun.length > 0) {
+    const auditOverrides = auditOverridesThisRun;
     const relevantVerifiedSet = new Set(relevantVerified);
     const unrecovered = auditOverrides.filter((o) => !relevantVerifiedSet.has(o.commentId));
     if (remainingCount === undefined) {
