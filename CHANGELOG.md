@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **README (Philosophy):** Explicit “what logs showed vs what the code does now” paragraph — verified∩dismissed repair, path variants / fragments, model skip + session skip, summary overlap warnings, and **residual risk** / operator trust model (no new feature; documents real audit history).
+
 ### Added
 
 - **ElizaCloud rotation visibility (pill-output #1793):** After **`validateAndFilterModels`**, **`warn`** when the ElizaCloud-backed list has **≤3** models post skip-list + API filter — points to **`PRR_ELIZACLOUD_INCLUDE_MODELS`** and **`docs/MODELS.md`**. **README** troubleshooting: overlap repair vs delete state / **`--clean-state`**. **`shared/README.md`**: skip list / thinking cap / git-hooks pointers.
