@@ -37,7 +37,7 @@ Audits and agents sometimes conflate these when logs mention “workdir” next 
 
 **WHY document this here:** Contributors otherwise grep for `src/` in pill text and assume missing files are a bug in prr. The status lines record what was implemented in **this** tree vs. what was eliza/downstream-only.
 
-**Where the prr-side work landed (pointers):** Path fragments vs `missing-file` and extension variants — **`shared/path-utils.ts`**, solvability; verified/dismissed overlap and head cleanup — **`tools/prr/state`**; session model skip / diminishing-returns warning — **`shared/constants.ts`**, **`tools/prr/models/rotation.ts`**, **`tools/prr/workflow/push-iteration-loop.ts`**; committed-fix scan cache — **`shared/git/git-commit-scan.ts`**; 429 concurrency restore — **`shared/llm/rate-limit.ts`**; dirty / unmergeable PR warning — setup phase (see **AGENTS.md**). Full bullets: **CHANGELOG [Unreleased]**.
+**Where the prr-side work landed (pointers):** Path fragments vs `missing-file` and extension variants — **`shared/path-utils.ts`**, solvability; verified/dismissed overlap and head cleanup — **`tools/prr/state`**; session model skip / diminishing-returns warning — **`shared/constants.js`** (see **`shared/constants/runners.ts`** / related domain files), **`tools/prr/models/rotation.ts`**, **`tools/prr/workflow/push-iteration-loop.ts`**; committed-fix scan cache — **`shared/git/git-commit-scan.ts`**; 429 concurrency restore — **`shared/llm/rate-limit.ts`**; dirty / unmergeable PR warning — setup phase (see **AGENTS.md**). Full bullets: **CHANGELOG [Unreleased]**.
 
 ### Pill `N/A (external)` items → what to do in **this** repo
 
@@ -137,6 +137,28 @@ Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or *
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Codebase structure (modular layout)
+
+PRR’s tree was refactored to **separate concerns without changing intended runtime behavior** (move + re-export; see **CHANGELOG [Unreleased]** — codebase organization).
+
+**WHY split large files**
+
+- **Audits and fixes:** Reviewing a 3k-line LLM client or a monolithic issue-analysis file made it easy to miss interactions (verifier vs snippet vs dedup). Smaller modules map to one theme each.
+- **Tests:** Pure helpers (verification heuristics, snippet windowing, dedup) can be covered without constructing the full **`LLMClient`** or full analysis context.
+- **Dependency rules:** **`shared/`** must stay usable from any tool; moving the pill hook out of **`closeOutputLog()`** keeps **`shared/logger.ts`** from importing **`tools/pill/`**.
+- **Stable import paths:** **`tools/prr/llm/client.ts`** and **`workflow/issue-analysis.ts`** still **re-export** symbols that previously lived inline so external and in-repo callers do not need to chase new paths unless they want to.
+
+**Where things live**
+
+| Area | Layout | WHY |
+|------|--------|-----|
+| **Constants** | **`shared/constants.ts`** (shim) → **`shared/constants/index.ts`** + domain files (**`models.ts`**, **`llm.ts`**, **`polling.ts`**, **`git-constants.ts`**, **`state-constants.ts`**, …) | Boundaries match themes; module state such as **`getEffectiveElizacloudSkipModelIds`** stays in a single file (**`models.ts`**) so singleton behavior is obvious. |
+| **Logger** | **`shared/logger.ts`** re-exports **`shared/timing.ts`**, **`shared/token-tracking.ts`** | Stream I/O and prompt logging are separate from wall-clock/token accounting; easier to reason about shutdown and metrics. |
+| **Pill** | **`tools/pill/after-close-logs.ts`** — invoked **after** **`closeOutputLog()`** from tool CLIs when **`--pill`** | Preserves opt-in pill without violating **`shared` → `tools`** layering. |
+| **LLM** | **`tools/prr/llm/client.ts`** (**`LLMClient`**) + **`verification-heuristics.ts`**, **`provider-probes.ts`**, **`error-helpers.ts`** (re-exported from **`client.ts`**) | Probes and pure string/heuristic logic do not need a client instance; one barrel (**`client.js`**) avoids churn for **split-plan**, rotation, and tests. |
+| **Issue analysis** | **`issue-analysis.ts`** (orchestrator, **`findUnresolvedIssues`**) + **`issue-analysis-snippet-helpers.ts`**, **`issue-analysis-snippets.ts`**, **`issue-analysis-dedup.ts`**, **`issue-analysis-context.ts`** | Dedup, low-level snippets, and STALE/ordering context evolve on different cadences; the orchestrator reads as a pipeline driver. |
+| **Resolver surface** | **`tools/prr/resolver-proc.ts`** — **only** **`export { … } from './workflow/…'`** | **`resolver.ts`** and integration tests import one facade; implementations stay next to related workflow code (**`bot-wait.ts`**, **`bailout.ts`**, …). |
+
 ### Commit gate and catalog model auto-heal
 
 Review bots sometimes claim a **valid** vendor model id is a “typo” and tell authors to switch to another valid id (e.g. “change `gpt-5-mini` to `gpt-4o-mini`”). That is not actionable PRR work when **both** spellings appear in the committed **`generated/model-provider-catalog.json`**: the PR is already aligned with public API ids.
@@ -172,7 +194,11 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 | `tools/prr/cli.ts` | Argument parsing, validation |
 | `shared/config.ts` | Environment/config loading |
 | `tools/prr/resolver.ts` | Main orchestration (delegates to workflow/) |
-| `shared/logger.ts` | Logging, timing, token tracking |
+| `tools/prr/resolver-proc.ts` | **Facade only** — re-exports workflow APIs for resolver/tests (**WHY:** one stable import surface; see *Codebase structure*) |
+| `shared/logger.ts` | Logging, output/prompt streams; re-exports **`shared/timing.ts`**, **`shared/token-tracking.ts`** |
+| `shared/timing.ts` | Session/overall timers (**WHY:** separated from logger I/O; imported via **`logger.js`** for most code) |
+| `shared/token-tracking.ts` | Token phase + usage (**WHY:** same as timing) |
+| `shared/constants.ts` | Shim → **`shared/constants/index.ts`** barrel (**WHY:** domain-sized constant files; see **AGENTS.md**) |
 
 
 ### GitHub Integration
@@ -217,7 +243,24 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 
 | File | Purpose |
 |------|---------|
-| `tools/prr/llm/client.ts` | Anthropic/OpenAI for verification |
+| `tools/prr/llm/client.ts` | **`LLMClient`** — Anthropic/OpenAI/ElizaCloud verification, batch checks, conflict prompts; **re-exports** **`verification-heuristics.ts`**, **`provider-probes.ts`**, **`error-helpers.ts`** (**WHY:** stable `…/client.js` import for tools and tests). |
+| `tools/prr/llm/verification-heuristics.ts` | Pure final-audit / snippet heuristics (no client instance) |
+| `tools/prr/llm/provider-probes.ts` | Model listing and key validation for rotation and CLI |
+| `tools/prr/llm/error-helpers.ts` | ElizaCloud error parsing, JSON sanitize, conflict rules, id normalize |
+
+
+### Issue analysis (workflow)
+
+
+| File | Purpose |
+|------|---------|
+| `tools/prr/workflow/issue-analysis.ts` | **`findUnresolvedIssues`** orchestrator; re-exports public snippet/context helpers (**WHY:** one barrel for tests and **`resolver-proc`**). |
+| `tools/prr/workflow/issue-analysis-snippet-helpers.ts` | Line refs, windowed excerpts, **`getFullFileForAudit`**, **`getWiderSnippetForAnalysis`** |
+| `tools/prr/workflow/issue-analysis-snippets.ts` | **`getCodeSnippet`**, **`buildSnippetFromRepoContent`** (wires helpers + context) |
+| `tools/prr/workflow/issue-analysis-dedup.ts` | Heuristic + LLM + cross-file dedup |
+| `tools/prr/workflow/issue-analysis-context.ts` | STALE symbols, ordering / conservative analysis snippets |
+| `tools/prr/workflow/bot-wait.ts` | Post-push smart wait, rate-limit short-wait, **`checkForNewBotReviews`** |
+| `tools/prr/workflow/bailout.ts` | Stalemate bail-out sequence |
 
 
 ### State Persistence
@@ -871,7 +914,7 @@ const SPOT_CHECK_PASS_THRESHOLD = 0.4;  // 40% must pass to justify full check
 
 #### Fix loop audits (output.log)
 
-The following pain points and improvements come from auditing real runs (e.g. elizaOS/eliza#6562; run metrics and timing are recorded in `tools/prr/AUDIT-CYCLES.md` when we add a cycle). Constants live in `shared/constants.ts`; behavior in `shared/runners/llm-api.ts`, `tools/prr/workflow/execute-fix-iteration.ts`, and related workflow files.
+The following pain points and improvements come from auditing real runs (e.g. elizaOS/eliza#6562; run metrics and timing are recorded in `tools/prr/AUDIT-CYCLES.md` when we add a cycle). Constants are authored under **`shared/constants/`** and imported via **`shared/constants.js`** (shim → barrel); behavior in **`shared/runners/llm-api.ts`**, **`tools/prr/workflow/execute-fix-iteration.ts`**, and related workflow files.
 
 **Implemented (current behavior):**
 

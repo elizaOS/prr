@@ -158,6 +158,18 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 This repo contains **prr** (PR Resolver), **pill** (Program Improvement Log Looker), **split-plan** (PR decomposition planner), **split-exec** (execute split plan), and **story** (PR narrative & changelog). All use a shared library under `shared/`; tool code lives under `tools/prr/`, `tools/pill/`, `tools/split-plan/`, `tools/split-exec/`, and `tools/story/`.
 
+### Repository layout (contributors & agents)
+
+**WHY document this:** PRR clones the **target PR’s repo** into a **workdir**; this monorepo is the **tool source**. Confusing the two causes wrong paths in patches and audits.
+
+| Layer | Path | Role |
+|-------|------|------|
+| **Shared** | `shared/` | Logger (plus timing/token modules), config, git helpers, **`shared/constants/`** (barrel via **`shared/constants.ts`** shim), runners, path-utils — **no imports of** `tools/pill/` **from here** (**WHY:** lower layer stays tool-agnostic). |
+| **PRR** | `tools/prr/` | CLI, **`resolver.ts`**, **`resolver-proc.ts`** (re-export facade only), **`workflow/`**, **`llm/`**, **`github/`**, **`state/`**. |
+| **Other tools** | `tools/pill/`, `tools/split-plan/`, … | Each tool has its own entry point; **pill after logs** runs from those CLIs via **`after-close-logs.ts`**, not from **`shared/logger.ts`** (**WHY:** layering). |
+
+For architecture diagrams, key file tables, and fix-loop internals, see **[DEVELOPMENT.md](DEVELOPMENT.md)**. For clone workdir rules, constants file names, and conventions (e.g. option bags **`XOptions`**), see **[AGENTS.md](AGENTS.md)**. For **optional future** structural ideas (e.g. moving **`GitHubAPI`** / **`LLMClient`** into `shared/`), see **[docs/ROADMAP.md](docs/ROADMAP.md)**. Completed refactors are recorded in **[CHANGELOG.md](CHANGELOG.md)**.
+
 ```bash
 npm install
 npm run typecheck

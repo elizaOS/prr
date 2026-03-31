@@ -12,8 +12,14 @@
 import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
 import { initOutputLog, closeOutputLog, setVerbose, setPillEnabled } from '../../shared/logger.js';
+import { runPillAfterClosedLogs } from '../pill/after-close-logs.js';
 import { createCLI, parseArgs, type SplitExecParsedArgs } from './cli.js';
 import { runSplitExec } from './run.js';
+
+async function closeOutputLogAndPill(): Promise<void> {
+  await closeOutputLog();
+  await runPillAfterClosedLogs();
+}
 
 try {
   initOutputLog({ prefix: 'split-exec' });
@@ -29,7 +35,7 @@ async function main(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red('Error:'), msg);
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 
@@ -42,7 +48,7 @@ async function main(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red('Error:'), msg);
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 
@@ -50,11 +56,11 @@ async function main(): Promise<void> {
 
   try {
     await runSplitExec(parsed.planPath, config, parsed.options);
-    await closeOutputLog();
+    await closeOutputLogAndPill();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red('Error:'), msg);
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 }

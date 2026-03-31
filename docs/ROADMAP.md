@@ -34,7 +34,7 @@ From root **`pill-output.md`** triage — **prr** scope only:
 - **`autoVerifiedFrom`:** **Done** — **`recoverVerificationState`** sets **`PRR_GIT_RECOVERY_VERIFIED_MARKER`** on recovered IDs (see **`types.ts`** / **CHANGELOG**).
 - **Git utilities:** **`checkForConflicts`** JSDoc + **debug** line clarify fetch-only vs in-progress conflicts; **`fetchOriginBranch`** timeout/clear documented in **CHANGELOG**.
 - **CodeRabbit SHA vs HEAD:** **Partial** — startup warns when **`botReviewCommitSha`** ≠ PR HEAD (review **`commit_id`**, or **40-char SHA** in latest bot issue comment if no review row). Optional future: deprioritize stale threads or wait (trade-off vs speed).
-- **Skip list ops:** Refresh **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`** when Model Performance tables show new 0% models (**WHY:** static list drifts vs. gateway reality).
+- **Skip list ops:** Refresh **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants/models.ts`** (barreled as **`shared/constants.js`**) when Model Performance tables show new 0% models (**WHY:** static list drifts vs. gateway reality).
 - **`determineScope`:** **Done** — falls back to first directory segment (e.g. `src`) when “meaningful” segments are empty.
 
 ## Lesson staleness / conflict detection
@@ -86,3 +86,11 @@ From [tools/prr/AUDIT-CYCLES.md](../tools/prr/AUDIT-CYCLES.md) consolidated find
 - **Confidence scoring** — generator indicates uncertainty, judge can teach ("I'm 60% sure this is an issue" — judge confirms or dismisses with evidence).
 
 **WHY:** Current runs show high dismissal rates (e.g. 62% EXISTING for already-fixed, many stale/file-unchanged). That implies the generator often flags issues that the judge then dismisses. Closing the loop would reduce tokens (fewer issues to analyze/fix), improve signal-to-noise for humans, and make PRR's behavior more predictable. Tradeoff: requires generator support or a separate "dismissal → analysis prompt" pipeline; we already persist dismissal reasons, so export and pattern analysis are low-hanging first steps.
+
+## Further structural follow-ups (optional)
+
+**Idea A — Slim `LLMClient`:** Extract internal prompt builders (e.g. final-audit batching, conflict sub-prompts) into dedicated modules or a thin mixin, keeping **`complete()`** and transport as the single network entry. **WHY:** `client.ts` remains large; smaller units reduce review load and make provider-specific quirks easier to test in isolation. **Tradeoff:** Touch a hot file; needs careful re-export or import churn.
+
+**Idea B — `shared/` GitHub + LLM surfaces:** Move a stable **`GitHubAPI`** (or narrower port) to **`shared/github/`** and core **`LLMClient`** (transport + **`complete`**) to **`shared/llm/`** (names TBD) so **split-plan**, **split-exec**, and **story** depend only on **`shared/`** instead of **`tools/prr/`**. **WHY:** Clear package boundaries and fewer accidental PRR→tool cycles. **Tradeoff:** Large migration; wait until GitHub/LLM module APIs stop churning (see **AGENTS.md** — *Future shared migration*).
+
+**Idea C — Direct imports vs barrels:** Optionally migrate call sites from **`import { … } from '…/llm/client.js'`** to submodule paths where it improves tree-shaking or clarity; keep **`client.ts`** as the documented public surface until then. **WHY:** Barrels are convenient but can imply “everything lives in one file” to new readers.

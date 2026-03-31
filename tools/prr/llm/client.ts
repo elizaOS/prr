@@ -39,171 +39,64 @@ import {
   estimateElizacloudInputTokensFromCharLength,
   getElizaCloudModelContextSpec,
   getMaxElizacloudLlmCompleteInputChars,
-  getMaxFixPromptCharsForModel,
   lowerModelMaxPromptChars,
-  resolveElizaCloudCanonicalModelId,
 } from '../../../shared/llm/model-context-limits.js';
-
-/** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
-function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
-  const out: { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } = {};
-  if (error == null || typeof error !== 'object') return out;
-  const e = error as Record<string, unknown>;
-  out.message = e.message != null ? String(e.message) : undefined;
-  out.cause = e.cause;
-  if (typeof e.status === 'number') out.status = e.status as number;
-  const headers = e.headers;
-  if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
-    const h = headers as Record<string, unknown> & { forEach?: (cb: (v: string, k: string) => void) => void };
-    if (typeof h.forEach === 'function') {
-      out.headers = {};
-      h.forEach((v: string, k: string) => { out.headers![k] = v; });
-    } else {
-      out.headers = {};
-      for (const [k, v] of Object.entries(h)) {
-        if (typeof v === 'string') out.headers[k] = v;
-        else if (Array.isArray(v) && v.length) out.headers[k] = String(v[0]);
-      }
-    }
-  }
-  if ('error' in e && e.error !== undefined) out.body = e.error;
-  if (out.body === undefined && 'data' in e && e.data !== undefined) out.body = e.data;
-  const cause = e.cause as Record<string, unknown> | undefined;
-  if (cause && typeof cause === 'object' && out.body === undefined && 'responseBody' in cause) out.body = cause.responseBody;
-  if (cause && typeof cause === 'object' && out.body === undefined && 'error' in cause) out.body = cause.error;
-  return out;
-}
-
-/** True when error looks like ElizaCloud/gateway 5xx (status or message heuristics). */
-function isElizaCloudServerClassError(e: unknown): boolean {
-  const ctx = getElizaCloudErrorContext(e);
-  if (ctx.status === 500 || ctx.status === 502 || ctx.status === 504) return true;
-  const msg = `${ctx.message ?? ''} ${e instanceof Error ? e.message : String(e)}`;
-  return /500|504|502|gateway.*timeout|deployment.*timeout|internal_server_error/i.test(msg);
-}
+import {
+  elizaCloudServerErrorExpectationDebug,
+  getConflictFileTypeRules,
+  getElizaCloudErrorContext,
+  isElizaCloudServerClassError,
+  isLikelyContextLengthExceededError,
+  maskApiKey,
+  normalizeIssueId,
+  sanitizeForJson,
+} from './error-helpers.js';
+import type { ModelRecommendationContext } from './provider-probes.js';
+import { getCheapModelForProvider } from './provider-probes.js';
+import {
+  commentNeedsConservativeExistenceCheck,
+  explanationHasConcreteFixEvidence,
+  explanationMentionsMissingCodeVisibility,
+  finalAuditSnippetLooksTruncatedOrExcerpt,
+  snippetShowsUuidCommentAlignedWithVersionRange,
+} from './verification-heuristics.js';
 
 /**
- * For debug when ElizaCloud returns 5xx: configured max context vs this request size.
- * WHY: Gateway often wraps upstream 400 (context) as 500 — operators need expected limits from model-context-limits.
+ * Re-exports from split modules so `import { … } from '…/llm/client.js'` stays stable.
+ * WHY: Rotation, split-plan, and tests already use this path; moving helpers to
+ * sibling files avoids a 3k+ line single file without forcing every caller to
+ * retarget imports. Prefer importing heuristics/probes/errors from here unless
+ * you are inside `llm/` and need to avoid pulling the full client graph.
  */
-function elizaCloudServerErrorExpectationDebug(
-  model: string,
-  prompt: string,
-  systemPrompt?: string
-): Record<string, string | boolean> {
-  const spec = getElizaCloudModelContextSpec(model);
-  const canonical = resolveElizaCloudCanonicalModelId(model);
-  const sysLen = systemPrompt?.length ?? 0;
-  const total = prompt.length + sysLen;
-  const { approxTokens: estIn, assumedCharsPerToken } = estimateElizacloudInputTokensFromCharLength(model, total);
-  const headroom = spec.maxContextTokens - estIn - ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS;
-  const cappedCompletion = Math.min(
-    ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
-    Math.max(256, headroom),
-  );
-  const worstDefault = estIn + ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
-  return {
-    expectedMaxContextTokens: formatNumber(spec.maxContextTokens),
-    expectedMaxFixPromptChars: formatNumber(getMaxFixPromptCharsForModel('elizacloud', model)),
-    expectedMaxTotalInputChars: formatNumber(getMaxElizacloudLlmCompleteInputChars(model)),
-    requestUserChars: formatNumber(prompt.length),
-    requestSystemChars: formatNumber(sysLen),
-    requestTotalChars: formatNumber(total),
-    estimatedInputTokensApprox: formatNumber(estIn),
-    tokenizerAssumptionCharsPerToken: String(assumedCharsPerToken),
-    maxCompletionTokensDefault: formatNumber(ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS),
-    estimatedInputPlusDefaultMaxOutputApprox: formatNumber(worstDefault),
-    estimatedExceedsContextWithDefaultMaxOut: worstDefault > spec.maxContextTokens,
-    effectiveMaxCompletionAfterContextCap: formatNumber(cappedCompletion),
-    usingUnknownModelContextDefault: canonical === null,
-    ...(canonical != null ? { canonicalModelId: canonical } : {}),
-  };
-}
-
-/**
- * Gateway may return HTTP 500 while embedding a 400 "maximum context length" from the upstream.
- * Retrying is pointless; lowering the fix prompt cap helps the next batch.
- */
-function isLikelyContextLengthExceededError(e: unknown): boolean {
-  const parts: string[] = [];
-  const walk = (x: unknown, depth: number) => {
-    if (depth > 6 || x == null) return;
-    if (x instanceof Error) {
-      parts.push(x.message);
-      walk(x.cause, depth + 1);
-      return;
-    }
-    if (typeof x === 'string') {
-      parts.push(x);
-      return;
-    }
-    if (typeof x === 'object') {
-      try {
-        parts.push(JSON.stringify(x));
-      } catch {
-        parts.push(String(x));
-      }
-    }
-  };
-  walk(e, 0);
-  const t = parts.join('\n');
-  return /maximum context length|maximum context length is \d+ tokens|input tokens\. please reduce|reduce the length of the input messages|context window.*exceeded/i.test(
-    t
-  );
-}
-
-/** Safe description of an API key for debug/error messages (never log the full key). */
-function maskApiKey(key: string | undefined): string {
-  if (key === undefined || key === null) return 'not set';
-  const k = key.trim();
-  if (!k.length) return 'empty after trim';
-  const prefix = k.length <= 8 ? k.slice(0, 2) + '***' : k.slice(0, 6) + '...';
-  return `length=${k.length}, prefix=${prefix}`;
-}
-
-/** File-type-specific rules for conflict resolution prompt (reduces invalid JSON/TS output). */
-function getConflictFileTypeRules(filePath: string): string {
-  if (filePath.endsWith('.json')) {
-    return '\n6. Output must be strict JSON (no comments, no trailing commas).';
-  }
-  if (/\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(filePath)) {
-    return '\n6. Preserve all imports and ensure the result compiles.';
-  }
-  return '';
-}
-
-/** Re-export for consumers that still import from llm/client. */
 export { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
 export { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
-
-/** Normalize issue/comment IDs: strip markdown (headings, bold) and standardize to issue_<n> for matching. */
-function normalizeIssueId(raw: string): string {
-  // Strip markdown formatting that LLMs wrap around IDs.
-  // HISTORY: Haiku started returning "**issue_1**: YES:" (bold markdown) instead
-  // of "issue_1: YES:" — the regex only stripped '#' heading prefixes, so "**issue_1"
-  // normalized to "issue_**issue_1" which never matched allowedIds. Observed: 0/15
-  // parsed in batch analysis, every issue fell through to "assuming unresolved."
-  // This single bug disabled the entire triage/priority system.
-  const normalized = raw.trim()
-    .replace(/^#+\s*/, '')      // "## issue_1" → "issue_1"
-    .replace(/^\*{1,2}/, '')    // "**issue_1" or "*issue_1" → "issue_1"
-    .replace(/\*{1,2}$/, '')    // "issue_1**" → "issue_1"
-    .toLowerCase()
-    .replace(/^issue[_\s]*/i, '') // "issue_1" → "1"
-    .replace(/^#/, '');           // "#1" → "1"
-  return normalized.length > 0 ? `issue_${normalized}` : normalized;
-}
-
-/**
- * Strip unpaired UTF-16 surrogates from a string.
- * Lone surrogates (U+D800–U+DFFF without a valid pair) are invalid in JSON
- * and cause API errors like "no low surrogate in string". Replaces them with U+FFFD.
- */
-function sanitizeForJson(text: string): string {
-  // Match lone high surrogates (not followed by low) and lone low surrogates (not preceded by high)
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
-}
+export {
+  commentNeedsConservativeExistenceCheck,
+  explanationHasConcreteFixEvidence,
+  explanationMentionsMissingCodeVisibility,
+  finalAuditSnippetLooksTruncatedOrExcerpt,
+  snippetShowsUuidCommentAlignedWithVersionRange,
+} from './verification-heuristics.js';
+export type { ModelRecommendationContext } from './provider-probes.js';
+export {
+  fetchAvailableAnthropicModels,
+  fetchAvailableElizaCloudModels,
+  fetchAvailableOpenAIModels,
+  getCheapModelForProvider,
+  probeElizaCloudModel,
+  validateElizaCloudKey,
+  validateOpenAIKey,
+} from './provider-probes.js';
+export {
+  elizaCloudServerErrorExpectationDebug,
+  getConflictFileTypeRules,
+  getElizaCloudErrorContext,
+  isElizaCloudServerClassError,
+  isLikelyContextLengthExceededError,
+  maskApiKey,
+  normalizeIssueId,
+  sanitizeForJson,
+} from './error-helpers.js';
 
 export interface LLMResponse {
   content: string;
@@ -254,362 +147,6 @@ export interface BatchCheckResult {
   modelRecommendationReasoning?: string;
   /** True when a batch failed (e.g. 504) but earlier batches were returned so state can be persisted */
   partial?: boolean;
-}
-
-export function commentNeedsConservativeExistenceCheck(comment: string): boolean {
-  const c = comment.toLowerCase();
-  return (
-    /\bmemory leak\b/.test(c) ||
-    /\b(?:potential )?leak\b/.test(c) ||
-    /\b(?:cleanup|clean up|prune|evict|ttl|lru)\b/.test(c) ||
-    /\b(?:stale|orphaned|dangling)\s+(?:entry|entries|state|map|set|cache)\b/.test(c) ||
-    /\bnever\s+(?:cleared|cleaned|pruned|deleted|removed)\b/.test(c) ||
-    /\bfromend\b/.test(c) ||
-    /\b(?:newest|oldest)-first\b/.test(c) ||
-    /\bkeep(?:s|ing)?\s+(?:the\s+)?(?:newest|oldest)\b/.test(c) ||
-    /\bslicetofitbudget\b/.test(c)
-  );
-}
-
-/**
- * True when the "already correct" explanation contains concrete code evidence
- * rather than generic reassurance.
- *
- * WHY: The YES->NO override is useful for obvious false positives, but vague
- * phrases like "already correct" are too risky for lifecycle/order-sensitive
- * bugs. Requiring evidence keeps the override from silently hiding real issues.
- */
-export function explanationHasConcreteFixEvidence(explanation: string): boolean {
-  return (
-    /\bline\s+\d+\b/i.test(explanation) ||
-    /`[^`\n]{2,120}`/.test(explanation) ||
-    /\b(?:now|uses?|returns?|deletes?|removes?|calls?|sets?|sorts?|reverses?)\b.{0,80}\b(?:if|map|set|sliceToFitBudget|fromEnd|delete|cleanup|prune|reverse)\b/i.test(explanation)
-  );
-}
-
-/**
- * True when the model is really saying "I couldn't see enough code to decide",
- * regardless of whether it labeled the result NO or STALE.
- *
- * WHY: Missing snippet context should keep an issue open, not dismiss it as stale.
- * Different models phrase this in many ways ("truncated snippet", "can't verify",
- * "current code doesn't show"), so we centralize the detection in one helper.
- * Hedged phrasing ("suggests", "appears to") with truncated snippet/excerpt is still
- * uncertainty, not evidence the issue is fixed or obsolete — we treat it as missing visibility.
- */
-/**
- * True when the snippet shows a UUID regex using [1-8] and an adjacent line comment documents
- * versions 1–8 (not v4-only). Used to demote false final-audit UNFIXED that parroted an
- * outdated "comment says v4 but allows 1–8" review when the code was already aligned (Cycle 65).
- */
-export function snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet: string): boolean {
-  if (!/\[1-8\]/.test(codeSnippet)) return false;
-  return /(versions?\s*1[\s–-]8|uuid format.*\(versions 1-8\)|version\s+bits.*1.?8)/i.test(codeSnippet);
-}
-
-/**
- * True when the final-audit code block is known to be a **partial** view (batch clip, huge-file excerpt, head-only fallback).
- * Used to demote UNFIXED that lacks line+code citations — **WHY:** Adversarial audit must not re-open the fix loop on
- * parroted review text when the model never saw the implementation region (pill-output final-audit cluster).
- */
-export function finalAuditSnippetLooksTruncatedOrExcerpt(snippet: string): boolean {
-  return (
-    /truncated for model context limit — final audit/i.test(snippet) ||
-    /more lines omitted — file exceeds/i.test(snippet) ||
-    /excerpt only — file has/i.test(snippet) ||
-    /\(\d[\d,]* more lines omitted for size\)/i.test(snippet) ||
-    /truncated to char budget — final audit excerpt/i.test(snippet)
-  );
-}
-
-export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
-  return (
-    /snippet.*(?:truncated|unavailable)/i.test(explanation) ||
-    /(?:truncated|unavailable).*snippet/i.test(explanation) ||
-    /truncated snippet.*(?:suggests|appears?)/i.test(explanation) ||
-    /appears?\s+to\b.*\btruncated snippet/i.test(explanation) ||
-    // Hedged uncertainty about truncated excerpt (no "snippet"); only this branch matches so tests can pin it.
-    /truncated (?:snippet|excerpt).*(?:suggests|appears?)/i.test(explanation) ||
-    /cannot verify.*(?:truncated|unavailable)/i.test(explanation) ||
-    /not visible in the provided excerpt/i.test(explanation) ||
-    /not (?:visible|found) in the provided .* excerpt/i.test(explanation) ||
-    /not visible in provided .* excerpt/i.test(explanation) ||
-    /are not visible in the provided/i.test(explanation) ||
-    /excerpt does not (?:include|show|contain)/i.test(explanation) ||
-    /can'?t (?:be )?evaluat/i.test(explanation) ||
-    /cannot (?:assess|determine|verify)/i.test(explanation) ||
-    /(?:code|snippet|excerpt|current code) (?:doesn'?t|does not) show/i.test(explanation) ||
-    /\bonly shows\b.*\b(?:not |beginning|start|first|lines? \d)/i.test(explanation) ||
-    /\bincomplete\b.*\b(?:show|visible|implementation)\b/i.test(explanation) ||
-    /not (?:visible|shown|included) in the (?:current |provided )?(?:excerpt|code|snippet)/i.test(explanation)
-  );
-}
-
-/**
- * Context for model recommendation (optional)
- */
-export interface ModelRecommendationContext {
-  /** Available models to choose from */
-  availableModels?: string[];
-  /** Historical model performance summary (e.g., "sonnet: 5 fixes, 2 failures") */
-  modelHistory?: string;
-  /** Previous attempts on these issues (e.g., "sonnet failed: lesson was X") */
-  attemptHistory?: string;
-  /** When false, omit model recommendation block and Previous Attempts from prompt. WHY: Verification doesn't fix issues; audit showed ~60k chars wasted per run sending full history to every batch. */
-  includeModelRecommendation?: boolean;
-  /** Estimated fix prompt size in chars (audit: recommender didn't account for gateway timeout on 94k prompt). */
-  estimatedFixPromptChars?: number;
-}
-
-/**
- * Fetch the list of model IDs available to the given OpenAI API key.
- * Uses GET /v1/models (openai.models.list()).
- *
- * WHY: Model rotation lists contain models that may not exist or may not be
- * accessible to the user's API key (e.g. "gpt-5.3-codex"). Without validation,
- * the fixer retries multiple times per unavailable model, wasting time and tokens.
- * Calling this once at startup lets us prune the rotation list up front.
- *
- * Returns an empty set on error (network issue, invalid key) so callers
- * can safely fall back to the full rotation list.
- */
-export async function fetchAvailableOpenAIModels(apiKey: string): Promise<Set<string>> {
-  try {
-    const client = new OpenAI({ apiKey });
-    const models = await client.models.list();
-    const ids = new Set<string>();
-    for await (const model of models) {
-      ids.add(model.id);
-    }
-    debug(`Fetched ${ids.size} available OpenAI models`);
-    return ids;
-  } catch (err) {
-    debug('Failed to fetch OpenAI models list', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return new Set(); // Empty = skip filtering, keep all models
-  }
-}
-
-/**
- * Validate OpenAI API key at startup (e.g. for Codex or llm-api).
- * Calls GET /v1/models and throws on 401 so we fail fast with a clear message.
- */
-export async function validateOpenAIKey(apiKey: string): Promise<void> {
-  const key = apiKey?.trim();
-  if (!key) {
-    throw new Error('OPENAI_API_KEY is empty. Set it in your .env or environment.');
-  }
-  const keyHint = maskApiKey(key);
-  debug('Validating OpenAI API key');
-  try {
-    const client = new OpenAI({ apiKey: key });
-    for await (const _ of client.models.list()) {
-      break; // one request to verify auth
-    }
-  } catch (err) {
-    const status = (err as { status?: number })?.status;
-    const msg = err instanceof Error ? err.message : String(err);
-    if (status === 401 || /401|Unauthorized|Authentication required|Missing bearer|invalid.*api.*key/i.test(msg)) {
-      debug('OpenAI 401 during validation');
-      throw new Error(
-        `OpenAI API key was rejected (401 Unauthorized). ` +
-        `API key: ${keyHint}. ` +
-        `Check that OPENAI_API_KEY in .env is correct, has no extra spaces/newlines, and has not been revoked. ` +
-        `If OPENAI_BASE_URL is set, unset it so the key is used with api.openai.com (see github.com/openai/codex/issues/9153).`
-      );
-    }
-    throw err;
-  }
-}
-
-/**
- * Fetch the list of model IDs available to the given Anthropic API key.
- * Uses GET https://api.anthropic.com/v1/models directly.
- *
- * WHY: Same reason as OpenAI - rotation lists may reference models the key
- * can't access (e.g. opus on a lower-tier plan). Validate once at startup
- * instead of discovering failures one retry at a time.
- *
- * NOTE: Uses raw fetch because the @anthropic-ai/sdk@0.32.x doesn't have
- * the .models namespace yet. The endpoint is stable (documented at
- * docs.anthropic.com/en/api/models-list).
- *
- * Returns an empty set on error so callers can safely fall back.
- */
-export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set<string>> {
-  try {
-    const ids = new Set<string>();
-    let afterId: string | undefined;
-    let hasMore = true;
-    const MAX_PAGES = 20; // Safety cap to prevent infinite loops
-    let page = 0;
-    
-    while (hasMore) {
-      if (++page > MAX_PAGES) {
-        debug('Anthropic models pagination safety cap reached');
-        break;
-      }
-      const url = new URL('https://api.anthropic.com/v1/models');
-      url.searchParams.set('limit', '1000');
-      if (afterId) {
-        url.searchParams.set('after_id', afterId);
-      }
-      
-      const controller = new AbortController();
-const timeout = setTimeout(() => controller.abort(), 15_000);
-let response: Response;
-try {
-  response = await fetch(url.toString(), {
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    signal: controller.signal,
-  });
-} finally {
-  clearTimeout(timeout);
-}
-      
-      if (!response.ok) {
-        debug('Anthropic models API returned non-OK', {
-          status: response.status,
-          statusText: response.statusText,
-        });
-        break;
-      }
-      
-      const body = await response.json() as {
-        data: Array<{ id: string }>;
-        has_more: boolean;
-      };
-      
-      for (const model of body.data) {
-        ids.add(model.id);
-      }
-      
-      hasMore = body.has_more;
-      if (body.data.length > 0) {
-        afterId = body.data[body.data.length - 1].id;
-      } else {
-        hasMore = false;
-      }
-    }
-    
-    debug(`Fetched ${ids.size} available Anthropic models`);
-    return ids;
-  } catch (err) {
-    debug('Failed to fetch Anthropic models list', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return new Set(); // Empty = skip filtering, keep all models
-  }
-// Review: returning empty set allows skipping filtering when model fetch fails
-}
-
-/**
- * Validate ElizaCloud API key (e.g. at startup).
- * Throws with a clear message on 401 so we fail fast instead of many 401s later.
- */
-export async function validateElizaCloudKey(apiKey: string): Promise<void> {
-  const key = apiKey?.trim();
-  if (!key) {
-    throw new Error('ELIZACLOUD_API_KEY is empty. Set it in your .env file.');
-  }
-  const keyHint = maskApiKey(key);
-  const url = ELIZACLOUD_API_BASE_URL;
-  debug('Validating ElizaCloud API key', { requestURL: `${url}/models`, apiKey: keyHint });
-  try {
-    const client = createElizaCloudOpenAIClient(key);
-    for await (const _ of client.models.list()) {
-      break; // one request to verify auth
-    }
-  } catch (err) {
-    const status = (err as { status?: number })?.status;
-    const msg = err instanceof Error ? err.message : String(err);
-    if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
-      debug('ElizaCloud 401 during validation', { requestURL: `${url}/models`, apiKey: keyHint });
-      throw new Error(
-        `ElizaCloud API key was rejected (401 Unauthorized). ` +
-        `Request URL: ${url}/models. API key: ${keyHint}. ` +
-        `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
-      );
-    }
-    throw err;
-  }
-}
-
-/**
- * Fetch all available models from ElizaCloud API.
- * Returns empty set if fetch fails (skip filtering).
- */
-export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Set<string>> {
-  try {
-    const client = createElizaCloudOpenAIClient(apiKey?.trim() ?? '');
-    const models = await client.models.list();
-    const ids = new Set<string>();
-    for await (const model of models) {
-      ids.add(model.id);
-    }
-    debug(`Fetched ${ids.size} available ElizaCloud models`);
-    return ids;
-  } catch (err) {
-    debug('Failed to fetch ElizaCloud models list', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return new Set();
-  }
-}
-
-/**
- * Probe one ElizaCloud model with a minimal chat request.
- * Returns 'ok' if the model is usable, 'slow_pool' if the backend says it's not in the slow pool
- * (e.g. "switch to auto"), 'error' for other failures (network, auth, etc.).
- * Used at startup to drop models that would fail on first real request.
- */
-export async function probeElizaCloudModel(apiKey: string, model: string): Promise<'ok' | 'slow_pool' | 'error'> {
-  try {
-    const client = createElizaCloudOpenAIClient(apiKey?.trim() ?? '');
-    await client.chat.completions.create({
-      model,
-      messages: [{ role: 'user', content: 'Hi' }],
-      max_tokens: 5,
-    });
-    return 'ok';
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const ctx = getElizaCloudErrorContext(err);
-    const bodyStr = ctx.body != null ? JSON.stringify(ctx.body) : '';
-    const combined = `${msg} ${bodyStr}`;
-    if (/not available in the slow pool|switch to auto/i.test(combined)) {
-      return 'slow_pool';
-    }
-    return 'error';
-  }
-}
-
-/**
- * Cheap models for low-stakes tasks (commit messages, dismissal comments).
- *
- * WHY: Sonnet ($3/$15 per MTok) is overkill for generating a one-line commit
- * message or a 120-char dismissal comment. Haiku ($1/$5 per MTok) and
- * GPT-4o-mini ($0.15/$0.6 per MTok) produce equivalent results for constrained
- * text generation — the output is a single formatted sentence, not multi-step
- * code reasoning. This saves ~66-95% per call with zero quality impact.
- *
- * WHY per-provider map: The model name format differs between providers.
- * Anthropic uses versioned names, OpenAI uses its own naming scheme.
- * ElizaCloud proxies to OpenAI models.
- */
-const CHEAP_MODELS: Record<string, string> = {
-  anthropic: 'claude-haiku-4-5-20251001',
-  openai: 'gpt-4o-mini',
-  elizacloud: 'openai/gpt-4o-mini',               // ElizaCloud uses owner/model IDs
-};
-
-/** Return the fast/cheap model for the provider (for split-plan, dedup, etc.). WHY exported: split-plan uses it when SPLIT_PLAN_LLM_MODEL is unset to avoid 504 timeouts. */
-export function getCheapModelForProvider(provider: string): string | undefined {
-  return CHEAP_MODELS[provider];
 }
 
 /**
@@ -981,7 +518,7 @@ export class LLMClient {
    * Use for lightweight tasks (e.g. LLM dedup) to save cost; default model is for verification/fixing.
    */
   async completeWithCheapModel(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
-    const cheapModel = CHEAP_MODELS[this.provider];
+    const cheapModel = getCheapModelForProvider(this.provider);
     if (!cheapModel) {
       return this.complete(prompt, systemPrompt);
     }
@@ -3386,7 +2923,7 @@ RESOLVED:
     parts.push('Based on the above, what SPECIFIC CODE CHANGES were made? Write the commit message:');
 
     // Use a cheap model — commit messages are simple text, not code-fixing
-    const cheapModel = CHEAP_MODELS[this.provider];
+    const cheapModel = getCheapModelForProvider(this.provider);
     const response = await this.complete(parts.join('\n'), undefined, cheapModel ? { model: cheapModel } : undefined);
     let message = response.content.trim();
     
@@ -3506,7 +3043,7 @@ COMMENT: Note: This was changed from X to Y in a recent refactor
 COMMENT: Note: The import path was updated to use relative imports`;
 
     // Use a cheap model — dismissal comments are simple text, not code-fixing
-    const cheapModel = CHEAP_MODELS[this.provider];
+    const cheapModel = getCheapModelForProvider(this.provider);
     const response = await this.complete(prompt, undefined, cheapModel ? { model: cheapModel } : undefined);
     const content = response.content.trim();
 

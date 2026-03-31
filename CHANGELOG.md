@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Codebase organization (structural refactor):** Large modules were split along natural seams with **backward-compatible re-exports** so import paths and behavior stay stable for existing callers. **WHY:** Easier code review, targeted tests, clearer dependency direction (e.g. **`shared/`** must not depend on **`tools/pill/`**), and less scroll fatigue when auditing the fix loop. **What moved:**
+  - **`tools/prr/llm/`** — **`verification-heuristics.ts`**, **`provider-probes.ts`**, **`error-helpers.ts`**; **`LLMClient`** stays in **`client.ts`**, which **re-exports** helpers so **`from '…/llm/client.js'`** remains the stable surface.
+  - **`tools/prr/workflow/`** — **`issue-analysis-snippet-helpers.ts`**, **`issue-analysis-snippets.ts`**, **`issue-analysis-dedup.ts`**, **`issue-analysis-context.ts`**; **`findUnresolvedIssues`** remains the orchestrator in **`issue-analysis.ts`** (barrel re-exports for tests and **`resolver-proc`**).
+  - **`shared/`** — **`timing.ts`**, **`token-tracking.ts`** (re-exported from **`logger.ts`**); **`shared/constants/`** domain files + **`shared/constants.ts`** shim → barrel.
+  - **Pill hook** — **`runPillAfterClosedLogs()`** in **`tools/pill/after-close-logs.ts`** runs **after** **`closeOutputLog()`** from **prr / split-exec / split-plan / story** entry points (**WHY:** avoid **`shared` → `tools/pill`** import).
+  - **`tools/prr/resolver-proc.ts`** — **re-exports only**; **`workflow/bot-wait.ts`** (post-push wait, new-comment poll), **`workflow/bailout.ts`** (stalemate bail-out).
+  **Docs:** **DEVELOPMENT.md** (architecture — codebase structure), **README** (repository layout), **AGENTS.md** (constants layout, option bags, future shared migration), **docs/ROADMAP.md** (optional follow-ups).
+
 - **README (Philosophy):** Explicit “what logs showed vs what the code does now” paragraph — verified∩dismissed repair, path variants / fragments, model skip + session skip, summary overlap warnings, and **residual risk** / operator trust model (no new feature; documents real audit history).
 
 ### Added

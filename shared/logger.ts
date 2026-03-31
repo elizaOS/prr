@@ -38,19 +38,48 @@ let emptyPromptBodyCount = 0;
 /** Same `requestId` on PROMPT + RESPONSE metadata when concurrent LLM calls reorder prompts.log (grep `requestId` to pair). */
 const promptRequestIdBySlug = new Map<string, string>();
 
-/** When true, closeOutputLog() runs pill analysis on the logs we just closed. Set at init or via setPillEnabled() when --pill is passed. */
+/** When true, callers should run `runPillAfterClosedLogs()` from tools/pill after `closeOutputLog()`. Set via initOutputLog enablePill or setPillEnabled(--pill). */
 let pillAnalysisEnabled = false;
 
 /** Enable or disable pill analysis on close. Call after parse when user passes --pill. WHY opt-in: default runs stay fast; tools like split-exec have no LLM calls so pill would often have nothing to analyze unless the user explicitly requests it. */
 export function setPillEnabled(enabled: boolean): void {
   pillAnalysisEnabled = enabled;
 }
+
+/** True when --pill / enablePill was set and pill has not yet been run for this close cycle. */
+export function isPillScheduledForAfterClose(): boolean {
+  return pillAnalysisEnabled;
+}
+
+/** Clear pill scheduling after running pill (or to cancel). */
+export function clearPillScheduled(): void {
+  pillAnalysisEnabled = false;
+}
+
 /** Log prefix from initOutputLog (e.g. 'story') so pill knows which log files to read. */
 let currentLogPrefix: string | undefined;
 /** Original console methods, captured before patching, for pill hook to print to real console. */
 let origLogRef: ((...args: unknown[]) => void) | null = null;
 let origWarnRef: ((...args: unknown[]) => void) | null = null;
 let origErrorRef: ((...args: unknown[]) => void) | null = null;
+
+/** Prefix from initOutputLog (e.g. story) for pill log resolution. */
+export function getOutputLogPrefix(): string | undefined {
+  return currentLogPrefix;
+}
+
+/** Unpatched console methods for post-close pill output (tee may still wrap console). */
+export function getOriginalConsoleForShutdown(): {
+  log: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+} {
+  return {
+    log: origLogRef ?? console.log.bind(console),
+    warn: origWarnRef ?? console.warn.bind(console),
+    error: origErrorRef ?? console.error.bind(console),
+  };
+}
 
 /**
  * Strip ANSI escape codes from a string for plain-text logging.
@@ -68,7 +97,7 @@ function stripAnsi(str: string): string {
  */
 export interface InitOutputLogOptions {
   prefix?: string;
-  /** When true, closeOutputLog() runs pill analysis and prints pitch + file paths. */
+  /** When true, call `runPillAfterClosedLogs()` after `closeOutputLog()` to analyze logs. */
   enablePill?: boolean;
 }
 
@@ -177,7 +206,6 @@ export function initOutputLog(options?: InitOutputLogOptions): void {
  * WHY: Without closing, the last lines may stay buffered and the file may be
  * unreadable or truncated when the user opens it after the process exits.
  * Waits for streams to flush so callers (e.g. before process.exit()) can rely on logs being written.
- * When enablePill was set, runs pill analysis on the closed logs and prints pitch + file paths to the real console.
  */
 export async function closeOutputLog(): Promise<void> {
   const streams: WriteStream[] = [];
@@ -211,74 +239,6 @@ export async function closeOutputLog(): Promise<void> {
     }
     // Reset counter for next run
     emptyPromptBodyCount = 0;
-  }
-
-  // WHY run when output has content OR prompts have entries: split-exec has no prompts log; prr/story do. So we
-  // run pill when either the output log has content (operational improvements, timing, RESULTS SUMMARY, etc.) or the prompts log has PROMPT/RESPONSE/ERROR.
-  const outputLogHasContent =
-    outputLogPath && existsSync(outputLogPath) && readFileSync(outputLogPath, 'utf-8').trim().length > 0;
-  const hasPromptsToAnalyze =
-    promptLogPath &&
-    existsSync(promptLogPath) &&
-    / (PROMPT|RESPONSE|ERROR): /m.test(readFileSync(promptLogPath, 'utf-8'));
-
-  if (pillAnalysisEnabled && outputLogPath && (outputLogHasContent || hasPromptsToAnalyze)) {
-    // WHY run even when prompts.log is empty: output.log alone has nuggets (timing, RESULTS SUMMARY, errors, clone/fetch progress). Pill uses [PROMPTS DIGEST](none) and still audits output.log.
-    // WHY reset first: so we run at most once even if runPillAnalysis or a later step throws.
-    pillAnalysisEnabled = false;
-    try {
-      // WHY dynamic import: avoids circular dependency (orchestrator must not import from logger).
-      const { dirname } = await import('path');
-      const { runPillAnalysis } = await import('../tools/pill/orchestrator.js');
-      const { tryLoadPillConfig } = await import('../tools/pill/config.js');
-      const targetDir = dirname(outputLogPath);
-      const config = tryLoadPillConfig({ targetDir, logPrefix: currentLogPrefix });
-      if (config) {
-        appendFileSync(outputLogPath, '\n[Pill] Running analysis on closed logs…\n', 'utf-8');
-        const out = await runPillAnalysis(config);
-        if (out.result) {
-          appendFileSync(outputLogPath, `[Pill] Done. Instructions: ${out.result.instructionsPath}\n`, 'utf-8');
-          if (origLogRef) {
-            origLogRef('\n' + out.result.pitch);
-            origLogRef(`\n  Instructions: ${out.result.instructionsPath}`);
-            origLogRef(`  Summary log:  ${out.result.summaryPath}`);
-          }
-        } else {
-          const reasonLine =
-            out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
-              ? `[Pill] No improvements to record (reason: ${out.reason}: ${(out as { errorMessage?: string }).errorMessage}).\n`
-              : `[Pill] No improvements to record (reason: ${out.reason}).\n`;
-          appendFileSync(outputLogPath, reasonLine, 'utf-8');
-          // WHY distinct console message: Operators need to know why pill recorded nothing (pill-output.md #3, #7).
-          const fc = (out as { filteredCount?: number }).filteredCount;
-          const consoleMsg =
-            out.reason === 'no_logs'
-              ? 'Pill: No logs to analyze (output/prompts log empty or missing for this prefix).'
-              : out.reason === 'no_api_key'
-                ? 'Pill: No improvements to record (no API key configured). Set API key in .env.'
-                : out.reason === 'zero_improvements_from_llm'
-                  ? 'Pill: LLM returned zero improvements (audit ran successfully).'
-                  : out.reason === 'all_filtered_tool_scope'
-                    ? `Pill: All suggestions were outside tool-repo paths (${fc != null ? fc.toLocaleString() : '?'} omitted); nothing written. Set PILL_TOOL_REPO_SCOPE_FILTER=0 to include clone-target ideas.`
-                    : out.reason === 'api_call_failed' && (out as { errorMessage?: string }).errorMessage
-                      ? `Pill: Audit failed: ${(out as { errorMessage?: string }).errorMessage}`
-                      : `Pill: No improvements to record (reason: ${out.reason}).`;
-          if (origLogRef) origLogRef('\n[Pill] ' + consoleMsg);
-        }
-      } else {
-        appendFileSync(outputLogPath, '[Pill] Skipped (no API key or no config in target dir).\n', 'utf-8');
-        if (origLogRef) origLogRef('\n[Pill] Skipped (no API key or no config in target dir).');
-      }
-    } catch (err) {
-      // Log to real console so operators see pill failures (pill-output.md #6); still complete shutdown.
-      if (origErrorRef) origErrorRef('[Pill] Error:', err);
-      try {
-        if (outputLogPath) {
-          const msg = err instanceof Error ? err.message : String(err);
-          appendFileSync(outputLogPath, `[Pill] Error: ${msg}\n`, 'utf-8');
-        }
-      } catch { /* ignore */ }
-    }
   }
 }
 
@@ -618,187 +578,29 @@ export function getDebugLogDir(): string | null {
   return debugLogDir;
 }
 
-// Timing utilities - session and overall tracking
-const timers = new Map<string, number>();
-const sessionTimings: Array<{ name: string; duration: number }> = [];
-let overallTimings: Record<string, number> = {};
+export {
+  endTimer,
+  formatDuration,
+  getOverallTimings,
+  getTimingSummary,
+  loadOverallTimings,
+  printTimingSummary,
+  resetAllTimings,
+  resetTimings,
+  startTimer,
+} from './timing.js';
 
-export function startTimer(name: string): void {
-  timers.set(name, Date.now());
-}
-
-export function endTimer(name: string): number {
-  const start = timers.get(name);
-  if (!start) {
-    return 0;
-  }
-  const duration = Date.now() - start;
-  timers.delete(name);
-  sessionTimings.push({ name, duration });
-  // Aggregate to overall
-  overallTimings[name] = (overallTimings[name] || 0) + duration;
-  return duration;
-}
-
-export function formatDuration(ms: number): string {
-  if (ms < 1000) {
-    return `${ms}ms`;
-  } else if (ms < 60000) {
-    return `${(ms / 1000).toFixed(1)}s`;
-  } else {
-    const mins = Math.floor(ms / 60000);
-    const secs = Math.floor((ms % 60000) / 1000);
-    const secsStr = secs.toString().padStart(2, '0');
-    return `${mins}m ${secsStr}s`;
-  }
-}
-
-export function getTimingSummary(): Array<{ name: string; duration: number; formatted: string }> {
-  return sessionTimings.map(t => ({
-    ...t,
-    formatted: formatDuration(t.duration),
-  }));
-}
-
-export function loadOverallTimings(timings: Record<string, number>): void {
-  overallTimings = { ...timings };
-}
-
-export function getOverallTimings(): Record<string, number> {
-  return { ...overallTimings };
-}
-
-export function printTimingSummary(): void {
-  const hasSession = sessionTimings.length > 0;
-  const hasOverall = Object.keys(overallTimings).length > 0;
-
-  if (!hasSession && !hasOverall) return;
-
-  console.log(chalk.cyan('\n⏱  Timing Summary:'));
-
-  // Session timings — aggregate repeated phase names (e.g. "Run fixer" 11×) for scannability
-  if (hasSession) {
-    console.log(chalk.gray('   This session:'));
-    const byName = new Map<string, number[]>();
-    for (const { name, duration } of sessionTimings) {
-      const list = byName.get(name) ?? [];
-      list.push(duration);
-      byName.set(name, list);
-    }
-    let sessionTotal = 0;
-    for (const [name, durations] of byName) {
-      const total = durations.reduce((a, b) => a + b, 0);
-      sessionTotal += total;
-      const label = durations.length > 1 ? `${name} (${durations.length}×)` : name;
-      console.log(chalk.gray(`     ${label.padEnd(32)} ${formatDuration(total).padStart(8)}`));
-    }
-    console.log(chalk.gray(`     ${'─'.repeat(41)}`));
-    console.log(chalk.gray(`     ${'Session total'.padEnd(32)} ${formatDuration(sessionTotal).padStart(8)}`));
-  }
-
-  // Overall timings (if resumed and have history) — already aggregated by name
-  const overallEntries = Object.entries(overallTimings);
-  if (overallEntries.length > 0) {
-    let overallTotal = 0;
-    for (const [, duration] of overallEntries) {
-      overallTotal += duration;
-    }
-
-    // Only show overall breakdown if different from session
-    const sessionTotal = sessionTimings.reduce((sum, t) => sum + t.duration, 0);
-    if (Math.abs(overallTotal - sessionTotal) > 1000) { // >1s difference means resumed
-      console.log(chalk.cyan('   Overall (all sessions):'));
-      for (const [name, duration] of overallEntries) {
-        if (name === 'Total') continue;
-        console.log(chalk.gray(`     ${name.padEnd(32)} ${formatDuration(duration).padStart(8)}`));
-      }
-      console.log(chalk.cyan(`     ${'─'.repeat(41)}`));
-      console.log(chalk.cyan(`     ${'Overall total'.padEnd(32)} ${formatDuration(overallTotal).padStart(8)}`));
-    }
-  }
-}
-
-export function resetTimings(): void {
-  timers.clear();
-  sessionTimings.length = 0;
-  // Note: overall timings are NOT reset, they accumulate across sessions
-}
-
-export function resetAllTimings(): void {
-  timers.clear();
-  sessionTimings.length = 0;
-  overallTimings = {};
-}
-
-// Token usage tracking - session and overall
-export interface TokenUsage {
-  phase: string;
-  inputTokens: number;
-  outputTokens: number;
-  calls: number;
-}
-
-const sessionTokenUsage: TokenUsage[] = [];
-let overallTokenUsage: TokenUsage[] = [];
-let currentPhase = 'unknown';
-
-export function setTokenPhase(phase: string): void {
-  currentPhase = phase;
-}
-
-export function trackTokens(inputTokens: number, outputTokens: number): void {
-  // Track in session
-  const existingSession = sessionTokenUsage.find(t => t.phase === currentPhase);
-  if (existingSession) {
-    existingSession.inputTokens += inputTokens;
-    existingSession.outputTokens += outputTokens;
-    existingSession.calls += 1;
-  } else {
-    sessionTokenUsage.push({
-      phase: currentPhase,
-      inputTokens,
-      outputTokens,
-      calls: 1,
-    });
-  }
-
-  // Track in overall
-  const existingOverall = overallTokenUsage.find(t => t.phase === currentPhase);
-  if (existingOverall) {
-    existingOverall.inputTokens += inputTokens;
-    existingOverall.outputTokens += outputTokens;
-    existingOverall.calls += 1;
-  } else {
-    overallTokenUsage.push({
-      phase: currentPhase,
-      inputTokens,
-      outputTokens,
-      calls: 1,
-    });
-  }
-}
-
-export function getTokenUsage(): TokenUsage[] {
-  return [...sessionTokenUsage];
-}
-
-export function loadOverallTokenUsage(usage: TokenUsage[]): void {
-  overallTokenUsage = usage.map(u => ({ ...u }));
-}
-
-export function getOverallTokenUsage(): TokenUsage[] {
-  return overallTokenUsage.map(u => ({ ...u }));
-}
-
-function formatTokenCount(tokens: number): string {
-  if (tokens < 1000) {
-    return `${tokens}`;
-  } else if (tokens < 1000000) {
-    return `${(tokens / 1000).toFixed(1)}k`;
-  } else {
-    return `${(tokens / 1000000).toFixed(2)}M`;
-  }
-}
+export type { TokenUsage } from './token-tracking.js';
+export {
+  getOverallTokenUsage,
+  getTokenUsage,
+  loadOverallTokenUsage,
+  printTokenSummary,
+  resetAllTokenUsage,
+  resetTokenUsage,
+  setTokenPhase,
+  trackTokens,
+} from './token-tracking.js';
 
 /**
  * Format a number with locale-aware separators (e.g., 1,234,567).
@@ -811,89 +613,4 @@ export function formatNumber(n: number): string {
 /** Return singular when n === 1, otherwise plural (e.g. "1 file" / "2 files"). */
 export function pluralize(n: number, singular: string, plural = `${singular}s`): string {
   return n === 1 ? singular : plural;
-}
-
-function printTokenSection(label: string, usage: TokenUsage[], isSession: boolean): { totalInput: number; totalOutput: number; totalCalls: number } {
-  let totalInput = 0;
-  let totalOutput = 0;
-  let totalCalls = 0;
-
-  console.log(chalk.gray(`   ${label}:`));
-
-  for (const { phase, inputTokens, outputTokens, calls } of usage) {
-    totalInput += inputTokens;
-    totalOutput += outputTokens;
-    totalCalls += calls;
-    console.log(chalk.gray(
-      `     ${phase.padEnd(23)} ${formatTokenCount(inputTokens).padStart(8)} in / ${formatTokenCount(outputTokens).padStart(8)} out  (${calls} call${calls > 1 ? 's' : ''})`
-    ));
-  }
-
-  const lineChar = isSession ? '─' : '─';
-  const color = isSession ? chalk.gray : chalk.cyan;
-  console.log(color(`     ${lineChar.repeat(58)}`));
-  console.log(color(
-    `     ${'Subtotal'.padEnd(23)} ${formatTokenCount(totalInput).padStart(8)} in / ${formatTokenCount(totalOutput).padStart(8)} out  (${totalCalls} calls)`
-  ));
-
-  return { totalInput, totalOutput, totalCalls };
-}
-
-export function printTokenSummary(): void {
-  const hasSession = sessionTokenUsage.length > 0;
-  const hasOverall = overallTokenUsage.length > 0;
-
-  if (!hasSession && !hasOverall) return;
-
-  console.log(chalk.cyan('\n🔤 Token Usage:'));
-
-  let sessionTotals = { totalInput: 0, totalOutput: 0, totalCalls: 0 };
-
-  if (hasSession) {
-    sessionTotals = printTokenSection('This session', sessionTokenUsage, true);
-  }
-
-  // Only show overall if different from session (i.e., resumed)
-  if (hasOverall) {
-    const overallTotals = { totalInput: 0, totalOutput: 0, totalCalls: 0 };
-    for (const { inputTokens, outputTokens, calls } of overallTokenUsage) {
-      overallTotals.totalInput += inputTokens;
-      overallTotals.totalOutput += outputTokens;
-      overallTotals.totalCalls += calls;
-    }
-
-    // Show overall breakdown if different from session
-    if (overallTotals.totalCalls > sessionTotals.totalCalls) {
-      console.log('');
-      printTokenSection('Overall (all sessions)', overallTokenUsage, false);
-
-      // Cost estimate for overall
-      const inputCost = (overallTotals.totalInput / 1000000) * 3;
-      const outputCost = (overallTotals.totalOutput / 1000000) * 15;
-      const totalCost = inputCost + outputCost;
-      if (totalCost > 0.001) {
-        console.log(chalk.gray(`     Estimated total cost: ~$${totalCost.toFixed(3)}`));
-      }
-    } else {
-      // Just session, show cost for session
-      const inputCost = (sessionTotals.totalInput / 1000000) * 3;
-      const outputCost = (sessionTotals.totalOutput / 1000000) * 15;
-      const totalCost = inputCost + outputCost;
-      if (totalCost > 0.001) {
-        console.log(chalk.gray(`     Estimated cost: ~$${totalCost.toFixed(3)}`));
-      }
-    }
-  }
-}
-
-export function resetTokenUsage(): void {
-  sessionTokenUsage.length = 0;
-  currentPhase = 'unknown';
-  // Note: overall token usage is NOT reset
-}
-
-export function resetAllTokenUsage(): void {
-  sessionTokenUsage.length = 0;
-  overallTokenUsage = [];
-  currentPhase = 'unknown';
 }

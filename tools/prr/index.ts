@@ -21,6 +21,7 @@ import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled, formatNumber } from '../../shared/logger.js';
+import { runPillAfterClosedLogs } from '../pill/after-close-logs.js';
 import {
   formatPrrStartupVersionLine,
   shouldSuggestPrrGitShaInCi,
@@ -58,11 +59,16 @@ try {
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;
 
+async function closeOutputLogAndPill(): Promise<void> {
+  await closeOutputLog();
+  await runPillAfterClosedLogs();
+}
+
 async function handleShutdown(signal: string): Promise<void> {
   if (isShuttingDown) {
     // Second signal - force exit
     console.log(chalk.red('\nForce exit.'));
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
   
@@ -76,7 +82,7 @@ async function handleShutdown(signal: string): Promise<void> {
   if (logPath) {
     console.log(chalk.gray(`\n📄 Full output log: ${logPath}`));
   }
-  await closeOutputLog();
+  await closeOutputLogAndPill();
 
   // Compute signal-specific exit code (128 + signal number)
   // SIGINT (2) -> 130, SIGTERM (15) -> 143
@@ -116,21 +122,21 @@ async function main(): Promise<void> {
     if (options.checkTools) {
       await printToolStatus();
       await checkPrrUpdate();
-      await closeOutputLog();
+      await closeOutputLogAndPill();
       return;
     }
 
     // Handle --update-tools mode (update all installed tools and exit)
     if (options.updateTools) {
       await updateAllTools();
-      await closeOutputLog();
+      await closeOutputLogAndPill();
       return;
     }
 
     // Handle --tidy-lessons mode (clean up all lesson files and exit)
     if (options.tidyLessons) {
       await tidyAllLessons();
-      await closeOutputLog();
+      await closeOutputLogAndPill();
       // Review: early exits are designed to bypass further processing when specific flags are used
       return;
     }
@@ -203,7 +209,7 @@ async function main(): Promise<void> {
     if (logPath) {
       console.log(chalk.gray(`\n📄 Full output log: ${logPath}`));
     }
-    await closeOutputLog();
+    await closeOutputLogAndPill();
 
     const strictFinalAudit =
       process.env.PRR_STRICT_FINAL_AUDIT?.trim() === 'true' || process.env.PRR_STRICT_FINAL_AUDIT === '1';
@@ -247,7 +253,7 @@ async function main(): Promise<void> {
     if (logPath) {
       console.error(chalk.gray(`\n📄 Full output log: ${logPath}`));
     }
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 }

@@ -2,7 +2,7 @@
  * Pill analysis-only: assemble context from logs, run audit LLM, append to pill-output.md and pill-summary.md.
  * No runners, fix, verify, or commit.
  *
- * WHY no import from shared/logger: closeOutputLog() in shared/logger.ts dynamically imports this module
+ * WHY no import from shared/logger: entrypoints call runPillAfterClosedLogs() from this package after closeOutputLog().
  * to run the pill hook. Importing formatNumber (or anything) from logger would create a circular dependency.
  * User-facing numbers use n.toLocaleString() here (workspace rule allows that when logger is not imported).
  */

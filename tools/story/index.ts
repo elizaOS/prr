@@ -12,8 +12,14 @@
 import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
 import { initOutputLog, closeOutputLog, setVerbose, setPillEnabled, getOutputLogPath, getDebugLogDir } from '../../shared/logger.js';
+import { runPillAfterClosedLogs } from '../pill/after-close-logs.js';
 import { createCLI, parseArgs, type StoryParsedArgs } from './cli.js';
 import { runStory, writeOutput } from './run.js';
+
+async function closeOutputLogAndPill(): Promise<void> {
+  await closeOutputLog();
+  await runPillAfterClosedLogs();
+}
 
 try {
   initOutputLog({ prefix: 'story' });
@@ -29,7 +35,7 @@ async function main(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red('Error:'), msg);
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 
@@ -46,7 +52,7 @@ async function main(): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red('Error:'), msg);
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 
@@ -63,11 +69,11 @@ async function main(): Promise<void> {
     if (logPath) console.log(chalk.gray(`\nOutput log: ${logPath}`));
     const debugDir = getDebugLogDir();
     if (parsed.options.verbose && debugDir) console.log(chalk.gray(`Debug logs: ${debugDir}`));
-    await closeOutputLog();
+    await closeOutputLogAndPill();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(chalk.red('Error:'), msg);
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 }
