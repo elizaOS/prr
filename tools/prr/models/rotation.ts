@@ -715,6 +715,7 @@ export async function validateAndFilterModels(
   configuredModel?: string
 ): Promise<{ removed: Array<{ runner: string; model: string }>}> {
   const removed: Array<{ runner: string; model: string }> = [];
+  let thinElizacloudPoolWarned = false;
   
   // Check which providers we need to validate
   const runnersToValidate = runners.filter(r => RUNNER_PROVIDER_MAP[r.name]);
@@ -881,6 +882,20 @@ export async function validateAndFilterModels(
       const reason = getElizaCloudSkipReason(skippedConfiguredDefault);
       const reasonLabel = reason === 'timeout' ? 'known timeout/504' : '0% fix rate (audit)';
       console.log(chalk.yellow(`  ⚠ Configured default "${skippedConfiguredDefault}" skipped (${reasonLabel}). Using: ${replacement}`));
+    }
+
+    // Pill-output #1793: thin rotation after skip list + API filter — easy to miss why only 1–3 models rotate.
+    if (
+      !thinElizacloudPoolWarned &&
+      isLlMApi &&
+      useElizaCloudForLlMApi &&
+      validModels.length > 0 &&
+      validModels.length <= 3
+    ) {
+      thinElizacloudPoolWarned = true;
+      warn(
+        `ElizaCloud rotation has only ${formatNumber(validModels.length)} model(s) after built-in skip list (${formatNumber(getEffectiveElizacloudSkipModelIds().length)} skipped by default) and gateway availability — use PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable ids, or see docs/MODELS.md.`,
+      );
     }
 
     // Update the rotation list in-place (where it came from)

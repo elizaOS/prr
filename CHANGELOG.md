@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ElizaCloud rotation visibility (pill-output #1793):** After **`validateAndFilterModels`**, **`warn`** when the ElizaCloud-backed list has **≤3** models post skip-list + API filter — points to **`PRR_ELIZACLOUD_INCLUDE_MODELS`** and **`docs/MODELS.md`**. **README** troubleshooting: overlap repair vs delete state / **`--clean-state`**. **`shared/README.md`**: skip list / thinking cap / git-hooks pointers.
+
 - **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** Every N completed fix iterations, clear **session** skipped model keys so rotation can retry them without restarting the process (**`maybeResetSessionSkippedModelsAfterFixIteration`** in **`tools/prr/models/rotation.ts`**, **`push-iteration-loop.ts`**). **WHY:** Pill-output #847 — long runs otherwise never revisit models skipped early. **README**, **`.env.example`**, **`docs/MODELS.md`**, **DEVELOPMENT.md**.
 
 - **`PRR_THINKING_BUDGET` clamp:** Values above **500,000** clamp with a **`console.warn`** (typo guard; pill-output). **`shared/config.ts`**, **`.env.example`**.
