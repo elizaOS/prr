@@ -120,16 +120,17 @@ export async function runSplitExec(
   ensureTargetBranchExistsOnRemote(cloneUrl, plan.targetBranch, config.githubToken);
   spinner.succeed(`Target branch ${plan.targetBranch} exists`);
 
-  const splitBranches = [...new Set([plan.targetBranch, ...plan.splits.map(s => s.newBranch).filter((b): b is string => b != null)])];
+  // WHY only target_branch (when ≠ source): **New PR:** names are local output branches — not on origin until push.
+  // Prefetching every split branch caused "not found" noise and invalid refspecs when names contained `:`.
+  const cloneAdditionalBranches =
+    plan.targetBranch !== plan.sourceBranch ? [plan.targetBranch] : undefined;
   // No spinner during clone — git clone/fetch output is shown directly.
   const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
-    additionalBranches: splitBranches,
-    // New split branch names may not exist on remote until first push; only PRR base-branch fetch is strict.
-    verifyAdditionalRemoteRefs: false,
+    additionalBranches: cloneAdditionalBranches,
   });
   spinner.succeed(`Workdir: ${workdir}`);
 
-  // Fail fast if target branch is missing in workdir (e.g. additionalBranches fetch warned but continued).
+  // Fail fast if target branch is missing in workdir (e.g. fetch failed silently in edge cases).
   if (!options.dryRun) {
     await ensureTargetRefOrFetch(git, plan.targetBranch, workdir);
   }

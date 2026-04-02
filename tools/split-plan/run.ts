@@ -9,6 +9,7 @@ import type { PRInfo } from '../prr/github/types.js';
 import { GitHubAPI } from '../prr/github/api.js';
 import { parsePRUrl } from '../prr/github/types.js';
 import { getCheapModelForProvider, LLMClient } from '../prr/llm/client.js';
+import { getMaxElizacloudLlmCompleteInputChars } from '../prr/llm/model-context-limits.js';
 import { debug, formatNumber } from '../../shared/logger.js';
 
 /**
@@ -72,6 +73,112 @@ export function applyPatchBudget(
   return { included, omitted, totalPatchChars };
 }
 
+/** Slack under ElizaCloud char preflight so tokenizer skew rarely trips the gateway. */
+const ELIZACLOUD_SPLIT_PLAN_INPUT_SLACK_CHARS = 1024;
+
+/** Cap proportional shrink when fence/markup makes user length nonlinear in patch budget. */
+const ELIZACLOUD_PATCH_BUDGET_SHRINK_MAX_STEPS = 32;
+
+/**
+ * Cap Phase 1 patch budget so user prompt fits {@link getMaxElizacloudLlmCompleteInputChars} for a single model.
+ * Returns null when even zero-patch metadata doesn't fit (caller decides whether to try another model or throw).
+ */
+function tryCapPatchBudgetForModel(
+  model: string,
+  prInfo: PRInfo,
+  commits: Array<{ sha: string; message: string; authoredDate: Date }>,
+  codeFiles: FileWithPatch[],
+  openPRs: Array<{ number: number; title: string; body: string; branch: string; author: string }>,
+  cliMaxPatchChars: number
+): { patchBudget: number; cappedVsCliRequest: boolean } | null {
+  const systemPrompt = getDependenciesOnlySystemPrompt();
+  const maxTotal = getMaxElizacloudLlmCompleteInputChars(model);
+  const maxUserChars = maxTotal - systemPrompt.length - ELIZACLOUD_SPLIT_PLAN_INPUT_SLACK_CHARS;
+  if (maxUserChars < 4096) return null;
+
+  const noPatches = applyPatchBudget(codeFiles, 0);
+  const len0 = buildUserPrompt(prInfo, commits, noPatches, openPRs, true).length;
+  if (len0 > maxUserChars) return null;
+
+  const sumPatches = codeFiles.reduce((s, f) => s + (f.patch?.length ?? 0), 0);
+  const roomEstimate = Math.max(0, maxUserChars - len0);
+  let patchBudget = Math.min(cliMaxPatchChars, sumPatches, roomEstimate);
+
+  for (let step = 0; step < ELIZACLOUD_PATCH_BUDGET_SHRINK_MAX_STEPS; step++) {
+    const r = applyPatchBudget(codeFiles, patchBudget);
+    const len = buildUserPrompt(prInfo, commits, r, openPRs, true).length;
+    if (len <= maxUserChars) {
+      return {
+        patchBudget,
+        cappedVsCliRequest: patchBudget < cliMaxPatchChars,
+      };
+    }
+    if (patchBudget <= 0) return null;
+    const scaled = Math.floor(patchBudget * (maxUserChars / len));
+    patchBudget = scaled >= patchBudget ? patchBudget - 1 : scaled;
+  }
+  return null;
+}
+
+/**
+ * Resolve model + patch budget for ElizaCloud Phase 1.
+ * WHY fallback: The cheap model (gpt-4o-mini, ~94k) can't hold metadata for very large PRs.
+ * When SPLIT_PLAN_LLM_MODEL is set, we use that (throw if it doesn't fit).
+ * Otherwise try cheap, then PRR_LLM_MODEL; warn when falling back.
+ */
+function resolveElizaCloudModelAndPatchBudget(
+  prInfo: PRInfo,
+  commits: Array<{ sha: string; message: string; authoredDate: Date }>,
+  codeFiles: FileWithPatch[],
+  openPRs: Array<{ number: number; title: string; body: string; branch: string; author: string }>,
+  cliMaxPatchChars: number,
+  config: Config
+): { model: string; patchBudget: number; cappedVsCliRequest: boolean } {
+  const cheapModel = getCheapModelForProvider(config.llmProvider);
+  const preferredModel = config.splitPlanModel ?? cheapModel ?? config.llmModel;
+
+  const result = tryCapPatchBudgetForModel(
+    preferredModel,
+    prInfo,
+    commits,
+    codeFiles,
+    openPRs,
+    cliMaxPatchChars
+  );
+  if (result) return { model: preferredModel, ...result };
+
+  // Preferred model can't fit. If there's a distinct fallback (PRR_LLM_MODEL), try it.
+  if (!config.splitPlanModel && config.llmModel && config.llmModel !== preferredModel) {
+    const fallbackResult = tryCapPatchBudgetForModel(
+      config.llmModel,
+      prInfo,
+      commits,
+      codeFiles,
+      openPRs,
+      cliMaxPatchChars
+    );
+    if (fallbackResult) {
+      debug('split-plan: cheap model too small for metadata', {
+        cheapModel: preferredModel,
+        cheapCap: getMaxElizacloudLlmCompleteInputChars(preferredModel),
+        fallbackModel: config.llmModel,
+        fallbackCap: getMaxElizacloudLlmCompleteInputChars(config.llmModel),
+      });
+      return { model: config.llmModel, ...fallbackResult };
+    }
+  }
+
+  // Nothing fits — build a helpful error.
+  const noPatches = applyPatchBudget(codeFiles, 0);
+  const len0 = buildUserPrompt(prInfo, commits, noPatches, openPRs, true).length;
+  const sysLen = getDependenciesOnlySystemPrompt().length;
+  const bestModel = config.llmModel ?? preferredModel;
+  const cap = getMaxElizacloudLlmCompleteInputChars(bestModel);
+  throw new Error(
+    `split-plan: Phase 1 prompt is ${formatNumber(len0 + sysLen)} chars (no patches); ${bestModel} allows ${formatNumber(cap)}. Set SPLIT_PLAN_LLM_MODEL to a larger-context model, shorten the PR body, or reduce files/commits.`
+  );
+}
+
 export async function runSplitPlan(
   prUrl: string,
   config: Config,
@@ -114,7 +221,31 @@ export async function runSplitPlan(
   // WHY separate code vs low-signal: Code files get patch budget; low-signal files still appear in the prompt as metadata (omitted list) so the LLM knows they changed but we don't spend patch budget on them.
   const codeFiles = filesWithPatches.filter(f => !isLowSignalFile(f.filename));
   const lowSignalFiles = filesWithPatches.filter(f => isLowSignalFile(f.filename));
-  const filesWithBudget = applyPatchBudget(codeFiles, options.maxPatchChars);
+
+  let patchBudget = options.maxPatchChars;
+  let splitPlanModel =
+    config.splitPlanModel ?? getCheapModelForProvider(config.llmProvider) ?? config.llmModel;
+  if (config.llmProvider === 'elizacloud') {
+    const resolved = resolveElizaCloudModelAndPatchBudget(
+      prInfo,
+      commits,
+      codeFiles,
+      openPRs,
+      options.maxPatchChars,
+      config
+    );
+    patchBudget = resolved.patchBudget;
+    splitPlanModel = resolved.model;
+    if (options.verbose || resolved.cappedVsCliRequest) {
+      debug('split-plan ElizaCloud Phase 1', {
+        model: splitPlanModel,
+        patchBudget,
+        requestedMaxPatchChars: options.maxPatchChars,
+      });
+    }
+  }
+
+  const filesWithBudget = applyPatchBudget(codeFiles, patchBudget);
   for (const f of lowSignalFiles) {
     filesWithBudget.omitted.push(f);
   }
@@ -131,7 +262,17 @@ export async function runSplitPlan(
     });
   }
 
-  const planContent = await buildPlanContent(prInfo, commits, filesWithBudget, prFileList, openPRs, llm, config, titleStyleSummary);
+  const planContent = await buildPlanContent(
+    prInfo,
+    commits,
+    filesWithBudget,
+    prFileList,
+    openPRs,
+    llm,
+    config,
+    titleStyleSummary,
+    splitPlanModel
+  );
   return planContent;
 }
 
@@ -166,10 +307,10 @@ async function buildPlanContent(
   openPRs: Array<{ number: number; title: string; body: string; branch: string; author: string }>,
   llm: LLMClient,
   config: Config,
-  titleStyleSummary: string | null
+  titleStyleSummary: string | null,
+  /** Resolved in runSplitPlan; on ElizaCloud may differ from cheap default when metadata exceeds cheap model's cap. */
+  model: string
 ): Promise<string> {
-  // Use fast/cheap model by default to reduce 504; override with SPLIT_PLAN_LLM_MODEL when set.
-  const model = config.splitPlanModel ?? getCheapModelForProvider(config.llmProvider) ?? config.llmModel;
   const spinner = ora();
 
   // Phase 1: Dependencies only (full prompt with patches; output is small).
@@ -187,6 +328,15 @@ async function buildPlanContent(
   spinner.start('Phase 2: Split plan...');
   const userPrompt2 = buildUserPromptPhase2(prInfo, commits, filesWithBudget, openPRs, depsText);
   const systemPrompt2 = getSystemPrompt(titleStyleSummary);
+  if (config.llmProvider === 'elizacloud') {
+    const maxTotal = getMaxElizacloudLlmCompleteInputChars(model);
+    const phase2Total = userPrompt2.length + systemPrompt2.length + ELIZACLOUD_SPLIT_PLAN_INPUT_SLACK_CHARS;
+    if (phase2Total > maxTotal) {
+      throw new Error(
+        `split-plan: Phase 2 prompt (${formatNumber(phase2Total)} chars) exceeds ElizaCloud input budget (${formatNumber(maxTotal)} chars) for ${model}. Use SPLIT_PLAN_LLM_MODEL with a larger context or reduce PR size.`
+      );
+    }
+  }
   const response2 = await llm.complete(userPrompt2, systemPrompt2, {
     model,
     max504Retries: 3,

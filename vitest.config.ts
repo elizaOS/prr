@@ -5,6 +5,7 @@ export default defineConfig({
     exclude: [
       ...configDefaults.exclude,
       '**/.split-exec-workdir/**',
+      '**/.split-rewrite-plan-workdir/**',
     ],
   },
 });

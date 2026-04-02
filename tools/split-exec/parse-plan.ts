@@ -96,6 +96,42 @@ function validateCommitShas(splits: ParsedSplit[]): void {
 }
 
 /**
+ * Reject branch names that break fetch refspecs (`+refs/heads/a:b`) or `git checkout`.
+ * WHY: LLMs often put conventional-commit titles in **New PR:**; those must live in **PR title:** instead.
+ */
+export function assertValidGitBranchName(name: string, context: string): void {
+  const t = name.trim();
+  if (!t) {
+    throw new Error(`Invalid plan: empty branch name (${context})`);
+  }
+  if (t.includes('..') || t.includes('//') || t.startsWith('/') || t.endsWith('/')) {
+    throw new Error(`Invalid plan: branch "${name}" (${context}) — avoid .., //, or leading/trailing /.`);
+  }
+  if (t.endsWith('.lock')) {
+    throw new Error(`Invalid plan: branch "${name}" (${context}) must not end with .lock`);
+  }
+  if (t.includes('@{')) {
+    throw new Error(`Invalid plan: branch "${name}" (${context}) must not contain @{`);
+  }
+  // Colon breaks refspec parsing; space and metacharacters are invalid or unsafe for refs/heads/*
+  if (/[:\s~^?*[\]\\]/.test(t) || /[\x00-\x1f]/.test(t)) {
+    throw new Error(
+      `Invalid plan: branch "${name}" (${context}) is not a valid git branch slug (forbidden: :, spaces, ~, ^, ?, *, [, \\, control chars). Use a short path like feat/foo-bar in **New PR:** and the full conventional title in **PR title:**.`
+    );
+  }
+}
+
+function validateBranchNames(sourceBranch: string, targetBranch: string, splits: ParsedSplit[]): void {
+  assertValidGitBranchName(sourceBranch, 'frontmatter source_branch');
+  assertValidGitBranchName(targetBranch, 'frontmatter target_branch');
+  for (const split of splits) {
+    if (split.newBranch != null) {
+      assertValidGitBranchName(split.newBranch, `split ${split.index} ("${split.title}") **New PR:**`);
+    }
+  }
+}
+
+/**
  * Parse the plan file and return structured data for execution.
  * WHY throw on invalid: Caller should not run with a broken plan; we validate required fields.
  */
@@ -134,6 +170,7 @@ export function parsePlanFile(planPath: string): ParsedPlan {
   if (secondFront) body = body.slice(secondFront[0].length);
   const splits = parseSplits(body);
   validateCommitShas(splits);
+  validateBranchNames(sourceBranch, targetBranch, splits);
 
   return {
     sourcePrUrl,

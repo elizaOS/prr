@@ -21,9 +21,11 @@ function normalizePath(p: string): string {
   return p.replace(/^\.\//, '').replace(/\\/g, '/').trim();
 }
 
+type SplitEntry = { branchName: string; splitIndex: number };
+
 /** Build map: normalized file path → { branchName, splitIndex }. First occurrence wins; warn on duplicate. WHY: Each file must map to exactly one split so we don't emit the same path in two commit-from-sha ops (would duplicate changes on two branches). */
-function buildFileToSplit(plan: ParsedPlan): Map<string, { branchName: string; splitIndex: number }> {
-  const map = new Map<string, { branchName: string; splitIndex: number }>();
+function buildFileToSplit(plan: ParsedPlan): Map<string, SplitEntry> {
+  const map = new Map<string, SplitEntry>();
   for (const split of plan.splits) {
     if (!split.newBranch) continue;
     for (const file of split.files) {
@@ -37,6 +39,45 @@ function buildFileToSplit(plan: ParsedPlan): Map<string, { branchName: string; s
     }
   }
   return map;
+}
+
+/**
+ * Build a sorted array of directory prefixes → split entry, derived from the explicit file paths
+ * in the plan. For each file, every ancestor directory is a candidate prefix for that split.
+ * Longest prefix wins at lookup time.
+ * WHY: LLMs write "All files under X" or globs; the parser only captures literal paths.
+ * Directory-prefix fallback routes unlisted siblings to the split that owns the most specific
+ * ancestor, so commits that touch files not explicitly listed still get assigned.
+ */
+function buildPrefixIndex(fileToSplit: Map<string, SplitEntry>): Array<{ prefix: string; entry: SplitEntry }> {
+  const prefixToEntry = new Map<string, SplitEntry>();
+  for (const [filePath, entry] of fileToSplit) {
+    const parts = filePath.split('/');
+    for (let depth = 1; depth < parts.length; depth++) {
+      const prefix = parts.slice(0, depth).join('/') + '/';
+      if (!prefixToEntry.has(prefix)) {
+        prefixToEntry.set(prefix, entry);
+      }
+    }
+  }
+  const index = [...prefixToEntry.entries()]
+    .map(([prefix, entry]) => ({ prefix, entry }))
+    .sort((a, b) => b.prefix.length - a.prefix.length);
+  return index;
+}
+
+/** Look up a path: exact match first, then longest directory prefix. */
+function resolvePathToSplit(
+  path: string,
+  fileToSplit: Map<string, SplitEntry>,
+  prefixIndex: Array<{ prefix: string; entry: SplitEntry }>
+): SplitEntry | undefined {
+  const exact = fileToSplit.get(path);
+  if (exact) return exact;
+  for (const { prefix, entry } of prefixIndex) {
+    if (path.startsWith(prefix)) return entry;
+  }
+  return undefined;
 }
 
 /** Get commit SHAs in source..target order (oldest first). Uses first-parent for linear order. WHY first-parent: Merge commits would duplicate or reorder; first-parent gives one linear sequence. WHY reverse: git log is newest-first; we need oldest-first so replay order matches PR history. */
@@ -94,6 +135,7 @@ export async function runSplitRewritePlan(
   spinner.succeed(`${formatNumber(commitShas.length)} commit(s) on source since target`);
 
   const fileToSplit = buildFileToSplit(plan);
+  const prefixIndex = buildPrefixIndex(fileToSplit);
 
   const splitsByBranch = new Map<string, RewritePlanSplit>();
   for (const split of plan.splits) {
@@ -108,6 +150,7 @@ export async function runSplitRewritePlan(
   const planFilesSet = new Set(fileToSplit.keys());
   const touchedByCommits = new Set<string>();
   let skippedCommits = 0;
+  let prefixFallbackCount = 0;
 
   for (const sha of commitShas) {
     const paths = await getChangedPaths(git, sha);
@@ -115,8 +158,11 @@ export async function runSplitRewritePlan(
     for (const p of paths) {
       const norm = normalizePath(p);
       touchedByCommits.add(norm);
-      const entry = fileToSplit.get(norm);
-      if (entry) pathToBranch.set(norm, entry.branchName);
+      const entry = resolvePathToSplit(norm, fileToSplit, prefixIndex);
+      if (entry) {
+        pathToBranch.set(norm, entry.branchName);
+        if (!fileToSplit.has(norm)) prefixFallbackCount++;
+      }
     }
 
     const assignedByBranch = new Map<string, string[]>();
@@ -163,6 +209,9 @@ export async function runSplitRewritePlan(
     }
   }
 
+  if (prefixFallbackCount > 0) {
+    console.log(chalk.gray(`  ${formatNumber(prefixFallbackCount)} path(s) assigned via directory-prefix fallback`));
+  }
   if (skippedCommits > 0) {
     console.log(chalk.yellow(`  ${formatNumber(skippedCommits)} commit(s) skipped (only unassigned paths)`));
   }

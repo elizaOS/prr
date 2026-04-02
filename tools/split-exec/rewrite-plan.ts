@@ -5,6 +5,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { parse as parseYaml } from 'yaml';
+import { assertValidGitBranchName } from './parse-plan.js';
 
 /**
  * Single operation in a split's sequence.
@@ -84,7 +85,9 @@ function parseSplit(raw: unknown): RewritePlanSplit {
         }
       })
     : [];
-  return { branchName: String(branchName).trim(), splitIndex: idx, ops };
+  const trimmedBranch = String(branchName).trim();
+  assertValidGitBranchName(trimmedBranch, `rewrite plan split ${idx}`);
+  return { branchName: trimmedBranch, splitIndex: idx, ops };
 }
 
 function parsePayload(data: Record<string, unknown>): RewritePlan {
@@ -107,10 +110,14 @@ function parsePayload(data: Record<string, unknown>): RewritePlan {
       throw new Error(`Invalid rewrite plan: split ${i}: ${e instanceof Error ? e.message : e}`);
     }
   });
+  const srcBranch = String(source_branch).trim();
+  const tgtBranch = String(target_branch).trim();
+  assertValidGitBranchName(srcBranch, 'rewrite plan source_branch');
+  assertValidGitBranchName(tgtBranch, 'rewrite plan target_branch');
   return {
-    source_branch: String(source_branch).trim(),
+    source_branch: srcBranch,
     source_tip_sha: String(source_tip_sha).trim(),
-    target_branch: String(target_branch).trim(),
+    target_branch: tgtBranch,
     generated_at: generated_at != null ? String(generated_at) : '',
     splits,
   };

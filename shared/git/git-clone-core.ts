@@ -106,13 +106,47 @@ async function assertAdditionalBranchTrackingRefs(
   );
 }
 
+/**
+ * Replace all `remote.origin.fetch` entries with clean refspecs for the requested branches.
+ * WHY direct config edit: `git remote set-branches` validates existing entries before replacing;
+ * if any stale refspec is invalid (e.g. branch name with `:` from old split-exec runs), the command
+ * itself fails. We remove all entries first via `--unset-all`, then add only the ones we need.
+ */
+async function syncOriginFetchBranches(
+  git: SimpleGit,
+  primaryBranch: string,
+  additionalBranches: string[] | undefined
+): Promise<void> {
+  // Remove all existing fetch refspecs (tolerate "key does not exist" on fresh clones).
+  try {
+    await git.raw(['config', '--unset-all', 'remote.origin.fetch']);
+  } catch {
+    // Key may not exist — that's fine.
+  }
+
+  // Build the set of branches we actually need.
+  const names = new Set<string>();
+  const p = primaryBranch?.trim();
+  if (p) names.add(p);
+  for (const b of additionalBranches ?? []) {
+    const t = typeof b === 'string' ? b.trim() : '';
+    if (t) names.add(t);
+  }
+
+  // Add one refspec per branch.
+  for (const name of names) {
+    await git.raw(['config', '--add', 'remote.origin.fetch', `+refs/heads/${name}:refs/remotes/origin/${name}`]);
+  }
+  debug('syncOriginFetchBranches', { branches: [...names] });
+}
+
 /** Fetch extra branches (explicit refspec) so origin/<b> exists under --single-branch. */
 async function fetchAdditionalBranches(git: SimpleGit, primaryBranch: string, additionalBranches: string[] | undefined): Promise<void> {
+  await syncOriginFetchBranches(git, primaryBranch, additionalBranches);
   if (!additionalBranches?.length) return;
   for (const b of additionalBranches) {
     if (b && b !== primaryBranch) {
       try {
-        await git.raw(['remote', 'set-branches', '--add', 'origin', b]);
         debug('Fetching additional branch', { branch: b });
         await git.fetch(['origin', `+refs/heads/${b}:refs/remotes/origin/${b}`]);
       } catch (err) {
@@ -201,6 +235,10 @@ export async function cloneOrUpdate(
   }
 
   if (isExistingRepo) {
+    // Sanitize remote.origin.fetch FIRST — stale invalid refspecs (e.g. branch names with `:` from old
+    // split-exec `set-branches --add` runs) make ANY `git remote` subcommand fail, including `set-url`.
+    await syncOriginFetchBranches(git!, branch, options?.additionalBranches);
+
     // Set remote to auth URL when we have a token so fetch/pull/push do not prompt
     if (githubToken && cloneUrl.startsWith('https://')) {
       await git!.raw(['remote', 'set-url', 'origin', authUrl]);
@@ -253,10 +291,12 @@ export async function cloneOrUpdate(
       // Ensure we're on a branch before reset (e.g. previous run left detached HEAD mid-rebase).
       await git!.checkout(branch).catch(() => {});
 
+      await syncOriginFetchBranches(git!, branch, options?.additionalBranches);
+
       // Run fetch via spawn with stdio inherit so user sees "Receiving objects" progress (not diffs).
       console.log('  Fetching latest from origin (git output will appear below)...');
       await new Promise<void>((resolve, reject) => {
-        const proc = spawn('git', ['fetch', 'origin', branch], {
+        const proc = spawn('git', ['fetch', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
           cwd: workdir,
           stdio: 'inherit',
         });
@@ -266,7 +306,12 @@ export async function cloneOrUpdate(
         });
         proc.on('error', (err) => reject(err));
       });
-      await git!.checkout(branch);
+      try {
+        await git!.checkout(branch);
+      } catch {
+        // Local branch may not exist (e.g. --single-branch clone for a different branch); create from remote.
+        await git!.raw(['checkout', '-b', branch, `origin/${branch}`]);
+      }
       await git!.reset(['--hard', `origin/${branch}`]);
       await fetchAdditionalBranches(git!, branch, options?.additionalBranches);
       console.log(`Updated to latest ${branch}`);

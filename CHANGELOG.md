@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cloneOrUpdate` / `fetchAdditionalBranches`:** Replaces **`remote.origin`** fetch branches with **`git remote set-branches origin …`** (no **`--add`**) before fetches. **WHY:** **`--add`** accumulates stale branch names in the workdir; **`git fetch origin <refspec>`** merges CLI refspecs with **`remote.origin.fetch`**, so one old invalid name (e.g. split **New PR:** titles with **`:`**) broke every subsequent fetch until the list was reset.
+
+- **split-exec clone:** Fetches only **`target_branch`** as an extra ref when it differs from **`source_branch`** — no longer passes every split **New PR** branch to **`cloneOrUpdate`**. **WHY:** Output branch names are not on **origin** until push; including them caused useless fetch warnings and **`invalid refspec`** when names contained **`:`** (conventional-commit-style titles).
+
 ### Changed
 
 - **Codebase organization (structural refactor):** Large modules were split along natural seams with **backward-compatible re-exports** so import paths and behavior stay stable for existing callers. **WHY:** Easier code review, targeted tests, clearer dependency direction (e.g. **`shared/`** must not depend on **`tools/pill/`**), and less scroll fatigue when auditing the fix loop. **What moved:**
@@ -175,7 +181,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (2026-03) — Clone base refs, verification no-ops
 
-- **`cloneOrUpdate`:** Fetches **`additionalBranches`** in the **preserve-changes** path too (read-only), then **fails fast** if any required **`origin/<branch>`** ref is still missing (default **`verifyAdditionalRemoteRefs: true`**). **split-exec** passes **`verifyAdditionalRemoteRefs: false`** because new split branch names may not exist on the remote yet.
+- **`cloneOrUpdate`:** Fetches **`additionalBranches`** in the **preserve-changes** path too (read-only), then **fails fast** if any required **`origin/<branch>`** ref is still missing (default **`verifyAdditionalRemoteRefs: true`**). **split-exec** only lists **`target_branch`** when it differs from **`source_branch`** (not per-split **New PR** names — those are local until push).
 - **`markVerified`:** No-op when the comment is already verified at the **current iteration** with the same **`autoVerifiedFrom`** and no **dismissed** overlap to fix. Git recovery skips **`markVerified`** when the ID is already verified.
 
 ### Changed (2026-03) — Pill output.log: state, logging, config, push, docs
