@@ -81,7 +81,7 @@ export class AiderRunner implements Runner {
       return { success: false, output: '', error: `Failed to write prompt file: ${errorMessage}` };
     }
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('aider', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('aider', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -125,7 +125,7 @@ export class AiderRunner implements Runner {
 
       child.on('close', (code) => {
         cleanupPromptFile();
-        debugResponse('aider', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse(promptSlug, 'aider', stdout, { exitCode: code, stderrLength: stderr.length });
 
         if (code === 0) {
           resolve({ success: true, output: stdout });

@@ -3,6 +3,7 @@ import {
   commentNeedsConservativeExistenceCheck,
   explanationHasConcreteFixEvidence,
   explanationMentionsMissingCodeVisibility,
+  snippetShowsUuidCommentAlignedWithVersionRange,
 } from '../tools/prr/llm/client.js';
 
 describe('commentNeedsConservativeExistenceCheck', () => {
@@ -66,5 +67,22 @@ describe('explanationMentionsMissingCodeVisibility', () => {
         'The truncated excerpt suggests the cleanup may happen elsewhere; the relevant lifecycle code is not visible here.'
       )
     ).toBe(true);
+  });
+});
+
+describe('snippetShowsUuidCommentAlignedWithVersionRange', () => {
+  it('is true when comment documents versions 1-8 and regex uses [1-8]', () => {
+    const snip = `// WHY this regex? Matches standard UUID format (versions 1-8) with variant bits
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;`;
+    expect(snippetShowsUuidCommentAlignedWithVersionRange(snip)).toBe(true);
+  });
+
+  it('is false without [1-8] in regex', () => {
+    expect(
+      snippetShowsUuidCommentAlignedWithVersionRange(
+        '// v4 only\nconst r = /^[0-9a-f-]{36}$/i;',
+      ),
+    ).toBe(false);
   });
 });

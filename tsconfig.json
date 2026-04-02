@@ -15,6 +15,6 @@
     "declarationMap": true,
     "sourceMap": true
   },
-  "include": ["shared/**/*", "tools/prr/**/*", "tools/pill/**/*", "types/**/*"],
+  "include": ["shared/**/*", "tools/prr/**/*", "tools/pill/**/*", "tools/split-plan/**/*", "tools/split-exec/**/*", "tools/split-rewrite-plan/**/*", "tools/story/**/*", "tools/model-catalog/**/*", "types/**/*"],
   "exclude": ["node_modules", "dist"]
 }

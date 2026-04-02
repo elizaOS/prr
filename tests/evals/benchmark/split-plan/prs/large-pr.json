@@ -1,0 +1,79 @@
+{
+  "name": "large-pr",
+  "description": "Large PR with clear dependency structure",
+  "owner": "test-org",
+  "repo": "test-repo",
+  "number": 100,
+  "title": "Major feature: Add authentication system",
+  "body": "Implements OAuth2 authentication with JWT tokens",
+  "branch": "feature/auth-system",
+  "baseBranch": "main",
+  "headSha": "large123pr456",
+  "files": [
+    {
+      "path": "src/auth/types.ts",
+      "status": "added"
+    },
+    {
+      "path": "src/auth/oauth2.ts",
+      "status": "added"
+    },
+    {
+      "path": "src/auth/jwt.ts",
+      "status": "added"
+    },
+    {
+      "path": "src/api/routes/auth.ts",
+      "status": "modified"
+    },
+    {
+      "path": "src/middleware/auth.ts",
+      "status": "added"
+    },
+    {
+      "path": "tests/auth/oauth2.test.ts",
+      "status": "added"
+    },
+    {
+      "path": "tests/auth/jwt.test.ts",
+      "status": "added"
+    }
+  ],
+  "commits": [
+    {
+      "sha": "commit1",
+      "message": "Add auth types and interfaces",
+      "authoredDate": "2025-01-01T00:00:00Z"
+    },
+    {
+      "sha": "commit2",
+      "message": "Implement OAuth2 flow",
+      "authoredDate": "2025-01-01T00:10:00Z"
+    },
+    {
+      "sha": "commit3",
+      "message": "Add JWT token handling",
+      "authoredDate": "2025-01-01T00:20:00Z"
+    },
+    {
+      "sha": "commit4",
+      "message": "Add auth routes to API",
+      "authoredDate": "2025-01-01T00:30:00Z"
+    },
+    {
+      "sha": "commit5",
+      "message": "Add auth middleware",
+      "authoredDate": "2025-01-01T00:40:00Z"
+    },
+    {
+      "sha": "commit6",
+      "message": "Add OAuth2 tests",
+      "authoredDate": "2025-01-01T00:50:00Z"
+    },
+    {
+      "sha": "commit7",
+      "message": "Add JWT tests",
+      "authoredDate": "2025-01-01T01:00:00Z"
+    }
+  ]
+}

@@ -41,6 +41,7 @@ import type { LLMClient } from '../llm/client.js';
 import type { RotationContext } from '../models/rotation.js';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 import { cleanupWorkdir } from '../../../shared/git/workdir.js';
+import { push as gitPushWithAuth } from '../../../shared/git/git-push.js';
 import * as ResolverProc from '../resolver-proc.js';
 import { addDismissalComments } from './dismissal-comments.js';
 import * as Dismissed from '../state/state-dismissed.js';
@@ -99,8 +100,18 @@ export interface RunCallbacks {
   waitForBotReviews: (owner: string, repo: string, prNumber: number, headSha: string) => Promise<void>;
   cleanupCreatedSyncTargets: (git: SimpleGit) => Promise<void>;
   printModelPerformance: () => void;
-  printHandoffPrompt: (issues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]) => void;
-  printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
+  printHandoffPrompt: (
+    issues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => void;
+  printAfterActionReport: (
+    issues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => Promise<void>;
   printFinalSummary: (remainingCount?: number) => void;
   ringBell: (times: number) => void;
   runCleanupMode: (prUrl: string, owner: string, repo: string, prNumber: number) => Promise<void>;
@@ -142,8 +153,17 @@ export async function executeRun(
     state.prInfo = prInfo;
     state.botTimings = botTimings;
     state.expectedBotResponseTime = expectedBotResponseTime;
-    const setupResult = await ResolverProc.executeSetupPhase(config, options, owner, repo, number, state.prInfo, github, spinner, callbacks.setupRunner, callbacks.ensureStateFileIgnored, callbacks.resolveConflictsWithLLM, callbacks.getRotationContext, callbacks.getCurrentModel);
-    
+    const setupResult = await ResolverProc.executeSetupPhase(
+      config, options, owner, repo, number, state.prInfo, github, spinner,
+      callbacks.setupRunner, callbacks.ensureStateFileIgnored, callbacks.resolveConflictsWithLLM,
+      callbacks.getRotationContext, callbacks.getCurrentModel,
+      (w, ctx) => {
+        state.workdir = w;
+        state.stateContext = ctx;
+        if (callbacks.syncResolverState) callbacks.syncResolverState(state);
+      }
+    );
+
     // Always copy setup results to state, even on early exit
     // WHY: Error handlers and cleanup need these values (especially stateContext)
     // CRITICAL: Also update via callback so the resolver instance is updated BEFORE callbacks are invoked
@@ -172,6 +192,24 @@ export async function executeRun(
       debug('Setup requested early exit', { exitReason: setupResult.exitReason, exitDetails: setupResult.exitDetails });
       if (setupResult.exitReason) state.exitReason = setupResult.exitReason;
       if (setupResult.exitDetails) state.exitDetails = setupResult.exitDetails;
+      // Sync resolver so printFinalSummary shows correct exit reason; run error cleanup so user sees "Exit: Error" and details (not "successfully ran").
+      if (callbacks.syncResolverState) callbacks.syncResolverState(state);
+      await ResolverProc.executeErrorCleanup(
+        state.workdir || '',
+        options,
+        spinner,
+        state.finalUnresolvedIssues,
+        state.finalComments,
+        state.stateContext,
+        cleanupWorkdir,
+        callbacks.printModelPerformance,
+        callbacks.printHandoffPrompt,
+        callbacks.printAfterActionReport,
+        callbacks.printFinalSummary,
+        callbacks.ringBell,
+        state.exitReason,
+        state.exitDetails
+      );
       return state;
     }
     debug('Setup complete, entering push iteration loop', { workdir: setupResult.workdir, hasPrefetchedComments: !!setupResult.prefetchedComments?.length });
@@ -211,8 +249,9 @@ export async function executeRun(
     const expectedBotResponseTimeRef = { current: state.expectedBotResponseTime };
     // Pass prefetched comments from setup phase to avoid redundant fetch on first iteration.
     // The push iteration loop clears this after consuming it once.
-    const lastAnalysisCacheRef = { current: null as { commentCount: number; headSha: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]> } | null };
-    const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments, codeRabbitMode: setupResult.codeRabbitMode, lastAnalysisCacheRef };
+    const lastAnalysisCacheRef = { current: null as { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]>; changedFiles?: string[] } | null };
+    const repliedThreadIds = new Set<string>();
+    const pushContexts = { prInfo: state.prInfo, stateContext: state.stateContext, lessonsContext: state.lessonsContext, finalUnresolvedIssues: state.finalUnresolvedIssues, finalComments: state.finalComments, prInfoRef, finalUnresolvedIssuesRef, finalCommentsRef, expectedBotResponseTimeRef, prefetchedComments: setupResult.prefetchedComments, codeRabbitMode: setupResult.codeRabbitMode, lastAnalysisCacheRef, repliedThreadIds };
     while (pushIteration < maxPushIterations) {
       pushIteration++;
       // Reset so adaptive batch sizing is fresh per push iteration (re-analysis gives new issue set).
@@ -341,7 +380,12 @@ export async function executeRun(
           // informational and safe, and bots need to see them on the next review pass)
           if (options.autoPush && !options.noPush) {
             spinner.text = 'Pushing dismissal comments...';
-            await git.push();
+            // WHY shared push(): simple-git push() ignores credential.helper / extraheader and
+            // prompts in CI ("could not read Password … No such device or address").
+            const pushResult = await gitPushWithAuth(git, state.prInfo.branch, false, config.githubToken);
+            if (!pushResult.success) {
+              throw new Error(pushResult.error ?? 'Git push failed');
+            }
           }
           
           spinner.succeed(`Added ${added} dismissal comment${added === 1 ? '' : 's'}`);
@@ -360,7 +404,7 @@ export async function executeRun(
     
     await ResolverProc.executeFinalCleanup(git, state.workdir, state.lessonsContext, state.stateContext, options, spinner, state.finalUnresolvedIssues, state.finalComments, state.exitReason, state.exitDetails,
       callbacks.cleanupCreatedSyncTargets, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell,
-      state.prInfo, callbacks.submitReview);
+      state.prInfo, callbacks.submitReview, repliedThreadIds, github);
   } catch (error) {
     // Set exit reason so final summary shows the real error instead of "Interrupted or exited early".
     callbacks.syncResolverState?.({
@@ -372,7 +416,23 @@ export async function executeRun(
     // Prefer ref snapshot so AAR/remaining count are correct when error happens mid-iteration (audit: remaining on early exit, AAR on auth exit).
     const issuesForCleanup = finalUnresolvedIssuesRef.current.length > 0 ? finalUnresolvedIssuesRef.current : state.finalUnresolvedIssues;
     const commentsForCleanup = finalCommentsRef.current.length > 0 ? finalCommentsRef.current : state.finalComments;
-    await ResolverProc.executeErrorCleanup(state.workdir || '', options, spinner, issuesForCleanup, commentsForCleanup, state.stateContext, cleanupWorkdir, callbacks.printModelPerformance, callbacks.printHandoffPrompt, callbacks.printAfterActionReport, callbacks.printFinalSummary, callbacks.ringBell);
+    const errDetails = error instanceof Error ? error.message : String(error);
+    await ResolverProc.executeErrorCleanup(
+      state.workdir || '',
+      options,
+      spinner,
+      issuesForCleanup,
+      commentsForCleanup,
+      state.stateContext,
+      cleanupWorkdir,
+      callbacks.printModelPerformance,
+      callbacks.printHandoffPrompt,
+      callbacks.printAfterActionReport,
+      callbacks.printFinalSummary,
+      callbacks.ringBell,
+      'error',
+      errDetails
+    );
     throw error;
   }
   return state;

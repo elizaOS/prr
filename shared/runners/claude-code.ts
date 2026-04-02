@@ -155,7 +155,7 @@ export class ClaudeCodeRunner implements Runner {
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
     writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('claude-code', prompt, { workdir, model: options?.model, skipPermissions });
+    const promptSlug = debugPrompt('claude-code', prompt, { workdir, model: options?.model, skipPermissions });
     const cleanupPromptFile = () => {
       try {
         unlinkSync(promptFile);
@@ -216,7 +216,7 @@ export class ClaudeCodeRunner implements Runner {
         cleanupPromptFile();
         
         // Log response to debug file
-        debugResponse('claude-code', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse(promptSlug, 'claude-code', stdout, { exitCode: code, stderrLength: stderr.length });
 
         // Check for permission errors in output (even on success exit code)
         // This catches cases where claude-code "succeeded" but couldn't actually write

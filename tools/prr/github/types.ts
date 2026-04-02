@@ -59,6 +59,8 @@ export interface ThreadComment {
   diffSide: 'LEFT' | 'RIGHT' | null;
   createdAt: string;
   isResolved: boolean;
+  /** Numeric ID for REST API (e.g. pulls.createReplyForReviewComment). Null for synthetic issue comments. */
+  databaseId?: number | null;
 }
 
 export interface ReviewThread {
@@ -82,6 +84,19 @@ export interface ReviewComment {
   createdAt: string;
   /** True when GitHub marks this thread as outdated (line no longer in current diff). Such comments are not shown as unaddressed. */
   outdated?: boolean;
+  /** Numeric ID for REST API (e.g. pulls.createReplyForReviewComment). Null for synthetic issue comments. */
+  databaseId?: number | null;
+}
+
+/**
+ * First full 40-character lowercase hex git object id in text, or undefined.
+ * WHY: Some bots (e.g. CodeRabbit) post **issue** comments with an embedded commit SHA when there is no
+ * `pulls.listReviews` row; `getBotReviewStatus` uses this for **`lastReviewSha`** / HEAD comparison.
+ */
+export function extractFullCommitShaFromText(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const m = text.match(/\b([0-9a-f]{40})\b/i);
+  return m ? m[1]!.toLowerCase() : undefined;
 }
 
 export function parsePRUrl(url: string): { owner: string; repo: string; number: number } {
@@ -109,4 +124,76 @@ export function parsePRUrl(url: string): { owner: string; repo: string; number: 
   }
 
   throw new Error(`Invalid PR URL format: ${url}. Expected: https://github.com/owner/repo/pull/123 or owner/repo#123`);
+}
+
+/**
+ * Parse a bare repo URL (no PR number, no branch). Returns null if input does not match.
+ * Supports: https://github.com/owner/repo, https://github.com/owner/repo.git, owner/repo
+ * WHY: Story and other tools can use the repo's default branch when user passes only the repo URL.
+ */
+export function parseRepoUrl(input: string): { owner: string; repo: string } | null {
+  const trimmed = input.trim();
+  const fullUrl = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?(?:\/)?(?:\?.*)?(?:#.*)?$/i);
+  if (fullUrl && !/\/pull\/|\/tree\//.test(trimmed)) {
+    const repo = fullUrl[2].replace(/\.git$/i, '');
+    if (repo) return { owner: fullUrl[1], repo };
+  }
+  const shorthand = trimmed.match(/^([^\/]+)\/([^\/#@]+)$/);
+  if (shorthand) return { owner: shorthand[1], repo: shorthand[2] };
+  return null;
+}
+
+/**
+ * Parse a branch spec (repo + branch). Returns null if input does not match.
+ * Supports: owner/repo@branch, owner/repo:branch, https://github.com/owner/repo/tree/branch
+ * WHY tree URL: Users paste browser URLs; accepting tree URL avoids "invalid input" and we pass only branch name to the API.
+ * WHY strip query/fragment and trailing slash: Clean branch name; GitHub API expects ref name without URL cruft.
+ */
+export function parseBranchSpec(input: string): { owner: string; repo: string; branch: string } | null {
+  const trimmed = input.trim();
+  const shorthandAt = trimmed.match(/^([^\/]+)\/([^@:]+)@([^@]+)$/);
+  if (shorthandAt) {
+    return { owner: shorthandAt[1], repo: shorthandAt[2], branch: shorthandAt[3] };
+  }
+  const shorthandColon = trimmed.match(/^([^\/]+)\/([^@:]+):([^@:]+)$/);
+  if (shorthandColon) {
+    return { owner: shorthandColon[1], repo: shorthandColon[2], branch: shorthandColon[3] };
+  }
+  const treeMatch = trimmed.match(/(?:https?:\/\/)?github\.com\/([^\/]+)\/([^\/]+)\/tree\/(.+?)(?:[?#]|$)/);
+  if (treeMatch) {
+    const branch = treeMatch[3].replace(/\/+$/, '').trim();
+    if (branch) {
+      return { owner: treeMatch[1], repo: treeMatch[2], branch };
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalize a --compare value to a branch name for the GitHub API.
+ * Accepts: plain branch name (e.g. v1-develop), owner/repo@branch, or tree URL.
+ * When currentOwner/currentRepo are set, parsed repo must match (same-repo comparison only).
+ * WHY: Compare API expects ref names; passing a tree URL as ref causes 404. We parse and pass only the branch name.
+ */
+export function normalizeCompareBranch(
+  value: string,
+  currentOwner?: string,
+  currentRepo?: string
+): string {
+  const trimmed = value.trim();
+  const parsed = parseBranchSpec(trimmed);
+  if (parsed) {
+    if (currentOwner != null && currentRepo != null && (parsed.owner !== currentOwner || parsed.repo !== currentRepo)) {
+      throw new Error(
+        `--compare repo (${parsed.owner}/${parsed.repo}) does not match branch repo (${currentOwner}/${currentRepo}). Use the same repository.`
+      );
+    }
+    return parsed.branch;
+  }
+  if (!/github\.com|@|^[^\/]+\/[^\/]+:/.test(trimmed)) {
+    return trimmed;
+  }
+  throw new Error(
+    `Invalid --compare value: "${value}". Use a branch name (e.g. v1-develop), owner/repo@branch, or a tree URL.`
+  );
 }

@@ -77,6 +77,12 @@ export interface CLIOptions {
   predictBots: boolean;
   /** If true, do not wait for bot re-review after push (use --no-wait-bot). Default is false (wait for bots). */
   noWaitBot: boolean;
+  /** Run pill analysis on the output log when the run finishes. */
+  pill: boolean;
+  /** Post a short reply on each review thread when PRR fixes or dismisses an issue (opt-in). */
+  replyToThreads: boolean;
+  /** When replying to threads, also resolve the thread (collapse with checkmark). */
+  resolveThreads: boolean;
 }
 
 export interface ParsedArgs {
@@ -165,7 +171,12 @@ export function createCLI(): Command {
     .option('--update-tools', 'Update all installed AI coding tools to latest versions, then exit')
     .option('--tidy-lessons', 'Clean up lessons: re-normalize, deduplicate, remove garbage entries, then exit')
     .option('--predict-bots', 'Before push, predict likely new bot feedback via LLM (display only)', true)
-    .option('--no-predict-bots', 'Disable bot prediction (skip extra LLM call before push)');
+    .option('--no-predict-bots', 'Disable bot prediction (skip extra LLM call before push)')
+    .option('--pill', 'Run pill analysis on the output log when the run finishes', false)
+    .option('--reply-to-threads', 'Post a short reply on each review thread when PRR fixes or dismisses an issue', false)
+    .option('--no-reply-to-threads', 'Do not post replies on review threads (default)')
+    .option('--resolve-threads', 'When replying, also resolve the review thread (collapse with checkmark)', false)
+    .option('--no-resolve-threads', 'Do not resolve threads after replying (default)');
 
   return program;
 }
@@ -261,6 +272,9 @@ export function parseArgs(program: Command): ParsedArgs {
       predictBots: opts.predictBots ?? true,
       // Default: wait for bot re-review after push; pass --no-wait-bot to exit without waiting
       noWaitBot: opts.noWaitBot === true,
+      pill: opts.pill ?? false,
+      replyToThreads: opts.replyToThreads === true || process.env.PRR_REPLY_TO_THREADS === 'true',
+      resolveThreads: opts.resolveThreads === true,
     },
   };
 }

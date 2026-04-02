@@ -1,0 +1,26 @@
+{
+  "name": "simple-pr",
+  "description": "Simple PR fixture: one file, one comment",
+  "pr": {
+    "owner": "test-org",
+    "repo": "test-repo",
+    "number": 1,
+    "title": "Fix null assertion",
+    "branch": "feature",
+    "baseBranch": "main",
+    "files": [
+      {
+        "path": "src/utils.ts",
+        "content": "export function foo() { return null!; }\n"
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "path": "src/utils.ts",
+        "line": 1,
+        "body": "Use nullish coalescing instead of non-null assertion"
+      }
+    ]
+  }
+}

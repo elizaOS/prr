@@ -21,8 +21,12 @@
 import type { StateContext } from './state-context.js';
 import { getState } from './state-context.js';
 import type { VerifiedComment } from './types.js';
+import { debug } from '../../../shared/logger.js';
 
 export type VerificationRecord = VerifiedComment;
+
+/** Sentinel for `autoVerifiedFrom` when verification was restored from `prr-fix:` git history (not a duplicate). */
+export const PRR_GIT_RECOVERY_VERIFIED_MARKER = '__prr_git_recovery__';
 
 /**
  * Mark a comment as verified/fixed
@@ -32,7 +36,8 @@ export type VerificationRecord = VerifiedComment;
  * 
  * @param ctx - State context
  * @param commentId - ID of the comment to mark as verified
- * @param autoVerifiedFrom - Optional canonical comment ID if this is an auto-verified duplicate
+ * @param autoVerifiedFrom - Optional canonical comment ID for auto-verified **duplicates**, or
+ *   **`PRR_GIT_RECOVERY_VERIFIED_MARKER`** when verification was restored from **`prr-fix:`** git history (`recoverVerificationState`).
  */
 export function markVerified(ctx: StateContext, commentId: string, autoVerifiedFrom?: string): void {
   const state = getState(ctx);
@@ -45,11 +50,26 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
   const existing = state.verifiedComments.find(v => v.commentId === commentId);
   
   if (existing) {
+    const hadDismissed = state.dismissedIssues?.some((d) => d.commentId === commentId) ?? false;
+    const sameIteration = existing.verifiedAtIteration === currentIteration;
+    const fromCompatible =
+      autoVerifiedFrom === undefined || autoVerifiedFrom === existing.autoVerifiedFrom;
+    if (sameIteration && fromCompatible && !hadDismissed) {
+      return;
+    }
     existing.verifiedAt = new Date().toISOString();
     existing.verifiedAtIteration = currentIteration;
     if (autoVerifiedFrom !== undefined) {
       existing.autoVerifiedFrom = autoVerifiedFrom;
     }
+    if (state.dismissedIssues?.length) {
+      const before = state.dismissedIssues.length;
+      state.dismissedIssues = state.dismissedIssues.filter((d) => d.commentId !== commentId);
+      if (state.dismissedIssues.length < before) {
+        debug('markVerified (update): removed from dismissed — mutual exclusivity', { commentId });
+      }
+    }
+    debug('markVerified (update)', { commentId, iteration: currentIteration, autoVerifiedFrom });
   } else {
     state.verifiedComments.push({
       commentId,
@@ -61,6 +81,11 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
     if (!(state.verifiedFixed ??= []).includes(commentId)) {
       state.verifiedFixed.push(commentId);
     }
+    // Pill: Keep verifiedFixed and dismissedIssues mutually exclusive — when we verify, remove from dismissed.
+    if (state.dismissedIssues?.length) {
+      state.dismissedIssues = state.dismissedIssues.filter((d) => d.commentId !== commentId);
+    }
+    debug('markVerified (new)', { commentId, iteration: currentIteration, autoVerifiedFrom, totalVerified: state.verifiedFixed.length });
   }
   
   // Sync commentStatuses: if this comment had an "open" analysis status,
@@ -74,6 +99,14 @@ export function markVerified(ctx: StateContext, commentId: string, autoVerifiedF
       updatedAt: new Date().toISOString(),
       updatedAtIteration: currentIteration,
     };
+  }
+
+  // Clear apply-failure state so a future re-attempt doesn't see stale error or count.
+  if (state.lastApplyErrorByCommentId?.[commentId] !== undefined) {
+    delete state.lastApplyErrorByCommentId[commentId];
+  }
+  if (state.applyFailureCountByCommentId?.[commentId] !== undefined) {
+    delete state.applyFailureCountByCommentId[commentId];
   }
 }
 
@@ -107,6 +140,14 @@ export function unmarkVerified(ctx: StateContext, commentId: string): void {
   if (state.commentStatuses?.[commentId]) {
     delete state.commentStatuses[commentId];
   }
+
+  // WHY: fix-loop start filters out IDs in verifiedThisSession ("already fixed this session").
+  // Final audit calls unmarkVerified when it says UNFIXED; if we leave the ID in the session set,
+  // the next iteration drops all re-queued issues → empty queue → "BUG DETECTED" repopulate
+  // (output.log audit babylon#1327 2026-03-21).
+  ctx.verifiedThisSession?.delete(commentId);
+
+  debug('unmarkVerified', { commentId, remainingVerified: (state.verifiedFixed ?? []).length });
 }
 
 /**
@@ -212,7 +253,9 @@ export function clearAllVerifications(ctx: StateContext): void {
   const state = ctx.state;
   if (!state) return;
   
+  const previousCount = (state.verifiedFixed ?? []).length;
   state.verifiedFixed = [];
   state.verifiedComments = [];
   state.commentStatuses = {};
+  debug('clearAllVerifications', { previousCount });
 }

@@ -30,7 +30,7 @@ function buildRow(
   const summary = firstLine(comment.body ?? '');
   return [
     pad(String(index + 1), 4),
-    pad(comment.id.slice(0, 10), 12),
+    pad(comment.id.length <= 20 ? comment.id : comment.id.slice(0, 20) + '…', 22),
     pad(location, 42),
     pad(statusLabel, 20),
     pad(reason, 72),
@@ -104,14 +104,14 @@ export function printDebugIssueTable(
   console.log(chalk.gray(
     [
       pad('#', 4),
-      pad('id', 12),
+      pad('id', 22),
       pad('location', 42),
       pad('status', 20),
       pad('reason', 72),
       pad('comment', 76),
     ].join(' ')
   ));
-  console.log(chalk.gray('-'.repeat(4 + 1 + 12 + 1 + 42 + 1 + 20 + 1 + 72 + 1 + 76)));
+  console.log(chalk.gray('-'.repeat(4 + 1 + 22 + 1 + 42 + 1 + 20 + 1 + 72 + 1 + 76)));
   for (const row of rows) {
     console.log(chalk.gray(row));
   }

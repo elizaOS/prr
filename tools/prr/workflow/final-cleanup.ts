@@ -29,9 +29,11 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import type { PRInfo } from '../github/types.js';
-import { endTimer, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
+import { debug, endTimer, formatNumber, printTimingSummary, printTokenSummary } from '../../../shared/logger.js';
 import { buildReviewSummaryMarkdown } from '../ui/reporter.js';
 import { printDebugIssueTable } from './debug-issue-table.js';
+import { postThreadReplies } from './thread-replies.js';
+import type { GitHubAPI } from '../github/api.js';
 
 /** Dedupe by (filePath, line) so remaining count matches AAR (same location = one remaining). */
 function dedupeDismissedByLocation(issues: DismissedIssue[]): DismissedIssue[] {
@@ -75,12 +77,25 @@ export async function executeFinalCleanup(
   cleanupCreatedSyncTargets: (git: SimpleGit) => Promise<void>,
   cleanupWorkdir: (workdir: string) => Promise<void>,
   printModelPerformance: () => void,
-  printHandoffPrompt: (issues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]) => void,
-  printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
+  printHandoffPrompt: (
+    issues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => void,
+  printAfterActionReport: (
+    issues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => Promise<void>,
   printFinalSummary: (remainingCount?: number) => void,
   ringBell: (times: number) => void,
   prInfo?: PRInfo | null,
-  submitReview?: (body: string, prInfo: PRInfo) => Promise<void>
+  submitReview?: (body: string, prInfo: PRInfo) => Promise<void>,
+  /** When set and options.replyToThreads, post replies for dismissed issues at end of run */
+  repliedThreadIds?: Set<string>,
+  github?: GitHubAPI
 ): Promise<void> {
   // Final lessons export (catches any lessons from last iteration not yet committed)
   // WHY: Lessons are also exported before each commit, but this catches edge cases
@@ -130,11 +145,11 @@ export async function executeFinalCleanup(
   const remainingCount = trulyUnresolved.length + exhaustedDeduped.length;
   const fixedThisSessionCount = stateContext.verifiedThisSession?.size ?? 0;
   if (remainingCount > 0) {
-    printHandoffPrompt(trulyUnresolved, exhaustedDeduped);
+    printHandoffPrompt(trulyUnresolved, exhaustedDeduped, exitReason, exitDetails);
   }
   // AAR when there are remaining issues (unresolved + exhausted/remaining) or fixes this session — gives a record of what was done (audit).
   if (remainingCount > 0 || fixedThisSessionCount > 0) {
-    await printAfterActionReport(trulyUnresolved, finalComments);
+    await printAfterActionReport(trulyUnresolved, finalComments, exitReason, exitDetails);
   }
 
   // Final results summary - remaining = unresolved + legacy exhausted/remaining (same formula as AAR)
@@ -150,7 +165,47 @@ export async function executeFinalCleanup(
       await submitReview(body, prInfo);
     } catch (err) {
       // Non-fatal: review submission is a nice-to-have; don't fail the run
+      // Detailed GitHub 5xx debug: `submitPullRequestReview` logs via `logGitHubApiFailure` before throw.
       console.log(chalk.gray(`\nCould not submit PR review: ${err instanceof Error ? err.message : String(err)}`));
+    }
+  }
+
+  // Reply on review threads: dismissed outcomes + verified fixes that did not get a push-phase reply.
+  // WHY verified at end: commit-and-push only posts "Fixed in …" when a push actually happened (!pushNothingToPush).
+  // Runs that verify fixes but skip push (--no-push), or "nothing to push", would otherwise leave threads silent.
+  // repliedThreadIds dedupes with any replies already posted after push.
+  if (!options.dryRun && options.replyToThreads && prInfo && repliedThreadIds != null && github) {
+    try {
+      let commitSha: string;
+      try {
+        commitSha = await git.revparse(['HEAD']);
+      } catch {
+        commitSha = prInfo.headSha;
+      }
+      const verifiedForReply = new Set<string>();
+      if (stateContext.verifiedThisSession) {
+        for (const id of stateContext.verifiedThisSession) {
+          if (Verification.isVerified(stateContext, id)) verifiedForReply.add(id);
+        }
+      }
+      const replyStats = await postThreadReplies({
+        comments: finalComments,
+        verifiedCommentIds: verifiedForReply,
+        dismissedIssues,
+        commitSha,
+        repliedThreadIds,
+        github,
+        prInfo,
+        replyToThreads: true,
+        resolveThreads: options.resolveThreads,
+      });
+      // User-visible summary when most replies failed (e.g. systemic 422; output.log audit).
+      if (replyStats && replyStats.attempted > 0 && replyStats.replied < replyStats.attempted * 0.1) {
+        const failed = replyStats.attempted - replyStats.replied;
+        console.log(chalk.yellow(`Could not post replies on ${formatNumber(failed)} review thread(s) (GitHub returned Validation Failed). Check repo permissions and thread state.`));
+      }
+    } catch (err) {
+      debug('Thread replies for dismissed (non-fatal)', { error: String(err) });
     }
   }
 
@@ -181,10 +236,23 @@ export async function executeErrorCleanup(
   stateContext: StateContext | null,
   cleanupWorkdir: (workdir: string) => Promise<void>,
   printModelPerformance: () => void,
-  printHandoffPrompt: (issues: UnresolvedIssue[], exhaustedIssues?: DismissedIssue[]) => void,
-  printAfterActionReport: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
+  printHandoffPrompt: (
+    issues: UnresolvedIssue[],
+    exhaustedIssues?: DismissedIssue[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => void,
+  printAfterActionReport: (
+    issues: UnresolvedIssue[],
+    comments: ReviewComment[],
+    exitReason?: string | null,
+    exitDetails?: string | null
+  ) => Promise<void>,
   printFinalSummary: (remainingCount?: number) => void,
-  ringBell: (times: number) => void
+  ringBell: (times: number) => void,
+  /** Passed to handoff/AAR when setup exits early (e.g. merge_conflicts). */
+  exitReasonForReporting?: string | null,
+  exitDetailsForReporting?: string | null
 ): Promise<void> {
   endTimer('Total');
   printTimingSummary();
@@ -204,11 +272,13 @@ export async function executeErrorCleanup(
   const exhaustedDedupedErr = dedupeDismissedByLocation(exhaustedOrRemainingErr);
   const remainingCountErr = trulyUnresolved.length + exhaustedDedupedErr.length;
   const fixedThisSessionCount = stateContext?.verifiedThisSession?.size ?? 0;
+  const er = exitReasonForReporting ?? null;
+  const ed = exitDetailsForReporting ?? null;
   if (remainingCountErr > 0) {
-    printHandoffPrompt(trulyUnresolved, exhaustedDedupedErr);
+    printHandoffPrompt(trulyUnresolved, exhaustedDedupedErr, er, ed);
   }
   if (remainingCountErr > 0 || fixedThisSessionCount > 0) {
-    await printAfterActionReport(trulyUnresolved, finalComments);
+    await printAfterActionReport(trulyUnresolved, finalComments, er, ed);
   }
 
   printFinalSummary(remainingCountErr);  // same formula as AAR: unresolved + exhausted/remaining deduped

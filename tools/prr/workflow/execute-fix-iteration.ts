@@ -26,16 +26,17 @@ import type { LLMClient } from '../llm/client.js';
 import type { CLIOptions } from '../cli.js';
 import ora from 'ora';
 import { createHash } from 'crypto';
-import { debug, debugStep, startTimer, endTimer, formatDuration } from '../../../shared/logger.js';
+import { debug, debugStep, startTimer, endTimer, formatDuration, formatNumber } from '../../../shared/logger.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 import { tryRestoreFromBaseIfRequested } from './restore-from-base.js';
-import { getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests, reviewSuggestsFixInTest } from '../analyzer/prompt-builder.js';
+import { getMentionedTestFilePaths, getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests, reviewSuggestsFixInTest, reviewTargetsMentionedTestFile } from '../analyzer/prompt-builder.js';
 import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
-import { HALLUCINATION_DISMISS_THRESHOLD } from '../../../shared/constants.js';
+import { HALLUCINATION_DISMISS_THRESHOLD, NO_PROGRESS_DISMISS_THRESHOLD, getEffectiveMaxConcurrentLLM } from '../../../shared/constants.js';
+import { runWithConcurrency } from '../../../shared/run-with-concurrency.js';
 import { existsSync } from 'fs';
 import { basename, join } from 'path';
 import { assessSolvability } from './helpers/solvability.js';
@@ -45,6 +46,52 @@ import { assessSolvability } from './helpers/solvability.js';
 // the next iteration generates the exact same prompt for the same model.
 // Re-running it is guaranteed to fail again — skip straight to rotation.
 let lastPromptKey: string | null = null;
+
+/** Expand allowed paths for a set of issues (mirrors prompt-builder so runner accepts same files). */
+function getAllowedPathsForIssues(
+  issues: UnresolvedIssue[],
+  pathExists: (p: string) => boolean
+): string[] {
+  return filterAllowedPathsForFix(Array.from(new Set(issues.flatMap((i) => {
+    const primaryPath = i.resolvedPath ?? i.comment.path;
+    let base = i.allowedPaths?.length ? [...i.allowedPaths] : [primaryPath];
+    if (base.length === 0) base = [primaryPath];
+    const journal = getMigrationJournalPath(i);
+    if (journal && !base.includes(journal)) base.push(journal);
+    const consolidate = getConsolidateDuplicateTargetPath(i);
+    if (consolidate && !base.includes(consolidate)) base.push(consolidate);
+    const referencedFull = getReferencedFullPathFromComment(i);
+    if (referencedFull && !base.includes(referencedFull)) base.push(referencedFull);
+    const docPath = getDocumentationPathFromComment(i);
+    if (docPath && !base.includes(docPath)) base.push(docPath);
+    const renameTarget = getRenameTargetPath(i);
+    if (renameTarget && !base.includes(renameTarget)) base.push(renameTarget);
+    for (const sibling of getSiblingFilePathsFromComment(i)) {
+      if (!base.includes(sibling)) base.push(sibling);
+    }
+    for (const p of getPathsToDeleteFromComment(i)) {
+      if (!base.includes(p)) base.push(p);
+    }
+    const impl = getImplPathForTestFileIssue(i, undefined);
+    if (impl && !base.includes(impl)) base.push(impl);
+    const forceTestPath = reviewSuggestsFixInTest(i.comment.body ?? '');
+    const testPath = getTestPathForSourceFileIssue(i, { pathExists, forceTestPath });
+    if (testPath && !base.includes(testPath)) base.push(testPath);
+    if (issueRequestsTests(i) || forceTestPath) {
+      const srcPath = i.resolvedPath ?? i.comment.path ?? '';
+      if (/\.(?:ts|tsx|js|jsx)$/.test(srcPath)) {
+        const testBase = srcPath.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/, '.test.$1');
+        const testsRootPath = `__tests__/${testBase}`;
+        if (!base.includes(testsRootPath)) base.push(testsRootPath);
+      }
+    }
+    for (const hiddenTestPath of getMentionedTestFilePaths(i, { pathExists })) {
+      if (!base.includes(hiddenTestPath)) base.push(hiddenTestPath);
+    }
+    const filtered = filterAllowedPathsForFix(base);
+    return filtered.length > 0 ? filtered : [primaryPath];
+  }))));
+}
 
 /** Reset the duplicate prompt tracker (call after model/tool rotation). */
 export function resetPromptTracker(): void {
@@ -59,7 +106,9 @@ function addDisallowedFilesLessonsAndState(
   lessonsContext: LessonsContext,
   stateContext: StateContext
 ): void {
-  const allowedStr = allowedPathsForBatch.slice(0, 5).join(', ') + (allowedPathsForBatch.length > 5 ? ` (+${allowedPathsForBatch.length - 5} more)` : '');
+  const allowedStr = allowedPathsForBatch.length > 0
+    ? allowedPathsForBatch.slice(0, 5).join(', ') + (allowedPathsForBatch.length > 5 ? ` (+${allowedPathsForBatch.length - 5} more)` : '')
+    : [...new Set(issuesForPrompt.map((i) => i.resolvedPath ?? i.comment.path))].slice(0, 5).join(', ');
   LessonsAPI.Add.addGlobalLesson(
     lessonsContext,
     `Fixer attempted disallowed file(s): ${skippedDisallowedFiles.join(', ')}. Only edit the file(s) listed in TARGET FILE(S): ${allowedStr}.`
@@ -67,8 +116,17 @@ function addDisallowedFilesLessonsAndState(
   if (stateContext.state) {
     const state = stateContext.state;
     if (!state.wrongFileLessonCountByCommentId) state.wrongFileLessonCountByCommentId = {};
+    // Only increment wrong-file count for issues whose target file was in skippedDisallowedFiles.
+    // WHY: Otherwise every issue in the batch gets blamed when one issue's file was disallowed (e.g. empty allowlist).
     for (const issue of issuesForPrompt) {
-      state.wrongFileLessonCountByCommentId[issue.comment.id] = (state.wrongFileLessonCountByCommentId[issue.comment.id] ?? 0) + 1;
+      const primaryPath = issue.resolvedPath ?? issue.comment.path;
+      const allowedForIssue = issue.allowedPaths?.length ? issue.allowedPaths : [primaryPath];
+      const wasThisIssueTargetDisallowed = skippedDisallowedFiles.some(
+        (p) => p === primaryPath || allowedForIssue.includes(p)
+      );
+      if (wasThisIssueTargetDisallowed) {
+        state.wrongFileLessonCountByCommentId[issue.comment.id] = (state.wrongFileLessonCountByCommentId[issue.comment.id] ?? 0) + 1;
+      }
     }
     const testFilePattern = /__tests__|\.(test|spec)\.(ts|js)$/i;
     function isPlausibleTestPathForIssue(attemptedPath: string, issuePath: string): boolean {
@@ -80,10 +138,16 @@ function addDisallowedFilesLessonsAndState(
       return issueStem === attemptedStem;
     }
     for (const issue of issuesForPrompt) {
-      const wantsTestPath = issueRequestsTests(issue) || reviewSuggestsFixInTest(issue.comment.body ?? '');
+      const wantsTestPath = issueRequestsTests(issue) || reviewSuggestsFixInTest(issue.comment.body ?? '') || reviewTargetsMentionedTestFile(issue.comment.body ?? '');
       if (!wantsTestPath) continue;
-      const inferredTestPath = getTestPathForSourceFileIssue(issue, { forceTestPath: wantsTestPath });
-      if (inferredTestPath && allowedPathsForBatch.includes(inferredTestPath)) continue;
+      const inferredTestPaths = [
+        ...getMentionedTestFilePaths(issue, { attemptedPaths: skippedDisallowedFiles }),
+        ...(() => {
+          const testPath = getTestPathForSourceFileIssue(issue, { forceTestPath: wantsTestPath });
+          return testPath ? [testPath] : [];
+        })(),
+      ].filter((p, idx, arr) => Boolean(p) && arr.indexOf(p) === idx);
+      if (inferredTestPaths.some((p) => allowedPathsForBatch.includes(p))) continue;
       const attemptedTestPath = skippedDisallowedFiles.find(
         (p) => testFilePattern.test(p) && isPlausibleTestPathForIssue(p, issue.comment.path)
       );
@@ -143,6 +207,8 @@ export async function executeFixIteration(
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
   /** Current fix iteration (1-based). When 1, use conservative prompt cap to avoid timeout (audit). */
   fixIteration: number,
+  /** LLM dedup: dismiss duplicate-cluster siblings when canonical gets ALREADY_FIXED (no-changes path). */
+  duplicateMap?: Map<string, string[]>,
   onDisableRunner?: (runnerName: string) => void
 ): Promise<{
   shouldContinue: boolean;
@@ -295,7 +361,9 @@ export async function executeFixIteration(
     undefined,
     modelContext,
     pathExists,
-    fixIteration === 1
+    workdir,
+    fixIteration === 1,
+    stateContext
   );
   
   if (promptDetails.shouldSkip) {
@@ -375,49 +443,123 @@ export async function executeFixIteration(
    const codexAddDirs = [...(options.codexAddDir ?? [])];
   // Pass OpenAI key explicitly so Codex gets it even when config came from env and runner spawns with a copy of process.env
   const keyForRunner = openaiApiKey ?? process.env.OPENAI_API_KEY;
-  // Union of allowed paths so runner can skip change blocks targeting wrong files.
-  // WHY: Must mirror prompt-builder expansion (journal, consolidate-duplicate, test-impl, fix-in-test) or the
-  // runner rejects edits the prompt asked for (e.g. _journal.json for Drizzle migrations) as "disallowed file".
-  const allowedPathsForBatch = filterAllowedPathsForFix(Array.from(new Set(issuesForPrompt.flatMap((i) => {
-    const primaryPath = i.resolvedPath ?? i.comment.path;
-    const base = i.allowedPaths?.length ? [...i.allowedPaths] : [primaryPath];
-    const journal = getMigrationJournalPath(i);
-    if (journal && !base.includes(journal)) base.push(journal);
-    const consolidate = getConsolidateDuplicateTargetPath(i);
-    if (consolidate && !base.includes(consolidate)) base.push(consolidate);
-    const referencedFull = getReferencedFullPathFromComment(i);
-    if (referencedFull && !base.includes(referencedFull)) base.push(referencedFull);
-    const docPath = getDocumentationPathFromComment(i);
-    if (docPath && !base.includes(docPath)) base.push(docPath);
-    const renameTarget = getRenameTargetPath(i);
-    if (renameTarget && !base.includes(renameTarget)) base.push(renameTarget);
-    for (const sibling of getSiblingFilePathsFromComment(i)) {
-      if (!base.includes(sibling)) base.push(sibling);
-    }
-    for (const p of getPathsToDeleteFromComment(i)) {
-      if (!base.includes(p)) base.push(p);
-    }
-    const impl = getImplPathForTestFileIssue(i, undefined);
-    if (impl && !base.includes(impl)) base.push(impl);
-    const forceTestPath = reviewSuggestsFixInTest(i.comment.body ?? '');
-    const testPath = getTestPathForSourceFileIssue(i, { pathExists, forceTestPath });
-    if (testPath && !base.includes(testPath)) base.push(testPath);
-    return base;
-  }))));
+  const allowedPathsForBatch = getAllowedPathsForIssues(issuesForPrompt, pathExists);
 
-  let result;
-   try {
-     result = await runner.run(workdir, prompt, {
-       model: currentModel,
-       codexAddDirs,
-       openaiApiKey: keyForRunner,
-       unresolvedIssues: workingUnresolved,
-       allowedPathsForBatch,
-       allowedPathsForInjection: allowedPathsForBatch,
-     });
-   } finally {
-     spinner.stop();
-   }
+  let result: Awaited<ReturnType<Runner['run']>>;
+  const concurrencyLimit = getEffectiveMaxConcurrentLLM();
+  // WHY llm-api only: Subprocess runners (cursor, claude-code, aider) share one workdir; parallel runs would overwrite each other. llm-api applies edits in-process so disjoint groups are safe.
+  const useParallelGroups =
+    runner.name === 'llm-api' &&
+    concurrencyLimit >= 2 &&
+    issuesForPrompt.length > 0;
+
+  const affectedFiles = [...new Set(issuesForPrompt.map((i) => getIssuePrimaryPath(i)))];
+  // WHY disjoint file groups: Each group gets its own prompt and run(); no two groups touch the same file, so no write conflicts.
+  const canParallelize = useParallelGroups && affectedFiles.length >= 2;
+
+  if (canParallelize) {
+    const N = Math.min(concurrencyLimit, affectedFiles.length);
+    const sortedFiles = [...affectedFiles].sort();
+    const fileGroups: Set<string>[] = Array.from({ length: N }, () => new Set());
+    sortedFiles.forEach((f, i) => fileGroups[i % N]!.add(f));
+    const issueGroups = fileGroups
+      .map((files) => issuesForPrompt.filter((i) => files.has(getIssuePrimaryPath(i))))
+      .filter((g) => g.length > 0);
+
+    if (issueGroups.length >= 2) {
+      debug('Parallel fix groups (llm-api)', { groupCount: issueGroups.length, concurrencyLimit });
+      const groupDetails = issueGroups.map((groupIssues) => {
+        const details = ResolverProc.buildAndDisplayFixPrompt(
+          groupIssues,
+          lessonsContext,
+          options.verbose,
+          effectiveConsecutive,
+          options.priorityOrder,
+          prInfo,
+          diffStat,
+          comments,
+          runner.name,
+          undefined,
+          modelContext,
+          pathExists,
+          workdir,
+          fixIteration === 1,
+          stateContext
+        );
+        const groupPaths = getAllowedPathsForIssues(groupIssues, pathExists);
+        return { prompt: details.prompt, allowedPathsForBatch: groupPaths, groupIssues, shouldSkip: details.shouldSkip };
+      });
+      const toRun = groupDetails.filter((d) => !d.shouldSkip);
+      if (toRun.length > 0) {
+        const tasks = toRun.map(
+          (d) => () =>
+            runner.run(workdir, d.prompt, {
+              model: currentModel,
+              codexAddDirs,
+              openaiApiKey: keyForRunner,
+              unresolvedIssues: d.groupIssues,
+              allowedPathsForBatch: d.allowedPathsForBatch,
+              allowedPathsForInjection: d.allowedPathsForBatch,
+            })
+        );
+        try {
+          const results = await runWithConcurrency(tasks, concurrencyLimit);
+          const firstFailure = results.find((r) => !r.success);
+          const mergedUsage = results.reduce(
+            (acc, r) =>
+              r.usage
+                ? {
+                    input_tokens: acc.input_tokens + (r.usage.input_tokens ?? 0),
+                    output_tokens: acc.output_tokens + (r.usage.output_tokens ?? 0),
+                    cached_input_tokens: acc.cached_input_tokens + (r.usage.cached_input_tokens ?? 0),
+                  }
+                : acc,
+            { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 }
+          );
+          result = {
+            success: !firstFailure,
+            output: results.map((r) => r.output ?? '').join('\n\n'),
+            error: firstFailure?.error,
+            usage:
+              mergedUsage.input_tokens + mergedUsage.output_tokens + mergedUsage.cached_input_tokens > 0
+                ? mergedUsage
+                : undefined,
+          };
+        } finally {
+          spinner.stop();
+        }
+      } else {
+        result = { success: true, output: '' };
+        spinner.stop();
+      }
+    } else {
+      try {
+        result = await runner.run(workdir, prompt, {
+          model: currentModel,
+          codexAddDirs,
+          openaiApiKey: keyForRunner,
+          unresolvedIssues: workingUnresolved,
+          allowedPathsForBatch,
+          allowedPathsForInjection: allowedPathsForBatch,
+        });
+      } finally {
+        spinner.stop();
+      }
+    }
+  } else {
+    try {
+      result = await runner.run(workdir, prompt, {
+        model: currentModel,
+        codexAddDirs,
+        openaiApiKey: keyForRunner,
+        unresolvedIssues: workingUnresolved,
+        allowedPathsForBatch,
+        allowedPathsForInjection: allowedPathsForBatch,
+      });
+    } finally {
+      spinner.stop();
+    }
+  }
   const fixerTime = endTimer('Run fixer');
   if (result.usage) {
     addTokenUsage(stateContext, result.usage);
@@ -454,6 +596,7 @@ export async function executeFixIteration(
     // When search/replace failed to match, add file-specific lessons so next run uses exact content, narrower anchor, or full-file rewrite.
     if (result.error && /search\/replace operations failed|search text did not match/i.test(result.error)) {
       const paths = [...new Set(workingUnresolved.map((i) => i.comment.path))];
+      console.log(chalk.yellow(`  ⚠ Search/replace did not match for this batch (${formatNumber(paths.length)} file(s)) — next attempt will include last-error hint.`));
       for (const path of paths) {
         const one = workingUnresolved.find((i) => i.comment.path === path);
         if (one) {
@@ -463,10 +606,23 @@ export async function executeFixIteration(
           );
         }
       }
+      // Persist last apply error and increment apply-failure count for retry prompt and earlier chronic-failure dismissal (output.log audit).
+      const errTruncated = result.error.slice(0, 250);
+      const state = getState(stateContext);
+      state.lastApplyErrorByCommentId = state.lastApplyErrorByCommentId ?? {};
+      state.applyFailureCountByCommentId = state.applyFailureCountByCommentId ?? {};
+      for (const issue of issuesForPrompt) {
+        state.lastApplyErrorByCommentId[issue.comment.id] = errTruncated;
+        state.applyFailureCountByCommentId[issue.comment.id] = (state.applyFailureCountByCommentId[issue.comment.id] ?? 0) + 1;
+      }
     }
     // Strict allowlist failure: fixer attempted only disallowed files — add file-scoped lesson and state.
     if (result.skippedDisallowedFiles?.length) {
       addDisallowedFilesLessonsAndState(result.skippedDisallowedFiles, issuesForPrompt, allowedPathsForBatch, lessonsContext, stateContext);
+    }
+    if (result.skippedNewfilePathExists?.length) {
+      const pathList = result.skippedNewfilePathExists.join(', ');
+      LessonsAPI.Add.addGlobalLesson(lessonsContext, `File(s) already exist: ${pathList}. Use <change path="..."> to edit, not <newfile> (overwriting would destroy existing content).`);
     }
     const errorResult = ResolverProc.handleFixerError(result, runner, fixerTime, rapidFailureCount, lastFailureTime, stateContext, getCurrentModel);
     
@@ -527,10 +683,18 @@ export async function executeFixIteration(
   }
   
   console.log(chalk.gray(`\n  Fixer completed in ${formatDuration(fixerTime)}`));
+  // Long fix step often due to gateway retries; surface so operators don't assume slow model only (output.log audit).
+  if (fixerTime > 120_000) {
+    console.log(chalk.gray(`  Fix step took ${formatDuration(fixerTime)} (may include gateway retries).`));
+  }
 
   // Strict allowlist: fixer also attempted disallowed files — add file-scoped lesson and state.
   if (result.skippedDisallowedFiles?.length) {
     addDisallowedFilesLessonsAndState(result.skippedDisallowedFiles, issuesForPrompt, allowedPathsForBatch, lessonsContext, stateContext);
+  }
+  if (result.skippedNewfilePathExists?.length) {
+    const pathList = result.skippedNewfilePathExists.join(', ');
+    LessonsAPI.Add.addGlobalLesson(lessonsContext, `File(s) already exist: ${pathList}. Use <change path="..."> to edit, not <newfile> (overwriting would destroy existing content).`);
   }
 
   // Placeholder test content (e.g. expect(true).toBe(true)): add lesson and treat as non-fix so we rotate without counting as success.
@@ -564,7 +728,21 @@ export async function executeFixIteration(
   // All changes were no-op (search === replace): skip verification and treat as no changes for rotation.
   // WHY: handleNoChangesWithVerification would run an LLM call to parse ALREADY_FIXED etc.; when we know all changes were no-ops there's nothing to verify, so we skip that call and go straight to rotation.
   if (result.noMeaningfulChanges) {
-    console.log(chalk.yellow('\n  All fixer changes were no-ops (no files modified) — skipping verification'));
+    console.log(chalk.yellow(result.applyFailureSummary
+      ? '\n  Fixer changes did not match (search/replace failed) — skipping verification'
+      : '\n  All fixer changes were no-ops (no files modified) — skipping verification'));
+    // §2: When reason was S/R failed to match, persist hint so next attempt gets "Previous attempt: ..." (output.log audit).
+    if (result.applyFailureSummary) {
+      const state = getState(stateContext);
+      state.lastApplyErrorByCommentId = state.lastApplyErrorByCommentId ?? {};
+      state.applyFailureCountByCommentId = state.applyFailureCountByCommentId ?? {};
+      // WHY 250: Same cap as the fixer-error path (result.error.slice(0, 250)); keeps prompt size bounded while preserving the actionable part of the message.
+      const errTruncated = result.applyFailureSummary.slice(0, 250);
+      for (const issue of issuesForPrompt) {
+        state.lastApplyErrorByCommentId[issue.comment.id] = errTruncated;
+        state.applyFailureCountByCommentId[issue.comment.id] = (state.applyFailureCountByCommentId[issue.comment.id] ?? 0) + 1;
+      }
+    }
     const updatedConsecutiveFailures = consecutiveFailures + 1;
     const updatedModelFailuresInCycle = modelFailuresInCycle + 1;
     if (prompt.length > 200_000) {
@@ -595,8 +773,28 @@ export async function executeFixIteration(
 
   // Check for changes
   if (!(await hasChanges(git))) {
+    if (result.pathsWrittenByRunner && result.pathsWrittenByRunner.length > 0) {
+      console.log(
+        chalk.yellow(
+          `  Note: Fixer reported edits to ${formatNumber(result.pathsWrittenByRunner.length)} file(s), but git worktree matches HEAD — content likely equals the index (e.g. a local change matched committed files after interim edits).`,
+        ),
+      );
+    }
     // Handle no-changes scenario with verification
-    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(workingUnresolved, runner.name, currentModel, result.output || '', llm, stateContext, lessonsContext, verifiedThisSession, parseNoChangesExplanation, workdir);
+    const noChangesResult = await ResolverProc.handleNoChangesWithVerification(
+      workingUnresolved,
+      runner.name,
+      currentModel,
+      result.output || '',
+      llm,
+      stateContext,
+      lessonsContext,
+      verifiedThisSession,
+      parseNoChangesExplanation,
+      workdir,
+      comments,
+      duplicateMap,
+    );
     
     let updatedConsecutiveFailures = consecutiveFailures;
     let updatedModelFailuresInCycle = modelFailuresInCycle;
@@ -642,6 +840,32 @@ export async function executeFixIteration(
     updatedConsecutiveFailures++;
     updatedModelFailuresInCycle++;
     const failureErrorType = result.usedFullFileRewrite ? 'full_rewrite_no_diff' : undefined;
+
+    // output.log audit: earlier bail-out for this issue set — dismiss as remaining and continue with others.
+    if (updatedConsecutiveFailures >= NO_PROGRESS_DISMISS_THRESHOLD && issuesForPrompt.length > 0) {
+      const reason = `No progress after ${formatNumber(updatedConsecutiveFailures)} attempts across models; continuing with other issues.`;
+      for (const issue of issuesForPrompt) {
+        const primaryPath = getIssuePrimaryPath(issue);
+        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'remaining', primaryPath, issue.comment.line, issue.comment.body ?? '');
+      }
+      const dismissedIds = new Set(issuesForPrompt.map((i) => i.comment.id));
+      const remaining = workingUnresolved.filter((i) => !dismissedIds.has(i.comment.id));
+      console.log(chalk.yellow(`  No progress after ${formatNumber(updatedConsecutiveFailures)} no-change attempt(s) — dismissing ${formatNumber(issuesForPrompt.length)} issue(s) as remaining; continuing with ${formatNumber(remaining.length)} other(s).`));
+      return {
+        shouldContinue: true,
+        shouldBreak: false,
+        shouldExit: false,
+        allFixed: false,
+        updatedRapidFailureCount: rapidFailureCount,
+        updatedLastFailureTime: lastFailureTime,
+        updatedConsecutiveFailures: 0,
+        updatedModelFailuresInCycle,
+        updatedProgressThisCycle,
+        updatedUnresolvedIssues: remaining,
+        lessonsBeforeFix,
+      };
+    }
+
     // WHY: Same as error path — large prompt that produced no changes should trigger batch reduce on next attempt.
     if (prompt.length > 200_000) {
       stateContext.forceNextBatchSizeReduce = true;

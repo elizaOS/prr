@@ -54,7 +54,7 @@ const TOOL_MARKER_FILES = [
  * WHY .prr/: Lessons and state live there. Fixer edits would corrupt the
  * learning system or state and get auto-reverted, wasting a fix iteration.
  */
-export const PROTECTED_DIRS = ['.prr/'];
+export const PROTECTED_DIRS = ['.prr/', '.split-exec-workdir/'];
 
 /**
  * Matches common test file names so we can reject empty/placeholder test files.
@@ -231,13 +231,22 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
         let stagedContent: string;
         try {
           stagedContent = await git.raw(['show', ':0:' + file]);
-        } catch {
-          debug(`Could not read staged content for: ${file}`);
+        } catch (readErr) {
+          debug(`Could not read staged content for ${file} (binary, missing, or conflicted); skip`, { err: String(readErr) });
           continue;
         }
         try {
           if (typeof stagedContent === 'string') {
             JSON.parse(stagedContent);
+            // Valid JSON can still contain tool markup (e.g. in a string value); check and unstage.
+            if (TOOL_MARKUP_PATTERN.test(stagedContent)) {
+              debug(`Tool markup detected in staged JSON: ${file}`);
+              if (status.created.includes(file)) {
+                filesToRemove.push(file);
+              } else {
+                filesToRevert.push(file);
+              }
+            }
           }
         } catch {
           debug(`Invalid JSON detected in staged file: ${file}`);
@@ -247,7 +256,6 @@ async function unstageToolArtifacts(git: SimpleGit): Promise<void> {
             filesToRevert.push(file);
           }
         }
-        // Review: skips invalid files without misclassifying git errors as JSON issues
         continue;
       }
     }
@@ -312,8 +320,9 @@ async function unstageEmptyTestFiles(git: SimpleGit): Promise<void> {
       let stagedContent: string;
       try {
         stagedContent = await git.raw(['show', ':0:' + file]);
-      } catch {
-        continue; // e.g. binary or missing; skip
+      } catch (readErr) {
+        debug(`Could not read staged content for ${file} (e.g. binary or missing; skip)`, { err: String(readErr) });
+        continue;
       }
       if (typeof stagedContent !== 'string') continue;
       if (!isEmptyOrPlaceholder(stagedContent)) continue;

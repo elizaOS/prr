@@ -65,7 +65,8 @@ export async function executePreIterationChecks(
   getCurrentModel: () => string | undefined,
   githubToken?: string,
   // WHY: Required for P1 (prompts.log audit) — new comments are run through assessSolvability when workdir is set; without it, (PR comment) and other unsolvable items would enter the fix queue mid-loop.
-  workdir?: string
+  workdir?: string,
+  changedFiles?: string[],
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -98,7 +99,9 @@ export async function executePreIterationChecks(
     unresolvedIssues,
     comments,
     stateContext,
-    getCodeSnippet
+    getCodeSnippet,
+    workdir,
+    changedFiles,
   );
   if (emptyCheck.shouldBreak) {
     return {

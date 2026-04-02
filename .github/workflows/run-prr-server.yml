@@ -21,13 +21,14 @@
 #         pr_number:
 #           description: 'PR number to run PRR on'
 #           required: true
-#           type: number
+#           type: string
 #   jobs:
 #     prr:
-#       uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+#       uses: OWNER/prr/.github/workflows/run-prr-server.yml@babylon
 #       with:
 #         pr_number: ${{ inputs.pr_number }}
 #         prr_repo: 'OWNER/prr'
+#         prr_ref: 'babylon'
 #       secrets:
 #         PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # caller's token, no PAT needed
 #         ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
@@ -41,10 +42,20 @@ on:
       pr_number:
         description: 'PR number to run PRR on'
         required: true
-        type: number
+        type: string
       prr_repo:
         description: 'Repo containing the PRR tool (e.g. owner/prr)'
         required: true
+        type: string
+      submit_review:
+        description: 'If true, PRR will submit a PR review and post a comment (only set for manual runs)'
+        required: false
+        default: false
+        type: boolean
+      prr_ref:
+        description: 'Branch, tag, or SHA to checkout (default: repo default branch). When using @babylon in uses:, pass prr_ref: "babylon" so checkout matches and npm ci succeeds.'
+        required: false
+        default: ''
         type: string
     secrets:
       # Caller passes their token here; we use it as GITHUB_TOKEN in the job (checkout + PRR).
@@ -62,34 +73,55 @@ jobs:
     name: Run PRR
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     permissions:
-      contents: read
+      contents: write      # checkout + PRR push
+      pull-requests: write # submit PR review
     steps:
       # WHY token: Checking out another repo (inputs.prr_repo) requires a token; caller's token is passed in.
+      # WHY ref: When using a non-default ref (e.g. @babylon), pass prr_ref so checkout matches and npm ci sees in-sync lock file.
       - name: Checkout PRR
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.prr_repo }}
+          ref: ${{ inputs.prr_ref }}
           path: prr
           token: ${{ secrets.PRR_GITHUB_TOKEN }}
+
+      # Log which PRR commit is running so operators can verify "did it use our updated code?"
+      - name: Log PRR version
+        run: |
+          cd prr
+          echo "PRR ref: ${{ inputs.prr_ref }}"
+          echo "PRR SHA: $(git rev-parse HEAD)"
+          echo "PRR commit: $(git log -1 --oneline)"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: prr/package-lock.json
 
-      - name: Install and build PRR
+      # dist/ is gitignored — compile so node dist/tools/prr/index.js exists.
+      - name: Install and compile PRR
         run: |
           cd prr
           npm ci
           npm run build
 
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       # WHY GITHUB_TOKEN: PRR expects GITHUB_TOKEN in env; we pass through the caller's token.
+      # PRR_SUBMIT_REVIEW: only set true by client when run is workflow_dispatch (manual); avoids posting on CLI or label/review_requested.
       - name: Run PRR
         env:
           GITHUB_TOKEN: ${{ secrets.PRR_GITHUB_TOKEN }}
+          PRR_SUBMIT_REVIEW: ${{ inputs.submit_review }}
           ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -100,6 +132,14 @@ jobs:
             --tool llm-api \
             --no-wait-bot
 
+      # When Run PRR fails, show tail of output.log in the job log so operators see the error without downloading artifacts.
+      - name: Show PRR output on failure
+        if: failure() && hashFiles('prr/output.log') != ''
+        run: |
+          echo '=== Last 120 lines of prr/output.log ==='
+          tail -n 120 prr/output.log
+
+      # output.log + prompts.log are written to CWD (prr/) by PRR; upload as artifacts for debugging.
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

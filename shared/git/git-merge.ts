@@ -2,6 +2,7 @@
  * Git merge operations
  */
 import type { SimpleGit } from 'simple-git';
+import { spawn } from 'child_process';
 import { debug } from '../logger.js';
 
 /**
@@ -32,49 +33,39 @@ export async function abortMerge(git: SimpleGit): Promise<void> {
   }
 }
 
+/** Run a git command in workdir with stdout/stderr suppressed so we don't flood the user with "fatal: No rebase in progress" etc. */
+async function gitQuiet(workdir: string, args: string[]): Promise<{ exitCode: number | null }> {
+  return new Promise((resolve) => {
+    const proc = spawn('git', args, {
+      cwd: workdir,
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    proc.on('close', (code) => resolve({ exitCode: code }));
+    proc.on('error', () => resolve({ exitCode: null }));
+  });
+}
+
 export async function cleanupGitState(git: SimpleGit): Promise<void> {
   debug('Cleaning up git state');
-  
-  // Abort any in-progress merge
+
+  let workdir: string;
   try {
-    await git.merge(['--abort']);
-    debug('Aborted in-progress merge');
+    workdir = (await git.revparse(['--show-toplevel'])).trim();
   } catch {
-    // No merge in progress, ignore
+    workdir = (git as { _baseDir?: string })._baseDir ?? process.cwd();
   }
-  
-  // Abort any in-progress rebase
-  try {
-    await git.rebase(['--abort']);
-    debug('Aborted in-progress rebase');
-  } catch {
-    // No rebase in progress, ignore
-  }
-  
-  // Abort any in-progress cherry-pick
-  try {
-    await git.raw(['cherry-pick', '--abort']);
-    debug('Aborted in-progress cherry-pick');
-  } catch {
-    // No cherry-pick in progress, ignore
-  }
-  
-  // Reset any staged changes and restore working directory
-  try {
-    await git.reset(['--hard', 'HEAD']);
-    debug('Reset to HEAD');
-  } catch {
-    // May fail if HEAD doesn't exist, ignore
-  }
-  
-  // Clean untracked files and directories so checkout can overwrite them (avoids "would be overwritten by checkout").
-  // Use raw so we definitely run `git clean -fd`; simple-git clean() API may differ by version.
-  try {
-    await git.raw(['clean', '-fd']);
-    debug('Cleaned untracked files');
-  } catch {
-    // Ignore cleanup errors (caller may run clean again before checkout)
-  }
+
+  // Run abort/reset/clean with stderr suppressed so user doesn't see "fatal: No merge in progress" etc.
+  const m = await gitQuiet(workdir, ['merge', '--abort']);
+  if (m.exitCode === 0) debug('Aborted in-progress merge');
+  const r = await gitQuiet(workdir, ['rebase', '--abort']);
+  if (r.exitCode === 0) debug('Aborted in-progress rebase');
+  const c = await gitQuiet(workdir, ['cherry-pick', '--abort']);
+  if (c.exitCode === 0) debug('Aborted in-progress cherry-pick');
+  const reset = await gitQuiet(workdir, ['reset', '--hard', 'HEAD']);
+  if (reset.exitCode === 0) debug('Reset to HEAD');
+  const clean = await gitQuiet(workdir, ['clean', '-fd']);
+  if (clean.exitCode === 0) debug('Cleaned untracked files');
 }
 
 export interface MergeBaseResult {
@@ -84,43 +75,80 @@ export interface MergeBaseResult {
   error?: string;
 }
 
-export async function mergeBaseBranch(
-  git: SimpleGit, 
-  baseBranch: string
-): Promise<MergeBaseResult> {
-  debug('Merging base branch into PR branch', { baseBranch });
-  
+/**
+ * Ensure git user.name and user.email are set in the repo so merge/commit don't fail with
+ * "Committer identity unknown". In CI (GITHUB_ACTIONS) use the standard bot identity;
+ * otherwise use a safe local default so PRR works without global git config.
+ */
+export async function ensureGitIdentity(git: SimpleGit): Promise<void> {
   try {
-    // Fetch all refs including the base branch
-    debug('Fetching origin with all refs');
-    await git.fetch(['origin', '--prune']);
+    const name = await git.raw(['config', '--get', 'user.name']).then(s => s?.trim());
+    if (name && name.length > 0) return;
+  } catch {
+    // user.name not set
+  }
+  const inCI = process.env.GITHUB_ACTIONS === 'true';
+  const userName = inCI ? 'github-actions[bot]' : 'PRR';
+  const userEmail = inCI ? '41898282+github-actions[bot]@users.noreply.github.com' : 'prr@local';
+  await git.raw(['config', 'user.name', userName]);
+  await git.raw(['config', 'user.email', userEmail]);
+  debug('Set git identity for merge/commit', { userName, userEmail });
+}
+
+export interface MergeBaseBranchOptions {
+  /** When true, do not short-circuit with merge-base; always run git merge. Use when GitHub reports mergeableState === 'behind' so the source branch is actually updated with the target. */
+  forceMerge?: boolean;
+  /** When true, use --no-ff so a merge commit is always created when there are incoming commits (never fast-forward). Ensures we have a commit to push and GitHub stops showing "out of date with base branch". */
+  noFastForward?: boolean;
+}
+
+export async function mergeBaseBranch(
+  git: SimpleGit,
+  baseBranch: string,
+  options?: MergeBaseBranchOptions
+): Promise<MergeBaseResult> {
+  debug('Merging base branch into PR branch', { baseBranch, forceMerge: options?.forceMerge });
+  await ensureGitIdentity(git);
+
+  try {
+    // WHY explicit refspec: On --single-branch clones the default fetch config only
+    // includes the PR branch; a plain fetch does not update origin/<baseBranch>, so
+    // the ref can be stale and the merge-base check incorrectly reports "already up-to-date".
+    debug('Fetching base branch with explicit refspec', { baseBranch });
+    await git.raw(['remote', 'set-branches', '--add', 'origin', baseBranch]);
+    await git.fetch(['origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
     
-    // Verify the ref exists
-    try {
-      await git.raw(['rev-parse', '--verify', `origin/${baseBranch}`]);
-    } catch {
-      debug('Base branch ref not found, trying explicit fetch');
-      await git.fetch(['origin', `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+    // Check if we're already up-to-date before trying merge (skip when forceMerge: GitHub said "behind")
+    if (!options?.forceMerge) {
+      const headSha = await git.revparse(['HEAD']);
+      const baseSha = await git.revparse([`origin/${baseBranch}`]);
+      const mergeBase = await git.raw(['merge-base', 'HEAD', `origin/${baseBranch}`]).then(s => s.trim());
+      if (baseSha.trim() === mergeBase) {
+        debug('Already up-to-date with base branch');
+        return { success: true, alreadyUpToDate: true };
+      }
     }
     
-    // Check if we're already up-to-date before trying merge
-    const headSha = await git.revparse(['HEAD']);
-    const baseSha = await git.revparse([`origin/${baseBranch}`]);
-    const mergeBase = await git.raw(['merge-base', 'HEAD', `origin/${baseBranch}`]).then(s => s.trim());
+    // Try to merge (--no-ff when requested so we always create a merge commit and have something to push)
+    const mergeArgs: string[] = [`origin/${baseBranch}`, '--no-edit'];
+    if (options?.noFastForward) mergeArgs.push('--no-ff');
+    const headBefore = (await git.revparse(['HEAD'])).trim();
+    debug('Attempting merge', { noFastForward: options?.noFastForward, headBefore: headBefore.slice(0, 10) });
+    const result = await git.merge(mergeArgs);
+    const headAfter = (await git.revparse(['HEAD'])).trim();
+    debug('Merge completed', { headBefore: headBefore.slice(0, 10), headAfter: headAfter.slice(0, 10), headMoved: headBefore !== headAfter });
     
-    if (baseSha.trim() === mergeBase) {
-      debug('Already up-to-date with base branch');
-      return { success: true, alreadyUpToDate: true };
-    }
-    
-    // Try to merge
-    debug('Attempting merge');
-    const result = await git.merge([`origin/${baseBranch}`, '--no-edit']);
-    
-    // Check if merge result indicates already up-to-date
+    // Detect "Already up to date": simple-git's MergeResult (PullResult & MergeDetail)
+    // does not store the "Already up to date" text in any parsed field — the line parsers
+    // don't match it, so all fields stay at defaults (result: "success", files: [], etc.).
+    // JSON.stringify therefore never contains "Already up to date", making the old string
+    // check silently fail. Instead, compare HEAD before/after: if HEAD didn't move, the
+    // merge was a no-op regardless of what simple-git reports.
     const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-    if (resultStr.includes('Already up to date') || resultStr.includes('Already up-to-date')) {
-      debug('Merge says already up-to-date');
+    const textSaysUpToDate = resultStr.includes('Already up to date') || resultStr.includes('Already up-to-date');
+    const headDidNotMove = headBefore === headAfter;
+    if (textSaysUpToDate || headDidNotMove) {
+      debug('Merge says already up-to-date', { textSaysUpToDate, headDidNotMove });
       return { success: true, alreadyUpToDate: true };
     }
     
@@ -159,14 +187,12 @@ export async function startMergeForConflictResolution(
   debug('Starting merge for conflict resolution', { baseBranch });
   
   try {
-    // Fetch all refs
-    await git.fetch(['origin', '--prune']);
-    
-    // Try explicit fetch of base branch
+    // WHY explicit refspec: Same as mergeBaseBranch — ensure origin/<baseBranch> is
+    // up-to-date so the merge we're about to start sees the real remote tip.
     try {
-      await git.fetch(['origin', `${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+      await git.fetch(['origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
     } catch {
-      // May already exist, ignore
+      // May fail if branch doesn't exist on remote
     }
     
     // Start the merge (will fail with conflicts, that's expected). Only suppress conflict errors;
@@ -212,7 +238,26 @@ export async function startMergeForConflictResolution(
 export async function markConflictsResolved(git: SimpleGit, files: string[]): Promise<void> {
   debug('Marking conflicts as resolved', { files });
   for (const file of files) {
-    await git.add(file);
+    try {
+      // Check if file exists in worktree before trying to add
+      // WHY: Delete conflicts are resolved by git.rm() in resolveDeleteConflict(),
+      // so the file no longer exists. Trying to git.add() a deleted file fails with
+      // "pathspec did not match any files". Skip files that don't exist (they're
+      // already staged for deletion).
+      const { existsSync } = await import('fs');
+      const { join } = await import('path');
+      const workdir = (await git.revparse(['--show-toplevel'])).trim();
+      const fullPath = join(workdir, file);
+      if (!existsSync(fullPath)) {
+        debug('Skipping deleted file in markConflictsResolved', { file });
+        continue;
+      }
+      await git.add(file);
+    } catch (err) {
+      // If git.add fails (e.g. file was deleted), skip it
+      // Delete conflicts are already handled by resolveDeleteConflict()
+      debug('Skipping file in markConflictsResolved (likely deleted)', { file, error: err });
+    }
   }
 }
 
@@ -269,17 +314,3 @@ export async function completeMerge(git: SimpleGit, message: string): Promise<{ 
     return { success: false, error: errorMessage };
   }
 }
-
-// Lock files that can be safely deleted and regenerated
-export const LOCK_FILES: Record<string, { deletePattern: string; regenerateCmd: string }> = {
-  'bun.lock': { deletePattern: 'bun.lock', regenerateCmd: 'bun install' },
-  'bun.lockb': { deletePattern: 'bun.lockb', regenerateCmd: 'bun install' },
-  'package-lock.json': { deletePattern: 'package-lock.json', regenerateCmd: 'npm install' },
-  'yarn.lock': { deletePattern: 'yarn.lock', regenerateCmd: 'yarn install' },
-  'pnpm-lock.yaml': { deletePattern: 'pnpm-lock.yaml', regenerateCmd: 'pnpm install' },
-  'Cargo.lock': { deletePattern: 'Cargo.lock', regenerateCmd: 'cargo generate-lockfile' },
-  'Gemfile.lock': { deletePattern: 'Gemfile.lock', regenerateCmd: 'bundle install' },
-  'poetry.lock': { deletePattern: 'poetry.lock', regenerateCmd: 'poetry lock' },
-  'composer.lock': { deletePattern: 'composer.lock', regenerateCmd: 'composer install' },
-};
-

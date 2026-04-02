@@ -1,0 +1,28 @@
+{
+  "name": "feature-pr",
+  "expectedNarrative": {
+    "themes": ["user profiles", "CRUD operations", "avatar upload", "validation"],
+    "coherence": "Should describe a cohesive feature implementation",
+    "completeness": "Should cover all major components"
+  },
+  "expectedChangelog": {
+    "added": [
+      "User profile model and schema",
+      "Profile API endpoints (CRUD)",
+      "Avatar upload functionality",
+      "Profile validation and error handling"
+    ],
+    "changed": [],
+    "fixed": [],
+    "removed": []
+  },
+  "expectedFeatures": [
+    "User profile data model",
+    "Profile CRUD API",
+    "Avatar upload",
+    "Profile validation"
+  ],
+  "minNarrativeQuality": 0.8,
+  "minChangelogAccuracy": 0.85,
+  "minCompleteness": 0.9
+}

@@ -1,0 +1,30 @@
+{
+  "name": "simple-fix",
+  "description": "Single comment, single file, straightforward fix",
+  "owner": "test-org",
+  "repo": "test-repo",
+  "number": 1,
+  "title": "Fix null assertion",
+  "body": "Replace non-null assertion with nullish coalescing",
+  "branch": "feature/fix-null",
+  "baseBranch": "main",
+  "headSha": "abc123def456",
+  "files": [
+    {
+      "path": "src/utils.ts",
+      "content": "export function foo() {\n  return null!;\n}\n",
+      "status": "modified"
+    }
+  ],
+  "comments": [
+    {
+      "id": "c1",
+      "threadId": "thread-1",
+      "author": "reviewer",
+      "path": "src/utils.ts",
+      "line": 2,
+      "body": "Use nullish coalescing instead of non-null assertion",
+      "createdAt": "2025-01-01T00:00:00Z"
+    }
+  ]
+}

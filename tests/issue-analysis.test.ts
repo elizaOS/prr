@@ -6,6 +6,7 @@ import {
   commentNeedsConservativeAnalysisContext,
   commentNeedsOrderingContext,
   getCodeSnippet,
+  getFullFileForAudit,
   parseLineReferencesFromBody,
 } from '../tools/prr/workflow/issue-analysis.js';
 
@@ -212,5 +213,33 @@ describe('getCodeSnippet', () => {
     expect(snippet).toContain('Requested new file `src/reply.test.ts` does not exist yet.');
     expect(snippet).toContain('Nearby source context from `src/reply.ts`:');
     expect(snippet).toContain('hasRequestedInState');
+  });
+});
+
+describe('getFullFileForAudit', () => {
+  it('returns full line-numbered file when under size cap', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-audit-'));
+    tempDirs.push(dir);
+    writeFileSync(join(dir, 'small.ts'), ['alpha', 'beta', 'gamma'].join('\n'), 'utf-8');
+    const out = await getFullFileForAudit(dir, 'small.ts', 2, '');
+    expect(out).toContain('1: alpha');
+    expect(out).toContain('2: beta');
+    expect(out).toContain('3: gamma');
+  });
+
+  it('centers excerpt on review line when file exceeds audit char cap', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-audit-'));
+    tempDirs.push(dir);
+    const lines: string[] = [];
+    for (let i = 1; i <= 2000; i++) {
+      lines.push(`// line ${i} ${'x'.repeat(40)}`);
+    }
+    const content = lines.join('\n');
+    expect(content.length).toBeGreaterThan(50_000);
+    writeFileSync(join(dir, 'big.ts'), content, 'utf-8');
+    const out = await getFullFileForAudit(dir, 'big.ts', 1500, '');
+    expect(out).toContain('excerpt only');
+    expect(out).toMatch(/1500:\s*\/\/ line 1500/);
+    expect(out).not.toMatch(/^1:\s*\/\/ line 1/m);
   });
 });

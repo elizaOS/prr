@@ -1,0 +1,68 @@
+name: Run Evals
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # Run full evals daily
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        tool: [prr, pill, split-plan, story]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile (emit dist/)
+        run: npm run build
+
+      - name: Run evals
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
+        run: |
+          # Run fast evals on PRs, full evals on main/schedule
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "Running fast evals (subset) for PR"
+            npm run eval -- run -t ${{ matrix.tool }} -b simple-fix || true
+          else
+            echo "Running full evals"
+            npm run eval -- run -t ${{ matrix.tool }} -b simple-fix --compare || true
+            # Add more benchmarks as they're created
+          fi
+        continue-on-error: true
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ matrix.tool }}
+          path: tests/evals/results/
+          retention-days: 30
+
+      - name: Check for regressions
+        if: github.event_name != 'pull_request'
+        run: |
+          # TODO: Implement regression check
+          # Fail if metrics regress significantly
+          echo "Regression check not yet implemented"

@@ -7,6 +7,544 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`cloneOrUpdate` / `fetchAdditionalBranches`:** Replaces **`remote.origin`** fetch branches with **`git remote set-branches origin …`** (no **`--add`**) before fetches. **WHY:** **`--add`** accumulates stale branch names in the workdir; **`git fetch origin <refspec>`** merges CLI refspecs with **`remote.origin.fetch`**, so one old invalid name (e.g. split **New PR:** titles with **`:`**) broke every subsequent fetch until the list was reset.
+
+- **split-exec clone:** Fetches only **`target_branch`** as an extra ref when it differs from **`source_branch`** — no longer passes every split **New PR** branch to **`cloneOrUpdate`**. **WHY:** Output branch names are not on **origin** until push; including them caused useless fetch warnings and **`invalid refspec`** when names contained **`:`** (conventional-commit-style titles).
+
+### Changed
+
+- **Codebase organization (structural refactor):** Large modules were split along natural seams with **backward-compatible re-exports** so import paths and behavior stay stable for existing callers. **WHY:** Easier code review, targeted tests, clearer dependency direction (e.g. **`shared/`** must not depend on **`tools/pill/`**), and less scroll fatigue when auditing the fix loop. **What moved:**
+  - **`tools/prr/llm/`** — **`verification-heuristics.ts`**, **`provider-probes.ts`**, **`error-helpers.ts`**; **`LLMClient`** stays in **`client.ts`**, which **re-exports** helpers so **`from '…/llm/client.js'`** remains the stable surface.
+  - **`tools/prr/workflow/`** — **`issue-analysis-snippet-helpers.ts`**, **`issue-analysis-snippets.ts`**, **`issue-analysis-dedup.ts`**, **`issue-analysis-context.ts`**; **`findUnresolvedIssues`** remains the orchestrator in **`issue-analysis.ts`** (barrel re-exports for tests and **`resolver-proc`**).
+  - **`shared/`** — **`timing.ts`**, **`token-tracking.ts`** (re-exported from **`logger.ts`**); **`shared/constants/`** domain files + **`shared/constants.ts`** shim → barrel.
+  - **Pill hook** — **`runPillAfterClosedLogs()`** in **`tools/pill/after-close-logs.ts`** runs **after** **`closeOutputLog()`** from **prr / split-exec / split-plan / story** entry points (**WHY:** avoid **`shared` → `tools/pill`** import).
+  - **`tools/prr/resolver-proc.ts`** — **re-exports only**; **`workflow/bot-wait.ts`** (post-push wait, new-comment poll), **`workflow/bailout.ts`** (stalemate bail-out).
+  **Docs:** **DEVELOPMENT.md** (architecture — codebase structure), **README** (repository layout), **AGENTS.md** (constants layout, option bags, future shared migration), **docs/ROADMAP.md** (optional follow-ups).
+
+- **README (Philosophy):** Explicit “what logs showed vs what the code does now” paragraph — verified∩dismissed repair, path variants / fragments, model skip + session skip, summary overlap warnings, and **residual risk** / operator trust model (no new feature; documents real audit history).
+
+### Added
+
+- **ElizaCloud rotation visibility (pill-output #1793):** After **`validateAndFilterModels`**, **`warn`** when the ElizaCloud-backed list has **≤3** models post skip-list + API filter — points to **`PRR_ELIZACLOUD_INCLUDE_MODELS`** and **`docs/MODELS.md`**. **README** troubleshooting: overlap repair vs delete state / **`--clean-state`**. **`shared/README.md`**: skip list / thinking cap / git-hooks pointers.
+
+- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** Every N completed fix iterations, clear **session** skipped model keys so rotation can retry them without restarting the process (**`maybeResetSessionSkippedModelsAfterFixIteration`** in **`tools/prr/models/rotation.ts`**, **`push-iteration-loop.ts`**). **WHY:** Pill-output #847 — long runs otherwise never revisit models skipped early. **README**, **`.env.example`**, **`docs/MODELS.md`**, **DEVELOPMENT.md**.
+
+- **`PRR_THINKING_BUDGET` clamp:** Values above **500,000** clamp with a **`console.warn`** (typo guard; pill-output). **`shared/config.ts`**, **`.env.example`**.
+
+- **AGENTS.md:** Note that **`shared/git/git-hooks.ts`** is not shipped here (pill-output foreign-path triage).
+
+- **Unit tests (audit-derived helpers):** **`getMigrationJournalPath`** (`tests/migration-journal-path.test.ts`), **`getFixedIssueTitle`** (`tests/fixed-issue-title.test.ts`; **`getFixedIssueTitle`** exported from **`tools/prr/ui/reporter.ts`**), **`pluralize`** (`tests/pluralize.test.ts`), **`isCodeRabbitMetaComment`** (`tests/coderabbit-meta-comment.test.ts`; function exported from **`tools/prr/github/api.ts`**).
+
+- **Lessons vs issue path:** **`lessonForbidsEditingIssuePath`** filters **`getLessonsForIssue`** so lessons that say **do not edit** the current issue path (in the same negated clause) are not injected into fix prompts. **`pruneLessonsForbiddingOwnTargetPath`** removes file-scoped lessons under a path that forbid editing that path on load. **`tests/lesson-forbid-path.test.ts`**.
+
+- **Final audit (deleted file / outdated thread):** When the audit snippet is **`(file not found or unreadable)`** and **`pathTrackedAtGitHead`** reports the path is **not** at **`HEAD`**, **`runFinalAudit`** records a synthetic **FIXED (git check)** without calling the adversarial LLM. If the model still returns **UNFIXED** for a previously verified issue in that situation, an **L1 tie-break** keeps verified instead of re-queueing. **Rule 6** validation now uses explicit **`git ls-tree`** non-empty output (file still tracked) vs absent path. **Outdated** review comments get an **`[GitHub: thread OUTDATED …]`** line prepended in the audit prompt. **`tools/prr/workflow/helpers/git-path-at-head.ts`**, **`tests/git-path-at-head.test.ts`**, **`tools/prr/workflow/analysis.ts`**.
+
+- **`PRR_STRICT_FINAL_AUDIT_UNCERTAIN`:** Exit **2** on an otherwise successful run when final audit **passed** any issue via **`UNCERTAIN`** or **truncation guard** (operators can fail closed on non-affirming passes). **`finalAuditUncertainThisRun`** on state context; **`classifyFinalAuditUncertainExplanation`** in **`tools/prr/workflow/helpers/final-audit-uncertain.ts`**; **`LLMClient`** prefixes parsed **`UNCERTAIN`** rows with **`UNCERTAIN (audit pass):`** for reliable classification. **`tools/prr/index.ts`**, **`resolver.ts`**, **`analysis.ts`**, **README**, **`.env.example`**, **`tests/final-audit-uncertain.test.ts`**.
+- **`PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE`:** Opt-in thread replies for **`chronic-failure`** dismissals when using **`--reply-to-threads`** (**`dismissedCategoriesWithReply()`** in **`tools/prr/workflow/thread-replies.ts`**). **docs/THREAD-REPLIES.md**, **`tests/thread-replies.test.ts`**.
+
+- **Bot review noise and deduplication (conversation + analysis):** **`isNonReviewContent`** in **`tools/prr/github/review-ingestion-filters.ts`** drops README/setup-style issue-comment bodies (multiple doc headings in the lead) and ultra-short non-actionable text before **`parseMarkdownReviewIssues`** — **WHY:** Bots pasted full READMEs into PR conversation (e.g. elizaOS/cloud#417), producing dozens of fake **`(PR comment)`** rows. **`deduplicateSameBotAcrossComments`** in **`tools/prr/github/issue-comment-dedup.ts`** collapses duplicate **`ic-*`** rows from the same author + path (line-proximate cluster, word-set Jaccard ≥ 0.5, keep longest body) **before** solvability/snippet fetch — **WHY:** Same bot re-posting reviews multiplied I/O and queue size; downstream dedup ran too late. **`stripSeverityFraming`** / **`wordSetJaccard`** in **`tools/prr/workflow/helpers/review-body-normalize.ts`** feed ingestion dedup and **`primarySymbolFromBody`** / **`bodySimilarityForDedup`** in **`issue-analysis.ts`** — **WHY:** Severity labels and headings shifted which backtick symbol matched, breaking cross-bot merge signals. **LLM dedup** now also runs for **exactly two** comments on a file when **authors differ** and **primary symbols match** — **WHY:** Claude issue rows + Cursor Bugbot inline on the same bug were skipped when only two items remained. **`crossFileDedup`** (Phase 3): one cheap-model call when **≥5** survivors after per-file dedup, **`GROUP:`** parsing with **all-distinct paths** validation, **`contextHints`** on canonical — **WHY:** Same root cause across **`seo.ts`**, **`app-promotion.ts`**, etc. stayed split per file. **Persisted dedup cache** includes **`schema: 'dedup-v2'`**; hits require it so pre-change caches recompute — **WHY:** Cross-file phase changes the final grouping; old **`dedupCache`** without schema would be stale. **Tests:** **`tests/review-body-normalize.test.ts`**, **`tests/issue-comment-dedup.test.ts`**, **`tests/github-api-parser.test.ts`** (**`isNonReviewContent`**). **`state/types.ts`**: optional **`dedupCache.schema`**.
+
+- **ElizaCloud gateway fallback:** After **2** consecutive **5xx/502** (or timeout) failures on the same model inside one **`LLMClient.complete()`** retry loop, PRR switches to the next id from **`getElizacloudGatewayFallbackModels`** (default chain: mini → haiku → sonnet → 4o, minus skip list). Override with **`PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS`**; **`off`** disables. **`tools/prr/llm/client.ts`**, **`tests/elizacloud-gateway-fallback.test.ts`**, **README**.
+
+### Fixed
+
+- **RESULTS SUMMARY (pill-output #18):** **◆ Final audit re-queued** ( **`auditOverridesThisRun`** count) is printed **after** fixed/dismissed outcome lines instead of only above **Exit** — **WHY:** Operators scanning the summary see re-queue volume with other counts; follow-up lines still explain recovery vs **Remaining**. **DEVELOPMENT.md** — state repair quick ref + final-audit wording (pill #24 overlap messaging).
+
+- **Single-issue recovery vs batch `allowedPaths`:** **`trySingleIssueFix`** (`tools/prr/workflow/helpers/recovery.ts`) now adds **`getRenameTargetPath`** and the same **`issueRequestsTests` / `__tests__/` co-located test hint** as **`getAllowedPathsForIssues`** in **`execute-fix-iteration.ts`** — **WHY:** Focus mode could reject runner edits the batch path would allow (rename + “add tests” reviews). **`REPO_TOP_LEVEL`** (`shared/path-utils.ts`) includes **`e2e`**, **`playwright`**, **`cypress`**, **`fixtures`**, **`integration`**, **`wdio`** so those trees are not misclassified as external package roots.
+
+- **Basename paths, empty-queue accounting, and AAR noise (output.log audit — e.g. multi-file TestCafe PR):**
+  - **`resolveTrackedPathWithPrFiles`** (`tools/prr/workflow/helpers/solvability.ts`) — **WHY:** Bots sometimes anchor comments on a **bare filename** (e.g. `smoke.testcafe.js`) while `git ls-files` finds **multiple** tracked matches. Picking arbitrarily would edit the wrong file. When **exactly one** of those candidates appears in the PR’s changed-file list (`git diff --name-only` vs base), that path is treated as **`resolvedPath`**. If zero or several PR files match, behavior stays conservative (no guess).
+  - **`findUnresolvedIssues`** uses **`resolveTrackedPathWithPrFiles`** after **`resolvePathFromDiff`** — **WHY:** Same disambiguation during normal analysis so snippets and **`allowedPaths`** align with the file the PR actually touches.
+  - **`checkEmptyIssues` repopulate** — **WHY:** After “BUG DETECTED: … re-populated unresolvedIssues”, rebuilt rows previously had **no** **`resolvedPath`**, so the next iteration still skipped the real file (“primary path does not exist”). Repopulated issues now get **`resolvedPath`** via **`resolveTrackedPathWithPrFiles`** when **`workdir`** + **`changedFiles`** are passed from **`executePreIterationChecks`**.
+  - **Analysis cache** (`processCommentsAndPrepareFixLoop`) stores **`changedFiles`** alongside **`duplicateMap`** — **WHY:** Push iteration 2+ must still pass the PR diff list into pre-iteration checks without re-running full analysis when the cache hits.
+  - **`handleNoChangesWithVerification` + `ALREADY_FIXED`** — **WHY:** Dismissing only the single row in **`unresolvedIssues`** left **sibling dedup-cluster** comment IDs neither verified nor dismissed → empty queue but “unaccounted” comments. **`getDuplicateClusterCommentIds`** (`tools/prr/workflow/utils.js`) expands canonical + duplicates; cluster members are dismissed together for single-issue **`ALREADY_FIXED`** and for **`ALREADY_FIXED` any-threshold** dismissals. **`executeFixIteration`** passes **`duplicateMap`** and **`comments`** into that path.
+  - **After Action Report** (`printAfterActionReport`) — **WHY:** **`### What this adds`**-style PR-description threads and **`autoVerifiedFrom`** duplicate rows cluttered “Fixed this session” without adding signal; they are summarized in a one-line count instead of per-thread blurbs.
+  - **Tests:** **`tests/resolve-tracked-path-pr-files.test.ts`**, **`tests/duplicate-cluster-ids.test.ts`**.
+
+- **Consolidate-duplicate `allowedPaths`:** **`getConsolidateDuplicateTargetPath`** (`tools/prr/analyzer/prompt-builder.ts`) scans **all** path-like mentions in the review body (broader roots: `packages/`, `shared/`, `benchmarks/`, …; extra extensions `.mjs`/`.cjs`/`.py`; case-insensitive match), compares via **`normalizeRepoPath`**, and returns the first candidate that is not the comment path and not **`lib/utils/db-errors.(ts|js)`** — **WHY:** When db-errors was listed first, the old “first match only” logic returned null and the fixer lacked the real duplicate file. **`tests/consolidate-duplicate-path.test.ts`**.
+
+- **Path resolution:** **`stripGitDiffPathPrefix`** in **`shared/path-utils.ts`** removes unified-diff **`a/`** / **`b/`** prefixes when the next segment looks like a repo root (e.g. **`a/packages/...`** → **`packages/...`**), wired into **`tryResolvePathWithExtensionVariants`** and **`resolveTrackedPathDetailed`** (**`tools/prr/workflow/helpers/solvability.ts`**). **`.ts`** extension variants now include **`.mts`** / **`.cts`**. **LLM dedup:** reject **GROUP** lines with fewer than **two distinct** indices (e.g. **`3,3`**). **Logger:** empty **prompts.log** body warning includes **`phase`** from metadata when present.
+
+- **Final audit:** Comments with **no auditable file path** — empty path, GitHub synthetic **`(PR comment)`**, or **path fragments** (`isReviewPathFragment`, e.g. bare `.d.ts`) — **skip the adversarial LLM** and are treated as **passed** with a logged explanation (avoids bogus **UNFIXED** and token waste on “file not found” snippets). **`shouldSkipFinalAuditLlmForPath`** in **`shared/path-utils.ts`**, **`tools/prr/workflow/analysis.ts`**.
+
+- **Batch verify / post-fix judge context:** **`getCurrentCodeAtLine`** with **`expandForTypeSignature`** now returns a **line-anchored window** (~100 lines before / ~160 after the review line) when **`line`** is set, instead of always returning the **first 500 lines** (which led to **`substring(0, 8k)`** cutting only imports and hiding the real hunk — **`prompts.log`** audit **`runtime.ts`**). **`LLMClient.buildBatchVerifyPrompt`** uses **`truncateVerificationCurrentCode`** to center on **`fix.line`** when raw current code still exceeds **`MAX_VERIFY_CURRENT_CODE_CHARS`**. **`tools/prr/workflow/fix-verification.ts`**, **`tools/prr/llm/client.ts`**.
+- **LLM dedup prompts:** Static **GROUPING RULES** and reply format are passed as **`LLM_DEDUP_SYSTEM_PROMPT`** via **`completeWithCheapModel(user, system)`**; the user message is only **file path + comment summaries** (fewer duplicate tokens per file in **`prompts.log`**). **`tools/prr/workflow/issue-analysis.ts`**.
+- **Final audit (many issues, small context):** After file-based batching and snippet truncation, prompts are **split into additional sub-batches** when fixed per-issue overhead (comment previews + headers) still exceeds **`getMaxElizacloudLlmCompleteInputChars`** (e.g. **84** issues on **`alibaba/qwen-3-14b`**). Avoids **`ElizaCloud request too large`** at final audit. Debug logs **`hardCap`** with **`effectiveMaxContextChars`** and **`Final audit batches (expanded to model input cap)`** when splitting applies. **`tools/prr/llm/client.ts`**.
+- **Pill audit response parsing:** **`extractJsonLenient`** retries from each `{` that opens **`"pitch"`**, **`"summary"`**, or **`"improvements"`** when the first `{` in the response is not valid JSON (e.g. model echoes **`[DIRECTORY TREE]`** / prose — **`Unexpected identifier "DIRECTORY"`**). **`tools/pill/llm/parse-json.ts`**, **`tools/pill/orchestrator.ts`**, **`tests/pill-parse-json.test.ts`**.
+- **ElizaCloud small-context char preflight:** **`getMaxElizacloudLlmCompleteInputChars`** for **≤32k** windows is now **`min`(legacy fix+14k overhead, unified budget)** — `floor((maxContext − 8192 completion − 512 reserve) × 1.6)` for **system+user** total. The legacy sum **double-counted** tokens (fix budget + extra 14k system chars both tokenize), so **~32k** chars passed preflight while the model still 500’d; batch check now splits smaller on Qwen-class models. **`tests/model-context-limits.test.ts`**.
+- **ElizaCloud opaque 500 (small context):** Logs now include **`estimatedInputTokensApprox`**, **`maxCompletionTokensDefault`**, **`estimatedInputPlusDefaultMaxOut`**, and **`estimatedExceedsContextWithDefaultMaxOut`** on each ElizaCloud `complete()` debug line and in **`ElizaCloud error (response context)`** (same tokenizer assumption as fix-prompt budgeting: **~1.6 chars/token** for ≤32k windows). **`completeOpenAI`** caps **`max_completion_tokens`** so estimated input + reserved headroom stays under **`maxContextTokens`** (default was **8192** out, which with **~20k** estimated input exceeded **Qwen3-14B 24,576**). **`estimateElizacloudInputTokensFromCharLength`**, constants in **`shared/llm/model-context-limits.ts`**, **`tests/model-context-limits.test.ts`**.
+- **Final audit (ElizaCloud):** **`finalAudit`** batching now uses **`effectiveMaxContextChars = min(requested, min(90k, getMaxElizacloudLlmCompleteInputChars(finalAuditModel)))`** so batches match what **`complete()`** allows — avoids planning **400k** batches then failing on **Qwen ~42k**. Larger **structureSlack** and **`ISSUE_HEADER_APPROX`** so planned batches align with real prompt markup. If a batch prompt still exceeds the cap (e.g. one huge file), **binary-search max snippet length** and truncate with a clear suffix so **`complete()`** runs; warn if still over after **200**-char fallback.
+- **ElizaCloud / small models:** **`LLMClient.complete`** now **rejects** requests when **system + user** length exceeds **`getMaxElizacloudLlmCompleteInputChars(model)`** (fix-prompt budget + 14k overhead, same idea as batch-verify). Avoids **opaque HTTP 500 (no body)** and useless retries when prompts are far over context (e.g. **~93k chars vs ~42k** for **`alibaba/qwen-3-14b`**). Debug fields add **`expectedMaxTotalInputChars`**; 5xx retries are skipped when still over the configured budget. **`shared/llm/model-context-limits.ts`**, **`tests/model-context-limits.test.ts`**.
+- **Git push (CI / HTTPS):** When **`githubToken`** is passed and **`origin`** is HTTPS, **`push()`** uses a **one-shot URL** (`https://x-access-token:<token>@host/...`) with credential helpers cleared instead of relying on **`origin`** + **`http.extraheader`**, avoiding **`terminal prompts disabled`** when the remote URL has a stale or masked token. **WHY `x-access-token`:** GitHub installation tokens (`ghs_*`) and fine-grained PATs require the `x-access-token:<token>` format (username:password); token-as-username-only causes git to prompt for a password. Classic PATs (`ghp_*`) also accept this format. Pure URL helpers: **`shared/git/git-push-auth-url.ts`**; tests: **`tests/git-push-auth-url.test.ts`**. **DEVELOPMENT.md** — local smoke steps.
+- **Partial conflict cache:** State field **`partialConflictSavedOriginBaseSha`** records **`origin/<base>`** when a base-merge stops with unresolved conflicts; on the next run, if the remote base tip changed, saved partial resolutions are **cleared** (avoids re-applying stale merged text). Cleared with partials on successful merge, PR **HEAD** change, and **`--clean-state`** paths.
+- **Model catalog / 0a6:** When the provider catalog is **empty** (missing JSON or zero API ids), **`getOutdatedModelCatalogDismissal`** no longer relies on **`catalogValidatesBothIds`** alone — it **skips** dismissal with a **one-time `console.warn`** and **`npm run update-model-catalog`** hint (**`isEffectivelyEmptyModelCatalog`** in **`shared/model-catalog.ts`**).
+- **Merge conflict follow-up:** **`hasConflictMarkers`** detects **`<<<<<<<`**, orphan **`>>>>>>>`**, orphan / multiple **`=======`** lines, and uses **trimStart** + narrow setext heuristic for a **single** lone middle line. **Size-regression** validation is skipped for **keep ours** and **take theirs** resolutions so intentional one-side outcomes are not rejected.
+- **Deterministic doc merge (CHANGELOG, etc.):** When the working tree has **nested/overlapping** conflict markers, or line-based **keep ours** would still leave markers, PRR resolves by reading **ours** from the unmerged index (**`git show :2:<path>`**) instead of parsing conflict regions in the file (**`tools/prr/git/git-conflict-resolve.ts`**). **`resolveKeepOurs`** uses **trimStart** on lines so indented markers match **`hasConflictMarkers`**. **Index stage-2** validation uses **`hasGitConflictOpenOrCloseMarkers`** only (`<<<<<<<` / `>>>>>>>`) so markdown **`=======`** lines in **ours** do not reject the blob (audit Cycle 66 / ROADMAP).
+
+### Changed
+
+- **Issue-comment ingestion dedup:** **`normalizeReviewBotAuthorLabel`** in **`tools/prr/github/bot-author-normalize.ts`** — shared by **`GitHubAPI.normalizeBotName`** and **`deduplicateSameBotAcrossComments`** bucket keys so **`cursor[bot]`** / **`Cursor`**, **`claude[bot]`** / **`Claude`**, etc. collapse to one author family per path — **WHY:** Same bot under different string forms duplicated buckets (ROADMAP). **`debug()`** logs **`removedIdsSample`** (up to 20) when rows merge. **Other** issue comments now store normalized author labels when applicable. **Tests:** **`tests/bot-author-normalize.test.ts`**, **`tests/issue-comment-dedup.test.ts`**.
+
+- **Final audit (truncation-aware):** **`getFullFileForAudit`** takes **`line`** and **`commentBody`**; when the file exceeds **`MAX_FULL_FILE_AUDIT_CHARS`**, builds a **line-centered excerpt** (review line, else keyword anchor, else head slice with explicit “no line anchor” footer) — **WHY:** Head-only truncation hid tail bugs and drove false **UNFIXED**. **`runFinalAudit`** / **`main-loop-setup`** pass **`path, line, body`** into the full-file callback. **`LLMClient.finalAudit`:** prompt **rule 10** + **`[n] UNCERTAIN:`** response; **`finalAuditSnippetLooksTruncatedOrExcerpt`** demotes **UNFIXED** when the snippet was batch- or excerpt-truncated and the explanation lacks **line + backtick** citation or matches **`explanationMentionsMissingCodeVisibility`** (UUID alignment override preserved). **`tests/final-audit-snippet.test.ts`**, **`tests/issue-analysis.test.ts`** (**`getFullFileForAudit`**).
+
+- **ElizaCloud skip list (pill-output / audits):** **`alibaba/qwen-3-14b`** and **`Qwen/Qwen3-14B`** added to **`ELIZACLOUD_SKIP_MODEL_IDS`** with **`zero-fix-rate`** in **`ELIZACLOUD_SKIP_REASON`** — **WHY:** Small-context opaque **500**s, weak verification vs shown code, and default-model churn in audited runs; re-enable with **`PRR_ELIZACLOUD_INCLUDE_MODELS`**. **`docs/MODELS.md`** — skip table + **last reviewed** + override/maintenance notes.
+
+- **LLM client (ElizaCloud / OpenAI path):** **`openAiChatCompletionContentToString`** in **`shared/llm/openai-chat-content.ts`** normalizes **`message.content`** when the SDK returns a **text-part array** (was treated as empty). On **HTTP success** with empty/whitespace body, **`console.warn`** (yellow) after **`debugPromptError`** — **WHY:** Operators/CI often miss **prompts.log**; ties empty output to the **ERROR** slug. **`tests/openai-chat-content.test.ts`**.
+
+- **Pill (chunked audit):** When the assembled context exceeds the per-request char cap (e.g. **~12k** for Opus-class audit models), audit chunks are sent with **limited concurrency** (default **4**, **`PILL_AUDIT_CHUNK_CONCURRENCY`** **1–16**) instead of strictly sequential HTTP calls — large logs no longer imply multi-hour wall time from hundreds of serial LLM round-trips. **`tools/pill/orchestrator.ts`**, **`tools/pill/config.ts`**, **`tools/pill/types.ts`**.
+
+- **Thread replies:** Dismissals categorized **`chronic-failure`** no longer receive a GitHub thread reply (matches **AGENTS.md** / **docs/THREAD-REPLIES.md** — batch token-saving dismissals vs `remaining`/`exhausted` where we exhausted the fix loop). **`formatNumber`** on the 422 stop message. **`tools/prr/workflow/thread-replies.ts`**.
+
+- **Prompt log polish:** **`debugPromptError`** standalone **`debug()`** line (when **`PRR_DEBUG_PROMPTS`**) includes **`requestId`**. **Pill** **`pill-prompts.log`** PROMPT/RESPONSE metadata gets the same **`requestId`** pairing as PRR **`shared/logger`**. **`shared/logger.ts`**, **`tools/pill/logger.ts`**.
+
+- **ElizaCloud 5xx retries:** **`LLMClient.complete`** uses **`getElizacloudServerErrorMaxRetries()`** (**`shared/constants.ts`**): default **2** (3 HTTP tries) when not CI; **4** (5 tries) when **`CI=true`**; override with **`PRR_ELIZACLOUD_SERVER_ERROR_RETRIES`** (**0–15**). Reduces empty **500** batch-check bailouts in Actions. **README**, **`.env.example`**, **`tests/elizacloud-server-error-retries.test.ts`**.
+- **CI workflows:** **`npm run build`** (same as **`tsc`**) replaces **`npm run typecheck`** in workflow steps where the purpose is **emitting `dist/`** (`dist/` is gitignored — not optional validation). Step titles note “compile”; **`package.json`** adds **`build`** script. **AGENTS.md** explains why Actions must compile.
+
+### Added
+
+- **Startup / `output.log` provenance:** First tee’d lines print **`PRR <package.json version> (<git short>)`** when **`PRR_GIT_SHA`** / **`PRR_SOURCE_COMMIT`** is set, or when **`.git`** exists in the prr package root and **`git rev-parse --short HEAD`** succeeds (no **`git`** call if `.git` is absent). In **`CI`**, a hint suggests **`PRR_GIT_SHA`** only when **`.git`** is missing (vendored install). **`shared/prr-runtime-meta.ts`**, **`tools/prr/index.ts`**. README / **`.env.example`**: do not use **`GITHUB_SHA`** for prr (host repo).
+- **GitHub API failures:** **`tools/prr/github/github-api-errors.ts`** — **`logGitHubApiFailure`** / **`summarizeGitHubError`**; **`debug`** payload includes phase, **`x-github-request-id`**, method, URL, response preview; **`warn`** on **5xx** / gateway-style messages and **429**. Used from **`tools/prr/github/api.ts`** on **`pulls.get`**, **`pulls.createReview`**, **`issues.createComment`**, GraphQL **reviewThreads** (per page), **reply** / **resolve** thread. Tests: **`tests/github-api-errors.test.ts`**. **DEVELOPMENT.md** — table row.
+- **Conflict resolution (verbose):** **`debug()`** lines **`Conflict resolution: file snapshot`**, **`Conflict index stage-2 (ours) OK`**, expanded index-failure / line-parser marker context, and **`Deterministic merge outcome`** with **`strategy`** (**`tools/prr/git/git-conflict-resolve.ts`**).
+- **`fetchOriginBranch`:** **`isBranchRefSafeForOriginFetch`** uses **`git check-ref-format --branch`** after quick sanity checks (**`shared/git/git-conflicts.ts`**).
+- **`PROMPTLOG_EMPTY_BODY`:** Log line includes **`phase=...`** when **`writeToPromptLog`** metadata carries **`phase`** (**`shared/logger.ts`**).
+- **Catalog auto-heal:** User-visible line when **±20** line window misses the quoted wrong id and **full-file** fallback applies (**`tools/prr/workflow/catalog-model-autoheal.ts`**).
+- **`PRR_LLM_TASK_TIMEOUT_MS`:** Optional per-task timeout for **`runWithConcurrency`** / **`runWithConcurrencyAllSettled`** (LLM batch pools). Unset or non-positive = no cap; invalid values disable the cap with a verbose debug line. Optional third argument **`{ taskTimeoutMs }`** overrides env for one call (no minimum clamp; for advanced use / tests).
+- **`parseFetchTimeoutMs` / fetch:** Invalid **`PRR_FETCH_TIMEOUT_MS`** logs a debug line when verbose (still defaults to 60s). **`git fetch` spawn `error` message** is passed through **`redactUrlCredentials`**. Verbose debug explains when **one-shot fetch auth** is skipped (credentials already in URL, non-https, no token, unsafe branch ref).
+
+### Documentation / UX
+
+- **CONFLICT-RESOLUTION.md:** **Verbose debug** — grep targets for conflict snapshot, index **stage-2**, and deterministic merge **`strategy`** in **`output.log`** (see **Added** above).
+- **README:** **Troubleshooting** — resolver state path (**.pr-resolver-state.json** in clone workdir), when to delete state, verified∩dismissed overlap, final-audit re-queue line in **RESULTS SUMMARY**, **`--clean-state`**, **`PRR_FETCH_TIMEOUT_MS`** typos.
+- **DEVELOPMENT.md:** **State invariants, paths, and skip-list (operator reference)** — verified/dismissed, HEAD change envs, path-utils, skip list + session skip + maintainer refresh; corrected resolver state path note (not only under **`.prr/`**).
+- **RESULTS SUMMARY / GitHub review body:** Prominent **Final audit re-queued** count; yellow warn if verified∩dismissed overlap remains at exit; review markdown leads with **Final audit re-queues** then shorter follow-up bullets (**`tools/prr/ui/reporter.ts`**).
+
+### Added / changed (pill-output external → prr)
+
+- **`PRR_EXIT_ON_UNMERGEABLE`:** When **`1`/`true`**, setup exits **before clone** if GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set** (symmetry with **`PRR_EXIT_ON_STALE_BOT_REVIEW`**). **`tools/prr/resolver.ts`:** removed unused **`checkForConflicts`** import.
+- **Latent merge probe (`git merge-tree`):** After fetch, **`checkForConflicts`** dry-merges **`HEAD`** with **`origin/<branch>`** (requires Git 2.38+) so conflicts are surfaced even when **`git status`** has no in-progress merge. **`checkAndSyncWithRemote`** prints file list + hints. **`PRR_MATERIALIZE_LATENT_MERGE=1`** runs **`git merge --no-commit --no-ff`** when the probe hits so LLM resolution can run before pull. **`PRR_DISABLE_LATENT_MERGE_PROBE=1`** skips. **`parseMergeTreeConflictPaths`**, **`tests/git-latent-merge-probe.test.ts`**.
+- **Second latent probe (PR vs base / GitHub dirty):** When GitHub **`baseBranch`** differs from the PR branch, **`checkForConflicts`** also dry-merges **`HEAD`** with **`origin/<prBase>`** (after fetching the base ref). Warns separately from the PR-tip probe; aligns with **mergeable / dirty** vs integrating only **`origin/<prBranch>`**. **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE=1`** skips. **`PRR_MATERIALIZE_LATENT_MERGE_BASE=1`** materializes **`git merge origin/<prBase> --no-commit`**. **`run-setup-phase`** passes **`prInfo.baseBranch`** into **`checkAndSyncWithRemote`**.
+- **`PRR_EXIT_ON_STALE_BOT_REVIEW`:** When **`1`/`true`**, setup exits **before clone** if the latest bot review commit ≠ PR HEAD (same condition as the yellow CodeRabbit warn). Default unchanged (warn only).
+- **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD`:** When **`1`/`true`**, a PR **HEAD** change clears **all** **`dismissedIssues`** (default remains: clear only **`already-fixed`** dismissals). **`state-core.ts`** + **`tools/prr/state/manager.ts`**.
+- **README** operator table: verifier / final-audit / strict audit / stale-bot exit / clear-dismissals / pointer to **`--merge-base`**. **AGENTS.md:** mermaid fix-loop diagram; CodeRabbit exit env; **path-fragment** = **`path-unresolved`** note; HEAD-change dismissals env.
+- **`scanCommittedFixes` + PR base:** Optional **`prBaseBranch`** (from GitHub PR) tries **`origin/<base>`** first for the `git log` range before **`origin/main|master|develop`**, so recovery isn’t stuck with **`baseBranch: null`** on repos whose default branch naming differs. **`recoverVerificationState`** passes **`prInfo.baseBranch`** from **`run-setup-phase.ts`**.
+- **Commit message hygiene:** **`stripMarkdownForCommit`** strips leading emoji via **`\p{Extended_Pictographic}`** (covers bot prefixes beyond the fixed alternation list). **`generateCommitFirstLine`** avoids **`!`** on regex capture groups.
+- **Docs:** **DEVELOPMENT.md** — table mapping pill **`N/A (external)`** themes to **prr** files; **AGENTS.md** — short fix-loop lifecycle pointer for interpreting clone-path pill items.
+
+### Changed (pill)
+
+- **Tool-repo scope filter:** When **`tools/prr`** exists under pill’s **`targetDir`**, improvements whose **`file`** is outside the monorepo tool layout (`tools/`, `shared/`, `tests/`, `docs/`, `generated/`, `.cursor/`, `.github/`, allowlisted root files) are **dropped** before append. **`PILL_TOOL_REPO_SCOPE_FILTER=0`** disables; **`=1`** forces on. New no-improvements reason **`all_filtered_tool_scope`**. Audit system prompt asks for paths in **this** repo only. See **`tools/pill/tool-repo-scope.ts`**, **`tests/pill-tool-repo-scope.test.ts`**, **`tools/pill/README.md`**.
+
+### Documentation
+
+- **Pill vs two codebases:** **`pill-output.md`** legend + **DEVELOPMENT.md** / **AGENTS.md** / **`tools/pill/README.md`** — explicit that pill **mixes** improvements for the **PR clone** with improvements for **prr**; triage by path/status.
+- **AGENTS.md** / **DEVELOPMENT.md:** Clarify **clone workdir** (PR checkout / `SimpleGit` root) vs **`process.cwd()`** vs the **prr tool repository**; **`shared/git/git-conflicts.ts`**, **`path-utils`**, **`buildFixPrompt`**, **`buildAndDisplayFixPrompt`** JSDoc/strings aligned so agents don’t mix target checkout with the prr source tree.
+
+### Added / changed (pill-output low-hanging fruit)
+
+- **CodeRabbit vs PR HEAD:** **`triggerCodeRabbitIfNeeded`** returns optional **`botReviewCommitSha`** (from **`getBotReviewStatus`**). **`checkCodeRabbitStatus`** (**`startup.ts`**) prints a **yellow warn** when that SHA differs from PR HEAD so operators know inline review threads may be stale until the bot re-reviews.
+- **`getBotReviewStatus`** (issue-comment fallback): **`extractFullCommitShaFromText`** (`tools/prr/github/types.ts`) pulls a **40-character** commit from the latest bot comment when **`pulls.listReviews`** has no bot row — improves **`lastReviewSha`** / stale-HEAD detection vs. **7-char prefix** only.
+- **Remote check UX:** Setup spinner text is **“Fetching from origin and checking git status…”** (clearer than “conflicts” only). Behind/ahead commit counts use **`formatNumber`**. **`checkForConflicts`** logs a **debug** line that **`hasConflicts`** is in-progress merge/rebase only, not latent vs **`origin`** after fetch.
+- **Docs:** **DEVELOPMENT.md** lessons JSON example uses **`tools/prr/`** / **`shared/`** paths; **ROADMAP** marks **`autoVerifiedFrom`** git-recovery and git-util follow-ups done where implemented.
+- **Fix prompt paths:** **`buildFixPrompt`** accepts optional **`workdir`**; with **`pathExists`**, primary paths are normalized via **`tryResolvePathWithExtensionVariants`** (`shared/path-utils.ts`) before basename-prefix fallback — same extension / `.d.ts` rules as solvability. **`buildAndDisplayFixPrompt`** / **`execute-fix-iteration`** pass **`workdir`**.
+- **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`:** Comma-separated model ids merged into the built-in ElizaCloud skip list (`getEffectiveElizacloudSkipModelIds`). Documented in **`.env.example`**, **`README.md`** (operator table), **`AGENTS.md`**.
+- **Git recovery provenance:** **`recoverVerificationState`** calls **`markVerified(..., PRR_GIT_RECOVERY_VERIFIED_MARKER)`** so state shows verification restored from **`prr-fix:`** commits.
+- **Final audit:** Debug **`warn`** if any comment id appears in both verified and dismissed (overlap invariant).
+- **Commit scope:** **`determineScope`** falls back to the first directory segment (e.g. `src`) when deeper “meaningful” segments are empty — fewer **`misc:`** messages for `src/*`-only paths.
+- **`checkForConflicts`:** JSDoc documents that conflict detection is for **in-progress** merge/rebase only; **`fetchOriginBranch`** timeout handler clears its timer defensively at fire.
+- **Docs:** **`AGENTS.md`** “Path resolution rules (canonical)” subsection; **`DEVELOPMENT.md`** note on generic **`src/`** paths in example JSON.
+
+### Documentation (2026-03) — Pill output status + cross-links
+
+- **`pill-output.md`:** Status legend and a **Status** line on each numbered item (prr Done / Partial / Open vs N/A external for eliza/`packages/*`-shaped paths). **WHY:** Pill text mixed target-repo items with PRR items; without tags, contributors misread missing `src/` paths as prr breakage.
+- **`DEVELOPMENT.md`:** “Pill output triage” — mixed sources, mapping to `tools/prr`/`shared`, pointers to implemented areas.
+- **`README.md`:** **`PRR_SESSION_MODEL_SKIP_FAILURES`** and **`PRR_DIMINISHING_RETURNS_ITERATIONS`** under Configuration (**WHY:** discoverable operator knobs; defaults match `shared/constants.ts`).
+- **`AGENTS.md`:** “Pill output” note linking **`pill-output.md`** + **DEVELOPMENT.md**.
+- **`docs/ROADMAP.md`:** Mutual-exclusivity item marked largely done; “Pill-output follow-ups” for remaining prr-scope work.
+
+### Changed (2026-03) — Dirty PR warning + scanCommittedFixes cache
+
+- **Setup:** When GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set**, emit a **`warn`** that resolving conflicts or using **`--merge-base`** may avoid wasted work.
+- **`scanCommittedFixes`:** Optional in-process cache keyed by **`workdir` + branch + `HEAD`** (passed from **`recoverVerificationState`**); **`clearScanCommittedFixesCache()`** for tests. Removed unused **`scanCommittedFixes`** import from **`resolver.ts`**.
+
+### Changed (2026-03) — Path fragment vs missing-file (canonical dismissal)
+
+- **`shared/path-utils.ts`:** **`isReviewPathFragment`** and **`pathDismissCategoryForNotFound`** centralize rules. Extension-only paths (e.g. `.d.ts`, `d.ts`) map to **`path-unresolved`**; real root files like **`.env`** are **not** fragments (fixes over-broad “dot file, no slash” logic).
+- **`assessSolvability`:** “Tracked file not found” uses **`pathDismissCategoryForNotFound`** so **`missing-file` vs `path-unresolved`** stays consistent when **`git ls-files`** is unavailable or resolution is **`missing`**.
+- **State load:** Legacy **`missing-file`** rows whose **`filePath`** is a fragment are normalized to **`path-unresolved`** (broader than `.d.ts` only).
+
+### Changed (2026-03) — Session model skip + diminishing-returns warning
+
+- **Rotation:** After **`PRR_SESSION_MODEL_SKIP_FAILURES`** cumulative verification failures (default **4**) for a tool/model pair with **no** verified fixes this process, that model is **skipped until the next run**; a verified fix clears the skip. **`getCurrentModel`** skips session-bad models for recommended and legacy rotation ( **`PRR_SESSION_MODEL_SKIP_FAILURES=0`** disables).
+- **Fix loop:** One **`warn`** when **`PRR_DIMINISHING_RETURNS_ITERATIONS`** consecutive iterations (default **10**) produce **no** new verified fixes; **`0`** disables.
+
+### Changed (2026-03) — Clone base refs, verification no-ops
+
+- **`cloneOrUpdate`:** Fetches **`additionalBranches`** in the **preserve-changes** path too (read-only), then **fails fast** if any required **`origin/<branch>`** ref is still missing (default **`verifyAdditionalRemoteRefs: true`**). **split-exec** only lists **`target_branch`** when it differs from **`source_branch`** (not per-split **New PR** names — those are local until push).
+- **`markVerified`:** No-op when the comment is already verified at the **current iteration** with the same **`autoVerifiedFrom`** and no **dismissed** overlap to fix. Git recovery skips **`markVerified`** when the ID is already verified.
+
+### Changed (2026-03) — Pill output.log: state, logging, config, push, docs
+
+- **State:** **`verifiedSet`** on load includes **`verifiedComments`** (not only **`verifiedFixed`**) when removing overlaps; **`StateManager.load`** also removes dismissed entries for any verified ID. **`markVerified` (update)** strips **`dismissedIssues`**. **`loadState`** clears **`already-fixed`** dismissals on PR **head** change (aligned with **`StateManager`**).
+- **429 cooldown:** **`acquireElizacloud`** logs (debug) when the post-429 half-concurrency window ends and full **`PRR_MAX_CONCURRENT_LLM`** cap applies again.
+- **prompts.log:** On empty PROMPT/RESPONSE body refusal, writes a **`PROMPTLOG_EMPTY_BODY`** line into **`prompts.log`** for CI/pill visibility.
+- **Config:** Warns when both **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY`** and **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL`** are set.
+- **CLI:** Warns when **`--reply-to-threads`** is on but **`PRR_BOT_LOGIN`** is unset.
+- **Runners:** When not **`--verbose`**, **`debug`** lists fix tools that were skipped (not ready / not installed).
+- **`pushWithRetry`:** **`console.warn`** with conflicted file list when rebase conflicts are not resolved (handler missing or failed).
+- **Commits:** **`generateCommitFirstLine`** truncates the base subject to **72** chars when needed.
+- **Docs:** **README** final-audit bullet completed; **`.env.example`** expanded; **AGENTS.md** “State and path invariants”.
+
+### Fixed (2026-03) — Merge: conflict marker normalization + malformed skip
+
+- **`normalizeConflictMarkerLines`:** Strips **leading whitespace** on `<<<<<<<` / `=======` / `>>>>>>>` lines so indented markers still parse; applied when reading conflicted files in **`git-conflict-resolve`** and inside **`extractConflictChunks`**.
+- **Malformed regions:** If a block has **no outer `=======`** or **no closing `>>>>>>>`**, advance past the whole region (depth-balanced) instead of **`i++`**, reducing debug spam and allowing **valid conflicts later in the file** to parse.
+
+### Fixed / changed (2026-03) — Merge: separator repair, outer-`=======` scan, windowed syntax fix
+
+- **`findOuterConflictSeparatorLine`:** Stops when **`>>>>>>>`** brings depth back to **0** before any **`=======` at depth 1** — avoids attributing a **later** conflict’s separator to an **earlier** two-marker block (fixes bogus single mega-chunk and “malformed” spam).
+- **`repairMissingConflictSeparators`:** Inserts a missing **`=======`** before the closing **`>>>>>>>`** for two-marker conflicts; **`preprocessConflictFileContent`** runs normalize + repair; opt out with **`PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR=1`**.
+- **Syntax fix (large files):** If the file exceeds **`MAX_CONFLICT_SYNTAX_FIX_EMBED_CHARS`**, try a **windowed** LLM fix around the TS/JS error line (or first `<<<<<<<`) before giving up — **`CONFLICT_SYNTAX_FIX_WINDOW_HALF_LINES`** / **`CONFLICT_SYNTAX_FIX_WINDOW_MAX_CHARS`** in **`shared/constants.ts`**.
+
+### Changed (2026-03) — Model catalog, state overlap, concurrency env, observability
+
+- **`loadModelProviderCatalog`:** Missing, unreadable, or invalid JSON **no longer throws** — logs a **one-time warning** per path and returns an **empty in-memory catalog** (dismissal/auto-heal stay fail-open; run `npm run update-model-catalog` to restore).
+- **State load:** Removes **`verifiedComments`** rows whose `commentId` is in **`dismissedIssues`** (same overlap rule as **`verifiedFixed`**); **`StateManager.load`** uses **`formatNumber`** for overlap counts.
+- **`PRR_MAX_CONCURRENT_LLM`:** Invalid values log a **one-time warning** and clamp to **1** (range **1–32**).
+- **`PRR_ELIZACLOUD_INCLUDE_MODELS`:** Logs once how the ElizaCloud **skip list** was narrowed.
+- **Solvability 0a6:** **Gray console line** when a comment is dismissed as catalog model-id noise (easier audits).
+
+### Fixed (2026-03) — Merge: nested conflict markers + large-file single-shot + markerless TS
+
+- **`extractConflictChunks`:** Depth-aware parsing so **nested `<<<<<<<`** (e.g. CHANGELOG) no longer ends the outer region at the **inner** `>>>>>>>` — fixes empty/wrong chunks and failed resolution on valid files.
+- **Attempt 2:** Skip **`resolveConflict`** single-shot when file **> 50k chars** if chunked already ran (avoids misleading “file too large” as the only message); parse-retry skips single-shot over cap too.
+- **Markerless unmerged** `.ts`/`.tsx`/`.js`/`.jsx`: choose **stage 2 (ours)** or **stage 3 (theirs)** from the index and **`git add`** — **`PRR_MARKERLESS_CONFLICT_PREFER=theirs`** to prefer base.
+- **Top+tails failure:** Log **fallback’s** explanation when it is more specific than the prior failure.
+- **Constants:** **`MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS`** aliases the 50k cap; **`LLMClient.resolveConflict`** imports it.
+
+### Fixed (2026-03) — Pill 504 on ElizaCloud (large prompts.log + Opus audit)
+
+- **prompts.log digest:** Each PROMPT/RESPONSE **pair truncated (~18k chars)** before story-read chapter grouping — a single huge entry no longer bypasses the chapter token budget.
+- **Story-read:** Lower **chapter token budgets** (8k paired / 10k plain text) so summarization calls stay smaller.
+- **Audit request:** Default user payload cap **~20k chars** per request (was ~42k); **~12k** for Opus-class / `o3-` / `gpt-5` (excluding mini/nano) audit models. Optional **`PILL_AUDIT_MAX_USER_CHARS`** (6000–80000). **Output log** default char cap **28k** (was 40k). **Raw prompts path:** **12k** max per log entry.
+- **Docs:** `tools/pill/README.md`, **AGENTS.md** (Pill section).
+
+### Changed (2026-03) — prompts.log pairing, conflict phases, nested-marker warning
+
+- **LLM client:** If the provider returns **HTTP success with an empty/whitespace body**, **`prompts.log` records an `ERROR` entry** for that slug (avoids orphan PROMPT lines; `writeToPromptLog` refuses empty RESPONSE).
+- **Merge conflict LLM calls:** Log metadata **`phase`** set per step (`resolve-conflict`, `conflict-syntax-fix`, `conflict-file-story`, `conflict-chunk`, `conflict-subchunk`, `conflict-top-tails`, `conflict-asymmetric-check`) for easier audits.
+- **Nested conflicts:** **`hasNestedConflictMarkers`** in **`shared/git/git-lock-files.ts`**; per-file **yellow warning** during Attempt 2 when the working tree has overlapping `<<<<<<<` regions.
+
+### Changed (2026-03) — Merge conflicts, handoff/AAR, solvability, prompts.log messaging
+
+- **Base-branch conflict resolution:** When one embedded batch exceeds the char budget, **split into multiple `llm-api` runner batches** instead of skipping Attempt 1; batch cap scales with model context (capped for timeouts). **`hasConflictMarkers`** matches the same scanner as conflict discovery; clearer message when git is unmerged but the working tree has no standard markers; **`ROADMAP.md`** uses the same deterministic keep-ours strategy as changelog-style docs.
+- **Reporting:** **`merge_conflicts`** exit shows **merge-first** warnings in handoff, AAR, and RESULTS SUMMARY; AAR summary separates **PR comments loaded this run** from **bucket counts** (clarifies 0 fetched vs cumulative state); **`executeErrorCleanup`** receives **`exitReason`/`exitDetails`** so setup failures (e.g. merge) are not mislabeled; **handoff** folds near-duplicate unresolved issues (same file + first line).
+- **Solvability 0a5b:** Dismisses review threads where a human **confirmed addressed** (e.g. ✅ Confirmed as addressed by @user) as **not-an-issue**.
+- **Docs / CLI:** **`prompts.log`** behavior documented in **AGENTS.md**; startup banner and **README** `--verbose` row no longer imply prompts are gated on verbose (in-process LLM vs subprocess; **`PRR_DEBUG_PROMPTS=1`**).
+
+### Fixed / changed (2026-03) — Catalog parse, merge-meta solvability, fixer UX, prune hint, prompt catalog context
+
+- **`parseModelRenameAdvice`:** Parses CodeRabbit-style **“model name typo \`X\`”** headings when a **use / recommended / prefer … \`Y\`** appears later in the same comment — same **0a6** dismissal + auto-heal as one-line pairs (audit eliza#6575 duplicate telegram threads).
+- **`assessSolvability` (0a3b):** Dismisses **PR merge / branch-closing** comments (“Closing — … merged …”) as **not-an-issue** so they are not queued as code fixes when GitHub anchors them on a file.
+- **llm-api / fix iteration:** Runner returns **`pathsWrittenByRunner`**; when **`hasChanges(git)`** is false but the runner reported writes, logs a **yellow note** that the tree matches HEAD (explains “Modified file” vs “No changes made” confusion).
+- **Git recovery + prune:** After **`Recovered N … from git`**, the **prune** line can append how many IDs were recovered this run vs current PR comment count (`StateContext.gitRecoveredVerificationCount`).
+- **Auto-heal:** Removed hard-coded debug logging for specific comment id prefixes.
+- **Verifier + fixer prompts:** When a comment matches outdated model advice pattern (even if not dismissed by 0a6), inject **catalog context** warning that both IDs are valid and the PR should keep the catalog-correct ID — prevents verifier/fixer from blindly following the review's "invalid model" claim (audit prompts.log eliza#6575).
+- **`unmarkVerified`:** Also removes the comment id from **`verifiedThisSession`** so **final-audit** re-queues are not dropped by “verified this session” filtering (audit output.log babylon#1327).
+- **Final audit (prompts.log Cycle 65):** **`PRR_FINAL_AUDIT_MODEL`** chooses the model for the adversarial final-audit pass (**`finalAuditModel` → `verifierModel` → `llmModel`**). Prompt rules stress judging from **shown code** vs stale review text; **UUID comment / `[1-8]` regex** post-check demotes false **UNFIXED**. Batch verify: shorter examples; **YES→NO** when **`(end of file)`** snippet but explanation cites **truncation**; skip **model recommendation** call when only **one** fixer model exists.
+- **Cycle 64 follow-through (output.log babylon#1327):** **RESULTS SUMMARY** / **AAR** / PR review body explain **audit re-queue** vs **exit state** (no false “still broken” when all re-opened issues were fixed again). **`runFinalAudit`**: one **`unmarkVerified`** pass (no duplicate with **`main-loop-setup`**); **UUID snippet + verified-this-session** tie-break keeps verified when code already matches. **Auto-heal:** silent return when a comment does not suggest an invalid catalog model id (drops per-comment debug spam). **Tests:** `mkdir` **`src/`** before writes in split-exec / split-rewrite-plan git fixture tests.
+
+### Fixed (2026-03) — Pill audit 504 on ElizaCloud (chunk size mismatch)
+
+- **Pill:** Chunked audit requests used **`userMessageMaxChars / 2.7`** as the token budget passed to **`chunkPlainText`**, but **`chunkPlainText`** uses **`estimateTokens`** (**4 chars/token**), so each chunk could grow to **~75k chars** and the POST body (~76k) hit **Vercel FUNCTION_INVOCATION_TIMEOUT / 504**. Chunk budget now uses **`shared/utils/tokens.ts`** **`CHARS_PER_TOKEN` (4)** with a prefix reserve; **oversized single-line** chapters are split. Default **`DEFAULT_AUDIT_USER_MESSAGE_MAX_CHARS`** lowered **50k → 42k** for gateway headroom. Docs: **`tools/pill/README.md`**, **`AGENTS.md`**.
+
+### Added (2026-03) — Programmatic provider model catalog
+
+- **`generated/model-provider-catalog.json`** — Machine-readable Anthropic + OpenAI API model IDs extracted from the official doc URLs in `docs/MODELS.md` (OpenAI uses the [all models](https://developers.openai.com/api/docs/models/all) page for complete slugs). Includes `fetchedAtIso`, `recommendedRefreshDays`, and hyphenless lookup maps (e.g. `gpt5mini` → `gpt-5-mini`) for validating spellings in automation.
+- **`npm run update-model-catalog`** — Runs `tools/model-catalog/fetch-provider-catalog.ts` (network; no provider keys).
+- **`shared/model-catalog.ts`** — Load catalog, resolve loose IDs, staleness helper; **`PRR_MODEL_CATALOG_PATH`** overrides the JSON path.
+- **`.github/workflows/refresh-model-catalog.yml`** — Weekly + manual refresh; commits updates to the JSON when the fetch changes output.
+
+### Added (2026-03) — Catalog-backed dismissal + auto-heal for bogus model-ID review advice
+
+- **Dismiss:** Comments that frame a catalog-valid id as a “typo” and suggest another id are dismissed in **`assessSolvability`** when both ids are in **`generated/model-provider-catalog.json`** (`tools/prr/workflow/helpers/outdated-model-advice.ts`). **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1`** skips.
+- **Auto-heal:** **`applyCatalogModelAutoHeals`** restores the catalog id in quoted literals near the review line (`tools/prr/workflow/catalog-model-autoheal.ts`), **`markVerified`** + **`verifiedThisSession`**. **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1`** skips.
+- **Auto-heal (fix):** If the wrong id is not in the ±20-line anchor window, retry quoted-literal replacement on the **full file**; if the file already has the catalog id and the wrong id never appears quoted, **`markVerified`** with reason **`catalog-autoheal-noop`** (no disk edit). **`applyCatalogModelAutoHeals`** returns **`{ modifiedPaths, verificationTouched }`**; **`main-loop-setup`** saves state when **`verificationTouched`** so noop verifies persist (output.log audit eliza#6575).
+- **Commit:** When analysis yields no unresolved issues but auto-heal dirtied the tree, **`processCommentsAndPrepareFixLoop`** calls **`commitAndPushChanges`** if **`verifiedThisSession`** is non-empty (see **`DEVELOPMENT.md`** — Commit gate and catalog model auto-heal).
+
+### Documentation (2026-03) — Catalog model advice
+
+- **DEVELOPMENT.md:** Expanded “Commit gate and catalog model auto-heal” with WHYs (dismiss vs heal, quoted-only + window, ordering before analysis cache, verified session gate, limitations); added Key Files table for catalog modules.
+- **README.md:** Core feature bullet + Configuration entries for **`PRR_MODEL_CATALOG_PATH`**, **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY`**, **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL`**.
+- **docs/MODELS.md:** Deeper PRR behavior, env vars, and explicit limitation note (comment shapes that do not parse as a rename pair).
+- **AGENTS.md:** WHY summary for dismiss / auto-heal / commit interaction.
+- **Code:** File- and block-level comments in **`outdated-model-advice.ts`**, **`catalog-model-autoheal.ts`**, **`solvability.ts`** (0a6), **`main-loop-setup.ts`** (heal + heal-only commit).
+
+### Fixed (2026-03) — `--reply-to-threads` skipped replies when ids differed in case or when push phase did not run
+
+- **Thread replies:** Match review comment ids **case-insensitively** when resolving threads (`prr-fix:` markers store lowercase; GraphQL returns mixed-case node ids).
+- **Thread replies:** **Final cleanup** now passes **`verifiedThisSession`** into `postThreadReplies` (with dismissals), so "Fixed in \`sha\`" can still post after **`--no-push`** or **nothing to push**; `repliedThreadIds` avoids double posts when push-phase already replied.
+
+### Changed (2026-03) — Pill follow-ups: skip low-performing model, shallow clone, prune verified, strict audit exit
+
+- **ElizaCloud:** `anthropic/claude-3.5-sonnet` added to default skip list (low fix rate in audits); **`ELIZACLOUD_FALLBACK_MODEL`** is now **`anthropic/claude-sonnet-4-5-20250929`** so fallback is never a skipped model. Re-enable sonnet with **`PRR_ELIZACLOUD_INCLUDE_MODELS`** if needed.
+- **Clone:** Optional **`PRR_CLONE_DEPTH`** (e.g. `1`) for shallow `git clone --depth`.
+- **State:** After fetching PR comments, **prune** `verifiedFixed` / `verifiedComments` entries whose IDs are not in the current PR (stale IDs from older runs); persist when anything was removed.
+- **RESULTS SUMMARY:** Warn when `verifiedFixed` is large vs current comment count (>2×); existing 3× relevant warning unchanged.
+- **Exit:** **`PRR_STRICT_FINAL_AUDIT=true`** exits with code **2** if audit overrides occurred (otherwise success paths unchanged).
+
+### Added (2026-03) — Split rewrite plan: three-phase pipeline, optional ordered ops, rebuild then promote
+
+**Three-phase pipeline (split-plan → split-rewrite-plan → split-exec)**
+- **split-plan** produces the group plan (`.split-plan.md`) with **Files:** per split; it does not clone the repo.
+- **split-rewrite-plan** (new tool under `tools/split-rewrite-plan/`) clones the repo (or uses a workdir), runs `git log target..source --first-parent`, and for each commit maps changed paths to splits. It writes a **rewrite plan** (`.split-rewrite-plan.yaml` or `.json`) with ordered ops per split: `cherry-pick` when a commit touches only one split, `commit-from-sha` when it touches multiple splits (one op per split with that split’s paths). **WHY:** So each split branch gets a linear history that only touches that split’s files instead of one squashed commit per split.
+- **split-exec** when a rewrite plan is present runs only those ops and pushes to **rebuild branches** (e.g. `feature/logging-rebuild`). When absent, it does the **bare minimum**: one commit per split from **Files:** (or cherry-picks from **Commits:**). **WHY:** Rebuild branches let you verify the result before overwriting the original branch; optional `--promote` force-pushes rebuild → original when satisfied.
+
+**Staleness check**
+- If the rewrite plan’s `source_tip_sha` does not match the current source branch tip, split-exec **fails** with a clear message and tells you to re-run split-rewrite-plan. **WHY:** Applying an outdated plan to a different source state would produce wrong branches; failing is safer than silently applying the wrong ops.
+
+**Rewrite plan format and parser**
+- Rewrite plan is **developer-editable** (Markdown with YAML frontmatter, or raw YAML/JSON). Parser in `tools/split-exec/rewrite-plan.ts`: discriminates `cherry-pick` vs `commit-from-sha` ops, rejects empty `paths` on commit-from-sha, normalizes paths (array or comma-separated). **WHY:** Humans and LLMs can edit the plan; we only throw on truly invalid content.
+
+**Edge cases**
+- If the rewrite plan has **no entry** for a group-plan split (e.g. typo in `branchName`), split-exec **skips** that split with a warning instead of falling back to file-based and pushing to the original branch name. **WHY:** When a rewrite plan is loaded we only run rewrite ops and only push to rebuild branches; mixing one split to original branch and others to rebuild would be inconsistent and could overwrite the original by mistake.
+- Splits with **zero ops** in the rewrite plan are skipped with a one-line warning; they are still emitted in the plan so split count matches the group plan.
+
+**Docs and options**
+- split-exec: `--rewrite-plan`, `--rebuild-suffix` (default `-rebuild`), `--promote`. README: three-phase pipeline, staleness, rebuild+promote, troubleshooting.
+- split-rewrite-plan: `--workdir`, `--output`; README with WHYs and pipeline. AGENTS.md and DEVELOPMENT.md updated (split tools subsection, file map).
+
+- Plan: `.cursor/plans/split_rewrite_plan_phased_15c5c9ae.plan.md`. Key files: `tools/split-exec/rewrite-plan.ts`, `tools/split-exec/run.ts`, `tools/split-rewrite-plan/` (cli, run, index).
+
+### Added (2026-03) — Conflict resolution: top+tails fallback, parse retries, fetch message, workflow version log
+
+**Top+tails fallback (when main strategy fails)**
+- If the main conflict resolution (chunked or single-shot) fails for a file, PRR tries a **top+tails fallback**: chunk the entire file to build a short "story" (full read in segments), then for each conflict send only the **top** (context + first 80 lines of conflict) and **tails** (last 80 lines of OURS and THEIRS) plus base top/tail; the model produces a full resolution from that.
+- **WHY fallback-only:** We don't process the whole file this way unless we need to; default path stays fast; fallback gives a second chance when the main path has already failed (e.g. parse errors at chunk boundaries).
+- **WHY always build story in fallback:** So every resolution prompt has a consistent "map" of the file; the model sees how the conflict sits in the file and how each side ends.
+- For conflicts whose larger side exceeds 150 lines (but ≤ 280), we use **two-pass**: resolve "head" from top + base top, then resolve "tail" from resolved head + tail OURS + tail THEIRS; reassemble head + tail. **WHY:** One-shot would ask the model to invent too much middle from partial input; two-pass keeps each request bounded.
+- Constants: `TOP_TAILS_FALLBACK_MAX_CHUNK_LINES` (280), `TOP_TAILS_TOP_CONFLICT_LINES` (80), `TOP_TAILS_TAIL_LINES` (80), `TOP_TAILS_TWO_PASS_THRESHOLD_LINES` (150). See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md).
+
+**Parse validation: location + two retries + error-specific hints**
+- When TS/JS parse validation fails, we now return **location** (line/column) from the TypeScript diagnostic and inject it into the retry prompt (e.g. "At line 42: '*/' expected").
+- We retry resolution **up to two times** (was once) with the parse error in the prompt. **WHY:** First retry often fixes trivial syntax; second retry gives the model another chance when the error is at a chunk boundary.
+- **Error-specific hints:** For `'*/' expected` we add "Fix unclosed block comments: ensure every /* has a matching */". For `',' expected` we add "Fix commas: check object/array literals for missing or illegal trailing commas." **WHY:** Output.log showed these two errors as the main parse failures; targeted hints improve retry success.
+
+**Clone/setup UX**
+- Before `git fetch` in the "existing workdir, clean and fetch" path we log: "Fetching latest from origin (large repos may take several minutes)...". **WHY:** On large repos (e.g. 1.6 GB) fetch can take many minutes with no git output; without this message the spinner looks stuck and users think PRR is hanging.
+- Reusable workflow **Run PRR (server)** now has a "Log PRR version" step that prints the PRR ref and commit SHA after checkout. **WHY:** Operators can confirm which PRR code a run used (e.g. after pinning to a SHA in the client workflow).
+
+- Docs: README (fallback and parse retries), [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md) (alternative design, audit, WHYs). Code: `resolveConflictsWithTopTailsFallback`, `getFileConflictOverviewAlways`, `buildParseErrorRetryHint`, `shared/git/git-clone-core.ts`, `.github/workflows/run-prr-server.yml`.
+
+### Fixed (2026-03) — Base branch fetch on single-branch clones (PR stays "dirty")
+
+**Problem:** When the repo was cloned with `--single-branch`, the default fetch config only included the PR branch (e.g. `odi-dev`). Fetching the base branch with `git fetch origin v2.0.0` downloaded objects but **did not update** `refs/remotes/origin/v2.0.0`, because git only updates refs that match the configured refspecs. The tracking ref stayed at whatever SHA it had from the initial clone (or a prior run). The merge-base check then saw `baseSha === mergeBaseSha` and concluded "already up-to-date", so PRR never merged the base branch. The PR remained "mergeable: false / dirty" on GitHub even though the base had moved.
+
+**Fix:** All fetches of the base branch (and of `additionalBranches`) now use an **explicit refspec**: `+refs/heads/<branch>:refs/remotes/origin/<branch>`. This force-updates the tracking ref regardless of the clone's fetch config, so the merge-base check sees the real tip of the base branch and PRR correctly merges (and resolves conflicts) before the fix loop.
+
+**WHY explicit refspec:** On single-branch clones, `git fetch origin <branch>` succeeds (no error) but does not write to `refs/remotes/origin/<branch>` when that ref is not in `remote.origin.fetch`. Using an explicit refspec guarantees the ref is created/updated every time, so re-runs and long-lived workdirs always see the latest base.
+
+**Files:** `tools/prr/workflow/base-merge.ts` (pre-merge fetch), `shared/git/git-merge.ts` (`mergeBaseBranch`, `startMergeForConflictResolution`), `shared/git/git-clone-core.ts` (existing-workdir and fresh-clone `additionalBranches`).
+
+### Added (2026-03) — Parallel workflow (config-driven concurrency)
+
+**Config-driven concurrency**
+- **`PRR_MAX_CONCURRENT_LLM`** (env, 1–32, default 1): Single source of truth for all parallelism caps. Rate limiter, batch analysis, and parallel fix groups use `getEffectiveMaxConcurrentLLM()`. **WHY:** Operators can tune without code change; default 1 keeps deployments safe; raising (e.g. to 3) reduces wall-clock when the backend allows.
+- **`PRR_LLM_MIN_DELAY_MS`** (env, optional): Overrides per-slot min delay (default 6000 ms). **WHY:** Lets operators tune spacing for a specific gateway without code change.
+- Startup log prints effective concurrency (e.g. "LLM concurrency: 1 (default)" or "3") so operators see what is active.
+
+**Rate limiter: N slots + 429 backoff**
+- **`shared/llm/rate-limit.ts`** uses `getEffectiveMaxConcurrentLLM()` for max in-flight and `getEffectiveMinDelayMs()` for per-slot delay. **WHY:** One global limiter shared by LLM client and llm-api runner so total in-flight never exceeds N.
+- **`notifyRateLimitHit()`**: On 429 (or rate-limit response), callers invoke this; effective concurrency is halved for 60s. **WHY:** Next run backs off without code change so operators can fix the gateway and re-run safely.
+- Client and llm-api runner both call `notifyRateLimitHit()` on 429; client and runner release the slot in `finally`. **WHY:** No slot leak on throw; single limiter avoids 429s from two code paths each assuming N slots.
+
+**Parallel batch analysis**
+- **`batchCheckIssuesExist`** runs batches with `runWithConcurrencyAllSettled(tasks, getEffectiveMaxConcurrentLLM())`. Results are merged in batch order; partial results on rejection; first batch supplies model recommendation. **WHY:** Analysis phase (e.g. 6 batches) finishes in ~ceil(6/N) waves instead of 6 sequential; preserves order so issue-to-verdict mapping stays correct.
+
+**Parallel fix groups (llm-api only)**
+- When **runner is llm-api** and **`PRR_MAX_CONCURRENT_LLM` ≥ 2** and issues span **≥ 2 files**, issues are partitioned into disjoint file groups (round-robin by file); each group gets its own prompt and `runner.run()`, up to N parallel runs. **WHY:** Subprocess runners (cursor, claude-code, aider) share one workdir and would overwrite each other; llm-api applies edits in-process so disjoint groups can run in parallel. Disjoint files guarantee no two runs touch the same file.
+- Merged result: success only if all runs succeed; output concatenated; token usage summed; on any failure the iteration is treated as failed (error path/rotation). **WHY:** Simpler than partial verification; successful groups’ edits remain on disk for the next run.
+
+**Pipeline verification**
+- **Verification** and **`git.fetch()`** run in parallel (`Promise.all`). Only the verification result is used; fetch is best-effort. **WHY:** Warms refs for the next iteration so the next pull can be faster; no shared mutable state.
+
+**Shared concurrency helper**
+- **`shared/run-with-concurrency.ts`**: `runWithConcurrency(tasks, limit)` and `runWithConcurrencyAllSettled(tasks, limit)` run tasks with a cap and preserve input order. **WHY:** Reusable worker-pool pattern; allSettled allows partial results when some tasks reject.
+
+- Docs: README Configuration (PRR_MAX_CONCURRENT_LLM, PRR_LLM_MIN_DELAY_MS). Audit: `.cursor/plans/parallelize-prr-audit.md`.
+
+### Added (2026-03) — Conflict resolution: 3-way merge, sub-chunking, validation
+
+**Three-way merge (base + ours + theirs)**
+- Every LLM conflict resolution now receives **base** (Git stage 1), **ours** (stage 2), and **theirs** (stage 3). The prompt labels them and asks the model to merge both changes relative to the common ancestor.
+- **WHY:** Two-way (ours vs theirs only) forces the model to guess how to combine; proper merge semantics require the common ancestor so the model can reason about what each side changed from base and produce a correct merge.
+
+**Base in the loop**
+- `readConflictStage(git, filePath, 1)` reads the base version; on error (e.g. new-file-in-both) we return `''` so the 3-way format still has BASE/OURS/THEIRS.
+- Single-chunk resolution uses `getFullFileSides(conflictedContent)` and passes base + full ours + full theirs to the client. Chunked resolution passes per-chunk base segment via `getBaseSegmentForChunk(baseContent, chunk)`.
+- **WHY:** Base segment is derived from chunk start line and content extent (max of ours/theirs line count), not marker line count, so we don't assume base has the same structure as the conflicted file.
+
+**Sub-chunking at semantic boundaries**
+- When a single conflict region exceeds the segment cap (`maxSegmentChars`), we split at **AST boundaries** (TS/JS: TypeScript API statement boundaries; Python: `def`/`class`/blank at indent 0; fallback: blank lines or 150-line cap). Each sub-chunk is resolved with its base segment, then results are concatenated.
+- **WHY:** Splitting mid-statement would send invalid code to the LLM and produce broken output; semantic boundaries keep each segment parseable and mergeable.
+
+**Context limits**
+- Segment cap is derived as `(effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3`, clamped to [4_000, 25_000], so each request is at most base segment + ours segment + theirs segment + overhead. Small-context models get smaller segments automatically.
+- **WHY:** Prevents one giant prompt (e.g. 50k-line conflict) from exceeding the model window and causing 504/timeout or silent truncation.
+
+**Validation before write/stage**
+- After resolution we run `validateResolvedFileContent(content, filePath)` for TS/JS (TypeScript `createProgram` + `getSyntacticDiagnostics`). If invalid, we do not write or stage; we leave the file conflicted and report the parse error.
+- **WHY:** Prevents committing syntactically broken resolution (e.g. truncated or corrupted LLM output).
+
+**Single retry on parse validation failure**
+- When validation fails (e.g. `'*/' expected`), we retry resolution **once** with the previous parse error message injected into the prompt so the model can fix syntax. No change to "one failure = whole merge fails" beyond this single retry.
+- **WHY:** Many parse failures are trivial (unclosed comment, missing brace); one retry with the exact error gives the model a chance to self-correct without opening the door to unbounded retries.
+
+**Large-file warning only for skipped files**
+- The "Large files skipped (will need manual resolution)" message now lists only files that were actually skipped (e.g. file size > effectiveMaxChars and we didn't use chunked). Files resolved via sub-chunking are not warned.
+- **WHY:** Previously we warned for any file over 50KB; that was noisy for files we successfully resolve with sub-chunking.
+
+- Docs: [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md). Audit: [tools/prr/CONFLICT-RESOLUTION-AUDIT.md](tools/prr/CONFLICT-RESOLUTION-AUDIT.md). Plan: `.cursor/plans/large-file-deconflict-correct.plan.md`.
+
+### Added (2026-03) — PRR thread replies (GitHub feedback)
+
+**Thread reply feature**
+- With **`--reply-to-threads`** (or **`PRR_REPLY_TO_THREADS=true`**), PRR posts a short reply on each GitHub review thread when it fixes or dismisses an issue: e.g. "Fixed in \`abc1234\`." or "No changes needed — already addressed before this run." Optional **`--resolve-threads`** resolves (collapses) replied threads. **WHY:** Reviewers see visible feedback in the PR conversation instead of only in PRR's exit summary; one reply per thread keeps noise low and leaves room for human follow-up.
+- **WHY opt-in:** Default runs stay unchanged; posting to GitHub is a conscious choice so read-only or analysis-only runs do not write comments.
+- **Reply timing:** Fixed issues get a reply right after each successful push (iteration or squash); dismissed issues get replies once at end of run. **WHY:** We know "fixed" as soon as we push; we only know the full set of dismissals after audit/bail-out, so dismissed replies are sent in final cleanup.
+- **Reply-eligible dismissals:** Only `already-fixed`, `stale`, `not-an-issue`, `false-positive` get a reply. `exhausted`, `remaining`, `chronic-failure` do not. **WHY:** The former are clear conclusions that help the reviewer; the latter mean "we gave up" or "needs human" and a bot reply adds little and can feel like noise.
+- **In-run idempotency:** A single `repliedThreadIds` set is shared across iteration cleanup, commit-and-push, and final cleanup so we never post twice to the same thread in one run.
+- **Cross-run idempotency:** When **`PRR_BOT_LOGIN`** is set (GitHub login of the bot that posts), we fetch each candidate thread's comments and skip posting if that login already commented. **WHY:** Re-runs would otherwise post duplicate replies; checking by bot login keeps re-runs safe.
+- **Batch idempotency check:** We collect all candidate thread IDs and call `getThreadComments` in parallel (`Promise.all`). **WHY:** Sequential per-thread requests would make latency grow with thread count; parallelizing keeps wall-clock time low.
+- **API:** `replyToReviewThread` (REST `pulls.createReplyForReviewComment`, uses numeric `databaseId`), `resolveReviewThread` (GraphQL mutation), `getThreadComments` (GraphQL for thread authors). GraphQL review-threads query and types now include `databaseId` so we can reply without a second lookup. **WHY:** REST expects databaseId; storing it at fetch time keeps reply flow reliable.
+- **Tests:** Unit tests in `tests/thread-replies.test.ts` for opt-in, fixed/dismissed bodies, idempotency, resolve, and category filtering.
+- Docs: [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
+
+### Added (2026-03) — Thread reply Validation Failed handling and Pill 504 avoidance
+
+**Thread reply: full error logging and retry**
+- On **422 / Validation Failed** when posting a thread reply, we now log the **full error** (status, message, response body) via `getErrorDetails()`. **WHY:** Reviewers don't see a reply for those threads; logging GitHub's reason (e.g. body format, thread state) makes debugging possible.
+- **Retry with shortened message:** If the first post fails with validation, we retry **once** with a fallback body: "Addressed." for fixed replies, "No change needed." for dismissed. **WHY:** Long or special characters in the first message can trigger validation; a short fallback often succeeds so the thread still gets a reply.
+- **Idempotency:** Unchanged; `repliedThreadIds` and `alreadyRepliedByUsMap` already skip posting twice to the same thread this run or from a previous run. **WHY:** Audit suggested "consider idempotency"; we already had it, so no change.
+
+**Pill 504 (FUNCTION_INVOCATION_TIMEOUT) avoidance**
+- **Chunk/summarize earlier:** Output log is considered "large" when **tokens > 30k** or **chars > 100k**. When large, we use head (400 lines) + story-read middle + tail (400 lines) + excerpt instead of sending the full log. **WHY:** A ~183k-char request body caused 504; char threshold guards against token underestimation; lower token threshold (30k vs 40k) triggers summarization sooner.
+- **Hard cap on output log chars:** After assembling context, output log is capped at **50k chars** (default; overridable via **`PILL_OUTPUT_LOG_MAX_CHARS`**). Truncation keeps head (2/3) and tail (1/3). **WHY:** Ensures the audit request never includes an unbounded log; 504 is often request-size or processing-time related.
+- **No-LLM-client fallback:** When the log is large but no story-read client is passed (e.g. dry-run), we no longer send raw; we send head + "[ … middle omitted (no summarization client) … ]" + tail + excerpt. **WHY:** Previously we sent the full raw log in that path, which could still cause 504.
+
+**Shared token and story-read modules (DRY)**
+- **`shared/utils/tokens.ts`:** `estimateTokens(text)` (chars/4), `truncateHeadAndTail(text, maxTokens, marker?)`, `truncateHeadAndTailByChars(text, maxChars, marker?)`, `CHARS_PER_TOKEN`. **WHY:** Same rule and truncation pattern were duplicated in tools/prr and tools/pill; one source avoids drift and keeps context budgeting consistent. **WHY tailChars clamp:** When marker is long, `tailChars` could go negative; we use `Math.max(0, …)` so `slice(-tailChars)` is valid.
+- **`shared/llm/story-read.ts`:** Chapter-by-chapter LLM summarization with carried context: `chunkPlainText(text, budget)`, `storyReadChapters(chapters, client, options)`, `storyReadPlainText(text, client, options)`, `ChapterAnalysis` type, default system prompt for log analysis. **WHY:** Pill's story-read logic (chunk → prior context → digest) is reusable for any tool that must summarize large logs or documents; moving it to shared lets pill and future callers share one implementation. **WHY single-line-over-budget:** If one line exceeds the chapter token budget, we emit it as its own chapter so we don't create one giant chapter that blows the model's context.
+- **Pill** now uses shared tokens (context truncation, char cap) and shared story-read (processor wires prompts.log pairs and output.log plain text to `storyReadChapters` / `storyReadPlainText`). **Pill types:** `ChapterAnalysis` re-exported from shared. **Pill utils/files:** Re-exports `estimateTokens` from shared so existing pill callers unchanged.
+- **PRR** `prompt-builder.ts` uses shared `estimateTokens` instead of a local copy.
+
+- Docs: Pill README (context assembly, PILL_OUTPUT_LOG_MAX_CHARS); shared/README.md (tokens, story-read).
+
+### Added (2026-03) — Output.log audit §2–§6: apply failures, no-changes, couldNotInject, thresholds
+
+**§5 Empty diff / fixer reports changes but diff empty**
+- When the fixer **attempted changes** but **wrote no files** (all no-ops or all search/replace failed to match), the runner now returns **`noMeaningfulChanges: true`** instead of an error, and when S/R failed it also returns **`applyFailureSummary`** (e.g. "Search/replace failed to match in: path/to/file.ts. Use exact content or shorter search block."). **WHY:** Treating "tried but wrote nothing" as no-changes skips the verifier (output.log audit §5); the workflow goes straight to rotation instead of running verification on unchanged code. Returning success + noMeaningfulChanges keeps one code path for "no files modified" so rotation and batch-size logic stay consistent.
+- **`shared/runners/llm-api.ts`:** `applyFileChanges` now sets `noMeaningfulChanges = attemptedChanges > 0 && filesWritten.length === 0` (covers both all-no-ops and all-S/R-failed). When `failedSearchReplace > 0`, the return includes `applyFailureSummary` with the list of failed files. **WHY:** Caller can skip verification and still get a hint to persist for the next fix prompt.
+
+**§2 "Output did not match file" — last apply error in retry, earlier chronic-failure**
+- **Last apply error in retry:** When the runner returns `noMeaningfulChanges` with `applyFailureSummary`, the workflow now **persists** `lastApplyErrorByCommentId` and increments `applyFailureCountByCommentId` for the issues in that batch. The fix prompt already receives "Previous attempt: …" from `lastApplyError`; now the S/R-failed path also feeds that. **WHY:** output.log audit §2 — the model wasn't getting explicit feedback that the apply failed (search/replace mismatch); passing the failure summary into the next attempt lets the model adjust (exact content, shorter search block).
+- **Earlier chronic-failure dismissal:** **`HALLUCINATION_DISMISS_THRESHOLD`** reduced from 5 to 3 (in **`shared/constants.ts`**). **WHY:** Per-file S/R (or hallucinated-stub) failure count now triggers "remaining" dismissal after 3 failures instead of 5, so we stop burning iterations on files that never match (output.log audit §2). `APPLY_FAILURE_DISMISS_THRESHOLD` (2) was already in place for apply-failure dismissals.
+
+**§4 couldNotInject for create-file issues**
+- **`COULD_NOT_INJECT_CREATE_FILE_THRESHOLD`** set from 2 to 1 in **`shared/constants.ts`**. **WHY:** output.log audit §4 — issues that are clearly "create this file" (e.g. missing test file) were retried 2–3 times with couldNotInject and no file created; dismissing after 1 failure saves tokens and defers to human when the path can't be created.
+
+**§3 Consecutive no-changes**
+- **`NO_PROGRESS_DISMISS_THRESHOLD`** reduced from 3 to 2 in **`shared/constants.ts`**. **WHY:** output.log audit §3 — after 2 consecutive no-changes for the same issue set we dismiss as remaining and continue with others, so we don't burn iterations on the same set; one fewer attempt before bail-out.
+
+**Runner result type**
+- **`RunnerResult.applyFailureSummary`** (optional string) added in **`shared/runners/types.ts`**. **WHY:** When the reason for no meaningful changes was S/R failed to match, the workflow can persist this for the next prompt without overloading the runner contract (success + noMeaningfulChanges + applyFailureSummary).
+
+- Audit rationale and pain-point list: DEVELOPMENT.md "Fix loop audits (output.log)". Constants: `shared/constants.ts` (HALLUCINATION_DISMISS_THRESHOLD, NO_PROGRESS_DISMISS_THRESHOLD, COULD_NOT_INJECT_CREATE_FILE_THRESHOLD). Workflow: `tools/prr/workflow/execute-fix-iteration.ts` (noMeaningfulChanges branch). Runner: `shared/runners/llm-api.ts` (applyFileChanges, run result).
+
+### Added (2026-03) — Pill opt-in (--pill) and split-exec improvements
+
+**Pill runs only when --pill is passed**
+- **prr**, **split-exec**, **story**, and **split-plan** now accept an optional **`--pill`** flag. When set, `closeOutputLog()` runs pill analysis on the closed output (and prompts) log and appends to pill-output.md / pill-summary.md. When not set, pill does not run.
+- **WHY opt-in:** Running pill on every run (especially split-exec, which has no LLM calls) added startup cost and produced empty or low-value pill output. Making pill explicit keeps default runs fast and lets users request analysis when they want it.
+- **Logger:** `setPillEnabled(enabled)` lets tools enable pill after parsing CLI args. Pill still runs only when there is content to analyze (output log has content or prompts log has PROMPT/RESPONSE/ERROR).
+- **WHY run on output-only:** Tools like split-exec have no prompts log entries; we still want pill to analyze the output log for operational improvements when the user passes `--pill`.
+
+**split-exec: auth, token check, exit codes, PR URLs**
+- **Exit code 2** when all executed splits are already up-to-date (nothing pushed). **WHY:** CI/scripts can distinguish "no work done" from "changes pushed" without parsing human-readable output.
+- **Pre-check `isBranchAlreadyUpToDate`** before push: if remote already has our commits, skip the push and report "already up-to-date" without attempting push. **WHY:** Avoids reject → rebase → second push when re-running on branches that were already pushed (e.g. previous run).
+- **`findExistingPR`** uses a single `getOpenPRs(owner, repo)` call (no base filter) and finds by head branch. **WHY:** One API call; finds the PR even if it was retargeted to a different base than the plan's target_branch.
+- **PR URLs** are collected and printed in the final summary ("Open PRs: url1 url2" or "PRs: url1 url2"). **WHY:** So the user sees links in one place even when skimming the log.
+- **Auth fail-fast:** If a split fails with an auth error (invalid token, password auth not supported), split-exec throws immediately with a clear message and does not run remaining splits. **WHY:** Same error would repeat for every split; failing once saves time and noise.
+- **--force-push hint** is shown only when all failures were push rejections (non-fast-forward), not when the failure was authentication. **WHY:** Suggesting --force-push for auth failures is misleading and unhelpful.
+- **Upfront token check:** Before cloning, split-exec calls `github.getDefaultBranch(owner, repo)`. If the API returns 401/403/404, we throw with a clear message (invalid/expired token, no access, or repo not found). **WHY:** Fail before clone so the user fixes GITHUB_TOKEN without waiting for the first push to fail.
+- **Push auth URL:** Git push now uses `https://${token}@...` (same format as the working `git ls-remote` in split-exec) instead of `x-access-token:${token}@...`. **WHY:** Consistency with ensureTargetBranchExistsOnRemote; some tokens or environments work with one format and not the other.
+- **Log and debug:** "Pushing &lt;branch&gt;..." is written to the output log (spinner text is not tee'd). getOpenPRs debug logs `baseBranch: '(all)'` when no base filter is used.
+
+- Docs: [tools/split-exec/README.md](tools/split-exec/README.md) (options, exit codes, troubleshooting).
+
+### Added (2026-03) — split-plan tool (PR decomposition planner)
+
+**New CLI: split-plan**
+- `split-plan <pr-url> [-o <file>] [--max-patch-chars <n>]` analyzes a large PR and writes a human-editable `.split-plan.md` with dependency analysis and a proposed split into smaller, reviewable PRs. Open PRs on the same base branch are shown as "buckets" to route changes to; the plan is intended for human review and for a future `split-exec` tool.
+- **WHY PR URL only (no branch spec):** Decomposition only makes sense for an existing PR; we need PR metadata, commits, and file list from the GitHub PR API. Branch-only analysis is out of scope.
+- **WHY default output is a file (`.split-plan.md`):** The plan is meant to be edited by the user before execution; writing to a file is the primary workflow. Stdout would require redirect and doesn’t match the “edit then run split-exec” flow.
+- **WHY prefix `split-plan` for logs:** `initOutputLog({ prefix: 'split-plan' })` produces split-plan-output.log and split-plan-prompts.log so runs from the same directory don’t overwrite prr/story/pill logs (same pattern as story and pill).
+- **WHY branch topology filter:** Only open PRs targeting the same base branch as the target PR are fetched. A PR into `v2-develop` must not suggest routing changes to a PR into `v3`; they are different worlds. `getOpenPRs(owner, repo, baseBranch, excludePRNumber)` uses the GitHub API `base` parameter for server-side filtering.
+- **WHY cap open PRs at 20 and truncate body to 500 chars:** Including every open PR and full descriptions can blow the LLM context. Twenty buckets and a short description per PR are enough for “route to existing PR” decisions; the prompt states “showing up to 20” so the model knows the list may be truncated.
+- **WHY patch budget (--max-patch-chars):** Full diffs for 50+ files can exceed 200k chars. We sort files by change size (additions+deletions), include patches until the budget is exhausted, and list omitted files with “[patch omitted — budget exceeded]” so the model knows what it didn’t see. Low-signal files (lockfiles, *.min.js) are listed with metadata only (no patch) so the model still sees they changed.
+- **WHY two-phase prompt (dependencies then split):** If we only ask “split this PR,” the model tends to group by file proximity and ignore cross-file dependencies. Forcing Phase 1 (identify A depends on B) before Phase 2 (group into PRs) makes dependency order a hard constraint so dependent changes stay together or merge in order.
+- **WHY validate/repair frontmatter:** The LLM may output invalid YAML (unescaped colons, wrong structure). We parse with a simple parser; on failure we discard the model’s frontmatter and inject safe values from `prInfo` and `new Date().toISOString()`. We always set `generated_at` in code so the plan file has a reliable timestamp.
+- **WHY file validation (paths not in PR):** The model can hallucinate file paths. We extract paths from the plan body under “**Files:**” sections, compare to the PR file list, and append a “## Validation” warning for unknown paths. We don’t strip them so human-added paths aren’t removed.
+- **GitHub API:** `getOpenPRs(owner, repo, baseBranch?, excludePRNumber?)` — paginated list of open PRs, optional base filter, exclude target PR. `getPRFilesWithPatches(owner, repo, prNumber)` — same as getPRFiles but includes the `patch` field (unified diff) per file; patch is optional for binary/large/rename-only files. Warning when file count >= 3000 (GitHub cap).
+- Docs: [tools/split-plan/README.md](tools/split-plan/README.md).
+
+### Added (2026-03) — split-exec tool (execute split plan)
+
+**New CLI: split-exec**
+- `split-exec <plan-file> [-w <workdir>] [--dry-run]` reads a `.split-plan.md` from split-plan, clones the repo at the source branch, then executes each split in order: checkout target branch (existing PR or new branch from base), cherry-pick listed commits, push, and create a new PR when the plan says "New PR".
+- **WHY iterative (one split at a time):** So the user can fix conflicts or stop between splits; batch execution would leave the repo in a hard-to-recover state on the first conflict.
+- **WHY default workdir `.split-exec-workdir`:** So the user can inspect or fix the repo between runs; re-run uses the same dir (cloneOrUpdate updates existing clone).
+- **Route to existing PR:** For "Route to: PR #N", split-exec checks out that PR's branch, cherry-picks the listed commits, and pushes so the existing PR gets the new commits. **New PR:** For "New PR: \`branch-name\`", creates that branch from the plan's target_branch, cherry-picks, pushes, and calls GitHub API to open a pull request.
+- **GitHub API:** `createPullRequest(owner, repo, head, base, title, body?)` for opening new PRs. Plan parser extracts frontmatter and ## Split sections (Route to, New PR, Commits) with a forgiving regex-based parser.
+- Docs: [tools/split-exec/README.md](tools/split-exec/README.md).
+
+### Fixed (2026-03) — Pill integration: circular import, error handling, double-init, dead code
+
+**Circular import removed**
+- `tools/pill/orchestrator.ts` no longer imports `formatNumber` from `shared/logger.js`. It uses `n.toLocaleString()` for user-facing counts (e.g. improvement counts in the summary entry).
+- **WHY**: `shared/logger.ts` dynamically imports the pill orchestrator in `closeOutputLog()` to run the pill hook. The orchestrator previously imported from logger, creating a cycle (logger → orchestrator → logger). Breaking the dependency in the orchestrator keeps the hook safe and allows the main process to load without pulling in pill.
+
+**runPillAnalysis no longer swallows errors**
+- The top-level `try { ... } catch { return null }` was removed from `runPillAnalysis`. LLM, parse, and file-write errors now propagate to the caller.
+- **WHY**: When pill is run from the CLI, users need to see real failures (e.g. missing API key, network error). The shared logger’s `closeOutputLog()` still wraps the call in try/catch so the hook never throws and shutdown always completes; only the CLI path sees thrown errors.
+
+**Dead prompt removed**
+- `VERIFY_SYSTEM_PROMPT` was removed from `tools/pill/llm/prompts.ts`. It was unused after the fixer/verify flow was removed from pill.
+- **WHY**: Dead code adds noise and can confuse future changes; the audit prompt is the only one pill uses.
+
+**Double-init guard in initOutputLog**
+- In `shared/logger.ts`, the original console refs (`origLogRef`, `origWarnRef`, `origErrorRef`) are only set when they are still null. On re-entry we use `origXxxRef ?? console.Xxx.bind(console)` and assign to the refs only if they are null.
+- **WHY**: If `initOutputLog` is called twice, the second time the current `console.log` is the *patched* function from the first init. Overwriting the refs with that would make the pill hook log to a closed or wrong stream. Keeping the first capture preserves the real console for the hook.
+
+**pillAnalysisEnabled reset before await**
+- In `closeOutputLog()`, `pillAnalysisEnabled = false` is set at the start of the `if (pillAnalysisEnabled && outputLogPath)` block, before any dynamic import or await.
+- **WHY**: So the hook runs at most once even if `runPillAnalysis` or a later step throws; the flag is cleared before async work so a subsequent close doesn’t re-run pill.
+
+- Docs: [tools/pill/README.md](tools/pill/README.md) (pill documentation with WHYs).
+
+### Added (2026-03) — story tool (PR and branch narrative & changelog)
+
+**New CLI: story**
+- `story <pr-or-branch> [--compare <branch>] [--output <file>]` builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a GitHub PR or branch. Modes: PR (title/body + commits + files), single branch (commit history only via List Commits API), two branches (`--compare`; compare API, primary branch preferred as “newer” when diverged).
+- **WHY single-branch uses commit history only:** A branch may be behind default (e.g. v2-develop behind develop); comparing to default would yield 0 commits. Listing the branch’s commits always gives a story without requiring a base ref.
+- **WHY prefer primary branch in two-branch mode:** The first argument is the branch the user cares about. When both directions have commits (diverged), we use the direction where that branch is the “newer” ref so the narrative describes what happened on it.
+- **WHY story-output.log / story-prompts.log prefix:** Shared logger supports `initOutputLog({ prefix: 'story' })` so story and prr don’t overwrite each other’s logs when run from the same directory (same pattern as pill’s pill-output.log).
+- **WHY normalize --compare to branch name:** The GitHub compare API expects ref names; passing a tree URL causes 404. We parse tree URL or owner/repo@branch and pass only the branch name; same-repo check when owner/repo provided.
+- **WHY buildCommitSummary avoids overlap:** When total commits ≤ maxCommits we show all; when total > maxCommits we use non-overlapping first/last halves (`half = min(maxCommits/2, total/2)`). Previously first+last could overlap and duplicate ~50 commits in the prompt.
+- **Changelog prompts** include optional “### Removed” section so the model can document removals (e.g. pnpm, legacy characters) without inventing a new heading.
+- Docs: [tools/story/README.md](tools/story/README.md). GitHub API additions: getPRFiles, getDefaultBranch, getBranchComparison, getBranchCommitHistory, getBranchComparisonEitherDirection, getBranchComparisonWithFallback; types: parseBranchSpec, normalizeCompareBranch.
+
 ### Added (2026-03) — GitHub Actions caller token and null-safe review path handling
 
 **GitHub Actions: use caller's token and avoid reserved secret name**
@@ -102,6 +640,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Targeted verifier tests**
 - Added `tests/fix-verification.test.ts` to cover lifecycle-comment detection and lifecycle-aware snippet extraction.
 - **WHY**: This behavior is easy to regress during future prompt/snippet tuning. Tests keep the conservative verification bias intentional and visible.
+
+### Added (2026-03) — Output.log + prompts.log follow-up: hidden test-target inference and issue-scoped lessons
+
+**Infer hidden test-file targets from import-path review comments**
+- `prompt-builder.ts` now detects comments like "test file has invalid imports" / "actual file is at ..." and infers likely test-file targets such as `scripts/__tests__/generate-skills-md.test.ts`.
+- Issue creation, batch prompts, single-issue prompts, recovery, and disallowed-file retry learning all now include those inferred test targets in allowed paths when the review clearly says the bug is in a test file attached to the implementation file.
+- **WHY**: This run kept sending a test-import issue to `scripts/generate-skills-md.ts` alone, while the fixer repeatedly tried `scripts/__tests__/generate-skills-md.test.ts` and got blocked as disallowed. Inferring the hidden test target converts that stalemate into an editable path.
+
+**Stop retry loops when the real target file is still hidden**
+- `no-changes-verification.ts` now persists inferred hidden test targets after `WRONG_LOCATION`, `UNCLEAR`, or `CANNOT_FIX`, and it tracks repeated "bug is in a hidden test file but no concrete target can be inferred" failures.
+- After repeated misses with no inferable target, the issue is dismissed for human follow-up instead of burning more model rotations on the same wrong file.
+- **WHY**: Output.log showed the same issue cycling through `WRONG_LOCATION`, `ALREADY_FIXED`, and `CANNOT_FIX` responses that all said the current file was not the place to fix. Once the workflow knows that but still cannot identify the actual file, continued retries are pure token waste.
+
+**Scope lessons to the specific issue, not just the file**
+- `lessons-retrieve.ts` now exposes `getLessonsForIssue(...)`, which filters lessons by the issue's comment text and current target paths.
+- Batch and single-issue prompt builders now prefer per-issue lessons so unrelated same-file failures (for example YAML indentation or duplicate op mapping) do not pollute a test-import issue on the same file.
+- **WHY**: Prompts.log was still presenting unrelated `scripts/generate-skills-md.ts` lessons as if they applied directly to the import-path issue. That distracts the fixer and can outweigh the actual actionable guidance.
 
 ### Added (2026-03) — Output.log + prompts.log follow-up: finish canonical paths, commit gating, rename targets
 

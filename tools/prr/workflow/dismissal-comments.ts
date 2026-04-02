@@ -160,7 +160,7 @@ async function insertCommentAtLine(
     const fullPath = join(workdir, filePath);
     
     if (!existsSync(fullPath)) {
-      debug('File no longer exists, skipping comment insertion', { filePath });
+      debug('Skipping insertion of dismissal comment: file not in workdir (no place to insert comment)', { filePath });
       return false;
     }
     
@@ -281,9 +281,9 @@ export async function addDismissalComments(
       return false;
     }
 
-    // Skip when the reason says the file no longer exists.
+    // Skip when the reason says the file no longer exists — no code location to insert a comment.
     if (/\b(?:file\s+no\s+longer\s+exists|file\s+not\s+found|no\s+longer\s+exists)\b/i.test(issue.reason)) {
-      debug('Skipping dismissal comment (file no longer exists)', {
+      debug('Skipping dismissal comment: issue target file no longer exists (no place to insert comment)', {
         filePath: issue.filePath,
         reasonPreview: issue.reason.substring(0, 60),
       });
@@ -378,7 +378,7 @@ export async function addDismissalComments(
       }
     }
     if (!existsSync(fullPath)) {
-      debug('File no longer exists, skipping all issues', { filePath: resolvedPath, count: issues.length });
+      debug('Skipping insertion of dismissal comments: file not in workdir (no place to insert comment)', { filePath: resolvedPath, count: issues.length });
       skipped += issues.length;
       continue;
     }

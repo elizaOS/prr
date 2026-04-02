@@ -4,6 +4,9 @@
  */
 import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, closeSync } from 'fs';
 import { join, relative } from 'path';
+import { estimateTokens } from '../../../shared/utils/tokens.js';
+
+export { estimateTokens };
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'build', 'out', '.next', '.nuxt', 'coverage', '.cache']);
 const SKIP_EXT = new Set(['.lock', '.lockb', '.min.js', '.min.css']);
@@ -53,13 +56,6 @@ const SOURCE_EXT = new Set([
 function isSourceLike(name: string): boolean {
   const ext = name.includes('.') ? '.' + name.split('.').pop()! : '';
   return SOURCE_EXT.has(ext) || name === 'Dockerfile' || name === 'Makefile';
-}
-
-/**
- * Rough token estimate: chars/4. Good enough for budgeting.
- */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
 
 /**
