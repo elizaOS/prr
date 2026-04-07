@@ -3,13 +3,44 @@
  */
 import chalk from 'chalk';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { unlink } from 'fs/promises';
 import type { SimpleGit } from 'simple-git';
-import { isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../../shared/git/git-clone-index.js';
+import {
+  isLockFile,
+  getLockFileInfo,
+  findFilesWithConflictMarkers,
+  hasConflictMarkers,
+} from '../../../shared/git/git-clone-index.js';
 import type { Config } from '../../../shared/config.js';
 import { setTokenPhase, debug } from '../../../shared/logger.js';
 
+/** Regenerate commands that read package.json (install fails if JSON still has conflict markers). */
+const JS_LOCK_REGEN_CMDS = new Set(['bun install', 'npm install', 'yarn install', 'pnpm install']);
+
+/**
+ * True when any lock file in the list is regenerated via a JS package manager that
+ * parses package.json. WHY: Running install while package.json contains `<<<<<<<`
+ * yields EJSONPARSE and wastes time (audit milady#1722 re-run).
+ */
+export function lockRegenerationRequiresCleanPackageJson(lockFiles: string[]): boolean {
+  for (const f of lockFiles) {
+    const info = getLockFileInfo(f);
+    if (info && JS_LOCK_REGEN_CMDS.has(info.regenerateCmd)) return true;
+  }
+  return false;
+}
+
+/** True when workdir package.json exists and still has merge conflict markers. */
+export function packageJsonHasConflictMarkers(workdir: string): boolean {
+  const p = join(workdir, 'package.json');
+  if (!existsSync(p)) return false;
+  try {
+    return hasConflictMarkers(readFileSync(p, 'utf-8'));
+  } catch {
+    return true;
+  }
+}
 
 export async function handleLockFileConflicts(
   git: SimpleGit,

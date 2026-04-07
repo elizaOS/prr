@@ -7,7 +7,7 @@
  * output (JSON validity, size regression) to catch truncation or corruption.
  */
 import chalk from 'chalk';
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { SimpleGit } from 'simple-git';
 import {
@@ -44,7 +44,11 @@ import {
   buildConflictResolutionPromptWithContent,
   splitConflictFilesIntoBatches,
 } from './git-conflict-prompts.js';
-import { handleLockFileConflicts } from './git-conflict-lockfiles.js';
+import {
+  handleLockFileConflicts,
+  lockRegenerationRequiresCleanPackageJson,
+  packageJsonHasConflictMarkers,
+} from './git-conflict-lockfiles.js';
 import {
   resolveConflictsChunked,
   resolveConflictsWithTopTailsFallback,
@@ -685,10 +689,34 @@ export async function resolveConflictsWithLLM(
     console.log(chalk.cyan(`    - ${file}${isLock ? chalk.gray(' (lock file - will regenerate)') : ''}`));
   }
 
-  // Handle lock files first - delete and regenerate
-  if (lockFiles.length > 0) {
+  // Lock regeneration runs `npm install` / `bun install`, which parse package.json.
+  // WHY defer: If package.json still has <<<<<<< markers, every install fails with
+  // EJSONPARSE; we regenerate after the LLM clears JSON (milady#1722 re-run).
+  let lockRegenDeferred =
+    lockFiles.length > 0 &&
+    lockRegenerationRequiresCleanPackageJson(lockFiles) &&
+    packageJsonHasConflictMarkers(workdir);
+
+  if (lockFiles.length > 0 && !lockRegenDeferred) {
     await handleLockFileConflicts(git, lockFiles, workdir, config);
+  } else if (lockRegenDeferred) {
+    console.log(
+      chalk.cyan(
+        '  Deferring lock file regeneration until package.json has no conflict markers ' +
+          '(install would fail while JSON is conflicted).'
+      )
+    );
   }
+
+  const runDeferredLockRegenIfNeeded = async (): Promise<void> => {
+    if (!lockRegenDeferred || lockFiles.length === 0) return;
+    if (packageJsonHasConflictMarkers(workdir)) return;
+    console.log(
+      chalk.cyan('\n  Running deferred lock file regeneration (package.json is clean)...')
+    );
+    await handleLockFileConflicts(git, lockFiles, workdir, config);
+    lockRegenDeferred = false;
+  };
 
   // Handle submodule/directory conflicts before code files.
   // WHY: Git submodules (gitlinks) show up as directories on disk. readFileSync throws
@@ -697,7 +725,7 @@ export async function resolveConflictsWithLLM(
   const submoduleConflicts = await detectSubmoduleConflicts(git, codeFiles, workdir);
   if (submoduleConflicts.length > 0) {
     for (const sm of submoduleConflicts) {
-      const resolved = await resolveSubmoduleConflict(git, sm);
+      const resolved = await resolveSubmoduleConflict(git, sm, workdir);
       if (resolved) {
         const idx = codeFiles.indexOf(sm.file);
         if (idx !== -1) codeFiles.splice(idx, 1);
@@ -831,7 +859,9 @@ export async function resolveConflictsWithLLM(
   } else if (codeFiles.length > 0 && skipRunnerAttempt) {
     console.log(chalk.blue(`\n  Skipping runner attempt (not available yet), using direct LLM API...`));
   }
-  
+
+  await runDeferredLockRegenIfNeeded();
+
   // Check if conflicts remain after first attempt
   // Check both git status AND actual file contents for conflict markers
   let statusAfter = await git.status();
@@ -902,6 +932,21 @@ export async function resolveConflictsWithLLM(
       const fullPath = join(workdir, conflictFile);
 
       try {
+        // WHY: Early submodule pass can fail before package.json is fixed; retry here so
+        // index-based gitlink staging runs after the tree is cleaner (milady#1722).
+        try {
+          if (fs.lstatSync(fullPath).isDirectory()) {
+            const subOk = await resolveSubmoduleConflict(
+              git,
+              { file: conflictFile, isDirectory: true },
+              workdir
+            );
+            if (subOk) continue;
+          }
+        } catch {
+          /* missing path — fall through */
+        }
+
         let conflictedContent = fs.readFileSync(fullPath, 'utf-8');
         conflictedContent = preprocessConflictFileContent(conflictedContent);
         // WHY: When the main path fails due to parse validation we pass this into the top+tails fallback
@@ -1324,6 +1369,12 @@ export async function resolveConflictsWithLLM(
     remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
   }
 
+  await runDeferredLockRegenIfNeeded();
+  statusAfter = await git.status();
+  gitConflicts = statusAfter.conflicted || [];
+  markerConflicts = await findFilesWithConflictMarkers(workdir, codeFiles);
+  remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
+
   return {
     success: remainingConflicts.length === 0,
     remainingConflicts
@@ -1506,6 +1557,37 @@ async function detectSubmoduleConflicts(
 }
 
 /**
+ * Stage a submodule gitlink from unmerged index stages (mode 160000).
+ *
+ * WHY: `git checkout --theirs -- path` fails with "does not have a commit checked out"
+ * when the submodule directory is empty or not initialized. The merge index still
+ * holds both OIDs — we can record the chosen commit directly (milady#1722 `eliza`).
+ */
+async function stageSubmoduleGitlinkFromIndex(
+  git: SimpleGit,
+  file: string,
+  preferTheirs: boolean
+): Promise<boolean> {
+  const raw = await git.raw(['ls-files', '-u', '--', file]).catch(() => '');
+  const stages = new Map<number, string>();
+  for (const line of raw.split('\n')) {
+    const m = line.match(/^160000\s+(\S+)\s+(\d)\t(.+)$/);
+    if (!m) continue;
+    const pathFromGit = m[3];
+    if (pathFromGit !== file && pathFromGit.replace(/\\/g, '/') !== file.replace(/\\/g, '/')) {
+      continue;
+    }
+    stages.set(Number(m[2]), m[1]);
+  }
+  const oid = preferTheirs
+    ? (stages.get(3) ?? stages.get(2) ?? stages.get(1))
+    : (stages.get(2) ?? stages.get(3) ?? stages.get(1));
+  if (!oid) return false;
+  await git.raw(['update-index', '--cacheinfo', `160000,${oid},${file}`]);
+  return true;
+}
+
+/**
  * Resolve a submodule/directory conflict by accepting "theirs" (base branch) gitlink.
  *
  * WHY theirs: The PR is being merged into the base; the base branch typically has the
@@ -1513,35 +1595,63 @@ async function detectSubmoduleConflicts(
  * keeps the base branch's commit reference. This is a safe default — the PR author can
  * always update the submodule pointer in a follow-up commit.
  *
- * If "theirs" is not available (e.g. one side deleted the submodule), fall back to
- * `git checkout --ours` then `git add`.
+ * Order: remove dirty worktree dir → checkout --theirs/--ours → else stage OID from index.
+ * WHY rm first: Git refuses checkout when the path is a broken/empty submodule checkout.
  */
 async function resolveSubmoduleConflict(
   git: SimpleGit,
-  conflict: SubmoduleConflict
+  conflict: SubmoduleConflict,
+  workdir: string
 ): Promise<boolean> {
   const { file } = conflict;
+  const fullPath = join(workdir, file);
+  const resolvedRoot = resolve(workdir);
+  const resolvedPath = resolve(fullPath);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + sep)) {
+    console.log(chalk.red(`    ✗ ${file}: path escapes workdir`));
+    return false;
+  }
+
+  const rmTree = async (): Promise<void> => {
+    const fs = await import('fs');
+    try {
+      fs.rmSync(resolvedPath, { recursive: true, force: true });
+    } catch {
+      /* absent or not a directory */
+    }
+  };
+
   try {
-    // Try accepting theirs (base branch pointer)
+    await rmTree();
     try {
       await git.raw(['checkout', '--theirs', '--', file]);
-      await git.add(file);
+      await git.add(file).catch(() => {});
       console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (accepted base branch pointer)`));
       return true;
     } catch {
-      // Theirs might not exist; try ours
+      await rmTree();
       try {
         await git.raw(['checkout', '--ours', '--', file]);
-        await git.add(file);
+        await git.add(file).catch(() => {});
         console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (kept current branch pointer)`));
         return true;
       } catch {
-        // Last resort: just add the current state
-        await git.add(file);
-        console.log(chalk.yellow(`    ⚠ ${file}: submodule conflict marked resolved (current state)`));
-        return true;
+        if (await stageSubmoduleGitlinkFromIndex(git, file, true)) {
+          console.log(
+            chalk.green(`    ✓ ${file}: submodule conflict resolved (staged gitlink from index, theirs)`)
+          );
+          return true;
+        }
+        if (await stageSubmoduleGitlinkFromIndex(git, file, false)) {
+          console.log(
+            chalk.green(`    ✓ ${file}: submodule conflict resolved (staged gitlink from index, ours)`)
+          );
+          return true;
+        }
       }
     }
+    console.log(chalk.red(`    ✗ ${file}: could not resolve submodule (no gitlink in merge index)`));
+    return false;
   } catch (e) {
     console.log(chalk.red(`    ✗ ${file}: failed to resolve submodule conflict: ${e}`));
     return false;

@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-04-07 · **Recorded cycles:** 74 · **Historical (legacy):** 4
+**Last updated:** 2026-04-07 · **Recorded cycles:** 75 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -55,7 +55,7 @@ Improvements should reinforce these, not reverse.
 | **Approval/noise filter** | Summary/meta-review tables, rollup headings (**`Remaining Issues`**, **`Issues Fixed Since Previous Reviews`**, etc.), approval comments ("Approve", "LGTM", "All issues resolved"), PR metadata requests — all dismissed in solvability (0a2 / 0a3 / 0a). |
 | **Judge / verifier** | Judge NO must cite specific code or line numbers; format colons. Verifier: LESSON only for NO; for duplicate/shared-util steer to canonical lib/utils/..., not reference file; "Code before fix" empty/artifact → base verdict on Current Code and diff; multi-fix same file → judge by review comment. STALE→YES override when explanation indicates code/snippet not visible or "can't evaluate" (per judge instructions: if you would say "not in excerpt", say YES not STALE). |
 | **Output / UX** | Pluralize (1 file / N files); timing aggregated by phase; model recommendation only when real reasoning; AAR title from first meaningful line. Exhausted issues appear in AAR and handoff until resolved (fix, conversation, or other). |
-| **Conflict resolution** | Skip batch when prompt > 40 KB; hasConflictMarkers(); 504/timeout → chunked fallback; heartbeat every 30 s. **Submodule/directory** conflicts detected via `git ls-files -s` mode 160000 + `lstatSync`; resolved with `git checkout --theirs/--ours` before LLM loop (Cycle 74). **Lock file fallback:** ENOENT on primary pkg manager → try JS ecosystem alternatives. **JSON dupe key:** `findDuplicateJsonKey` rejects LLM output with repeated keys. |
+| **Conflict resolution** | Skip batch when prompt > 40 KB; hasConflictMarkers(); 504/timeout → chunked fallback; heartbeat every 30 s. **Submodule/directory** conflicts: `rm -rf` worktree path then checkout; **`git update-index --cacheinfo 160000,oid`** from `ls-files -u` when checkout says "no commit checked out" (Cycle 75). **Defer JS lock regen** when package.json has conflict markers; run after code merge (Cycle 75). **Lock file fallback:** ENOENT on primary pkg manager → try JS ecosystem alternatives. **JSON dupe key:** `findDuplicateJsonKey` rejects LLM output with repeated keys. |
 | **Dedup across authors** | Same file + same primary symbol + same caller file (e.g. runner.py) → heuristic merge even when authors differ. LLM dedup still runs for 3+ issues per file; GROUP lines take priority over NONE. |
 | **Verifier strength** | Escalation for previous rejections; stronger model for API/signature-related fixes (async, await, caller, TypeError). Weak default verifier kept approving call-site bugs. |
 | **Dismissal comments** | Skip when reason says "file no longer exists" / "file not found"; skip when file missing in workdir; post-filter comments that only restate code (e.g. "extracts metrics"). |
@@ -163,6 +163,22 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 75 — 2026-04-07 (milady#1722 re-run: defer lock regen + submodule index)
+
+**Artifacts audited:** CI output after Cycle 74 landed — same PR merge (`develop` into `odi-dev`).
+
+**Findings:**
+- **High:** Deferred lock regen was not implemented in Cycle 74. `bun install` / `npm install` / `yarn install` still ran while `package.json` contained `<<<<<<<`, causing EJSONPARSE; all fallbacks failed; user saw "No JS package manager available" incorrectly.
+- **High:** Submodule `eliza`: `git checkout --theirs` + `git add` still failed (`does not have a commit checked out` / `unable to index file`). Attempt 2 then hit EISDIR again.
+
+**Improvements implemented:** Defer `handleLockFileConflicts` when JS lockfiles are present and `package.json` has conflict markers; `runDeferredLockRegenIfNeeded` after Attempt 1 and before final return. Submodule: `rm -rf` path under worktree, retry checkout, then **`stageSubmoduleGitlinkFromIndex`** via `ls-files -u` + `update-index --cacheinfo 160000,oid`. Attempt 2 retries directory paths with `resolveSubmoduleConflict` before `readFileSync`. Tests: `tests/git-conflict-lock-defer.test.ts`.
+
+**Flip-flop check:** N.
+
+**Notes:** Spot-check N/A (CI workdir).
+
+---
 
 ### Cycle 74 — 2026-04-07 (conflict resolution audit; milady#1722 EISDIR + merge quality)
 
