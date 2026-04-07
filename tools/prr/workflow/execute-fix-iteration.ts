@@ -34,7 +34,7 @@ import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 import { tryRestoreFromBaseIfRequested } from './restore-from-base.js';
 import { getMentionedTestFilePaths, getMigrationJournalPath, getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequestsTests, reviewSuggestsFixInTest, reviewTargetsMentionedTestFile } from '../analyzer/prompt-builder.js';
-import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
+import { filterAllowedPathsForFix, normalizeRepoPath, stripGitDiffPathPrefix } from '../../../shared/path-utils.js';
 import { HALLUCINATION_DISMISS_THRESHOLD, NO_PROGRESS_DISMISS_THRESHOLD, getEffectiveMaxConcurrentLLM } from '../../../shared/constants.js';
 import { runWithConcurrency } from '../../../shared/run-with-concurrency.js';
 import { existsSync } from 'fs';
@@ -47,13 +47,26 @@ import { assessSolvability } from './helpers/solvability.js';
 // Re-running it is guaranteed to fail again — skip straight to rotation.
 let lastPromptKey: string | null = null;
 
+/**
+ * Restrict prompt injection to blast-radius paths when the set is present.
+ * **WHY:** Saves context; fixer may still edit `allowedPathsForBatch`. If intersection is empty, fall back to full batch.
+ */
+function allowedPathsForInjectionSubset(batch: string[], blast: Set<string> | undefined): string[] {
+  if (!blast || blast.size === 0) return batch;
+  const filtered = batch.filter((p) => {
+    const k = stripGitDiffPathPrefix(normalizeRepoPath(p));
+    return blast.has(k) || blast.has(p);
+  });
+  return filtered.length > 0 ? filtered : batch;
+}
+
 /** Expand allowed paths for a set of issues (mirrors prompt-builder so runner accepts same files). */
 function getAllowedPathsForIssues(
   issues: UnresolvedIssue[],
   pathExists: (p: string) => boolean
 ): string[] {
   return filterAllowedPathsForFix(Array.from(new Set(issues.flatMap((i) => {
-    const primaryPath = i.resolvedPath ?? i.comment.path;
+    const primaryPath = getIssuePrimaryPath(i);
     let base = i.allowedPaths?.length ? [...i.allowedPaths] : [primaryPath];
     if (base.length === 0) base = [primaryPath];
     const journal = getMigrationJournalPath(i);
@@ -78,7 +91,7 @@ function getAllowedPathsForIssues(
     const testPath = getTestPathForSourceFileIssue(i, { pathExists, forceTestPath });
     if (testPath && !base.includes(testPath)) base.push(testPath);
     if (issueRequestsTests(i) || forceTestPath) {
-      const srcPath = i.resolvedPath ?? i.comment.path ?? '';
+      const srcPath = getIssuePrimaryPath(i) || '';
       if (/\.(?:ts|tsx|js|jsx)$/.test(srcPath)) {
         const testBase = srcPath.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/, '.test.$1');
         const testsRootPath = `__tests__/${testBase}`;
@@ -108,7 +121,7 @@ function addDisallowedFilesLessonsAndState(
 ): void {
   const allowedStr = allowedPathsForBatch.length > 0
     ? allowedPathsForBatch.slice(0, 5).join(', ') + (allowedPathsForBatch.length > 5 ? ` (+${allowedPathsForBatch.length - 5} more)` : '')
-    : [...new Set(issuesForPrompt.map((i) => i.resolvedPath ?? i.comment.path))].slice(0, 5).join(', ');
+    : [...new Set(issuesForPrompt.map((i) => getIssuePrimaryPath(i)))].slice(0, 5).join(', ');
   LessonsAPI.Add.addGlobalLesson(
     lessonsContext,
     `Fixer attempted disallowed file(s): ${skippedDisallowedFiles.join(', ')}. Only edit the file(s) listed in TARGET FILE(S): ${allowedStr}.`
@@ -119,7 +132,7 @@ function addDisallowedFilesLessonsAndState(
     // Only increment wrong-file count for issues whose target file was in skippedDisallowedFiles.
     // WHY: Otherwise every issue in the batch gets blamed when one issue's file was disallowed (e.g. empty allowlist).
     for (const issue of issuesForPrompt) {
-      const primaryPath = issue.resolvedPath ?? issue.comment.path;
+      const primaryPath = getIssuePrimaryPath(issue);
       const allowedForIssue = issue.allowedPaths?.length ? issue.allowedPaths : [primaryPath];
       const wasThisIssueTargetDisallowed = skippedDisallowedFiles.some(
         (p) => p === primaryPath || allowedForIssue.includes(p)
@@ -149,7 +162,7 @@ function addDisallowedFilesLessonsAndState(
       ].filter((p, idx, arr) => Boolean(p) && arr.indexOf(p) === idx);
       if (inferredTestPaths.some((p) => allowedPathsForBatch.includes(p))) continue;
       const attemptedTestPath = skippedDisallowedFiles.find(
-        (p) => testFilePattern.test(p) && isPlausibleTestPathForIssue(p, issue.comment.path)
+        (p) => testFilePattern.test(p) && isPlausibleTestPathForIssue(p, getIssuePrimaryPath(issue))
       );
       if (!attemptedTestPath) continue;
       if (!state.wrongFileAllowedPathsByCommentId) state.wrongFileAllowedPathsByCommentId = {};
@@ -236,13 +249,14 @@ export async function executeFixIteration(
     const failureCounts = runnerWithCounts.getFailureCounts();
     const dismissedIds = new Set<string>();
     for (const issue of workingUnresolved) {
-      if ((failureCounts.get(issue.comment.path) ?? 0) >= HALLUCINATION_DISMISS_THRESHOLD) {
+      const primaryForCounts = getIssuePrimaryPath(issue);
+      if ((failureCounts.get(primaryForCounts) ?? 0) >= HALLUCINATION_DISMISS_THRESHOLD) {
         Dismissed.dismissIssue(
           stateContext,
           issue.comment.id,
           'Repeated failed fix attempts (output did not match file); manual review recommended.',
           'remaining',
-          issue.comment.path,
+          primaryForCounts,
           issue.comment.line,
           issue.comment.body
         );
@@ -307,7 +321,7 @@ export async function executeFixIteration(
     ? workingUnresolved.map((issue) => {
         const extra = allowedPathsByComment[issue.comment.id];
         if (!extra?.length) return issue;
-        const base = issue.allowedPaths?.length ? issue.allowedPaths : [issue.comment.path];
+        const base = issue.allowedPaths?.length ? issue.allowedPaths : [getIssuePrimaryPath(issue)];
         const merged = [...new Set([...base, ...extra])];
         return { ...issue, allowedPaths: merged };
       })
@@ -444,6 +458,10 @@ export async function executeFixIteration(
   // Pass OpenAI key explicitly so Codex gets it even when config came from env and runner spawns with a copy of process.env
   const keyForRunner = openaiApiKey ?? process.env.OPENAI_API_KEY;
   const allowedPathsForBatch = getAllowedPathsForIssues(issuesForPrompt, pathExists);
+  const allowedPathsForInjection = allowedPathsForInjectionSubset(
+    allowedPathsForBatch,
+    stateContext.blastRadiusPaths
+  );
 
   let result: Awaited<ReturnType<Runner['run']>>;
   const concurrencyLimit = getEffectiveMaxConcurrentLLM();
@@ -487,7 +505,14 @@ export async function executeFixIteration(
           stateContext
         );
         const groupPaths = getAllowedPathsForIssues(groupIssues, pathExists);
-        return { prompt: details.prompt, allowedPathsForBatch: groupPaths, groupIssues, shouldSkip: details.shouldSkip };
+        const groupInjection = allowedPathsForInjectionSubset(groupPaths, stateContext.blastRadiusPaths);
+        return {
+          prompt: details.prompt,
+          allowedPathsForBatch: groupPaths,
+          allowedPathsForInjection: groupInjection,
+          groupIssues,
+          shouldSkip: details.shouldSkip,
+        };
       });
       const toRun = groupDetails.filter((d) => !d.shouldSkip);
       if (toRun.length > 0) {
@@ -499,7 +524,7 @@ export async function executeFixIteration(
               openaiApiKey: keyForRunner,
               unresolvedIssues: d.groupIssues,
               allowedPathsForBatch: d.allowedPathsForBatch,
-              allowedPathsForInjection: d.allowedPathsForBatch,
+              allowedPathsForInjection: d.allowedPathsForInjection,
             })
         );
         try {
@@ -540,7 +565,7 @@ export async function executeFixIteration(
           openaiApiKey: keyForRunner,
           unresolvedIssues: workingUnresolved,
           allowedPathsForBatch,
-          allowedPathsForInjection: allowedPathsForBatch,
+          allowedPathsForInjection,
         });
       } finally {
         spinner.stop();
@@ -554,7 +579,7 @@ export async function executeFixIteration(
         openaiApiKey: keyForRunner,
         unresolvedIssues: workingUnresolved,
         allowedPathsForBatch,
-        allowedPathsForInjection: allowedPathsForBatch,
+        allowedPathsForInjection,
       });
     } finally {
       spinner.stop();
@@ -595,10 +620,10 @@ export async function executeFixIteration(
     }
     // When search/replace failed to match, add file-specific lessons so next run uses exact content, narrower anchor, or full-file rewrite.
     if (result.error && /search\/replace operations failed|search text did not match/i.test(result.error)) {
-      const paths = [...new Set(workingUnresolved.map((i) => i.comment.path))];
+      const paths = [...new Set(workingUnresolved.map((i) => getIssuePrimaryPath(i)))];
       console.log(chalk.yellow(`  ⚠ Search/replace did not match for this batch (${formatNumber(paths.length)} file(s)) — next attempt will include last-error hint.`));
       for (const path of paths) {
-        const one = workingUnresolved.find((i) => i.comment.path === path);
+        const one = workingUnresolved.find((i) => getIssuePrimaryPath(i) === path);
         if (one) {
           LessonsAPI.Add.addLesson(
             lessonsContext,

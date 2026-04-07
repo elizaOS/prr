@@ -5,12 +5,8 @@
  */
 import { join } from 'path';
 import { readFile } from 'fs/promises';
-import { formatNumber } from '../../../shared/logger.js';
-import {
-  CODE_SNIPPET_CONTEXT_AFTER,
-  CODE_SNIPPET_CONTEXT_BEFORE,
-  MAX_SNIPPET_LINES,
-} from '../../../shared/constants.js';
+import { computeBudget, fitToBudget } from '../../../shared/prompt-budget.js';
+import { debug } from '../../../shared/logger.js';
 
 export function buildNumberedFullFileSnippet(content: string, note?: string): string {
   const lines = content.split('\n');
@@ -117,14 +113,6 @@ export function parseLineReferencesFromBody(commentBody: string): number[] {
   return unique;
 }
 
-/** Max size for full-file content in final audit (avoid huge prompts / context overflow). */
-const MAX_FULL_FILE_AUDIT_CHARS = 50_000;
-
-/** Max chars for wider snippet in batch analysis when initial snippet is too short (prompts.log audit: verifier said "snippet truncated"). */
-const MAX_WIDER_SNIPPET_ANALYSIS_CHARS = 12_000;
-
-const WIDER_SNIPPET_LINES = 80;
-
 /** Extract code-like tokens from comment body to anchor snippet when no line number. Prompts.log audit: first 80 lines showed only imports/class header; buggy code was deeper. */
 export function findAnchorLineFromCommentKeywords(lines: string[], commentBody: string | undefined): number | null {
   if (!commentBody || lines.length === 0) return null;
@@ -159,11 +147,14 @@ export function escapeRegExpForSnippet(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** Shared windowing: parse anchors from line + commentBody, center an 80-line window, cap at MAX_WIDER_SNIPPET_ANALYSIS_CHARS. */
+/**
+ * Parse anchors from line + commentBody, then fill model-aware char budget with a line-centered excerpt.
+ */
 export function buildWindowedSnippet(
   fileContent: string,
   line: number | null,
-  commentBody?: string
+  commentBody?: string,
+  modelId?: string
 ): string {
   const lines = fileContent.split('\n');
   const anchors = new Set<number>();
@@ -202,26 +193,20 @@ export function buildWindowedSnippet(
       endLine = keywordLine;
     }
   }
-  const halfWindow = Math.floor(WIDER_SNIPPET_LINES / 2);
-  let start: number;
-  let end: number;
-  if (startLine !== null || anchors.size > 0) {
-    const minAnchor = anchors.size > 0 ? Math.min(...anchors) : startLine!;
-    const maxAnchor = anchors.size > 0 ? Math.max(...anchors) : (endLine ?? startLine!);
-    const center = Math.floor((minAnchor + maxAnchor) / 2);
-    start = Math.max(0, center - 1 - halfWindow);
-    end = Math.min(lines.length, start + WIDER_SNIPPET_LINES);
-  } else {
-    start = 0;
-    end = Math.min(lines.length, WIDER_SNIPPET_LINES);
+
+  let centerLine: number | null = null;
+  if (anchors.size > 0) {
+    centerLine = Math.floor((Math.min(...anchors) + Math.max(...anchors)) / 2);
+  } else if (line !== null) {
+    centerLine = line;
   }
-  const slice = lines
-    .slice(start, end)
-    .map((l, i) => `${start + i + 1}: ${l}`)
-    .join('\n');
-  return slice.length > MAX_WIDER_SNIPPET_ANALYSIS_CHARS
-    ? slice.substring(0, MAX_WIDER_SNIPPET_ANALYSIS_CHARS) + '\n... (truncated)'
-    : slice;
+
+  const { availableForCode } = computeBudget({ model: modelId, reservedChars: 26_000 });
+  const { content } = fitToBudget(fileContent, centerLine, availableForCode, {
+    commentBody,
+    findKeywordAnchor: findAnchorLineFromCommentKeywords,
+  });
+  return content;
 }
 
 /**
@@ -248,24 +233,39 @@ export async function getWiderSnippetForAnalysis(
  * Get full file content for final audit so the LLM sees complete context
  * instead of truncated snippets that can cause false "UNFIXED" verdicts.
  *
- * When the file exceeds {@link MAX_FULL_FILE_AUDIT_CHARS}, uses a **line-centered excerpt**
- * (review line, or keyword anchor from comment, else legacy head slice) so bugs away from
- * line 1 are still visible — **WHY:** head-only truncation caused false UNFIXED on tail-heavy
- * files (pill-output / final-audit cluster).
+ * When the raw file is larger than **`computeBudget`** allows for this call, returns a
+ * **line-centered numbered excerpt** via **`fitToBudget`** (review line, or keyword anchor from
+ * **`commentBody`**, else a short head slice with an explicit “no line anchor” footer).
+ * **WHY:** A fixed char cap per file is not enough — small-context models need a smaller excerpt
+ * than large-context models; and head-only truncation hid tail bugs → false UNFIXED
+ * (pill-output / final-audit cluster). Pass **`modelId`** when known so the budget matches the
+ * final-audit model’s gateway limit.
  */
+export interface FullFileForAuditResult {
+  snippet: string;
+  /** True when the GitHub review anchor is inside the shown window (full file or line-centered excerpt). */
+  fixSiteInWindow: boolean;
+}
+
 export async function getFullFileForAudit(
   workdir: string,
   path: string,
   line?: number | null,
   commentBody?: string,
-): Promise<string> {
+  modelId?: string
+): Promise<FullFileForAuditResult> {
+  const missing: FullFileForAuditResult = { snippet: '(file not found or unreadable)', fixSiteInWindow: false };
   try {
     const filePath = join(workdir, path);
     const content = await readFile(filePath, 'utf-8');
     const lines = content.split('\n');
 
-    if (content.length <= MAX_FULL_FILE_AUDIT_CHARS) {
-      return lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
+    const { availableForCode } = computeBudget({ model: modelId, reservedChars: 16_000 });
+    if (content.length <= availableForCode) {
+      return {
+        snippet: lines.map((l, i) => `${i + 1}: ${l}`).join('\n'),
+        fixSiteInWindow: true,
+      };
     }
 
     let anchorLine = line != null && line > 0 && line <= lines.length ? line : null;
@@ -273,33 +273,23 @@ export async function getFullFileForAudit(
       anchorLine = findAnchorLineFromCommentKeywords(lines, commentBody);
     }
 
-    if (anchorLine === null) {
-      const keep = Math.floor(MAX_FULL_FILE_AUDIT_CHARS / 80);
-      return (
-        lines
-          .slice(0, keep)
-          .map((l, i) => `${i + 1}: ${l}`)
-          .join('\n') +
-        `\n... (${formatNumber(lines.length - keep)} more lines omitted — file exceeds ${formatNumber(MAX_FULL_FILE_AUDIT_CHARS)} chars; no line anchor — set review line or cite symbols in comment)`
-      );
+    const { content: excerpt, truncated } = fitToBudget(content, anchorLine, availableForCode, {
+      commentBody,
+      findKeywordAnchor: findAnchorLineFromCommentKeywords,
+    });
+    if (truncated) {
+      debug('getFullFileForAudit: line-centered or head excerpt (budget)', {
+        path,
+        lineCount: lines.length,
+        anchorLine,
+        truncated,
+        excerptChars: excerpt.length,
+        availableForCode,
+      });
     }
-
-    const contextBefore = 120;
-    const contextAfter = 200;
-    let start = Math.max(0, anchorLine - contextBefore - 1);
-    let end = Math.min(lines.length, anchorLine + contextAfter);
-    let excerpt = lines
-      .slice(start, end)
-      .map((l, i) => `${start + i + 1}: ${l}`)
-      .join('\n');
-    excerpt += `\n... (excerpt only — file has ${formatNumber(lines.length)} lines; centered on line ${formatNumber(anchorLine)})`;
-    if (excerpt.length > MAX_FULL_FILE_AUDIT_CHARS) {
-      excerpt =
-        excerpt.slice(0, MAX_FULL_FILE_AUDIT_CHARS - 120) +
-        '\n... (truncated to char budget — final audit excerpt)';
-    }
-    return excerpt;
+    const fixSiteInWindow = !truncated || anchorLine != null;
+    return { snippet: excerpt, fixSiteInWindow };
   } catch {
-    return '(file not found or unreadable)';
+    return missing;
   }
 }

@@ -89,7 +89,19 @@ export interface PushIterationContexts {
    * Cache of last analysis result (comment IDs + headSha + file hashes → unresolved, duplicateMap).
    * When comment set and file content for comment paths unchanged, reuse to skip expensive findUnresolvedIssues (output.log audit).
    */
-  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]>; changedFiles?: string[] } | null };
+  lastAnalysisCacheRef?: {
+    current: {
+      commentCount: number;
+      headSha: string;
+      commentIds?: string;
+      fileHashesKeyDigest?: string;
+      unresolvedIssues: UnresolvedIssue[];
+      comments: ReviewComment[];
+      duplicateMap: Map<string, string[]>;
+      changedFiles?: string[];
+      blastRadiusPaths?: string[];
+    } | null;
+  };
   /** Thread IDs we have already replied to this run (one reply per thread). */
   repliedThreadIds: Set<string>;
 }

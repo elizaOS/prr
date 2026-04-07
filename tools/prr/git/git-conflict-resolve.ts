@@ -1625,14 +1625,14 @@ async function resolveSubmoduleConflict(
     await rmTree();
     try {
       await git.raw(['checkout', '--theirs', '--', file]);
-      await git.add(file).catch(() => {});
+      await git.add(file);
       console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (accepted base branch pointer)`));
       return true;
     } catch {
       await rmTree();
       try {
         await git.raw(['checkout', '--ours', '--', file]);
-        await git.add(file).catch(() => {});
+        await git.add(file);
         console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (kept current branch pointer)`));
         return true;
       } catch {

@@ -387,6 +387,11 @@ export function printFinalSummary(
         `\n  ◆ Final audit re-queued: ${formatNumber(auditOverridesThisRun.length)} issue(s) (adversarial pass said UNFIXED for previously verified — see After Action Report)`,
       ),
     );
+    console.log(
+      chalk.gray(
+        `     (This count is only threads that were verified then challenged by final audit — not the same as “Remaining” unless those were the only open issues.)`,
+      ),
+    );
     if (
       remainingCount !== undefined &&
       remainingCount > 0 &&
@@ -394,7 +399,7 @@ export function printFinalSummary(
     ) {
       console.log(
         chalk.gray(
-          `     (If Remaining below differs: re-queue is per thread; Remaining dedupes by file:line and can shrink after fixes.)`,
+          `     If Remaining below differs: re-queue is per thread id; Remaining dedupes by file:line and can include issues never verified this run.`,
         ),
       );
     }

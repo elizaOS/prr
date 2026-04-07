@@ -89,12 +89,27 @@ export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {
 let loggedElizacloudIncludeModels = false;
 
 let loggedElizacloudExtraSkip = false;
+let loggedElizacloudExtraSkipInvalid = false;
+
+/** Skip-list ids must be sane strings (no `//`, bounded length) — avoids junk env breaking merges. */
+function isPlausibleSkipListModelId(id: string): boolean {
+  if (!id || id.length > 200 || id.includes('//')) return false;
+  return /^[A-Za-z0-9._\/-]+$/.test(id);
+}
 
 export function getEffectiveElizacloudSkipModelIds(): string[] {
   const extraRaw = process.env.PRR_ELIZACLOUD_EXTRA_SKIP_MODELS?.trim();
-  const extraIds = extraRaw
+  const extraParsed = extraRaw
     ? extraRaw.split(',').map((s) => s.trim()).filter(Boolean)
     : [];
+  const extraDropped = extraParsed.filter((id) => !isPlausibleSkipListModelId(id));
+  const extraIds = extraParsed.filter((id) => isPlausibleSkipListModelId(id));
+  if (extraDropped.length > 0 && !loggedElizacloudExtraSkipInvalid) {
+    loggedElizacloudExtraSkipInvalid = true;
+    console.warn(
+      `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS: ignored ${extraDropped.length.toLocaleString()} malformed id(s) (empty, //, or invalid chars).`,
+    );
+  }
   const mergedBase = [...new Set([...ELIZACLOUD_SKIP_MODEL_IDS, ...extraIds])];
   if (extraIds.length > 0 && !loggedElizacloudExtraSkip) {
     loggedElizacloudExtraSkip = true;
@@ -105,7 +120,12 @@ export function getEffectiveElizacloudSkipModelIds(): string[] {
 
   const raw = process.env.PRR_ELIZACLOUD_INCLUDE_MODELS?.trim();
   if (!raw) return mergedBase;
-  const include = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
+  const include = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s && isPlausibleSkipListModelId(s)),
+  );
   const match = (id: string) => include.has(id) || include.has(id.replace(/^(openai|anthropic|google)\//, ''));
   const filtered = mergedBase.filter(id => !match(id));
   if (!loggedElizacloudIncludeModels) {

@@ -344,4 +344,8 @@ describe('dismissedCategoriesWithReply', () => {
     vi.stubEnv('PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE', 'true');
     expect(dismissedCategoriesWithReply().has('chronic-failure')).toBe(true);
   });
+
+  it('includes out-of-scope in base reply set', () => {
+    expect(dismissedCategoriesWithReply().has('out-of-scope')).toBe(true);
+  });
 });

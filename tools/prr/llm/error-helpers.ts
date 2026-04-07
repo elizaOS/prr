@@ -130,19 +130,26 @@ export function maskApiKey(key: string | undefined): string {
   return `length=${k.length}, prefix=${prefix}`;
 }
 
-/** File-type-specific rules for conflict resolution prompt (reduces invalid JSON/TS output). */
+/**
+ * File-type rules for merge-conflict prompts (chunked 3-way and marker single-shot).
+ * Bullet list so it reads well alone (chunked) or after INSTRUCTIONS 1–5 (single-shot).
+ */
 export function getConflictFileTypeRules(filePath: string): string {
   if (filePath.endsWith('.json')) {
-    const base = '\n6. Output must be strict JSON (no comments, no trailing commas).';
+    const lines = [
+      'Output must be strict JSON (no comments, no trailing commas).',
+      'No duplicate property keys in any object — invalid JSON and easy to produce when merging. Combine both sides so each key appears exactly once.',
+    ];
     if (/package\.json$/i.test(filePath)) {
-      return base +
-        '\n7. CRITICAL: No duplicate keys allowed in JSON objects. When both sides add entries to "scripts", "dependencies", or "devDependencies", merge ALL entries from BOTH sides into a single object — do NOT repeat any key name.' +
-        '\n8. When both sides define the same script key (e.g. "dev") with different values, keep the HEAD version unless the base version adds a clearly new feature.';
+      lines.push(
+        'package.json: merge every distinct key in "scripts", "dependencies", and "devDependencies" from BOTH sides; never output two entries with the same key (e.g. two "dev:desktop" lines).',
+        'When the same script key exists on both sides with different command strings, prefer HEAD unless the incoming side clearly adds a new capability you must keep.',
+      );
     }
-    return base;
+    return `\n${lines.map(l => `- ${l}`).join('\n')}`;
   }
   if (/\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(filePath)) {
-    return '\n6. Preserve all imports and ensure the result compiles.';
+    return '\n- Preserve all imports and ensure the result compiles.';
   }
   return '';
 }

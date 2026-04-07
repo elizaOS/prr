@@ -3,7 +3,7 @@
  * Used in allowed-path filtering and TARGET FILE(S) construction; edge cases include
  * URL-encoded segments, internal paths, node_modules/dist, and repo top-level detection.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   normalizeRepoPath,
   normalizePathForAllow,
@@ -14,6 +14,8 @@ import {
   shouldSkipFinalAuditLlmForPath,
   pathDismissCategoryForNotFound,
   stripGitDiffPathPrefix,
+  setDynamicRepoTopLevelDirs,
+  getDynamicRepoTopLevelDirs,
 } from '../shared/path-utils.js';
 
 describe('normalizeRepoPath', () => {
@@ -70,9 +72,12 @@ describe('isPathAllowedForFix', () => {
     expect(isPathAllowedForFix('packages/x/node_modules/y')).toBe(false);
     expect(isPathAllowedForFix('dist/index.js')).toBe(false);
   });
-  it('rejects external package-like first segment', () => {
-    expect(isPathAllowedForFix('elizaos/core/lib/types.d.ts')).toBe(false);
-    expect(isPathAllowedForFix('some-pkg/bar')).toBe(false);
+  it('allows any repo-relative path by default (strict mode off)', () => {
+    expect(isPathAllowedForFix('elizaos/core/lib/types.d.ts')).toBe(true);
+    expect(isPathAllowedForFix('some-pkg/bar')).toBe(true);
+    expect(isPathAllowedForFix('agent/typescript/index.ts')).toBe(true);
+    expect(isPathAllowedForFix('cmd/server/main.go')).toBe(true);
+    expect(isPathAllowedForFix('contracts/ERC20.sol')).toBe(true);
   });
   it('allows repo top-level dirs', () => {
     expect(isPathAllowedForFix('src/foo.ts')).toBe(true);
@@ -119,6 +124,44 @@ describe('stripGitDiffPathPrefix', () => {
   });
   it('leaves normal paths unchanged', () => {
     expect(stripGitDiffPathPrefix('packages/foo.ts')).toBe('packages/foo.ts');
+  });
+});
+
+describe('setDynamicRepoTopLevelDirs', () => {
+  afterEach(() => {
+    setDynamicRepoTopLevelDirs([]);
+  });
+
+  it('hard deny rules still apply regardless of dynamic dirs', () => {
+    setDynamicRepoTopLevelDirs(['node_modules/foo/bar.js', 'dist/index.js']);
+    expect(isPathAllowedForFix('node_modules/foo/bar.js')).toBe(false);
+    expect(isPathAllowedForFix('dist/index.js')).toBe(false);
+  });
+
+  it('internal segments denied even if in changed files', () => {
+    setDynamicRepoTopLevelDirs(['.cursor/plans/x.md', '.prr/state.json']);
+    expect(isPathAllowedForFix('.cursor/plans/x.md')).toBe(false);
+    expect(isPathAllowedForFix('.prr/state.json')).toBe(false);
+  });
+
+  it('enables stripGitDiffPathPrefix for dynamic dirs', () => {
+    expect(stripGitDiffPathPrefix('a/agent/typescript/index.ts')).toBe('a/agent/typescript/index.ts');
+    setDynamicRepoTopLevelDirs(['agent/typescript/index.ts']);
+    expect(stripGitDiffPathPrefix('a/agent/typescript/index.ts')).toBe('agent/typescript/index.ts');
+  });
+
+  it('extracts correct first segments from changed files', () => {
+    setDynamicRepoTopLevelDirs([
+      'agent/typescript/index.ts',
+      'contracts/ERC20.sol',
+      'cmd/server/main.go',
+      'package.json',
+    ]);
+    const dirs = getDynamicRepoTopLevelDirs();
+    expect(dirs.has('agent')).toBe(true);
+    expect(dirs.has('contracts')).toBe(true);
+    expect(dirs.has('cmd')).toBe(true);
+    expect(dirs.has('package.json')).toBe(true);
   });
 });
 

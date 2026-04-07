@@ -50,6 +50,15 @@ export function snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet: stri
  * parroted review text when the model never saw the implementation region (pill-output final-audit cluster).
  */
 export function finalAuditSnippetLooksTruncatedOrExcerpt(snippet: string): boolean {
+  // Line-centered budget excerpts from fitToBudget — anchor line is in the visible window; do not
+  // treat like blind truncation for UNFIXED demotion (Pattern G / pill-output final-audit cluster).
+  if (
+    /centered on line [\d,]+/i.test(snippet) &&
+    (/\(excerpt — [\d,]+ lines; centered on line/i.test(snippet) ||
+      /\(excerpt only — file has [\d,]+ lines; centered on line/i.test(snippet))
+  ) {
+    return false;
+  }
   return (
     /truncated for model context limit — final audit/i.test(snippet) ||
     /more lines omitted — file exceeds/i.test(snippet) ||

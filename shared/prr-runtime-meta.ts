@@ -3,7 +3,9 @@
  *
  * WHY: Operators need to confirm which tool revision ran (especially when PRR is vendored
  * or only dist/ is copied). We show package.json version always; revision from env or
- * `git rev-parse` only when `.git` exists in the prr package root.
+ * `git rev-parse` only when a `.git` file or directory exists on the prr package root
+ * **or any parent directory** (up to a depth cap), so vendored `milady/prr/` layouts still
+ * show a revision when the host repo root has `.git`.
  *
  * WHY not GITHUB_SHA: In downstream workflows that runs inside another repo, GITHUB_SHA is
  * that repo's head — not the PRR checkout. Use PRR_GIT_SHA when you want to stamp the PRR commit.
@@ -38,9 +40,26 @@ export function getPrrPackageRoot(): string {
   return join(getModuleDir(), '..', '..');
 }
 
-/** True when the prr root looks like a git checkout (`.git` file or dir, including worktrees). */
+const MAX_GIT_METADATA_WALK = 32;
+
+/**
+ * First directory at or above the prr package root that contains `.git` (file or dir).
+ * WHY: PRR may live under a monorepo (`host/prr/`) while `.git` is only at `host/`.
+ */
+export function findPrrGitMetadataDir(): string | undefined {
+  let dir = getPrrPackageRoot();
+  for (let i = 0; i < MAX_GIT_METADATA_WALK; i++) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+/** True when some ancestor of the prr package root is a git work tree (`.git` file or dir). */
 export function hasPrrGitMetadata(): boolean {
-  return existsSync(join(getPrrPackageRoot(), '.git'));
+  return findPrrGitMetadataDir() !== undefined;
 }
 
 let cachedVersion: string | undefined;
@@ -66,8 +85,9 @@ function normalizeRevDisplay(raw: string): string {
 
 /**
  * Optional source revision: PRR_GIT_SHA or PRR_SOURCE_COMMIT (short or full SHA), else
- * `git rev-parse --short HEAD` in the prr package root **only if** `.git` exists there
- * (avoids calling git for vendored / npm-packaged trees with no repo metadata).
+ * `git rev-parse --short HEAD` with cwd at the prr package root **only if** a `.git` exists
+ * on the package root or a parent (see `findPrrGitMetadataDir`). Git discovers the repo from
+ * any path inside the work tree (avoids calling git when there is no enclosing repo).
  */
 export function getPrrSourceRevision(): string | undefined {
   const env = process.env.PRR_GIT_SHA?.trim() || process.env.PRR_SOURCE_COMMIT?.trim();
@@ -85,7 +105,7 @@ export function getPrrSourceRevision(): string | undefined {
   }
 }
 
-/** CI hint only when prr package root has no `.git` and no env stamp (e.g. prr as subfolder of another repo). */
+/** CI hint when no `.git` is found walking up from the prr package root and no env stamp. */
 export function shouldSuggestPrrGitShaInCi(): boolean {
   if (process.env.CI !== 'true') return false;
   if (process.env.PRR_GIT_SHA?.trim() || process.env.PRR_SOURCE_COMMIT?.trim()) return false;

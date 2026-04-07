@@ -85,7 +85,7 @@ export interface DismissedIssue {
   reason: string;                 // Detailed explanation of why it doesn't need fixing
   dismissedAt: string;            // ISO timestamp when dismissed
   dismissedAtIteration: number;   // Which iteration it was dismissed in
-  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted' | 'remaining' | 'chronic-failure' | 'missing-file' | 'path-unresolved';
+  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted' | 'remaining' | 'chronic-failure' | 'missing-file' | 'path-unresolved' | 'out-of-scope';
   filePath: string;               // File the comment was about
   line: number | null;            // Line number if specified
   commentBody: string;            // Original review comment text

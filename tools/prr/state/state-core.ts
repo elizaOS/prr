@@ -150,28 +150,43 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
         ]);
         const dismissedIds = new Set(ctx.state.dismissedIssues.map((d) => d.commentId));
         if (verifiedSet.size > 0 && ctx.state.dismissedIssues.length > 0) {
+          const overlapDismissed = ctx.state.dismissedIssues.filter((d) => verifiedSet.has(d.commentId));
           const beforeD = ctx.state.dismissedIssues.length;
           ctx.state.dismissedIssues = ctx.state.dismissedIssues.filter((d) => !verifiedSet.has(d.commentId));
           const removedD = beforeD - ctx.state.dismissedIssues.length;
           if (removedD > 0) {
-            console.log(`Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified)`);
+            const ids = overlapDismissed.map((d) => d.commentId);
+            const show = ids.slice(0, 15).join(', ');
+            const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
+            console.log(
+              `Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified) — comment id(s): ${show}${more}`,
+            );
           }
         }
         if (dismissedIds.size > 0 && ctx.state.verifiedFixed?.length) {
+          const removedIds = ctx.state.verifiedFixed.filter((id) => dismissedIds.has(id));
           const beforeV = ctx.state.verifiedFixed.length;
           ctx.state.verifiedFixed = ctx.state.verifiedFixed.filter((id) => !dismissedIds.has(id));
           const removedV = beforeV - ctx.state.verifiedFixed.length;
           if (removedV > 0) {
-            console.warn(`State load: removed ${formatNumber(removedV)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned)`);
+            const show = removedIds.slice(0, 15).join(', ');
+            const more = removedIds.length > 15 ? ` …(+${formatNumber(removedIds.length - 15)} more)` : '';
+            console.warn(
+              `State load: removed ${formatNumber(removedV)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned): ${show}${more}`,
+            );
           }
         }
         if (dismissedIds.size > 0 && ctx.state.verifiedComments?.length) {
+          const removedVcRows = ctx.state.verifiedComments.filter((v) => dismissedIds.has(v.commentId));
           const beforeVc = ctx.state.verifiedComments.length;
           ctx.state.verifiedComments = ctx.state.verifiedComments.filter((v) => !dismissedIds.has(v.commentId));
           const removedVc = beforeVc - ctx.state.verifiedComments.length;
           if (removedVc > 0) {
+            const ids = removedVcRows.map((v) => v.commentId);
+            const show = ids.slice(0, 15).join(', ');
+            const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
             console.warn(
-              `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned)`,
+              `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned): ${show}${more}`,
             );
           }
         }

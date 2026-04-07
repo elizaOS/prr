@@ -9,9 +9,10 @@
 export const MAX_WHITESPACE_IN_RUNNER_OUTPUT = 1000;
 
 /**
- * Every N completed fix iterations (within a push iteration’s inner loop), clear session-skipped model keys
- * so rotation can retry them. **0** = disabled (default). **WHY:** Pill-output #847 — long runs otherwise
- * never revisit a model skipped early for transient failures; next process run was the only retry.
+ * After N completed fix iterations **since each key was added to** session **`skippedModelKeys`**, remove that
+ * key so rotation can retry that model. Checked at the start of each fix iteration. **0** = disabled (default).
+ * **WHY:** Pill-output #847 — long runs otherwise never revisit a model skipped early; per-key timing avoids
+ * wiping fresher skips on one global boundary.
  */
 export function getSessionModelSkipResetAfterFixIterations(): number {
   const raw = process.env.PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS?.trim();

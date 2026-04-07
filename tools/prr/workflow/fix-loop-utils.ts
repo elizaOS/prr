@@ -20,6 +20,7 @@ import type { PRInfo } from '../github/types.js';
 import { checkRemoteAhead } from '../../../shared/git/git-conflicts.js';
 import { pullLatest } from '../../../shared/git/git-pull.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
+import { getMidLoopNewCommentCap } from '../../../shared/constants.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solvability.js';
 
@@ -110,26 +111,41 @@ export async function processNewBotReviews(
     } else {
       solvableComments.push(...newComments);
     }
-    // Add solvable new comments to tracking — fetch all snippets concurrently
+
+    const cap = getMidLoopNewCommentCap();
+    const overflow =
+      cap > 0 && solvableComments.length > cap ? solvableComments.length - cap : 0;
+    const toEnqueue = overflow > 0 ? solvableComments.slice(0, cap) : solvableComments;
+    if (overflow > 0) {
+      console.log(
+        chalk.yellow(
+          `   Capping mid-loop enqueue: ${formatNumber(toEnqueue.length)} of ${formatNumber(solvableComments.length)} new thread(s) (PRR_MID_LOOP_NEW_COMMENT_CAP=${formatNumber(cap)}). ${formatNumber(overflow)} remain in the PR but are deferred until the next full analysis.`,
+        ),
+      );
+    }
+
+    // Register every solvable new comment on the PR list so later phases see full thread set; only `toEnqueue` enters the fix queue now.
     for (const comment of solvableComments) {
       existingCommentIds.add(comment.id);
       comments.push(comment);
+    }
+    for (const comment of toEnqueue) {
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
     }
     const newSnippets = await Promise.all(
-      solvableComments.map((c) => getCodeSnippet(c.path, c.line, c.body))
+      toEnqueue.map((c) => getCodeSnippet(c.path, c.line, c.body))
     );
-    for (let i = 0; i < solvableComments.length; i++) {
+    for (let i = 0; i < toEnqueue.length; i++) {
       unresolvedIssues.push({
-        comment: solvableComments[i],
+        comment: toEnqueue[i],
         codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment from bot review',
         triage: { importance: 3, ease: 3 },
       });
     }
-    
-    console.log(chalk.cyan(`   Added ${formatNumber(solvableComments.length)} new issue(s) to workflow\n`));
+
+    console.log(chalk.cyan(`   Added ${formatNumber(toEnqueue.length)} new issue(s) to workflow\n`));
   }
 }
 

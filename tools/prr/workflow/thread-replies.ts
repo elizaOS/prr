@@ -29,6 +29,7 @@ const DISMISSED_CATEGORIES_BASE = new Set<string>([
   'missing-file', // file not found — reply so thread has visible feedback
   'duplicate',
   'file-unchanged',
+  'out-of-scope', // blast radius (opt-in dismiss) — manual review if comment still valid
 ]);
 
 /** Categories that receive a dismissed-thread reply for this process (base set + optional chronic-failure). */
@@ -288,6 +289,8 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       body = 'Treated as duplicate of another comment; no separate fix.';
     } else if (d.category === 'file-unchanged') {
       body = 'No change in this file this run; manual review if still needed.';
+    } else if (d.category === 'out-of-scope') {
+      body = 'Outside PR scope — manual review recommended.';
     } else {
       body = `Dismissed: ${oneLine(d.reason)}`;
     }

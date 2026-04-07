@@ -17,6 +17,11 @@ export interface AggregatedTokenUsage {
 export interface RotationSessionTracking {
   skippedModelKeys: Set<string>;
   modelStats: Map<string, { fixes: number; failures: number }>;
+  /**
+   * Fix iteration (1-based) when each key was added to `skippedModelKeys`.
+   * WHY: Per-key retry — remove from skip after N iterations for that key only (vs clearing all skips).
+   */
+  sessionSkippedSinceFixIteration: Map<string, number>;
 }
 
 export interface StateContext {
@@ -54,6 +59,12 @@ export interface StateContext {
   diminishingReturnsZeroVerifyStreak?: number;
   /** Ephemeral: already logged one diminishing-returns warning this run. */
   diminishingReturnsWarned?: boolean;
+  /**
+   * Repo-relative paths in the blast-radius set (changed files + graph BFS + proximity), normalized with `/`.
+   * **WHY:** Fixer batch allowlist stays full; prompt injection is intersected with this set to save context.
+   * Undefined when blast radius was not built this analysis (disabled, failure, or cache without field).
+   */
+  blastRadiusPaths?: Set<string>;
 }
 
 export function createStateContext(workdir: string): StateContext {
@@ -69,7 +80,14 @@ export function createStateContext(workdir: string): StateContext {
 
 export function ensureRotationSession(ctx: StateContext): RotationSessionTracking {
   if (!ctx.rotationSession) {
-    ctx.rotationSession = { skippedModelKeys: new Set(), modelStats: new Map() };
+    ctx.rotationSession = {
+      skippedModelKeys: new Set(),
+      modelStats: new Map(),
+      sessionSkippedSinceFixIteration: new Map(),
+    };
+  }
+  if (!ctx.rotationSession.sessionSkippedSinceFixIteration) {
+    ctx.rotationSession.sessionSkippedSinceFixIteration = new Map();
   }
   return ctx.rotationSession;
 }

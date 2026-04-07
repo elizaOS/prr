@@ -230,7 +230,7 @@ export async function closeOutputLog(): Promise<void> {
 
   // Pill #8: Emit summary of empty prompt bodies to output.log so operators see it
   if (emptyPromptBodyCount > 0 && outputLogPath) {
-    const summaryMsg = `WARNING: ${emptyPromptBodyCount} prompts.log entr${emptyPromptBodyCount === 1 ? 'y' : 'ies'} had empty bodies — see stderr for details. This may indicate a logging bug (e.g. elizacloud streaming not passing accumulated response to logger).\n`;
+    const summaryMsg = `WARNING: ${formatNumber(emptyPromptBodyCount)} prompts.log entr${emptyPromptBodyCount === 1 ? 'y' : 'ies'} had empty bodies — see stderr for details. This may indicate a logging bug (e.g. elizacloud streaming not passing accumulated response to logger).\n`;
     try {
       appendFileSync(outputLogPath, summaryMsg, 'utf-8');
       if (origWarnRef) origWarnRef(summaryMsg.trim());

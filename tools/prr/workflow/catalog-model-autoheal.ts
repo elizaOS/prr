@@ -10,6 +10,7 @@
  * each healed comment so `commitAndPushChanges` can run on the "no unresolved issues" branch.
  */
 
+import { execFileSync } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import chalk from 'chalk';
@@ -91,7 +92,34 @@ export function applyCatalogModelAutoHeals(
     debug('[Auto-heal] Disabled via PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1');
     return { modifiedPaths: [], verificationTouched: false };
   }
-  
+
+  try {
+    const porcelain = execFileSync('git', ['-c', 'safe.directory=*', 'status', '--porcelain'], {
+      cwd: workdir,
+      encoding: 'utf8',
+      maxBuffer: 512 * 1024,
+    });
+    if (porcelain.trim().length > 0) {
+      console.warn(
+        chalk.yellow(
+          '  Catalog auto-heal skipped: workdir has uncommitted changes — refusing to edit files on a dirty tree',
+        ),
+      );
+      debug('[Auto-heal] Skipped — dirty worktree', {
+        workdir,
+        porcelainLines: porcelain.trim().split('\n').length,
+      });
+      return { modifiedPaths: [], verificationTouched: false };
+    }
+  } catch (e) {
+    console.warn(
+      chalk.yellow(
+        `  Catalog auto-heal skipped: could not read git status in workdir — ${e instanceof Error ? e.message : String(e)}`,
+      ),
+    );
+    return { modifiedPaths: [], verificationTouched: false };
+  }
+
   const modified: string[] = [];
   if (!stateContext.verifiedThisSession) {
     stateContext.verifiedThisSession = new Set<string>();

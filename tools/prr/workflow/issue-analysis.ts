@@ -66,7 +66,8 @@ import {
   getVerificationExpiryForIterationCount,
   VERIFICATION_EXPIRY_ITERATIONS,
 } from '../../../shared/constants.js';
-import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
+import { filterAllowedPathsForFix, normalizeRepoPath, stripGitDiffPathPrefix } from '../../../shared/path-utils.js';
+import { isBlastRadiusDismissEnabled } from '../../../shared/dependency-graph/index.js';
 import { looksLikeCreateFileIssue, validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
@@ -102,6 +103,7 @@ export {
 } from './issue-analysis-context.js';
 export type { DedupResult } from './issue-analysis-dedup.js';
 export { getCodeSnippet } from './issue-analysis-snippets.js';
+export type { FullFileForAuditResult } from './issue-analysis-snippet-helpers.js';
 export { getFullFileForAudit, getWiderSnippetForAnalysis, parseLineReferencesFromBody } from './issue-analysis-snippet-helpers.js';
 
 /** Optional options for findUnresolvedIssues (e.g. line map from git diff for post-push). */
@@ -112,6 +114,8 @@ export type FindUnresolvedIssuesOptions = {
   getFileContentFromRepo?: (path: string) => Promise<string | null>;
   /** Files changed in the PR (e.g. from git diff --name-only). When comment.path is a basename, prefer matching full path so issue targets the correct file. */
   changedFiles?: string[];
+  /** Map path → BFS depth from changed files (imports + proximity). When set, issues get `inBlastRadius` / `blastRadiusDepth`; optional dismiss when `PRR_BLAST_RADIUS_DISMISS=1`. */
+  blastRadius?: Map<string, number>;
 };
 
 /** If the issue requests tests or review suggests fix-in-test (e.g. "fix mocks in tests"), return [primaryPath, testPath] so allowedPaths is set at issue build. */
@@ -135,6 +139,53 @@ function getEffectiveAllowedPathsForNewIssue(comment: ReviewComment, primaryPath
   }
   const merged = filterAllowedPathsForFix([...base, ...deletePaths]);
   return merged.length > 0 ? merged : [primaryPath];
+}
+
+/**
+ * Annotate unresolved issues with blast-radius fields; optionally dismiss out-of-scope when
+ * `PRR_BLAST_RADIUS_DISMISS=1`. Runs once before final save so dismissals persist.
+ */
+function applyBlastRadiusToUnresolved(
+  unresolved: UnresolvedIssue[],
+  blastRadius: Map<string, number> | undefined,
+  stateContext: StateContext
+): UnresolvedIssue[] {
+  if (!blastRadius || blastRadius.size === 0) {
+    return unresolved;
+  }
+  for (const issue of unresolved) {
+    const primary = issue.resolvedPath ?? issue.comment.path;
+    const k = stripGitDiffPathPrefix(normalizeRepoPath(primary));
+    const d = blastRadius.get(k) ?? blastRadius.get(primary);
+    if (d !== undefined) {
+      issue.inBlastRadius = true;
+      issue.blastRadiusDepth = d;
+    } else {
+      issue.inBlastRadius = false;
+    }
+  }
+  if (!isBlastRadiusDismissEnabled()) {
+    return unresolved;
+  }
+  const kept: UnresolvedIssue[] = [];
+  for (const issue of unresolved) {
+    if (issue.inBlastRadius === false) {
+      const primary = issue.resolvedPath ?? issue.comment.path;
+      Dismissed.dismissIssue(
+        stateContext,
+        issue.comment.id,
+        'Comment target is outside the PR dependency blast radius (imports + proximity heuristics).',
+        'out-of-scope',
+        primary,
+        issue.comment.line,
+        issue.comment.body ?? '',
+        'This file is outside the PR\'s dependency graph (blast radius). Review manually if the comment is valid.',
+      );
+    } else {
+      kept.push(issue);
+    }
+  }
+  return kept;
 }
 
 /** When comment.path is a basename (no directory), resolve to full path from diff if present. Prompts.log audit: fixer was sent wrong file (root reporting.py) when issue was about benchmarks/bfcl/reporting.py. */
@@ -566,7 +617,7 @@ export async function findUnresolvedIssues(
   );
 
   // Build a set for fast lookup in the status check loop (after dedup, before status split).
-  // HISTORY: staleVerifications forces re-check of comments verified 5+ iterations ago.
+  // HISTORY: staleVerifications forces re-check of comments past verification-expiry (see getVerificationExpiryForIterationCount).
   // Without this bypass, Phase 0 hooks would mark them 'resolved', Phase 2 hash relaxation
   // would return the status, and line 774 would re-dismiss them — defeating stale re-check.
   const staleVerificationSet = new Set(staleVerifications);
@@ -580,7 +631,7 @@ export async function findUnresolvedIssues(
     
     // Both --reverify and stale verifications force fresh LLM analysis.
     // --reverify: user explicitly wants to re-check everything.
-    // staleVerifications: comment was verified 5+ iterations ago, fix may have regressed.
+    // staleVerifications: comment was verified long enough ago (iteration-scaled expiry), fix may have regressed.
     // Without this, Phase 0 hooks + Phase 2 hash relaxation would make these
     // bypass the LLM entirely, defeating the purpose of stale verification.
     const forceReanalyze = options.reverify || staleVerificationSet.has(item.comment.id);
@@ -1216,14 +1267,19 @@ export async function findUnresolvedIssues(
     }
   }
 
+  const unresolvedAfterBlast = applyBlastRadiusToUnresolved(
+    unresolved,
+    findUnresolvedIssuesOptions?.blastRadius,
+    stateContext
+  );
   await State.saveState(stateContext);
   await LessonsAPI.Save.save(lessonsContext);
   if (options.verbose) {
-    printDebugIssueTable('after analysis', comments, stateContext, unresolved);
+    printDebugIssueTable('after analysis', comments, stateContext, unresolvedAfterBlast);
   }
-  
+
   return {
-    unresolved,
+    unresolved: unresolvedAfterBlast,
     recommendedModels,
     recommendedModelIndex,
     modelRecommendationReasoning,

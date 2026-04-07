@@ -1,55 +1,46 @@
 /**
  * LLM client for verification, issue detection, and commit message generation.
- * 
+ *
+ * **Module layout:** Low-level completion (Anthropic / OpenAI / ElizaCloud retries, prompts.log)
+ * lives in `llm-client-transport.ts`. Shared response/options types are in `llm-client-types.ts`.
+ * Batch existence checks, final audit, batch verify, conflict resolution, and commit/dismissal
+ * prompts remain on this class for now — they delegate to `complete()` which uses the transport.
+ *
  * WHY separate from fixer tools: Verification needs different models than fixing.
  * We use Claude Haiku/Sonnet for fast verification checks, while fixer tools
  * might use Opus or GPT for actual code changes.
- * 
+ *
  * WHY extended thinking support: For complex verification, Claude's "thinking"
  * capability improves accuracy by reasoning through the problem before answering.
- * 
+ *
  * WHY adversarial prompts: Regular "is this fixed?" prompts have high false positive
  * rates - LLMs tend toward "yes". Adversarial prompts ("find what's NOT fixed")
  * are more reliable.
  */
 import Anthropic from '@anthropic-ai/sdk';
-import chalk from 'chalk';
 import OpenAI from 'openai';
-import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../../../shared/config.js';
-import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError, formatNumber } from '../../../shared/logger.js';
+import { debug, warn, formatNumber } from '../../../shared/logger.js';
 import {
   ELIZACLOUD_API_BASE_URL,
   getEffectiveMaxConcurrentLLM,
-  getElizacloudGatewayFallbackModels,
-  getElizacloudServerErrorMaxRetries,
   MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS,
 } from '../../../shared/constants.js';
-import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
-import { openAiChatCompletionContentToString } from '../../../shared/llm/openai-chat-content.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
 import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
 import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
 import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
+import { getMaxElizacloudLlmCompleteInputChars } from '../../../shared/llm/model-context-limits.js';
 import {
-  ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS,
-  ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
-  estimateElizacloudInputTokensFromCharLength,
-  getElizaCloudModelContextSpec,
-  getMaxElizacloudLlmCompleteInputChars,
-  lowerModelMaxPromptChars,
-} from '../../../shared/llm/model-context-limits.js';
+  computePerFixVerifyCurrentCodeBudget,
+  truncateNumberedCodeAroundAnchor,
+} from '../../../shared/prompt-budget.js';
 import {
-  elizaCloudServerErrorExpectationDebug,
   getConflictFileTypeRules,
-  getElizaCloudErrorContext,
-  isElizaCloudServerClassError,
-  isLikelyContextLengthExceededError,
   maskApiKey,
   normalizeIssueId,
-  sanitizeForJson,
 } from './error-helpers.js';
 import type { ModelRecommendationContext } from './provider-probes.js';
 import { getCheapModelForProvider } from './provider-probes.js';
@@ -60,6 +51,9 @@ import {
   finalAuditSnippetLooksTruncatedOrExcerpt,
   snippetShowsUuidCommentAlignedWithVersionRange,
 } from './verification-heuristics.js';
+import { llmComplete, type LlmTransportDeps } from './llm-client-transport.js';
+import type { BatchCheckResult, CompleteOptions, LLMResponse } from './llm-client-types.js';
+import { filterAttemptHistoryToBatch } from './llm-client-types.js';
 
 /**
  * Re-exports from split modules so `import { … } from '…/llm/client.js'` stays stable.
@@ -98,73 +92,8 @@ export {
   sanitizeForJson,
 } from './error-helpers.js';
 
-export interface LLMResponse {
-  content: string;
-  usage?: {
-    inputTokens: number;
-    outputTokens: number;
-    /** Tokens written to Anthropic's prompt cache (1.25x cost, 5-min TTL). */
-    cacheCreationInputTokens?: number;
-    /** Tokens read from Anthropic's prompt cache (0.1x cost — 90% savings). */
-    cacheReadInputTokens?: number;
-  };
-}
-
-interface CompleteOptions {
-  model?: string;
-  /**
-   * Override the generic ElizaCloud 500/504 retry count for special callers.
-   * WHY: Conflict resolution should fall back to chunked/manual strategies quickly
-   * instead of spending ~10 minutes exhausting the global retry ladder first.
-   */
-  max504Retries?: number;
-  /** Optional phase label for prompts.log metadata (e.g. batch-verify, final-audit). Helps pill and auditors filter by step. */
-  phase?: string;
-}
-
-/**
- * Batch check result with optional model recommendation
- */
-export interface BatchCheckResult {
-  issues: Map<string, {
-    exists: boolean;
-    explanation: string;
-    stale: boolean;
-    /**
-     * Importance score (1-5): 1=critical, 5=trivial.
-     * Defaults to 3 if LLM doesn't provide or issue is NO/STALE.
-     */
-    importance: number;
-    /**
-     * Fix difficulty score (1-5): 1=easy one-liner, 5=major refactor.
-     * Defaults to 3 if LLM doesn't provide or issue is NO/STALE.
-     */
-    ease: number;
-  }>;
-  /** Recommended models to use for fixing, in order of preference */
-  recommendedModels?: string[];
-  /** Reasoning behind the model recommendation */
-  modelRecommendationReasoning?: string;
-  /** True when a batch failed (e.g. 504) but earlier batches were returned so state can be persisted */
-  partial?: boolean;
-}
-
-/**
- * Filter attempt history to only lines for issues in the current batch.
- * WHY: Audit showed full history (all issues) sent to every verify batch; only the current batch is relevant.
- * NOTE: batchIds should be raw comment IDs (PRRC_...) matching the format from getAttemptHistoryForIssues.
- * The batch input uses synthetic issue_N IDs, so callers must map back to comment IDs before calling this.
- */
-function filterAttemptHistoryToBatch(attemptHistory: string, batchIds: string[]): string {
-  const set = new Set(batchIds);
-  return attemptHistory
-    .split('\n')
-    .filter((line) => {
-      const m = line.match(/^Issue\s+(\S+):/);
-      return m && set.has(m[1]);
-    })
-    .join('\n');
-}
+export type { BatchCheckResult, CompleteOptions, LLMResponse } from './llm-client-types.js';
+export { filterAttemptHistoryToBatch } from './llm-client-types.js';
 
 export class LLMClient {
   /** Cap noisy per-batch final-audit truncation debug (output.log: dozens of identical lines per run). */
@@ -231,286 +160,20 @@ export class LLMClient {
     }
   }
 
+  private transportDeps(): LlmTransportDeps {
+    return {
+      provider: this.provider,
+      model: this.model,
+      thinkingBudget: this.thinkingBudget,
+      anthropic: this.anthropic,
+      openai: this.openai,
+      elizacloudKeyHint: this.elizacloudKeyHint,
+      runAbortSignal: this.runAbortSignal,
+    };
+  }
+
   async complete(prompt: string, systemPrompt?: string, options?: CompleteOptions): Promise<LLMResponse> {
-    // Sanitize inputs: strip unpaired UTF-16 surrogates that cause JSON serialization
-    // errors (Anthropic API returns 400 "no low surrogate in string"). These can appear
-    // in code snippets read from binary or corrupted files.
-    prompt = sanitizeForJson(prompt);
-    if (systemPrompt) {
-      systemPrompt = sanitizeForJson(systemPrompt);
-    }
-
-    // Allow callers to override the model for this request (no instance mutation to avoid race conditions)
-    // WHY: The LLM client defaults to the verification model (often haiku),
-    // but some callers (like tryDirectLLMFix) need a stronger model for code fixing
-    const chosenModel = options?.model ?? this.model;
-
-    const baseDebug: Record<string, unknown> = {
-      promptLength: prompt.length,
-      hasSystemPrompt: !!systemPrompt,
-    };
-    if (this.provider === 'elizacloud') {
-      const sysLen = systemPrompt?.length ?? 0;
-      const totalChars = prompt.length + sysLen;
-      const { approxTokens, assumedCharsPerToken } = estimateElizacloudInputTokensFromCharLength(
-        chosenModel,
-        totalChars,
-      );
-      const spec = getElizaCloudModelContextSpec(chosenModel);
-      const worstOut = approxTokens + ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
-      baseDebug.requestTotalChars = totalChars;
-      baseDebug.estimatedInputTokensApprox = approxTokens;
-      baseDebug.tokenizerAssumptionCharsPerToken = assumedCharsPerToken;
-      baseDebug.maxCompletionTokensDefault = ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
-      baseDebug.estimatedInputPlusDefaultMaxOutputApprox = worstOut;
-      baseDebug.estimatedExceedsContextWithDefaultMaxOut = worstOut > spec.maxContextTokens;
-    }
-    debug(`LLM request to ${this.provider}/${chosenModel}`, baseDebug);
-
-    // ElizaCloud: fail fast when total input exceeds configured budget. Gateways often
-    // return 500 (no body) for oversize upstream — retries waste minutes (audit: qwen 93k vs ~42k cap).
-    if (this.provider === 'elizacloud') {
-      const maxTotal = getMaxElizacloudLlmCompleteInputChars(chosenModel);
-      const total = prompt.length + (systemPrompt?.length ?? 0);
-      if (total > maxTotal) {
-        const detail = elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt);
-        warn(
-          `ElizaCloud prompt exceeds model input budget (${formatNumber(total)} chars > ${formatNumber(maxTotal)}). Use a larger-context model, split verification batches, or adjust ELIZACLOUD_MODEL_CONTEXT.`,
-        );
-        debug('ElizaCloud input budget exceeded (detail)', detail);
-        throw new Error(
-          `ElizaCloud request too large for ${chosenModel}: ${formatNumber(total)} chars (max ${formatNumber(maxTotal)}).`,
-        );
-      }
-    }
-
-    // Log full prompt to debug file
-    const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
-    const promptMeta: Record<string, unknown> = { model: chosenModel };
-    if (options?.phase != null) promptMeta.phase = options.phase;
-    const promptSlug = debugPrompt(`llm-${this.provider}`, fullPrompt, promptMeta);
-    
-    const is429 = (e: unknown) => {
-      const status = (e as { status?: number })?.status;
-      const msg = e instanceof Error ? e.message : String(e);
-      return status === 429 || /429|Too many requests|rate limit/i.test(msg);
-    };
-    const isServerError = (e: unknown) => {
-      const status = (e as { status?: number })?.status;
-      const msg = e instanceof Error ? e.message : String(e);
-      return status === 500 || /500|504|502|gateway.*timeout|deployment.*timeout|error occurred with your deployment/i.test(msg);
-    };
-
-    let elizaAcquired = false;
-    try {
-      if (this.provider === 'elizacloud') {
-        await acquireElizacloud().then(() => elizaAcquired = true); // uses exported fn so same global limit as llm-api runner
-        elizaAcquired = true;
-      }
-      const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
-      const max504Retries =
-        options?.max504Retries ??
-        (this.provider === 'elizacloud' ? getElizacloudServerErrorMaxRetries() : 0);
-      const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
-      const backoff504Ms = this.provider === 'elizacloud' ? [10_000, 20_000] : [10_000];
-      // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
-      let lastErr: unknown;
-      for (let attempt = 0; attempt <= max429Retries; attempt++) {
-        try {
-          let response: LLMResponse | undefined;
-          let requestModel = chosenModel;
-          let consecutiveElizacloudGatewayErrors = 0;
-          let elizacloudFallbackIdx = 0;
-          const elizacloudGatewayFallbackChain =
-            this.provider === 'elizacloud' ? getElizacloudGatewayFallbackModels(chosenModel) : [];
-
-          for (let attempt504 = 0; attempt504 <= max504Retries; attempt504++) {
-            try {
-              response = this.provider === 'anthropic'
-                ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
-                : await this.completeOpenAI(prompt, systemPrompt, requestModel);
-              break;
-            } catch (e504) {
-              if (this.provider === 'elizacloud') {
-                const base504 = getElizaCloudErrorContext(e504);
-                const payload504 =
-                  isElizaCloudServerClassError(e504)
-                    ? { ...base504, ...elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt) }
-                    : base504;
-                debug('ElizaCloud error (response context)', payload504);
-              }
-              const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
-              const contextOverflow = isLikelyContextLengthExceededError(e504);
-              const totalChars = prompt.length + (systemPrompt?.length ?? 0);
-              const overConfiguredBudget =
-                this.provider === 'elizacloud' &&
-                totalChars > getMaxElizacloudLlmCompleteInputChars(requestModel);
-              if (contextOverflow && this.provider === 'elizacloud') {
-                lowerModelMaxPromptChars('elizacloud', requestModel, prompt.length);
-                debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
-                  model: requestModel,
-                  promptLength: formatNumber(prompt.length),
-                  ...elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt),
-                });
-              }
-
-              const gatewayClassRetry =
-                this.provider === 'elizacloud' && (isServerError(e504) || timeoutMsg);
-              if (gatewayClassRetry) {
-                consecutiveElizacloudGatewayErrors++;
-              } else {
-                consecutiveElizacloudGatewayErrors = 0;
-              }
-
-              if (
-                this.provider === 'elizacloud' &&
-                consecutiveElizacloudGatewayErrors >= 2 &&
-                elizacloudFallbackIdx < elizacloudGatewayFallbackChain.length
-              ) {
-                const nextModel = elizacloudGatewayFallbackChain[elizacloudFallbackIdx]!;
-                elizacloudFallbackIdx++;
-                console.warn(
-                  chalk.yellow(
-                    `ElizaCloud: ${formatNumber(2)} consecutive gateway/server errors on ${requestModel} — trying fallback model ${nextModel} (override chain: PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS; disable: off).`,
-                  ),
-                );
-                requestModel = nextModel;
-                consecutiveElizacloudGatewayErrors = 0;
-                attempt504--;
-                continue;
-              }
-
-              if (
-                attempt504 < max504Retries &&
-                (isServerError(e504) || timeoutMsg) &&
-                !contextOverflow &&
-                !overConfiguredBudget
-              ) {
-                const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
-                debug('Server error or request timeout, retrying', {
-                  attempt: attempt504 + 1,
-                  maxRetries: max504Retries,
-                  delayMs,
-                  model: this.provider === 'elizacloud' ? requestModel : chosenModel,
-                  ...(this.provider === 'elizacloud'
-                    ? elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt)
-                    : {}),
-                });
-                await new Promise(r => setTimeout(r, delayMs));
-              } else {
-                throw e504;
-              }
-            }
-          }
-
-          if (!response) throw new Error('LLM request failed after retries');
-
-          debug('LLM response', {
-            responseLength: response.content.length,
-            usage: response.usage,
-          });
-
-          // Pill #1, #4: Ensure we pass the accumulated response content, not empty string.
-          // The OpenAI/Anthropic SDKs should return full content, but add safeguard.
-          const responseContent = response.content || '';
-          if (!responseContent && response.usage?.outputTokens && response.usage.outputTokens > 0) {
-            debug('WARNING: LLM response has usage tokens but empty content — possible streaming accumulation bug', {
-              provider: this.provider,
-              model: requestModel,
-              outputTokens: response.usage.outputTokens,
-            });
-          }
-
-          if (response.usage) {
-            trackTokens(response.usage.inputTokens, response.usage.outputTokens);
-          }
-
-          // WHY: writeToPromptLog refuses empty RESPONSE — audits would see orphan PROMPT slugs with no ERROR.
-          if (!responseContent.trim()) {
-            debugPromptError(
-              promptSlug,
-              `llm-${this.provider}`,
-              'Empty or whitespace-only response body (HTTP success but no text; prompts.log would not record a RESPONSE).',
-              {
-                model: requestModel,
-                usage: response.usage,
-                ...(options?.phase != null ? { phase: options.phase } : {}),
-                emptyBody: true,
-              }
-            );
-            // WHY: Operators and CI often skip prompts.log; one stderr line ties empty LLM output to the ERROR slug.
-            if (this.provider === 'elizacloud') {
-              console.warn(
-                chalk.yellow(
-                  `ElizaCloud: empty response body from ${requestModel} (prompts.log has ERROR for this request).`,
-                ),
-              );
-            }
-          } else {
-            const responseMeta: Record<string, unknown> = { model: requestModel, usage: response.usage };
-            if (options?.phase != null) responseMeta.phase = options.phase;
-            debugResponse(promptSlug, `llm-${this.provider}`, responseContent, responseMeta);
-          }
-
-          return response;
-        } catch (err) {
-          lastErr = err;
-          if (this.provider === 'elizacloud') {
-            const status = (err as { status?: number })?.status;
-            const msg = err instanceof Error ? err.message : String(err);
-            if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
-              const url = ELIZACLOUD_API_BASE_URL;
-              const keyHint = this.elizacloudKeyHint ?? maskApiKey(undefined);
-              debug('ElizaCloud 401', { requestURL: `${url}/chat/completions`, apiKey: keyHint, ...getElizaCloudErrorContext(err) });
-              throw new Error(
-                `ElizaCloud API key was rejected (401 Unauthorized). ` +
-                `Request URL: ${url}/chat/completions. API key: ${keyHint}. ` +
-                `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
-              );
-            }
-            if (is429(err)) {
-              notifyRateLimitHit();
-              if (attempt < max429Retries) {
-                const wait = backoffMs[attempt] ?? 8000;
-                debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
-                await new Promise(r => setTimeout(r, wait));
-                continue;
-              }
-            }
-          }
-          if (this.provider === 'elizacloud') {
-            const baseErr = getElizaCloudErrorContext(err);
-            const payloadErr =
-              isElizaCloudServerClassError(err)
-                ? { ...baseErr, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
-                : baseErr;
-            debug('ElizaCloud error (response context)', payloadErr);
-          }
-          throw err;
-        }
-      }
-      if (this.provider === 'elizacloud' && lastErr != null) {
-        const baseLast = getElizaCloudErrorContext(lastErr);
-        const payloadLast =
-          isElizaCloudServerClassError(lastErr)
-            ? { ...baseLast, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
-            : baseLast;
-        debug('ElizaCloud error (response context)', payloadLast);
-      }
-      const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-      debugPromptError(promptSlug, `llm-${this.provider}`, lastMsg, {
-        model: chosenModel,
-        status: (lastErr as { status?: number })?.status,
-        is504: lastErr != null && isServerError(lastErr),
-        isTimeout: /timeout/i.test(lastMsg),
-      });
-      throw lastErr;
-    } finally {
-      if (this.provider === 'elizacloud' && elizaAcquired) {
-        releaseElizacloud();
-      }
-    // Review: ensures slot release only if acquisition is successful to maintain accurate in-flight count.
-    }
+    return llmComplete(this.transportDeps(), prompt, systemPrompt, options);
   }
 
   /**
@@ -523,195 +186,6 @@ export class LLMClient {
       return this.complete(prompt, systemPrompt);
     }
     return this.complete(prompt, systemPrompt, { model: cheapModel });
-  }
-
-  private async completeAnthropic(prompt: string, systemPrompt?: string, model?: string): Promise<LLMResponse> {
-    if (!this.anthropic) {
-      throw new Error('Anthropic client not initialized');
-    }
-
-    const chosenModel = model ?? this.model;
-
-    // Build request options
-    // max_tokens is required by the Anthropic API — we can't omit it.
-    // Set it high so it's never the constraint; response length is controlled
-    // via prompt instructions, not this parameter. You only pay for tokens
-    // actually generated, not the budget ceiling.
-    //
-    // WHY 64K default: Sonnet/Haiku cap at 64K. Opus also caps at 64K unless
-    // extended thinking is enabled — requesting 128K without thinking causes 400.
-    const isHighOutputModel = chosenModel.includes('opus');
-    const maxOutputTokens = (isHighOutputModel && this.thinkingBudget) ? 128_000 : 64_000;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const requestOptions: any = {
-      model: chosenModel,
-      max_tokens: maxOutputTokens,
-      messages: [
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    };
-
-    const maxTokens = requestOptions.max_tokens;
-    if (this.thinkingBudget && this.thinkingBudget >= maxTokens) {
-      throw new Error(`PRR_THINKING_BUDGET (${this.thinkingBudget}) must be < max_tokens (${maxTokens})`);
-    }
-
-    // Add extended thinking if budget is set
-    if (this.thinkingBudget) {
-      requestOptions.thinking = {
-        type: 'enabled',
-        budget_tokens: this.thinkingBudget,
-      };
-      debug('Using extended thinking', { budget: this.thinkingBudget });
-    } else {
-      // Only use system prompt when not using extended thinking
-      // (extended thinking doesn't support system prompts).
-      // Use block format with cache_control so Anthropic caches the system
-      // prompt prefix across calls. Cache reads are 90% cheaper than base
-      // input — big win for repeated calls like batch analysis and verification.
-      const systemText = systemPrompt || 'You are a helpful code review assistant.';
-      requestOptions.system = [
-        {
-          type: 'text',
-          text: systemText,
-          cache_control: { type: 'ephemeral' },
-        },
-      ];
-    }
-
-    const requestOpts = this.runAbortSignal ? { signal: this.runAbortSignal } : undefined;
-    const response = await this.anthropic.messages.create(requestOptions, requestOpts);
-
-    // Extract text content (skip thinking blocks)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const content = response.content
-      .filter((block: any) => block.type === 'text' && 'text' in block)
-      .map((block: any) => block.text)
-      .join('');
-
-    // Log thinking if present (extended thinking feature)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const thinkingBlock = response.content.find((block: any) => block.type === 'thinking');
-    if (thinkingBlock && 'thinking' in thinkingBlock) {
-      debug('Extended thinking output', (thinkingBlock as any).thinking);
-    }
-
-    // Capture cache usage stats from Anthropic's response.
-    // WHY log: Without observability, you can't tell if caching is actually
-    // working. Cache hits depend on the system prompt exceeding the model's
-    // minimum cacheable size (1024 tokens for Sonnet, 2048 for Haiku). If
-    // you see only cacheWrite with zero cacheRead, the system prompt is too
-    // small or the prefix changed between calls.
-    const usage: any = response.usage;
-    const cacheCreation = usage.cache_creation_input_tokens || 0;
-    const cacheRead = usage.cache_read_input_tokens || 0;
-    if (cacheCreation > 0 || cacheRead > 0) {
-      debug('Anthropic prompt cache', {
-        cacheWrite: cacheCreation,
-        cacheRead: cacheRead,
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        savingsPercent: cacheRead > 0
-          ? Math.round((cacheRead / (response.usage.input_tokens + cacheRead)) * 90) + '%'
-          : '0%',
-      });
-    }
-
-    return {
-      content,
-      usage: {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        cacheCreationInputTokens: cacheCreation || undefined,
-        cacheReadInputTokens: cacheRead || undefined,
-      },
-    };
-  }
-
-  private async completeOpenAI(prompt: string, systemPrompt?: string, model?: string): Promise<LLMResponse> {
-    if (!this.openai) {
-      throw new Error('OpenAI client not initialized');
-    }
-
-    const chosenModel = model ?? this.model;
-
-    const messages: OpenAI.ChatCompletionMessageParam[] = [];
-    
-    // WHY suppress for Qwen: Asking the model not to emit <think> reduces output tokens and latency;
-    // we still strip in response as a fallback for other models or when the instruction is ignored.
-    const noThinkSuffix = /\bqwen\b/i.test(chosenModel)
-      ? '\nDo NOT include <think> tags or internal reasoning. Respond directly.'
-      : '';
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt + noThinkSuffix });
-    } else if (noThinkSuffix) {
-      messages.push({ role: 'system', content: noThinkSuffix.trim() });
-    }
-    
-    messages.push({ role: 'user', content: prompt });
-
-    // Cap completion so estimated input + max_output stays under model context.
-    // WHY: Char preflight uses a separate budget; OpenAI-style APIs still validate **tokens**.
-    // Qwen3-14B is 24,576 ctx — ~32k chars ≈ ~20k input tok + 8192 max out → opaque HTTP 500 (audit).
-    const systemMessageChars = systemPrompt
-      ? (systemPrompt + noThinkSuffix).length
-      : noThinkSuffix
-        ? noThinkSuffix.trim().length
-        : 0;
-    const totalInputChars = systemMessageChars + prompt.length;
-
-    let maxCompletionTokens = ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
-    if (this.provider === 'elizacloud') {
-      const spec = getElizaCloudModelContextSpec(chosenModel);
-      const { approxTokens } = estimateElizacloudInputTokensFromCharLength(chosenModel, totalInputChars);
-      const headroom = spec.maxContextTokens - approxTokens - ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS;
-      const capped = Math.min(
-        ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
-        Math.max(256, headroom),
-      );
-      if (capped < ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS) {
-        debug('ElizaCloud: capping max_completion_tokens for context window', {
-          model: chosenModel,
-          estimatedInputTokensApprox: approxTokens,
-          maxContextTokens: spec.maxContextTokens,
-          maxCompletionTokens: capped,
-        });
-      }
-      maxCompletionTokens = capped;
-    }
-
-    const requestOpts = this.runAbortSignal ? { signal: this.runAbortSignal } : undefined;
-    const response = await this.openai.chat.completions.create(
-      { model: chosenModel, messages, max_completion_tokens: maxCompletionTokens },
-      requestOpts
-    );
-
-    let content = openAiChatCompletionContentToString(response.choices[0]?.message?.content);
-
-    // Strip <think>…</think> reasoning blocks emitted by models like Qwen.
-    // WHY: They waste ~30% output tokens and break parsers that expect content to start
-    // with the answer (e.g. startsWith('YES')). Second replace handles unclosed think (truncated output).
-    if (/<think>/i.test(content)) {
-      content = content
-        .replace(/<think>[\s\S]*?<\/think>\s*/gi, '')
-        .replace(/<think>[\s\S]*/i, '')
-        .trim();
-    }
-
-    return {
-      content,
-      usage: response.usage
-        ? {
-            inputTokens: response.usage.prompt_tokens,
-            outputTokens: response.usage.completion_tokens,
-          }
-        : undefined,
-    };
   }
 
   // Static system prompt for checkIssueExists — extracted here so Anthropic can
@@ -1011,10 +485,13 @@ ${codeSnippet}
     // ensure the model can actually respond to each one.
     // WHY smaller for ElizaCloud: Gateways often 500/504 on large requests.
     // Small models (14b, mini) get 10 issues per batch to avoid 200k-char prompts.
+    // Heavy reasoning models (e.g. Qwen-3-235b) also use 10 — audit (Cycle 72) showed ~8 min wall time
+    // for a single 21-issue batch; smaller batches improve latency and reduce timeout risk.
+    const isSmallOrHeavyElizaBatch =
+      /\b(14b|mini|qwen-3-14b|gpt-4o-mini)\b/i.test(this.model) ||
+      /\bqwen-3-235b?\b/i.test(this.model);
     const defaultMaxPerBatch =
-      this.provider === 'elizacloud'
-        ? (/\b(14b|mini|qwen-3-14b|gpt-4o-mini)\b/i.test(this.model) ? 10 : 25)
-        : 50;
+      this.provider === 'elizacloud' ? (isSmallOrHeavyElizaBatch ? 10 : 25) : 50;
     const MAX_ISSUES_PER_BATCH = maxIssuesPerBatch ?? defaultMaxPerBatch;
     const batches: Array<{ issues: typeof issues; issueTexts: string[] }> = [];
     let currentBatch: typeof issues = [];
@@ -1518,6 +995,7 @@ ${codeSnippet}
         filePath: string;
         line: number | null;
         codeSnippet: string;
+        fixSiteInWindow?: boolean;
       }>;
     }>,
     batchIssueCount: number,
@@ -1572,6 +1050,7 @@ ${codeSnippet}
       filePath: string;
       line: number | null;
       codeSnippet: string;
+      fixSiteInWindow?: boolean;
     }>,
     sourceGroups: Array<{
       filePath: string;
@@ -1582,6 +1061,7 @@ ${codeSnippet}
         filePath: string;
         line: number | null;
         codeSnippet: string;
+        fixSiteInWindow?: boolean;
       }>;
     }>,
   ): Array<{
@@ -1593,6 +1073,7 @@ ${codeSnippet}
       filePath: string;
       line: number | null;
       codeSnippet: string;
+      fixSiteInWindow?: boolean;
     }>;
   }> {
     const snippetById = new Map<string, string>();
@@ -1639,6 +1120,7 @@ ${codeSnippet}
         filePath: string;
         line: number | null;
         codeSnippet: string;
+        fixSiteInWindow?: boolean;
       }>;
     }>,
     batchIssueCount: number,
@@ -1732,6 +1214,7 @@ ${codeSnippet}
         filePath: string;
         line: number | null;
         codeSnippet: string;
+        fixSiteInWindow?: boolean;
       }>;
     }>,
     headerParts: string[],
@@ -1827,6 +1310,8 @@ ${codeSnippet}
       filePath: string;
       line: number | null;
       codeSnippet: string;
+      /** When true (from `getFullFileForAudit`), skip UNFIXED demotion for excerpt-shaped snippets — anchor is in view. */
+      fixSiteInWindow?: boolean;
     }>,
     maxContextChars: number = 400_000,
     /** Optional phase for prompts.log metadata (e.g. 'final-audit'). */
@@ -2066,6 +1551,7 @@ ${codeSnippet}
             // Truncation guard: partial excerpt + UNFIXED without strong code cite (or visibility hedge) → pass.
             if (
               !isFixed &&
+              issue.fixSiteInWindow !== true &&
               finalAuditSnippetLooksTruncatedOrExcerpt(issue.codeSnippet) &&
               !snippetShowsUuidCommentAlignedWithVersionRange(issue.codeSnippet)
             ) {
@@ -2333,9 +1819,11 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
   /** Max fixes per request to avoid 500 on large verification prompts (e.g. 26 fixes → 124k chars). */
   private static readonly MAX_VERIFY_FIXES_PER_BATCH = 6;
-  /** Per-fix truncation so batches stay under gateway limits. WHY 8k/1500: Audit showed 2k code + 800 comment
-   * caused false negatives (verifier couldn't see relevant section); larger limits match anchored snippet size. */
-  private static readonly MAX_VERIFY_CURRENT_CODE_CHARS = 8000;
+  /**
+   * Hard ceiling on batch verify user prompt size (chars) for ElizaCloud even when the model claims a large context.
+   * WHY: Gateways time out or drop connections on 30k–50k verify payloads (prompts.log audit); splitting batches cuts wall time.
+   */
+  private static readonly MAX_VERIFY_BATCH_PROMPT_CHARS_ELIZACLOUD = 72_000;
   private static readonly MAX_VERIFY_DIFF_CHARS = 2500;
   private static readonly MAX_VERIFY_COMMENT_CHARS = 1500;
 
@@ -2355,29 +1843,34 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     }
 
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
-    const batchSize = LLMClient.MAX_VERIFY_FIXES_PER_BATCH;
-    const batches = Array.from(
-      { length: Math.ceil(fixes.length / batchSize) },
-      (_, i) => fixes.slice(i * batchSize, (i + 1) * batchSize)
-    );
+    const verifyModel = options?.model ?? this.verifierModel ?? this.model ?? '';
+    const batches = this.partitionFixesForVerifyBatches(fixes, verifyModel);
+    if (batches.length > 1) {
+      debug('Verify batches split', {
+        batchCount: batches.length,
+        fixes: fixes.length,
+        provider: this.provider,
+        model: verifyModel,
+      });
+    }
 
     // WHY verifierModel/options.model: Verification accuracy drives fix-loop decisions. Audit showed false negatives
     // with a weak default model. Prefer PRR_VERIFIER_MODEL (or caller override) over default llmModel for verification.
     const MAX_VERIFY_RETRIES = 1;
     for (let b = 0; b < batches.length; b++) {
       const batchFixes = batches[b];
-      const batchPrompt = this.buildBatchVerifyPrompt(batchFixes);
+      const batchPrompt = this.buildBatchVerifyPrompt(batchFixes, verifyModel);
       debug('Batch verifying fixes', { batch: b + 1, totalBatches: batches.length, count: batchFixes.length, modelOverride: !!options?.model });
       let batchResults: Map<string, { fixed: boolean; explanation: string; lesson?: string }> | null = null;
       for (let attempt = 0; attempt <= MAX_VERIFY_RETRIES; attempt++) {
         try {
-          const verifyModel = options?.model ?? this.verifierModel ?? this.model;
           const response = await this.complete(batchPrompt, undefined, { model: verifyModel });
           batchResults = this.parseBatchVerifyResponse(batchFixes, response.content);
           break;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
+          const isTransient =
+            /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up|connection error|ETIMEDOUT/i.test(msg);
           if (isTransient && attempt < MAX_VERIFY_RETRIES) {
             debug('Batch verify failed (transient), retrying', { batch: b + 1, attempt: attempt + 1, error: msg.slice(0, 80) });
             continue;
@@ -2458,82 +1951,49 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
   }
 
   /**
-   * When post-fix "Current Code" exceeds the verify char budget, keep a window around the review line
-   * instead of truncating from byte 0 (which drops the hunk and leaves only imports — prompts.log audit).
+   * Pack fixes into verify batches under {@link MAX_VERIFY_FIXES_PER_BATCH} and a char budget.
+   * WHY: Fixed "6 fixes" batches still produced 30k+ prompts with large files; ElizaCloud then stalls or connection-errors (prompts.log audit #0022).
    */
-  private static truncateVerificationCurrentCode(
-    raw: string,
-    anchorLine: number | null | undefined,
-    maxChars: number,
-  ): string {
-    if (raw.length <= maxChars) return raw;
-    const lines = raw.split('\n');
-    const footerLines: string[] = [];
-    const bodyLines = [...lines];
-    while (bodyLines.length > 0) {
-      const last = bodyLines[bodyLines.length - 1] ?? '';
-      if (
-        /^\(end of file — \d+ lines total\)\s*$/.test(last) ||
-        /^\.\.\. \(truncated — file has \d+ lines total\)\s*$/.test(last)
-      ) {
-        footerLines.unshift(last);
-        bodyLines.pop();
+  private partitionFixesForVerifyBatches(
+    fixes: Array<{
+      id: string;
+      comment: string;
+      filePath: string;
+      line?: number | null;
+      diff: string;
+      currentCode?: string;
+    }>,
+    verifyModel: string,
+  ): Array<(typeof fixes)[number][]> {
+    const maxPerBatch = LLMClient.MAX_VERIFY_FIXES_PER_BATCH;
+    const modelKey = verifyModel || this.model;
+    const maxChars =
+      this.provider === 'elizacloud' && modelKey
+        ? Math.min(
+            Math.floor(getMaxElizacloudLlmCompleteInputChars(modelKey) * 0.9),
+            LLMClient.MAX_VERIFY_BATCH_PROMPT_CHARS_ELIZACLOUD,
+          )
+        : 200_000;
+
+    const batches: Array<(typeof fixes)[number][]> = [];
+    let cur: (typeof fixes)[number][] = [];
+    for (const f of fixes) {
+      const trial = [...cur, f];
+      if (trial.length > maxPerBatch) {
+        batches.push(cur);
+        cur = [f];
         continue;
       }
-      break;
-    }
-    type Row = { lineNum: number; text: string };
-    const rows: Row[] = [];
-    for (let i = 0; i < bodyLines.length; i++) {
-      const text = bodyLines[i] ?? '';
-      const m = text.match(/^(\d+):\s?(.*)$/);
-      if (m) {
-        rows.push({ lineNum: parseInt(m[1]!, 10), text });
+      const promptLen = this.buildBatchVerifyPrompt(trial, modelKey).length;
+      if (promptLen > maxChars && cur.length > 0) {
+        batches.push(cur);
+        cur = [f];
+        continue;
       }
+      cur = trial;
     }
-    if (rows.length === 0) {
-      return raw.substring(0, Math.max(0, maxChars - 80)) + '\n... (truncated — snippet was cut for prompt size)';
-    }
-    let center = Math.floor(rows.length / 2);
-    if (anchorLine != null && anchorLine > 0) {
-      let best = 0;
-      let bestDist = Infinity;
-      for (let k = 0; k < rows.length; k++) {
-        const d = Math.abs(rows[k].lineNum - anchorLine);
-        if (d < bestDist) {
-          bestDist = d;
-          best = k;
-        }
-      }
-      center = best;
-    }
-    let lo = center;
-    let hi = center;
-    const sliceText = () => rows.slice(lo, hi + 1).map((r) => r.text).join('\n');
-    let chunk = sliceText();
-    const note = '\n... (truncated — centered on review line for prompt budget)';
-    const maxBody = Math.max(400, maxChars - note.length - footerLines.reduce((s, l) => s + l.length + 1, 0));
-    while (chunk.length < maxBody && (lo > 0 || hi < rows.length - 1)) {
-      const canHi = hi < rows.length - 1;
-      const canLo = lo > 0;
-      if (canHi && (!canLo || hi - center <= center - lo)) hi++;
-      else if (canLo) lo--;
-      else if (canHi) hi++;
-      else break;
-      const next = sliceText();
-      if (next.length > maxBody) break;
-      chunk = next;
-    }
-    while (chunk.length > maxBody && lo < hi) {
-      if (hi - center >= center - lo) hi--;
-      else lo--;
-      chunk = sliceText();
-    }
-    if (chunk.length > maxBody) {
-      chunk = chunk.substring(0, Math.max(0, maxBody - 60)) + '\n...';
-    }
-    const footer = footerLines.length > 0 ? '\n' + footerLines.join('\n') : '';
-    return chunk + note + footer;
+    if (cur.length > 0) batches.push(cur);
+    return batches;
   }
 
   private buildBatchVerifyPrompt(
@@ -2544,7 +2004,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       line?: number | null;
       diff: string;
       currentCode?: string;
-    }>
+    }>,
+    verifyModel: string
   ): string {
     // Build batch prompt — verification + failure analysis in a single LLM call.
     const parts: string[] = [
@@ -2582,7 +2043,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       '',
     ];
 
-    const maxCode = LLMClient.MAX_VERIFY_CURRENT_CODE_CHARS;
+    const maxCode = computePerFixVerifyCurrentCodeBudget(verifyModel, fixes.length);
     const maxDiff = LLMClient.MAX_VERIFY_DIFF_CHARS;
     const maxComment = LLMClient.MAX_VERIFY_COMMENT_CHARS;
     for (let i = 0; i < fixes.length; i++) {
@@ -2595,7 +2056,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       const currentCode =
         rawCurrent && rawCurrent.length > 0
           ? rawCurrent.length > maxCode
-            ? LLMClient.truncateVerificationCurrentCode(rawCurrent, fix.line ?? null, maxCode)
+            ? truncateNumberedCodeAroundAnchor(rawCurrent, fix.line ?? null, maxCode)
             : rawCurrent
           : undefined;
       const diff =
@@ -2766,7 +2227,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
           baseBranch,
           filePath,
           options.previousParseError
-        ) + `\n\nOutput the COMPLETE resolved file. ${getConflictFileTypeRules(filePath)}`
+        ) + '\n\nOutput the COMPLETE resolved file.'
       : `You are resolving a Git merge conflict.
 
 FILE: ${filePath}

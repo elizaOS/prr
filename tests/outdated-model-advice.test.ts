@@ -308,6 +308,47 @@ describe('applyCatalogModelAutoHeals', () => {
     }
   });
 
+  it('skips auto-heal when workdir has uncommitted changes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-heal-dirty-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir, env: gitEnv });
+      const rel = 'examples/telegram-agent.ts';
+      mkdirSync(join(dir, 'examples'), { recursive: true });
+      writeFileSync(join(dir, rel), 'export const X = "gpt-4o-mini";\n', 'utf8');
+      execFileSync('git', ['add', '.'], { cwd: dir, env: gitEnv });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, env: gitEnv });
+      writeFileSync(join(dir, 'other.ts'), '// dirty\n', 'utf8');
+
+      const body =
+        '❌ CRITICAL: Model name typo in example\nChange gpt-5-mini to gpt-4o-mini';
+      const comment: ReviewComment = {
+        id: 'ic_heal_dirty',
+        threadId: 't_dirty',
+        author: 'claude',
+        body,
+        path: rel,
+        line: 1,
+        createdAt: new Date().toISOString(),
+      };
+      const ctx: StateContext = {
+        statePath: join(dir, '.pr-resolver-state.json'),
+        state: {
+          iterations: [],
+          verifiedFixed: [],
+          verifiedComments: [],
+          dismissedIssues: [],
+        } as ResolverState,
+        currentPhase: 'test',
+      };
+      const outcome = applyCatalogModelAutoHeals(dir, [comment], ctx);
+      expect(outcome.modifiedPaths).toEqual([]);
+      expect(outcome.verificationTouched).toBe(false);
+      expect(readFileSync(join(dir, rel), 'utf8')).toContain('gpt-4o-mini');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('heals quoted wrong id outside ±20 line window via full-file fallback', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prr-heal-full-'));
     try {

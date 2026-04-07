@@ -1,6 +1,6 @@
 # LLM Models Reference
 
-This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits in **`shared/llm/model-context-limits.ts`** (re-exported from `tools/prr/llm/model-context-limits.ts`).
+This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits in **`shared/llm/model-context-limits.ts`** (**`tools/prr/llm/model-context-limits.ts`** re-exports the same symbols for stable imports from workflow code).
 
 **Sources (check for latest):**
 
@@ -124,7 +124,7 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 - **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from `shared/constants.ts`. Do not assume the static table in `types.ts` is the exact live order.
 - **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`**. The table below is a **snapshot for operators**; if it disagrees with the source array, **trust the source file** and update this table when you change skips.
 
-**Last reviewed (skip table):** 2026-03-28 — pill-output / audit follow-up (Qwen 14B default churn, empty-response logging).
+**Last reviewed (skip table):** 2026-04-05 — constants sync + env skip-list validation (`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` / `INCLUDE` malformed tokens ignored with one-time warn).
 
 | Model id | Reason in **`ELIZACLOUD_SKIP_REASON`** | Notes |
 |----------|----------------------------------------|--------|
@@ -147,7 +147,14 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 - **`getElizaCloudSkipReason(id)`:** ids **not** in **`ELIZACLOUD_SKIP_REASON`** use default **`timeout`** so new skip entries still rotate with a sensible debug line until you assign **`zero-fix-rate`**.
 - **Operational habit:** When **RESULTS SUMMARY** / Model Performance shows **0%** fix rate for an ElizaCloud id, add it (with reason + comment) to **`shared/constants.ts`** and bump the “last reviewed” line above — same guidance as **AGENTS.md**.
 
+### Re-evaluating skips (maintainer)
+
+1. **Evidence:** Use **RESULTS SUMMARY** → **Model Performance** in **`output.log`** (per-model success/fail counts). Pill may omit tables when the log is summarized — grep **`Model Performance`** in the raw log for critical runs (**AGENTS.md**).
+2. **Timeout vs zero-fix:** **`getElizaCloudSkipReason(id)`** returns **`timeout`** (default) or **`zero-fix-rate`**. Timeout-skipped models may be worth retrying after gateway changes — set **`PRR_ELIZACLOUD_INCLUDE_MODELS`** to the full id (or short suffix per **`getEffectiveElizacloudSkipModelIds`**) for a trial run.
+3. **Edit source of truth:** Change **`ELIZACLOUD_SKIP_MODEL_IDS`** and **`ELIZACLOUD_SKIP_REASON`** in **`shared/constants/models.ts`** (barreled as **`shared/constants.js`**). Run **`npm test`**; update the snapshot table above and **Last reviewed**.
+4. **Env-only skips:** **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** merges comma-separated ids; **`PRR_ELIZACLOUD_INCLUDE_MODELS`** subtracts. Entries with **`//`**, empty tokens, or invalid characters are **dropped** with a one-time **`console.warn`** — fix the env string if a model you expected is missing from the effective list.
+
 - **Per-run performance:** Success/failure is recorded in state; rotation can prefer better-performing models within the same run. **`PRR_SESSION_MODEL_SKIP_FAILURES`** skips a tool/model for the rest of the process after repeated verification failures with zero verified fixes.
-- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** positive integer — every N completed **fix** iterations (inner loop inside a push iteration), clear **session** skips so rotation can retry those models **without** restarting the process. **`0`** / unset = off. **WHY:** Long runs otherwise never revisit a model skipped early for transient failures (pill-output #847).
+- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** positive integer — each session-skipped tool/model key is removed after N **subsequent** completed **fix** iterations (counted from when that key was skipped), so rotation can retry it **without** restarting the process. **`0`** / unset = off. **WHY:** Long runs otherwise never revisit a model skipped early for transient failures (pill-output #847); per-key timing avoids clearing fresher skips on a single global boundary.
 
 *Provider model tables: last curated from linked docs; verify there for current IDs and pricing.*

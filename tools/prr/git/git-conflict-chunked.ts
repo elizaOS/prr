@@ -7,6 +7,7 @@
  */
 
 import type { LLMClient } from '../llm/client.js';
+import { getConflictFileTypeRules } from '../llm/error-helpers.js';
 import { debug } from '../../../shared/logger.js';
 import {
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
@@ -113,7 +114,11 @@ export function buildConflictResolutionPromptThreeWay(
   const parseHint = previousParseError
     ? `\n\nIMPORTANT: A previous resolution attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is complete, valid code (e.g. close all block comments with */, no missing commas or brackets).\n`
     : '';
-  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}
+  const fileRules = filePath ? getConflictFileTypeRules(filePath) : '';
+  const fileRulesBlock = fileRules
+    ? `\n\nApply to the RESOLVED block:${fileRules}`
+    : '';
+  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}${fileRulesBlock}
 
 BASE (common ancestor):
 \`\`\`

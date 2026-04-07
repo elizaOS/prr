@@ -362,14 +362,15 @@ export function assessSolvability(
     };
   }
 
-  // Check 0a2: Summary/meta-review comments (reviewer recap tables: "| Issue | Status |" with ✅/❌/Fixed/Still missing)
+  // Check 0a2: Summary/meta-review comments (status tables, "### Summary", CodeRabbit rollups)
   // WHY: These are status recaps of many issues, not a single fixable item. Treating them as one issue causes
-  // verifier confusion (e.g. "patchComponent tests: Still missing" row → NO with wrong reasoning). Dismiss so we don't fix "the summary".
+  // verifier confusion (e.g. "patchComponent tests: Still missing" row → NO with wrong reasoning) or burns
+  // single-issue / couldNotInject cycles on headings like "### Remaining Issues" (Cycle 72 / eliza#6702).
   if (isSummaryOrMetaReviewComment(comment.body)) {
     return {
       solvable: false,
       dismissCategory: 'not-an-issue',
-      reason: 'Summary or meta-review comment (status recap table), not a single fixable issue',
+      reason: 'Summary or meta-review comment (status recap / rollup heading), not a single fixable issue',
     };
   }
 
@@ -1022,6 +1023,18 @@ export async function recheckSolvability(
  * metadata keyword AND an action verb in the same sentence.
  */
 function isSummaryOrMetaReviewComment(commentBody: string): boolean {
+  const rollupWindow = commentBody.slice(0, 1500);
+  // Cycle 72: CodeRabbit (and similar) posts section headers that summarize many threads — not one code fix.
+  // WHY early regex: These often fail table/### Summary heuristics but still enter the fix loop and consume focus slots.
+  const rollupHeading =
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bRemaining Issues\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bIssues\s+Fixed\s+Since\s+Previous\s+Reviews\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bIssues\s+Addressed\s+in\s+Previous\s+Reviews\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bPreviously\s+Fixed\s+Issues\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bOutstanding\s+Issues\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bIssues\s+from\s+Previous\s+Reviews\b/im.test(rollupWindow);
+  if (rollupHeading) return true;
+
   const head = commentBody.slice(0, 800);
   // Table with Status column and status-like cells (✅/❌/Fixed/Still missing/Addressed)
   const hasStatusTable =

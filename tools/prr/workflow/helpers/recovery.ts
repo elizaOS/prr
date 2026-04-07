@@ -39,6 +39,7 @@ import {
   issueRequestsTests,
   reviewSuggestsFixInTest,
 } from '../../analyzer/prompt-builder.js';
+import { testBasenameWithSuffix } from '../../analyzer/test-path-inference.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../../shared/path-utils.js';
 import * as fs from 'fs';
 
@@ -157,7 +158,7 @@ export async function trySingleIssueFix(
       if (/\.(?:ts|tsx|js|jsx)$/.test(srcPath)) {
         const stem = basename(srcPath).replace(/\.(ts|tsx|js|jsx)$/i, '');
         const ext = (srcPath.match(/\.(ts|tsx|js|jsx)$/i) ?? [])[1] ?? 'ts';
-        const testsRootPath = `__tests__/${stem}.test.${ext}`;
+        const testsRootPath = `__tests__/${testBasenameWithSuffix(stem, `.${ext}`, 'test')}`;
         if (isPathAllowedForFix(testsRootPath) && !allowedForIssue.includes(testsRootPath)) {
           allowedForIssue = [...allowedForIssue, testsRootPath];
         }

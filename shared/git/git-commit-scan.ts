@@ -145,7 +145,12 @@ export async function scanCommittedFixes(
     if (logOutput) {
       const lines = logOutput.split('\n');
       for (const line of lines) {
-        const match = line.match(/^prr-fix:(.+)$/);
+        // Use \S+ (non-whitespace) rather than .+ so trailing text or trailing
+        // newline artifacts in commit messages don't get captured as part of the ID.
+        // WHY: `^prr-fix:(.+)$` with `.trim()` handles trailing whitespace but not
+        // trailing non-whitespace text (e.g. "prr-fix:ID extra-note" would capture
+        // "ID extra-note" as the ID, which would never match state). (Pattern B, 2026-04-05)
+        const match = line.match(/^prr-fix:(\S+)/);
         if (match) {
           // Preserve original casing from commit messages.
           // WHY NOT lowercase: The state's verifiedFixed array stores IDs in
