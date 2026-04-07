@@ -8,7 +8,7 @@ import { debug, debugPrompt, debugPromptError, debugResponse, formatNumber } fro
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
-import { getMaxFixPromptCharsForModel, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
+import { getMaxFixPromptCharsForModel, getMaxElizacloudHardInputCeiling, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient } from '../llm/elizacloud.js';
 import { openAiChatCompletionContentToString } from '../llm/openai-chat-content.js';
 import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../llm/rate-limit.js';
@@ -644,8 +644,14 @@ Working directory: ${workdir}`;
       if (is504OrTimeout) {
         this.consecutive504Count++;
         if (this.provider === 'elizacloud' && model) {
-          lowerModelMaxPromptChars(this.provider ?? 'elizacloud', model, enrichedPrompt.length);
-          debug('Lowered prompt cap for model after timeout', { model, sentChars: enrichedPrompt.length });
+          const hardCeiling = getMaxElizacloudHardInputCeiling(model);
+          const promptRatio = enrichedPrompt.length / hardCeiling;
+          if (promptRatio > 0.3) {
+            lowerModelMaxPromptChars(this.provider ?? 'elizacloud', model, enrichedPrompt.length);
+            debug('Lowered prompt cap for model after timeout', { model, sentChars: enrichedPrompt.length, promptRatio: promptRatio.toFixed(2) });
+          } else {
+            debug('Timeout on small prompt relative to context — not lowering cap', { model, sentChars: enrichedPrompt.length, hardCeiling, promptRatio: promptRatio.toFixed(2) });
+          }
         }
         // De-escalate full-file rewrite so next attempt uses smaller prompt and may complete.
         if (rewriteFiles.length > 0) {

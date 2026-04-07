@@ -20,6 +20,7 @@ import {
   ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
   estimateElizacloudInputTokensFromCharLength,
   getElizaCloudModelContextSpec,
+  getMaxElizacloudHardInputCeiling,
   getMaxElizacloudLlmCompleteInputChars,
   lowerModelMaxPromptChars,
 } from '../../../shared/llm/model-context-limits.js';
@@ -274,19 +275,25 @@ export async function llmComplete(
     }
     debug(`LLM request to ${deps.provider}/${chosenModel}`, baseDebug);
 
-    // ElizaCloud: fail fast when total input exceeds configured budget. Gateways often
-    // return 500 (no body) for oversize upstream — retries waste minutes (audit: qwen 93k vs ~42k cap).
+    // ElizaCloud: fail fast when total input exceeds the model's **context-derived** hard
+    // ceiling. WHY hard ceiling vs budget: `lowerModelMaxPromptChars` adaptively shrinks the
+    // budget after timeouts (which may be gateway lag, not context overflow). A 40k prompt on
+    // a 200k-context model should never be rejected just because a prior timeout lowered the
+    // cap. Only reject when the prompt genuinely can't fit the model's context window.
     if (deps.provider === 'elizacloud') {
-      const maxTotal = getMaxElizacloudLlmCompleteInputChars(chosenModel);
       const total = prompt.length + (systemPrompt?.length ?? 0);
-      if (total > maxTotal) {
+      const hardCeiling = getMaxElizacloudHardInputCeiling(chosenModel);
+      const softBudget = getMaxElizacloudLlmCompleteInputChars(chosenModel);
+      if (total > hardCeiling) {
         const detail = elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt);
-        warn(
-          `ElizaCloud prompt exceeds model input budget (${formatNumber(total)} chars > ${formatNumber(maxTotal)}). Use a larger-context model, split verification batches, or adjust ELIZACLOUD_MODEL_CONTEXT.`,
-        );
-        debug('ElizaCloud input budget exceeded (detail)', detail);
+        debug('ElizaCloud input exceeds context-derived hard ceiling', detail);
         throw new Error(
-          `ElizaCloud request too large for ${chosenModel}: ${formatNumber(total)} chars (max ${formatNumber(maxTotal)}).`,
+          `ElizaCloud request too large for ${chosenModel}: ${formatNumber(total)} chars (context ceiling ${formatNumber(hardCeiling)}).`,
+        );
+      }
+      if (total > softBudget) {
+        debug(
+          `ElizaCloud prompt exceeds adaptive budget (${formatNumber(total)} chars > ${formatNumber(softBudget)}) but within context ceiling (${formatNumber(hardCeiling)}); proceeding`,
         );
       }
     }
@@ -348,9 +355,9 @@ export async function llmComplete(
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
               const contextOverflow = isLikelyContextLengthExceededError(e504);
               const totalChars = prompt.length + (systemPrompt?.length ?? 0);
-              const overConfiguredBudget =
+              const overHardCeiling =
                 deps.provider === 'elizacloud' &&
-                totalChars > getMaxElizacloudLlmCompleteInputChars(requestModel);
+                totalChars > getMaxElizacloudHardInputCeiling(requestModel);
               if (contextOverflow && deps.provider === 'elizacloud') {
                 lowerModelMaxPromptChars('elizacloud', requestModel, prompt.length);
                 debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
@@ -390,7 +397,7 @@ export async function llmComplete(
                 attempt504 < max504Retries &&
                 (isServerError(e504) || timeoutMsg) &&
                 !contextOverflow &&
-                !overConfiguredBudget
+                !overHardCeiling
               ) {
                 const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
                 debug('Server error or request timeout, retrying', {
