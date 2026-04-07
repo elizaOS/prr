@@ -583,6 +583,67 @@ function findDuplicateJsonKey(text: string): string | null {
 }
 
 /**
+ * Attempt programmatic repair of common LLM JSON merge artifacts before rejecting.
+ * Fixes trailing commas, missing commas between merged sections, and duplicate keys
+ * (keeps the last occurrence, matching JSON.parse semantics).
+ * Returns null if the result still doesn't parse.
+ */
+function tryRepairJson(text: string): string | null {
+  let s = text;
+
+  // 1. Remove trailing commas before } or ]
+  s = s.replace(/,(\s*[}\]])/g, '$1');
+
+  // 2. Insert missing commas: line ending with `"` or `}` followed by a line starting with `"`
+  //    (e.g., two key-value lines from different chunks with no comma between them)
+  s = s.replace(/"(\s*\n\s*"[^"]+"\s*:)/g, '",$1');
+  s = s.replace(/}(\s*\n\s*"[^"]+"\s*:)/g, '},$1');
+
+  // 3. Try parse; if it fails, bail
+  try {
+    JSON.parse(s);
+  } catch {
+    return null;
+  }
+
+  // 4. Remove duplicate keys (keep last) by round-tripping through the parsed object
+  //    JSON.parse already does last-wins, so we parse → stringify.
+  //    BUT: we want to preserve the original formatting. Instead, detect and remove
+  //    earlier duplicate lines.
+  const dupeKey = findDuplicateJsonKey(s);
+  if (dupeKey) {
+    const lines = s.split('\n');
+    const keyPattern = new RegExp(`^\\s*"${dupeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:`);
+    const matchingIndices: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (keyPattern.test(lines[i]!)) matchingIndices.push(i);
+    }
+    if (matchingIndices.length > 1) {
+      // Remove all but the last occurrence
+      for (let k = 0; k < matchingIndices.length - 1; k++) {
+        let line = lines[matchingIndices[k]!]!;
+        if (line.trimEnd().endsWith(',')) {
+          lines[matchingIndices[k]!] = '';
+        } else {
+          lines[matchingIndices[k]!] = '';
+          // If the previous non-empty line has a trailing comma, it's fine; otherwise
+          // we might leave a comma gap. Better to be safe and re-check after.
+        }
+      }
+      s = lines.filter(l => l !== '').join('\n');
+      // Remove any trailing commas we created
+      s = s.replace(/,(\s*[}\]])/g, '$1');
+      // Verify it still parses
+      try { JSON.parse(s); } catch { return null; }
+      // Check for more duplicates (different key)
+      if (findDuplicateJsonKey(s)) return null;
+    }
+  }
+
+  return s;
+}
+
+/**
  * Validate that resolved content is sane before writing to disk.
  * 
  * WHY: LLMs sometimes catastrophically corrupt files during conflict resolution.
@@ -1191,9 +1252,24 @@ export async function resolveConflictsWithLLM(
           // WHY: Catches corrupted resolutions (invalid JSON, catastrophic truncation)
           // before they get committed and pushed. Better to bail to manual resolution
           // than to push garbage.
-          const validation = validateResolvedContent(conflictFile, conflictedContent, result.content, {
+          let validation = validateResolvedContent(conflictFile, conflictedContent, result.content, {
             skipSizeRegression: resolutionSkipsSizeRegression,
           });
+          // Auto-repair common JSON merge artifacts before rejecting
+          if (!validation.valid && conflictFile.endsWith('.json')) {
+            const repaired = tryRepairJson(result.content);
+            if (repaired) {
+              const recheck = validateResolvedContent(conflictFile, conflictedContent, repaired, {
+                skipSizeRegression: resolutionSkipsSizeRegression,
+              });
+              if (recheck.valid) {
+                debug('JSON auto-repair succeeded', { file: conflictFile, originalReason: validation.reason });
+                console.log(chalk.blue(`    → Auto-repaired JSON (${validation.reason})`));
+                result = { resolved: true, content: repaired, explanation: result.explanation + ' (JSON auto-repaired)' };
+                validation = recheck;
+              }
+            }
+          }
           if (!validation.valid) {
             debug('Resolution rejected by validation', { file: conflictFile, reason: validation.reason });
             result = {
@@ -1319,7 +1395,21 @@ export async function resolveConflictsWithLLM(
           }
           if (fallbackResult.resolved) {
             // WHY: Same validation as main path — size/JSON and parse — so we never stage broken output.
-            const fbValidation = validateResolvedContent(conflictFile, conflictedContent, fallbackResult.content);
+            let fbContent = fallbackResult.content;
+            let fbValidation = validateResolvedContent(conflictFile, conflictedContent, fbContent);
+            if (!fbValidation.valid && conflictFile.endsWith('.json')) {
+              const repaired = tryRepairJson(fbContent);
+              if (repaired) {
+                const rc = validateResolvedContent(conflictFile, conflictedContent, repaired);
+                if (rc.valid) {
+                  debug('JSON auto-repair succeeded (top+tails fallback)', { file: conflictFile, originalReason: fbValidation.reason });
+                  console.log(chalk.blue(`    → Auto-repaired JSON in fallback (${fbValidation.reason})`));
+                  fbContent = repaired;
+                  fbValidation = rc;
+                  fallbackResult = { ...fallbackResult, content: repaired };
+                }
+              }
+            }
             if (fbValidation.valid) {
               const fbParse = await validateResolvedFileContent(fallbackResult.content, conflictFile);
               if (fbParse.valid) {
