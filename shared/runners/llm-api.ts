@@ -458,6 +458,7 @@ Working directory: ${workdir}`;
 
     // Full-file rewrite prompts are larger; use a longer timeout so the request can complete.
     const requestTimeoutMs = rewriteFiles.length > 0 ? LLM_REQUEST_TIMEOUT_FULL_FILE_MS : LLM_REQUEST_TIMEOUT_MS;
+    debug('Request timeout for this call', { timeoutMs: requestTimeoutMs, isFullFileRewrite: rewriteFiles.length > 0 });
 
     // Cooldown: after 3+ consecutive 504/timeouts, pause so gateway can recover.
     if (this.consecutive504Count >= CONSECUTIVE_504_COOLDOWN_THRESHOLD) {
@@ -473,9 +474,9 @@ Working directory: ${workdir}`;
 
       if (this.provider === 'anthropic' && anthropic) {
         const model = options?.model || DEFAULT_ANTHROPIC_MODEL;
-        debug('Calling Anthropic API', { model });
+        debug('Calling Anthropic API', { model, timeoutMs: requestTimeoutMs });
         
-        console.log(`\n🧠 Calling ${model}...\n`);
+        console.log(`\n🧠 Calling ${model} (timeout ${Math.round(requestTimeoutMs / 1000)}s)...\n`);
 
         const maxTokens = getAnthropicMaxTokens(model);
         const result = await with504Retry(
@@ -499,9 +500,9 @@ Working directory: ${workdir}`;
           outputTokens: result.usage.output_tokens,
         });
       } else if ((this.provider === 'elizacloud' || this.provider === 'openai') && openai) {
-        debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model });
+        debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model, timeoutMs: requestTimeoutMs });
 
-        console.log(`\n🧠 Calling ${model}...\n`);
+        console.log(`\n🧠 Calling ${model} (timeout ${Math.round(requestTimeoutMs / 1000)}s)...\n`);
 
         if (this.provider === 'elizacloud') {
           await acquireElizacloud();
