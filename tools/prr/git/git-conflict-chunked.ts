@@ -1216,6 +1216,28 @@ export async function resolveConflictsWithTopTailsFallback(
         resolvedLines = resolvedCode.split('\n');
         explanations.push(`Lines ${chunk.startLine}-${chunk.endLine}: top+tails`);
       }
+      // Strip contextBefore lines that the model may have echoed back.
+      // The stitching code already preserves non-conflict lines before the chunk,
+      // so including them in the resolved output would duplicate them.
+      if (chunk.contextBefore.length > 0 && resolvedLines.length > chunk.contextBefore.length) {
+        const ctxLines = chunk.contextBefore;
+        let prefixMatch = true;
+        for (let ci = 0; ci < ctxLines.length; ci++) {
+          if (resolvedLines[ci]?.trim() !== ctxLines[ci]?.trim()) {
+            prefixMatch = false;
+            break;
+          }
+        }
+        if (prefixMatch) {
+          debug('Top+tails: stripping echoed contextBefore from resolved output', {
+            filePath,
+            strippedLines: ctxLines.length,
+            chunkStart: chunk.startLine,
+          });
+          resolvedLines = resolvedLines.slice(ctxLines.length);
+        }
+      }
+
       resolutions.set(chunk.startLine, resolvedLines);
     } catch (e) {
       debug('Top+tails fallback LLM error', { filePath, error: e });

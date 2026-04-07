@@ -588,56 +588,74 @@ function findDuplicateJsonKey(text: string): string | null {
  * (keeps the last occurrence, matching JSON.parse semantics).
  * Returns null if the result still doesn't parse.
  */
+/** Extract the character position from a JSON.parse error message (e.g. "at position 4460"). */
+function extractJsonErrorPosition(err: unknown): number | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = msg.match(/at position (\d+)/);
+  return m ? parseInt(m[1]!, 10) : null;
+}
+
 function tryRepairJson(text: string): string | null {
+  // Bail early on conflict markers — those need resolution, not syntax repair
+  if (/^<{7}\s|^={7}$|^>{7}\s/m.test(text)) return null;
+
   let s = text;
 
   // 1. Remove trailing commas before } or ]
   s = s.replace(/,(\s*[}\]])/g, '$1');
 
-  // 2. Insert missing commas: line ending with `"` or `}` followed by a line starting with `"`
-  //    (e.g., two key-value lines from different chunks with no comma between them)
+  // 2. Insert missing commas: line ending with a JSON value followed by a key line.
+  //    Common when LLM resolves chunks separately — last line of chunk N has no
+  //    trailing comma, first line of chunk N+1 starts a new key.
+  //    Handles: "value", }, ], number, true, false, null
   s = s.replace(/"(\s*\n\s*"[^"]+"\s*:)/g, '",$1');
   s = s.replace(/}(\s*\n\s*"[^"]+"\s*:)/g, '},$1');
+  s = s.replace(/](\s*\n\s*"[^"]+"\s*:)/g, '],$1');
+  s = s.replace(/(true|false|null|\d)(\s*\n\s*"[^"]+"\s*:)/g, '$1,$2');
 
-  // 3. Try parse; if it fails, bail
-  try {
-    JSON.parse(s);
-  } catch {
-    return null;
+  // 3. Try parse; if still broken, try iterative position-based comma insertion
+  //    (up to 5 rounds — each round finds the error position and inserts a comma)
+  for (let round = 0; round < 5; round++) {
+    try {
+      JSON.parse(s);
+      break;
+    } catch (e: unknown) {
+      const pos = extractJsonErrorPosition(e);
+      if (pos === null || pos <= 0) return null;
+      // Look backward from the error position for the last non-whitespace char;
+      // if it's a JSON value terminator without a trailing comma, insert one.
+      const beforeErr = s.slice(0, pos);
+      const trimmed = beforeErr.trimEnd();
+      const lastChar = trimmed[trimmed.length - 1];
+      if (lastChar && /["\d}\]eE]/.test(lastChar) && !trimmed.endsWith(',')) {
+        s = trimmed + ',' + s.slice(trimmed.length);
+      } else {
+        return null;
+      }
+    }
   }
+  // Final verification after iterative repair
+  try { JSON.parse(s); } catch { return null; }
 
-  // 4. Remove duplicate keys (keep last) by round-tripping through the parsed object
-  //    JSON.parse already does last-wins, so we parse → stringify.
-  //    BUT: we want to preserve the original formatting. Instead, detect and remove
-  //    earlier duplicate lines.
-  const dupeKey = findDuplicateJsonKey(s);
-  if (dupeKey) {
+  // 4. Remove duplicate keys (keep last occurrence) while preserving formatting.
+  //    Loop so we handle multiple different duplicate keys.
+  const MAX_DEDUP_ROUNDS = 10;
+  for (let dr = 0; dr < MAX_DEDUP_ROUNDS; dr++) {
+    const dupeKey = findDuplicateJsonKey(s);
+    if (!dupeKey) break;
     const lines = s.split('\n');
     const keyPattern = new RegExp(`^\\s*"${dupeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:`);
     const matchingIndices: number[] = [];
     for (let i = 0; i < lines.length; i++) {
       if (keyPattern.test(lines[i]!)) matchingIndices.push(i);
     }
-    if (matchingIndices.length > 1) {
-      // Remove all but the last occurrence
-      for (let k = 0; k < matchingIndices.length - 1; k++) {
-        let line = lines[matchingIndices[k]!]!;
-        if (line.trimEnd().endsWith(',')) {
-          lines[matchingIndices[k]!] = '';
-        } else {
-          lines[matchingIndices[k]!] = '';
-          // If the previous non-empty line has a trailing comma, it's fine; otherwise
-          // we might leave a comma gap. Better to be safe and re-check after.
-        }
-      }
-      s = lines.filter(l => l !== '').join('\n');
-      // Remove any trailing commas we created
-      s = s.replace(/,(\s*[}\]])/g, '$1');
-      // Verify it still parses
-      try { JSON.parse(s); } catch { return null; }
-      // Check for more duplicates (different key)
-      if (findDuplicateJsonKey(s)) return null;
+    if (matchingIndices.length <= 1) break;
+    for (let k = 0; k < matchingIndices.length - 1; k++) {
+      lines[matchingIndices[k]!] = '';
     }
+    s = lines.filter(l => l !== '').join('\n');
+    s = s.replace(/,(\s*[}\]])/g, '$1');
+    try { JSON.parse(s); } catch { return null; }
   }
 
   return s;
@@ -1257,6 +1275,7 @@ export async function resolveConflictsWithLLM(
           });
           // Auto-repair common JSON merge artifacts before rejecting
           if (!validation.valid && conflictFile.endsWith('.json')) {
+            debug('Attempting JSON auto-repair', { file: conflictFile, reason: validation.reason, contentChars: result.content.length, hasMarkers: hasConflictMarkers(result.content) });
             const repaired = tryRepairJson(result.content);
             if (repaired) {
               const recheck = validateResolvedContent(conflictFile, conflictedContent, repaired, {
@@ -1267,7 +1286,11 @@ export async function resolveConflictsWithLLM(
                 console.log(chalk.blue(`    → Auto-repaired JSON (${validation.reason})`));
                 result = { resolved: true, content: repaired, explanation: result.explanation + ' (JSON auto-repaired)' };
                 validation = recheck;
+              } else {
+                debug('JSON auto-repair: repaired content still fails validation', { file: conflictFile, recheckReason: recheck.reason });
               }
+            } else {
+              debug('JSON auto-repair: tryRepairJson returned null (could not fix)', { file: conflictFile });
             }
           }
           if (!validation.valid) {
@@ -1398,6 +1421,7 @@ export async function resolveConflictsWithLLM(
             let fbContent = fallbackResult.content;
             let fbValidation = validateResolvedContent(conflictFile, conflictedContent, fbContent);
             if (!fbValidation.valid && conflictFile.endsWith('.json')) {
+              debug('Attempting JSON auto-repair (top+tails fallback)', { file: conflictFile, reason: fbValidation.reason, contentChars: fbContent.length, hasMarkers: hasConflictMarkers(fbContent) });
               const repaired = tryRepairJson(fbContent);
               if (repaired) {
                 const rc = validateResolvedContent(conflictFile, conflictedContent, repaired);
@@ -1407,7 +1431,11 @@ export async function resolveConflictsWithLLM(
                   fbContent = repaired;
                   fbValidation = rc;
                   fallbackResult = { ...fallbackResult, content: repaired };
+                } else {
+                  debug('JSON auto-repair (top+tails): repaired content still fails validation', { file: conflictFile, recheckReason: rc.reason });
                 }
+              } else {
+                debug('JSON auto-repair (top+tails): tryRepairJson returned null', { file: conflictFile });
               }
             }
             if (fbValidation.valid) {
