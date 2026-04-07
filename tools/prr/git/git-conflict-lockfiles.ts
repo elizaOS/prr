@@ -121,8 +121,41 @@ export async function handleLockFileConflicts(
     }
   }
   
+  // WHY fallback chain: CI may not have the primary package manager (e.g. bun not
+  // installed but npm is). ENOENT on the primary command should try alternatives
+  // from the same ecosystem before giving up (audit Cycle 74, milady#1722).
+  const JS_INSTALL_FALLBACKS: string[][] = [
+    ['bun', 'install'],
+    ['npm', 'install'],
+    ['yarn', 'install'],
+    ['pnpm', 'install'],
+  ];
+
+  async function trySpawn(exe: string, args: string[]): Promise<{ ok: boolean; enoent: boolean }> {
+    if (exe.includes('/') || exe.includes('\\')) return { ok: false, enoent: false };
+    return new Promise((resolve) => {
+      const proc = spawn(exe, args, {
+        cwd: resolvedWorkdir,
+        stdio: 'inherit',
+        env: safeEnv,
+        shell: false,
+      });
+      const timeout = setTimeout(() => {
+        proc.kill('SIGTERM');
+        setTimeout(() => proc.kill('SIGKILL'), 5000);
+        resolve({ ok: false, enoent: false });
+      }, 60_000);
+      proc.on('close', (code) => { clearTimeout(timeout); resolve({ ok: code === 0, enoent: false }); });
+      proc.on('error', (err: NodeJS.ErrnoException) => {
+        clearTimeout(timeout);
+        resolve({ ok: false, enoent: err.code === 'ENOENT' });
+      });
+    });
+  }
+
+  const isJsLockCmd = (cmd: string): boolean => /^(bun|npm|yarn|pnpm)\s+install$/i.test(cmd);
+
   // Run regenerate commands using spawn with validated args
-  // Security: Only execute whitelisted commands with spawn (no shell)
   for (const cmd of regenerateCommands) {
     const cmdArgs = ALLOWED_COMMANDS[cmd];
     if (!cmdArgs) {
@@ -131,50 +164,32 @@ export async function handleLockFileConflicts(
     }
     
     const [executable, ...args] = cmdArgs;
-    
-    // Security: Verify executable is a simple name (no path components)
-    // This ensures we use the system PATH lookup, not a potentially malicious local file
-    if (executable.includes('/') || executable.includes('\\')) {
-      console.log(chalk.yellow(`    ⚠ Skipping command with path in executable: ${executable}`));
-      continue;
-    }
-    
     console.log(chalk.cyan(`    Running: ${cmd}`));
     
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn(executable, args, {
-          cwd: resolvedWorkdir,
-          stdio: 'inherit',
-          env: safeEnv,
-          shell: false, // Never use shell - prevents shell injection
-        });
-        
-        // Security: 60 second timeout prevents resource exhaustion
-        const timeout = setTimeout(() => {
-          proc.kill('SIGTERM');
-          // Give process 5s to terminate gracefully, then SIGKILL
-          setTimeout(() => proc.kill('SIGKILL'), 5000);
-          reject(new Error('Timeout exceeded (60s)'));
-        }, 60000);
-        
-        proc.on('close', (code) => {
-          clearTimeout(timeout);
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(new Error(`Exit code ${code}`));
-          }
-        });
-        
-        proc.on('error', (err) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-      });
+    const result = await trySpawn(executable, args);
+    if (result.ok) {
       console.log(chalk.green(`    ✓ ${cmd} completed`));
-    } catch (e) {
-      console.log(chalk.yellow(`    ⚠ ${cmd} failed: ${e}, continuing...`));
+    } else if (result.enoent && isJsLockCmd(cmd)) {
+      // Primary not found — try JS ecosystem fallbacks
+      console.log(chalk.yellow(`    ⚠ ${executable} not found, trying fallback package managers...`));
+      let fallbackOk = false;
+      for (const [fbExe, ...fbArgs] of JS_INSTALL_FALLBACKS) {
+        if (fbExe === executable) continue;
+        console.log(chalk.cyan(`    Trying: ${fbExe} ${fbArgs.join(' ')}`));
+        const fb = await trySpawn(fbExe, fbArgs);
+        if (fb.ok) {
+          console.log(chalk.green(`    ✓ ${fbExe} ${fbArgs.join(' ')} completed (fallback)`));
+          fallbackOk = true;
+          break;
+        }
+        if (fb.enoent) continue;
+        console.log(chalk.yellow(`    ⚠ ${fbExe} ${fbArgs.join(' ')} failed, trying next...`));
+      }
+      if (!fallbackOk) {
+        console.log(chalk.yellow(`    ⚠ No JS package manager available; lock file will be removed to clear conflict`));
+      }
+    } else {
+      console.log(chalk.yellow(`    ⚠ ${cmd} failed, continuing...`));
     }
   }
   

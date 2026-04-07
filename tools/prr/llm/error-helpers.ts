@@ -133,7 +133,13 @@ export function maskApiKey(key: string | undefined): string {
 /** File-type-specific rules for conflict resolution prompt (reduces invalid JSON/TS output). */
 export function getConflictFileTypeRules(filePath: string): string {
   if (filePath.endsWith('.json')) {
-    return '\n6. Output must be strict JSON (no comments, no trailing commas).';
+    const base = '\n6. Output must be strict JSON (no comments, no trailing commas).';
+    if (/package\.json$/i.test(filePath)) {
+      return base +
+        '\n7. CRITICAL: No duplicate keys allowed in JSON objects. When both sides add entries to "scripts", "dependencies", or "devDependencies", merge ALL entries from BOTH sides into a single object — do NOT repeat any key name.' +
+        '\n8. When both sides define the same script key (e.g. "dev") with different values, keep the HEAD version unless the base version adds a clearly new feature.';
+    }
+    return base;
   }
   if (/\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(filePath)) {
     return '\n6. Preserve all imports and ensure the result compiles.';

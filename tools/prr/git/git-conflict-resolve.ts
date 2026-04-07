@@ -529,6 +529,56 @@ ${content}
 }
 
 /**
+ * Scan JSON text for duplicate keys at the top two nesting levels.
+ *
+ * WHY: `JSON.parse` silently accepts `{ "dev": "a", "dev": "b" }` (last wins),
+ * so standard validation misses this. LLMs merging package.json often produce
+ * duplicate "scripts" entries from both sides. We scan raw text rather than
+ * a custom reviver because the reviver approach breaks on nested objects.
+ *
+ * Returns the first duplicate key found, or null if none.
+ */
+function findDuplicateJsonKey(text: string): string | null {
+  // Line-based approach: works for indented JSON where keys are on separate lines
+  // (the common LLM output pattern for package.json).
+  // Track brace depth; at each level, record keys seen. When a `}` closes a level,
+  // clear that level's keys (the next `{` starts a new sibling object).
+  const MAX_DEPTH = 2;
+  let depth = 0;
+  // Stack: each depth has its own set of seen keys. Use a depth-indexed map
+  // so closing `}` clears the correct level.
+  const seenAtDepth = new Map<number, Set<string>>();
+
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+
+    // Process structural chars before checking for a key on this line.
+    // Count opens/closes carefully — a line like `},` or `}` only has one close.
+    for (const c of trimmed) {
+      if (c === '{') {
+        depth++;
+        seenAtDepth.set(depth, new Set());
+      } else if (c === '}') {
+        seenAtDepth.delete(depth);
+        depth--;
+      }
+    }
+    if (depth > MAX_DEPTH || depth < 1) continue;
+
+    const m = trimmed.match(/^"([^"]+)"\s*:/);
+    if (m) {
+      const key = m[1];
+      const seen = seenAtDepth.get(depth);
+      if (seen) {
+        if (seen.has(key)) return key;
+        seen.add(key);
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Validate that resolved content is sane before writing to disk.
  * 
  * WHY: LLMs sometimes catastrophically corrupt files during conflict resolution.
@@ -537,7 +587,8 @@ ${content}
  * 
  * Checks performed:
  * 1. JSON validation for .json files (catches structural corruption)
- * 2. Size regression detection (catches catastrophic truncation; skipped for keep-ours / take-theirs)
+ * 2. Duplicate key detection for JSON (catches LLM merge artifacts)
+ * 3. Size regression detection (catches catastrophic truncation; skipped for keep-ours / take-theirs)
  */
 function validateResolvedContent(
   filePath: string,
@@ -552,6 +603,13 @@ function validateResolvedContent(
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       return { valid: false, reason: `Invalid JSON after resolution: ${message}` };
+    }
+    // WHY: JSON.parse silently accepts duplicate keys (last wins). In package.json
+    // this means dropped scripts or dependencies. Scan the raw text for dupe keys
+    // at the top two nesting levels where LLM merges commonly produce them.
+    const dupeKey = findDuplicateJsonKey(resolvedContent);
+    if (dupeKey) {
+      return { valid: false, reason: `Duplicate JSON key "${dupeKey}" — LLM merged both sides but repeated a key` };
     }
   }
 
@@ -630,6 +688,21 @@ export async function resolveConflictsWithLLM(
   // Handle lock files first - delete and regenerate
   if (lockFiles.length > 0) {
     await handleLockFileConflicts(git, lockFiles, workdir, config);
+  }
+
+  // Handle submodule/directory conflicts before code files.
+  // WHY: Git submodules (gitlinks) show up as directories on disk. readFileSync throws
+  // EISDIR and the entire per-file loop catches it as a generic error, leaving the
+  // conflict unresolved and blocking the run. Detect and resolve them deterministically.
+  const submoduleConflicts = await detectSubmoduleConflicts(git, codeFiles, workdir);
+  if (submoduleConflicts.length > 0) {
+    for (const sm of submoduleConflicts) {
+      const resolved = await resolveSubmoduleConflict(git, sm);
+      if (resolved) {
+        const idx = codeFiles.indexOf(sm.file);
+        if (idx !== -1) codeFiles.splice(idx, 1);
+      }
+    }
   }
 
   // Handle delete conflicts (e.g. "deleted by them", "deleted by us")
@@ -1371,6 +1444,106 @@ async function resolveDeleteConflict(
     return true;
   } catch (e) {
     console.log(chalk.red(`    ✗ ${file}: failed to resolve delete conflict: ${e}`));
+    return false;
+  }
+}
+
+/**
+ * Submodule/directory conflict info.
+ */
+interface SubmoduleConflict {
+  file: string;
+  /** true when the path is a directory on disk (submodule checkout or gitlink). */
+  isDirectory: boolean;
+}
+
+/**
+ * Detect git submodule (gitlink) or directory conflicts.
+ *
+ * WHY: Submodules show up as directories on disk. `readFileSync` throws EISDIR,
+ * and the per-file LLM loop catches it generically — leaving the conflict unresolved
+ * and blocking the entire run (audit Cycle 74, milady#1722 `eliza` submodule).
+ *
+ * Detection: `git ls-files -s` shows mode 160000 for gitlinks. We also check
+ * `lstatSync` so plain directories (e.g. nested repos without .gitmodules) are caught.
+ */
+async function detectSubmoduleConflicts(
+  git: SimpleGit,
+  conflictedFiles: string[],
+  workdir: string
+): Promise<SubmoduleConflict[]> {
+  const results: SubmoduleConflict[] = [];
+  const { lstatSync } = await import('fs');
+
+  // Check git ls-files for mode 160000 (gitlink entries)
+  const gitlinkPaths = new Set<string>();
+  try {
+    const lsOutput = await git.raw(['ls-files', '-s', '--', ...conflictedFiles]);
+    for (const line of lsOutput.split('\n')) {
+      // Format: <mode> <hash> <stage>\t<path>
+      const m = line.match(/^160000\s+\S+\s+\d\t(.+)$/);
+      if (m) gitlinkPaths.add(m[1]);
+    }
+  } catch {
+    // ls-files may fail during merge; fall back to stat below
+  }
+
+  for (const file of conflictedFiles) {
+    const fullPath = join(workdir, file);
+    let isDir = gitlinkPaths.has(file);
+    if (!isDir) {
+      try {
+        isDir = lstatSync(fullPath).isDirectory();
+      } catch {
+        // Path doesn't exist or can't be stat'd — not a directory conflict
+      }
+    }
+    if (isDir) {
+      results.push({ file, isDirectory: true });
+    }
+  }
+  return results;
+}
+
+/**
+ * Resolve a submodule/directory conflict by accepting "theirs" (base branch) gitlink.
+ *
+ * WHY theirs: The PR is being merged into the base; the base branch typically has the
+ * authoritative submodule pointer. If both sides updated the pointer, accepting theirs
+ * keeps the base branch's commit reference. This is a safe default — the PR author can
+ * always update the submodule pointer in a follow-up commit.
+ *
+ * If "theirs" is not available (e.g. one side deleted the submodule), fall back to
+ * `git checkout --ours` then `git add`.
+ */
+async function resolveSubmoduleConflict(
+  git: SimpleGit,
+  conflict: SubmoduleConflict
+): Promise<boolean> {
+  const { file } = conflict;
+  try {
+    // Try accepting theirs (base branch pointer)
+    try {
+      await git.raw(['checkout', '--theirs', '--', file]);
+      await git.add(file);
+      console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (accepted base branch pointer)`));
+      return true;
+    } catch {
+      // Theirs might not exist; try ours
+      try {
+        await git.raw(['checkout', '--ours', '--', file]);
+        await git.add(file);
+        console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (kept current branch pointer)`));
+        return true;
+      } catch {
+        // Last resort: just add the current state
+        await git.add(file);
+        console.log(chalk.yellow(`    ⚠ ${file}: submodule conflict marked resolved (current state)`));
+        return true;
+      }
+    }
+  } catch (e) {
+    console.log(chalk.red(`    ✗ ${file}: failed to resolve submodule conflict: ${e}`));
     return false;
   }
 }

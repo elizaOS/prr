@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-03-28 · **Recorded cycles:** 70 · **Historical (legacy):** 4
+**Last updated:** 2026-04-07 · **Recorded cycles:** 74 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -49,13 +49,13 @@ Improvements should reinforce these, not reverse.
 | **Prompt size / noise** | Cap lessons, trim diff for tiny batches, filter global lessons by path relevance. |
 | **Snippet visibility** | Quality gate (too-short note), wider fallback for analysis batch, anchor-aware expansion. |
 | **Queue / log clarity** | One clear "still in queue" line, queue subtitle (to-fix vs already-verified), no contradictory "No issues" vs "N in queue". |
-| **Allow-path / test path** | Expand for test-coverage, plausible-path checks, test path at issue build; migration journal in allowedPaths when review mentions it; consolidate-duplicate "other file" when refactor issue. Do *not* add a file when comment only *references* it — use isReferencePathInComment before persisting otherFile from CANNOT_FIX/WRONG_LOCATION. |
+| **Allow-path / test path** | Expand for test-coverage, plausible-path checks, test path at issue build; migration journal in allowedPaths when review mentions it; consolidate-duplicate "other file" when refactor issue. Do *not* add a file when comment only *references* it — use isReferencePathInComment before persisting otherFile from CANNOT_FIX/WRONG_LOCATION. **Open by default** (Cycle 72): `isPathAllowedForFix` allows any repo-relative path that passes hard deny rules; `PRR_STRICT_ALLOWED_PATHS=1` restores the old first-segment heuristic (static `REPO_TOP_LEVEL` + dynamic PR changed-file dirs). |
 | **Loop prevention** | Counters and thresholds (WRONG_LOCATION/UNCLEAR, wrong-file, verifier rejection, CANNOT_FIX missing content); exhaust and dismiss instead of burning models. Auto-verify when bug pattern absent after N verifier rejections. Apply threshold checks (couldNotInject, ALREADY_FIXED) inside the fix loop, not only at analysis; run solvability on new comments before adding to queue. |
 | **File injection** | Basename fallback for short/fragment paths; placeholder detection before injection; hallucination guard for full-file rewrite output (< 15% of original = reject). **llm-api:** files over 200k chars or 5k lines get a **line-anchored excerpt** (from `### Issue N: path:line` / `primary:` / `path:line` in the prompt) or a **head excerpt** when no anchors — avoids skipping injection entirely on mega-files (Cycle 67). |
-| **Approval/noise filter** | Summary/meta-review tables, approval comments ("Approve", "LGTM", "All issues resolved"), PR metadata requests — all dismissed in solvability. |
+| **Approval/noise filter** | Summary/meta-review tables, rollup headings (**`Remaining Issues`**, **`Issues Fixed Since Previous Reviews`**, etc.), approval comments ("Approve", "LGTM", "All issues resolved"), PR metadata requests — all dismissed in solvability (0a2 / 0a3 / 0a). |
 | **Judge / verifier** | Judge NO must cite specific code or line numbers; format colons. Verifier: LESSON only for NO; for duplicate/shared-util steer to canonical lib/utils/..., not reference file; "Code before fix" empty/artifact → base verdict on Current Code and diff; multi-fix same file → judge by review comment. STALE→YES override when explanation indicates code/snippet not visible or "can't evaluate" (per judge instructions: if you would say "not in excerpt", say YES not STALE). |
 | **Output / UX** | Pluralize (1 file / N files); timing aggregated by phase; model recommendation only when real reasoning; AAR title from first meaningful line. Exhausted issues appear in AAR and handoff until resolved (fix, conversation, or other). |
-| **Conflict resolution** | Skip batch when prompt > 40 KB; hasConflictMarkers(); 504/timeout → chunked fallback; heartbeat every 30 s. |
+| **Conflict resolution** | Skip batch when prompt > 40 KB; hasConflictMarkers(); 504/timeout → chunked fallback; heartbeat every 30 s. **Submodule/directory** conflicts detected via `git ls-files -s` mode 160000 + `lstatSync`; resolved with `git checkout --theirs/--ours` before LLM loop (Cycle 74). **Lock file fallback:** ENOENT on primary pkg manager → try JS ecosystem alternatives. **JSON dupe key:** `findDuplicateJsonKey` rejects LLM output with repeated keys. |
 | **Dedup across authors** | Same file + same primary symbol + same caller file (e.g. runner.py) → heuristic merge even when authors differ. LLM dedup still runs for 3+ issues per file; GROUP lines take priority over NONE. |
 | **Verifier strength** | Escalation for previous rejections; stronger model for API/signature-related fixes (async, await, caller, TypeError). Weak default verifier kept approving call-site bugs. |
 | **Dismissal comments** | Skip when reason says "file no longer exists" / "file not found"; skip when file missing in workdir; post-filter comments that only restate code (e.g. "extracts metrics"). |
@@ -73,7 +73,7 @@ Quick checks each audit. Drill into the category that matches what you changed.
 **Log vs reality (output.log / prompts.log)**
 - [ ] For runs that report "already verified" or "fixed": spot-check at least one such issue by reading the file at the cited path in the workdir (path from log: `Reusing existing workdir:` / `Workdir preserved:`). Confirm the bug pattern is actually gone. If the log says fixed but the file still has the bug, treat as a finding (stale verification, head change).
 - [ ] **prompts.log (Cycle 67):** PROMPT and RESPONSE JSON metadata share the same **`requestId`** (UUID) when using `shared/logger` — grep `requestId` to pair entries when concurrent calls reorder the file; slug number still pairs by convention.
-- [ ] RESULTS SUMMARY "N issue(s) fixed and verified" counts only verifiedFixed/verifiedComments; it must not include issues dismissed as already-fixed (pill-output.md #2; cycles 33/34).
+- [ ] RESULTS SUMMARY "N issue(s) fixed and verified" counts only verifiedFixed/verifiedComments; it must not include issues dismissed as already-fixed (cycles 33/34; see pill-output index / CHANGELOG for accounting themes).
 - [ ] Base-merge push: when log says "Merged latest X into Y" followed by "Everything up-to-date", the merge was a no-op (already merged). Verify `mergeBaseBranch` returns `alreadyUpToDate: true` so the caller doesn't attempt a pointless push.
 
 **Prompt quality**
@@ -92,7 +92,7 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] Judge: NO must cite specific code or line numbers; format uses colons.
 - [ ] Verifier: YES→NO override when explanation says "already correct", "comment mistaken", etc.
 - [ ] Verifier: NO→YES override when explanation says "not visible in excerpt", "can't confirm whether", "missing from excerpts", "truncated portion would contain" (Cycle 14).
-- [ ] Summary/meta-review comments (status recap tables, "### Summary" with 3+ status phrases) dismissed as not-an-issue (solvability).
+- [ ] Summary/meta-review comments (status recap tables, "### Summary" with 3+ status phrases, rollup headings: Remaining Issues / Issues Fixed Since Previous Reviews / …) dismissed as not-an-issue (solvability 0a2).
 - [ ] When snippet is "(file not found or unreadable)", batch analysis tries getFileContentFromRepo (git show HEAD:path) before sending to verifier.
 - [ ] No-changes lessons: single-issue uses "Fix for path:line - ..."; batch uses "(N issues in batch)" in global lesson.
 - [ ] Multi-file fix: when allowedPaths.length > 1 and body mentions callers (calls/caller/await/file:line), prompt includes nudge to update all listed files and call sites.
@@ -163,6 +163,89 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 74 — 2026-04-07 (conflict resolution audit; milady#1722 EISDIR + merge quality)
+
+**Artifacts audited:** `logs/output.log`, `logs/prompts.log` — milady-ai/milady#1722 (`odi-dev` ← `develop`), exit `merge_conflicts` after 5/6 files auto-resolved, 1 remaining (`eliza` submodule). No review issues were processed. Workdir: `/home/runner/.prr/work/e1728b2ad8df995b` (CI, not accessible for spot-check).
+
+**Findings:**
+- **High:** `eliza` is a git submodule (gitlink). `readFileSync` on Attempt 2 threw `EISDIR: illegal operation on a directory, read` — generic catch logged the error but the run exited with `merge_conflicts`. No submodule-aware handling existed anywhere in the conflict resolution stack. The entire run was blocked; zero review issues were processed.
+- **Medium:** `bun.lock` correctly deleted, but `bun install` failed with `ENOENT` (bun not in CI PATH). No fallback to `npm install` or `yarn install`; lock file left missing. Conflict technically cleared by delete+stage, but regeneration silently failed.
+- **Medium:** LLM (claude-sonnet-4-5) resolved `package.json` but **dropped** HEAD-side scripts (`verify`, `verify:typecheck`, `verify:lint`, `dev:web:ui`, `milady:doctor`, `milady:db-reset`) and produced a **duplicate `"dev"` key** (lines 387+390 in response). Search/replace fell back to fuzzy matching (73.8%) and progressive-trim — both indicate the LLM's search block didn't match the file well.
+- **Low:** `parseMergeTreeConflictPaths` listed `Merge` as a conflicted file path. The second regex `CONFLICT ([^)]+): (\S+)` captured the word `Merge` from `CONFLICT (submodule): Merge conflict in eliza`.
+
+**Improvements implemented:**
+1. **Submodule/directory detection** (`git-conflict-resolve.ts`): `detectSubmoduleConflicts` checks `git ls-files -s` for mode `160000` (gitlink entries) and `lstatSync` for directories. `resolveSubmoduleConflict` accepts theirs (base branch pointer) with `git checkout --theirs`, falls back to ours. Runs before the LLM code-file loop so EISDIR never fires.
+2. **Directory guard in marker scan** (`shared/git/git-lock-files.ts`): `findFilesWithConflictMarkers` now calls `lstatSync` and skips directories before `readFileSync`.
+3. **Directory guard in prompt build** (`git-conflict-prompts.ts`): `buildConflictResolutionPromptWithContent` checks `lstatSync` before reading; directories go to `unreadable` list instead of throwing.
+4. **Lock file fallback chain** (`git-conflict-lockfiles.ts`): When primary package manager ENOENT's (e.g. `bun` not in PATH), tries `npm install`, `yarn install`, `pnpm install` before giving up. Extracted `trySpawn` helper.
+5. **`parseMergeTreeConflictPaths` fix** (`shared/git/git-conflicts.ts`): Changed second regex from `CONFLICT ([^)]+): (\S+)` to specifically match `Merge conflict in <path>` and `<path> deleted/renamed/added` formats so `Merge` is not captured as a file path.
+6. **Duplicate JSON key detection** (`git-conflict-resolve.ts`): `findDuplicateJsonKey` scans resolved JSON for duplicate keys at top two nesting levels; `validateResolvedContent` rejects resolutions with duplicate keys (catches LLM merge artifacts like duplicate `"dev"` in package.json).
+7. **`package.json`-specific prompt rules** (`error-helpers.ts`): `getConflictFileTypeRules` adds explicit instructions for package.json — no duplicate keys, merge ALL entries from both sides, prefer HEAD when keys conflict.
+
+**Flip-flop check:** N — all changes are additive; no prior behavior reverted.
+
+**Notes:** Workdir is CI (GitHub Actions runner), not accessible for spot-check of resolved files. Prompt log confirms the LLM response merged both sides of ROADMAP.md, vite.config.ts, repository.ts, and most of package.json correctly — the duplicate `"dev"` key and dropped scripts were the main quality issues. The `eliza` EISDIR was the blocker that prevented the run from reaching review issues.
+
+---
+
+### Cycle 73 — 2026-04-05 (pill-output.md full triage; 4 code fixes)
+
+**Artifacts audited:** `pill-output.md` (4,240+ lines across 16 pill runs, 2026-03-23 through 2026-04-05). No single output.log; this was a cross-run triage pass adding per-item Status lines and a PATTERNS & OPEN WORK report section.
+
+**Findings:**
+- **High:** `commentStatuses` not cleared on HEAD SHA change. `manager.ts` zeroed `verifiedFixed`/`verifiedComments` on rebase but left `commentStatuses` with stale `status: 'resolved'` entries — callers see contradictory maps. (Pattern H)
+- **High:** `redactUrlCredentials` (`shared/git/redact-url.ts`) only handled HTTPS URLs; SSH-style `git@host:org/repo` and Windows `\r` were not redacted. (Pattern C)
+- **Medium:** Pill chunked audit used `runWithConcurrency` (fail-fast via `Promise.all`) — a single chunk HTTP error aborted all remaining chunks with no partial results. (Pattern D)
+- **Medium:** `prr-fix:` commit-scan regex `^prr-fix:(.+)$` could capture trailing non-whitespace text as part of the ID. (Pattern B)
+- **Low:** `tryResolvePathWithExtensionVariants` doesn't call `stripGitDiffPathPrefix` before trying variants — a path like `a/tsconfig.js` won't match. (Open)
+- **Low:** Truncation guard in `tools/prr/llm/client.ts` may demote UNFIXED→UNCERTAIN for line-centered excerpts that intentionally cover the fix site. (Pattern G, Open)
+
+**Improvements implemented:**
+- `tools/prr/state/manager.ts`: Clear `commentStatuses` verified/resolved entries on HEAD change; log count.
+- `shared/git/redact-url.ts`: Add SSH URL redaction + `\r` to HTTPS char class.
+- `shared/git/git-commit-scan.ts`: Tighten `prr-fix:` regex to `^prr-fix:(\S+)`.
+- `tools/pill/orchestrator.ts`: Switch to `runWithConcurrencyAllSettled` for chunk audit; partial results collected even on chunk failure.
+
+**Flip-flop check:** N — all changes are additive or narrowing fixes; none revert prior behavior. The regex tightening could theoretically miss an ID with embedded whitespace, but such IDs are not valid GitHub comment IDs.
+
+**Notes:** Spot-checked `manager.ts` load() — confirmed repair pass does mutate state (adds to dismissed from overlap). Workdir verification not applicable (no single run workdir; triage pass only). SSH redaction is opportunistic (SSH auth doesn't embed tokens, but repo names can be private; redaction prevents repo name leakage in logs). Pattern K (central CONFIGURATION.md) and Pattern G (fixSiteInWindow flag) remain open.
+
+---
+
+### Cycle 72 — 2026-04-05 (elizaOS/eliza#6702; allowedPaths blocks primary target)
+
+**Artifacts audited:** output.log (229 KB, 2572 lines) from elizaOS/eliza#6702 (`odi-develop` → `develop`). Workdir `/root/.prr/work/4a425a4f063fc1bb`. Fixer: `anthropic/claude-opus-4.5` via ElizaCloud; verifier: `alibaba/qwen-3-235b`; dedup: `openai/gpt-4o-mini`. Duration ~24 min, 52 LLM calls.
+
+**Findings:**
+- **Medium:** `agent/typescript/index.ts` was the primary target for 5+ issues but `isPathAllowedForFix` rejected it because first segment `agent` is not in `REPO_TOP_LEVEL`. File never injected; fixer couldn't see it in batch runs. Single-issue focus mode eventually worked (no injection needed — S/R on prompt snippet), but this burned 3+ full batch iterations and many focus slots doing nothing. Root cause: `REPO_TOP_LEVEL` acts as a static allowlist of first-segment names, and any repo with a non-standard top-level dir (e.g. `agent/`, `harness/`, `service/`) silently blocks all issues targeting those paths.
+- **Medium:** Qwen-3-235b batch analysis (#0005, 43k chars, 21 issues) took 8 minutes — the longest single call. Dominated wall time. Splitting large batches or using a faster analysis model would help.
+- **Medium:** Stale re-check false positive: Qwen said `break` still existed at index.ts:303 during push iteration 2 analysis, but workdir had `continue`. The fix had been pushed; verifier hallucinated or used stale snippet. Caused unnecessary un-verify + re-fix cycle.
+- **Low:** Meta-review checklist comments (`ic-4188073508-2` "Remaining Issues", `ic-4188073508-1` "Issues Fixed Since Previous Reviews") cycled 3-4 times each through single-issue focus before couldNotInject dismissal. Solvability should catch these earlier.
+- **Low:** `(PR comment)` synthetic-path issues consumed focus slots across iterations before dismissal.
+
+**Improvements implemented:** (1) **Open-by-default** allowed paths + `PRR_STRICT_ALLOWED_PATHS=1` strict mode; `setDynamicRepoTopLevelDirs` in `main-loop-setup.ts`; see CHANGELOG / AGENTS.md / README. (2) **Solvability rollups:** `isSummaryOrMetaReviewComment` extended for CodeRabbit-style headings (`Remaining Issues`, `Issues Fixed Since Previous Reviews`, etc.); dismisses at 0a2 including `(PR comment)` before path inference. (3) **Analysis batching:** ElizaCloud `batchCheckIssuesExist` caps **10 issues per batch** for **qwen-3-235b** / **qwen-3-235** (Cycle 72 wall-time finding). Tests: `tests/path-utils.test.ts`, `tests/solvability-pr-comment.test.ts`. **Not implemented here:** stale re-check false positive (batch judge said YES vs pushed `continue`) — needs separate verifier / snippet / head-sync design.
+
+**Flip-flop check:** Mixed — open paths: N (strict opt-in). Rollup headings: **Y** if a rare comment uses e.g. `### Remaining Issues` for a *single* concrete fix (unusual); batch cap for Qwen-235b: N (smaller batches only).
+
+**Notes:** Spot-checked `agent/typescript/index.ts:305-307` (break→continue fix present), `scripts/plugin-submodules-dev.mjs:80-83` (readRootPackage dedup fix present), `agent/typescript/index.ts:212` (createRuntimes fix present). The old first-segment heuristic was meant to block `lodash/fp/...`-style package references from comment bodies, but those never resolve to real files in the workdir anyway — `pathExists` catches them. The real protection (absolute paths, node_modules, dist, internal segments) is unaffected.
+
+---
+
+### Cycle 71 — 2026-04-02 (pill-output index; docs alignment)
+
+**Artifacts audited:** Historical **`pill-output.md`** (~5.7k lines of mixed **Done** / **Open** / **N/A** / obsolete foreign-path items); **CHANGELOG** [Unreleased]; **AUDIT-CYCLES** through Cycle 70; **DEVELOPMENT.md** pill triage section.
+
+**Findings:**
+- **Low:** Monolithic pill-output duplicated **CHANGELOG** / cycle narrative and buried remaining work under thousands of closed items.
+
+**Improvements implemented:** Replaced **`pill-output.md`** with a **short deduplicated index** (Open / Partial / ops only) + re-triage instructions; **DEVELOPMENT.md** — **`pill-output.md`** described as index + append workflow; **CHANGELOG** [Unreleased] — doc thinning note; this cycle.
+
+**Flip-flop check:** N — documentation and artifact shape only; no runtime behavior change.
+
+**Notes:** No workdir spot-check (not an output.log “already verified” audit). Old numbered pill items (e.g. #18, #1793) remain discoverable via **git history** and **CHANGELOG** / earlier cycles.
+
+---
 
 ### Cycle 70 — 2026-03-28 (basename + PR diff, repopulate resolvedPath, dedup-cluster ALREADY_FIXED, AAR)
 
