@@ -240,7 +240,7 @@ story --help      # PR narrative & changelog
 | `PRR_DISABLE_LATENT_MERGE_PROBE_BASE` | `1` / `true` — skip the **second** dry-merge vs `origin/<prBase>` (GitHub mergeable/dirty); default runs when base ≠ PR branch |
 | `PRR_MATERIALIZE_LATENT_MERGE` | `1` / `true` — when the PR-tip probe predicts conflicts, run **`git merge origin/<branch> --no-commit --no-ff`** before pull so LLM conflict resolution can run early |
 | `PRR_MATERIALIZE_LATENT_MERGE_BASE` | `1` / `true` — when the **PR-vs-base** probe predicts conflicts, run **`git merge origin/<prBase> --no-commit --no-ff`** for early LLM resolution |
-| `PRR_BOT_LOGIN` | GitHub login for thread-reply idempotency when using `--reply-to-threads` |
+| `PRR_BOT_LOGIN` | Optional override for thread-reply idempotency; if unset, PRR uses `GET /user` with your token |
 
 **CLI (related):** pass **`--merge-base`** when GitHub reports the PR as not mergeable / dirty and you want PRR to merge the PR base before the fix loop.
 

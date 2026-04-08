@@ -69,6 +69,8 @@ describe('postThreadReplies', () => {
         getThreadCommentsCalls.push(threadId);
         return getThreadCommentsMap.get(threadId) ?? [];
       }),
+      // Synthetic login: idempotency queries run without matching real thread authors; avoids stderr warn when env unset.
+      getAuthenticatedLogin: vi.fn().mockResolvedValue('__prr_test_token_user__'),
       resolveReviewThread: vi.fn(async (_o, _r, threadId: string) => {
         resolveCalls.push(threadId);
       }),
@@ -248,6 +250,22 @@ describe('postThreadReplies', () => {
       verifiedCommentIds: new Set(['c1']),
     });
     expect(replyCalls).toHaveLength(1);
+  });
+
+  it('skips reply when PRR_BOT_LOGIN is unset but getAuthenticatedLogin matches thread author (token user)', async () => {
+    vi.unstubAllEnvs();
+    getThreadCommentsMap.set('thread-1', [{ author: 'reviewer' }, { author: 'octocat' }]);
+    (mockGithub as { getAuthenticatedLogin: ReturnType<typeof vi.fn> }).getAuthenticatedLogin.mockResolvedValue(
+      'octocat',
+    );
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['c1']),
+    });
+    expect(replyCalls).toHaveLength(0);
+    expect(getThreadCommentsCalls).toContain('thread-1');
   });
 
   it('adds thread to repliedThreadIds after successful reply', async () => {

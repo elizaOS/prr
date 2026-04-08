@@ -35,7 +35,7 @@ We reply for: `already-fixed`, `stale`, `not-an-issue`, `false-positive`, `remai
 ## WHY in-run and cross-run idempotency
 
 - **In-run:** A single `repliedThreadIds` set is shared across commit-and-push (fixed replies) and final cleanup (dismissed replies). We never post twice to the same thread in one run.
-- **Cross-run:** If `PRR_BOT_LOGIN` is set, we fetch each candidate thread’s comments and skip posting when that login already commented. **WHY:** Re-runs (e.g. after manual edits) would otherwise post duplicate “Fixed in …” or “Dismissed: …” for threads we already replied to. Checking by bot login makes re-runs safe and avoids spamming threads.
+- **Cross-run:** We need a GitHub **login** to match against thread comment authors. If **`PRR_BOT_LOGIN`** is set, we use it; otherwise we call **`GET /user`** with the same token (see **`GitHubAPI.getAuthenticatedLogin`**) when there are reply candidates. We then fetch each candidate thread’s comments and skip posting when that login already commented. **WHY:** Re-runs (e.g. after manual edits) would otherwise post duplicate “Fixed in …” or “Dismissed: …” for threads we already replied to. **`PRR_BOT_LOGIN`** remains useful to override when the token identity is not the account that posts review replies (rare).
 
 ## WHY batch idempotency check
 
@@ -65,7 +65,7 @@ Some “comments” are synthetic: we create them from issue comments (e.g. bot 
 | `--no-reply-to-threads` | Disable (default). |
 | `PRR_REPLY_TO_THREADS=true` | Enable via env (e.g. CI). |
 | `--resolve-threads` | After replying, resolve the thread (collapse with checkmark). Default off. |
-| `PRR_BOT_LOGIN` | GitHub login of the bot that posts replies. When set, we skip threads that already have a comment from this login (cross-run idempotency). |
+| `PRR_BOT_LOGIN` | Optional override: GitHub login for cross-run idempotency. If unset, PRR uses the token’s login from **`GET /user`** when there are threads to reply to. |
 
 ## 422 Validation Failed and retries
 
@@ -75,4 +75,4 @@ On **`pulls.createReplyForReviewComment`**, GitHub may return **422** with struc
 
 - **AGENTS.md** — “PRR thread replies” for a short reference.
 - **README.md** — “Thread replies (GitHub feedback)” in Features and CLI options table.
-- **Code:** `tools/prr/workflow/thread-replies.ts`, `tools/prr/github/api.ts` (`replyToReviewThread`, `resolveReviewThread`, `getThreadComments`).
+- **Code:** `tools/prr/workflow/thread-replies.ts`, `tools/prr/github/api.ts` (`replyToReviewThread`, `resolveReviewThread`, `getThreadComments`, `getAuthenticatedLogin`).

@@ -73,6 +73,8 @@ function isBotNoiseComment(body: string): boolean {
 export class GitHubAPI {
   private octokit: Octokit;
   private graphqlWithAuth: typeof graphql;
+  /** Memoized `GET /user` for thread-reply idempotency when PRR_BOT_LOGIN is unset. */
+  private authenticatedLoginPromise: Promise<string | undefined> | undefined;
 
   constructor(token: string) {
     this.octokit = new Octokit({ auth: token });
@@ -82,6 +84,29 @@ export class GitHubAPI {
       },
     });
     debug('GitHub API client initialized');
+  }
+
+  /**
+   * GitHub login for the current auth token (`GET /user`).
+   * WHY: Thread-reply cross-run idempotency matches review comment `author` to a login; PAT / Actions
+   * tokens can resolve that login here so PRR_BOT_LOGIN is optional.
+   */
+  async getAuthenticatedLogin(): Promise<string | undefined> {
+    if (!this.authenticatedLoginPromise) {
+      this.authenticatedLoginPromise = (async () => {
+        try {
+          const { data } = await this.octokit.users.getAuthenticated();
+          const login = data.login?.trim();
+          return login || undefined;
+        } catch (err) {
+          debug('users.getAuthenticated failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return undefined;
+        }
+      })();
+    }
+    return this.authenticatedLoginPromise;
   }
 
   private escapeRegex(value: string): string {
@@ -852,7 +877,7 @@ export class GitHubAPI {
 
   /**
    * Get comment authors in a review thread (for cross-run idempotency: skip if we already replied).
-   * WHY: When PRR_BOT_LOGIN is set, callers check whether this thread already has a comment from that login; if so, we skip posting to avoid duplicate replies on re-runs.
+   * WHY: When we know the bot login (PRR_BOT_LOGIN or token from getAuthenticatedLogin), callers check whether this thread already has a comment from that login; if so, we skip posting to avoid duplicate replies on re-runs.
    * owner/repo/prNumber are unused (GraphQL node(id) only needs threadId) but kept for API consistency and future use.
    */
   async getThreadComments(

@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Thread-reply idempotency:** When **`PRR_BOT_LOGIN`** is unset, PRR calls GitHub **`GET /user`** (via **`octokit.users.getAuthenticated`**) once per API client to use the token’s **`login`** for cross-run “already replied” checks — same behavior as explicitly setting **`PRR_BOT_LOGIN`**. Warns only if there are reply candidates and the user cannot be resolved. Removed the startup warning that always nagged when the env was unset (**`tools/prr/github/api.ts`**, **`tools/prr/workflow/thread-replies.ts`**, **`tools/prr/index.ts`**).
+
 - **Catalog model auto-heal:** Skips entirely when the clone workdir is **dirty** (`git status --porcelain` non-empty) or git status cannot be read — avoids mixing auto-heal edits with unrelated local changes (**`tools/prr/workflow/catalog-model-autoheal.ts`**).
 
 - **Path variants:** **`EXTENSION_VARIANT_MAP`** includes **`.json` → `.js`, `.ts`, `.cjs`, `.mjs`** for reviews that cite a JSON path when only a JS/TS config exists (**`shared/path-utils.ts`**).

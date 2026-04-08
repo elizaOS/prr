@@ -237,7 +237,6 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     commentToThread.get(commentId) ?? commentToThread.get(commentId.toLowerCase());
 
   const threadsRepliedThisCall: string[] = [];
-  const botLogin = process.env.PRR_BOT_LOGIN?.trim() || undefined;
   let attempted = 0;
   let replied = 0;
   let consecutiveAll422Batches = 0;
@@ -255,9 +254,21 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     if (entry && !repliedThreadIds.has(entry.threadId)) candidateThreadIds.add(entry.threadId);
   }
 
+  let botLogin = process.env.PRR_BOT_LOGIN?.trim() || undefined;
+  if (!botLogin && candidateThreadIds.size > 0) {
+    botLogin = await github.getAuthenticatedLogin();
+  }
+
   // Batch-fetch "already replied by us" for all candidates in parallel (one API call per thread, parallelized).
   // WHY parallel: Sequential getThreadComments would make latency linear in thread count; Promise.all keeps wall-clock time low.
   const alreadyRepliedByUsMap = new Map<string, boolean>();
+  if (!botLogin && candidateThreadIds.size > 0) {
+    console.warn(
+      chalk.yellow(
+        '  Thread replies: could not determine bot login (set PRR_BOT_LOGIN or use a token allowed to call GET /user); cross-run idempotency is off.',
+      ),
+    );
+  }
   if (botLogin && candidateThreadIds.size > 0) {
     const results = await Promise.all(
       Array.from(candidateThreadIds, async (threadId) => {

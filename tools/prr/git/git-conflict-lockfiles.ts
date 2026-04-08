@@ -224,12 +224,23 @@ export async function handleLockFileConflicts(
     }
   }
   
-  // Stage the regenerated lock files
+  // Stage regenerated lock files, or record deletion when regen left no file (clears UU conflicts).
+  // WHY: Blind `git add` on a missing path fails with "pathspec did not match"; `git rm` resolves
+  // many merge conflicts when we intentionally drop the lock after a failed install.
   for (const lockFile of lockFiles) {
+    const stagedPath = path.join(resolvedWorkdir, lockFile);
     try {
-      await git.add(lockFile);
+      if (fs.existsSync(stagedPath)) {
+        await git.add(lockFile);
+      } else {
+        await git
+          .raw(['rm', '-f', '--', lockFile])
+          .catch(async () => {
+            await git.raw(['add', '-u', '--', lockFile]).catch(() => {});
+          });
+      }
     } catch {
-      // File might not exist if regenerate failed, ignore
+      // Last resort: ignore (caller treats remaining git conflicts as unresolved)
     }
   }
 }
