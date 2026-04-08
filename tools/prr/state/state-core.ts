@@ -9,7 +9,11 @@ import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage, formatNumber } from '../../../shared/logger.js';
 import { getEffectiveElizacloudSkipModelIds } from '../../../shared/constants.js';
 import { isReviewPathFragment } from '../../../shared/path-utils.js';
-import type { StateContext } from './state-context.js';
+import {
+  type StateContext,
+  hydrateRotationSessionFromPersistedState,
+  persistRotationSessionToState,
+} from './state-context.js';
 
 export async function loadState(ctx: StateContext, pr: string, branch: string, headSha: string): Promise<ResolverState> {
   if (existsSync(ctx.statePath)) {
@@ -24,6 +28,9 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
         if (ctx.state.headSha !== headSha) {
           const prevSha = ctx.state.headSha?.slice(0, 7);
           ctx.state.headSha = headSha;
+          delete ctx.state.sessionSkippedModelKeys;
+          delete ctx.state.sessionModelStats;
+          delete ctx.state.sessionSkippedSinceFixIteration;
           const hadVerified =
             (ctx.state.verifiedFixed?.length ?? 0) + (ctx.state.verifiedComments?.length ?? 0) > 0;
           const hadPartial =
@@ -223,6 +230,10 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
     ctx.state = createInitialState(pr, branch, headSha);
   }
 
+  if (ctx.state) {
+    hydrateRotationSessionFromPersistedState(ctx);
+  }
+
   return ctx.state;
 }
 
@@ -268,6 +279,7 @@ export async function saveState(ctx: StateContext): Promise<void> {
     await mkdir(dir, { recursive: true });
   }
 
+  persistRotationSessionToState(ctx);
   await writeFile(ctx.statePath, JSON.stringify(ctx.state, null, 2), 'utf-8');
 }
 

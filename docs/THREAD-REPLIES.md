@@ -67,6 +67,10 @@ Some “comments” are synthetic: we create them from issue comments (e.g. bot 
 | `--resolve-threads` | After replying, resolve the thread (collapse with checkmark). Default off. |
 | `PRR_BOT_LOGIN` | GitHub login of the bot that posts replies. When set, we skip threads that already have a comment from this login (cross-run idempotency). |
 
+## 422 Validation Failed and retries
+
+On **`pulls.createReplyForReviewComment`**, GitHub may return **422** with structured **`errors`** (e.g. **`PullRequestReviewComment`** / **`in_reply_to`**) when the thread is not replyable (stale diff, wrong anchor). PRR logs the full response body in **debug** and **does not** send the short fallback body in that case — a shorter string would 422 the same way and wastes an API call. Plain **422** without those fields still gets one retry with the short fallback (e.g. `Addressed.`). Reply bodies are clamped to a safe max length before send. After several consecutive batches where **every** reply in the batch returns **422**, PRR stops attempting further replies for that run (see **`postThreadReplies`**).
+
 ## See also
 
 - **AGENTS.md** — “PRR thread replies” for a short reference.

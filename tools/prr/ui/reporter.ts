@@ -320,9 +320,13 @@ export function printFinalSummary(
   const auditOverridesThisRun = stateContext.auditOverridesThisRun ?? [];
 
   if (overlapIds.length > 0) {
+    const showOverlap = 20;
+    const overlapSample = overlapIds.slice(0, showOverlap).join(', ');
+    const more =
+      overlapIds.length > showOverlap ? ` … (+${formatNumber(overlapIds.length - showOverlap)} more)` : '';
     console.warn(
       chalk.yellow(
-        `  ⚠ verified ∩ dismissed still shows ${formatNumber(overlapIds.length)} ID(s) at summary time — unexpected. Delete .pr-resolver-state.json in the clone workdir (see README Troubleshooting), then re-run.`,
+        `  ⚠ verified ∩ dismissed still shows ${formatNumber(overlapIds.length)} ID(s) at summary time — unexpected. Overlap: ${overlapSample}${more}. Delete .pr-resolver-state.json in the clone workdir (see README Troubleshooting), then re-run.`,
       ),
     );
   }

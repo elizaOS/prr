@@ -258,6 +258,9 @@ export function pathDismissCategoryForNotFound(
   return 'missing-file';
 }
 
+/** Alias for {@link pathDismissCategoryForNotFound} — single name for “not found” dismissal (pill-output). */
+export const dismissPathNotFound = pathDismissCategoryForNotFound;
+
 /**
  * Fix URL-encoding artifacts in path segments (e.g. from GitHub links in comment bodies).
  * A segment like "2Fmessage-service.test.ts" comes from "%2Fmessage..." with % stripped;

@@ -8,6 +8,7 @@ beforeEach(() => {
 
 describe('scanCommittedFixes cache', () => {
   it('skips git log on cache hit for same workdir, branch, and HEAD', async () => {
+    let logCalls = 0;
     const git = {
       raw: vi.fn(async (args: string[]) => {
         if (args[0] === 'rev-parse' && args[1] === '--verify') {
@@ -16,6 +17,7 @@ describe('scanCommittedFixes cache', () => {
           throw err;
         }
         if (args[0] === 'log') {
+          logCalls++;
           return 'prr-fix:IC_cached_marker\n';
         }
         return '';
@@ -23,12 +25,28 @@ describe('scanCommittedFixes cache', () => {
     } as unknown as SimpleGit;
 
     const a = await scanCommittedFixes(git, 'feature/x', { workdir: '/tmp/prr-w', headSha: 'deadbeef01' });
-    const rawAfterFirst = git.raw.mock.calls.length;
-    const b = await scanCommittedFixes(git, 'feature/x', { workdir: '/tmp/prr-w', headSha: 'deadbeef01' });
+    expect(logCalls).toBe(1);
+    await scanCommittedFixes(git, 'feature/x', { workdir: '/tmp/prr-w', headSha: 'deadbeef01' });
     expect(a).toEqual(['IC_cached_marker']);
-    expect(b).toEqual(['IC_cached_marker']);
-    expect(rawAfterFirst).toBeGreaterThan(0);
-    expect(git.raw.mock.calls.length).toBe(rawAfterFirst);
+    expect(logCalls).toBe(1);
+  });
+
+  it('captures multiple prr-fix markers on one commit message line', async () => {
+    const git = {
+      raw: vi.fn(async (args: string[]) => {
+        if (args[0] === 'rev-parse' && args[1] === '--verify') {
+          if (args[2] === 'origin/main') return 'abc\n';
+          throw new Error('no');
+        }
+        if (args[0] === 'log') {
+          return 'prr-fix:IC_a prr-fix:IC_b\n';
+        }
+        return '';
+      }),
+    } as unknown as SimpleGit;
+
+    const ids = await scanCommittedFixes(git, 'feature/y');
+    expect(ids.sort()).toEqual(['IC_a', 'IC_b'].sort());
   });
 
   it('does not use cache when workdir or headSha omitted', async () => {

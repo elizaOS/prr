@@ -21,6 +21,18 @@ Vendor doc pages change often; review bots may lag and suggest wrong renames (e.
 
 **PRR behavior:** Outdated bot comments that call a catalog-valid id a “typo” and suggest another id are **dismissed** (`assessSolvability`, check **0a6**) and optionally **auto-healed** in the workdir before issue analysis.
 
+### ElizaCloud built-in skip list — when to add or re-enable
+
+PRR maintains **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants/models.ts`** with per-id reasons in **`ELIZACLOUD_SKIP_REASON`** (`timeout` vs `zero-fix-rate`).
+
+| Criterion | Typical action |
+|-----------|------------------|
+| **Repeated 504 / gateway timeout** on modest prompts (not a one-off blip) | Add id with reason **`timeout`**; operators may re-enable with **`PRR_ELIZACLOUD_INCLUDE_MODELS`** if the gateway improves. |
+| **0% fix rate or systematic verifier/fix failures** in output.log / pill audits | Add id with reason **`zero-fix-rate`**. |
+| **Session-only bad behavior** | **`PRR_SESSION_MODEL_SKIP_FAILURES`** + persisted **`sessionSkippedModelKeys`** (see **AGENTS.md**); no catalog change required. |
+
+**Re-evaluate:** After gateway or model updates, try **`PRR_ELIZACLOUD_INCLUDE_MODELS=<id>`** on a small PR; if stable, propose removing the id from the built-in list in a PR with evidence (log snippet or audit cycle).
+
 | Mechanism | WHY |
 |-----------|-----|
 | **Dismiss in solvability** | Stops non-actionable “rename valid A → valid B” advice from entering the LLM analysis/fix queue. |

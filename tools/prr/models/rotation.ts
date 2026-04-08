@@ -905,6 +905,20 @@ export async function validateAndFilterModels(
       }
     }
 
+    if (isLlMApi && useElizaCloudForLlMApi && validModels.length === 0) {
+      throw new Error(
+        'ElizaCloud: no models remain after the built-in skip list and gateway filter. ' +
+          'Set PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable at least one id, or see docs/MODELS.md.',
+      );
+    }
+    if (isLlMApi && useElizaCloudForLlMApi && validModels.length === 1) {
+      console.warn(
+        chalk.yellow(
+          `  ⚠ Only ${formatNumber(1)} ElizaCloud model in rotation after skips — a single failure blocks fixes until the next rotation step. Consider PRR_ELIZACLOUD_INCLUDE_MODELS (see docs/MODELS.md).`,
+        ),
+      );
+    }
+
     // User-visible warning when configured default was skipped (pill-output #2)
     if (skippedConfiguredDefault) {
       const replacement = validModels.length > 0 ? validModels[0] : '(none; add other models or remove from skip list)';
@@ -918,7 +932,7 @@ export async function validateAndFilterModels(
       !thinElizacloudPoolWarned &&
       isLlMApi &&
       useElizaCloudForLlMApi &&
-      validModels.length > 0 &&
+      validModels.length >= 2 &&
       validModels.length <= 3
     ) {
       thinElizacloudPoolWarned = true;

@@ -422,20 +422,19 @@ function writeToPromptLog(
       // avoid throwing from logger
     }
     // Pill / audit: record in prompts.log so CI and pill see empty-body events (not only stderr).
-    try {
-      if (promptLogStream) {
-        const stamp = new Date().toISOString();
-        const phase =
-          metadata && typeof metadata === 'object' && metadata !== null && 'phase' in metadata
-            ? String((metadata as { phase?: unknown }).phase ?? '')
-            : '';
-        const phasePart = phase ? ` phase=${JSON.stringify(phase)}` : '';
-        const line = `--- PROMPTLOG_EMPTY_BODY slug=${slug} kind=${kind} label=${JSON.stringify(label)}${phasePart} at=${stamp} ---\n`;
-        promptLogStream.write(line);
-      }
-    } catch {
-      // ignore
-    }
+    // Pill / audit: standard ERROR block in prompts.log (not only stderr / one-line marker) so greps match.
+    const emptyMeta: Record<string, unknown> = {
+      ...(metadata && typeof metadata === 'object' && metadata !== null ? { ...metadata } : {}),
+      emptyBody: true,
+      originalKind: kind,
+    };
+    writeToPromptLog(
+      slug,
+      'ERROR',
+      label,
+      `[empty-body] ${kind} refused: zero or whitespace-only content (see AGENTS.md prompts.log troubleshooting).`,
+      emptyMeta,
+    );
     return;
   }
   const bodyToWrite = content;

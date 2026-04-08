@@ -222,6 +222,7 @@ describe('getFullFileForAudit', () => {
     tempDirs.push(dir);
     writeFileSync(join(dir, 'small.ts'), ['alpha', 'beta', 'gamma'].join('\n'), 'utf-8');
     const out = await getFullFileForAudit(dir, 'small.ts', 2, '');
+    expect(out.snippet).toContain('[PRR final-audit context]');
     expect(out.snippet).toContain('1: alpha');
     expect(out.snippet).toContain('2: beta');
     expect(out.snippet).toContain('3: gamma');
@@ -239,6 +240,7 @@ describe('getFullFileForAudit', () => {
     expect(content.length).toBeGreaterThan(50_000);
     writeFileSync(join(dir, 'big.ts'), content, 'utf-8');
     const out = await getFullFileForAudit(dir, 'big.ts', 1500, '');
+    expect(out.snippet).toContain('[PRR final-audit context]');
     expect(out.snippet).toMatch(/excerpt —/);
     expect(out.snippet).toMatch(/1500:\s*\/\/ line 1500/);
     expect(out.snippet).not.toMatch(/^1:\s*\/\/ line 1/m);
@@ -255,7 +257,8 @@ describe('getFullFileForAudit', () => {
     writeFileSync(join(dir, 'huge.ts'), lines.join('\n'), 'utf-8');
     const out = await getFullFileForAudit(dir, 'huge.ts', null, '');
     expect(out.fixSiteInWindow).toBe(false);
-    expect(out.snippet).toMatch(/^1:\s*\/\/ line 1/);
+    expect(out.snippet).toContain('[PRR final-audit context]');
+    expect(out.snippet).toMatch(/1:\s*\/\/ line 1/);
     expect(out.snippet.length).toBeLessThan(lines.join('\n').length);
   });
 });

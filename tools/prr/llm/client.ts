@@ -48,6 +48,7 @@ import {
   commentNeedsConservativeExistenceCheck,
   explanationHasConcreteFixEvidence,
   explanationMentionsMissingCodeVisibility,
+  finalAuditExplanationClaimsSnippetIsIncomplete,
   finalAuditSnippetLooksTruncatedOrExcerpt,
   snippetShowsUuidCommentAlignedWithVersionRange,
 } from './verification-heuristics.js';
@@ -68,6 +69,7 @@ export {
   commentNeedsConservativeExistenceCheck,
   explanationHasConcreteFixEvidence,
   explanationMentionsMissingCodeVisibility,
+  finalAuditExplanationClaimsSnippetIsIncomplete,
   finalAuditSnippetLooksTruncatedOrExcerpt,
   snippetShowsUuidCommentAlignedWithVersionRange,
 } from './verification-heuristics.js';
@@ -1548,7 +1550,8 @@ ${codeSnippet}
               }
             }
 
-            // Truncation guard: partial excerpt + UNFIXED without strong code cite (or visibility hedge) → pass.
+            // Truncation guard: partial excerpt + UNFIXED only when the model says the shown window is insufficient.
+            // WHY: Prior `!hasStrongCite || visibilityHedge` demoted substantive UNFIXED that lacked line quotes (pill-output).
             if (
               !isFixed &&
               issue.fixSiteInWindow !== true &&
@@ -1557,14 +1560,13 @@ ${codeSnippet}
             ) {
               const hasStrongCite =
                 /\bline\s+\d+/i.test(finalExplanation) && /`[^`\n]{2,120}`/.test(finalExplanation);
-              const visibilityHedge = explanationMentionsMissingCodeVisibility(finalExplanation);
-              if (!hasStrongCite || visibilityHedge) {
-                debug('Final audit demotion: excerpt/truncation + weak or hedged UNFIXED → pass', {
+              if (!hasStrongCite && finalAuditExplanationClaimsSnippetIsIncomplete(finalExplanation)) {
+                debug('Final audit demotion: excerpt/truncation + UNFIXED hinges on incomplete snippet view → pass', {
                   issueId: issue.id,
                 });
                 finalStatus = false;
                 finalExplanation =
-                  'FIXED (truncation guard): Partial snippet; UNFIXED lacked line+code citation or admitted limited visibility. ' +
+                  'FIXED (truncation guard): Partial snippet; model indicated visible excerpt insufficient for UNFIXED. ' +
                   finalExplanation;
               }
             }

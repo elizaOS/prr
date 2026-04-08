@@ -42,6 +42,61 @@ export interface DedupResult {
   }>;
 }
 
+/** Minimal shape for overlap resolution (per-file + cross-file dedup). */
+export type DedupGroupItem = {
+  comment: ReviewComment;
+  codeSnippet?: string;
+  contextHints?: string[];
+  resolvedPath?: string;
+};
+
+/**
+ * When the LLM emits multiple GROUP lines, the same index may appear twice (e.g. issue 70 in two groups).
+ * Keep **first** group order; later groups drop indices already assigned (pill-output / prompts.log audits).
+ */
+export function resolveOverlappingDedupGroupsByIndex<T extends DedupGroupItem>(
+  groups: Array<{ canonical: T; dupes: T[] }>,
+  items: T[],
+): Array<{ canonical: T; dupes: T[] }> {
+  const idToIdx = new Map<string, number>();
+  for (let i = 0; i < items.length; i++) {
+    idToIdx.set(items[i]!.comment.id, i);
+  }
+  const used = new Set<number>();
+  const out: Array<{ canonical: T; dupes: T[] }> = [];
+
+  for (const g of groups) {
+    const rawIdxs = [g.canonical, ...g.dupes]
+      .map((m) => idToIdx.get(m.comment.id))
+      .filter((i): i is number => i !== undefined);
+    const memberIdx = [...new Set(rawIdxs)];
+    const available = memberIdx.filter((i) => !used.has(i));
+    if (available.length < 2) {
+      if (memberIdx.some((i) => used.has(i))) {
+        debug('Dedup: dropped overlapping GROUP — index(s) already merged earlier', {
+          memberIndices: memberIdx.map((i) => i + 1),
+        });
+      }
+      continue;
+    }
+
+    const origCanonIdx = idToIdx.get(g.canonical.comment.id);
+    const canonicalIdx =
+      origCanonIdx !== undefined && available.includes(origCanonIdx)
+        ? origCanonIdx
+        : available.reduce((best, i) =>
+            items[i]!.comment.body.length > items[best]!.comment.body.length ? i : best,
+            available[0]!,
+          );
+    const dupeIdxs = available.filter((i) => i !== canonicalIdx);
+    for (const i of available) {
+      used.add(i);
+    }
+    out.push({ canonical: items[canonicalIdx]!, dupes: dupeIdxs.map((i) => items[i]!) });
+  }
+  return out;
+}
+
 /**
  * Propagate the same comment status to all duplicates of a canonical.
  * WHY: Duplicates are only analyzed via the canonical; without this they stay "unseen" in the debug table.
@@ -552,12 +607,13 @@ ${summaries}`;
         const dupes = indices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
         groups.push({ canonical, dupes });
       }
+      const mergedGroups = resolveOverlappingDedupGroupsByIndex(groups, items);
       // Only treat as NONE when no GROUP lines were parsed. Audit (prompts.log): model may output
       // `GROUP: …` plus a trailing `NONE` line — regex still captures groups; do not discard.
-      if (groups.length === 0 && content.toUpperCase().includes('NONE')) {
+      if (mergedGroups.length === 0 && content.toUpperCase().includes('NONE')) {
         return { filePath, groups: [], error: undefined };
       }
-      return { filePath, groups };
+      return { filePath, groups: mergedGroups };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       debug(`LLM dedup failed for ${filePath}: ${msg}`);
@@ -679,6 +735,8 @@ export async function crossFileDedup(dedupResult: DedupResult, llm: LLMClient): 
     const newDuplicateItems = new Map(dedupResult.duplicateItems);
     const newDuplicateIds = new Set<string>();
 
+    type CrossRow = { canonicalIdx: number; memberIndices: number[] };
+    const crossPending: CrossRow[] = [];
     while ((match = groupPattern.exec(content)) !== null) {
       const parsedIndices = match[1].split(',').map(s => parseInt(s.trim(), 10));
       const canonicalOneBased = parseInt(match[2], 10);
@@ -693,12 +751,38 @@ export async function crossFileDedup(dedupResult: DedupResult, llm: LLMClient): 
       const uniquePaths = new Set(paths);
       if (uniquePaths.size !== indices.length) continue;
 
-      const canonicalIdx = canonicalOneBased - 1;
-      const canonical = items[canonicalIdx]!;
-      const dupes = indices.filter(i => i !== canonicalIdx).map(i => items[i]!);
+      crossPending.push({ canonicalIdx: canonicalOneBased - 1, memberIndices: indices });
+    }
 
-      const otherPaths = [...new Set(dupes.map(d => d.resolvedPath ?? d.comment.path))];
-      const hint = `Cross-file dedup: same root cause also reported on ${otherPaths.map(p => `\`${p}\``).join(', ')} — fix consistently across files.`;
+    const usedCross = new Set<number>();
+    for (const row of crossPending) {
+      const available = row.memberIndices.filter((i) => !usedCross.has(i));
+      if (available.length < 2) {
+        if (row.memberIndices.some((i) => usedCross.has(i))) {
+          debug('Cross-file dedup: dropped overlapping GROUP — index(s) already merged earlier', {
+            memberIndices: row.memberIndices.map((i) => i + 1),
+          });
+        }
+        continue;
+      }
+      const pathsAvail = available.map((i) => items[i]!.resolvedPath ?? items[i]!.comment.path);
+      if (new Set(pathsAvail).size !== available.length) continue;
+
+      const canonicalIdx = available.includes(row.canonicalIdx)
+        ? row.canonicalIdx
+        : available.reduce((best, i) =>
+            items[i]!.comment.body.length > items[best]!.comment.body.length ? i : best,
+            available[0]!,
+          );
+      const dupes = available.filter((i) => i !== canonicalIdx).map((i) => items[i]!);
+      const canonical = items[canonicalIdx]!;
+
+      for (const i of available) {
+        usedCross.add(i);
+      }
+
+      const otherPaths = [...new Set(dupes.map((d) => d.resolvedPath ?? d.comment.path))];
+      const hint = `Cross-file dedup: same root cause also reported on ${otherPaths.map((p) => `\`${p}\``).join(', ')} — fix consistently across files.`;
       canonical.contextHints = [...(canonical.contextHints ?? []), hint];
 
       const existingDupes = newDuplicateMap.get(canonical.comment.id) || [];

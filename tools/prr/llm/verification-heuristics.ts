@@ -68,6 +68,31 @@ export function finalAuditSnippetLooksTruncatedOrExcerpt(snippet: string): boole
   );
 }
 
+/**
+ * True when the model says the **shown** snippet/excerpt is incomplete relative to what it needs
+ * (outside the window, rest of file, etc.). **WHY:** Truncation-guard demotion should apply only when
+ * the UNFIXED rationale explicitly hinges on not seeing enough code — not when the model gives a
+ * substantive UNFIXED from visible context without line quotes (pill-output).
+ */
+export function finalAuditExplanationClaimsSnippetIsIncomplete(explanation: string): boolean {
+  const e = explanation.toLowerCase();
+  return (
+    /\b(not|isn't|is not)\s+(visible|shown|included)\s+in\s+(the\s+)?(provided|shown|excerpt|snippet)/.test(
+      e,
+    ) ||
+    /\b(excerpt|snippet)\s+(does not|doesn't)\s+(include|show|contain)/.test(e) ||
+    /\boutside\s+(of\s+)?(the\s+)?(shown|provided)\s+(code|snippet|excerpt)/.test(e) ||
+    /\b(rest|remainder)\s+of\s+the\s+file\b/.test(e) ||
+    /\belsewhere\s+in\s+the\s+file\b/.test(e) ||
+    /\bcannot\s+(see|view|verify)\s+(the\s+)?(rest|full|remaining|complete)\b/.test(e) ||
+    /\b(full|entire)\s+file\b.*\b(not|isn't)\s+(shown|provided|visible)/.test(e) ||
+    /\bimplementation\s+(may be|might be|could be)\s+(elsewhere|outside)/.test(e) ||
+    /\breported\s+(line|region|location)\b.*\b(not\s+in|outside)\s+(the\s+)?(excerpt|snippet)/.test(e) ||
+    /\bcannot\s+verify\b.*\b(truncated|unavailable|excerpt|snippet)\b/.test(e) ||
+    /\bnot\s+visible\s+in\s+(the\s+)?(provided|current)\s+(code|snippet|excerpt)\b/.test(e)
+  );
+}
+
 export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
   return (
     /snippet.*(?:truncated|unavailable)/i.test(explanation) ||

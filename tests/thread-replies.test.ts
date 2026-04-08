@@ -332,6 +332,30 @@ describe('postThreadReplies', () => {
     expect(result).toEqual({ attempted: 2, replied: 0 });
     expect(replyMock).toHaveBeenCalledTimes(4);
   });
+
+  it('skips short-body retry when 422 errors indicate thread/comment state (no redundant fallback call)', async () => {
+    const err422 = Object.assign(new Error('Validation Failed'), {
+      status: 422,
+      response: {
+        data: {
+          message: 'Validation Failed',
+          errors: [{ resource: 'PullRequestReviewComment', field: 'in_reply_to', code: 'invalid' }],
+        },
+      },
+    });
+    const replyMock = vi.fn(async () => {
+      throw err422;
+    });
+    mockGithub.replyToReviewThread = replyMock;
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    const result = await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['c1']),
+    });
+    expect(result).toEqual({ attempted: 1, replied: 0 });
+    expect(replyMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('dismissedCategoriesWithReply', () => {

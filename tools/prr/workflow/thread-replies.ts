@@ -77,6 +77,62 @@ function getErrorDetails(err: unknown): { status?: number; message: string; body
   return { status, message, body };
 }
 
+/** GitHub REST cap for review reply bodies (leave margin below 65,536). */
+const REVIEW_REPLY_BODY_MAX_CHARS = 60_000;
+
+function clampReplyBodyForGitHub(body: string): string {
+  if (body.length <= REVIEW_REPLY_BODY_MAX_CHARS) return body;
+  return `${body.slice(0, REVIEW_REPLY_BODY_MAX_CHARS - 24)}\n[body truncated]`;
+}
+
+/**
+ * When true, 422 is almost certainly stale thread / diff position / comment id — a shorter body will not help.
+ * Skip the second API call (pill-output audits: redundant fallback still 422s).
+ */
+function threadReply422SkipShortBodyRetry(err: unknown): boolean {
+  const { body } = getErrorDetails(err);
+  if (body != null && typeof body === 'object' && !Array.isArray(body) && 'errors' in body) {
+    const errors = (body as { errors?: unknown }).errors;
+    if (Array.isArray(errors)) {
+      for (const raw of errors) {
+        if (!raw || typeof raw !== 'object') continue;
+        const e = raw as { field?: string; resource?: string; code?: string };
+        const field = (e.field ?? '').toLowerCase();
+        const resource = (e.resource ?? '').toLowerCase();
+        if (field === 'body' || field.endsWith('_body')) return false;
+        if (resource.includes('pullrequestreviewcomment') || resource.includes('pull_request_review')) return true;
+        if (
+          field === 'in_reply_to' ||
+          field === 'commit_id' ||
+          field === 'path' ||
+          field === 'position' ||
+          field === 'line' ||
+          field === 'side' ||
+          field === 'subject_type' ||
+          field === 'diff_hunk'
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  const s =
+    typeof body === 'string'
+      ? body
+      : body != null
+        ? JSON.stringify(body)
+        : '';
+  const lower = s.toLowerCase();
+  if (/\bfield["']?\s*:\s*["']body["']/.test(s) || /\bcode["']?\s*:\s*["']too_large["']/.test(s)) {
+    return false;
+  }
+  return (
+    /pullrequestreviewcomment|in_reply_to|"field":"commit_id"|"field":"path"|"field":"position"|"field":"line"|"field":"side"|diff_hunk/.test(
+      lower,
+    )
+  );
+}
+
 /**
  * Post reply; on 422/Validation Failed log full error body and retry once with shortened message.
  * WHY full error: GitHub's reason (body format, thread state) is in the response; we log it so we can fix.
@@ -93,8 +149,10 @@ async function postReplyWithRetry(
   body: string,
   fallbackBody: string
 ): Promise<{ ok: boolean; is422?: boolean }> {
+  const primary = clampReplyBodyForGitHub(body);
+  const fallback = clampReplyBodyForGitHub(fallbackBody);
   try {
-    await github.replyToReviewThread(owner, repo, prNumber, databaseId, body);
+    await github.replyToReviewThread(owner, repo, prNumber, databaseId, primary);
     return { ok: true };
   } catch (err) {
     const { status, message, body: errBody } = getErrorDetails(err);
@@ -104,9 +162,13 @@ async function postReplyWithRetry(
     } else {
       debug('Failed to post reply', { threadId, error: message });
     }
-    if (fallbackBody !== body) {
+    const skipShortRetry = validationFailed && threadReply422SkipShortBodyRetry(err);
+    if (skipShortRetry) {
+      debug('Skipping short-body reply retry — 422 looks like thread/diff/comment state, not body length', { threadId });
+    }
+    if (!skipShortRetry && fallback !== primary) {
       try {
-        await github.replyToReviewThread(owner, repo, prNumber, databaseId, fallbackBody);
+        await github.replyToReviewThread(owner, repo, prNumber, databaseId, fallback);
         return { ok: true };
       } catch (retryErr) {
         const retryDetails = getErrorDetails(retryErr);
@@ -128,14 +190,14 @@ export interface PostThreadRepliesResult {
   replied: number;
 }
 
-/** Consecutive 422s after which we stop attempting further replies (avoids retry storm; output.log audit). */
-const MAX_CONSECUTIVE_422_BEFORE_STOP = 3;
+/** Consecutive batches where **every** reply in the batch failed with 422 — then stop (avoids parallel 422 miscount; pill-output). */
+const MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP = 3;
 
 /**
  * Post a reply on each review thread that was verified-fixed or dismissed (with reply).
  * Skips ic-* threads (issue comments); skips threads already in repliedThreadIds.
  * Updates repliedThreadIds in-place after each successful reply.
- * On 3 consecutive 422 Validation Failed, stops attempting more replies and returns counts.
+ * On 3 consecutive batches where every reply in the batch returns 422, stops attempting more replies (serial batch accounting; pill-output).
  * Caller may print a summary when replied/attempted is very low (e.g. <10%).
  */
 export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise<PostThreadRepliesResult | void> {
@@ -178,7 +240,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   const botLogin = process.env.PRR_BOT_LOGIN?.trim() || undefined;
   let attempted = 0;
   let replied = 0;
-  let consecutive422 = 0;
+  let consecutiveAll422Batches = 0;
   let stopReplyDueTo422 = false;
 
   // Collect candidate thread IDs we might reply to (for batched cross-run idempotency check).
@@ -235,30 +297,26 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
         const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'Addressed.');
         if (result.ok) {
           replied++;
-          consecutive422 = 0;
           repliedThreadIds.add(entry.threadId);
           threadsRepliedThisCall.push(entry.threadId);
           debug('Posted fixed reply on thread', { threadId: entry.threadId });
-        } else {
-          if (result.is422) {
-            consecutive422++;
-            if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-              console.log(
-                chalk.yellow(
-                  `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_422_BEFORE_STOP)} consecutive 422s (Validation Failed).`,
-                ),
-              );
-              stopReplyDueTo422 = true;
-            }
-          } else {
-            consecutive422 = 0;
-          }
         }
         return result;
       })
     );
-    // Check if any result triggered stop
-    if (results.some(r => r.is422 && consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP)) {
+    const anyOk = results.some((r) => r.ok);
+    const all422 =
+      results.length > 0 && results.every((r) => !r.ok && r.is422 === true);
+    if (anyOk) consecutiveAll422Batches = 0;
+    else if (all422) consecutiveAll422Batches++;
+    else consecutiveAll422Batches = 0;
+    if (consecutiveAll422Batches >= MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP) {
+      console.log(
+        chalk.yellow(
+          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed).`,
+        ),
+      );
+      stopReplyDueTo422 = true;
       break;
     }
   }
@@ -306,30 +364,26 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
         const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'No change needed.');
         if (result.ok) {
           replied++;
-          consecutive422 = 0;
           repliedThreadIds.add(entry.threadId);
           threadsRepliedThisCall.push(entry.threadId);
           debug('Posted dismissed reply on thread', { threadId: entry.threadId });
-        } else {
-          if (result.is422) {
-            consecutive422++;
-            if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-              console.log(
-                chalk.yellow(
-                  `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_422_BEFORE_STOP)} consecutive 422s (Validation Failed).`,
-                ),
-              );
-              stopReplyDueTo422 = true;
-            }
-          } else {
-            consecutive422 = 0;
-          }
         }
         return result;
       })
     );
-    // Check if any result triggered stop
-    if (results.some(r => r.is422 && consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP)) {
+    const anyOk = results.some((r) => r.ok);
+    const all422 =
+      results.length > 0 && results.every((r) => !r.ok && r.is422 === true);
+    if (anyOk) consecutiveAll422Batches = 0;
+    else if (all422) consecutiveAll422Batches++;
+    else consecutiveAll422Batches = 0;
+    if (consecutiveAll422Batches >= MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP) {
+      console.log(
+        chalk.yellow(
+          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed).`,
+        ),
+      );
+      stopReplyDueTo422 = true;
       break;
     }
   }

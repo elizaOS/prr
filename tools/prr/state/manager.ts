@@ -51,11 +51,25 @@ export class StateManager {
           if (this.state.headSha !== headSha) {
             const prevSha = this.state.headSha?.slice(0, 7);
             this.state.headSha = headSha;
+            delete this.state.sessionSkippedModelKeys;
+            delete this.state.sessionModelStats;
+            delete this.state.sessionSkippedSinceFixIteration;
             const hadVerified = (this.state.verifiedFixed?.length ?? 0) + (this.state.verifiedComments?.length ?? 0) > 0;
             const hadPartial = Object.keys(this.state.partialConflictResolutions ?? {}).length > 0;
             // Pill #9: Also clear dismissed (especially already-fixed) on head change — stale dismissals can mask regressions
             const hadDismissed = (this.state.dismissedIssues?.length ?? 0) > 0;
             if (hadVerified) {
+              const clearedVerifiedIds = [
+                ...new Set([
+                  ...(this.state.verifiedFixed ?? []),
+                  ...(this.state.verifiedComments ?? []).map((v) => v.commentId),
+                ]),
+              ];
+              const showN = 25;
+              const idSample =
+                clearedVerifiedIds.length === 0
+                  ? ''
+                  : ` — IDs (${formatNumber(clearedVerifiedIds.length)} total, showing up to ${formatNumber(showN)}): ${clearedVerifiedIds.slice(0, showN).join(', ')}${clearedVerifiedIds.length > showN ? ' …' : ''}`;
               this.state.verifiedFixed = [];
               this.state.verifiedComments = [];
               // Also clear verified/resolved entries in commentStatuses so callers don't see stale
@@ -75,31 +89,48 @@ export class StateManager {
                   console.warn(`PR head changed: also cleared ${formatNumber(statusCleared)} verified/resolved commentStatuses entries`);
                 }
               }
-              console.warn(`PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code`);
+              console.warn(
+                `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code${idSample}`,
+              );
             }
             if (hadDismissed) {
               const clearAllRaw = process.env.PRR_CLEAR_ALL_DISMISSED_ON_HEAD?.trim().toLowerCase();
               const clearAll =
                 clearAllRaw === '1' || clearAllRaw === 'true' || clearAllRaw === 'yes' || clearAllRaw === 'on';
               if (clearAll) {
-                const n = this.state.dismissedIssues?.length ?? 0;
+                const priorDismissed = this.state.dismissedIssues ?? [];
+                const n = priorDismissed.length;
+                const showD = 25;
+                const dismissedIdSample =
+                  n === 0
+                    ? ''
+                    : ` — comment IDs (showing up to ${formatNumber(showD)}): ${priorDismissed
+                        .slice(0, showD)
+                        .map((d) => d.commentId)
+                        .join(', ')}${n > showD ? ' …' : ''}`;
                 this.state.dismissedIssues = [];
                 console.warn(
-                  `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD`,
+                  `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD${dismissedIdSample}`,
                 );
               } else {
                 // Clear code-/thread-dependent dismissals; keep e.g. not-an-issue, path-unresolved, false-positive.
-                const before = this.state.dismissedIssues?.length ?? 0;
-                this.state.dismissedIssues = (this.state.dismissedIssues ?? []).filter(
-                  (d) =>
-                    d.category !== 'already-fixed' &&
-                    d.category !== 'chronic-failure' &&
-                    d.category !== 'stale',
-                );
+                const prior = this.state.dismissedIssues ?? [];
+                const before = prior.length;
+                const dropCategories = new Set(['already-fixed', 'chronic-failure', 'stale']);
+                const removedRows = prior.filter((d) => dropCategories.has(d.category));
+                this.state.dismissedIssues = prior.filter((d) => !dropCategories.has(d.category));
                 const cleared = before - (this.state.dismissedIssues?.length ?? 0);
                 if (cleared > 0) {
+                  const showD = 25;
+                  const dismissedIdSample =
+                    removedRows.length === 0
+                      ? ''
+                      : ` — removed comment IDs (showing up to ${formatNumber(showD)}): ${removedRows
+                          .slice(0, showD)
+                          .map((d) => d.commentId)
+                          .join(', ')}${removedRows.length > showD ? ' …' : ''}`;
                   console.warn(
-                    `PR head changed: cleared ${formatNumber(cleared)} already-fixed/chronic-failure/stale dismissal(s) so they are re-checked against current code`,
+                    `PR head changed: cleared ${formatNumber(cleared)} already-fixed/chronic-failure/stale dismissal(s) so they are re-checked against current code${dismissedIdSample}`,
                   );
                 }
               }

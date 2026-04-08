@@ -33,7 +33,14 @@ export async function pullLatest(
       console.log(`  Stashed ${status.modified.length + status.created.length + status.deleted.length} local changes`);
     } catch (stashError) {
       debug('Failed to stash', { error: stashError });
-      // Continue anyway - pull might still work
+      console.warn(
+        '  ⚠ Could not stash local changes before pull — aborting pull to avoid merging/rebasing on a dirty tree (resolve or stash manually, then retry).',
+      );
+      return {
+        success: false,
+        error: stashError instanceof Error ? stashError.message : String(stashError),
+        stashLeft: false,
+      };
     }
   }
   

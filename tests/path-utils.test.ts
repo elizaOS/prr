@@ -4,6 +4,9 @@
  * URL-encoded segments, internal paths, node_modules/dist, and repo top-level detection.
  */
 import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import {
   normalizeRepoPath,
   normalizePathForAllow,
@@ -13,9 +16,11 @@ import {
   isReviewPathFragment,
   shouldSkipFinalAuditLlmForPath,
   pathDismissCategoryForNotFound,
+  dismissPathNotFound,
   stripGitDiffPathPrefix,
   setDynamicRepoTopLevelDirs,
   getDynamicRepoTopLevelDirs,
+  tryResolvePathWithExtensionVariants,
 } from '../shared/path-utils.js';
 
 describe('normalizeRepoPath', () => {
@@ -207,5 +212,41 @@ describe('pathDismissCategoryForNotFound', () => {
   });
   it('uses missing-file for normal paths with missing resolution', () => {
     expect(pathDismissCategoryForNotFound('src/nope.ts', 'missing')).toBe('missing-file');
+  });
+  it('matches dismissPathNotFound alias', () => {
+    expect(dismissPathNotFound('.d.ts', 'missing')).toBe('path-unresolved');
+  });
+});
+
+describe('tryResolvePathWithExtensionVariants', () => {
+  it('resolves tsconfig.js to tsconfig.json when only json exists', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-path-'));
+    try {
+      writeFileSync(join(dir, 'tsconfig.json'), '{}');
+      expect(tryResolvePathWithExtensionVariants(dir, 'tsconfig.js')).toBe('tsconfig.json');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves Component.ts to Component.tsx when only tsx exists', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-path-'));
+    try {
+      writeFileSync(join(dir, 'Component.tsx'), 'export {}');
+      expect(tryResolvePathWithExtensionVariants(dir, 'Component.ts')).toBe('Component.tsx');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('strips a/ git diff prefix before variant lookup', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-path-'));
+    try {
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'foo.tsx'), 'export {}');
+      expect(tryResolvePathWithExtensionVariants(dir, 'a/src/foo.ts')).toBe('src/foo.tsx');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

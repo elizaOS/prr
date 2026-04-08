@@ -247,6 +247,27 @@ export interface FullFileForAuditResult {
   fixSiteInWindow: boolean;
 }
 
+function finalAuditFileContextHeader(params: {
+  totalLines: number;
+  mode: 'full' | 'excerpt';
+  anchorLine: number | null;
+  truncated: boolean;
+}): string {
+  const { totalLines, mode, anchorLine, truncated } = params;
+  const anchorNote =
+    anchorLine != null
+      ? `Review anchor ~line ${anchorLine}.`
+      : 'No line anchor — excerpt may start at file head.';
+  if (mode === 'full') {
+    return `[PRR final-audit context] Complete numbered file below (${totalLines} lines total).\n\n`;
+  }
+  return (
+    `[PRR final-audit context] File has ${totalLines} lines total. ` +
+    `Below is a ${truncated ? 'budget-limited excerpt' : 'numbered view'} (${anchorNote}) ` +
+    `If the fix may be outside this window, prefer UNCERTAIN over UNFIXED without citing lines from the snippet.\n\n`
+  );
+}
+
 export async function getFullFileForAudit(
   workdir: string,
   path: string,
@@ -262,8 +283,9 @@ export async function getFullFileForAudit(
 
     const { availableForCode } = computeBudget({ model: modelId, reservedChars: 16_000 });
     if (content.length <= availableForCode) {
+      const body = lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
       return {
-        snippet: lines.map((l, i) => `${i + 1}: ${l}`).join('\n'),
+        snippet: finalAuditFileContextHeader({ totalLines: lines.length, mode: 'full', anchorLine: null, truncated: false }) + body,
         fixSiteInWindow: true,
       };
     }
@@ -288,7 +310,13 @@ export async function getFullFileForAudit(
       });
     }
     const fixSiteInWindow = !truncated || anchorLine != null;
-    return { snippet: excerpt, fixSiteInWindow };
+    const header = finalAuditFileContextHeader({
+      totalLines: lines.length,
+      mode: 'excerpt',
+      anchorLine,
+      truncated,
+    });
+    return { snippet: header + excerpt, fixSiteInWindow };
   } catch {
     return missing;
   }
