@@ -975,7 +975,7 @@ export async function printAfterActionReport(
     }
   }
 
-  // Summary — Fixed, Dismissed, Remaining (by unique comment IDs so total never exceeds comment count).
+  // Summary — Fixed, Dismissed, Remaining (union of distinct comment IDs across buckets vs fetched rows).
   console.log(chalk.cyan('\n━━━ Summary ━━━'));
   const fixedIds = new Set(
     comments
@@ -1004,7 +1004,16 @@ export async function printAfterActionReport(
     ),
   );
   if (totalAccounted !== comments.length) {
-    console.log(chalk.gray(`  (Unique comment IDs in these buckets: ${formatNumber(totalAccounted)})`));
+    console.log(
+      chalk.gray(
+        `  Distinct comment IDs in at least one bucket: ${formatNumber(totalAccounted)} (loaded: ${formatNumber(commentsFetched)})`,
+      ),
+    );
+    console.log(
+      chalk.gray(
+        "  → Buckets can be larger if dismissed/remaining/exhausted reference IDs not in this run's fetch; smaller if many loaded comments are only outdated / out of queue.",
+      ),
+    );
   }
   console.log(chalk.green(`  Fixed: ${formatNumber(fixedCount)}${fixedThisSessionCount > 0 ? ` (${formatNumber(fixedThisSessionCount)} this session)` : ''}`));
   console.log(chalk.gray(`  Dismissed: ${formatNumber(dismissedCount)}`));

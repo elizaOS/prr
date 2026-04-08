@@ -171,6 +171,46 @@ describe('review rollup headings (solvability 0a2 — Cycle 72)', () => {
     expect(result.dismissCategory).toBe('not-an-issue');
   });
 
+  it('dismisses bold-only "Issues Fixed Since Previous Reviews" (no # heading)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-bold'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    writeFileSync(join(dir, 'a.ts'), 'export const a = 1;\n', 'utf8');
+    execFileSync('git', ['add', 'a.ts'], { cwd: dir, stdio: 'ignore' });
+    const comment: ReviewComment = {
+      id: 'ic-rollup-bold',
+      threadId: 't-r2b',
+      author: 'coderabbitai',
+      path: 'a.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+      body: '**Issues Fixed Since Previous Reviews**\n\n- ✅ Thread one addressed\n',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+  });
+
+  it('dismisses HTML h3 "Issues Fixed Since Previous Reviews"', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-html'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    writeFileSync(join(dir, 'b.ts'), 'export const b = 1;\n', 'utf8');
+    execFileSync('git', ['add', 'b.ts'], { cwd: dir, stdio: 'ignore' });
+    const comment: ReviewComment = {
+      id: 'ic-rollup-html',
+      threadId: 't-r2h',
+      author: 'coderabbitai',
+      path: 'b.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+      body: '<h3>Issues Fixed Since Previous Reviews</h3>\n<p>Recap only.</p>\n',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+  });
+
   it('dismisses (PR comment) with rollup heading before path inference', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-pr'));
     tempDirs.push(dir);

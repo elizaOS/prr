@@ -1023,7 +1023,8 @@ export async function recheckSolvability(
  * metadata keyword AND an action verb in the same sentence.
  */
 function isSummaryOrMetaReviewComment(commentBody: string): boolean {
-  const rollupWindow = commentBody.slice(0, 1500);
+  // WHY 3k: Bots sometimes prepend logos, HTML, or “Recent review info” before the rollup heading (eliza#6702 audit).
+  const rollupWindow = commentBody.slice(0, 3000);
   // Cycle 72: CodeRabbit (and similar) posts section headers that summarize many threads — not one code fix.
   // WHY early regex: These often fail table/### Summary heuristics but still enter the fix loop and consume focus slots.
   const rollupHeading =
@@ -1034,6 +1035,28 @@ function isSummaryOrMetaReviewComment(commentBody: string): boolean {
     /(?:^|\n)\s*#{1,3}\s*[^\n]*\bOutstanding\s+Issues\b/im.test(rollupWindow) ||
     /(?:^|\n)\s*#{1,3}\s*[^\n]*\bIssues\s+from\s+Previous\s+Reviews\b/im.test(rollupWindow);
   if (rollupHeading) return true;
+
+  // Bold-only or **wrapped** headings (stored body may omit # if the host normalizes markdown).
+  const rollupBold =
+    /(?:^|\n)\s*\*{1,2}\s*Remaining Issues\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Issues\s+Fixed\s+Since\s+Previous\s+Reviews\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Issues\s+Addressed\s+in\s+Previous\s+Reviews\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Previously\s+Fixed\s+Issues\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Outstanding\s+Issues\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Issues\s+from\s+Previous\s+Reviews\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow);
+  if (rollupBold) return true;
+
+  // HTML headings (some bots/issues store rendered-style snippets).
+  const rollupHtml =
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bRemaining Issues\b[\s\S]{0,80}?<\/h[1-6]>/i.test(rollupWindow) ||
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bIssues\s+Fixed\s+Since\s+Previous\s+Reviews\b[\s\S]{0,80}?<\/h[1-6]>/i.test(
+      rollupWindow,
+    ) ||
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bIssues\s+Addressed\s+in\s+Previous\s+Reviews\b[\s\S]{0,80}?<\/h[1-6]>/i.test(
+      rollupWindow,
+    ) ||
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bOutstanding\s+Issues\b[\s\S]{0,80}?<\/h[1-6]>/i.test(rollupWindow);
+  if (rollupHtml) return true;
 
   const head = commentBody.slice(0, 800);
   // Table with Status column and status-like cells (✅/❌/Fixed/Still missing/Addressed)
