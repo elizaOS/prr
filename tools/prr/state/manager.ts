@@ -21,6 +21,11 @@ import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOveral
 import * as Normalize from './lessons-normalize.js';
 import type { StateContext } from './state-context.js';
 import { transitionIssue } from './state-transitions.js';
+import {
+  applyDismissedIssuesLoadNormalization,
+  applyResolverStateLoadCoreNormalization,
+  applyResolverStatePostOverlapCleanup,
+} from './state-core.js';
 
 const STATE_FILENAME = '.pr-resolver-state.json';
 
@@ -113,7 +118,7 @@ export class StateManager {
                   `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD${dismissedIdSample}`,
                 );
               } else {
-                // Clear code-/thread-dependent dismissals; keep e.g. not-an-issue, path-unresolved, false-positive.
+                // Clear code-/thread-dependent dismissals; keep e.g. not-an-issue, path-unresolved, path-fragment, false-positive.
                 const prior = this.state.dismissedIssues ?? [];
                 const before = prior.length;
                 const dropCategories = new Set(['already-fixed', 'chronic-failure', 'stale']);
@@ -154,27 +159,26 @@ export class StateManager {
             console.log(`Compacted ${removed} duplicate lessons (${this.state.lessonsLearned.length} unique remaining)`);
           }
           
-          // Deduplicate verifiedFixed on load
-          if (this.state.verifiedFixed && this.state.verifiedFixed.length > 0) {
-            const before = this.state.verifiedFixed.length;
-            this.state.verifiedFixed = [...new Set(this.state.verifiedFixed)];
-            const dupsRemoved = before - this.state.verifiedFixed.length;
-            if (dupsRemoved > 0) {
-              console.log(`Deduplicated verifiedFixed: removed ${dupsRemoved} duplicate(s) (${this.state.verifiedFixed.length} unique)`);
-            }
-          }
-          
-          // Load cumulative stats from previous sessions
-          if (this.state.totalTimings) {
-            loadOverallTimings(this.state.totalTimings);
-          }
-          if (this.state.totalTokenUsage) {
-            loadOverallTokenUsage(this.state.totalTokenUsage);
-          }
+          applyResolverStateLoadCoreNormalization(this.state);
 
           // Initialize new fields for backward compatibility
           if (!this.state.dismissedIssues) {
             this.state.dismissedIssues = [];
+          }
+
+          const {
+            list: normalizedDismissed,
+            fragmentNormalized,
+            dedupeRemoved: dismissedDupes,
+          } = applyDismissedIssuesLoadNormalization(this.state.dismissedIssues);
+          this.state.dismissedIssues = normalizedDismissed;
+          if (fragmentNormalized > 0) {
+            console.log(`Normalized ${formatNumber(fragmentNormalized)} legacy fragment dismissal(s) to path-fragment`);
+          }
+          if (dismissedDupes > 0) {
+            console.log(
+              `Deduplicated dismissedIssues: removed ${formatNumber(dismissedDupes)} duplicate row(s) for the same comment id (kept latest dismissedAt / canonical path category)`,
+            );
           }
 
           // Keep verifiedFixed and dismissedIssues mutually exclusive (pill #3; output.log audit).
@@ -224,6 +228,8 @@ export class StateManager {
               );
             }
           }
+
+          applyResolverStatePostOverlapCleanup(this.state);
         }
       } catch (error) {
         console.warn('Failed to load state file, creating new state:', error);
@@ -380,7 +386,20 @@ export class StateManager {
   addDismissedIssue(
     commentId: string,
     reason: string,
-    category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted' | 'remaining' | 'chronic-failure' | 'missing-file' | 'path-unresolved' | 'out-of-scope',
+    category:
+      | 'already-fixed'
+      | 'not-an-issue'
+      | 'file-unchanged'
+      | 'false-positive'
+      | 'duplicate'
+      | 'stale'
+      | 'exhausted'
+      | 'remaining'
+      | 'chronic-failure'
+      | 'missing-file'
+      | 'path-unresolved'
+      | 'path-fragment'
+      | 'out-of-scope',
     filePath: string,
     line: number | null,
     commentBody: string

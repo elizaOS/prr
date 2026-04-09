@@ -47,6 +47,11 @@ export type ElizaCloudSkipReason = 'timeout' | 'zero-fix-rate';
  * Model IDs to skip when using ElizaCloud, with reason. WHY: Audits showed these models
  * 500/timeout repeatedly or had 0% fix rate. Timeout-only models may be retried after cooldown
  * (transient gateway issues); zero-fix-rate are skipped for audit (pill-output #2).
+ *
+ * **Maintainer refresh:** When **RESULTS SUMMARY → Model Performance** shows a model at **0%** verified
+ * fixes across meaningful attempts, add it here with **`ELIZACLOUD_SKIP_REASON`** **`zero-fix-rate`** and a
+ * short evidence comment. **Last reviewed:** 2026-04-08 — no new static entries from recent CI conflict
+ * runs (client **90s** timeouts on bulk **llm-api** are operator/config, not automatic skip-list adds).
  */
 export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-5.2-codex',

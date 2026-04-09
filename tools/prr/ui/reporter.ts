@@ -341,7 +341,18 @@ export function printFinalSummary(
   if (exitDetails) {
     console.log(chalk.gray(`     ${exitDetails}`));
   }
-  
+  const successLikeExit =
+    effectiveReason === 'all_fixed' ||
+    effectiveReason === 'all_resolved' ||
+    effectiveReason === 'audit_passed';
+  if (successLikeExit && remainingCount !== undefined && remainingCount > 0) {
+    console.log(
+      chalk.gray(
+        `     Note: Fix loop finished for all active threads. Remaining (${formatNumber(remainingCount)}) counts exhausted or “remaining” locations in state (deduped by file:line), not open fix-queue work.`,
+      ),
+    );
+  }
+
   // Fixed issues (only count issues actually fixed by the tool, not pre-existing fixes)
   // Use verifiedThisSession (the actual Set of IDs verified during iteration loops)
   // instead of delta counting, which undercounts re-verifications of issues already
@@ -382,6 +393,18 @@ export function printFinalSummary(
     if (chronicCount > 0) {
       console.log(chalk.cyan(`  ↳ ${formatNumber(chronicCount)} chronic-failure (auto-dismissed to save tokens)`));
     }
+  }
+
+  // Pill-output #407: surface UNCERTAIN vs truncation-guard counts in the summary (not only debug).
+  const finalAuditUncertain = stateContext.finalAuditUncertainThisRun ?? [];
+  if (finalAuditUncertain.length > 0) {
+    const trunc = finalAuditUncertain.filter((u) => u.kind === 'truncation-guard').length;
+    const unc = finalAuditUncertain.filter((u) => u.kind === 'uncertain').length;
+    console.log(
+      chalk.gray(
+        `\n  ℹ Final audit non-affirming passes: ${formatNumber(finalAuditUncertain.length)} (${formatNumber(unc)} UNCERTAIN, ${formatNumber(trunc)} truncation guard)`,
+      ),
+    );
   }
 
   // Pill-output #18: keep final-audit re-queue count with other outcome lines (fixed / dismissed), not only above Exit.

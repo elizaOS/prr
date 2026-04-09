@@ -28,9 +28,9 @@ We only know the full set of dismissals at end of run (after audit, bail-out, et
 
 ## WHY only some dismissal categories get a reply
 
-We reply for: `already-fixed`, `stale`, `not-an-issue`, `false-positive`, `remaining`, `exhausted`, `path-unresolved`, `missing-file`, `duplicate`, `file-unchanged`, `out-of-scope` (see **`dismissedCategoriesWithReply()`** / **`DISMISSED_CATEGORIES_BASE`** in `tools/prr/workflow/thread-replies.ts`). By default we do **not** reply for `chronic-failure` (and other categories omitted from that set). Set **`PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE=1`** (or `true`) to also reply on **`chronic-failure`** threads with a short batch-dismissal line.
+We reply for: `already-fixed`, `stale`, `not-an-issue`, `false-positive`, `remaining`, `exhausted`, `path-unresolved`, `path-fragment`, `missing-file`, `duplicate`, `file-unchanged`, `out-of-scope` (see **`dismissedCategoriesWithReply()`** / **`DISMISSED_CATEGORIES_BASE`** in `tools/prr/workflow/thread-replies.ts`). By default we do **not** reply for `chronic-failure` (and other categories omitted from that set). Set **`PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE=1`** (or `true`) to also reply on **`chronic-failure`** threads with a short batch-dismissal line.
 
-**WHY:** Clear dismissals (`already-fixed`, `stale`, `not-an-issue`, `false-positive`) give the reviewer a definitive outcome. `remaining` / `exhausted` get a short “Could not auto-fix; manual review recommended.” so threads are not left silent after we stop the fix loop. `path-unresolved` / `missing-file` / `duplicate` / `file-unchanged` get a specific line so the thread shows why PRR stopped. **`out-of-scope`** (opt-in via **`PRR_BLAST_RADIUS_DISMISS=1`**) gets “Outside PR scope — manual review recommended.” **`chronic-failure` is excluded by default:** those threads are bulk-dismissed to save tokens without a full fix cycle on each one — replying can add noise; operators who want visible closure on every thread can opt in with the env var above.
+**WHY:** Clear dismissals (`already-fixed`, `stale`, `not-an-issue`, `false-positive`) give the reviewer a definitive outcome. `remaining` / `exhausted` get a short “Could not auto-fix; manual review recommended.” so threads are not left silent after we stop the fix loop. `path-unresolved` / `path-fragment` / `missing-file` / `duplicate` / `file-unchanged` get a specific line so the thread shows why PRR stopped. **`out-of-scope`** (opt-in via **`PRR_BLAST_RADIUS_DISMISS=1`**) gets “Outside PR scope — manual review recommended.” **`chronic-failure` is excluded by default:** those threads are bulk-dismissed to save tokens without a full fix cycle on each one — replying can add noise; operators who want visible closure on every thread can opt in with the env var above.
 
 ## WHY in-run and cross-run idempotency
 
@@ -70,6 +70,14 @@ Some “comments” are synthetic: we create them from issue comments (e.g. bot 
 ## 422 Validation Failed and retries
 
 On **`pulls.createReplyForReviewComment`**, GitHub may return **422** with structured **`errors`** (e.g. **`PullRequestReviewComment`** / **`in_reply_to`**) when the thread is not replyable (stale diff, wrong anchor). PRR logs the full response body in **debug** and **does not** send the short fallback body in that case — a shorter string would 422 the same way and wastes an API call. Plain **422** without those fields still gets one retry with the short fallback (e.g. `Addressed.`). Reply bodies are clamped to a safe max length before send. After several consecutive batches where **every** reply in the batch returns **422**, PRR stops attempting further replies for that run (see **`postThreadReplies`**).
+
+### User-visible summary (422 storms)
+
+At the end of **`postThreadReplies`**, PRR prints a **single line** with **`formatNumber`**: how many attempts **succeeded**, how many failed with **422**, how many failed for **other** reasons, and how many threads were **not attempted** because posting stopped early (repeated all-422 batches). When the stop threshold triggers, a **yellow** line also states how many were posted **so far** and how many remain **skipped**, plus a short pointer to this doc.
+
+**Common causes of mass 422:** (1) Review bots commented on an **older commit** than the PR head — inline anchors no longer match the current diff (PRR warns when CodeRabbit’s review SHA ≠ HEAD; wait for a re-review or use **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** to fail fast before clone). (2) Threads **resolved or outdated** on GitHub so REST reply is rejected. (3) Wrong **`databaseId`** / thread state (rare if GraphQL ingestion is consistent).
+
+**Mitigations:** Re-run after bots catch up; avoid **`--reply-to-threads`** on huge PRs until reviews target HEAD; ensure the token can post PR review comments; set **`PRR_BOT_LOGIN`** if cross-run idempotency should match a specific bot account.
 
 ## See also
 

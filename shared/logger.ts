@@ -34,6 +34,8 @@ let promptLogPath: string | null = null;
 let outputLogExitHandlerRegistered = false;
 // Pill #8: Counter for empty prompt bodies to emit summary at close
 let emptyPromptBodyCount = 0;
+/** Counts empty PROMPT/RESPONSE refusals by `kind:slug` for closeOutputLog breakdown (pill-output audit). */
+const emptyPromptBodyByKindSlug = new Map<string, number>();
 
 /** Same `requestId` on PROMPT + RESPONSE metadata when concurrent LLM calls reorder prompts.log (grep `requestId` to pair). */
 const promptRequestIdBySlug = new Map<string, string>();
@@ -230,7 +232,20 @@ export async function closeOutputLog(): Promise<void> {
 
   // Pill #8: Emit summary of empty prompt bodies to output.log so operators see it
   if (emptyPromptBodyCount > 0 && outputLogPath) {
-    const summaryMsg = `WARNING: ${formatNumber(emptyPromptBodyCount)} prompts.log entr${emptyPromptBodyCount === 1 ? 'y' : 'ies'} had empty bodies — see stderr for details. This may indicate a logging bug (e.g. elizacloud streaming not passing accumulated response to logger).\n`;
+    const breakdown =
+      emptyPromptBodyByKindSlug.size > 0
+        ? (() => {
+            const sorted = [...emptyPromptBodyByKindSlug.entries()].sort((a, b) => b[1] - a[1]);
+            const top = sorted.slice(0, 20);
+            const lines = top.map(([k, n]) => `    ${k}: ${formatNumber(n)}`).join('\n');
+            const more =
+              sorted.length > 20
+                ? `\n    … and ${formatNumber(sorted.length - 20)} more kind:slug key(s)`
+                : '';
+            return `\n  By kind:slug (top ${formatNumber(Math.min(20, sorted.length))}):\n${lines}${more}\n`;
+          })()
+        : '';
+    const summaryMsg = `WARNING: ${formatNumber(emptyPromptBodyCount)} prompts.log entr${emptyPromptBodyCount === 1 ? 'y' : 'ies'} had empty bodies — see stderr for details. This may indicate a logging bug (e.g. elizacloud streaming not passing accumulated response to logger).${breakdown}`;
     try {
       appendFileSync(outputLogPath, summaryMsg, 'utf-8');
       if (origWarnRef) origWarnRef(summaryMsg.trim());
@@ -239,7 +254,22 @@ export async function closeOutputLog(): Promise<void> {
     }
     // Reset counter for next run
     emptyPromptBodyCount = 0;
+    emptyPromptBodyByKindSlug.clear();
   }
+}
+
+/**
+ * Snapshot of prompts.log empty-body refusals (PROMPT/RESPONSE with zero content).
+ * WHY: Lets pill/tests read counts without reparsing prompts.log; cleared when `closeOutputLog` runs.
+ */
+export function getEmptyPromptBodyRejectionStats(): {
+  total: number;
+  byKindSlug: Array<{ key: string; count: number }>;
+} {
+  const byKindSlug = [...emptyPromptBodyByKindSlug.entries()]
+    .map(([key, count]) => ({ key, count }))
+    .sort((a, b) => b.count - a.count);
+  return { total: emptyPromptBodyCount, byKindSlug };
 }
 
 /**
@@ -395,8 +425,10 @@ function writeToPromptLog(
   if (isEmpty && kind !== 'ERROR') {
     // No RESPONSE will follow — drop pairing slot (debugPrompt already registered slug).
     if (kind === 'PROMPT') promptRequestIdBySlug.delete(slug);
-    // Pill #8: Increment counter for summary at close
+    // Pill #8: Increment counter for summary at close + per-slug breakdown (pill-output.md audit).
     emptyPromptBodyCount++;
+    const ksKey = `${kind}:${slug}`;
+    emptyPromptBodyByKindSlug.set(ksKey, (emptyPromptBodyByKindSlug.get(ksKey) ?? 0) + 1);
     const phaseFromMeta =
       metadata && typeof metadata === 'object' && metadata !== null && 'phase' in metadata
         ? String((metadata as { phase?: unknown }).phase ?? '').trim()
@@ -500,8 +532,10 @@ export function debugPrompt(label: string, prompt: string, metadata?: Record<str
   content += prompt;
   writeFileSync(filepath, content, 'utf-8');
 
-  // Searchable one-liner in output.log
-  debug(`PROMPT ${slug}`, { chars: prompt.length, requestId });
+  // Searchable one-liner in output.log (phase helps grep dedup vs verify vs conflict steps)
+  const promptLine: Record<string, unknown> = { chars: prompt.length, requestId };
+  if (metadata?.phase != null) promptLine.phase = metadata.phase;
+  debug(`PROMPT ${slug}`, promptLine);
   return slug;
 }
 
@@ -544,7 +578,12 @@ export function debugResponse(
   writeFileSync(filepath, content, 'utf-8');
 
   // Searchable one-liner in output.log
-  debug(`RESPONSE ${slug}`, { chars: response.length, ...(requestId ? { requestId } : {}) });
+  const responseLine: Record<string, unknown> = {
+    chars: response.length,
+    ...(requestId ? { requestId } : {}),
+  };
+  if (metadata && metadata.phase != null) responseLine.phase = metadata.phase;
+  debug(`RESPONSE ${slug}`, responseLine);
 }
 
 /**

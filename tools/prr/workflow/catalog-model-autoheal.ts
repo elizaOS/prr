@@ -141,12 +141,8 @@ export function applyCatalogModelAutoHeals(
     checkedCount++;
     const dismissal = getOutdatedModelCatalogDismissal(comment.body ?? '');
     if (!dismissal) {
-      debug('[Auto-heal] Comment does not match outdated model advice pattern', { 
-        commentId: comment.id.slice(0, 7), 
-        path: comment.path,
-        hasBody: !!comment.body,
-        bodyLength: comment.body?.length ?? 0,
-      });
+      // WHY no per-comment debug: almost every comment misses catalog auto-heal; verbose runs
+      // flooded output.log (audit Cycle 78). Use Summary below + PRR_DEBUG for deep dives.
       continue;
     }
     

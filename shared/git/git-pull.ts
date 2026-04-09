@@ -88,6 +88,9 @@ export async function pullLatest(
           // Don't abort - leave conflicts for programmatic resolution
           // WHY: If we abort, git status shows no conflicts and we can't resolve them
           debug('Rebase has conflicts - leaving in conflicted state for resolution');
+          console.log(
+            '  Hint: resolve conflicted files, then `git rebase --continue`, or `git rebase --abort` to undo.',
+          );
           await restoreStashOnFailure();
           return { success: false, error: `Rebase conflicts detected` };
         }

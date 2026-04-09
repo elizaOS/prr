@@ -72,6 +72,7 @@ import { looksLikeCreateFileIssue, validateDismissalExplanation } from './utils.
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
 import { assessSolvability, resolveTrackedPathWithPrFiles, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { isTrackedGitSubmodulePath } from '../../../shared/git/git-submodule-path.js';
 import { stripSeverityFraming } from './helpers/review-body-normalize.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import { buildLifecycleAwareVerificationSnippet, commentNeedsLifecycleContext } from './fix-verification.js';
@@ -477,15 +478,30 @@ export async function findUnresolvedIssues(
   // Phase 3: Post-filter placeholder results
   for (const { comment, codeSnippet, contextHints, resolvedPath } of snippetResults) {
     if (codeSnippet === SNIPPET_PLACEHOLDER) {
-      Dismissed.dismissIssue(
-        stateContext,
-        comment.id,
-        'File not found or unreadable after existence check passed',
-        'stale',
-        comment.path,
-        comment.line,
-        comment.body
-      );
+      const pathForSubmoduleCheck = (resolvedPath ?? comment.path).replace(/\\/g, '/');
+      if (isTrackedGitSubmodulePath(workdir, pathForSubmoduleCheck)) {
+        Dismissed.dismissIssue(
+          stateContext,
+          comment.id,
+          'Review path is a git submodule (gitlink) — no regular file text for snippets after existence check',
+          'not-an-issue',
+          comment.path,
+          comment.line,
+          comment.body,
+          'Run git submodule update --init, or fix in the submodule repo / parent manifest.',
+        );
+        dismissedNotAnIssue++;
+      } else {
+        Dismissed.dismissIssue(
+          stateContext,
+          comment.id,
+          'File not found or unreadable after existence check passed',
+          'stale',
+          comment.path,
+          comment.line,
+          comment.body,
+        );
+      }
       dismissedPlaceholder++;
       continue;
     }

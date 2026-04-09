@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-04-07 · **Recorded cycles:** 75 · **Historical (legacy):** 4
+**Last updated:** 2026-04-09 · **Recorded cycles:** 79 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -163,6 +163,71 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 79 — 2026-04-09 (Cycle 78 audit → code improvements)
+
+**Artifacts audited:** Cycle 78 recommendations (verbose log noise, dismissal LLM waste, ops hints).
+
+**Findings:** N/A (implementation cycle).
+
+**Improvements implemented:** **`catalog-model-autoheal.ts`:** removed per-comment debug on `!dismissal` (Summary retained). **`outdated-model-advice.ts`:** removed per-comment debug for framing-without-parseable-pair (false positives on CodeRabbit bodies). **`dismissal-comments.ts`:** extended **`DISMISSAL_COMMENT_PHRASES`** (`intentional`, `downstream`, `error boundary`, `by design`) so Pass 1 skips LLM when comments already explain intent (matches common gpt-4o-mini **EXISTING** cases). **`rotation.ts`:** single-model warn now mentions **`PRR_LLM_MODEL`** / verifier / final-audit pins. **`git-conflict-lockfiles.ts`:** after failed lock regen, gray hint to resolve conflict markers in **package.json**/lockfile then re-run install manually.
+
+**Flip-flop check:** N — logging quieter; dismissal pre-check strictly expands matches; rotation/lockfile text additive.
+
+**Notes:** Deep catalog-detection tracing: use verbose + inspect comment bodies; no new env flag added.
+
+---
+
+### Cycle 78 — 2026-04-09 (output.log + prompts.log: elizaOS/eliza#6702, workdir 4a425a4f)
+
+**Artifacts audited:** `/root/prr/output.log` (~1,361 lines), `/root/prr/prompts.log` (~2,488 lines, 16 in-process `llm-elizacloud` PROMPT blocks). PRR **b1b0b29**. Workdir: **`/root/.prr/work/4a425a4f063fc1bb`**.
+
+**Findings:**
+- **Medium (ops):** No **`PRR_LLM_MODEL`** — run defaulted to **qwen-3-235b** while fixer path used **anthropic/claude-opus-4.5** after rotation; **only one** ElizaCloud model left after skip list → single failure blocks fixes until rotation (log warns).
+- **Medium (environment):** PR **mergeable: dirty** vs **develop**; dry-merge reported **`bun.lock` modify/delete**; **`bun install failed, continuing...`** — risk of confusing local install state when resolving lock conflicts (mostly PR hygiene, not a PRR logic bug).
+- **Low:** **Dismissal-comments** phase: **3** gpt-4o-mini calls → **0** comments posted (skips: already exists, too generic, fix-failure categories) — useful idempotency but measurable token spend for no GitHub delta.
+- **Low:** **Catalog auto-heal** ran full comment scans twice with **0** heals and verbose per-comment debug — fine for correctness; could rate-limit debug on large PRs.
+
+**Improvements implemented:** None in this cycle (audit-only). Prior cycle: RESULTS SUMMARY note when success exit + **Remaining > 0** (Cycle 77); this log shows that note present (lines ~1290–1292).
+
+**Flip-flop check:** N.
+
+**Notes:** Exit **audit_passed** / **All issues resolved**; **5** verified relevant; **48** dismissed; **Remaining 4** = exhausted/**remaining** by location. **Spot-check:** `agent/typescript/index.ts` in workdir **~331–334** — `messageService` absent → log line + **`continue`** (not hard exit); **~347–356** — **`for (const rt of runtimes)`** **`stop()`** loop present — aligns with verified/dismissal narrative for harness/REPL issues.
+
+---
+
+### Cycle 77 — 2026-04-08 (eliza #6702 audit: ALREADY_FIXED cluster vs empty queue)
+
+**Artifacts audited:** Conversation handoff from `output.log` audit (PRR b1b0b29 on elizaOS/eliza#6702): `BUG DETECTED: unresolvedIssues is empty but N comments are neither verified nor dismissed` after no-change **ALREADY_FIXED**; RESULTS SUMMARY “All issues resolved” beside **Remaining** from exhausted dismissals.
+
+**Findings:**
+- **Medium:** **ALREADY_FIXED** cluster handling removed every cluster id from **`unresolvedIssues`** even when **`dismissIssue`** was skipped (e.g. dedup sibling id missing from the fetched **`comments`** array), leaving threads unaccounted and triggering **`checkEmptyIssues`** repopulate.
+- **Low:** Success exit read as “zero backlog” while **Remaining** still counted exhausted/**remaining** dismissals (deduped by file:line).
+
+**Improvements implemented:** **`no-changes-verification.ts`:** resolve dismiss row from **`comments`**, queued issues, or anchor comment for same-cluster ids; **`filterUnresolvedKeepUnaccountedClusterMembers`** — only drop queued rows that are verified or dismissed; **ALREADY_FIXED exhaust** path dismisses full dedup cluster (same as any-threshold). **`reporter.ts`:** gray note under Exit when success-like exit and **Remaining > 0**. Test: **`tests/no-changes-already-fixed-cluster.test.ts`**.
+
+**Flip-flop check:** N — stricter accounting + UX copy; repopulate guard still exists for genuine mismatches.
+
+**Notes:** Spot-check N/A (log-only handoff); behavior covered by new unit test for sibling **B** missing from **`comments`** while **`duplicateMap`** links **A → B**.
+
+---
+
+### Cycle 76 — 2026-04-08 (pill-output open index: path-fragment, README env, skip-list doc)
+
+**Artifacts audited:** `pill-output.md` PATTERNS & OPEN WORK index (2026-04-08); no new `output.log` Model Performance table for this pass.
+
+**Findings:**
+- **Medium:** Pill index called for a dedicated **`path-fragment`** dismissal value vs lumping fragments under **`path-unresolved`** — metrics and thread-reply copy are clearer when split.
+- **Low:** README operator table omitted several vars already documented in **`.env.example`**.
+- **Low:** Skip list refresh is recurring **ops** work; code lacked an explicit “last reviewed” / refresh contract on the static array.
+
+**Improvements implemented:** **`pathDismissCategoryForNotFound`** returns **`path-fragment`** for **`isReviewPathFragment`** / resolution **`fragment`**; **`path-unresolved`** for **`ambiguous`** only. **`DismissedIssue.category`**, **`assessSolvability`**, thread-reply set + copy, **AGENTS** / **DEVELOPMENT** path rules, **README** env rows, **`ELIZACLOUD_SKIP_MODEL_IDS`** docblock (**last reviewed 2026-04-08**). State load migrates legacy fragment **`missing-file`** and fragment-shaped **`path-unresolved`** → **`path-fragment`**.
+
+**Flip-flop check:** N — additive category + load migration; **`path-unresolved`** retained for ambiguous paths.
+
+**Notes:** No new skip-list IDs added (no fresh Model Performance evidence in this pass).
+
+---
 
 ### Cycle 75 — 2026-04-07 (milady#1722 re-run: defer lock regen + submodule index)
 

@@ -19,7 +19,16 @@
  * recovery share one HEAD. Tests call **`clearScanCommittedFixesCache()`**.
  */
 import type { SimpleGit } from 'simple-git';
-import { debug } from '../logger.js';
+import { debug, formatNumber, warn } from '../logger.js';
+
+/** One warning per process per workdir+reason when merge base for prr-fix scan is missing (pill-output #559). */
+const warnedScanBaseFallback = new Set<string>();
+/** One warning per process per workdir when git log --grep scan throws (non-fatal degrade). */
+const warnedScanRawFailure = new Set<string>();
+
+function scanDegradeWarnKey(workdir: string | undefined, tag: string): string {
+  return `${workdir ?? '?'}\0${tag}`;
+}
 
 /** In-process cache: same workdir + branch + HEAD → same grep scan (pill: avoid redundant git log). */
 const committedFixScanCache = new Map<string, string[]>();
@@ -74,6 +83,8 @@ function rememberScanCache(key: string, ids: string[]): void {
 /** Clear process-wide scan cache (tests or long-lived hosts). */
 export function clearScanCommittedFixesCache(): void {
   committedFixScanCache.clear();
+  warnedScanBaseFallback.clear();
+  warnedScanRawFailure.clear();
 }
 
 export interface ScanCommittedFixesOptions {
@@ -135,6 +146,24 @@ export async function scanCommittedFixes(
   }
   const cacheKeySuffix = resolvedBase ?? 'n100';
 
+  if (resolvedBase === null) {
+    const prBase = opts?.prBaseBranch?.trim();
+    const tag = prBase ? `missing-base:pr:${prBase}` : 'missing-base:no-origin-default';
+    const wk = scanDegradeWarnKey(opts?.workdir, tag);
+    if (!warnedScanBaseFallback.has(wk)) {
+      warnedScanBaseFallback.add(wk);
+      if (prBase) {
+        warn(
+          `[PRR] Git recovery scan: could not resolve \`origin/${prBase}\` or a default branch ref (main/master/develop). Using last ${formatNumber(100)} commits instead of \`base..HEAD\` — fetch the PR base with additionalBranches if needed; older \`prr-fix:\` markers may be missed.`,
+        );
+      } else {
+        warn(
+          `[PRR] Git recovery scan: no \`origin/main\`, \`origin/master\`, or \`origin/develop\` ref — using last ${formatNumber(100)} commits for \`prr-fix:\` recovery (typical of shallow/single-branch clones).`,
+        );
+      }
+    }
+  }
+
   if (opts?.workdir && opts?.headSha) {
     const key = scanCacheKey(opts.workdir, branch, opts.headSha, opts.prBaseBranch, cacheKeySuffix);
     const hit = committedFixScanCache.get(key);
@@ -187,6 +216,14 @@ export async function scanCommittedFixes(
   } catch (error) {
     // WHY catch and return empty instead of throw:
     // Scan failure shouldn't prevent startup - we'll just verify everything fresh
+    const wk = scanDegradeWarnKey(opts?.workdir, 'log-failed');
+    if (!warnedScanRawFailure.has(wk)) {
+      warnedScanRawFailure.add(wk);
+      const detail = error instanceof Error ? error.message : String(error);
+      warn(
+        `[PRR] Git recovery scan failed (${detail}) — continuing without recovered prr-fix markers. Next verification may re-run for issues fixed in prior commits.`,
+      );
+    }
     debug('Failed to scan committed fixes', { error });
     return [];
   }

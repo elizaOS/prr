@@ -25,6 +25,7 @@ import { shouldSkipFinalAuditLlmForPath } from '../../../shared/path-utils.js';
 import { assessSolvability, SNIPPET_PLACEHOLDER, resolveTrackedPath } from './helpers/solvability.js';
 import { classifyFinalAuditUncertainExplanation } from './helpers/final-audit-uncertain.js';
 import { pathTrackedAtGitHead } from './helpers/git-path-at-head.js';
+import { isTrackedGitSubmodulePath } from '../../../shared/git/git-submodule-path.js';
 
 /** Logged when final audit skips the LLM for a comment (synthetic / fragment path). */
 const FINAL_AUDIT_SKIP_LLM_EXPLANATION =
@@ -438,6 +439,18 @@ export async function runFinalAudit(
       !shouldSkipFinalAuditLlmForPath(comment.path)
     ) {
       const pathForGit = commentFilePathForWorkdir(workdir, comment);
+      if (isTrackedGitSubmodulePath(workdir, pathForGit)) {
+        syntheticAuditResults.set(comment.id, {
+          stillExists: false,
+          explanation:
+            'FIXED (git submodule): Review path is a git submodule (gitlink) — no regular file text at this anchor; final audit skipped adversarial LLM.',
+        });
+        debug('Final audit: skipped adversarial LLM — path is git submodule gitlink', {
+          commentId: comment.id,
+          path: pathForGit,
+        });
+        continue;
+      }
       const tracked = pathTrackedAtGitHead(workdir, pathForGit);
       if (tracked === false) {
         syntheticAuditResults.set(comment.id, {
@@ -677,9 +690,11 @@ export async function runFinalAudit(
 
     const uncertain = stateContext.finalAuditUncertainThisRun ?? [];
     if (uncertain.length > 0) {
+      const trunc = uncertain.filter((u) => u.kind === 'truncation-guard').length;
+      const unc = uncertain.filter((u) => u.kind === 'uncertain').length;
       console.log(
         chalk.yellow(
-          `  ℹ Final audit: ${formatNumber(uncertain.length)} issue(s) passed via UNCERTAIN or truncation guard (see explanations in prompts.log). Set PRR_STRICT_FINAL_AUDIT_UNCERTAIN=1 to exit 2 on these.`,
+          `  ℹ Final audit: ${formatNumber(uncertain.length)} issue(s) passed via UNCERTAIN or truncation guard (${formatNumber(unc)} UNCERTAIN, ${formatNumber(trunc)} truncation guard; see prompts.log). Set PRR_STRICT_FINAL_AUDIT_UNCERTAIN=1 to exit 2 on these.`,
         ),
       );
     }

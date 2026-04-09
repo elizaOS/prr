@@ -203,18 +203,18 @@ describe('shouldSkipFinalAuditLlmForPath', () => {
 });
 
 describe('pathDismissCategoryForNotFound', () => {
-  it('uses path-unresolved for ambiguous or fragment resolution', () => {
+  it('uses path-unresolved for ambiguous resolution; path-fragment for fragments', () => {
     expect(pathDismissCategoryForNotFound('foo.ts', 'ambiguous')).toBe('path-unresolved');
-    expect(pathDismissCategoryForNotFound('x', 'fragment')).toBe('path-unresolved');
+    expect(pathDismissCategoryForNotFound('x', 'fragment')).toBe('path-fragment');
   });
-  it('uses path-unresolved for fragment-shaped review path even when resolution is missing', () => {
-    expect(pathDismissCategoryForNotFound('.d.ts', 'missing')).toBe('path-unresolved');
+  it('uses path-fragment for fragment-shaped review path even when resolution is missing', () => {
+    expect(pathDismissCategoryForNotFound('.d.ts', 'missing')).toBe('path-fragment');
   });
   it('uses missing-file for normal paths with missing resolution', () => {
     expect(pathDismissCategoryForNotFound('src/nope.ts', 'missing')).toBe('missing-file');
   });
   it('matches dismissPathNotFound alias', () => {
-    expect(dismissPathNotFound('.d.ts', 'missing')).toBe('path-unresolved');
+    expect(dismissPathNotFound('.d.ts', 'missing')).toBe('path-fragment');
   });
 });
 

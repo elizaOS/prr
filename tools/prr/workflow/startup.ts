@@ -19,6 +19,9 @@ import chalk from 'chalk';
 import { warn, info, debug, debugStep, formatDuration, formatNumber } from '../../../shared/logger.js';
 import { getWorkdirInfo, ensureWorkdir } from '../../../shared/git/workdir.js';
 
+/** One stale-inline warning per process per (repo, PR, HEAD, bot review SHA) — pill-output #619. */
+const codeRabbitStaleInlineWarned = new Set<string>();
+
 /**
  * Display PR status including CI checks, bot reviews, and overall activity
  */
@@ -200,11 +203,15 @@ export async function checkCodeRabbitStatus(
       crResult.botReviewCommitSha !== headSha
     ) {
       staleInlineReviewVsHead = true;
-      console.log(
-        chalk.yellow(
-          `  ⚠ CodeRabbit's latest review targets \`${crResult.botReviewCommitSha.substring(0, 7)}\`; PR HEAD is \`${headSha.substring(0, 7)}\` — inline comments may be stale until the bot re-reviews.`,
-        ),
-      );
+      const staleKey = `${owner}\0${repo}\0${String(prNumber)}\0${headSha}\0${crResult.botReviewCommitSha}`;
+      if (!codeRabbitStaleInlineWarned.has(staleKey)) {
+        codeRabbitStaleInlineWarned.add(staleKey);
+        console.log(
+          chalk.yellow(
+            `  ⚠ CodeRabbit's latest review targets \`${crResult.botReviewCommitSha.substring(0, 7)}\`; PR HEAD is \`${headSha.substring(0, 7)}\` — inline comments may be stale until the bot re-reviews.`,
+          ),
+        );
+      }
     }
 
     // Check for bot rate-limit signals (e.g. CodeRabbit posting "review paused")

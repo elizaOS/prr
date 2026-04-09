@@ -292,14 +292,20 @@ describe('postThreadReplies', () => {
     expect(replyCalls[0].body).toMatch(/^Dismissed: .{197}\.\.\.$/);
   });
 
-  it('returns { attempted, replied } when replyToThreads is true', async () => {
+  it('returns reply stats when replyToThreads is true', async () => {
     const comments = [makeComment('c1', 'thread-1', 100)];
     const result = await run({
       replyToThreads: true,
       comments,
       verifiedCommentIds: new Set(['c1']),
     });
-    expect(result).toEqual({ attempted: 1, replied: 1 });
+    expect(result).toEqual({
+      attempted: 1,
+      replied: 1,
+      failed422: 0,
+      failedOther: 0,
+      skippedDueTo422Stop: 0,
+    });
   });
 
   it('returns undefined when replyToThreads is false', async () => {
@@ -347,7 +353,13 @@ describe('postThreadReplies', () => {
       verifiedCommentIds: new Set(['c1']),
       dismissedIssues: [makeDismissed('c2', 'already-fixed', 'Done.')],
     });
-    expect(result).toEqual({ attempted: 2, replied: 0 });
+    expect(result).toEqual({
+      attempted: 2,
+      replied: 0,
+      failed422: 2,
+      failedOther: 0,
+      skippedDueTo422Stop: 0,
+    });
     expect(replyMock).toHaveBeenCalledTimes(4);
   });
 
@@ -371,8 +383,47 @@ describe('postThreadReplies', () => {
       comments,
       verifiedCommentIds: new Set(['c1']),
     });
-    expect(result).toEqual({ attempted: 1, replied: 0 });
+    expect(result).toEqual({
+      attempted: 1,
+      replied: 0,
+      failed422: 1,
+      failedOther: 0,
+      skippedDueTo422Stop: 0,
+    });
     expect(replyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops after 3 consecutive all-422 batches and reports skipped count (verified phase only)', async () => {
+    const err422 = Object.assign(new Error('Validation Failed'), {
+      status: 422,
+      response: {
+        data: {
+          message: 'Validation Failed',
+          errors: [{ resource: 'PullRequestReviewComment', field: 'in_reply_to', code: 'invalid' }],
+        },
+      },
+    });
+    const replyMock = vi.fn(async () => {
+      throw err422;
+    });
+    mockGithub.replyToReviewThread = replyMock;
+    const comments = Array.from({ length: 10 }, (_, n) =>
+      makeComment(`c${n}`, `thread-${n}`, 100 + n),
+    );
+    const verified = new Set(comments.map((c) => c.id));
+    const result = await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: verified,
+    });
+    expect(result).toEqual({
+      attempted: 9,
+      replied: 0,
+      failed422: 9,
+      failedOther: 0,
+      skippedDueTo422Stop: 1,
+    });
+    expect(replyMock).toHaveBeenCalledTimes(9);
   });
 });
 

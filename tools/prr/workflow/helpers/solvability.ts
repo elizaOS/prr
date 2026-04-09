@@ -26,6 +26,7 @@ import {
 } from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 import { getOutdatedModelCatalogDismissal } from './outdated-model-advice.js';
+import { isTrackedGitSubmodulePath } from '../../../../shared/git/git-submodule-path.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
@@ -304,7 +305,15 @@ export function resolveTrackedPathWithPrFiles(
 export interface SolvabilityResult {
   solvable: boolean;
   reason?: string;                    // For logging
-  dismissCategory?: 'stale' | 'remaining' | 'not-an-issue' | 'chronic-failure' | 'already-fixed' | 'missing-file' | 'path-unresolved';
+  dismissCategory?:
+    | 'stale'
+    | 'remaining'
+    | 'not-an-issue'
+    | 'chronic-failure'
+    | 'already-fixed'
+    | 'missing-file'
+    | 'path-unresolved'
+    | 'path-fragment';
   /** Next-step for humans (e.g. lockfile: "Run: bun install") */
   remediationHint?: string;
   contextHints?: string[];            // Injected into LLM prompt in Phase 3
@@ -545,13 +554,27 @@ export function assessSolvability(
   if (pathResolution.kind === 'fragment') {
     return {
       solvable: false,
-      dismissCategory: 'path-unresolved',
+      dismissCategory: 'path-fragment',
       reason: `Review path "${comment.path}" is a fragment (e.g. .d.ts), not a full file path — cannot resolve to a single file`,
     };
   }
   let effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
   effectivePath = tryResolvePathWithExtensionVariants(workdir, effectivePath);
   const effectiveFullPath = join(workdir, effectivePath);
+
+  // Check 0e0: Git submodule (gitlink) at review path — no regular file for line-level fixes or snippets.
+  // WHY: Bots anchor on paths with index mode 160000; reads return placeholder and we used to dismiss as
+  // generic stale ("unreadable") or miss solvability when the checkout is a directory and comment.line is null.
+  if (isTrackedGitSubmodulePath(workdir, effectivePath)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason:
+        'Review path is a git submodule (gitlink) — not a regular source file in this repo; automated line-level fixes do not apply at this anchor',
+      remediationHint:
+        'Run git submodule update --init if you need a local checkout, or address the feedback in the submodule repository or parent manifest (.gitmodules / workspace).',
+    };
+  }
 
   // Check 0e1: Issue references line numbers beyond current file length (file was shortened → comment stale).
   // WHY: output.log audit — DATABASE_API_README.md had 37 lines but review referenced "lines 56-57, 120-121"; verifier couldn't confirm and we burned 3+ iterations.

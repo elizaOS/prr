@@ -241,6 +241,15 @@ story --help      # PR narrative & changelog
 | `PRR_MATERIALIZE_LATENT_MERGE` | `1` / `true` — when the PR-tip probe predicts conflicts, run **`git merge origin/<branch> --no-commit --no-ff`** before pull so LLM conflict resolution can run early |
 | `PRR_MATERIALIZE_LATENT_MERGE_BASE` | `1` / `true` — when the **PR-vs-base** probe predicts conflicts, run **`git merge origin/<prBase> --no-commit --no-ff`** for early LLM resolution |
 | `PRR_BOT_LOGIN` | Optional override for thread-reply idempotency; if unset, PRR uses `GET /user` with your token |
+| `PRR_REPLY_TO_THREADS` | `true` / `1` — opt in to posting thread replies (same as CLI **`--reply-to-threads`**) |
+| `PRR_THINKING_BUDGET` | Extended thinking token budget for Claude-class models; values above **500,000** clamp with a warning (**`shared/config.ts`**) |
+| `PRR_LLM_MIN_DELAY_MS` | Override min ms between ElizaCloud request starts per slot (default **6,000** — see **`shared/constants/models.ts`**) |
+| `PRR_LLM_TASK_TIMEOUT_MS` | Optional cap (ms) on concurrent pool tasks (**`0`** = none) |
+| `PRR_CLONE_TIMEOUT_MS` / `PRR_FETCH_TIMEOUT_MS` | Clone / fetch timeouts for large remotes (**AGENTS.md** / **Troubleshooting**) |
+| `PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR` | `1` — disable automatic insertion of missing **`=======`** between conflict markers |
+| `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY` / `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL` | Disable catalog **0a6** dismissal and/or quoted-literal auto-heal (**AGENTS.md**) |
+| `PRR_MODEL_CATALOG_PATH` | Override path to **`model-provider-catalog.json`** (malformed → empty catalog + warn) |
+| `PILL_OUTPUT_LOG_PATH` / `PILL_PROMPTS_LOG_PATH` | Standalone **pill** rerun on explicit log paths (**`.env.example`** pill section) |
 
 **CLI (related):** pass **`--merge-base`** when GitHub reports the PR as not mergeable / dirty and you want PRR to merge the PR base before the fix loop.
 
@@ -331,6 +340,8 @@ On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves eff
 - **`PRR_LLM_TASK_TIMEOUT_MS`:** Optional per pool-task wall-clock cap (ms) for concurrent LLM batches / fix groups (`runWithConcurrency`). Unset or `0` = no cap. Env values below `5,000` ms are clamped to `5,000`. Invalid values disable the cap and log a debug line when verbose. Programmatic override: `runWithConcurrency(tasks, n, { taskTimeoutMs })` (no clamp; for advanced use / tests).
 - **Partial base-merge resolutions:** When merge with **`origin/<base>`** fails part-way, PRR stores resolved file text in state for the next run. If **`origin/<base>`** moves to a new commit before you re-run, that cache is **cleared** so you don’t reuse content from an old merge attempt.
 - **Model catalog missing:** If **`generated/model-provider-catalog.json`** is absent, solvability **0a6** (dismiss bogus “model typo” noise) is **skipped** with a one-time console warning — run **`npm run update-model-catalog`** (or set **`PRR_MODEL_CATALOG_PATH`**).
+- **Thread replies: many HTTP 422 / “Validation Failed”:** PRR prints a **summary line** (succeeded vs 422 vs other vs skipped). Mass 422 usually means review comments are anchored on an **old commit** (see startup warning when a bot’s review SHA ≠ PR HEAD) or GitHub will not accept a reply on that thread anymore. **Mitigations:** wait for bots to re-review current HEAD, see **`PRR_EXIT_ON_STALE_BOT_REVIEW`** in **AGENTS.md**, and **[docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md)** (422 section).
+- **Pre-commit hooks / staged-file automation:** This **prr** repository does **not** ship bundled git hooks (pill sometimes cites hook paths from **application** repos). See **AGENTS.md** (**Pre-commit hooks**); install hooks in the repo you are developing, not here.
 
 ### Why These Defaults?
 

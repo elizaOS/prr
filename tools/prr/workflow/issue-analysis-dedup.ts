@@ -560,7 +560,9 @@ Comments: ${items.length} (use indices 1–${items.length} only)
 ${summaries}`;
     try {
       // Always use cheap model for dedup — fast and sufficient; avoids slow default (e.g. qwen-3-14b on ElizaCloud).
-      const response = await llm.completeWithCheapModel(userPrompt, LLM_DEDUP_SYSTEM_PROMPT);
+      const response = await llm.completeWithCheapModel(userPrompt, LLM_DEDUP_SYSTEM_PROMPT, {
+        phase: 'dedup-v2-grouping',
+      });
       const content = response.content.trim();
       const groups: DedupTaskResult['groups'] = [];
       const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
@@ -727,7 +729,9 @@ export async function crossFileDedup(dedupResult: DedupResult, llm: LLMClient): 
   const userPrompt = `Total issues: ${k}. Use indices 1 through ${k} only.\n\n${summaries}`;
 
   try {
-    const response = await llm.completeWithCheapModel(userPrompt, LLM_CROSS_FILE_DEDUP_SYSTEM_PROMPT);
+    const response = await llm.completeWithCheapModel(userPrompt, LLM_CROSS_FILE_DEDUP_SYSTEM_PROMPT, {
+      phase: 'dedup-v2-cross-file',
+    });
     const content = response.content.trim();
     const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
     let match;

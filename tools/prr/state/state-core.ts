@@ -4,7 +4,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { dirname } from 'path';
-import type { ResolverState } from './types.js';
+import type { DismissedIssue, ResolverState } from './types.js';
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage, formatNumber } from '../../../shared/logger.js';
 import { getEffectiveElizacloudSkipModelIds } from '../../../shared/constants.js';
@@ -14,6 +14,149 @@ import {
   hydrateRotationSessionFromPersistedState,
   persistRotationSessionToState,
 } from './state-context.js';
+
+/** Prefer canonical path categories when timestamps tie (pill-output #539). */
+function dismissalCategoryRank(c: DismissedIssue['category']): number {
+  if (c === 'path-fragment') return 0;
+  if (c === 'path-unresolved') return 1;
+  if (c === 'missing-file') return 2;
+  return 3;
+}
+
+/**
+ * Collapse duplicate rows for the same comment id (hand-edited or legacy state).
+ * Keeps the row with the latest dismissedAt; on tie, prefers path-fragment > path-unresolved > missing-file.
+ * Preserves first-seen order of unique ids.
+ */
+export function dedupeDismissedIssuesByCommentId(issues: DismissedIssue[]): {
+  merged: DismissedIssue[];
+  removedCount: number;
+} {
+  if (issues.length <= 1) {
+    return { merged: issues, removedCount: 0 };
+  }
+  const firstIndex = new Map<string, number>();
+  const best = new Map<string, DismissedIssue>();
+  for (let i = 0; i < issues.length; i++) {
+    const d = issues[i]!;
+    if (!firstIndex.has(d.commentId)) firstIndex.set(d.commentId, i);
+    const prev = best.get(d.commentId);
+    if (!prev) {
+      best.set(d.commentId, d);
+      continue;
+    }
+    const at = (d.dismissedAt ?? '') > (prev.dismissedAt ?? '');
+    const bt = (prev.dismissedAt ?? '') > (d.dismissedAt ?? '');
+    let pick: DismissedIssue;
+    if (at && !bt) pick = d;
+    else if (bt && !at) pick = prev;
+    else {
+      const ra = dismissalCategoryRank(d.category);
+      const rb = dismissalCategoryRank(prev.category);
+      pick = ra < rb ? d : ra > rb ? prev : d;
+    }
+    best.set(d.commentId, pick);
+  }
+  const orderedIds = [...firstIndex.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);
+  const merged = orderedIds.map((id) => best.get(id)!);
+  return { merged, removedCount: issues.length - merged.length };
+}
+
+/**
+ * Fragment category migration + duplicate row collapse for persisted dismissals.
+ * Mutates row objects in place for fragment fields; returns a new array from dedupe.
+ * **WHY:** Shared by {@link loadState} and legacy {@link StateManager.load} (pill-output).
+ */
+export function applyDismissedIssuesLoadNormalization(issues: DismissedIssue[]): {
+  list: DismissedIssue[];
+  fragmentNormalized: number;
+  dedupeRemoved: number;
+} {
+  let fragmentNormalized = 0;
+  for (const d of issues) {
+    if (!isReviewPathFragment(d.filePath)) continue;
+    if (d.category === 'missing-file' || d.category === 'path-unresolved') {
+      d.category = 'path-fragment';
+      if (d.reason?.includes('Tracked file not found')) {
+        d.reason = `Review path "${d.filePath}" is a fragment or incomplete path — cannot resolve to a single tracked file`;
+      }
+      fragmentNormalized++;
+    }
+  }
+  const { merged, removedCount } = dedupeDismissedIssuesByCommentId(issues);
+  return { list: merged, fragmentNormalized, dedupeRemoved: removedCount };
+}
+
+/**
+ * Verified-array dedupe, no-progress reset, and timing hydration — shared by {@link loadState}
+ * and {@link StateManager.load} (pill-output StateManager parity).
+ */
+export function applyResolverStateLoadCoreNormalization(state: ResolverState): void {
+  if (state.verifiedFixed && state.verifiedFixed.length > 0) {
+    const before = state.verifiedFixed.length;
+    state.verifiedFixed = [...new Set(state.verifiedFixed)];
+    const dupsRemoved = before - state.verifiedFixed.length;
+    if (dupsRemoved > 0) {
+      console.log(
+        `Deduplicated verifiedFixed: removed ${formatNumber(dupsRemoved)} duplicate(s) (${formatNumber(state.verifiedFixed.length)} unique)`,
+      );
+    }
+  }
+
+  if (state.verifiedComments && state.verifiedComments.length > 0) {
+    const seen = new Map<string, (typeof state.verifiedComments)[number]>();
+    for (const vc of state.verifiedComments) {
+      const existing = seen.get(vc.commentId);
+      if (!existing || (vc.verifiedAt && (!existing.verifiedAt || vc.verifiedAt > existing.verifiedAt))) {
+        seen.set(vc.commentId, vc);
+      }
+    }
+    const beforeNew = state.verifiedComments.length;
+    state.verifiedComments = [...seen.values()];
+    const dupsRemovedNew = beforeNew - state.verifiedComments.length;
+    if (dupsRemovedNew > 0) {
+      console.log(`Deduplicated verifiedComments: removed ${formatNumber(dupsRemovedNew)} duplicate(s)`);
+    }
+  }
+
+  if (state.noProgressCycles) {
+    state.noProgressCycles = 0;
+  }
+
+  if (state.totalTimings) {
+    loadOverallTimings(state.totalTimings);
+  }
+  if (state.totalTokenUsage) {
+    loadOverallTokenUsage(state.totalTokenUsage);
+  }
+}
+
+/**
+ * Ephemeral git-recovery markers and stale skip-list stats — after dismissed/verified overlap cleanup.
+ */
+export function applyResolverStatePostOverlapCleanup(state: ResolverState): void {
+  if (state.recoveredFromGitCommentIds !== undefined) {
+    state.recoveredFromGitCommentIds = undefined;
+  }
+
+  if (state.modelPerformance) {
+    const skipIds = getEffectiveElizacloudSkipModelIds();
+    if (skipIds.length > 0) {
+      const skipSet = new Set(skipIds);
+      let removed = 0;
+      for (const key of Object.keys(state.modelPerformance)) {
+        const modelId = key.includes('/') ? key.split('/').slice(1).join('/') : key;
+        if (skipSet.has(modelId)) {
+          delete state.modelPerformance[key];
+          removed++;
+        }
+      }
+      if (removed > 0) {
+        console.log(`Cleared ${formatNumber(removed)} model performance entries for skipped models`);
+      }
+    }
+  }
+}
 
 export async function loadState(ctx: StateContext, pr: string, branch: string, headSha: string): Promise<ResolverState> {
   if (existsSync(ctx.statePath)) {
@@ -84,69 +227,25 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           console.log(`Compacted ${removed} duplicate lessons (${ctx.state.lessonsLearned.length} unique remaining)`);
         }
         
-        // Deduplicate verifiedFixed on load.
-        // WHY: Prior sessions and git-commit-scan can accumulate duplicate IDs,
-        // inflating the verified count beyond the total number of comments.
-        if (ctx.state.verifiedFixed && ctx.state.verifiedFixed.length > 0) {
-          const before = ctx.state.verifiedFixed.length;
-          ctx.state.verifiedFixed = [...new Set(ctx.state.verifiedFixed)];
-          const dupsRemoved = before - ctx.state.verifiedFixed.length;
-          if (dupsRemoved > 0) {
-            console.log(`Deduplicated verifiedFixed: removed ${dupsRemoved} duplicate(s) (${ctx.state.verifiedFixed.length} unique)`);
-          }
-        }
-
-        // Also deduplicate verifiedComments by commentId, keeping the latest entry
-        if (ctx.state.verifiedComments && ctx.state.verifiedComments.length > 0) {
-          const seen = new Map<string, typeof ctx.state.verifiedComments[number]>();
-          for (const vc of ctx.state.verifiedComments) {
-            const existing = seen.get(vc.commentId);
-            if (!existing || (vc.verifiedAt && (!existing.verifiedAt || vc.verifiedAt > existing.verifiedAt))) {
-              seen.set(vc.commentId, vc);
-            }
-          }
-          const beforeNew = ctx.state.verifiedComments.length;
-          ctx.state.verifiedComments = [...seen.values()];
-          const dupsRemovedNew = beforeNew - ctx.state.verifiedComments.length;
-          if (dupsRemovedNew > 0) {
-            console.log(`Deduplicated verifiedComments: removed ${dupsRemovedNew} duplicate(s)`);
-          }
-        }
-        
-        // Reset no-progress cycle counter at session start.
-        // WHY: This counter is for detecting stalemate within a session's rotation.
-        // Carrying over 43 from a previous run makes the bail-out message misleading
-        // ("44 cycles") and gives no useful signal. Historical bail-out data is
-        // preserved in bailOutRecord anyway.
-        if (ctx.state.noProgressCycles) {
-          ctx.state.noProgressCycles = 0;
-        }
-        
-        if (ctx.state.totalTimings) {
-          loadOverallTimings(ctx.state.totalTimings);
-        }
-        if (ctx.state.totalTokenUsage) {
-          loadOverallTokenUsage(ctx.state.totalTokenUsage);
-        }
+        applyResolverStateLoadCoreNormalization(ctx.state);
 
         if (!ctx.state.dismissedIssues) {
           ctx.state.dismissedIssues = [];
         }
 
-        // Normalize legacy dismissals: fragment / extension-only paths were sometimes "missing-file";
-        // canonical category is path-unresolved (shared/path-utils isReviewPathFragment).
-        let normalizedFragment = 0;
-        for (const d of ctx.state.dismissedIssues) {
-          if (d.category === 'missing-file' && isReviewPathFragment(d.filePath)) {
-            d.category = 'path-unresolved';
-            if (d.reason?.includes('Tracked file not found')) {
-              d.reason = `Review path "${d.filePath}" is a fragment or incomplete path — cannot resolve to a single tracked file`;
-            }
-            normalizedFragment++;
-          }
+        const {
+          list: normalizedDismissed,
+          fragmentNormalized,
+          dedupeRemoved: dismissedDupes,
+        } = applyDismissedIssuesLoadNormalization(ctx.state.dismissedIssues);
+        ctx.state.dismissedIssues = normalizedDismissed;
+        if (fragmentNormalized > 0) {
+          console.log(`Normalized ${formatNumber(fragmentNormalized)} legacy fragment dismissal(s) to path-fragment`);
         }
-        if (normalizedFragment > 0) {
-          console.log(`Normalized ${formatNumber(normalizedFragment)} legacy fragment dismissal(s) to path-unresolved`);
+        if (dismissedDupes > 0) {
+          console.log(
+            `Deduplicated dismissedIssues: removed ${formatNumber(dismissedDupes)} duplicate row(s) for the same comment id (kept latest dismissedAt / canonical path category)`,
+          );
         }
 
         // Keep verifiedFixed and dismissedIssues mutually exclusive (output.log audit: overlapVerifiedAndDismissed; pill #3).
@@ -198,29 +297,7 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           }
         }
 
-        // Never carry recoveredFromGitCommentIds across runs — it's only for the first analysis after recovery.
-        if (ctx.state.recoveredFromGitCommentIds !== undefined) {
-          ctx.state.recoveredFromGitCommentIds = undefined;
-        }
-
-        // Zero out model performance for skipped models so stale 0%-success data doesn't persist.
-        if (ctx.state.modelPerformance) {
-          const skipIds = getEffectiveElizacloudSkipModelIds();
-          if (skipIds.length > 0) {
-          const skipSet = new Set(skipIds);
-          let removed = 0;
-          for (const key of Object.keys(ctx.state.modelPerformance)) {
-            const modelId = key.includes('/') ? key.split('/').slice(1).join('/') : key;
-            if (skipSet.has(modelId)) {
-              delete ctx.state.modelPerformance[key];
-              removed++;
-            }
-          }
-          if (removed > 0) {
-            console.log(`Cleared ${formatNumber(removed)} model performance entries for skipped models`);
-          }
-          }
-        }
+        applyResolverStatePostOverlapCleanup(ctx.state);
       }
     } catch (error) {
       console.warn('Failed to load state file, creating new state:', error);

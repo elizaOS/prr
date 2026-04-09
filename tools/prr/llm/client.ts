@@ -181,13 +181,18 @@ export class LLMClient {
   /**
    * Same as complete() but uses the cheap model for this provider (haiku/mini).
    * Use for lightweight tasks (e.g. LLM dedup) to save cost; default model is for verification/fixing.
+   * Pass **`phase`** in options for prompts.log / output.log (e.g. **`dedup-v2-grouping`**).
    */
-  async completeWithCheapModel(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
+  async completeWithCheapModel(
+    prompt: string,
+    systemPrompt?: string,
+    options?: Omit<CompleteOptions, 'model'>,
+  ): Promise<LLMResponse> {
     const cheapModel = getCheapModelForProvider(this.provider);
     if (!cheapModel) {
-      return this.complete(prompt, systemPrompt);
+      return this.complete(prompt, systemPrompt, options);
     }
-    return this.complete(prompt, systemPrompt, { model: cheapModel });
+    return this.complete(prompt, systemPrompt, { ...options, model: cheapModel });
   }
 
   // Static system prompt for checkIssueExists — extracted here so Anthropic can

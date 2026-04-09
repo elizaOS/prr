@@ -6,7 +6,7 @@
 import { join } from 'path';
 import { readFile } from 'fs/promises';
 import { computeBudget, fitToBudget } from '../../../shared/prompt-budget.js';
-import { debug } from '../../../shared/logger.js';
+import { debug, formatNumber } from '../../../shared/logger.js';
 
 export function buildNumberedFullFileSnippet(content: string, note?: string): string {
   const lines = content.split('\n');
@@ -284,6 +284,12 @@ export async function getFullFileForAudit(
     const { availableForCode } = computeBudget({ model: modelId, reservedChars: 16_000 });
     if (content.length <= availableForCode) {
       const body = lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
+      debug('getFullFileForAudit: full file within budget', {
+        path,
+        totalLines: formatNumber(lines.length),
+        contentChars: formatNumber(content.length),
+        availableForCode: formatNumber(availableForCode),
+      });
       return {
         snippet: finalAuditFileContextHeader({ totalLines: lines.length, mode: 'full', anchorLine: null, truncated: false }) + body,
         fixSiteInWindow: true,
@@ -291,25 +297,30 @@ export async function getFullFileForAudit(
     }
 
     let anchorLine = line != null && line > 0 && line <= lines.length ? line : null;
+    let anchorHow: 'review-line' | 'keyword' | 'none' = anchorLine != null ? 'review-line' : 'none';
     if (anchorLine === null && commentBody) {
-      anchorLine = findAnchorLineFromCommentKeywords(lines, commentBody);
+      const kwLine = findAnchorLineFromCommentKeywords(lines, commentBody);
+      if (kwLine != null) {
+        anchorLine = kwLine;
+        anchorHow = 'keyword';
+      }
     }
 
     const { content: excerpt, truncated } = fitToBudget(content, anchorLine, availableForCode, {
       commentBody,
       findKeywordAnchor: findAnchorLineFromCommentKeywords,
     });
-    if (truncated) {
-      debug('getFullFileForAudit: line-centered or head excerpt (budget)', {
-        path,
-        lineCount: lines.length,
-        anchorLine,
-        truncated,
-        excerptChars: excerpt.length,
-        availableForCode,
-      });
-    }
     const fixSiteInWindow = !truncated || anchorLine != null;
+    debug('getFullFileForAudit: budget excerpt', {
+      path,
+      totalLines: formatNumber(lines.length),
+      anchorLine,
+      anchorHow,
+      truncated,
+      excerptChars: formatNumber(excerpt.length),
+      availableForCode: formatNumber(availableForCode),
+      fixSiteInWindow,
+    });
     const header = finalAuditFileContextHeader({
       totalLines: lines.length,
       mode: 'excerpt',

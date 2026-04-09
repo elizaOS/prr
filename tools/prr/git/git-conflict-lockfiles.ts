@@ -221,6 +221,11 @@ export async function handleLockFileConflicts(
       }
     } else {
       console.log(chalk.yellow(`    ⚠ ${cmd} failed, continuing...`));
+      console.log(
+        chalk.gray(
+          `       If package.json or the lockfile still has merge conflict markers, resolve those in the workdir first, then run ${cmd} manually.`,
+        ),
+      );
     }
   }
   

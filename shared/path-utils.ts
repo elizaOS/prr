@@ -218,6 +218,9 @@ export type TrackedPathResolutionKind =
   | 'missing'
   | 'fragment';
 
+/** Dismissal when a review path cannot be mapped to a single tracked file (pill-output / AGENTS). */
+export type PathDismissCategory = 'missing-file' | 'path-unresolved' | 'path-fragment';
+
 /**
  * True when the review path cannot denote a single repo file (extension-only / bot fragments).
  * WHY: Distinguish from real root files like `.env` — do **not** use "starts with dot, no slash"
@@ -248,13 +251,14 @@ export function shouldSkipFinalAuditLlmForPath(path: string | undefined | null):
 /**
  * When a tracked file is not found after resolution, pick a single dismissal category.
  * WHY: Same logical case must not flip between missing-file and path-unresolved (pill-output).
+ * **Fragments** (bare `.d.ts`, extension-only): **`path-fragment`**. **Ambiguous** basename matches: **`path-unresolved`**.
  */
 export function pathDismissCategoryForNotFound(
   reviewPath: string,
   resolutionKind: TrackedPathResolutionKind
-): 'missing-file' | 'path-unresolved' {
-  if (resolutionKind === 'fragment' || resolutionKind === 'ambiguous') return 'path-unresolved';
-  if (isReviewPathFragment(reviewPath)) return 'path-unresolved';
+): PathDismissCategory {
+  if (resolutionKind === 'fragment' || isReviewPathFragment(reviewPath)) return 'path-fragment';
+  if (resolutionKind === 'ambiguous') return 'path-unresolved';
   return 'missing-file';
 }
 

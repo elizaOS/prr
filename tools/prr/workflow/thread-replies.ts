@@ -25,7 +25,8 @@ const DISMISSED_CATEGORIES_BASE = new Set<string>([
   'false-positive',
   'remaining',
   'exhausted',
-  'path-unresolved', // e.g. .d.ts fragment — reply so thread has visible feedback
+  'path-unresolved', // ambiguous basename / cannot pick one file — reply so thread has visible feedback
+  'path-fragment', // extension-only / bare .d.ts — reply so thread has visible feedback
   'missing-file', // file not found — reply so thread has visible feedback
   'duplicate',
   'file-unchanged',
@@ -184,10 +185,16 @@ async function postReplyWithRetry(
   }
 }
 
-/** Return type: when replyToThreads is true, returns counts for user-visible summary on high failure rate (output.log audit). */
+/** Return type: when replyToThreads is true, returns counts for user-visible summary (output.log audit / 422 storms). */
 export interface PostThreadRepliesResult {
   attempted: number;
   replied: number;
+  /** Failures where GitHub returned 422 / validation (stale thread, bad anchor, etc.). */
+  failed422: number;
+  /** Failures for other reasons (network, 403, non-422 errors). */
+  failedOther: number;
+  /** Candidates not attempted after we stopped on consecutive all-422 batches. */
+  skippedDueTo422Stop: number;
 }
 
 /** Consecutive batches where **every** reply in the batch failed with 422 — then stop (avoids parallel 422 miscount; pill-output). */
@@ -239,8 +246,17 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
   const threadsRepliedThisCall: string[] = [];
   let attempted = 0;
   let replied = 0;
+  let failed422 = 0;
+  let failedOther = 0;
+  let skippedDueTo422Stop = 0;
   let consecutiveAll422Batches = 0;
   let stopReplyDueTo422 = false;
+
+  const tallyFailure = (result: { ok: boolean; is422?: boolean }): void => {
+    if (result.ok) return;
+    if (result.is422 === true) failed422++;
+    else failedOther++;
+  };
 
   // Collect candidate thread IDs we might reply to (for batched cross-run idempotency check).
   const candidateThreadIds = new Set<string>();
@@ -298,6 +314,20 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     verifiedReplies.push({ entry, body: `Fixed in \`${short}\`.` });
   }
 
+  /** How many dismissed-thread replies would still be attempted (uses current repliedThreadIds — call after verified phase updates). */
+  const countDismissedReplyCandidates = (): number => {
+    let n = 0;
+    for (const d of dismissedIssues) {
+      if (!dismissedWithReply.has(d.category)) continue;
+      const entry = getThreadEntry(d.commentId);
+      if (!entry) continue;
+      if (repliedThreadIds.has(entry.threadId)) continue;
+      if (alreadyRepliedByUsMap.get(entry.threadId) === true) continue;
+      n++;
+    }
+    return n;
+  };
+
   // Process verified replies with concurrency limit (3 parallel)
   const REPLY_CONCURRENCY = 3;
   for (let i = 0; i < verifiedReplies.length && !stopReplyDueTo422; i += REPLY_CONCURRENCY) {
@@ -311,6 +341,8 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
           repliedThreadIds.add(entry.threadId);
           threadsRepliedThisCall.push(entry.threadId);
           debug('Posted fixed reply on thread', { threadId: entry.threadId });
+        } else {
+          tallyFailure(result);
         }
         return result;
       })
@@ -322,9 +354,13 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     else if (all422) consecutiveAll422Batches++;
     else consecutiveAll422Batches = 0;
     if (consecutiveAll422Batches >= MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP) {
+      const nextIdx = i + batch.length;
+      skippedDueTo422Stop = verifiedReplies.length - nextIdx + countDismissedReplyCandidates();
       console.log(
         chalk.yellow(
-          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed).`,
+          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed). ` +
+            `Posted ${formatNumber(replied)} of ${formatNumber(attempted)} so far; ${formatNumber(skippedDueTo422Stop)} thread(s) not attempted. ` +
+            `Often caused by comments anchored on an old commit (re-run after bots re-review) or threads GitHub no longer accepts replies on — see docs/THREAD-REPLIES.md.`,
         ),
       );
       stopReplyDueTo422 = true;
@@ -332,7 +368,7 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     }
   }
 
-  // Pill #10: Batch dismissed replies with concurrency limit
+  // Build dismissed list after verified replies so repliedThreadIds matches threads we already "Fixed in …" (avoid duplicate queue entries).
   const dismissedReplies: Array<{ entry: { threadId: string; databaseId: number }; body: string }> = [];
   for (const d of dismissedIssues) {
     if (!dismissedWithReply.has(d.category)) continue;
@@ -350,8 +386,11 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       body = 'Could not auto-fix (wrong file or repeated failures); manual review recommended.';
     } else if (d.category === 'chronic-failure') {
       body = 'Could not auto-verify after repeated failures; batch-dismissed. Manual review if still needed.';
-    } else if (d.category === 'path-unresolved') {
-      body = 'Could not auto-fix (path unresolved); manual review recommended.';
+    } else if (d.category === 'path-unresolved' || d.category === 'path-fragment') {
+      body =
+        d.category === 'path-fragment'
+          ? 'Could not auto-fix (path fragment — not a single file); manual review recommended.'
+          : 'Could not auto-fix (path unresolved); manual review recommended.';
     } else if (d.category === 'missing-file') {
       body = 'Could not auto-fix (file not found); manual review recommended.';
     } else if (d.category === 'duplicate') {
@@ -378,6 +417,8 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
           repliedThreadIds.add(entry.threadId);
           threadsRepliedThisCall.push(entry.threadId);
           debug('Posted dismissed reply on thread', { threadId: entry.threadId });
+        } else {
+          tallyFailure(result);
         }
         return result;
       })
@@ -389,9 +430,13 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     else if (all422) consecutiveAll422Batches++;
     else consecutiveAll422Batches = 0;
     if (consecutiveAll422Batches >= MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP) {
+      const nextIdx = i + batch.length;
+      skippedDueTo422Stop = dismissedReplies.length - nextIdx;
       console.log(
         chalk.yellow(
-          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed).`,
+          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed). ` +
+            `Posted ${formatNumber(replied)} of ${formatNumber(attempted)} so far; ${formatNumber(skippedDueTo422Stop)} thread(s) not attempted. ` +
+            `Often caused by comments anchored on an old commit (re-run after bots re-review) or threads GitHub no longer accepts replies on — see docs/THREAD-REPLIES.md.`,
         ),
       );
       stopReplyDueTo422 = true;
@@ -411,5 +456,22 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     }
   }
 
-  return { attempted, replied };
+  if (attempted > 0) {
+    const pieces: string[] = [
+      `${formatNumber(replied)} of ${formatNumber(attempted)} thread reply attempt(s) succeeded`,
+    ];
+    if (failed422 > 0) pieces.push(`${formatNumber(failed422)} Validation Failed (422)`);
+    if (failedOther > 0) pieces.push(`${formatNumber(failedOther)} other failure(s)`);
+    if (skippedDueTo422Stop > 0) {
+      pieces.push(`${formatNumber(skippedDueTo422Stop)} not attempted (stopped after repeated 422 batches)`);
+    }
+    const line = `  Thread replies: ${pieces.join('; ')}.`;
+    if (replied === attempted && skippedDueTo422Stop === 0) {
+      console.log(chalk.gray(line));
+    } else {
+      console.log(chalk.yellow(line));
+    }
+  }
+
+  return { attempted, replied, failed422, failedOther, skippedDueTo422Stop };
 }

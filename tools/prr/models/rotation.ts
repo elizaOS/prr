@@ -914,7 +914,7 @@ export async function validateAndFilterModels(
     if (isLlMApi && useElizaCloudForLlMApi && validModels.length === 1) {
       console.warn(
         chalk.yellow(
-          `  ⚠ Only ${formatNumber(1)} ElizaCloud model in rotation after skips — a single failure blocks fixes until the next rotation step. Consider PRR_ELIZACLOUD_INCLUDE_MODELS (see docs/MODELS.md).`,
+          `  ⚠ Only ${formatNumber(1)} ElizaCloud model in rotation after skips — a single failure blocks fixes until the next rotation step. Consider PRR_ELIZACLOUD_INCLUDE_MODELS (see docs/MODELS.md). Pin the working id with PRR_LLM_MODEL (and PRR_VERIFIER_MODEL / PRR_FINAL_AUDIT_MODEL if needed — see README).`,
         ),
       );
     }

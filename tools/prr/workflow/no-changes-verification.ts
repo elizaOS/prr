@@ -91,6 +91,47 @@ function persistInferredTestTargets(
 }
 
 /**
+ * After cluster dismiss attempts, only remove queued rows that are verified or dismissed.
+ * WHY: We used to splice every cluster id out of the queue even when `dismissIssue` was skipped
+ * (no row in `comments`), which left those threads neither verified nor dismissed → empty queue +
+ * BUG DETECTED repopulate (eliza #6702 audit).
+ */
+function filterUnresolvedKeepUnaccountedClusterMembers(
+  unresolvedIssues: UnresolvedIssue[],
+  clusterIds: string[],
+  stateContext: StateContext,
+): UnresolvedIssue[] {
+  const clusterSet = new Set(clusterIds);
+  return unresolvedIssues.filter((i) => {
+    if (!clusterSet.has(i.comment.id)) return true;
+    return (
+      !Verification.isVerified(stateContext, i.comment.id) &&
+      !Dismissed.isCommentDismissed(stateContext, i.comment.id)
+    );
+  });
+}
+
+/**
+ * Row for `dismissIssue` when a cluster id is missing from the fetched `comments` list.
+ * Prefer full API row, then any queued issue, anchor, else same file/line/body as anchor with `id`.
+ */
+function resolveCommentRowForClusterDismiss(
+  cid: string,
+  anchorIssue: UnresolvedIssue,
+  comments: ReviewComment[] | undefined,
+  unresolvedIssues: UnresolvedIssue[],
+  clusterSet: Set<string>,
+): ReviewComment | undefined {
+  const fromList = comments?.find((co) => co.id === cid);
+  if (fromList) return fromList;
+  const fromQueue = unresolvedIssues.find((i) => i.comment.id === cid)?.comment;
+  if (fromQueue) return fromQueue;
+  if (cid === anchorIssue.comment.id) return anchorIssue.comment;
+  if (!clusterSet.has(cid)) return undefined;
+  return { ...anchorIssue.comment, id: cid };
+}
+
+/**
  * Handle no-changes scenario after fixer runs.
  *
  * WHY: When a fixer makes no changes, it could mean: issues already fixed (verify), fixer confused
@@ -150,16 +191,21 @@ export async function handleNoChangesWithVerification(
           if (unresolvedIssues.length === 1) {
             const detailMsg = detail || 'fixer confirmed no changes needed';
             const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const clusterSet = new Set(clusterIds);
             const dismissText = `ALREADY_FIXED — ${detailMsg}`;
             for (const cid of clusterIds) {
               if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
                 continue;
               }
-              const c =
-                comments?.find((co) => co.id === cid) ??
-                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              const c = resolveCommentRowForClusterDismiss(
+                cid,
+                firstIssueAf,
+                comments,
+                unresolvedIssues,
+                clusterSet,
+              );
               if (!c) {
-                debug('ALREADY_FIXED cluster: skip dismiss (no comment row)', { commentId: cid });
+                debug('ALREADY_FIXED cluster: skip dismiss (no row resolvable)', { commentId: cid });
                 continue;
               }
               Dismissed.dismissIssue(
@@ -173,13 +219,16 @@ export async function handleNoChangesWithVerification(
                 undefined,
               );
             }
-            const clusterSet = new Set(clusterIds);
             Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
             return {
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
+              updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                unresolvedIssues,
+                clusterIds,
+                stateContext,
+              ),
               progressMade: 0,
             };
           }
@@ -210,9 +259,13 @@ export async function handleNoChangesWithVerification(
               if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
                 continue;
               }
-              const c =
-                comments?.find((co) => co.id === cid) ??
-                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              const c = resolveCommentRowForClusterDismiss(
+                cid,
+                firstIssueAf,
+                comments,
+                unresolvedIssues,
+                clusterSet,
+              );
               if (!c) continue;
               Dismissed.dismissIssue(stateContext, cid, dismissText, 'already-fixed', c.path, c.line, c.body, undefined);
             }
@@ -221,27 +274,54 @@ export async function handleNoChangesWithVerification(
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
+              updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                unresolvedIssues,
+                clusterIds,
+                stateContext,
+              ),
               progressMade: 0,
             };
           }
           if (consecutive >= ALREADY_FIXED_EXHAUST_THRESHOLD) {
-            Dismissed.dismissIssue(
-              stateContext,
-              firstIssueAf.comment.id,
-              `ALREADY_FIXED ${consecutive}× with same explanation — dismissing as not-an-issue`,
-              'not-an-issue',
-              firstIssueAf.comment.path,
-              firstIssueAf.comment.line,
-              firstIssueAf.comment.body,
-              undefined
-            );
+            const clusterIdsEx = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const clusterSetEx = new Set(clusterIdsEx);
+            const dismissTextEx = `ALREADY_FIXED ${consecutive}× with same explanation — dismissing as not-an-issue`;
+            for (const cid of clusterIdsEx) {
+              if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
+                continue;
+              }
+              const c = resolveCommentRowForClusterDismiss(
+                cid,
+                firstIssueAf,
+                comments,
+                unresolvedIssues,
+                clusterSetEx,
+              );
+              if (!c) {
+                debug('ALREADY_FIXED exhaust cluster: skip dismiss (no row resolvable)', { commentId: cid });
+                continue;
+              }
+              Dismissed.dismissIssue(
+                stateContext,
+                cid,
+                dismissTextEx,
+                'not-an-issue',
+                c.path,
+                c.line,
+                c.body,
+                undefined,
+              );
+            }
             Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
             return {
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssueAf.comment.id),
+              updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                unresolvedIssues,
+                clusterIdsEx,
+                stateContext,
+              ),
               progressMade: 0,
             };
           }
