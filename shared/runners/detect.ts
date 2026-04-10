@@ -11,6 +11,7 @@ import { GooseRunner } from './goose.js';
 import { OpenHandsRunner } from './openhands.js';
 import { LLMAPIRunner } from './llm-api.js';
 import chalk from 'chalk';
+import { debug } from '../logger.js';
 
 export { DEFAULT_MODEL_ROTATIONS };
 
@@ -78,6 +79,18 @@ export async function detectAvailableRunners(verbose = false): Promise<DetectedR
 
   if (verbose) {
     console.log('');
+  } else if (detected.length < ALL_RUNNERS.length) {
+    const skipped: string[] = [];
+    for (const runner of ALL_RUNNERS) {
+      if (detected.some((d) => d.runner.name === runner.name)) continue;
+      skipped.push(runner.name);
+    }
+    if (skipped.length > 0) {
+      debug('Runner detection: not ready or not installed', {
+        skipped: skipped.join(', '),
+        ready: detected.map((d) => d.runner.name).join(', ') || '(none)',
+      });
+    }
   }
 
   return detected;

@@ -103,7 +103,7 @@ export class OpencodeRunner implements Runner {
       return { success: false, output: '', error: `Failed to write prompt file: ${errorMessage}` };
     }
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('opencode', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('opencode', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // Build args array safely (no shell interpolation)
@@ -180,7 +180,7 @@ export class OpencodeRunner implements Runner {
         clearTimeout(timeoutHandle);
         if (sigkillFallbackHandle !== undefined) clearTimeout(sigkillFallbackHandle);
         cleanupPromptFile();
-        debugResponse('opencode', stdout, { exitCode: code, stderrLength: stderr.length, timedOut: killed });
+        debugResponse(promptSlug, 'opencode', stdout, { exitCode: code, stderrLength: stderr.length, timedOut: killed });
 
         if (killed) {
           resolve({

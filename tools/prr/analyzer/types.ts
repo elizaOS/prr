@@ -77,9 +77,3 @@ export interface FixPrompt {
   lessonsIncluded: number;   // Number of lessons included in prompt
   issues: UnresolvedIssue[];
 }
-
-export interface VerificationResult {
-  commentId: string;
-  fixed: boolean;
-  explanation: string;
-}

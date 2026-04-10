@@ -5,13 +5,20 @@
 import chalk from 'chalk';
 import type { Runner } from '../../../shared/runners/types.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../../../shared/runners/detect.js';
-import type { StateContext } from '../state/state-context.js';
+import { ensureRotationSession, type StateContext } from '../state/state-context.js';
 import * as Rotation from '../state/state-rotation.js';
 import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../../../shared/config.js';
 import { warn, debug, formatNumber } from '../../../shared/logger.js';
-import { MAX_MODELS_PER_TOOL_ROUND } from '../../../shared/constants.js';
+import {
+  DEFAULT_ELIZACLOUD_MODEL,
+  getEffectiveElizacloudSkipModelIds,
+  getElizaCloudSkipReason,
+  getSessionModelSkipFailureThreshold,
+  getSessionModelSkipResetAfterFixIterations,
+  MAX_MODELS_PER_TOOL_ROUND,
+} from '../../../shared/constants.js';
 import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
 import * as Performance from '../state/state-performance.js';
 
@@ -39,6 +46,86 @@ export interface RotationContext {
   cycleHadOnlyTimeouts?: boolean;
   /** When set, rotation list is sorted by success rate (best first). WHY: Tries proven models before chronic low performers. */
   stateContext?: StateContext;
+}
+
+/** Same key shape as state-performance (tool/model). */
+export function sessionModelKey(runnerName: string, model: string): string {
+  return `${runnerName}/${model}`;
+}
+
+function isSessionModelSkipped(ctx: RotationContext, model: string): boolean {
+  const skipped = ctx.stateContext?.rotationSession?.skippedModelKeys;
+  if (!skipped?.size) return false;
+  return skipped.has(sessionModelKey(ctx.runner.name, model));
+}
+
+/**
+ * After verification, update session stats; skip models with enough failures and zero fixes this run.
+ * WHY: Pill — 0% models waste rotation until manual skip list update.
+ */
+/**
+ * Optional periodic clear of session-skipped models (pill-output #847).
+ * Call once per completed fix iteration with that iteration’s 1-based index.
+ */
+export function maybeResetSessionSkippedModelsAfterFixIteration(
+  stateContext: StateContext,
+  fixIteration: number,
+): void {
+  const every = getSessionModelSkipResetAfterFixIterations();
+  if (every <= 0 || fixIteration <= 0 || fixIteration % every !== 0) return;
+  const skipped = stateContext.rotationSession?.skippedModelKeys;
+  if (!skipped?.size) return;
+  const n = skipped.size;
+  skipped.clear();
+  warn(
+    `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS (${formatNumber(every)}): cleared ${formatNumber(n)} session-skipped model key(s) — rotation may retry those models this run.`,
+  );
+}
+
+export function recordSessionModelVerificationOutcome(
+  stateContext: StateContext,
+  runnerName: string,
+  model: string | undefined,
+  verifiedCount: number,
+  failedCount: number
+): void {
+  const threshold = getSessionModelSkipFailureThreshold();
+  if (threshold <= 0) return;
+  const rs = ensureRotationSession(stateContext);
+  const m = model || 'unknown';
+  const key = sessionModelKey(runnerName, m);
+  const cur = rs.modelStats.get(key) ?? { fixes: 0, failures: 0 };
+  cur.fixes += verifiedCount;
+  cur.failures += failedCount;
+  rs.modelStats.set(key, cur);
+  if (cur.fixes > 0) {
+    if (rs.skippedModelKeys.delete(key)) {
+      debug('Session model skip cleared after verified fix', { key });
+    }
+    return;
+  }
+  if (cur.failures >= threshold && !rs.skippedModelKeys.has(key)) {
+    rs.skippedModelKeys.add(key);
+    warn(
+      `${runnerName} / ${m}: ${formatNumber(cur.failures)} verification failure(s) with no verified fixes this run — skipping this model until next run. ` +
+        `Set PRR_SESSION_MODEL_SKIP_FAILURES=0 to disable. For persistent poor performers, extend ELIZACLOUD_SKIP_MODEL_IDS in shared/constants.ts, set PRR_ELIZACLOUD_EXTRA_SKIP_MODELS for env-specific skips, or use PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable.`,
+    );
+  }
+}
+
+/** First index from `start` (inclusive, wrapping) whose model is not session-skipped; or `start` if all skipped / skip disabled. */
+function resolveRotationIndexSkippingSession(ctx: RotationContext, models: string[], startIndex: number): number {
+  if (models.length <= 1 || getSessionModelSkipFailureThreshold() <= 0) {
+    return startIndex >= models.length ? 0 : startIndex;
+  }
+  const skipped = ctx.stateContext?.rotationSession?.skippedModelKeys;
+  if (!skipped?.size) return startIndex >= models.length ? 0 : startIndex;
+  let idx = startIndex >= models.length ? 0 : startIndex;
+  for (let o = 0; o < models.length; o++) {
+    const i = (idx + o) % models.length;
+    if (!skipped.has(sessionModelKey(ctx.runner.name, models[i]!))) return i;
+  }
+  return idx;
 }
 
 /**
@@ -102,7 +189,12 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
     // Try current and subsequent recommendations to find one compatible with current runner
     for (let i = ctx.recommendedModelIndex; i < ctx.recommendedModels.length; i++) {
       const model = ctx.recommendedModels[i];
-      if (model && isModelAvailableForRunner(ctx, model) && isModelProviderCompatible(ctx.runner, model)) {
+      if (
+        model &&
+        isModelAvailableForRunner(ctx, model) &&
+        isModelProviderCompatible(ctx.runner, model) &&
+        !isSessionModelSkipped(ctx, model)
+      ) {
         // Advance index to this position so advanceModel starts from here
         ctx.recommendedModelIndex = i;
         debug('Using LLM-recommended model', { model, runner: ctx.runner.name, index: i });
@@ -122,14 +214,19 @@ export function getCurrentModel(ctx: RotationContext, options: CLIOptions): stri
     return undefined;  // Let the tool use its default
   }
   
-  const index = ctx.modelIndices.get(ctx.runner.name) || 0;
+  let index = ctx.modelIndices.get(ctx.runner.name) || 0;
   // Bounds check: if persisted index exceeds model list (e.g., model was removed),
   // wrap back to 0 and update the stored index
   if (index >= models.length) {
+    index = 0;
     ctx.modelIndices.set(ctx.runner.name, 0);
-    return models[0];
   }
-  return models[index];
+  const resolved = resolveRotationIndexSkippingSession(ctx, models, index);
+  if (resolved !== index && ctx.stateContext) {
+    ctx.modelIndices.set(ctx.runner.name, resolved);
+    Rotation.setModelIndex(ctx.stateContext, ctx.runner.name, resolved);
+  }
+  return models[resolved];
 }
 
 /**
@@ -529,20 +626,6 @@ const RUNNER_PROVIDER_MAP: Record<string, 'openai' | 'anthropic' | 'google' | 'm
 };
 
 /**
- * Models to skip on ElizaCloud (500/timeout or 0% fix rate in practice).
- * WHY: Audit showed these models either 500'd repeatedly, timed out, or had 0% fix rate;
- * including them in the rotation list wastes slots. Add new IDs here when audits show
- * repeated errors or zero success. See docs/MODELS.md for rotation/skip list docs.
- */
-const ELIZACLOUD_SKIP_MODELS = new Set<string>([
-  'openai/gpt-5.2-codex',
-  'anthropic/claude-3-opus',
-  'openai/gpt-4.1',
-  'anthropic/claude-sonnet-4.5',
-  'openai/gpt-5.1-codex-max',
-]);
-
-/**
  * Determine which provider a model belongs to based on its name/prefix.
  * Returns the provider for validation against the corresponding API's model list.
  */
@@ -627,9 +710,12 @@ export async function validateAndFilterModels(
   runners: Runner[],
   openaiApiKey?: string,
   anthropicApiKey?: string,
-  elizacloudApiKey?: string
+  elizacloudApiKey?: string,
+  /** Resolved configured model (e.g. PRR_LLM_MODEL); warn when this one is skipped (pill-output.md). */
+  configuredModel?: string
 ): Promise<{ removed: Array<{ runner: string; model: string }>}> {
   const removed: Array<{ runner: string; model: string }> = [];
+  let thinElizacloudPoolWarned = false;
   
   // Check which providers we need to validate
   const runnersToValidate = runners.filter(r => RUNNER_PROVIDER_MAP[r.name]);
@@ -697,6 +783,8 @@ export async function validateAndFilterModels(
     return { removed };
   }
 
+  const effectiveSkipSet = new Set(getEffectiveElizacloudSkipModelIds());
+
   // Build llm-api rotation from provider model list when native OpenAI/Anthropic (no hardcoded lists)
   for (const runner of runnersToValidate) {
     if ((runner.name !== 'llm-api' && runner.name !== 'elizacloud') || !runner.provider) continue;
@@ -722,15 +810,20 @@ export async function validateAndFilterModels(
     if (!models || models.length === 0) continue;
     
     const validModels: string[] = [];
+    let skippedConfiguredDefault: string | null = null;
     const isLlMApi = runner.name === 'elizacloud' || runner.name === 'llm-api';
     const useElizaCloudForLlMApi = isLlMApi && models.some(m => m.includes('/'));
 
     for (const model of models) {
       // Eliza Cloud backend: validate against elizacloud set
       if (isLlMApi && useElizaCloudForLlMApi) {
-        if (ELIZACLOUD_SKIP_MODELS.has(model)) {
+        if (effectiveSkipSet.has(model)) {
           removed.push({ runner: runner.name, model });
-          debug(`ElizaCloud: skipping ${model} (known timeout)`);
+          const reason = getElizaCloudSkipReason(model);
+          debug(`ElizaCloud: skipping ${model} (${reason === 'timeout' ? 'known timeout' : '0% fix rate'})`);
+          if (model === DEFAULT_ELIZACLOUD_MODEL || (configuredModel && model === configuredModel)) {
+            skippedConfiguredDefault = model;
+          }
           continue;
         }
         if (elizacloudModels.size === 0) {
@@ -782,7 +875,29 @@ export async function validateAndFilterModels(
         debug(`Model "${model}" not found in available ${provider} models for ${runner.name}`);
       }
     }
-    
+
+    // User-visible warning when configured default was skipped (pill-output #2)
+    if (skippedConfiguredDefault) {
+      const replacement = validModels.length > 0 ? validModels[0] : '(none; add other models or remove from skip list)';
+      const reason = getElizaCloudSkipReason(skippedConfiguredDefault);
+      const reasonLabel = reason === 'timeout' ? 'known timeout/504' : '0% fix rate (audit)';
+      console.log(chalk.yellow(`  ⚠ Configured default "${skippedConfiguredDefault}" skipped (${reasonLabel}). Using: ${replacement}`));
+    }
+
+    // Pill-output #1793: thin rotation after skip list + API filter — easy to miss why only 1–3 models rotate.
+    if (
+      !thinElizacloudPoolWarned &&
+      isLlMApi &&
+      useElizaCloudForLlMApi &&
+      validModels.length > 0 &&
+      validModels.length <= 3
+    ) {
+      thinElizacloudPoolWarned = true;
+      warn(
+        `ElizaCloud rotation has only ${formatNumber(validModels.length)} model(s) after built-in skip list (${formatNumber(getEffectiveElizacloudSkipModelIds().length)} skipped by default) and gateway availability — use PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable ids, or see docs/MODELS.md.`,
+      );
+    }
+
     // Update the rotation list in-place (where it came from)
     if (validModels.length > 0 && validModels.length < models.length) {
       if (runner.supportedModels) {
@@ -861,7 +976,7 @@ export async function setupRunner(
   // WHY: Remove models the user doesn't have access to BEFORE any fixer runs,
   // instead of discovering them one-by-one through failed retries
   const allDetectedRunners = detected.map(d => d.runner);
-  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey);
+  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey, config.llmModel);
 
   // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
   let primaryRunner: Runner;

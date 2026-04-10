@@ -71,6 +71,17 @@ export function normalizeLessonText(lesson: string): string | null {
   normalized = normalized.replace(/made no changes\s*:/i, 'made no changes');
   normalized = normalized.replace(/\bDo NOT repeat them\b:?/i, '').trim();
   normalized = canonicalizeToolAttempts(normalized);
+  // Reject nonsensical wrong-file lessons with empty allowed list (Pill: "need to modify one of: . Do NOT edit X").
+  // WHY: Such lessons tell the fixer not to edit any file and forbid the target file, blocking the fix.
+  if (/need to modify one of:\s*\.?\s*(?:Do NOT edit|$)/i.test(normalized)) {
+    return null;
+  }
+  // Meta-lesson: "Fix for X - The diff shows Y instead of implementing Z" (fixer edited wrong artifact).
+  // WHY: Dozens of lessons with different file paths describe the same root cause; normalize to one for dedup.
+  if (/^Fix for\s+.+\s+-\s+.+(?:the )?diff shows .+ instead of (?:implementing )?.+/i.test(normalized) ||
+      /^Fix for\s+.+\s+-\s+.+ instead of implementing\s+.+/i.test(normalized)) {
+    return 'Fixer edited documentation or lessons instead of source code - ensure changes target the actual source file';
+  }
   const fixForMatch = normalized.match(/^(Fix for\s+[^-]+)(?:\s+-\s+)?(.+)$/i);
   if (fixForMatch) {
     const prefix = fixForMatch[1].trim();

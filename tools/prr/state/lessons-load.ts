@@ -62,6 +62,10 @@ async function loadLocalLessons(ctx: LessonsContext): Promise<void> {
         if (prunedRedundant > 0) {
           console.log(`Pruned ${prunedRedundant} redundant lessons`);
         }
+        const prunedForbidOwn = Prune.pruneLessonsForbiddingOwnTargetPath(ctx);
+        if (prunedForbidOwn > 0) {
+          console.log(`Pruned ${prunedForbidOwn} lesson(s) that forbade editing their own target file`);
+        }
       }
     } catch (error) {
       console.warn('Failed to load local lessons file, starting fresh:', error);

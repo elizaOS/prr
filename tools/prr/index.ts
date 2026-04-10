@@ -2,8 +2,9 @@
 /**
  * PRR entry point: CLI wiring, config load, signal handling, resolver run.
  *
- * WHY initOutputLog() at top: We tee console output to ./output.log from the
- * first line so every run has a full audit trail even if we exit early or crash.
+ * WHY initOutputLog() before other console output: We tee console output to ./output.log
+ * so every run has a full audit trail; the first tee’d lines are PRR version/revision
+ * (see shared/prr-runtime-meta.ts), then log paths.
  * WHY closeOutputLog() before every return/exit: Flush and close the log file
  * so the user can read it immediately; without it the last lines may be lost.
  * WHY API keys on process.env: Spawned fixer tools (Codex, llm-api, etc.) read
@@ -15,14 +16,41 @@ import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
 import { createCLI, parseArgs } from './cli.js';
 import { validateElizaCloudKey, fetchAvailableElizaCloudModels, validateOpenAIKey } from './llm/client.js';
+import { ELIZACLOUD_FALLBACK_MODEL, getEffectiveElizacloudSkipModelIds, getEffectiveMaxConcurrentLLM } from '../../shared/constants.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
 import { tidyAllLessons } from './state/lessons-prune.js';
-import { initOutputLog, closeOutputLog, getOutputLogPath, debug } from '../../shared/logger.js';
+import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath, debug, setPillEnabled, formatNumber } from '../../shared/logger.js';
+import { runPillAfterClosedLogs } from '../pill/after-close-logs.js';
+import {
+  formatPrrStartupVersionLine,
+  shouldSuggestPrrGitShaInCi,
+} from '../../shared/prr-runtime-meta.js';
+import { isFailureExitReason } from './ui/reporter.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
-  initOutputLog();
+  initOutputLog({});
+  // First tee'd lines: tool version/revision (package.json + git in prr root, or PRR_GIT_SHA / PRR_SOURCE_COMMIT).
+  console.log(chalk.gray(`  ${formatPrrStartupVersionLine()}`));
+  if (shouldSuggestPrrGitShaInCi()) {
+    console.log(
+      chalk.gray(
+        `  CI: prr package dir has no .git (normal when prr is a subfolder of another repo). Set PRR_GIT_SHA to the prr commit for reproducible logs; GITHUB_SHA is the host repo, not prr.`,
+      ),
+    );
+  }
+  // WHY print at startup: Logs are written to process.cwd(); if the user ran prr from elsewhere they need to see where to find them.
+  const outPath = getOutputLogPath();
+  const promptPath = getPromptLogPath();
+  if (outPath) console.log(chalk.gray(`  Output log:  ${outPath}`));
+  if (promptPath) {
+    console.log(
+      chalk.gray(
+        `  Prompts log: ${promptPath} (full prompts when in-process LLM runs; use PRR_DEBUG_PROMPTS=1 for ~/.prr/debug files)`,
+      ),
+    );
+  }
 } catch (err) {
   // Non-fatal: log tee unavailable (e.g., read-only CWD), continue without it
   console.warn('Warning: Could not initialize output log:', err);
@@ -31,11 +59,16 @@ try {
 let resolver: PRResolver | null = null;
 let isShuttingDown = false;
 
+async function closeOutputLogAndPill(): Promise<void> {
+  await closeOutputLog();
+  await runPillAfterClosedLogs();
+}
+
 async function handleShutdown(signal: string): Promise<void> {
   if (isShuttingDown) {
     // Second signal - force exit
     console.log(chalk.red('\nForce exit.'));
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
   
@@ -49,7 +82,7 @@ async function handleShutdown(signal: string): Promise<void> {
   if (logPath) {
     console.log(chalk.gray(`\n📄 Full output log: ${logPath}`));
   }
-  await closeOutputLog();
+  await closeOutputLogAndPill();
 
   // Compute signal-specific exit code (128 + signal number)
   // SIGINT (2) -> 130, SIGTERM (15) -> 143
@@ -83,26 +116,27 @@ async function main(): Promise<void> {
     // Parse CLI arguments
     const program = createCLI();
     const { prUrl, options } = parseArgs(program);
+    setPillEnabled(options.pill);
 
     // Handle --check-tools mode (exit after showing status)
     if (options.checkTools) {
       await printToolStatus();
       await checkPrrUpdate();
-      await closeOutputLog();
+      await closeOutputLogAndPill();
       return;
     }
 
     // Handle --update-tools mode (update all installed tools and exit)
     if (options.updateTools) {
       await updateAllTools();
-      await closeOutputLog();
+      await closeOutputLogAndPill();
       return;
     }
 
     // Handle --tidy-lessons mode (clean up all lesson files and exit)
     if (options.tidyLessons) {
       await tidyAllLessons();
-      await closeOutputLog();
+      await closeOutputLogAndPill();
       // Review: early exits are designed to bypass further processing when specific flags are used
       return;
     }
@@ -126,22 +160,25 @@ async function main(): Promise<void> {
       await validateElizaCloudKey(config.elizacloudApiKey);
       const available = await fetchAvailableElizaCloudModels(config.elizacloudApiKey);
       if (available.size > 0 && !available.has(config.llmModel)) {
+        const skipSet = new Set<string>(getEffectiveElizacloudSkipModelIds());
         const PREFERRED_ELIZACLOUD_MODELS = [
           'anthropic/claude-sonnet-4-5-20250929',
-          'anthropic/claude-3.7-sonnet',
-          'anthropic/claude-3.5-sonnet',
+          ELIZACLOUD_FALLBACK_MODEL,
           // Short names for gateways that don't use owner/ prefix
           'claude-sonnet-4-5-20250929',
           'claude-3-5-sonnet-20241022',
           'claude-3-5-haiku-20241022',
         ];
-        const chosen = PREFERRED_ELIZACLOUD_MODELS.find(m => available.has(m))
+        const chosen = PREFERRED_ELIZACLOUD_MODELS.find(m => available.has(m) && !skipSet.has(m))
+          ?? Array.from(available).filter(m => !skipSet.has(m)).sort()[0]
           ?? Array.from(available).sort()[0];
         config.llmModel = chosen;
-        if (PREFERRED_ELIZACLOUD_MODELS.some(m => available.has(m))) {
-          console.log(chalk.gray(`  Using ElizaCloud model: ${chosen} (configured default unavailable)`));
+        // WHY: Distinguish "no model configured" from "configured model unavailable" (pill-output audit).
+        const userSetModel = process.env.PRR_LLM_MODEL?.trim();
+        if (userSetModel) {
+          console.warn(chalk.yellow(`  Configured model unavailable; using: ${chosen}. Set PRR_LLM_MODEL to pin.`));
         } else {
-          console.warn(chalk.yellow(`  ElizaCloud fallback model: ${chosen} (rotation may use other models). Set PRR_LLM_MODEL to pin.`));
+          console.warn(chalk.yellow(`  No model configured; defaulting to: ${chosen}. Set PRR_LLM_MODEL to pin.`));
         }
       }
     }
@@ -153,6 +190,17 @@ async function main(): Promise<void> {
       options.tool = config.defaultTool;
     }
 
+    const maxConcurrent = getEffectiveMaxConcurrentLLM();
+    console.log(chalk.gray(`  LLM concurrency: ${maxConcurrent === 1 ? '1 (default)' : maxConcurrent} — set PRR_MAX_CONCURRENT_LLM to tune`));
+
+    if (options.replyToThreads && !process.env.PRR_BOT_LOGIN?.trim()) {
+      console.warn(
+        chalk.yellow(
+          '  --reply-to-threads: PRR_BOT_LOGIN is not set — cross-run idempotency is off; re-runs may post duplicate thread replies. Set PRR_BOT_LOGIN to your bot GitHub login.',
+        ),
+      );
+    }
+
     // Create and run resolver
     resolver = new PRResolver(config, options);
     await resolver.run(prUrl);
@@ -161,8 +209,34 @@ async function main(): Promise<void> {
     if (logPath) {
       console.log(chalk.gray(`\n📄 Full output log: ${logPath}`));
     }
-    await closeOutputLog();
+    await closeOutputLogAndPill();
 
+    const strictFinalAudit =
+      process.env.PRR_STRICT_FINAL_AUDIT?.trim() === 'true' || process.env.PRR_STRICT_FINAL_AUDIT === '1';
+    if (resolver && strictFinalAudit && resolver.getAuditOverrideCount() > 0) {
+      console.warn(
+        chalk.yellow(
+          `\nStrict final audit: ${formatNumber(resolver.getAuditOverrideCount())} issue(s) kept verified despite audit UNFIXED — exiting with code 2 (PRR_STRICT_FINAL_AUDIT).`,
+        ),
+      );
+      process.exit(2);
+    }
+
+    const strictFinalAuditUncertain =
+      process.env.PRR_STRICT_FINAL_AUDIT_UNCERTAIN?.trim() === 'true' ||
+      process.env.PRR_STRICT_FINAL_AUDIT_UNCERTAIN === '1';
+    if (resolver && strictFinalAuditUncertain && resolver.getFinalAuditUncertainCount() > 0) {
+      console.warn(
+        chalk.yellow(
+          `\nStrict final audit (uncertain): ${formatNumber(resolver.getFinalAuditUncertainCount())} issue(s) passed via UNCERTAIN or truncation guard — exiting with code 2 (PRR_STRICT_FINAL_AUDIT_UNCERTAIN).`,
+        ),
+      );
+      process.exit(2);
+    }
+
+    if (isFailureExitReason(resolver.getExitReason())) {
+      process.exit(1);
+    }
   } catch (error) {
     resolver?.abortRun();
     if (error instanceof Error) {
@@ -179,7 +253,7 @@ async function main(): Promise<void> {
     if (logPath) {
       console.error(chalk.gray(`\n📄 Full output log: ${logPath}`));
     }
-    await closeOutputLog();
+    await closeOutputLogAndPill();
     process.exit(1);
   }
 }

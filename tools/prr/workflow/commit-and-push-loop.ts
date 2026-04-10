@@ -32,6 +32,7 @@ import { buildCommitMessage, squashCommit, pushWithRetry } from '../../../shared
 import { runHeuristicPrediction } from './bot-prediction-heuristics.js';
 import { predictBotFeedback } from './bot-prediction-llm.js';
 import { resolveTrackedPath } from './helpers/solvability.js';
+import { postThreadReplies } from './thread-replies.js';
 
 /**
  * Handle commit and push after fixes are verified
@@ -82,6 +83,8 @@ export async function handleCommitAndPush(
   skipBotWait: boolean = false,
   /** Reuse CodeRabbit mode from setup to avoid re-detection (e.g. manual → unknown). */
   codeRabbitCachedMode?: string,
+  /** When set and options.replyToThreads, post replies on review threads after push */
+  repliedThreadIds?: Set<string>,
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -230,6 +233,25 @@ export async function handleCommitAndPush(
       });
       pushNothingToPush = pushResult.nothingToPush === true;
       spinner.succeed(pushNothingToPush ? 'Already up-to-date (nothing to push)' : 'Pushed to remote');
+
+      if (!pushNothingToPush && options.replyToThreads && repliedThreadIds != null) {
+        try {
+          const commitSha = await git.revparse(['HEAD']);
+          await postThreadReplies({
+            comments,
+            verifiedCommentIds: verifiedThisSession,
+            dismissedIssues: [],
+            commitSha,
+            repliedThreadIds,
+            github,
+            prInfo,
+            replyToThreads: true,
+            resolveThreads: options.resolveThreads,
+          });
+        } catch (replyErr) {
+          debug('Thread reply failed (non-fatal)', { error: String(replyErr) });
+        }
+      }
     } catch (pushErr) {
       spinner.fail('Push failed');
       throw pushErr;

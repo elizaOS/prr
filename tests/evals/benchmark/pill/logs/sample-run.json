@@ -1,0 +1,13 @@
+{
+  "name": "sample-run",
+  "description": "Sample output.log and prompts.log from a PRR run",
+  "outputLog": "tests/evals/benchmark/pill/logs/sample-run-output.log",
+  "promptsLog": "tests/evals/benchmark/pill/logs/sample-run-prompts.log",
+  "metadata": {
+    "pr": "test-org/test-repo#123",
+    "runDate": "2025-01-01",
+    "totalIssues": 10,
+    "fixedIssues": 8,
+    "dismissedIssues": 2
+  }
+}

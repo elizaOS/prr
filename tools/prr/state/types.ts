@@ -26,7 +26,8 @@ export interface VerifiedComment {
   commentId: string;
   verifiedAt: string;        // ISO timestamp when verified
   verifiedAtIteration: number;  // Which iteration it was verified in
-  autoVerifiedFrom?: string;  // If this was auto-verified, the canonical comment ID
+  /** Canonical duplicate source comment id, or sentinel `PRR_GIT_RECOVERY_VERIFIED_MARKER` when restored from git (`prr-fix:` commits). */
+  autoVerifiedFrom?: string;
 }
 
 /**
@@ -208,10 +209,14 @@ export interface ResolverState {
   consecutiveAlreadyFixedAnyByCommentId?: Record<string, number>;
   /** Per-comment count of "could not inject file from repo" + no-change cycles; dismiss as file-unchanged after threshold (output.log audit H2). */
   couldNotInjectCountByCommentId?: Record<string, number>;
+  /** Per-comment consecutive "file not modified by fixer" count; dismiss as file-unchanged only after threshold (output.log audit — avoid dismissing in iter 1 when iter 2 would fix the file). */
+  fileUnchangedConsecutiveCountByCommentId?: Record<string, number>;
   /** Per-comment count of verifier verdicts saying "delete entirely" / "remove from repo". Dismiss after threshold so we don't burn iterations when fixer keeps emptying files instead of deleting (Cycle 13 M2). */
   deleteEntirelyVerdictCountByCommentId?: Record<string, number>;
   /** Per-comment count of CANNOT_FIX results citing missing/placeholder file content. WHY: audit showed 10+ retries on placeholder files burning 500K+ tokens. */
   cannotFixMissingContentCountByCommentId?: Record<string, number>;
+  /** Per-comment count of "fix belongs in a hidden test file, but no concrete target could be inferred". Dismiss after repeated misses to stop wrong-file loops. */
+  missingTargetFileCountByCommentId?: Record<string, number>;
   /** Per-comment consecutive CANNOT_FIX count (any reason); when >= CANNOT_FIX_EXHAUST_THRESHOLD, dismiss as not-an-issue. */
   cannotFixConsecutiveByCommentId?: Record<string, number>;
   /**
@@ -232,6 +237,24 @@ export interface ResolverState {
   /** When a review bot was last detected as rate-limited (bot name -> ISO timestamp). Used to short-wait on next run. */
   botRateLimitDetectedAt?: Record<string, string>;
   /**
+   * Comment IDs just recovered from git (scanCommittedFixes) this run.
+   * WHY: output.log audit — stale re-check was unmarking ~35 of them and re-verifying; when state was
+   * just recovered from git and head hasn't changed, we skip unmarking these and exclude them from
+   * stale re-check for the first analysis. Cleared after first findUnresolvedIssues and on load.
+   */
+  recoveredFromGitCommentIds?: string[];
+  /**
+   * Last apply/validation error per comment (e.g. "search text did not match at line X").
+   * WHY: output.log audit — include in retry prompt so next attempt can adjust search/replace.
+   * Cleared when injected into prompt or when issue is verified.
+   */
+  lastApplyErrorByCommentId?: Record<string, string>;
+  /**
+   * Per-comment count of apply failures (search/replace did not match / output did not match file).
+   * WHY: output.log audit — earlier chronic-failure dismissal with clear reason so loop doesn't burn iterations.
+   */
+  applyFailureCountByCommentId?: Record<string, number>;
+  /**
    * LLM dedup cache: keyed by sorted comment ID set; stores duplicateMap and dedupedIds.
    * WHY: Repeat runs with the same comments (e.g. re-run or next push iteration) can skip the dedup LLM step
    * and reuse this grouping, saving tokens and latency. Previously in-memory cache reset each run.
@@ -240,10 +263,23 @@ export interface ResolverState {
     commentIds: string;
     duplicateMap: Record<string, string[]>;
     dedupedIds: string[];
+    /** Present on new writes; old state omits it so cache is recomputed after dedup pipeline changes. */
+    schema?: string;
   };
   // Cumulative stats across all sessions
   totalTimings?: Record<string, number>;  // phase -> total ms
   totalTokenUsage?: TokenUsageRecord[];   // token usage per phase
+  /**
+   * Partial conflict resolutions from a previous run that did not resolve all conflicts.
+   * WHY: When base-merge resolves some files but not all, we persist resolved content so the next
+   * run reuses it and only runs LLM on the remaining files. Cleared when merge completes successfully.
+   */
+  partialConflictResolutions?: Record<string, string>;   // file path -> resolved content
+  /**
+   * `git rev-parse origin/<baseBranch>` when partial resolutions were last saved.
+   * WHY: If the base branch advances, cached file contents may be wrong for the new merge — clear partials.
+   */
+  partialConflictSavedOriginBaseSha?: string;
 }
 
 export function createInitialState(pr: string, branch: string, headSha: string): ResolverState {

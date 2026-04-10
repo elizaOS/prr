@@ -1,0 +1,16 @@
+{
+  "name": "simple-fix",
+  "expectedFixes": [
+    {
+      "commentId": "c1",
+      "expectedAction": "fixed",
+      "expectedFile": "src/utils.ts",
+      "expectedChange": "Replace `null!` with `?? null` or similar nullish coalescing pattern"
+    }
+  ],
+  "expectedDismissals": [],
+  "expectedRemaining": [],
+  "minFixRate": 0.9,
+  "maxFalsePositiveRate": 0.1,
+  "minAccuracy": 0.85
+}

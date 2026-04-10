@@ -78,6 +78,8 @@ export async function handleRotationStrategy(
   updatedUnresolvedIssues: UnresolvedIssue[];
 }> {
   const isOddFailure = consecutiveFailures % 2 === 1;
+  // output.log audit: after 2+ consecutive no-changes, try single-issue even on even failure (so we don't wait for 3rd).
+  const trySingleIssueForNoChanges = failureErrorType === undefined && consecutiveFailures >= 2;
   // Skip single-issue for errors where retrying the same model/tool won't help:
   // quota (same model will hit limit), 504 (same model would timeout again),
   // tool_config (same tool will fail again), tool_timeout, model (e.g. slow-pool unavailable).
@@ -95,7 +97,7 @@ export async function handleRotationStrategy(
   let newModelFailuresInCycle = modelFailuresInCycle;
   let newProgressThisCycle = progressThisCycle;
 
-  if (isOddFailure && unresolvedIssues.length > 1 && !skipSingleIssue) {
+  if ((isOddFailure || trySingleIssueForNoChanges) && unresolvedIssues.length > 1 && !skipSingleIssue) {
     console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
     const singleIssueFixed = await trySingleIssueFix(unresolvedIssues, git, verifiedThisSession);
     if (singleIssueFixed) {

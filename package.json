@@ -6,18 +6,25 @@
   "main": "dist/tools/prr/index.js",
   "bin": {
     "prr": "./dist/tools/prr/index.js",
-    "pill": "./dist/tools/pill/index.js"
+    "pill": "./dist/tools/pill/index.js",
+    "split-exec": "./dist/tools/split-exec/index.js",
+    "split-plan": "./dist/tools/split-plan/index.js",
+    "split-rewrite-plan": "./dist/tools/split-rewrite-plan/index.js",
+    "story": "./dist/tools/story/index.js",
+    "eval": "./dist/tools/eval/index.js"
   },
   "scripts": {
     "build": "tsc",
-    "build:bun": "bunx tsc",
+    "typecheck": "tsc",
+    "typecheck:noemit": "tsc --noEmit",
     "start": "node dist/tools/prr/index.js",
     "start:bun": "bun dist/tools/prr/index.js",
     "dev": "bun --watch tools/prr/index.ts",
     "test": "vitest",
     "test:elizacloud": "echo 'No test-elizacloud script; set ELIZACLOUD_API_KEY and run pill or prr'",
-    "typecheck": "tsc --noEmit",
-    "typecheck:bun": "bunx tsc --noEmit"
+    "eval": "node dist/tools/eval/index.js",
+    "lint:workflows": "actionlint .github/workflows/",
+    "update-model-catalog": "tsx tools/model-catalog/fetch-provider-catalog.ts"
   },
   "keywords": [
     "github",
@@ -38,13 +45,14 @@
     "dotenv": "^16.4.5",
     "openai": "^4.73.0",
     "ora": "^8.1.0",
-    "simple-git": "^3.27.0"
+    "simple-git": "^3.27.0",
+    "yaml": "^2.7.0"
   },
   "devDependencies": {
+    "typescript": "^5.7.2",
     "@types/diff": "^5.2.0",
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
     "vitest": "^2.1.4"
   },
   "engines": {

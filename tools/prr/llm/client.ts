@@ -13,98 +13,90 @@
  * are more reliable.
  */
 import Anthropic from '@anthropic-ai/sdk';
+import chalk from 'chalk';
 import OpenAI from 'openai';
 import type { Fetch } from 'openai/core';
 import type { Config, LLMProvider } from '../../../shared/config.js';
-import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError } from '../../../shared/logger.js';
-import { ELIZACLOUD_API_BASE_URL } from '../../../shared/constants.js';
-import { acquireElizacloud, releaseElizacloud } from '../../../shared/llm/rate-limit.js';
+import { debug, warn, trackTokens, debugPrompt, debugResponse, debugPromptError, formatNumber } from '../../../shared/logger.js';
+import {
+  ELIZACLOUD_API_BASE_URL,
+  getEffectiveMaxConcurrentLLM,
+  getElizacloudGatewayFallbackModels,
+  getElizacloudServerErrorMaxRetries,
+  MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS,
+} from '../../../shared/constants.js';
+import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
+import { openAiChatCompletionContentToString } from '../../../shared/llm/openai-chat-content.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
-
-/** Extract response status, headers, and body from OpenAI-style or nested errors for ElizaCloud debugging. */
-function getElizaCloudErrorContext(error: unknown): { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } {
-  const out: { status?: number; statusText?: string; headers?: Record<string, string>; body?: unknown; message?: string; cause?: unknown } = {};
-  if (error == null || typeof error !== 'object') return out;
-  const e = error as Record<string, unknown>;
-  out.message = e.message != null ? String(e.message) : undefined;
-  out.cause = e.cause;
-  if (typeof e.status === 'number') out.status = e.status as number;
-  const headers = e.headers;
-  if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
-    const h = headers as Record<string, unknown> & { forEach?: (cb: (v: string, k: string) => void) => void };
-    if (typeof h.forEach === 'function') {
-      out.headers = {};
-      h.forEach((v: string, k: string) => { out.headers![k] = v; });
-    } else {
-      out.headers = {};
-      for (const [k, v] of Object.entries(h)) {
-        if (typeof v === 'string') out.headers[k] = v;
-        else if (Array.isArray(v) && v.length) out.headers[k] = String(v[0]);
-      }
-    }
-  }
-  if ('error' in e && e.error !== undefined) out.body = e.error;
-  if (out.body === undefined && 'data' in e && e.data !== undefined) out.body = e.data;
-  const cause = e.cause as Record<string, unknown> | undefined;
-  if (cause && typeof cause === 'object' && out.body === undefined && 'responseBody' in cause) out.body = cause.responseBody;
-  if (cause && typeof cause === 'object' && out.body === undefined && 'error' in cause) out.body = cause.error;
-  return out;
-}
-
-/** Safe description of an API key for debug/error messages (never log the full key). */
-function maskApiKey(key: string | undefined): string {
-  if (key === undefined || key === null) return 'not set';
-  const k = key.trim();
-  if (!k.length) return 'empty after trim';
-  const prefix = k.length <= 8 ? k.slice(0, 2) + '***' : k.slice(0, 6) + '...';
-  return `length=${k.length}, prefix=${prefix}`;
-}
-
-/** File-type-specific rules for conflict resolution prompt (reduces invalid JSON/TS output). */
-function getConflictFileTypeRules(filePath: string): string {
-  if (filePath.endsWith('.json')) {
-    return '\n6. Output must be strict JSON (no comments, no trailing commas).';
-  }
-  if (/\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(filePath)) {
-    return '\n6. Preserve all imports and ensure the result compiles.';
-  }
-  return '';
-}
-
-/** Re-export for consumers that still import from llm/client. */
-export { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
-export { acquireElizacloud, releaseElizacloud } from '../../../shared/llm/rate-limit.js';
-
-/** Normalize issue/comment IDs: strip markdown (headings, bold) and standardize to issue_<n> for matching. */
-function normalizeIssueId(raw: string): string {
-  // Strip markdown formatting that LLMs wrap around IDs.
-  // HISTORY: Haiku started returning "**issue_1**: YES:" (bold markdown) instead
-  // of "issue_1: YES:" — the regex only stripped '#' heading prefixes, so "**issue_1"
-  // normalized to "issue_**issue_1" which never matched allowedIds. Observed: 0/15
-  // parsed in batch analysis, every issue fell through to "assuming unresolved."
-  // This single bug disabled the entire triage/priority system.
-  const normalized = raw.trim()
-    .replace(/^#+\s*/, '')      // "## issue_1" → "issue_1"
-    .replace(/^\*{1,2}/, '')    // "**issue_1" or "*issue_1" → "issue_1"
-    .replace(/\*{1,2}$/, '')    // "issue_1**" → "issue_1"
-    .toLowerCase()
-    .replace(/^issue[_\s]*/i, '') // "issue_1" → "1"
-    .replace(/^#/, '');           // "#1" → "1"
-  return normalized.length > 0 ? `issue_${normalized}` : normalized;
-}
+import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
+import { runWithConcurrencyAllSettled } from '../../../shared/run-with-concurrency.js';
+import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
+import {
+  ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS,
+  ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
+  estimateElizacloudInputTokensFromCharLength,
+  getElizaCloudModelContextSpec,
+  getMaxElizacloudLlmCompleteInputChars,
+  lowerModelMaxPromptChars,
+} from '../../../shared/llm/model-context-limits.js';
+import {
+  elizaCloudServerErrorExpectationDebug,
+  getConflictFileTypeRules,
+  getElizaCloudErrorContext,
+  isElizaCloudServerClassError,
+  isLikelyContextLengthExceededError,
+  maskApiKey,
+  normalizeIssueId,
+  sanitizeForJson,
+} from './error-helpers.js';
+import type { ModelRecommendationContext } from './provider-probes.js';
+import { getCheapModelForProvider } from './provider-probes.js';
+import {
+  commentNeedsConservativeExistenceCheck,
+  explanationHasConcreteFixEvidence,
+  explanationMentionsMissingCodeVisibility,
+  finalAuditSnippetLooksTruncatedOrExcerpt,
+  snippetShowsUuidCommentAlignedWithVersionRange,
+} from './verification-heuristics.js';
 
 /**
- * Strip unpaired UTF-16 surrogates from a string.
- * Lone surrogates (U+D800–U+DFFF without a valid pair) are invalid in JSON
- * and cause API errors like "no low surrogate in string". Replaces them with U+FFFD.
+ * Re-exports from split modules so `import { … } from '…/llm/client.js'` stays stable.
+ * WHY: Rotation, split-plan, and tests already use this path; moving helpers to
+ * sibling files avoids a 3k+ line single file without forcing every caller to
+ * retarget imports. Prefer importing heuristics/probes/errors from here unless
+ * you are inside `llm/` and need to avoid pulling the full client graph.
  */
-function sanitizeForJson(text: string): string {
-  // Match lone high surrogates (not followed by low) and lone low surrogates (not preceded by high)
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
-}
+export { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
+export { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
+export {
+  commentNeedsConservativeExistenceCheck,
+  explanationHasConcreteFixEvidence,
+  explanationMentionsMissingCodeVisibility,
+  finalAuditSnippetLooksTruncatedOrExcerpt,
+  snippetShowsUuidCommentAlignedWithVersionRange,
+} from './verification-heuristics.js';
+export type { ModelRecommendationContext } from './provider-probes.js';
+export {
+  fetchAvailableAnthropicModels,
+  fetchAvailableElizaCloudModels,
+  fetchAvailableOpenAIModels,
+  getCheapModelForProvider,
+  probeElizaCloudModel,
+  validateElizaCloudKey,
+  validateOpenAIKey,
+} from './provider-probes.js';
+export {
+  elizaCloudServerErrorExpectationDebug,
+  getConflictFileTypeRules,
+  getElizaCloudErrorContext,
+  isElizaCloudServerClassError,
+  isLikelyContextLengthExceededError,
+  maskApiKey,
+  normalizeIssueId,
+  sanitizeForJson,
+} from './error-helpers.js';
 
 export interface LLMResponse {
   content: string;
@@ -126,6 +118,8 @@ interface CompleteOptions {
    * instead of spending ~10 minutes exhausting the global retry ladder first.
    */
   max504Retries?: number;
+  /** Optional phase label for prompts.log metadata (e.g. batch-verify, final-audit). Helps pill and auditors filter by step. */
+  phase?: string;
 }
 
 /**
@@ -155,332 +149,6 @@ export interface BatchCheckResult {
   partial?: boolean;
 }
 
-export function commentNeedsConservativeExistenceCheck(comment: string): boolean {
-  const c = comment.toLowerCase();
-  return (
-    /\bmemory leak\b/.test(c) ||
-    /\b(?:potential )?leak\b/.test(c) ||
-    /\b(?:cleanup|clean up|prune|evict|ttl|lru)\b/.test(c) ||
-    /\b(?:stale|orphaned|dangling)\s+(?:entry|entries|state|map|set|cache)\b/.test(c) ||
-    /\bnever\s+(?:cleared|cleaned|pruned|deleted|removed)\b/.test(c) ||
-    /\bfromend\b/.test(c) ||
-    /\b(?:newest|oldest)-first\b/.test(c) ||
-    /\bkeep(?:s|ing)?\s+(?:the\s+)?(?:newest|oldest)\b/.test(c) ||
-    /\bslicetofitbudget\b/.test(c)
-  );
-}
-
-/**
- * True when the "already correct" explanation contains concrete code evidence
- * rather than generic reassurance.
- *
- * WHY: The YES->NO override is useful for obvious false positives, but vague
- * phrases like "already correct" are too risky for lifecycle/order-sensitive
- * bugs. Requiring evidence keeps the override from silently hiding real issues.
- */
-export function explanationHasConcreteFixEvidence(explanation: string): boolean {
-  return (
-    /\bline\s+\d+\b/i.test(explanation) ||
-    /`[^`\n]{2,120}`/.test(explanation) ||
-    /\b(?:now|uses?|returns?|deletes?|removes?|calls?|sets?|sorts?|reverses?)\b.{0,80}\b(?:if|map|set|sliceToFitBudget|fromEnd|delete|cleanup|prune|reverse)\b/i.test(explanation)
-  );
-}
-
-/**
- * True when the model is really saying "I couldn't see enough code to decide",
- * regardless of whether it labeled the result NO or STALE.
- *
- * WHY: Missing snippet context should keep an issue open, not dismiss it as stale.
- * Different models phrase this in many ways ("truncated snippet", "can't verify",
- * "current code doesn't show"), so we centralize the detection in one helper.
- * Hedged phrasing ("suggests", "appears to") with truncated snippet/excerpt is still
- * uncertainty, not evidence the issue is fixed or obsolete — we treat it as missing visibility.
- */
-export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
-  return (
-    /snippet.*(?:truncated|unavailable)/i.test(explanation) ||
-    /(?:truncated|unavailable).*snippet/i.test(explanation) ||
-    /truncated snippet.*(?:suggests|appears?)/i.test(explanation) ||
-    /appears?\s+to\b.*\btruncated snippet/i.test(explanation) ||
-    // Hedged uncertainty about truncated excerpt (no "snippet"); only this branch matches so tests can pin it.
-    /truncated (?:snippet|excerpt).*(?:suggests|appears?)/i.test(explanation) ||
-    /cannot verify.*(?:truncated|unavailable)/i.test(explanation) ||
-    /not visible in the provided excerpt/i.test(explanation) ||
-    /not (?:visible|found) in the provided .* excerpt/i.test(explanation) ||
-    /not visible in provided .* excerpt/i.test(explanation) ||
-    /are not visible in the provided/i.test(explanation) ||
-    /excerpt does not (?:include|show|contain)/i.test(explanation) ||
-    /can'?t (?:be )?evaluat/i.test(explanation) ||
-    /cannot (?:assess|determine|verify)/i.test(explanation) ||
-    /(?:code|snippet|excerpt|current code) (?:doesn'?t|does not) show/i.test(explanation) ||
-    /\bonly shows\b.*\b(?:not |beginning|start|first|lines? \d)/i.test(explanation) ||
-    /\bincomplete\b.*\b(?:show|visible|implementation)\b/i.test(explanation) ||
-    /not (?:visible|shown|included) in the (?:current |provided )?(?:excerpt|code|snippet)/i.test(explanation)
-  );
-}
-
-/**
- * Context for model recommendation (optional)
- */
-export interface ModelRecommendationContext {
-  /** Available models to choose from */
-  availableModels?: string[];
-  /** Historical model performance summary (e.g., "sonnet: 5 fixes, 2 failures") */
-  modelHistory?: string;
-  /** Previous attempts on these issues (e.g., "sonnet failed: lesson was X") */
-  attemptHistory?: string;
-  /** When false, omit model recommendation block and Previous Attempts from prompt. WHY: Verification doesn't fix issues; audit showed ~60k chars wasted per run sending full history to every batch. */
-  includeModelRecommendation?: boolean;
-  /** Estimated fix prompt size in chars (audit: recommender didn't account for gateway timeout on 94k prompt). */
-  estimatedFixPromptChars?: number;
-}
-
-/**
- * Fetch the list of model IDs available to the given OpenAI API key.
- * Uses GET /v1/models (openai.models.list()).
- *
- * WHY: Model rotation lists contain models that may not exist or may not be
- * accessible to the user's API key (e.g. "gpt-5.3-codex"). Without validation,
- * the fixer retries multiple times per unavailable model, wasting time and tokens.
- * Calling this once at startup lets us prune the rotation list up front.
- *
- * Returns an empty set on error (network issue, invalid key) so callers
- * can safely fall back to the full rotation list.
- */
-export async function fetchAvailableOpenAIModels(apiKey: string): Promise<Set<string>> {
-  try {
-    const client = new OpenAI({ apiKey });
-    const models = await client.models.list();
-    const ids = new Set<string>();
-    for await (const model of models) {
-      ids.add(model.id);
-    }
-    debug(`Fetched ${ids.size} available OpenAI models`);
-    return ids;
-  } catch (err) {
-    debug('Failed to fetch OpenAI models list', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return new Set(); // Empty = skip filtering, keep all models
-  }
-}
-
-/**
- * Validate OpenAI API key at startup (e.g. for Codex or llm-api).
- * Calls GET /v1/models and throws on 401 so we fail fast with a clear message.
- */
-export async function validateOpenAIKey(apiKey: string): Promise<void> {
-  const key = apiKey?.trim();
-  if (!key) {
-    throw new Error('OPENAI_API_KEY is empty. Set it in your .env or environment.');
-  }
-  const keyHint = maskApiKey(key);
-  debug('Validating OpenAI API key');
-  try {
-    const client = new OpenAI({ apiKey: key });
-    for await (const _ of client.models.list()) {
-      break; // one request to verify auth
-    }
-  } catch (err) {
-    const status = (err as { status?: number })?.status;
-    const msg = err instanceof Error ? err.message : String(err);
-    if (status === 401 || /401|Unauthorized|Authentication required|Missing bearer|invalid.*api.*key/i.test(msg)) {
-      debug('OpenAI 401 during validation');
-      throw new Error(
-        `OpenAI API key was rejected (401 Unauthorized). ` +
-        `API key: ${keyHint}. ` +
-        `Check that OPENAI_API_KEY in .env is correct, has no extra spaces/newlines, and has not been revoked. ` +
-        `If OPENAI_BASE_URL is set, unset it so the key is used with api.openai.com (see github.com/openai/codex/issues/9153).`
-      );
-    }
-    throw err;
-  }
-}
-
-/**
- * Fetch the list of model IDs available to the given Anthropic API key.
- * Uses GET https://api.anthropic.com/v1/models directly.
- *
- * WHY: Same reason as OpenAI - rotation lists may reference models the key
- * can't access (e.g. opus on a lower-tier plan). Validate once at startup
- * instead of discovering failures one retry at a time.
- *
- * NOTE: Uses raw fetch because the @anthropic-ai/sdk@0.32.x doesn't have
- * the .models namespace yet. The endpoint is stable (documented at
- * docs.anthropic.com/en/api/models-list).
- *
- * Returns an empty set on error so callers can safely fall back.
- */
-export async function fetchAvailableAnthropicModels(apiKey: string): Promise<Set<string>> {
-  try {
-    const ids = new Set<string>();
-    let afterId: string | undefined;
-    let hasMore = true;
-    const MAX_PAGES = 20; // Safety cap to prevent infinite loops
-    let page = 0;
-    
-    while (hasMore) {
-      if (++page > MAX_PAGES) {
-        debug('Anthropic models pagination safety cap reached');
-        break;
-      }
-      const url = new URL('https://api.anthropic.com/v1/models');
-      url.searchParams.set('limit', '1000');
-      if (afterId) {
-        url.searchParams.set('after_id', afterId);
-      }
-      
-      const controller = new AbortController();
-const timeout = setTimeout(() => controller.abort(), 15_000);
-let response: Response;
-try {
-  response = await fetch(url.toString(), {
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    signal: controller.signal,
-  });
-} finally {
-  clearTimeout(timeout);
-}
-      
-      if (!response.ok) {
-        debug('Anthropic models API returned non-OK', {
-          status: response.status,
-          statusText: response.statusText,
-        });
-        break;
-      }
-      
-      const body = await response.json() as {
-        data: Array<{ id: string }>;
-        has_more: boolean;
-      };
-      
-      for (const model of body.data) {
-        ids.add(model.id);
-      }
-      
-      hasMore = body.has_more;
-      if (body.data.length > 0) {
-        afterId = body.data[body.data.length - 1].id;
-      } else {
-        hasMore = false;
-      }
-    }
-    
-    debug(`Fetched ${ids.size} available Anthropic models`);
-    return ids;
-  } catch (err) {
-    debug('Failed to fetch Anthropic models list', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return new Set(); // Empty = skip filtering, keep all models
-  }
-// Review: returning empty set allows skipping filtering when model fetch fails
-}
-
-/**
- * Validate ElizaCloud API key (e.g. at startup).
- * Throws with a clear message on 401 so we fail fast instead of many 401s later.
- */
-export async function validateElizaCloudKey(apiKey: string): Promise<void> {
-  const key = apiKey?.trim();
-  if (!key) {
-    throw new Error('ELIZACLOUD_API_KEY is empty. Set it in your .env file.');
-  }
-  const keyHint = maskApiKey(key);
-  const url = ELIZACLOUD_API_BASE_URL;
-  debug('Validating ElizaCloud API key', { requestURL: `${url}/models`, apiKey: keyHint });
-  try {
-    const client = createElizaCloudOpenAIClient(key);
-    for await (const _ of client.models.list()) {
-      break; // one request to verify auth
-    }
-  } catch (err) {
-    const status = (err as { status?: number })?.status;
-    const msg = err instanceof Error ? err.message : String(err);
-    if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
-      debug('ElizaCloud 401 during validation', { requestURL: `${url}/models`, apiKey: keyHint });
-      throw new Error(
-        `ElizaCloud API key was rejected (401 Unauthorized). ` +
-        `Request URL: ${url}/models. API key: ${keyHint}. ` +
-        `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
-      );
-    }
-    throw err;
-  }
-}
-
-/**
- * Fetch all available models from ElizaCloud API.
- * Returns empty set if fetch fails (skip filtering).
- */
-export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Set<string>> {
-  try {
-    const client = createElizaCloudOpenAIClient(apiKey?.trim() ?? '');
-    const models = await client.models.list();
-    const ids = new Set<string>();
-    for await (const model of models) {
-      ids.add(model.id);
-    }
-    debug(`Fetched ${ids.size} available ElizaCloud models`);
-    return ids;
-  } catch (err) {
-    debug('Failed to fetch ElizaCloud models list', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return new Set();
-  }
-}
-
-/**
- * Probe one ElizaCloud model with a minimal chat request.
- * Returns 'ok' if the model is usable, 'slow_pool' if the backend says it's not in the slow pool
- * (e.g. "switch to auto"), 'error' for other failures (network, auth, etc.).
- * Used at startup to drop models that would fail on first real request.
- */
-export async function probeElizaCloudModel(apiKey: string, model: string): Promise<'ok' | 'slow_pool' | 'error'> {
-  try {
-    const client = createElizaCloudOpenAIClient(apiKey?.trim() ?? '');
-    await client.chat.completions.create({
-      model,
-      messages: [{ role: 'user', content: 'Hi' }],
-      max_tokens: 5,
-    });
-    return 'ok';
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const ctx = getElizaCloudErrorContext(err);
-    const bodyStr = ctx.body != null ? JSON.stringify(ctx.body) : '';
-    const combined = `${msg} ${bodyStr}`;
-    if (/not available in the slow pool|switch to auto/i.test(combined)) {
-      return 'slow_pool';
-    }
-    return 'error';
-  }
-}
-
-/**
- * Cheap models for low-stakes tasks (commit messages, dismissal comments).
- *
- * WHY: Sonnet ($3/$15 per MTok) is overkill for generating a one-line commit
- * message or a 120-char dismissal comment. Haiku ($1/$5 per MTok) and
- * GPT-4o-mini ($0.15/$0.6 per MTok) produce equivalent results for constrained
- * text generation — the output is a single formatted sentence, not multi-step
- * code reasoning. This saves ~66-95% per call with zero quality impact.
- *
- * WHY per-provider map: The model name format differs between providers.
- * Anthropic uses versioned names, OpenAI uses its own naming scheme.
- * ElizaCloud proxies to OpenAI models.
- */
-const CHEAP_MODELS: Record<string, string> = {
-  anthropic: 'claude-haiku-4-5-20251001',
-  openai: 'gpt-4o-mini',
-  elizacloud: 'openai/gpt-4o-mini',               // ElizaCloud uses owner/model IDs
-};
-
 /**
  * Filter attempt history to only lines for issues in the current batch.
  * WHY: Audit showed full history (all issues) sent to every verify batch; only the current batch is relevant.
@@ -499,10 +167,16 @@ function filterAttemptHistoryToBatch(attemptHistory: string, batchIds: string[])
 }
 
 export class LLMClient {
+  /** Cap noisy per-batch final-audit truncation debug (output.log: dozens of identical lines per run). */
+  private static finalAuditTruncationDebugCount = 0;
+  private static readonly FINAL_AUDIT_TRUNCATION_DEBUG_MAX = 5;
+
   private provider: LLMProvider;
   private model: string;
   /** When set (e.g. PRR_VERIFIER_MODEL), batch verification uses this instead of model to reduce false negatives. */
   private verifierModel?: string;
+  /** When set (PRR_FINAL_AUDIT_MODEL), adversarial final-audit uses this model (Cycle 65). */
+  private finalAuditModel?: string;
   private anthropic?: Anthropic;
   private openai?: OpenAI;
   private thinkingBudget?: number;
@@ -521,10 +195,16 @@ export class LLMClient {
     return this.verifierModel;
   }
 
+  /** Model for final audit: PRR_FINAL_AUDIT_MODEL ?? PRR_VERIFIER_MODEL ?? PRR_LLM_MODEL. */
+  getFinalAuditModel(): string {
+    return this.finalAuditModel ?? this.verifierModel ?? this.model;
+  }
+
   constructor(config: Config) {
     this.provider = config.llmProvider;
     this.model = config.llmModel;
     this.verifierModel = config.verifierModel;
+    this.finalAuditModel = config.finalAuditModel;
     this.thinkingBudget = config.anthropicThinkingBudget;
 
     if (this.provider === 'anthropic') {
@@ -565,14 +245,50 @@ export class LLMClient {
     // but some callers (like tryDirectLLMFix) need a stronger model for code fixing
     const chosenModel = options?.model ?? this.model;
 
-    debug(`LLM request to ${this.provider}/${chosenModel}`, {
+    const baseDebug: Record<string, unknown> = {
       promptLength: prompt.length,
       hasSystemPrompt: !!systemPrompt,
-    });
-    
+    };
+    if (this.provider === 'elizacloud') {
+      const sysLen = systemPrompt?.length ?? 0;
+      const totalChars = prompt.length + sysLen;
+      const { approxTokens, assumedCharsPerToken } = estimateElizacloudInputTokensFromCharLength(
+        chosenModel,
+        totalChars,
+      );
+      const spec = getElizaCloudModelContextSpec(chosenModel);
+      const worstOut = approxTokens + ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
+      baseDebug.requestTotalChars = totalChars;
+      baseDebug.estimatedInputTokensApprox = approxTokens;
+      baseDebug.tokenizerAssumptionCharsPerToken = assumedCharsPerToken;
+      baseDebug.maxCompletionTokensDefault = ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
+      baseDebug.estimatedInputPlusDefaultMaxOutputApprox = worstOut;
+      baseDebug.estimatedExceedsContextWithDefaultMaxOut = worstOut > spec.maxContextTokens;
+    }
+    debug(`LLM request to ${this.provider}/${chosenModel}`, baseDebug);
+
+    // ElizaCloud: fail fast when total input exceeds configured budget. Gateways often
+    // return 500 (no body) for oversize upstream — retries waste minutes (audit: qwen 93k vs ~42k cap).
+    if (this.provider === 'elizacloud') {
+      const maxTotal = getMaxElizacloudLlmCompleteInputChars(chosenModel);
+      const total = prompt.length + (systemPrompt?.length ?? 0);
+      if (total > maxTotal) {
+        const detail = elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt);
+        warn(
+          `ElizaCloud prompt exceeds model input budget (${formatNumber(total)} chars > ${formatNumber(maxTotal)}). Use a larger-context model, split verification batches, or adjust ELIZACLOUD_MODEL_CONTEXT.`,
+        );
+        debug('ElizaCloud input budget exceeded (detail)', detail);
+        throw new Error(
+          `ElizaCloud request too large for ${chosenModel}: ${formatNumber(total)} chars (max ${formatNumber(maxTotal)}).`,
+        );
+      }
+    }
+
     // Log full prompt to debug file
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
-    debugPrompt(`llm-${this.provider}`, fullPrompt, { model: chosenModel });
+    const promptMeta: Record<string, unknown> = { model: chosenModel };
+    if (options?.phase != null) promptMeta.phase = options.phase;
+    const promptSlug = debugPrompt(`llm-${this.provider}`, fullPrompt, promptMeta);
     
     const is429 = (e: unknown) => {
       const status = (e as { status?: number })?.status;
@@ -592,7 +308,9 @@ export class LLMClient {
         elizaAcquired = true;
       }
       const max429Retries = this.provider === 'elizacloud' ? 3 : 0;
-      const max504Retries = options?.max504Retries ?? (this.provider === 'elizacloud' ? 2 : 0);
+      const max504Retries =
+        options?.max504Retries ??
+        (this.provider === 'elizacloud' ? getElizacloudServerErrorMaxRetries() : 0);
       const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
       const backoff504Ms = this.provider === 'elizacloud' ? [10_000, 20_000] : [10_000];
       // ElizaCloud STRICT = 10 req/min; short backoff (2s/4s/8s) sends 4 requests in ~14s → 429. Use 60s so retries stay under limit.
@@ -600,23 +318,83 @@ export class LLMClient {
       for (let attempt = 0; attempt <= max429Retries; attempt++) {
         try {
           let response: LLMResponse | undefined;
+          let requestModel = chosenModel;
+          let consecutiveElizacloudGatewayErrors = 0;
+          let elizacloudFallbackIdx = 0;
+          const elizacloudGatewayFallbackChain =
+            this.provider === 'elizacloud' ? getElizacloudGatewayFallbackModels(chosenModel) : [];
+
           for (let attempt504 = 0; attempt504 <= max504Retries; attempt504++) {
             try {
               response = this.provider === 'anthropic'
                 ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
-                : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
+                : await this.completeOpenAI(prompt, systemPrompt, requestModel);
               break;
             } catch (e504) {
               if (this.provider === 'elizacloud') {
-                debug('ElizaCloud error (response context)', getElizaCloudErrorContext(e504));
+                const base504 = getElizaCloudErrorContext(e504);
+                const payload504 =
+                  isElizaCloudServerClassError(e504)
+                    ? { ...base504, ...elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt) }
+                    : base504;
+                debug('ElizaCloud error (response context)', payload504);
               }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
-              if (attempt504 < max504Retries && (isServerError(e504) || timeoutMsg)) {
+              const contextOverflow = isLikelyContextLengthExceededError(e504);
+              const totalChars = prompt.length + (systemPrompt?.length ?? 0);
+              const overConfiguredBudget =
+                this.provider === 'elizacloud' &&
+                totalChars > getMaxElizacloudLlmCompleteInputChars(requestModel);
+              if (contextOverflow && this.provider === 'elizacloud') {
+                lowerModelMaxPromptChars('elizacloud', requestModel, prompt.length);
+                debug('ElizaCloud context length exceeded — lowered prompt cap for this model', {
+                  model: requestModel,
+                  promptLength: formatNumber(prompt.length),
+                  ...elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt),
+                });
+              }
+
+              const gatewayClassRetry =
+                this.provider === 'elizacloud' && (isServerError(e504) || timeoutMsg);
+              if (gatewayClassRetry) {
+                consecutiveElizacloudGatewayErrors++;
+              } else {
+                consecutiveElizacloudGatewayErrors = 0;
+              }
+
+              if (
+                this.provider === 'elizacloud' &&
+                consecutiveElizacloudGatewayErrors >= 2 &&
+                elizacloudFallbackIdx < elizacloudGatewayFallbackChain.length
+              ) {
+                const nextModel = elizacloudGatewayFallbackChain[elizacloudFallbackIdx]!;
+                elizacloudFallbackIdx++;
+                console.warn(
+                  chalk.yellow(
+                    `ElizaCloud: ${formatNumber(2)} consecutive gateway/server errors on ${requestModel} — trying fallback model ${nextModel} (override chain: PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS; disable: off).`,
+                  ),
+                );
+                requestModel = nextModel;
+                consecutiveElizacloudGatewayErrors = 0;
+                attempt504--;
+                continue;
+              }
+
+              if (
+                attempt504 < max504Retries &&
+                (isServerError(e504) || timeoutMsg) &&
+                !contextOverflow &&
+                !overConfiguredBudget
+              ) {
                 const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
                 debug('Server error or request timeout, retrying', {
                   attempt: attempt504 + 1,
                   maxRetries: max504Retries,
                   delayMs,
+                  model: this.provider === 'elizacloud' ? requestModel : chosenModel,
+                  ...(this.provider === 'elizacloud'
+                    ? elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt)
+                    : {}),
                 });
                 await new Promise(r => setTimeout(r, delayMs));
               } else {
@@ -632,13 +410,46 @@ export class LLMClient {
             usage: response.usage,
           });
 
-          debugResponse(`llm-${this.provider}`, response.content, {
-            model: chosenModel,
-            usage: response.usage,
-          });
+          // Pill #1, #4: Ensure we pass the accumulated response content, not empty string.
+          // The OpenAI/Anthropic SDKs should return full content, but add safeguard.
+          const responseContent = response.content || '';
+          if (!responseContent && response.usage?.outputTokens && response.usage.outputTokens > 0) {
+            debug('WARNING: LLM response has usage tokens but empty content — possible streaming accumulation bug', {
+              provider: this.provider,
+              model: requestModel,
+              outputTokens: response.usage.outputTokens,
+            });
+          }
 
           if (response.usage) {
             trackTokens(response.usage.inputTokens, response.usage.outputTokens);
+          }
+
+          // WHY: writeToPromptLog refuses empty RESPONSE — audits would see orphan PROMPT slugs with no ERROR.
+          if (!responseContent.trim()) {
+            debugPromptError(
+              promptSlug,
+              `llm-${this.provider}`,
+              'Empty or whitespace-only response body (HTTP success but no text; prompts.log would not record a RESPONSE).',
+              {
+                model: requestModel,
+                usage: response.usage,
+                ...(options?.phase != null ? { phase: options.phase } : {}),
+                emptyBody: true,
+              }
+            );
+            // WHY: Operators and CI often skip prompts.log; one stderr line ties empty LLM output to the ERROR slug.
+            if (this.provider === 'elizacloud') {
+              console.warn(
+                chalk.yellow(
+                  `ElizaCloud: empty response body from ${requestModel} (prompts.log has ERROR for this request).`,
+                ),
+              );
+            }
+          } else {
+            const responseMeta: Record<string, unknown> = { model: requestModel, usage: response.usage };
+            if (options?.phase != null) responseMeta.phase = options.phase;
+            debugResponse(promptSlug, `llm-${this.provider}`, responseContent, responseMeta);
           }
 
           return response;
@@ -657,24 +468,37 @@ export class LLMClient {
                 `Check that ELIZACLOUD_API_KEY in .env is correct for this URL, has no extra spaces/newlines, and has not been revoked.`
               );
             }
-            if (is429(err) && attempt < max429Retries) {
-              const wait = backoffMs[attempt] ?? 8000;
-              debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
-              await new Promise(r => setTimeout(r, wait));
-              continue;
+            if (is429(err)) {
+              notifyRateLimitHit();
+              if (attempt < max429Retries) {
+                const wait = backoffMs[attempt] ?? 8000;
+                debug(`ElizaCloud 429, retry ${attempt + 1}/${max429Retries} in ${wait}ms`);
+                await new Promise(r => setTimeout(r, wait));
+                continue;
+              }
             }
           }
           if (this.provider === 'elizacloud') {
-            debug('ElizaCloud error (response context)', getElizaCloudErrorContext(err));
+            const baseErr = getElizaCloudErrorContext(err);
+            const payloadErr =
+              isElizaCloudServerClassError(err)
+                ? { ...baseErr, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+                : baseErr;
+            debug('ElizaCloud error (response context)', payloadErr);
           }
           throw err;
         }
       }
       if (this.provider === 'elizacloud' && lastErr != null) {
-        debug('ElizaCloud error (response context)', getElizaCloudErrorContext(lastErr));
+        const baseLast = getElizaCloudErrorContext(lastErr);
+        const payloadLast =
+          isElizaCloudServerClassError(lastErr)
+            ? { ...baseLast, ...elizaCloudServerErrorExpectationDebug(chosenModel, prompt, systemPrompt) }
+            : baseLast;
+        debug('ElizaCloud error (response context)', payloadLast);
       }
       const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
-      debugPromptError(`llm-${this.provider}`, lastMsg, {
+      debugPromptError(promptSlug, `llm-${this.provider}`, lastMsg, {
         model: chosenModel,
         status: (lastErr as { status?: number })?.status,
         is504: lastErr != null && isServerError(lastErr),
@@ -694,7 +518,7 @@ export class LLMClient {
    * Use for lightweight tasks (e.g. LLM dedup) to save cost; default model is for verification/fixing.
    */
   async completeWithCheapModel(prompt: string, systemPrompt?: string): Promise<LLMResponse> {
-    const cheapModel = CHEAP_MODELS[this.provider];
+    const cheapModel = getCheapModelForProvider(this.provider);
     if (!cheapModel) {
       return this.complete(prompt, systemPrompt);
     }
@@ -831,16 +655,43 @@ export class LLMClient {
     
     messages.push({ role: 'user', content: prompt });
 
-    // Cap completion tokens so input + completion stays under small-context model limits
-    // (e.g. Qwen3-14B has 40,960 total; gateway often defaults to 16k output → over limit).
-    const maxCompletionTokens = 8192;
+    // Cap completion so estimated input + max_output stays under model context.
+    // WHY: Char preflight uses a separate budget; OpenAI-style APIs still validate **tokens**.
+    // Qwen3-14B is 24,576 ctx — ~32k chars ≈ ~20k input tok + 8192 max out → opaque HTTP 500 (audit).
+    const systemMessageChars = systemPrompt
+      ? (systemPrompt + noThinkSuffix).length
+      : noThinkSuffix
+        ? noThinkSuffix.trim().length
+        : 0;
+    const totalInputChars = systemMessageChars + prompt.length;
+
+    let maxCompletionTokens = ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS;
+    if (this.provider === 'elizacloud') {
+      const spec = getElizaCloudModelContextSpec(chosenModel);
+      const { approxTokens } = estimateElizacloudInputTokensFromCharLength(chosenModel, totalInputChars);
+      const headroom = spec.maxContextTokens - approxTokens - ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS;
+      const capped = Math.min(
+        ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
+        Math.max(256, headroom),
+      );
+      if (capped < ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS) {
+        debug('ElizaCloud: capping max_completion_tokens for context window', {
+          model: chosenModel,
+          estimatedInputTokensApprox: approxTokens,
+          maxContextTokens: spec.maxContextTokens,
+          maxCompletionTokens: capped,
+        });
+      }
+      maxCompletionTokens = capped;
+    }
+
     const requestOpts = this.runAbortSignal ? { signal: this.runAbortSignal } : undefined;
     const response = await this.openai.chat.completions.create(
       { model: chosenModel, messages, max_completion_tokens: maxCompletionTokens },
       requestOpts
     );
 
-    let content = response.choices[0]?.message?.content || '';
+    let content = openAiChatCompletionContentToString(response.choices[0]?.message?.content);
 
     // Strip <think>…</think> reasoning blocks emitted by models like Qwen.
     // WHY: They waste ~30% output tokens and break parsers that expect content to start
@@ -983,14 +834,20 @@ ${codeSnippet}
     }>,
     modelContext?: ModelRecommendationContext,
     maxContextChars?: number,
-    maxIssuesPerBatch?: number
+    maxIssuesPerBatch?: number,
+    /** Optional phase for prompts.log metadata (e.g. 'batch-verify'). */
+    phase?: string
   ): Promise<BatchCheckResult> {
     if (issues.length === 0) {
       return { issues: new Map() };
     }
 
-    // ElizaCloud uses small-context models (e.g. Qwen3-14B 40k). Reserve room for completion.
-    const providerCap = this.provider === 'elizacloud' ? 90_000 : 150_000;
+    // ElizaCloud: small models need a TOTAL budget (system + user). batchCheckIssuesExist has a ~5–6k system prompt;
+    // a flat 90k user budget was still ~90k+ total and blew past Qwen 24k tokens (audit: 29k input tokens).
+    const providerCap =
+      this.provider === 'elizacloud'
+        ? Math.min(90_000, getMaxElizacloudLlmCompleteInputChars(this.model))
+        : 150_000;
     const effectiveMaxContextChars = maxContextChars != null
       ? Math.min(maxContextChars, providerCap)
       : providerCap;
@@ -1039,6 +896,7 @@ ${codeSnippet}
       '  removed or rewritten. Use STALE.',
       '- If "(end of file)" says the file has N lines but the comment references line M where M > N,',
       '  the file was shortened and the referenced code no longer exists. Use STALE.',
+      '- If your uncertainty is ONLY because the excerpt was truncated (not because you see the bug in the visible lines), prefer STALE over YES — do not treat the review text as current truth when the code block is partial.',
       '',
       'CRITICAL - Base your verdict on the ACTUAL CODE shown, not the review comment\'s description:',
       '- Read the Current Code carefully. If the review says "rank += 1 inside enumerate" but the Current Code',
@@ -1055,10 +913,11 @@ ${codeSnippet}
       'Just plain text: issue_1: YES: I1: D2: explanation',
       '',
       'Example GOOD responses:',
-      'issue_1: YES: I1: D2: Line 45 still has SQL injection via unsanitized user input',
-      'issue_2: YES: I4: D1: Line 12 uses `var` instead of `const`',
+      'issue_1: YES: I2: D3: Line 45 still omits the required validation',
+      'issue_2: YES: I4: D1: Line 12 still uses the deprecated API',
       'issue_3: NO: Line 23 now has `if (input === null) return;` guard',
       'issue_4: STALE: The processUser function no longer exists; module was refactored',
+      'issue_5: NO: Comment approves current state (e.g. "correctly reflects"); no change required',
       '',
       'Example BAD responses (NEVER do this):',
       '**issue_1**: YES: ...',
@@ -1081,7 +940,7 @@ ${codeSnippet}
     const maxCommentLen = wideSnippets ? 2500 : 2000;
     const maxCodeLen = wideSnippets ? 3000 : 2000;
 
-    const buildIssueText = (issue: typeof issues[0]): string => {
+    const buildIssueText = (issue: typeof issues[0], opts?: { codeSeeAbove?: boolean }): string => {
       // Sanitize HTML noise (base64 JWT links, metadata comments, <picture> tags)
       // THEN truncate. Without sanitizing first, a 600-char JWT blob can consume
       // 30% of the truncation budget, leaving too little actual description.
@@ -1101,6 +960,15 @@ ${codeSnippet}
 
       const parts = [];
       
+      // Inject catalog context when comment matches outdated model advice (audit prompts.log eliza#6575).
+      // WHY: Verifier prompts parrot the review's claim without catalog context; when both IDs are valid,
+      // the verifier should not say YES just because the code has the catalog-correct ID.
+      const catalogDismiss = getOutdatedModelCatalogDismissal(issue.comment);
+      if (catalogDismiss) {
+        parts.push(`⚠ CATALOG CONTEXT: This review suggests changing \`${catalogDismiss.pair.catalogGoodId}\` to \`${catalogDismiss.pair.wronglySuggestedId}\`, but **both are valid** per \`generated/model-provider-catalog.json\`. The PR should **keep** \`${catalogDismiss.pair.catalogGoodId}\`. If Current Code has \`${catalogDismiss.pair.catalogGoodId}\`, respond NO (already correct).`);
+        parts.push('');
+      }
+      
       // Inject context hints as factual observations
       if (issue.contextHints && issue.contextHints.length > 0) {
         for (const hint of issue.contextHints) {
@@ -1109,17 +977,28 @@ ${codeSnippet}
         parts.push('');
       }
       
-      parts.push(
-        `## Issue ${issue.id}`,
-        `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
-        `Comment: ${truncatedComment}`,
-        '',
-        'Current code:',
-        '```',
-        hasCode ? truncatedCode : '(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)',
-        '```',
-        '',
-      );
+      if (opts?.codeSeeAbove) {
+        parts.push(
+          `## Issue ${issue.id}`,
+          `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+          `Comment: ${truncatedComment}`,
+          '',
+          `Current code: (see File: ${issue.filePath} above.)`,
+          '',
+        );
+      } else {
+        parts.push(
+          `## Issue ${issue.id}`,
+          `File: ${issue.filePath}${issue.line ? `:${issue.line}` : ''}`,
+          `Comment: ${truncatedComment}`,
+          '',
+          'Current code:',
+          '```',
+          hasCode ? truncatedCode : '(snippet unavailable — do NOT respond STALE; if you cannot verify from the comment alone, respond YES with explanation that code was not visible)',
+          '```',
+          '',
+        );
+      }
 
       return parts.join('\n');
     };
@@ -1141,9 +1020,15 @@ ${codeSnippet}
     let currentBatch: typeof issues = [];
     let currentTexts: string[] = [];
     let currentSize = 0;
+    /** Within current batch: keys "filePath\0snippet" we've already output full code for. Same file + same snippet → "see above" to save tokens (prompts.log audit). */
+    let seenFileSnippetInBatch = new Set<string>();
 
     for (const issue of issues) {
-      const issueText = buildIssueText(issue);
+      const fileSnippetKey = `${issue.filePath}\0${issue.codeSnippet ?? ''}`;
+      const useSeeAbove = seenFileSnippetInBatch.has(fileSnippetKey);
+      const issueText = buildIssueText(issue, useSeeAbove ? { codeSeeAbove: true } : undefined);
+      if (!useSeeAbove) seenFileSnippetInBatch.add(fileSnippetKey);
+
       const issueSize = issueText.length;
 
       // Start a new batch if adding this issue would exceed size OR count limit
@@ -1152,6 +1037,7 @@ ${codeSnippet}
         currentBatch = [];
         currentTexts = [];
         currentSize = 0;
+        seenFileSnippetInBatch = new Set<string>();
       }
 
       currentBatch.push(issue);
@@ -1172,27 +1058,26 @@ ${codeSnippet}
       maxIssuesPerBatch: MAX_ISSUES_PER_BATCH,
     });
 
-    // Process all batches
-    const allResults = new Map<string, {
-      exists: boolean;
-      explanation: string;
-      stale: boolean;
-      importance: number;
-      ease: number;
-    }>();
-    let recommendedModels: string[] | undefined;
-    let modelRecommendationReasoning: string | undefined;
+    // Process all batches (parallel up to getEffectiveMaxConcurrentLLM())
+    type BatchSingleResult = { exists: boolean; explanation: string; stale: boolean; importance: number; ease: number };
+    type BatchBatchResult = {
+      batchResults: Map<string, BatchSingleResult>;
+      recommendedModels?: string[];
+      modelRecommendationReasoning?: string;
+    };
 
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const { issues: batchIssues, issueTexts } = batches[batchIdx];
+    const processOneBatch = async (batchIdx: number, batch: { issues: typeof issues; issueTexts: string[] }): Promise<BatchBatchResult> => {
+      const { issues: batchIssues, issueTexts } = batch;
       const isFirstBatch = batchIdx === 0;
-      
-      debug(`Processing batch ${batchIdx + 1}/${batches.length}`, { 
+      const batchResults = new Map<string, BatchSingleResult>();
+      let recommendedModels: string[] | undefined;
+      let modelRecommendationReasoning: string | undefined;
+
+      debug(`Processing batch ${batchIdx + 1}/${batches.length}`, {
         issueCount: batchIssues.length,
-        chars: issueTexts.join('').length + headerSize + footerSize
+        chars: issueTexts.join('').length + headerSize + footerSize,
       });
 
-      try {
       // Build user message with only dynamic content (static rules are in systemPrompt)
       const parts = [
         ...issueTexts,
@@ -1201,7 +1086,6 @@ ${codeSnippet}
         'Now analyze each issue STRICTLY and respond with one line per issue:',
       ];
 
-      // Only ask for model recommendation in first batch when requested (omitted for verification to save tokens).
       if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         parts.push('');
         parts.push('---');
@@ -1216,8 +1100,6 @@ ${codeSnippet}
         parts.push('- Issue count and diversity: many issues or multi-file changes need capable models');
         parts.push('- Previous attempts: if a model already failed, try a different one');
         parts.push('');
-        
-        // Cap model/attempt history so first batch doesn't exceed gateway limits (was 100k+ and caused 500)
         const MODEL_HISTORY_MAX = 1500;
         const ATTEMPT_HISTORY_MAX = 2500;
         if (modelContext.modelHistory) {
@@ -1228,13 +1110,11 @@ ${codeSnippet}
         }
         if (modelContext.attemptHistory) {
           parts.push('## Previous Attempts on These Issues');
-          // WHY filter to batch: Audit showed full attempt history (all issues) sent to every batch; only current batch is relevant.
           const filtered = filterAttemptHistoryToBatch(modelContext.attemptHistory, batchIssues.map(i => i.id));
           const a = filtered.length <= ATTEMPT_HISTORY_MAX ? filtered : filtered.slice(0, ATTEMPT_HISTORY_MAX) + '\n...(truncated)';
           parts.push(a);
           parts.push('');
         }
-        
         parts.push('End your response with this line:');
         parts.push('MODEL_RECOMMENDATION: model1, model2, model3 | explain why these models in this order');
         parts.push('');
@@ -1243,7 +1123,7 @@ ${codeSnippet}
         parts.push('MODEL_RECOMMENDATION: gpt-5-mini, claude-haiku | Simple style/formatting fixes only');
       }
 
-      const response = await this.complete(parts.join('\n'), systemPrompt);
+      const response = await this.complete(parts.join('\n'), systemPrompt, phase ? { phase } : undefined);
       const allowedIds = new Set(batchIssues.map(issue => normalizeIssueId(issue.id)));
 
       // Parse issue responses with optional triage scores
@@ -1253,7 +1133,7 @@ ${codeSnippet}
       for (const line of lines) {
         const match = line.match(/^([^:]+):\s*(YES|NO|STALE):\s*(.*)$/i);
         if (match) {
-          let [, id, response, rest] = match;
+          let [, id, verdict, rest] = match;
           const resultId = normalizeIssueId(id);
           if (!allowedIds.has(resultId)) {
             debug('Ignoring unmatched batch issue id', { id: id.trim(), resultId });
@@ -1270,7 +1150,7 @@ ${codeSnippet}
             rest = triageMatch[3];
           }
           
-          const responseUpper = response.toUpperCase();
+          const responseUpper = verdict.toUpperCase();
           const explanation = rest.trim();
           let exists = responseUpper === 'YES';
           let stale = responseUpper === 'STALE';
@@ -1352,7 +1232,22 @@ ${codeSnippet}
             stale = false;
           }
 
-          allResults.set(resultId, {
+          // Cycle 65: Verifier said YES citing truncation while the snippet is a complete "(end of file)" view.
+          if (
+            exists &&
+            sourceIssue &&
+            (sourceIssue.codeSnippet ?? '').includes('(end of file') &&
+            /\btruncat/i.test(explanation)
+          ) {
+            debug('Batch override: YES→NO (complete file shown; truncation hedge invalid)', {
+              resultId,
+              explanationPreview: explanation.slice(0, 100),
+            });
+            exists = false;
+            stale = false;
+          }
+
+          batchResults.set(resultId, {
             exists,
             stale,
             explanation,
@@ -1362,22 +1257,17 @@ ${codeSnippet}
         }
       }
 
-      // Per-batch outcome summary
-      // WHY: Without this, the only signal between batches is the raw LLM response length.
-      // Operators need to see how many issues were parsed and their disposition per batch
-      // to diagnose prompt/model problems early (e.g., batch 2 parsed 0 = response format issue).
       {
         let batchParsed = 0, batchExists = 0, batchFixed = 0, batchStale = 0;
         let sumImportance = 0, sumEase = 0, countTriage = 0;
         for (const issue of batchIssues) {
           const rid = normalizeIssueId(issue.id);
-          const r = allResults.get(rid);
+          const r = batchResults.get(rid);
           if (r) {
             batchParsed++;
             if (r.stale) batchStale++;
             else if (r.exists) batchExists++;
             else batchFixed++;
-            // Accumulate triage scores for avg calculation
             sumImportance += r.importance;
             sumEase += r.ease;
             countTriage++;
@@ -1395,19 +1285,15 @@ ${codeSnippet}
           avgImportance,
           avgEase,
         });
-
-        // When parsing falls short, log enough to diagnose the problem
         if (batchParsed < batchIssues.length) {
           const unparsedIssueIds = batchIssues
-            .filter(issue => !allResults.has(normalizeIssueId(issue.id)))
+            .filter(issue => !batchResults.has(normalizeIssueId(issue.id)))
             .map(issue => issue.id);
-          
           const unmatchedLines = lines
             .map(l => l.trim())
             .filter(l => l.length > 0)
             .filter(l => !l.match(/^([^:]+):\s*(YES|NO|STALE):\s*/i))
             .slice(0, 10);
-
           debug(`Batch ${batchIdx + 1} parse shortfall`, {
             missing: batchIssues.length - batchParsed,
             unparsedIssueIds,
@@ -1417,25 +1303,18 @@ ${codeSnippet}
         }
       }
 
-      // Parse model recommendation only from first batch when we asked for it
       if (isFirstBatch && includeModelRec && modelContext?.availableModels?.length) {
         const modelMatch = response.content.match(/MODEL_RECOMMENDATION:\s*([^|\n]+)\|?\s*(.*)?$/im);
         if (modelMatch) {
           const modelList = modelMatch[1];
           const reasoning = modelMatch[2]?.trim();
-          
           const availableSet = new Set(modelContext.availableModels.map(m => m.toLowerCase()));
           recommendedModels = modelList
             .split(',')
             .map(m => m.trim())
             .filter(m => {
               const lower = m.toLowerCase();
-              // Exact match (case-insensitive)
               if (availableSet.has(lower)) return true;
-              // Prefix match: the recommended model is a prefix of an available model
-              // (e.g., "claude-sonnet" matches "claude-sonnet-4-5-20250929")
-              // But NOT the reverse — we don't want "gpt" to match "gpt-5.3-codex"
-              // because that's too loose and could cross provider boundaries.
               for (const avail of modelContext.availableModels!) {
                 const availLower = avail.toLowerCase();
                 if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
@@ -1449,35 +1328,44 @@ ${codeSnippet}
               for (const avail of modelContext.availableModels!) {
                 const availLower = avail.toLowerCase();
                 if (availLower === lower) return avail;
-                // Normalize to the full available model name
                 if (availLower.startsWith(lower + '-') || availLower.startsWith(lower + '/')) {
                   return avail;
                 }
               }
               return m;
             });
-          
           modelRecommendationReasoning = reasoning || undefined;
-          
           if (recommendedModels.length > 0) {
-            debug('LLM model recommendation', { 
-              recommendedModels, 
-              reasoning: modelRecommendationReasoning,
-            });
+            debug('LLM model recommendation', { recommendedModels, reasoning: modelRecommendationReasoning });
           }
         }
       }
-      } catch (batchErr) {
-        if (allResults.size > 0) {
-          warn(`Batch ${batchIdx + 1}/${batches.length} failed (${batchErr instanceof Error ? batchErr.message : String(batchErr)}), returning ${allResults.size} partial result(s)`);
-          return {
-            issues: allResults,
-            recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
-            modelRecommendationReasoning,
-            partial: true,
-          };
+      return { batchResults, recommendedModels, modelRecommendationReasoning };
+    };
+
+    // WHY runWithConcurrencyAllSettled: Batch analysis has multiple batches; running with concurrency cap cuts wall-clock. AllSettled so one 429/timeout doesn't fail the whole phase — we merge partial results and use first batch for model recommendation.
+    const concurrencyLimit = getEffectiveMaxConcurrentLLM();
+    const batchTasks = batches.map((batch, batchIdx) => () => processOneBatch(batchIdx, batch));
+    const settled = await runWithConcurrencyAllSettled(batchTasks, concurrencyLimit);
+
+    const allResults = new Map<string, BatchSingleResult>();
+    let recommendedModels: string[] | undefined;
+    let modelRecommendationReasoning: string | undefined;
+    let partial = false;
+
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i]!;
+      if (r.status === 'fulfilled') {
+        for (const [id, v] of r.value.batchResults) {
+          allResults.set(id, v);
         }
-        throw batchErr;
+        if (i === 0 && r.value.recommendedModels?.length) {
+          recommendedModels = r.value.recommendedModels;
+          modelRecommendationReasoning = r.value.modelRecommendationReasoning;
+        }
+      } else {
+        partial = true;
+        warn(`Batch ${i + 1}/${batches.length} failed (${r.reason instanceof Error ? r.reason.message : String(r.reason)}), merging partial results`);
       }
     }
 
@@ -1504,6 +1392,7 @@ ${codeSnippet}
       issues: allResults,
       recommendedModels: recommendedModels?.length ? recommendedModels : undefined,
       modelRecommendationReasoning,
+      ...(partial ? { partial: true as const } : {}),
     };
   }
 
@@ -1617,6 +1506,295 @@ ${codeSnippet}
     };
   }
 
+  /** One file-group inside a final-audit batch (mirrors `finalAudit` batch structure). */
+  private buildFinalAuditBatchPrompt(
+    headerParts: string[],
+    groups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+    batchIssueCount: number,
+    commentMax: number,
+    maxSnippetChars?: number,
+  ): string {
+    const clip = (s: string) => {
+      if (maxSnippetChars == null || s.length <= maxSnippetChars) return s;
+      return `${s.slice(0, maxSnippetChars)}\n... (truncated for model context limit — final audit)`;
+    };
+    const promptParts: string[] = [...headerParts];
+    let issueNum = 0;
+    for (const group of groups) {
+      promptParts.push(`## File: ${group.filePath}`);
+      const snippets = group.issues.map((i) => group.snippets.get(i.id) ?? '');
+      const firstSnippet = snippets[0] ?? '';
+      const allSameSnippet = snippets.length > 0 && snippets.every((s) => s === firstSnippet);
+      if (allSameSnippet && firstSnippet.length > 0) {
+        promptParts.push('```');
+        promptParts.push(clip(firstSnippet));
+        promptParts.push('```');
+        promptParts.push('');
+      }
+      for (const issue of group.issues) {
+        issueNum++;
+        promptParts.push(`### [${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''}`);
+        if (!allSameSnippet) {
+          const snippet = group.snippets.get(issue.id) ?? '';
+          promptParts.push('```');
+          promptParts.push(clip(snippet));
+          promptParts.push('```');
+        }
+        const preview = sanitizeCommentForPrompt(issue.comment);
+        const short =
+          preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
+        promptParts.push(`Comment: ${short}`);
+        promptParts.push('');
+      }
+    }
+    promptParts.push('---');
+    promptParts.push(
+      `Respond with exactly ${batchIssueCount} lines, one per issue [1] through [${batchIssueCount}] (each line: [n] FIXED:, [n] UNFIXED:, or [n] UNCERTAIN:):`,
+    );
+    return promptParts.join('\n');
+  }
+
+  /** One file-group inside a final-audit batch (same shape as `finalAudit` batch groups). */
+  private regroupFinalAuditIssuesByFile(
+    issueSlice: Array<{
+      id: string;
+      comment: string;
+      filePath: string;
+      line: number | null;
+      codeSnippet: string;
+    }>,
+    sourceGroups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+  ): Array<{
+    filePath: string;
+    snippets: Map<string, string>;
+    issues: Array<{
+      id: string;
+      comment: string;
+      filePath: string;
+      line: number | null;
+      codeSnippet: string;
+    }>;
+  }> {
+    const snippetById = new Map<string, string>();
+    for (const g of sourceGroups) {
+      for (const i of g.issues) {
+        snippetById.set(i.id, g.snippets.get(i.id) ?? i.codeSnippet);
+      }
+    }
+    const byFile = new Map<string, typeof issueSlice>();
+    for (const issue of issueSlice) {
+      const list = byFile.get(issue.filePath) ?? [];
+      list.push(issue);
+      byFile.set(issue.filePath, list);
+    }
+    const out: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: typeof issueSlice;
+    }> = [];
+    for (const [filePath, fileIssues] of byFile) {
+      const snippets = new Map<string, string>();
+      for (const issue of fileIssues) {
+        snippets.set(issue.id, snippetById.get(issue.id) ?? issue.codeSnippet);
+      }
+      out.push({ filePath, snippets, issues: fileIssues });
+    }
+    return out;
+  }
+
+  /**
+   * Shrink snippets (and if needed comment previews) until the prompt fits `hardCap`, or return best effort.
+   * WHY: Small-context models (~42k chars) cannot fit dozens of issues even with tiny snippets — fixed per-issue
+   * overhead (headers + Comment: preview) must be accounted for via batch splitting; this handles truncation
+   * within a batch (output.log audit eliza#6562).
+   */
+  private applyFinalAuditSnippetTruncation(
+    headerParts: string[],
+    groups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+    batchIssueCount: number,
+    commentMax: number,
+    hardCap: number,
+  ): { promptText: string; fits: boolean; truncatedSnippetChars: number | null } {
+    const build = (cm: number, maxSnippetChars?: number) =>
+      this.buildFinalAuditBatchPrompt(headerParts, groups, batchIssueCount, cm, maxSnippetChars);
+
+    let promptText = build(commentMax, undefined);
+    if (promptText.length <= hardCap) {
+      return { promptText, fits: true, truncatedSnippetChars: null };
+    }
+
+    let maxSnip = 0;
+    for (const g of groups) {
+      for (const i of g.issues) {
+        const s = g.snippets.get(i.id) ?? '';
+        if (s.length > maxSnip) maxSnip = s.length;
+      }
+    }
+
+    let truncatedSnippetChars: number | null = null;
+    if (maxSnip > 0) {
+      let lo = 400;
+      let hi = Math.max(maxSnip, lo);
+      let ans = lo;
+      while (lo <= hi) {
+        const mid = (lo + hi + 1) >> 1;
+        const cand = build(commentMax, mid);
+        if (cand.length <= hardCap) {
+          ans = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      promptText = build(commentMax, ans);
+      truncatedSnippetChars = ans;
+      if (promptText.length <= hardCap && maxSnip > ans) {
+        LLMClient.finalAuditTruncationDebugCount += 1;
+        if (LLMClient.finalAuditTruncationDebugCount <= LLMClient.FINAL_AUDIT_TRUNCATION_DEBUG_MAX) {
+          debug('Final audit truncated code snippets to fit model input cap', {
+            promptChars: formatNumber(promptText.length),
+            hardCap: formatNumber(hardCap),
+            maxSnippetChars: ans,
+          });
+        } else if (LLMClient.finalAuditTruncationDebugCount === LLMClient.FINAL_AUDIT_TRUNCATION_DEBUG_MAX + 1) {
+          debug('Final audit truncated code snippets (suppressing further identical debug lines this process)', {
+            suppressedAfter: formatNumber(LLMClient.FINAL_AUDIT_TRUNCATION_DEBUG_MAX),
+          });
+        }
+      }
+    }
+
+    if (promptText.length <= hardCap) {
+      return { promptText, fits: true, truncatedSnippetChars };
+    }
+
+    promptText = build(commentMax, 200);
+    truncatedSnippetChars = Math.min(truncatedSnippetChars ?? 200, 200);
+
+    if (promptText.length <= hardCap) {
+      return { promptText, fits: true, truncatedSnippetChars };
+    }
+
+    const commentSteps = [350, 250, 150, 100, 80, 60];
+    for (const cm of commentSteps) {
+      for (const snipCap of [200, 150, 100, 80, 60, 40]) {
+        promptText = build(cm, snipCap);
+        if (promptText.length <= hardCap) {
+          return { promptText, fits: true, truncatedSnippetChars: snipCap };
+        }
+      }
+    }
+
+    return { promptText, fits: promptText.length <= hardCap, truncatedSnippetChars };
+  }
+
+  /**
+   * Split a batch that is still over `hardCap` after snippet truncation into multiple sub-batches.
+   * WHY: Per-issue comment/header overhead can exceed the whole model budget with many issues.
+   */
+  private splitFinalAuditBatchToFitHardCap(
+    groups: Array<{
+      filePath: string;
+      snippets: Map<string, string>;
+      issues: Array<{
+        id: string;
+        comment: string;
+        filePath: string;
+        line: number | null;
+        codeSnippet: string;
+      }>;
+    }>,
+    headerParts: string[],
+    hardCap: number,
+    commentMax: number,
+  ): Array<(typeof groups)[number][]> {
+    const batchIssues = groups.flatMap(g => g.issues);
+    if (batchIssues.length === 0) {
+      return [];
+    }
+    const full = this.applyFinalAuditSnippetTruncation(
+      headerParts,
+      groups,
+      batchIssues.length,
+      commentMax,
+      hardCap,
+    );
+    if (full.fits) {
+      return [groups];
+    }
+
+    const out: Array<(typeof groups)[number][]> = [];
+    const n = batchIssues.length;
+    let start = 0;
+    while (start < n) {
+      let lo = 1;
+      let hi = n - start;
+      let best = 0;
+      while (lo <= hi) {
+        const count = (lo + hi) >> 1;
+        const subGroups = this.regroupFinalAuditIssuesByFile(batchIssues.slice(start, start + count), groups);
+        const r = this.applyFinalAuditSnippetTruncation(
+          headerParts,
+          subGroups,
+          count,
+          commentMax,
+          hardCap,
+        );
+        if (r.fits) {
+          best = count;
+          lo = count + 1;
+        } else {
+          hi = count - 1;
+        }
+      }
+      if (best === 0) {
+        const one = this.regroupFinalAuditIssuesByFile(batchIssues.slice(start, start + 1), groups);
+        const r = this.applyFinalAuditSnippetTruncation(headerParts, one, 1, commentMax, hardCap);
+        out.push(one);
+        if (!r.fits) {
+          warn(
+            `Final audit: single-issue sub-batch still exceeds model input cap (${formatNumber(r.promptText.length)} > ${formatNumber(hardCap)}) — set PRR_FINAL_AUDIT_MODEL to a larger-context model.`,
+          );
+        }
+        start += 1;
+      } else {
+        out.push(this.regroupFinalAuditIssuesByFile(batchIssues.slice(start, start + best), groups));
+        start += best;
+      }
+    }
+    return out;
+  }
+
   /**
    * Final audit: Re-verify ALL issues with an adversarial, stricter prompt.
    * 
@@ -1638,7 +1816,9 @@ ${codeSnippet}
    * 36 issues × 3KB = 108KB prompt. Too big for some models.
    * We batch based on actual content size, not fixed counts.
    * 
-   * @param maxContextChars - Maximum characters per batch (default 400k, ~100k tokens)
+   * @param maxContextChars - Upper bound per batch (default 400k). **ElizaCloud:** clamped to
+   *   `getMaxElizacloudLlmCompleteInputChars(finalAuditModel)` (same as `LLMClient.complete`) so
+   *   batching matches the model that actually runs the audit (avoids 400k plan + 42k send fail).
    */
   async finalAudit(
     issues: Array<{
@@ -1648,13 +1828,30 @@ ${codeSnippet}
       line: number | null;
       codeSnippet: string;
     }>,
-    maxContextChars: number = 400_000
+    maxContextChars: number = 400_000,
+    /** Optional phase for prompts.log metadata (e.g. 'final-audit'). */
+    phase?: string
   ): Promise<Map<string, { stillExists: boolean; explanation: string }>> {
     if (issues.length === 0) {
       return new Map();
     }
 
-    debug('Running final audit on all issues', { count: issues.length, maxContextChars });
+    const auditModel = this.getFinalAuditModel();
+    let effectiveMaxContextChars = maxContextChars;
+    let elizacloudInputHardCap: number | undefined;
+    if (this.provider === 'elizacloud') {
+      const modelCap = Math.min(90_000, getMaxElizacloudLlmCompleteInputChars(auditModel));
+      effectiveMaxContextChars = Math.min(maxContextChars, modelCap);
+      elizacloudInputHardCap = getMaxElizacloudLlmCompleteInputChars(auditModel);
+    }
+
+    debug('Running final audit on all issues', {
+      count: issues.length,
+      maxContextChars,
+      effectiveMaxContextChars,
+      hardCap: elizacloudInputHardCap,
+      auditModel,
+    });
 
     // Build the static prompt header (used for each batch)
     const headerParts = [
@@ -1667,17 +1864,31 @@ ${codeSnippet}
       '2. Check if the SPECIFIC problem was addressed, not just "something changed"',
       '3. Partial fixes do NOT count - the full issue must be resolved',
       '4. If you cannot find CLEAR EVIDENCE the issue is fixed, mark it as UNFIXED',
+      '5. For ACCESSIBILITY (aria-label, accessible name, screen reader, unlabelled SVG): mark FIXED only if the code adds a meaningful accessible name (aria-label or title with the conveyed value). If the only change is aria-hidden or role="img" with no label, mark UNFIXED.',
+      '6. If the issue\'s file was DELETED (snippet shows "file not found" or empty) or the GitHub thread was marked outdated because the file was rewritten, and the issue was already verified fixed in a previous step, mark FIXED with explanation "File deleted or thread outdated; issue was resolved in an earlier fix." IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
+      '7. If the snippet shows "(file not found or unreadable)" and the review comment asked to DELETE or REMOVE the file from the repository, mark FIXED (the file no longer exists = the requested fix was applied). IMPORTANT: Only apply this rule if the file was genuinely deleted (check git history), not if the file simply wasn\'t fetched or the path couldn\'t be resolved.',
+      '',
+      'CRITICAL - Read the CODE in this prompt, not the review comment alone:',
+      '8. The "Comment:" lines are the ORIGINAL review. They may be stale. If the code block already satisfies what the review asked (e.g. comment and regex both describe UUID versions 1-8 and the pattern uses [1-8]), respond FIXED and quote the lines — do NOT UNFIXED by repeating the review\'s old wording.',
+      '9. UNFIXED only when the shown code still exhibits the problem. If you cannot find the problem in the snippet, say FIXED or explain what is missing with line cites from the snippet.',
+      '10. If the code block is explicitly an **excerpt** or **truncated** (footer says "excerpt only", "truncated for model context limit", "omitted for size", etc.) and you cannot verify the issue from what is shown, respond UNCERTAIN — do **not** echo the review comment as UNFIXED without citing specific lines from the snippet.',
       '',
       'RESPONSE FORMAT (use exactly this format for each issue):',
       '[1] FIXED: The code now includes X',
-      '[2] UNFIXED: The validation is still missing',
+      '[2] UNFIXED: Line 42 still has …',
+      '[3] UNCERTAIN: Excerpt does not show the reported region — cannot verify',
       '',
       '---',
       '',
     ];
     const headerSize = headerParts.join('\n').length;
     const footerSize = 100; // Reserve space for closing instructions
-    const availableForIssues = maxContextChars - headerSize - footerSize;
+    // Slack for ``` fences, `## File:` lines, `### [n]` headers, and long paths (estimate vs actual was ~15k short).
+    const structureSlack = this.provider === 'elizacloud' ? 6_000 : 0;
+    const availableForIssues = Math.max(
+      0,
+      effectiveMaxContextChars - headerSize - footerSize - structureSlack,
+    );
 
     // Group by file so we send each file's content once per batch (saves context when many issues share a file)
     const byFile = new Map<string, typeof issues>();
@@ -1687,31 +1898,56 @@ ${codeSnippet}
       byFile.set(issue.filePath, list);
     }
 
-    const ISSUE_HEADER_APPROX = 180; // "[N] path:line — comment preview" without code
+    // `### [n] path:line` + Comment + newlines can exceed 180; stay conservative for small-model batching.
+    const ISSUE_HEADER_APPROX = 380;
+    const COMMENT_PREVIEW_MAX = 500;
     const batches: Array<{ groups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> }> = [];
     let currentGroups: Array<{ filePath: string; snippets: Map<string, string>; issues: typeof issues }> = [];
     let currentSize = 0;
 
     for (const [filePath, fileIssues] of byFile) {
-      // Collect all unique snippets for this file (each issue may point to a different region)
       const snippets = new Map<string, string>();
-      let totalSnippetSize = 0;
       for (const issue of fileIssues) {
-        if (!snippets.has(issue.id)) {
-          snippets.set(issue.id, issue.codeSnippet);
-          totalSnippetSize += issue.codeSnippet.length;
+        if (!snippets.has(issue.id)) snippets.set(issue.id, issue.codeSnippet);
+      }
+      // Split this file's issues into chunks that fit within availableForIssues (avoids 306k+ prompts → 0-parsed / 504)
+      const issueList = [...fileIssues];
+      let chunkStart = 0;
+      while (chunkStart < issueList.length) {
+        let chunkSize = 0;
+        let chunkEnd = chunkStart;
+        while (chunkEnd < issueList.length) {
+          const issue = issueList[chunkEnd]!;
+          const snip = snippets.get(issue.id) ?? '';
+          const add = snip.length + ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX;
+          if (chunkSize + add > availableForIssues && chunkEnd > chunkStart) break;
+          chunkSize += add;
+          chunkEnd++;
         }
-      }
-      // Review: calculates group size by including total snippet size and header for each issue
-      const groupSize = totalSnippetSize + fileIssues.length * ISSUE_HEADER_APPROX;
+        if (chunkEnd === chunkStart) chunkEnd = chunkStart + 1;
+        const chunkIssues = issueList.slice(chunkStart, chunkEnd);
+        const firstSnippet = snippets.get(chunkIssues[0]!.id) ?? '';
+        const allSameContent = chunkIssues.length > 1 && chunkIssues.every(i => (snippets.get(i.id) ?? '') === firstSnippet);
+        // When we dedupe (same file content once per group), actual size = one snippet + (n × (header + comment))
+        if (allSameContent && firstSnippet.length > 0) {
+          chunkSize = firstSnippet.length + chunkIssues.length * (ISSUE_HEADER_APPROX + COMMENT_PREVIEW_MAX);
+        }
+        const chunkSnippets = new Map<string, string>();
+        for (const issue of chunkIssues) {
+          const s = snippets.get(issue.id);
+          if (s) chunkSnippets.set(issue.id, s);
+        }
+        const groupSize = chunkSize;
 
-      if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
-        batches.push({ groups: currentGroups });
-        currentGroups = [];
-        currentSize = 0;
+        if (currentSize + groupSize > availableForIssues && currentGroups.length > 0) {
+          batches.push({ groups: currentGroups });
+          currentGroups = [];
+          currentSize = 0;
+        }
+        currentGroups.push({ filePath, snippets: chunkSnippets, issues: chunkIssues });
+        currentSize += groupSize;
+        chunkStart = chunkEnd;
       }
-      currentGroups.push({ filePath, snippets, issues: fileIssues });
-      currentSize += groupSize;
     }
     if (currentGroups.length > 0) {
       batches.push({ groups: currentGroups });
@@ -1724,48 +1960,172 @@ ${codeSnippet}
       groups: batches.map(b => b.groups.length),
     });
 
-    const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
+    const hardCap =
+      this.provider === 'elizacloud'
+        ? getMaxElizacloudLlmCompleteInputChars(auditModel)
+        : Number.MAX_SAFE_INTEGER;
 
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const { groups } = batches[batchIdx];
+    const commentMax = 500;
+    const expandedGroupBatches: Array<(typeof batches)[0]['groups']> = [];
+    for (const b of batches) {
+      if (hardCap === Number.MAX_SAFE_INTEGER) {
+        expandedGroupBatches.push(b.groups);
+        continue;
+      }
+      const sub = this.splitFinalAuditBatchToFitHardCap(b.groups, headerParts, hardCap, commentMax);
+      expandedGroupBatches.push(...sub);
+    }
+
+    const expandedIssueCount = expandedGroupBatches.reduce(
+      (sum, g) => sum + g.reduce((s, grp) => s + grp.issues.length, 0),
+      0,
+    );
+    if (expandedGroupBatches.length !== batches.length) {
+      debug('Final audit batches (expanded to model input cap)', {
+        initialBatches: batches.length,
+        subBatches: expandedGroupBatches.length,
+        issues: expandedIssueCount,
+      });
+    }
+
+    const allResults = new Map<string, { stillExists: boolean; explanation: string }>();
+    let lastAuditResponseContent: string | null = null;
+
+    for (let batchIdx = 0; batchIdx < expandedGroupBatches.length; batchIdx++) {
+      const groups = expandedGroupBatches[batchIdx];
       const batchIssues = groups.flatMap(g => g.issues);
 
-      const promptParts: string[] = [...headerParts];
-      let issueNum = 0;
-      for (const group of groups) {
-        promptParts.push(`## File: ${group.filePath}`);
-        const commentMax = 500;
-        for (const issue of group.issues) {
-          issueNum++;
-          // Include each issue's specific code snippet so audit has full context
-          const snippet = group.snippets.get(issue.id) ?? '';
-          promptParts.push(`### [${issueNum}] ${issue.filePath}${issue.line != null ? `:${issue.line}` : ''}`);
-          promptParts.push('```');
-          promptParts.push(snippet);
-          promptParts.push('```');
-          const preview = sanitizeCommentForPrompt(issue.comment);
-          const short = preview.length > commentMax ? preview.substring(0, commentMax) + '...' : preview;
-          promptParts.push(`Comment: ${short}`);
-          promptParts.push('');
-        }
+      const { promptText, fits } = this.applyFinalAuditSnippetTruncation(
+        headerParts,
+        groups,
+        batchIssues.length,
+        commentMax,
+        hardCap,
+      );
+      if (!fits) {
+        warn(
+          `Final audit sub-batch ${formatNumber(batchIdx + 1)} still exceeds ${formatNumber(hardCap)} chars after truncation — set PRR_FINAL_AUDIT_MODEL to a larger-context model.`,
+        );
       }
-      promptParts.push('---');
-      promptParts.push(`Respond with exactly ${batchIssues.length} lines, one per issue [1] through [${batchIssues.length}]:`);
 
-      const response = await this.complete(promptParts.join('\n'));
+      if (promptText.length > 280_000) {
+        debug('Final audit batch prompt very large (risk of 0-parsed or 504)', {
+          batchIndex: batchIdx + 1,
+          promptChars: promptText.length,
+          issueCount: batchIssues.length,
+        });
+      }
+      if (auditModel !== this.model) {
+        debug('Final audit using model override', { model: auditModel });
+      }
+      const response = await this.complete(promptText, undefined, {
+        ...(phase ? { phase } : {}),
+        model: auditModel,
+      });
+      lastAuditResponseContent = response.content;
 
       // Parse responses - match [N] FIXED/UNFIXED pattern
       const lines = response.content.split('\n');
       for (const line of lines) {
-        const match = line.match(/^\[(\d+)\]\s*(FIXED|UNFIXED):\s*(.*)$/i);
+        const match = line.match(/^\[(\d+)\]\s*(FIXED|UNFIXED|UNCERTAIN):\s*(.*)$/i);
         if (match) {
           const [, numStr, status, explanation] = match;
           const idx = parseInt(numStr, 10) - 1;
           if (idx >= 0 && idx < batchIssues.length) {
             const issue = batchIssues[idx];
+            const upper = status.toUpperCase();
+
+            if (upper === 'UNCERTAIN') {
+              const rest = explanation.trim();
+              allResults.set(issue.id, {
+                stillExists: false,
+                explanation: rest
+                  ? `UNCERTAIN (audit pass): ${rest}`
+                  : 'UNCERTAIN (audit pass): insufficient visible code for adversarial check — not treating as UNFIXED.',
+              });
+              continue;
+            }
+
+            const isFixed = upper === 'FIXED';
+            let finalStatus = !isFixed; // UNFIXED by default
+            let finalExplanation = explanation.trim();
+
+            // Cycle 65: UNFIXED parroted stale review while snippet already aligned UUID comment + [1-8] regex.
+            if (!isFixed && snippetShowsUuidCommentAlignedWithVersionRange(issue.codeSnippet)) {
+              const rev = (issue.comment ?? '').toLowerCase();
+              if (/\buuid\b/.test(rev) && /\bv4|version|regex|comment\b/i.test(rev)) {
+                debug('Final audit override: UNFIXED→FIXED (UUID comment/regex already aligned in snippet)', {
+                  issueId: issue.id,
+                });
+                finalStatus = false;
+                finalExplanation =
+                  'FIXED (post-check): Shown code documents UUID versions 1-8 and regex uses [1-8]; prior UNFIXED repeated stale review text.';
+              }
+            }
+
+            // Truncation guard: partial excerpt + UNFIXED without strong code cite (or visibility hedge) → pass.
+            if (
+              !isFixed &&
+              finalAuditSnippetLooksTruncatedOrExcerpt(issue.codeSnippet) &&
+              !snippetShowsUuidCommentAlignedWithVersionRange(issue.codeSnippet)
+            ) {
+              const hasStrongCite =
+                /\bline\s+\d+/i.test(finalExplanation) && /`[^`\n]{2,120}`/.test(finalExplanation);
+              const visibilityHedge = explanationMentionsMissingCodeVisibility(finalExplanation);
+              if (!hasStrongCite || visibilityHedge) {
+                debug('Final audit demotion: excerpt/truncation + weak or hedged UNFIXED → pass', {
+                  issueId: issue.id,
+                });
+                finalStatus = false;
+                finalExplanation =
+                  'FIXED (truncation guard): Partial snippet; UNFIXED lacked line+code citation or admitted limited visibility. ' +
+                  finalExplanation;
+              }
+            }
+            
+            // Pill cycle 2 #2: Require code evidence when audit marks FIXED — if code snippet still contains bug pattern, demote to UNFIXED
+            if (isFixed) {
+              const codeSnippet = issue.codeSnippet.toLowerCase();
+              const commentLower = issue.comment.toLowerCase();
+              
+              // Extract bug patterns from comment (e.g. "gpt-5-mini", "non-null assertion", specific line references)
+              const bugPatterns: RegExp[] = [];
+              
+              // Pattern 1: Model IDs mentioned in comment (e.g. "gpt-5-mini" should be "gpt-4o-mini")
+              const modelIdMatch = commentLower.match(/\b(gpt-\d+(?:-mini|-turbo)?|claude-\d+(?:-sonnet|-opus|-haiku)?|qwen-\d+)\b/i);
+              if (modelIdMatch) {
+                const wrongModel = modelIdMatch[1].toLowerCase();
+                // Check if wrong model still exists in code
+                if (codeSnippet.includes(wrongModel)) {
+                  debug('Final audit contradiction: marked FIXED but code still contains bug pattern', {
+                    issueId: issue.id,
+                    pattern: wrongModel,
+                    explanation: finalExplanation,
+                  });
+                  finalStatus = true; // UNFIXED
+                  finalExplanation = `Code evidence contradicts FIXED verdict: code snippet still contains "${wrongModel}" mentioned in review. ${finalExplanation}`;
+                }
+              }
+              
+              // Pattern 2: Line-specific references (e.g. "line 31-32 still has incorrect")
+              const lineRefMatch = explanation.match(/(?:line|lines)\s+(\d+(?:\s*-\s*\d+)?)/i);
+              if (lineRefMatch && !codeSnippet.includes('not found') && !codeSnippet.includes('unreadable')) {
+                // If explanation cites specific lines but doesn't show replacement evidence, require it
+                const hasReplacementEvidence = /(?:now has|changed to|replaced with|uses|contains)\s+[a-z0-9-]+/i.test(explanation);
+                if (!hasReplacementEvidence && explanation.length < 50) {
+                  debug('Final audit FIXED verdict lacks code evidence', {
+                    issueId: issue.id,
+                    explanation: finalExplanation,
+                  });
+                  finalStatus = true; // UNFIXED
+                  finalExplanation = `FIXED verdict lacks code evidence — explanation does not cite replacement. Code snippet may still contain the bug. ${finalExplanation}`;
+                }
+              }
+            }
+            
             allResults.set(issue.id, {
-              stillExists: status.toUpperCase() === 'UNFIXED',
-              explanation: explanation.trim(),
+              stillExists: finalStatus,
+              explanation: finalExplanation,
             });
           }
         }
@@ -1795,6 +2155,10 @@ ${codeSnippet}
       debug('WARNING: Some audit responses could not be parsed - marked as needing review', {
         unparsed: issues.length - parsed,
       });
+    }
+    if (parsed === 0 && lastAuditResponseContent) {
+      const preview = lastAuditResponseContent.slice(0, 600).replace(/\n/g, ' ');
+      debug('Final audit parse failed (0 parsed) — response preview for debugging', { preview });
     }
 
     return allResults;
@@ -2093,6 +2457,85 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     return joined.length > maxChars ? joined.substring(0, maxChars) + '\n... (truncated)' : joined;
   }
 
+  /**
+   * When post-fix "Current Code" exceeds the verify char budget, keep a window around the review line
+   * instead of truncating from byte 0 (which drops the hunk and leaves only imports — prompts.log audit).
+   */
+  private static truncateVerificationCurrentCode(
+    raw: string,
+    anchorLine: number | null | undefined,
+    maxChars: number,
+  ): string {
+    if (raw.length <= maxChars) return raw;
+    const lines = raw.split('\n');
+    const footerLines: string[] = [];
+    const bodyLines = [...lines];
+    while (bodyLines.length > 0) {
+      const last = bodyLines[bodyLines.length - 1] ?? '';
+      if (
+        /^\(end of file — \d+ lines total\)\s*$/.test(last) ||
+        /^\.\.\. \(truncated — file has \d+ lines total\)\s*$/.test(last)
+      ) {
+        footerLines.unshift(last);
+        bodyLines.pop();
+        continue;
+      }
+      break;
+    }
+    type Row = { lineNum: number; text: string };
+    const rows: Row[] = [];
+    for (let i = 0; i < bodyLines.length; i++) {
+      const text = bodyLines[i] ?? '';
+      const m = text.match(/^(\d+):\s?(.*)$/);
+      if (m) {
+        rows.push({ lineNum: parseInt(m[1]!, 10), text });
+      }
+    }
+    if (rows.length === 0) {
+      return raw.substring(0, Math.max(0, maxChars - 80)) + '\n... (truncated — snippet was cut for prompt size)';
+    }
+    let center = Math.floor(rows.length / 2);
+    if (anchorLine != null && anchorLine > 0) {
+      let best = 0;
+      let bestDist = Infinity;
+      for (let k = 0; k < rows.length; k++) {
+        const d = Math.abs(rows[k].lineNum - anchorLine);
+        if (d < bestDist) {
+          bestDist = d;
+          best = k;
+        }
+      }
+      center = best;
+    }
+    let lo = center;
+    let hi = center;
+    const sliceText = () => rows.slice(lo, hi + 1).map((r) => r.text).join('\n');
+    let chunk = sliceText();
+    const note = '\n... (truncated — centered on review line for prompt budget)';
+    const maxBody = Math.max(400, maxChars - note.length - footerLines.reduce((s, l) => s + l.length + 1, 0));
+    while (chunk.length < maxBody && (lo > 0 || hi < rows.length - 1)) {
+      const canHi = hi < rows.length - 1;
+      const canLo = lo > 0;
+      if (canHi && (!canLo || hi - center <= center - lo)) hi++;
+      else if (canLo) lo--;
+      else if (canHi) hi++;
+      else break;
+      const next = sliceText();
+      if (next.length > maxBody) break;
+      chunk = next;
+    }
+    while (chunk.length > maxBody && lo < hi) {
+      if (hi - center >= center - lo) hi--;
+      else lo--;
+      chunk = sliceText();
+    }
+    if (chunk.length > maxBody) {
+      chunk = chunk.substring(0, Math.max(0, maxBody - 60)) + '\n...';
+    }
+    const footer = footerLines.length > 0 ? '\n' + footerLines.join('\n') : '';
+    return chunk + note + footer;
+  }
+
   private buildBatchVerifyPrompt(
     fixes: Array<{
       id: string;
@@ -2114,6 +2557,8 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       'If the concern is fully addressed in another file or by a different function (e.g. this code now delegates to a function that implements the fix), answer YES and cite where the fix is implemented.',
       'For lifecycle/cache/leak issues (Map/Set/cache cleanup, pruning, TTL, stale entries), answer YES only if the code shown demonstrates safe cleanup across the relevant creation/replacement/cleanup paths. A declaration-only tweak is not enough if stale entries can still survive on early returns or thrown errors.',
       '',
+      'For ACCESSIBILITY issues (review asks for aria-label, accessible name, screen reader, unlabelled SVG): answer YES only if the code adds a MEANINGFUL accessible name (e.g. aria-label or title with the conveyed value, such as the percentage or state). If the only change is aria-hidden="true" or role="img" with no label, or a generic/empty label, the concern is NOT addressed — answer NO and in LESSON suggest adding aria-label or title with the actual value (e.g. "X% yes").',
+      '',
       'For "duplicate" / "extract to shared utility" issues: The fix is usually to remove the duplicate from THIS file and import from the shared module (often lib/utils/...). The review may mention another file as where the duplicate already exists — that is a reference only; the canonical shared source is typically a dedicated util (e.g. lib/utils/db-errors.ts), not that reference file. In LESSON lines, do not suggest "use from [reference file]" as the shared source when a lib/utils/... module is the intended canonical location.',
       '',
       'For EACH fix, respond with EXACTLY this format:',
@@ -2130,6 +2575,9 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       '2: NO: Added try/catch but the comment asks for input validation before the call',
       'LESSON: Review asks for pre-call validation (line 32), not post-call error handling',
       '',
+      'CRITICAL FORMAT: Reply with plain lines starting with the fix number (e.g. 1: YES: ... or 2: NO: ...).',
+      'Do NOT use markdown headings in your response. Wrong: ## Fix 1: YES: ... Right: 1: YES: ...',
+      '',
       '---',
       '',
     ];
@@ -2144,9 +2592,12 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
       // cases. Emitting an empty ``` block gives the verifier no context and forces guessing. We treat empty/whitespace
       // as missing and emit "Current Code: (unavailable — verify from diff only)" so the model knows to rely on diff.
       const rawCurrent = fix.currentCode?.trim();
-      const currentCode = rawCurrent && rawCurrent.length > 0
-        ? (rawCurrent.length > maxCode ? rawCurrent.substring(0, maxCode) + '\n... (truncated — snippet was cut for prompt size)' : rawCurrent)
-        : undefined;
+      const currentCode =
+        rawCurrent && rawCurrent.length > 0
+          ? rawCurrent.length > maxCode
+            ? LLMClient.truncateVerificationCurrentCode(rawCurrent, fix.line ?? null, maxCode)
+            : rawCurrent
+          : undefined;
       const diff =
         fix.diff.length > maxDiff ? fix.diff.substring(0, maxDiff) + '\n... (truncated)' : fix.diff;
       const rawComment = sanitizeCommentForPrompt(fix.comment);
@@ -2185,7 +2636,7 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
 
     parts.push('---');
     parts.push('');
-    parts.push('Now verify each fix. Use the fix number (e.g. "1: YES: ..." or "2: NO: ..."). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
+    parts.push('Now verify each fix. Reply with lines like 1: YES: ... or 2: NO: ... (plain text, no ## Fix headings). For every NO, include a LESSON line immediately after. Do not include LESSON for YES responses.');
     return parts.join('\n');
   }
 
@@ -2200,13 +2651,13 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     const results = new Map<string, { fixed: boolean; explanation: string; lesson?: string }>();
 
     // Parse responses - now including lessons
-    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..." (no colon after FIX_ID), or "FIX_ID: 1" then "NO: ..." on next line
+    // Matches: "1: YES: ...", "fix 2: NO: ...", "FIX_ID: 1: NO: ...", "## Fix 1: YES: ..." (prompts.log audit), or "FIX_ID: 1" then "NO: ..." on next line
     const lines = content.split('\n');
     let currentOriginalId: string | null = null;
 
     for (const line of lines) {
-      // Match "1: YES: ..." or "fix_2: NO: ..." or "FIX_ID: 1: NO: ..." or "FIX_ID 1: YES: ..." (output.log audit: model used "FIX_ID 1:" with space, no colon)
-      const verifyMatch = line.match(/^(?:fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
+      // Match "1: YES: ...", "## Fix 1: YES: ...", "fix_2: NO: ...", "FIX_ID: 1: NO: ...", "FIX_ID 1: YES: ..."
+      const verifyMatch = line.match(/^(?:##\s*[Ff]ix\s+|fix[_\s]*|FIX_ID\s*:\s*|FIX_ID\s+)?(\d+)\s*:\s*(YES|NO)\s*:\s*(.*)$/i);
       if (verifyMatch) {
         const [, numStr, yesNo, explanation] = verifyMatch;
         const idx = parseInt(numStr, 10);
@@ -2289,11 +2740,11 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
     filePath: string,
     conflictedContent: string,
     baseBranch: string,
-    options?: { model?: string }
+    options?: { model?: string; baseContent?: string; oursContent?: string; theirsContent?: string; previousParseError?: string }
   ): Promise<{ resolved: boolean; content: string; explanation: string }> {
     // Check if file is too large for reliable conflict resolution
-    // WHY: Files >50KB cause token limit issues and response truncation
-    const MAX_SAFE_SIZE = 50000; // 50KB
+    // WHY: Files >50KB cause token limit issues and response truncation; caller should use chunked merge.
+    const MAX_SAFE_SIZE = MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS;
     if (conflictedContent.length > MAX_SAFE_SIZE) {
       debug('File too large for automatic conflict resolution', { 
         filePath, 
@@ -2306,7 +2757,17 @@ Respond with ONLY the lesson text, nothing else. Keep it under 150 characters.`;
         explanation: `File too large (${Math.round(conflictedContent.length / 1024)}KB) for automatic resolution. Please resolve manually.`,
       };
     }
-    const prompt = `You are resolving a Git merge conflict.
+    const useThreeWay = options?.baseContent != null && options?.oursContent != null && options?.theirsContent != null;
+    const prompt = useThreeWay
+      ? buildConflictResolutionPromptThreeWay(
+          options.baseContent!,
+          options.oursContent!,
+          options.theirsContent!,
+          baseBranch,
+          filePath,
+          options.previousParseError
+        ) + `\n\nOutput the COMPLETE resolved file. ${getConflictFileTypeRules(filePath)}`
+      : `You are resolving a Git merge conflict.
 
 FILE: ${filePath}
 MERGING: ${baseBranch} into current branch
@@ -2325,6 +2786,7 @@ INSTRUCTIONS:
 3. Remove ALL conflict markers (<<<<<<<, =======, >>>>>>>)
 4. Ensure the result is valid, working code
 5. CRITICAL: Output the COMPLETE file - do not truncate or omit any sections
+${options?.previousParseError ? `\nIMPORTANT: A previous attempt had a syntax/parse error: "${options.previousParseError}". Ensure the resolved file is valid code (e.g. close all block comments with */, no missing commas).\n` : ''}
 ${getConflictFileTypeRules(filePath)}
 
 Respond in this EXACT format (no other text before or after):
@@ -2341,6 +2803,7 @@ RESOLVED:
     const response = await this.complete(prompt, undefined, {
       model: options?.model,
       max504Retries: 0,
+      phase: 'resolve-conflict',
     });
     const content = response.content;
     
@@ -2460,7 +2923,7 @@ RESOLVED:
     parts.push('Based on the above, what SPECIFIC CODE CHANGES were made? Write the commit message:');
 
     // Use a cheap model — commit messages are simple text, not code-fixing
-    const cheapModel = CHEAP_MODELS[this.provider];
+    const cheapModel = getCheapModelForProvider(this.provider);
     const response = await this.complete(parts.join('\n'), undefined, cheapModel ? { model: cheapModel } : undefined);
     let message = response.content.trim();
     
@@ -2552,7 +3015,8 @@ ${reason}
 TASK:
 1. If there is ALREADY a comment near line ${params.line} that addresses the concern, respond: EXISTING
 2. If the code is self-explanatory and no comment adds value, respond: SKIP
-3. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
+3. If the dismissal reason above says the snippet does not show the lines referenced in the concern, respond SKIP (you cannot safely add a comment without seeing that code).
+4. Otherwise, write a ONE-LINE comment (max 100 chars) explaining the design intent — the WHY behind the current code.
 
 RULES:
 - Write as a developer, not a review tool. Explain the design decision, not what changed in a diff.
@@ -2579,7 +3043,7 @@ COMMENT: Note: This was changed from X to Y in a recent refactor
 COMMENT: Note: The import path was updated to use relative imports`;
 
     // Use a cheap model — dismissal comments are simple text, not code-fixing
-    const cheapModel = CHEAP_MODELS[this.provider];
+    const cheapModel = getCheapModelForProvider(this.provider);
     const response = await this.complete(prompt, undefined, cheapModel ? { model: cheapModel } : undefined);
     const content = response.content.trim();
 

@@ -21,8 +21,9 @@ import type { LLMClient } from '../llm/client.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
 import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
-import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from './utils.js';
-import { getTestPathForSourceFileIssue, reviewSuggestsFixInTest } from '../analyzer/prompt-builder.js';
+import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment, getDuplicateClusterCommentIds } from './utils.js';
+import type { ReviewComment } from '../github/types.js';
+import { getMentionedTestFilePaths, getTestPathForSourceFileIssue, reviewSuggestsFixInTest, reviewTargetsMentionedTestFile } from '../analyzer/prompt-builder.js';
 import * as Dismissed from '../state/state-dismissed.js';
 
 /**
@@ -58,20 +59,54 @@ function guessPackageJsonPath(filePath: string): string | null {
   return dir ? `${dir}/package.json` : 'package.json';
 }
 
+function detailSuggestsMissingTargetFile(detail: string): boolean {
+  return /\btest file\b/i.test(detail) &&
+    /\b(?:not provided|not shown|not in the current file|do not have access|don't have access|cannot fix here|not provided in the current context|not in the current context)\b/i.test(detail);
+}
+
+function persistInferredTestTargets(
+  issue: UnresolvedIssue,
+  detail: string,
+  workdir: string | undefined,
+  stateContext: StateContext
+): string[] {
+  if (!workdir || !stateContext.state) return [];
+  if (!reviewTargetsMentionedTestFile(issue.comment.body ?? '') && !detailSuggestsMissingTargetFile(detail)) return [];
+  const pathExists = (p: string) => existsSync(join(workdir, p));
+  const inferredTargets = getMentionedTestFilePaths(issue, { pathExists });
+  const state = stateContext.state;
+  if (inferredTargets.length > 0) {
+    if (!state.wrongFileAllowedPathsByCommentId) state.wrongFileAllowedPathsByCommentId = {};
+    const existing = state.wrongFileAllowedPathsByCommentId[issue.comment.id] ?? [];
+    const merged = [...new Set([...existing, ...inferredTargets])];
+    state.wrongFileAllowedPathsByCommentId[issue.comment.id] = merged;
+    if (state.missingTargetFileCountByCommentId) delete state.missingTargetFileCountByCommentId[issue.comment.id];
+    debug('Allow inferred hidden test target on retry', { commentId: issue.comment.id, targets: inferredTargets });
+    return inferredTargets;
+  }
+  if (!state.missingTargetFileCountByCommentId) state.missingTargetFileCountByCommentId = {};
+  state.missingTargetFileCountByCommentId[issue.comment.id] = (state.missingTargetFileCountByCommentId[issue.comment.id] ?? 0) + 1;
+  debug('Missing target file count', { commentId: issue.comment.id, count: state.missingTargetFileCountByCommentId[issue.comment.id] });
+  return [];
+}
+
 /**
- * Handle no-changes scenario after fixer runs
- * 
- * WHY: When a fixer makes no changes, it could mean:
- * - Issues are already fixed (need to verify)
- * - Fixer couldn't understand the issue (need different approach)
- * - Fixer hit a limitation (need rotation)
- * 
+ * Handle no-changes scenario after fixer runs.
+ *
+ * WHY: When a fixer makes no changes, it could mean: issues already fixed (verify), fixer confused
+ * (different approach), or limitation (rotation).
+ *
  * WORKFLOW:
  * 1. Parse fixer's explanation for why no changes were made
  * 2. If fixer claims "already fixed", verify each issue with LLM
  * 3. Mark verified issues as fixed and remove from unresolved list
  * 4. Track no-changes for performance stats
  * 5. Return whether to continue, break, or proceed to rotation
+ *
+ * Pass `comments` + `duplicateMap` so single-issue **ALREADY_FIXED** and **ALREADY_FIXED any-threshold**
+ * dismiss the **entire dedup cluster** (`getDuplicateClusterCommentIds`). **WHY:** Auto-verify on real
+ * fixes already marks duplicates when one canonical change lands; the no-change path used to dismiss
+ * only the queued row, leaving cluster siblings neither verified nor dismissed → BUG DETECTED repopulate.
  */
 export async function handleNoChangesWithVerification(
   unresolvedIssues: UnresolvedIssue[],
@@ -84,7 +119,10 @@ export async function handleNoChangesWithVerification(
   verifiedThisSession: Set<string>,
   parseNoChangesExplanation: (output: string) => string | null,
   /** When provided, CANNOT_FIX/WRONG_LOCATION responses can persist other-file paths for retry. When omitted, persistence is skipped. */
-  workdir?: string
+  workdir?: string,
+  /** Full PR comment list — used to dismiss duplicate-cluster siblings on ALREADY_FIXED. */
+  comments?: ReviewComment[],
+  duplicateMap?: Map<string, string[]>,
 ): Promise<{
   shouldBreak: boolean;
   shouldContinue: boolean;
@@ -108,6 +146,43 @@ export async function handleNoChangesWithVerification(
         if (firstIssueAf && stateContext.state) {
           const state = stateContext.state;
           const detail = (structuredResult.resultDetail ?? 'ALREADY_FIXED').trim().substring(0, 120);
+          // Prompts.log audit: single-issue ALREADY_FIXED with no code blocks was re-sent (duplicate 78k prompt). Dismiss immediately so we don't retry the same prompt.
+          if (unresolvedIssues.length === 1) {
+            const detailMsg = detail || 'fixer confirmed no changes needed';
+            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const dismissText = `ALREADY_FIXED — ${detailMsg}`;
+            for (const cid of clusterIds) {
+              if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
+                continue;
+              }
+              const c =
+                comments?.find((co) => co.id === cid) ??
+                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              if (!c) {
+                debug('ALREADY_FIXED cluster: skip dismiss (no comment row)', { commentId: cid });
+                continue;
+              }
+              Dismissed.dismissIssue(
+                stateContext,
+                cid,
+                dismissText,
+                'already-fixed',
+                c.path,
+                c.line,
+                c.body,
+                undefined,
+              );
+            }
+            const clusterSet = new Set(clusterIds);
+            Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+            return {
+              shouldBreak: false,
+              shouldContinue: false,
+              verifiedCount: 0,
+              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
+              progressMade: 0,
+            };
+          }
           if (!state.alreadyFixedLastDetailByCommentId) state.alreadyFixedLastDetailByCommentId = {};
           if (!state.alreadyFixedConsecutiveSameByCommentId) state.alreadyFixedConsecutiveSameByCommentId = {};
           const last = state.alreadyFixedLastDetailByCommentId[firstIssueAf.comment.id];
@@ -116,6 +191,7 @@ export async function handleNoChangesWithVerification(
             : 1;
           state.alreadyFixedLastDetailByCommentId[firstIssueAf.comment.id] = detail;
           state.alreadyFixedConsecutiveSameByCommentId[firstIssueAf.comment.id] = consecutive;
+          debug('ALREADY_FIXED counter update', { commentId: firstIssueAf.comment.id, consecutiveSame: consecutive, sameAsLast: last === detail, detail: detail.slice(0, 60) });
           // WHY separate counter from same-explanation counter above: The same-explanation counter
           // (ALREADY_FIXED_EXHAUST_THRESHOLD) only fires when explanation text matches. This counter
           // catches the broader pattern: 3+ models independently say ALREADY_FIXED with *different*
@@ -124,23 +200,28 @@ export async function handleNoChangesWithVerification(
           if (!state.consecutiveAlreadyFixedAnyByCommentId) state.consecutiveAlreadyFixedAnyByCommentId = {};
           state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id] = (state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id] ?? 0) + 1;
           const anyCount = state.consecutiveAlreadyFixedAnyByCommentId[firstIssueAf.comment.id];
+          debug('ALREADY_FIXED any-counter', { commentId: firstIssueAf.comment.id, anyCount, threshold: ALREADY_FIXED_ANY_THRESHOLD });
           if (anyCount >= ALREADY_FIXED_ANY_THRESHOLD) {
-            Dismissed.dismissIssue(
-              stateContext,
-              firstIssueAf.comment.id,
-              `ALREADY_FIXED ${anyCount}× (multiple models) — dismissing as already-fixed`,
-              'already-fixed',
-              firstIssueAf.comment.path,
-              firstIssueAf.comment.line,
-              firstIssueAf.comment.body,
-              undefined
-            );
+            debug('ALREADY_FIXED dismiss: any-threshold reached', { commentId: firstIssueAf.comment.id, anyCount });
+            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const dismissText = `ALREADY_FIXED ${anyCount}× (multiple models) — dismissing as already-fixed`;
+            const clusterSet = new Set(clusterIds);
+            for (const cid of clusterIds) {
+              if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
+                continue;
+              }
+              const c =
+                comments?.find((co) => co.id === cid) ??
+                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              if (!c) continue;
+              Dismissed.dismissIssue(stateContext, cid, dismissText, 'already-fixed', c.path, c.line, c.body, undefined);
+            }
             Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
             return {
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssueAf.comment.id),
+              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
               progressMade: 0,
             };
           }
@@ -222,6 +303,28 @@ export async function handleNoChangesWithVerification(
                   debug('Allow other file on retry (CANNOT_FIX)', { commentId: firstIssue0.comment.id, otherFile });
                 }
               }
+              const inferredTargets = persistInferredTestTargets(firstIssue0, detail, workdir, stateContext);
+              const missingTargetCount = stateContext.state?.missingTargetFileCountByCommentId?.[firstIssue0.comment.id] ?? 0;
+              if (inferredTargets.length === 0 && missingTargetCount >= 2) {
+                Dismissed.dismissIssue(
+                  stateContext,
+                  firstIssue0.comment.id,
+                  `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                  'remaining',
+                  getIssuePrimaryPath(firstIssue0),
+                  firstIssue0.comment.line,
+                  firstIssue0.comment.body ?? '',
+                  undefined
+                );
+                Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+                return {
+                  shouldBreak: false,
+                  shouldContinue: false,
+                  verifiedCount: 0,
+                  updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue0.comment.id),
+                  progressMade: 0,
+                };
+              }
             }
             // Prompts.log audit: UNCLEAR often "target is implementation file but review asks for tests in test file". Persist test path so next attempt has test file in TARGET FILE(S).
             if (structuredResult.resultCode === 'UNCLEAR' && /test|coverage|\.test\.(ts|js)/i.test(detail) && /target|allowed|not in my|cannot add|not permitted/i.test(detail)) {
@@ -239,6 +342,28 @@ export async function handleNoChangesWithVerification(
                   debug('Allow test file on retry (UNCLEAR)', { commentId: firstIssue0.comment.id, testPath });
                 }
               }
+            }
+            const inferredTargets = persistInferredTestTargets(firstIssue0, detail, workdir, stateContext);
+            const missingTargetCount = stateContext.state?.missingTargetFileCountByCommentId?.[firstIssue0.comment.id] ?? 0;
+            if (inferredTargets.length === 0 && missingTargetCount >= 2) {
+              Dismissed.dismissIssue(
+                stateContext,
+                firstIssue0.comment.id,
+                `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                'remaining',
+                getIssuePrimaryPath(firstIssue0),
+                firstIssue0.comment.line,
+                firstIssue0.comment.body ?? '',
+                undefined
+              );
+              Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+              return {
+                shouldBreak: false,
+                shouldContinue: false,
+                verifiedCount: 0,
+                updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue0.comment.id),
+                progressMade: 0,
+              };
             }
             // Loop breaker: count WRONG_LOCATION/UNCLEAR per issue; track consecutive same detail; solvability dismisses when threshold reached.
             if (structuredResult.resultCode === 'UNCLEAR') {
@@ -286,6 +411,28 @@ export async function handleNoChangesWithVerification(
                 debug('Allow other file on retry (WRONG_LOCATION)', { commentId: firstIssue1.comment.id, otherFile });
               }
             }
+            const inferredTargets = persistInferredTestTargets(firstIssue1, detail, workdir, stateContext);
+            const missingTargetCount = state.missingTargetFileCountByCommentId?.[firstIssue1.comment.id] ?? 0;
+            if (inferredTargets.length === 0 && missingTargetCount >= 2) {
+              Dismissed.dismissIssue(
+                stateContext,
+                firstIssue1.comment.id,
+                `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                'remaining',
+                getIssuePrimaryPath(firstIssue1),
+                firstIssue1.comment.line,
+                firstIssue1.comment.body ?? '',
+                undefined
+              );
+              Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
+              return {
+                shouldBreak: false,
+                shouldContinue: false,
+                verifiedCount: 0,
+                updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue1.comment.id),
+                progressMade: 0,
+              };
+            }
             // When fixer says snippet/code not visible or truncated, request wider snippet on next single-issue attempt (prompts.log audit M1).
             const snippetNotVisible = /not visible|truncated|not (in |shown)|doesn't exist|code (was |is )not (in|visible)|not in the provided|segment (is |containing )not visible/i.test(detail);
             if (snippetNotVisible) {
@@ -293,18 +440,25 @@ export async function handleNoChangesWithVerification(
               state.widerSnippetRequestedByCommentId[firstIssue1.comment.id] = true;
               debug('Request wider snippet on retry (WRONG_LOCATION)', { commentId: firstIssue1.comment.id });
             }
+            // Pill: When fixer refused due to a lesson ("Per the lessons learned", "not allowed to modify"), do NOT
+            // count toward WRONG_LOCATION exhaust — it's a lesson-induced refusal, not a genuine wrong-location.
+            const isLessonInducedRefusal = /per the lessons learned|not allowed to modify/i.test(detail);
             // Loop breaker: count WRONG_LOCATION/UNCLEAR per issue; track consecutive same detail; solvability dismisses when threshold reached.
-            if (!state.wrongLocationUnclearCountByCommentId) state.wrongLocationUnclearCountByCommentId = {};
-            state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] = (state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] ?? 0) + 1;
-            const normalizedDetailW = (structuredResult.resultDetail ?? 'WRONG_LOCATION').trim().substring(0, 120);
-            if (!state.wrongLocationUnclearLastDetailByCommentId) state.wrongLocationUnclearLastDetailByCommentId = {};
-            if (!state.wrongLocationUnclearConsecutiveSameByCommentId) state.wrongLocationUnclearConsecutiveSameByCommentId = {};
-            const lastW = state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id];
-            const consecutiveW = lastW === normalizedDetailW
-              ? (state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] ?? 0) + 1
-              : 1;
-            state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id] = normalizedDetailW;
-            state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] = consecutiveW;
+            if (!isLessonInducedRefusal) {
+              if (!state.wrongLocationUnclearCountByCommentId) state.wrongLocationUnclearCountByCommentId = {};
+              state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] = (state.wrongLocationUnclearCountByCommentId[firstIssue1.comment.id] ?? 0) + 1;
+              const normalizedDetailW = (structuredResult.resultDetail ?? 'WRONG_LOCATION').trim().substring(0, 120);
+              if (!state.wrongLocationUnclearLastDetailByCommentId) state.wrongLocationUnclearLastDetailByCommentId = {};
+              if (!state.wrongLocationUnclearConsecutiveSameByCommentId) state.wrongLocationUnclearConsecutiveSameByCommentId = {};
+              const lastW = state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id];
+              const consecutiveW = lastW === normalizedDetailW
+                ? (state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] ?? 0) + 1
+                : 1;
+              state.wrongLocationUnclearLastDetailByCommentId[firstIssue1.comment.id] = normalizedDetailW;
+              state.wrongLocationUnclearConsecutiveSameByCommentId[firstIssue1.comment.id] = consecutiveW;
+            } else {
+              debug('WRONG_LOCATION is lesson-induced refusal — not counting toward exhaust', { commentId: firstIssue1.comment.id, detailPreview: detail.slice(0, 80) });
+            }
           }
         } else {
           LessonsAPI.Add.addGlobalLesson(lessonsContext, wrongDetail);
@@ -419,7 +573,8 @@ export async function handleNoChangesWithVerification(
           })),
           undefined,
           80_000,
-          8
+          8,
+          'spot-verify'
         );
         
         let spotFixed = 0;
@@ -563,6 +718,8 @@ async function verifyAllIssues(
   updatedUnresolvedIssues: UnresolvedIssue[];
   progressMade: number;
 } | null> {
+  // Pill audit: truncated codeSnippet can cause judge to return STALE/truncated → false "still exists".
+  // Future: when fixer confirmed ALREADY_FIXED with full file, pass full file here to reduce wasted iterations.
   const verifyResults = await llm.batchCheckIssuesExist(
     unresolvedIssues.map((issue, idx) => ({
       id: `issue_${idx + 1}`,
@@ -573,7 +730,8 @@ async function verifyAllIssues(
     })),
     undefined,
     80_000,
-    8
+    8,
+    'batch-verify'
   );
   
   let verifiedAsFixed = 0;

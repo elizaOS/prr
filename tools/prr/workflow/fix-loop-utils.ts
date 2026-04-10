@@ -21,7 +21,7 @@ import { checkRemoteAhead } from '../../../shared/git/git-conflicts.js';
 import { pullLatest } from '../../../shared/git/git-pull.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
-import { assessSolvability } from './helpers/solvability.js';
+import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solvability.js';
 
 // Note: All imports must be at module top level - do not use dynamic imports inside functions
 
@@ -173,26 +173,28 @@ export function filterVerifiedIssues(
 }
 
 /**
- * Check for empty issues and detect potential bugs
- * 
- * Performs a sanity check when unresolvedIssues is empty: verifies that all
- * comments are actually marked as verified. If there's a mismatch (bug), it
- * re-populates unresolvedIssues from unverified comments.
- * 
- * WHY: Catch bugs in the filtering/verification logic that could cause the
- * loop to exit prematurely while issues remain unfixed.
- * 
- * @param unresolvedIssues - Array of unresolved issues
- * @param comments - All review comments
- * @param stateContext - State context for verification checks
- * @param getCodeSnippet - Function to fetch code snippets
- * @returns Exit signal if all truly resolved, or continue signal if issues remain
+ * Check for empty issues and detect potential bugs.
+ *
+ * When `unresolvedIssues` is empty, verifies every comment is verified **or** dismissed.
+ * If some are neither (accounting bug), re-populates the queue from those rows.
+ *
+ * WHY: Catch filtering/verification bugs that would exit the loop while threads stay open.
+ * Pass `workdir` + `changedFiles` (PR diff vs base) so repopulated rows get **`resolvedPath`**
+ * via **`resolveTrackedPathWithPrFiles`** — **WHY:** Without it, basename-only paths still fail
+ * **`pathExists`** in the fix prompt on the next iteration (Cycle 70 / DEVELOPMENT.md).
+ *
+ * @param getCodeSnippet - Fetches snippet for each re-queued comment
+ * @param workdir - Clone root; omit to skip PR-scoped path resolution on repopulate
+ * @param changedFiles - `git diff --name-only` vs base; from analysis cache / push iteration
  */
 export async function checkEmptyIssues(
   unresolvedIssues: UnresolvedIssue[],
   comments: ReviewComment[],
   stateContext: StateContext,
-  getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>
+  getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
+  /** When set, repopulated issues get resolvedPath (basename → tracked file, PR diff tie-break). */
+  workdir?: string,
+  changedFiles?: string[],
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -237,12 +239,20 @@ export async function checkEmptyIssues(
       );
       unresolvedIssues.splice(0, unresolvedIssues.length);
       for (let i = 0; i < unaccounted.length; i++) {
+        const c = unaccounted[i];
+        // WHY PR-scoped resolution here: repopulated rows used to lack resolvedPath, so the next
+        // buildFixPrompt still treated basename-only paths as missing and never fixed (audit loop).
+        const resolvedPath =
+          workdir != null
+            ? resolveTrackedPathWithPrFiles(workdir, c.path, c.body ?? '', changedFiles) ?? undefined
+            : undefined;
         unresolvedIssues.push({
-          comment: unaccounted[i],
+          comment: c,
           codeSnippet: snippets[i],
           stillExists: true,
           explanation: 'Re-added after bug detection',
           triage: { importance: 3, ease: 3 },
+          resolvedPath,
         });
       }
       debug('Re-populated unresolvedIssues', { count: unresolvedIssues.length });
@@ -348,8 +358,8 @@ export async function checkAndPullRemoteCommits(
       const previouslyVerified = Verification.getVerifiedComments(stateContext).length;
       if (previouslyVerified > 0) {
         console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
+        debug('Stale verification: clearing all after remote pull', { previouslyVerified, behind: remoteStatus.behind });
         Verification.clearAllVerifications(stateContext);
-      
       }
       
       // Re-fetch code snippets for unresolved issues concurrently

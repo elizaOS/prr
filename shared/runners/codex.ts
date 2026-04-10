@@ -88,7 +88,7 @@ export class CodexRunner implements Runner {
     const promptFile = join(tmpdir(), `prr-prompt.${process.pid}.${Date.now()}.txt`);
     writeFileSync(promptFile, prompt, { encoding: 'utf-8', mode: 0o600 });
     debug('Wrote prompt to file', { promptFile, length: prompt.length });
-    debugPrompt('codex', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('codex', prompt, { workdir, model: options?.model });
     
     const cleanupPromptFile = () => {
       try {
@@ -241,7 +241,7 @@ export class CodexRunner implements Runner {
           }
         }
         const output = lastAgentMessage || stdout;
-        debugResponse('codex', output, { exitCode: code, stderrLength: stderr.length, usage: aggregatedUsage });
+        debugResponse(promptSlug, 'codex', output, { exitCode: code, stderrLength: stderr.length, usage: aggregatedUsage });
 
         // Safety check: detect cursor position error even in exec mode (shouldn't happen, but just in case)
         const hasCursorError = isCursorPositionError(stdout) || isCursorPositionError(stderr);

@@ -1,0 +1,29 @@
+{
+  "name": "sample-run",
+  "expectedImprovements": [
+    {
+      "category": "performance",
+      "severity": "medium",
+      "description": "Token usage could be optimized - 800K tokens for fixing seems high",
+      "file": null,
+      "actionable": true
+    },
+    {
+      "category": "workflow",
+      "severity": "low",
+      "description": "Consider caching analysis results to reduce 8.5s analysis time",
+      "file": null,
+      "actionable": true
+    },
+    {
+      "category": "verification",
+      "severity": "medium",
+      "description": "One fix failed verification - investigate why claude-sonnet-4-5 failed on that issue",
+      "file": null,
+      "actionable": true
+    }
+  ],
+  "minImprovementRelevance": 0.8,
+  "minCoverage": 0.75,
+  "minSeverityAccuracy": 0.7
+}

@@ -4,6 +4,94 @@
 import type { LessonsContext } from './lessons-context.js';
 import * as Normalize from './lessons-normalize.js';
 
+const LESSON_TARGET_PATH_PATTERN = /\b([a-zA-Z0-9_][a-zA-Z0-9_./-]*\.(?:ts|tsx|js|jsx|mjs|cjs|json|py|go|rs|java|kt))\b/g;
+const ISSUE_TOKEN_STOPWORDS = new Set([
+  'about', 'actual', 'address', 'already', 'because', 'change', 'changes', 'comment', 'current',
+  'detail', 'different', 'edit', 'error', 'file', 'files', 'fix', 'fixed', 'issue', 'issues',
+  'listed', 'location', 'needs', 'only', 'path', 'paths', 'provided', 'review', 'runtime',
+  'should', 'snippet', 'target', 'targets', 'test', 'tests', 'that', 'their', 'there', 'these',
+  'they', 'this', 'those', 'tries', 'trying', 'update', 'with', 'wrong',
+]);
+
+function tokenizeIssueContext(text: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const part of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (part.length < 4) continue;
+    if (ISSUE_TOKEN_STOPWORDS.has(part)) continue;
+    tokens.add(part);
+  }
+  return tokens;
+}
+
+function extractLessonTargetPaths(lesson: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  LESSON_TARGET_PATH_PATTERN.lastIndex = 0;
+  while ((m = LESSON_TARGET_PATH_PATTERN.exec(lesson)) !== null) {
+    const path = Normalize.sanitizeFilePathHeader(m[1] ?? '');
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    out.push(path);
+  }
+  return out;
+}
+
+/** Path appears in the same "do not edit …" clause (before `,` / `;` / em-dash), not only in a later hint. */
+function forbidEditClauseTouchesPath(lesson: string, pathNorm: string): boolean {
+  const flat = lesson.replace(/\\/g, '/');
+  const esc = pathNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `\\b(?:do\\s+not|don't|must\\s+not|should\\s+not|never)\\s+(?:edit|modify|change|touch)\\s+[^,;—\\n]{0,240}?${esc}`,
+    'i',
+  ).test(flat);
+}
+
+/**
+ * True when the lesson tells the fixer not to edit `issueFilePath` (same path as the current issue).
+ * **WHY:** File-scoped or global lessons sometimes record "wrong file — do not edit X" while keyed under X,
+ * which blocks batch fixes until load/prune or single-issue filtering removes them (ROADMAP lesson conflict).
+ */
+export function lessonForbidsEditingIssuePath(lesson: string, issueFilePath: string): boolean {
+  const p = Normalize.sanitizeFilePathHeader(issueFilePath);
+  if (!p) return false;
+  if (
+    !/\b(?:do\s+not|don't|must\s+not|should\s+not|never)\s+(?:edit|modify|change|touch)\b/i.test(lesson)
+  ) {
+    return false;
+  }
+  const targets = extractLessonTargetPaths(lesson);
+  if (!targets.includes(p)) return false;
+  return forbidEditClauseTouchesPath(lesson, p.replace(/\\/g, '/'));
+}
+
+function lessonMatchesIssueContext(
+  lesson: string,
+  issueFilePath: string,
+  commentBody: string,
+  allowedPaths: string[] = []
+): boolean {
+  if (lessonForbidsEditingIssuePath(lesson, issueFilePath)) return false;
+
+  const cleanedIssue = Normalize.sanitizeFilePathHeader(issueFilePath);
+  const currentPaths = new Set(
+    [cleanedIssue, ...allowedPaths.map((p) => Normalize.sanitizeFilePathHeader(p))].filter(Boolean)
+  );
+  const lessonTargets = extractLessonTargetPaths(lesson);
+  if (/TARGET FILE\(S\)|Only edit the file\(s\) listed in TARGET FILE\(S\)/i.test(lesson) && lessonTargets.length > 0) {
+    if (!lessonTargets.some((p) => currentPaths.has(p))) return false;
+  }
+
+  const issueTokens = tokenizeIssueContext(`${issueFilePath}\n${commentBody}`);
+  if (issueTokens.size === 0) return true;
+  const lessonTokens = tokenizeIssueContext(lesson);
+  if (lessonTokens.size === 0) return true;
+  for (const token of lessonTokens) {
+    if (issueTokens.has(token)) return true;
+  }
+  return false;
+}
+
 /**
  * Get lessons for a SINGLE file (no global lessons).
  * Used for inline per-issue lesson injection in the fix prompt.
@@ -54,6 +142,17 @@ export function getLessonsForSingleIssue(ctx: LessonsContext, issueFilePath: str
   }
 
   return result;
+}
+
+/** Get lessons relevant to one issue, not just one file. */
+export function getLessonsForIssue(
+  ctx: LessonsContext,
+  issueFilePath: string,
+  commentBody: string,
+  allowedPaths: string[] = []
+): string[] {
+  return getLessonsForSingleIssue(ctx, issueFilePath)
+    .filter((lesson) => lessonMatchesIssueContext(lesson, issueFilePath, commentBody, allowedPaths));
 }
 
 export function getLessonsForFiles(ctx: LessonsContext, filePaths: string[]): string[] {

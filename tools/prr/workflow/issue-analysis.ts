@@ -27,14 +27,29 @@
  * the status cache. Without this, sync hooks that flip status to "resolved"
  * would prevent re-analysis of comments that SHOULD be re-checked (stale
  * verifications exist specifically to catch regressions).
+ *
+ * WHY modular files (issue-analysis-*.ts): Snippet line math, LLM dedup, and
+ * STALE/ordering context change for different reasons and at different rates.
+ * Keeping them next to this orchestrator would recreate a multi-thousand-line
+ * file; instead, **`findUnresolvedIssues`** stays here as the pipeline driver,
+ * and **`issue-analysis.ts`** re-exports the small public surface tests and
+ * **`resolver-proc`** need — without importing every submodule at every call site.
  */
-
 import chalk from 'chalk';
 import { join } from 'path';
 import { readFile } from 'fs/promises';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getPathsToDeleteFromCommentBody, getRenameTargetPath, getTestPathForSourceFileIssue, isSnippetTooShort, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import {
+  commentAsksForAccessibility,
+  getMentionedTestFilePaths,
+  getPathsToDeleteFromCommentBody,
+  getRenameTargetPath,
+  getTestPathForSourceFileIssue,
+  isSnippetTooShort,
+  reviewSuggestsFixInTest,
+  sanitizeCommentForPrompt,
+} from '../analyzer/prompt-builder.js';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
 import * as Verification from '../state/state-verification.js';
@@ -46,1243 +61,49 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient, ModelRecommendationContext } from '../llm/client.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import {
-  CODE_SNIPPET_CONTEXT_AFTER,
-  CODE_SNIPPET_CONTEXT_BEFORE,
+  COULD_NOT_INJECT_CREATE_FILE_THRESHOLD,
   COULD_NOT_INJECT_DISMISS_THRESHOLD,
   getVerificationExpiryForIterationCount,
-  LLM_DEDUP_MAX_CONCURRENT,
-  MAX_SNIPPET_LINES,
   VERIFICATION_EXPIRY_ITERATIONS,
 } from '../../../shared/constants.js';
 import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
-import { validateDismissalExplanation } from './utils.js';
+import { looksLikeCreateFileIssue, validateDismissalExplanation } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
-import { assessSolvability, resolveTrackedPath, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { assessSolvability, resolveTrackedPathWithPrFiles, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { stripSeverityFraming } from './helpers/review-body-normalize.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import { buildLifecycleAwareVerificationSnippet, commentNeedsLifecycleContext } from './fix-verification.js';
 import { printDebugIssueTable } from './debug-issue-table.js';
+import type { DedupResult } from './issue-analysis-dedup.js';
+import {
+  crossFileDedup,
+  heuristicDedup,
+  llmDedup,
+  logDuplicateCandidates,
+  propagateStatusToDuplicates,
+} from './issue-analysis-dedup.js';
+import {
+  commentNeedsConservativeAnalysisContext,
+  extractSymbolsFromStaleExplanation,
+  fileContainsSymbol,
+} from './issue-analysis-context.js';
+import {
+  getFullFileForAudit,
+  getWiderSnippetForAnalysis,
+} from './issue-analysis-snippet-helpers.js';
+import { buildSnippetFromRepoContent } from './issue-analysis-snippets.js';
+
+export {
+  commentNeedsConservativeAnalysisContext,
+  commentNeedsOrderingContext,
+  extractSymbolsFromStaleExplanation,
+  fileContainsSymbol,
+} from './issue-analysis-context.js';
+export type { DedupResult } from './issue-analysis-dedup.js';
+export { getCodeSnippet } from './issue-analysis-snippets.js';
+export { getFullFileForAudit, getWiderSnippetForAnalysis, parseLineReferencesFromBody } from './issue-analysis-snippet-helpers.js';
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Post-STALE symbol verification (override false STALE when symbol still in file)
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/** Extract candidate symbols from a STALE explanation (e.g. "formatDuration no longer exists" → formatDuration). */
-function extractSymbolsFromStaleExplanation(explanation: string): string[] {
-  const symbols: string[] = [];
-  // "X no longer exists" / "X does not exist" / "X do not exist"
-  const noLonger = explanation.matchAll(/(\w+)\s+(?:no longer exists|does not exist|do not exist|does not appear)/gi);
-  for (const m of noLonger) symbols.push(m[1]);
-  // "The X function ... no longer exists" / "The X function ... does not exist"
-  const theFunc = explanation.matchAll(/The\s+(\w+)\s+(?:function|method)\s+[^.]*(?:no longer exists|does not exist)/gi);
-  for (const m of theFunc) symbols.push(m[1]);
-  // "constants X, Y, Z are not visible" — split on comma, trim
-  const constants = explanation.match(/(?:constants?\s+)([A-Z][A-Z0-9_,\s]+?)(?:\s+are not visible|\s+do not appear|\.)/i);
-  if (constants) {
-    for (const part of constants[1].split(/[\s,]+/)) {
-      const s = part.trim();
-      if (s.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) symbols.push(s);
-    }
-  }
-  return [...new Set(symbols)];
-}
-
-/** Return true if file content contains the symbol as a word (identifier). */
-async function fileContainsSymbol(workdir: string, filePath: string, symbol: string): Promise<boolean> {
-  try {
-    const content = await readFile(join(workdir, filePath), 'utf-8');
-    const wordBoundary = new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
-    return wordBoundary.test(content);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True when the comment is about ordering/retention semantics that often span
- * more than the anchored line (e.g. newest-first vs oldest-first trimming).
- */
-export function commentNeedsOrderingContext(commentBody: string): boolean {
-  const c = commentBody.toLowerCase();
-  return (
-    /\bfromend\b/.test(c) ||
-    /\b(?:newest|oldest)-first\b/.test(c) ||
-    /\bkeep(?:s|ing)?\s+(?:the\s+)?(?:newest|oldest)\b/.test(c) ||
-    /\btrim(?:s|ming)?\s+the\s+wrong\s+side\b/.test(c) ||
-    /\bdrops?\s+the\s+(?:newest|oldest)\b/.test(c) ||
-    /\bpreserv(?:e|es|ing)\s+the\s+(?:newest|oldest)\b/.test(c) ||
-    /\bslicetofitbudget\b/.test(c)
-  );
-}
-
-export function commentNeedsConservativeAnalysisContext(commentBody: string): boolean {
-  return (
-    commentNeedsLifecycleContext({ comment: commentBody }) ||
-    commentNeedsOrderingContext(commentBody)
-  );
-}
-
-function buildNumberedFullFileSnippet(content: string, note?: string): string {
-  const lines = content.split('\n');
-  const body = lines.map((l, i) => `${i + 1}: ${l}`).join('\n');
-  return body + `\n(${note ?? `end of file — ${lines.length} lines total`})`;
-}
-
-function mergeAnalysisRanges(ranges: Array<{ start: number; end: number }>): Array<{ start: number; end: number }> {
-  const sorted = [...ranges].sort((a, b) => a.start - b.start);
-  const merged: Array<{ start: number; end: number }> = [];
-  for (const range of sorted) {
-    const last = merged[merged.length - 1];
-    if (!last || range.start > last.end + 1) {
-      merged.push({ ...range });
-      continue;
-    }
-    last.end = Math.max(last.end, range.end);
-  }
-  return merged;
-}
-
-/**
- * Pull likely ordering-related symbols out of the comment so we can stitch
- * together multiple relevant regions from a large file.
- *
- * WHY: "fromEnd keeps oldest runs" bugs are rarely local to the anchor line.
- * We usually need both the ordering source (`groupedByRun`, `getMemories`) and
- * the later trimming call (`sliceToFitBudget`, `reverse`) in one prompt.
- */
-function extractOrderingCandidateSymbols(commentBody: string): string[] {
-  const symbols: string[] = [];
-  const seen = new Set<string>();
-  const add = (value: string | undefined) => {
-    if (!value) return;
-    if (!/^[A-Za-z_$][\w$]{2,}$/.test(value)) return;
-    if (seen.has(value)) return;
-    seen.add(value);
-    symbols.push(value);
-  };
-
-  const backtick = /`([A-Za-z_$][\w$]{2,})`/g;
-  let match: RegExpExecArray | null;
-  while ((match = backtick.exec(commentBody)) !== null) add(match[1]);
-
-  const camelOrSnake = /\b([a-z]+_[a-z0-9_]+|[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*)\b/g;
-  while ((match = camelOrSnake.exec(commentBody)) !== null) add(match[1]);
-
-  if (/\bfromend\b/i.test(commentBody)) add('fromEnd');
-  if (/\bslicetofitbudget\b/i.test(commentBody)) add('sliceToFitBudget');
-  if (/\bgroupedbyrun\b/i.test(commentBody)) add('groupedByRun');
-  if (/\bgetmemories\b/i.test(commentBody)) add('getMemories');
-  if (/\breverse\b/i.test(commentBody)) add('reverse');
-
-  return symbols;
-}
-
-/**
- * Build a multi-range analysis snippet for ordering/history issues.
- *
- * WHY: For large files, sending one centered 80-line window reintroduced the
- * same blind spot this change set was meant to fix. Multi-range excerpts let
- * the model see both the "data order comes from here" site and the later
- * "selection/trimming happens here" site without needing the entire file.
- */
-function buildOrderingAwareAnalysisSnippet(
-  content: string,
-  filePath: string,
-  line: number | null,
-  commentBody: string
-): string | null {
-  const lines = content.split('\n');
-  const candidates = extractOrderingCandidateSymbols(commentBody);
-  if (candidates.length === 0) return null;
-
-  const ranges: Array<{ start: number; end: number }> = [];
-  if (line != null) {
-    ranges.push({
-      start: Math.max(1, line - 10),
-      end: Math.min(lines.length, line + 16),
-    });
-  }
-
-  for (const symbol of candidates) {
-    const rx = new RegExp(`\\b${escapeRegExpForSnippet(symbol)}\\b`);
-    for (let i = 0; i < lines.length; i++) {
-      if (!rx.test(lines[i]!)) continue;
-      ranges.push({
-        start: Math.max(1, i + 1 - 5),
-        end: Math.min(lines.length, i + 1 + 8),
-      });
-    }
-  }
-
-  const merged = mergeAnalysisRanges(ranges);
-  if (merged.length === 0) return null;
-
-  const parts = [
-    `Ordering excerpts for ${filePath} (relevant ordering/selection sites):`,
-    '',
-  ];
-  const maxChars = 20_000;
-  let usedChars = parts.join('\n').length;
-  let included = 0;
-
-  for (const range of merged) {
-    const body = lines
-      .slice(range.start - 1, range.end)
-      .map((l, i) => `${range.start + i}: ${l}`)
-      .join('\n');
-    const block = `--- lines ${range.start}-${range.end} ---\n${body}\n`;
-    if (usedChars + block.length > maxChars) break;
-    parts.push(block);
-    usedChars += block.length;
-    included++;
-  }
-
-  if (included === 0) return null;
-  if (included < merged.length) {
-    parts.push(`... (${merged.length - included} additional ordering section(s) omitted; file has ${lines.length} lines total)`);
-  } else {
-    parts.push(`(full ordering excerpt set shown; file has ${lines.length} lines total)`);
-  }
-  return parts.join('\n');
-}
-
-function buildConservativeAnalysisSnippet(
-  content: string,
-  filePath: string,
-  line: number | null,
-  commentBody: string
-): string | null {
-  if (commentNeedsLifecycleContext({ comment: commentBody })) {
-    const lifecycleSnippet = buildLifecycleAwareVerificationSnippet(content, filePath, line, commentBody);
-    if (lifecycleSnippet) return lifecycleSnippet;
-  }
-
-  if (commentNeedsOrderingContext(commentBody)) {
-    // WHY prefer targeted multi-range excerpts before full-file fallback: large
-    // ordering bugs often need distant sites, but whole-file embedding would
-    // waste prompt budget and still fail on very large files.
-    const orderingSnippet = buildOrderingAwareAnalysisSnippet(content, filePath, line, commentBody);
-    if (orderingSnippet) return orderingSnippet;
-  }
-
-  // Prefer the full numbered file for order/history issues when it fits.
-  // WHY: The bug is often in collection ordering plus the later selection call.
-  const fullFileSnippet = buildNumberedFullFileSnippet(content);
-  const MAX_CONSERVATIVE_ANALYSIS_CHARS = 20_000;
-  if (fullFileSnippet.length <= MAX_CONSERVATIVE_ANALYSIS_CHARS) {
-    return fullFileSnippet;
-  }
-
-  const widened = buildWindowedSnippet(content, line, commentBody);
-  return widened.length <= MAX_CONSERVATIVE_ANALYSIS_CHARS
-    ? widened
-    : widened.slice(0, MAX_CONSERVATIVE_ANALYSIS_CHARS) + '\n... (truncated)';
-}
-
-/**
- * Dedup cache is persisted in state (stateContext.state.dedupCache).
- * WHY: In-memory cache reset each run; audit showed all dedup LLM calls returning NONE on repeat runs.
- * Persisting keyed by sorted comment IDs makes the outcome deterministic for the same set, so we skip
- * the dedup LLM and save tokens/latency when the comment set is unchanged (e.g. re-run or next push iteration).
- */
-
-/**
- * Result of the deduplication process
- */
-interface DedupResult {
-  /** Items to proceed with (canonicals + non-duplicates) */
-  dedupedToCheck: Array<{
-    comment: ReviewComment;
-    codeSnippet: string;
-    contextHints?: string[];
-    resolvedPath?: string;
-  }>;
-  /** Maps canonical commentId -> duplicate commentIds */
-  duplicateMap: Map<string, string[]>;
-  /** Duplicate items keyed by commentId (for context merging) */
-  duplicateItems: Map<string, {
-    comment: ReviewComment;
-    codeSnippet: string;
-    contextHints?: string[];
-  }>;
-}
-
-/**
- * Log duplicate candidate groups for analysis.
- * Phase 0: Observation only - no filtering or behavior change.
- * 
- * Groups issues by file path and line proximity to identify potential duplicates.
- * 
- * @param toCheck Array of issues with snippets to analyze
- */
-function logDuplicateCandidates(
-  toCheck: Array<{
-    comment: ReviewComment;
-    codeSnippet: string;
-    contextHints?: string[];
-  }>,
-  /** Stable commentId → display number mapping, built from toCheck order.
-   *  HISTORY: Originally this function built its own `globalIdx` counter
-   *  sequentially across groups. But heuristicDedup used `toCheck` array
-   *  position for its verdict display — different ordering, different numbers.
-   *  Now both functions share this single map so #7 means the same comment
-   *  everywhere in the output. */
-  idToDisplayNum: Map<string, number>,
-): void {
-  // Skip if too few issues to have meaningful duplicates
-  if (toCheck.length <= 3) {
-    return;
-  }
-
-  // Group by file path
-  const byFile = new Map<string, typeof toCheck>();
-  for (const item of toCheck) {
-    const path = item.comment.path;
-    if (!byFile.has(path)) {
-      byFile.set(path, []);
-    }
-    byFile.get(path)!.push(item);
-  }
-
-  // Find candidate duplicate groups within each file
-  const candidateGroups: Array<{
-    file: string;
-    lineRange: string;
-    items: typeof toCheck;
-    sameAuthor: boolean;
-    authors: Set<string>;
-  }> = [];
-
-  for (const [file, items] of byFile.entries()) {
-    if (items.length < 2) continue;
-
-    // Cluster by line proximity (within 10 lines or both null)
-    const clusters: typeof toCheck[] = [];
-    const processed = new Set<number>();
-
-    for (let i = 0; i < items.length; i++) {
-      if (processed.has(i)) continue;
-
-      const cluster = [items[i]];
-      processed.add(i);
-
-      for (let j = i + 1; j < items.length; j++) {
-        if (processed.has(j)) continue;
-
-        const line1 = items[i].comment.line;
-        const line2 = items[j].comment.line;
-
-        // Check if lines are close or both null
-        const areClose = 
-          (line1 !== null && line2 !== null && Math.abs(line1 - line2) <= 10) ||
-          (line1 === null && line2 === null);
-
-        if (areClose) {
-          cluster.push(items[j]);
-          processed.add(j);
-        }
-      }
-
-      if (cluster.length >= 2) {
-        clusters.push(cluster);
-      }
-    }
-
-    // Record clusters as candidate groups
-    for (const cluster of clusters) {
-      const authors = new Set(cluster.map(item => item.comment.author));
-      const lines = cluster.map(item => item.comment.line).filter(l => l !== null) as number[];
-      const hasNullLine = cluster.some(item => item.comment.line === null);
-      
-      let lineRange: string;
-      if (lines.length === 0) {
-        lineRange = '(both line:null -- may be unrelated)';
-      } else if (lines.length === 1) {
-        lineRange = hasNullLine ? `${lines[0]} + null` : `${lines[0]}`;
-      } else {
-        const min = Math.min(...lines);
-        const max = Math.max(...lines);
-        lineRange = hasNullLine ? `${min}-${max} + null` : `${min}-${max}`;
-      }
-
-      candidateGroups.push({
-        file,
-        lineRange,
-        items: cluster,
-        sameAuthor: authors.size === 1,
-        authors,
-      });
-    }
-  }
-
-  // Log results
-  if (candidateGroups.length === 0) {
-    return; // No logging if no candidates found
-  }
-
-  const totalComments = candidateGroups.reduce((sum, g) => sum + g.items.length, 0);
-  console.log(chalk.gray(`\nDuplicate candidates: ${formatNumber(candidateGroups.length)} group(s), ${formatNumber(totalComments)} comments total`));
-  
-  // Use the shared idToDisplayNum map so "#7" means the same comment here
-  // and in the dedup verdict log. Numbers come from toCheck array position
-  // (1-indexed), so they're stable regardless of how groups are ordered.
-  for (const group of candidateGroups) {
-    const authorInfo = group.sameAuthor 
-      ? `same author: ${[...group.authors][0]}`
-      : 'different authors';
-    
-    console.log(chalk.gray(`  ${group.file}:${group.lineRange} (${formatNumber(group.items.length)} comments, ${authorInfo})`));
-    
-    for (let i = 0; i < group.items.length; i++) {
-      const item = group.items[i];
-      const num = idToDisplayNum.get(item.comment.id) ?? '?';
-      const author = item.comment.author || 'unknown';
-      const preview = item.comment.body.substring(0, 80).replace(/\n/g, ' ');
-      const suffix = item.comment.body.length > 80 ? '...' : '';
-      console.log(chalk.gray(`    #${num} (${author}): "${preview}${suffix}"`));
-    }
-  }
-  console.log(''); // Blank line after the report
-}
-
-/** Extract a primary symbol from comment body (method/function/test target) for same-requirement dedup. */
-function primarySymbolFromBody(body: string): string | null {
-  const backtick = body.match(/`([a-zA-Z_][a-zA-Z0-9_]*)`/);
-  if (backtick) return backtick[1];
-  const method = body.match(/(?:method|function|tests? for)\s+[`']?([a-zA-Z_][a-zA-Z0-9_]*)/i);
-  if (method) return method[1];
-  const has = body.match(/([a-zA-Z_][a-zA-Z0-9_]*)\s+has\s+(?:zero|no)\s+/i);
-  if (has) return has[1];
-  return null;
-}
-
-/** True if both bodies share a same-requirement keyword (avoids merging e.g. "add tests" with "security bug" on same symbol). */
-function bodySimilarityForDedup(body1: string, body2: string, symbol: string | null): boolean {
-  const b1 = body1.toLowerCase();
-  const b2 = body2.toLowerCase();
-  const keywords = ['test', 'tests', 'coverage', 'missing test', 'add test', 'zero test', 'no test', 'patch', 'fix', 'implement'];
-  for (const kw of keywords) {
-    if (b1.includes(kw) && b2.includes(kw)) return true;
-  }
-  if (symbol && b1.includes(symbol.toLowerCase()) && b2.includes(symbol.toLowerCase())) return true;
-  return false;
-}
-
-/** Extract caller/referenced file from comment body (e.g. "runner.py:146", "in runner.py", "callers in X"). Prompts.log audit: same method + same caller = same issue across authors. */
-function callerFileFromBody(body: string): string | null {
-  const m = body.match(/(?:calls?|caller|in|from)\s+[`']?([a-zA-Z0-9_/.()-]+\.(?:py|ts|tsx|js|jsx))[`']?(?::\d+)?/i)
-    ?? body.match(/([a-zA-Z0-9_/.()-]+\.(?:py|ts|tsx|js|jsx))(?::\d+)/);
-  return m ? m[1].trim() : null;
-}
-
-/**
- * Heuristic deduplication: filter obvious duplicates before batch analysis.
- * Phase 1: Zero LLM cost, uses deterministic logic.
- *
- * Criteria for duplicates (stricter than Phase 0 candidates):
- * - Same file (exact path match)
- * - Lines within 10 of each other (both non-null), OR both null
- * - Same author OR (same primary symbol + body similarity) OR (same symbol + same caller file)
- *
- * WHY same-caller: Prompts.log audit showed dedup returning NONE for four comments on the same file; cursor and claude both described the same async/caller mismatch (generate_report + runner.py) but different authors prevented merge. Same symbol + same caller file is a strong signal for "same issue" across bots.
- *
- * @param toCheck Array of issues with snippets
- * @returns DedupResult with filtered list, duplicate map, and duplicate items
- */
-function heuristicDedup(
-  toCheck: Array<{
-    comment: ReviewComment;
-    codeSnippet: string;
-    contextHints?: string[];
-    resolvedPath?: string;
-  }>,
-  /** Shared commentId → display number mapping (same one used in candidate log). */
-  idToDisplayNum: Map<string, number>,
-): DedupResult {
-  const duplicateMap = new Map<string, string[]>();
-  const duplicateItems = new Map<string, typeof toCheck[0]>();
-  const canonicalIds = new Set<string>();
-  const duplicateIds = new Set<string>();
-
-  // Group by file path
-  const byFile = new Map<string, typeof toCheck>();
-  for (const item of toCheck) {
-    const path = item.comment.path;
-    if (!byFile.has(path)) {
-      byFile.set(path, []);
-    }
-    byFile.get(path)!.push(item);
-  }
-
-  // Find duplicate groups within each file
-  for (const [, items] of byFile.entries()) {
-    if (items.length < 2) continue;
-
-    // Cluster by line proximity AND same author (stricter than Phase 0)
-    const clusters: typeof toCheck[] = [];
-    const processed = new Set<number>();
-
-    for (let i = 0; i < items.length; i++) {
-      if (processed.has(i)) continue;
-
-      const cluster = [items[i]];
-      processed.add(i);
-
-      for (let j = i + 1; j < items.length; j++) {
-        if (processed.has(j)) continue;
-
-        const line1 = items[i].comment.line;
-        const line2 = items[j].comment.line;
-        const author1 = items[i].comment.author;
-        const author2 = items[j].comment.author;
-        const symbol1 = primarySymbolFromBody(items[i].comment.body);
-        const symbol2 = primarySymbolFromBody(items[j].comment.body);
-        const sameSymbol = symbol1 && symbol2 && symbol1 === symbol2;
-        const bodySimilar = sameSymbol && bodySimilarityForDedup(items[i].comment.body, items[j].comment.body, symbol1);
-        const caller1 = callerFileFromBody(items[i].comment.body);
-        const caller2 = callerFileFromBody(items[j].comment.body);
-        const sameCaller = caller1 && caller2 && caller1 === caller2;
-
-        // Same author, or (same primary symbol + body similarity), or (same symbol + same caller file — prompts.log audit: async/caller mismatch from different authors)
-        if (author1 !== author2 && !(sameSymbol && (bodySimilar || sameCaller))) continue;
-
-        // Check if lines are close or both null
-        const areClose =
-          (line1 !== null && line2 !== null && Math.abs(line1 - line2) <= 10) ||
-          (line1 === null && line2 === null);
-
-        if (areClose) {
-          cluster.push(items[j]);
-          processed.add(j);
-        }
-      }
-
-      if (cluster.length >= 2) {
-        clusters.push(cluster);
-      }
-    }
-
-    // For each cluster, pick canonical and record duplicates
-    for (const cluster of clusters) {
-      // Pick canonical: longest body, most precise line, earliest createdAt
-      const canonical = cluster.reduce((best, current) => {
-        // 1. Longest comment body wins
-        if (current.comment.body.length > best.comment.body.length) {
-          return current;
-        }
-        if (current.comment.body.length < best.comment.body.length) {
-          return best;
-        }
-
-        // 2. Most precise line reference wins (non-null beats null)
-        if (current.comment.line !== null && best.comment.line === null) {
-          return current;
-        }
-        if (current.comment.line === null && best.comment.line !== null) {
-          return best;
-        }
-
-        // 3. Earliest createdAt wins (tiebreaker)
-        if (current.comment.createdAt < best.comment.createdAt) {
-          return current;
-        }
-
-        return best;
-      });
-
-      // Record canonical and duplicates
-      canonicalIds.add(canonical.comment.id);
-      const dupes = cluster
-        .filter(item => item.comment.id !== canonical.comment.id)
-        .map(item => item.comment.id);
-      
-      duplicateMap.set(canonical.comment.id, dupes);
-      
-      // Store duplicate items for context merging
-      for (const item of cluster) {
-        if (item.comment.id !== canonical.comment.id) {
-          duplicateIds.add(item.comment.id);
-          duplicateItems.set(item.comment.id, item);
-        }
-      }
-    }
-  }
-
-  // Build dedupedToCheck: keep canonicals and non-duplicates
-  const dedupedToCheck = toCheck.filter(item => !duplicateIds.has(item.comment.id));
-
-  // Log results if any deduplication happened
-  if (duplicateMap.size > 0) {
-    const totalDupes = [...duplicateMap.values()].reduce((sum, dupes) => sum + dupes.length, 0);
-    console.log(chalk.gray(
-      `  Dedup: ${formatNumber(duplicateMap.size)} group(s) merged ` +
-      `(${formatNumber(totalDupes + duplicateMap.size)} comments -> ${formatNumber(duplicateMap.size)} canonical)`
-    ));
-    
-    // HISTORY: Previously built a local idToIndex from toCheck array order, but
-    // logDuplicateCandidates used a different globalIdx. Numbers didn't match,
-    // making cross-references impossible (e.g. verdict showed #47 but candidate
-    // log only went to #43). Now both use the shared idToDisplayNum map.
-    for (const [canonicalId, dupes] of duplicateMap.entries()) {
-      const canonical = toCheck.find(item => item.comment.id === canonicalId);
-      if (canonical) {
-        const canonIdx = idToDisplayNum.get(canonicalId) ?? '?';
-        const dupeIdxs = dupes.map(d => `#${idToDisplayNum.get(d) ?? '?'}`).join(', ');
-        const lineInfo = canonical.comment.line !== null ? `:${canonical.comment.line}` : '';
-        console.log(chalk.gray(
-          `    #${canonIdx} [canonical] ${canonical.comment.path}${lineInfo} ← dupes: ${dupeIdxs}`
-        ));
-      }
-    }
-  }
-
-  return {
-    dedupedToCheck,
-    duplicateMap,
-    duplicateItems,
-  };
-}
-
-/**
- * Phase 2: LLM-based semantic deduplication.
- *
- * Takes candidate groups from Phase 0 that heuristic dedup (Phase 1) didn't merge
- * — typically because authors differ or lines are too far apart — and asks the LLM
- * whether they describe the same underlying issue.
- *
- * This catches the pattern where 4 reviewers flag the same corrupted file from
- * different angles (line 50, 62, 440, null) — the heuristic can't see they're all
- * "one file is structurally broken."
- *
- * Cost: One lightweight LLM call with short summaries. Typically <2k tokens.
- */
-async function llmDedup(
-  dedupResult: DedupResult,
-  toCheck: Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[]; resolvedPath?: string }>,
-  llm: LLMClient
-): Promise<DedupResult> {
-  // Find items that survived heuristic dedup — only compare within same file
-  const byFile = new Map<string, Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[]; resolvedPath?: string }>>();
-  for (const item of dedupResult.dedupedToCheck) {
-    const existing = byFile.get(item.comment.path) || [];
-    existing.push(item);
-    byFile.set(item.comment.path, existing);
-  }
-
-  // Process files with 3+ remaining issues. WHY skip LLM for 2: For exactly two comments on a file,
-  // heuristic grouping (same file, line proximity, author) is usually sufficient; the LLM call adds cost with little gain.
-  const filesToCheck = [...byFile.entries()].filter(([, items]) => items.length >= 3);
-  if (filesToCheck.length === 0) return dedupResult;
-
-  debug(`LLM dedup: checking ${filesToCheck.length} file(s) with 3+ issues`);
-
-  const newDuplicateMap = new Map(dedupResult.duplicateMap);
-  const newDuplicateItems = new Map(dedupResult.duplicateItems);
-  const newDuplicateIds = new Set<string>();
-
-  // Run dedup LLM calls in parallel (up to LLM_DEDUP_MAX_CONCURRENT) for speed.
-  // WHY: One call per file; parallelizing cuts total time. ElizaCloud client still
-  // serializes in-flight requests; direct providers get real parallelism.
-  type DedupEntry = [string, Array<{ comment: ReviewComment; codeSnippet: string; contextHints?: string[] }>];
-  type DedupTaskResult = { filePath: string; groups: Array<{ canonical: DedupEntry[1][0]; dupes: DedupEntry[1] }>; error?: string };
-
-  async function runOneDedupFile(entry: DedupEntry): Promise<DedupTaskResult> {
-    const [filePath, items] = entry;
-    const summaries = items.map((item, idx) => {
-      const line = item.comment.line !== null ? ` (line ${item.comment.line})` : '';
-      const preview = sanitizeCommentForPrompt(item.comment.body).substring(0, 400).replace(/\n/g, ' ');
-      // Include a short code snippet so the model can see whether comments reference the same code.
-      const hasSnippet = item.codeSnippet
-        && item.codeSnippet.length > 0
-        && !item.codeSnippet.startsWith('(file not found')
-        && !item.codeSnippet.startsWith('(unreadable');
-      const snippet = hasSnippet
-        ? `\n   Code: ${item.codeSnippet.split('\n').slice(0, 4).join(' | ').substring(0, 200)}`
-        : '';
-      return `[${idx + 1}] ${item.comment.author}${line}: ${preview}${snippet}`;
-    }).join('\n\n');
-    // WHY "same method, different fix" rule: Audit found a bad merge — two comments about the same method required
-    // different fixes (add method vs change call site). Grouping them lost nuance; the rule reduces false groupings.
-    // WHY index-range rule: Cycle 16 returned GROUP lines like "2,5,7" for a 3-comment file; telling the model that
-    // only 1..N are valid indices reduces malformed groups before they reach the parser.
-    const prompt = `Below are ${items.length} review comments on the same file (${filePath}).
-You must decide which comments describe the EXACT SAME underlying problem.
-
-${summaries}
-
-GROUPING RULES (be conservative — wrong merges cause missed fixes):
-- Only group comments that target the SAME line (or same code location). Comments on different line numbers must NOT be grouped.
-- Only group comments if they point to the SAME code location AND fix the SAME specific problem.
-- Comments on DIFFERENT lines, DIFFERENT functions, or that require DIFFERENT fixes must NOT be grouped.
-- "Related" or "thematically similar" is NOT enough — they must be describing the same bug/issue.
-- Same method/symbol but DIFFERENT fix = do NOT group. Example: "Method X doesn't exist" (fix: add the method) and "Method X called with wrong cast" (fix: change the call site) are two different fixes — do not group.
-- When in doubt, do NOT group.
-
-For each group of true duplicates, pick the most detailed comment as canonical.
-
-Valid comment indices in this prompt are 1 through ${items.length} only. Never reference an index outside that range.
-The canonical index MUST be one of the indices listed in its GROUP line.
-
-Reply ONLY with lines like (one per group, no other text):
-GROUP: 1,2 → canonical 2
-GROUP: 1,3 → canonical 3
-
-If no comments are duplicates, reply: NONE`;
-    try {
-      // Always use cheap model for dedup — fast and sufficient; avoids slow default (e.g. qwen-3-14b on ElizaCloud).
-      const response = await llm.completeWithCheapModel(prompt);
-      const content = response.content.trim();
-      const groups: DedupTaskResult['groups'] = [];
-      const groupPattern = /GROUP:\s*([\d,\s]+)\s*→\s*canonical\s*(\d+)/gi;
-      let match;
-      // WHY (Cycle 16): LLM sometimes returns GROUP lines with out-of-range indices (e.g. GROUP: 2,5,7 when only 3 comments).
-      // Applying a filtered subset merges the wrong comments. Reject the entire line when any index is outside [1, N] or canonical not in group.
-      const n = items.length;
-      while ((match = groupPattern.exec(content)) !== null) {
-        const rawIndices = match[1].split(',').map(s => parseInt(s.trim(), 10));
-        const canonicalOneBased = parseInt(match[2], 10);
-        if (canonicalOneBased < 1 || canonicalOneBased > n) continue;
-        const allInRange = rawIndices.every((i) => i >= 1 && i <= n);
-        if (!allInRange || rawIndices.length < 2) continue;
-        if (!rawIndices.includes(canonicalOneBased)) continue;
-        const indices = rawIndices.map((i) => i - 1);
-        const canonicalIdx = canonicalOneBased - 1;
-        const canonical = items[canonicalIdx];
-        const dupes = indices.filter((i) => i !== canonicalIdx).map((i) => items[i]);
-        groups.push({ canonical, dupes });
-      }
-      // Only treat as NONE when no GROUP lines were parsed. Audit: response contained
-      // both "GROUP: 1,2,3 → canonical 3" and "NONE" — the old check discarded valid groups.
-      if (groups.length === 0 && content.toUpperCase().includes('NONE')) {
-        return { filePath, groups: [], error: undefined };
-      }
-      return { filePath, groups };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      debug(`LLM dedup failed for ${filePath}: ${msg}`);
-      return { filePath, groups: [], error: msg };
-    }
-  }
-
-  async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
-    const results: T[] = new Array(tasks.length);
-    let index = 0;
-    async function worker(): Promise<void> {
-      while (index < tasks.length) {
-        const i = index++;
-        results[i] = await tasks[i]();
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, () => worker()));
-    return results;
-  }
-
-  const dedupTasks = filesToCheck.map(entry => () => runOneDedupFile(entry));
-  const dedupResults = await runWithConcurrency(dedupTasks, LLM_DEDUP_MAX_CONCURRENT);
-
-  const dedupFailures = dedupResults.filter((r): r is DedupTaskResult & { error: string } => !!r.error);
-  if (dedupFailures.length > 0) {
-    warn(`LLM dedup failed for ${dedupFailures.length}/${filesToCheck.length} file(s) — proceeding with heuristic-only dedup`);
-    for (const { filePath, error } of dedupFailures) {
-      warn(`  ${filePath}: ${error}`);
-    }
-  }
-
-  // Merge all results into the dedup map
-  for (const { filePath, groups } of dedupResults) {
-    for (const { canonical, dupes } of groups) {
-      const existingDupes = newDuplicateMap.get(canonical.comment.id) || [];
-      for (const dupe of dupes) {
-        if (!existingDupes.includes(dupe.comment.id) && !newDuplicateIds.has(dupe.comment.id)) {
-          existingDupes.push(dupe.comment.id);
-          newDuplicateIds.add(dupe.comment.id);
-          newDuplicateItems.set(dupe.comment.id, dupe);
-        }
-      }
-      newDuplicateMap.set(canonical.comment.id, existingDupes);
-
-      debug(`LLM dedup: merged ${dupes.length} duplicate(s) for ${filePath}:${canonical.comment.line ?? '?'}`);
-    }
-  }
-
-  if (newDuplicateIds.size === 0) return dedupResult;
-
-  // Rebuild dedupedToCheck excluding newly identified duplicates
-  const updatedDeduped = dedupResult.dedupedToCheck.filter(
-    item => !newDuplicateIds.has(item.comment.id)
-  );
-
-  const totalNewDupes = newDuplicateIds.size;
-  console.log(chalk.gray(
-    `  LLM dedup: merged ${totalNewDupes} additional duplicate(s) across ${filesToCheck.length} file(s)`
-  ));
-
-  return {
-    dedupedToCheck: updatedDeduped,
-    duplicateMap: newDuplicateMap,
-    duplicateItems: newDuplicateItems,
-  };
-}
-
-/**
- * Parse line references from a review comment body.
- * Used to expand the code snippet range so the fixer sees all referenced lines.
- *
- * WHY: Review bots (e.g. CodeRabbit) often anchor the comment at line 1 but say "around lines 52 - 93"
- * in the body. getCodeSnippet previously used only comment.line, so the fixer received 15 lines
- * around line 1 and never saw the actual code in question. Parsing refs and merging with the
- * anchor yields a snippet that includes every referenced range.
- *
- * Only matches high-confidence patterns (e.g. "around lines 52 - 93", "at line 128") to avoid
- * false positives like "HTTP 404" or "port 8080". Skips lines that look like shell commands
- * (sed -n, cat -n) from CodeRabbit analysis chains — those contain line numbers from the bot's
- * investigation, not the issue location.
- */
-export function parseLineReferencesFromBody(commentBody: string): number[] {
-  if (!commentBody || !commentBody.trim()) return [];
-
-  const lines = commentBody.split('\n');
-  const collected: number[] = [];
-
-  for (const raw of lines) {
-    // WHY skip: CodeRabbit embeds "Script executed: sed -n '225,245p'" in the comment. Matching
-    // those numbers would add 225–245 to the snippet range even though they refer to the bot's
-    // script output, not the file lines the reviewer is talking about.
-    if (/sed\s+-n|cat\s+-n|head\s+-n|grep\s+-n/.test(raw)) continue;
-
-    // Around lines N - M (CodeRabbit "Prompt for AI Agents" format)
-    const aroundMatch = raw.match(/around\s+lines\s+(\d+)\s*-\s*(\d+)/gi);
-    if (aroundMatch) {
-      for (const m of aroundMatch) {
-        const parts = m.match(/(\d+)\s*-\s*(\d+)/);
-        if (parts) {
-          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
-        }
-      }
-    }
-
-    // lines N-M or lines N - M
-    const linesDashMatch = raw.match(/\blines\s+(\d+)\s*[-–]\s*(\d+)/gi);
-    if (linesDashMatch) {
-      for (const m of linesDashMatch) {
-        const parts = m.match(/(\d+)\s*[-–]\s*(\d+)/);
-        if (parts) {
-          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
-        }
-      }
-    }
-
-    // lines N to M / lines N through M
-    const linesToMatch = raw.match(/\blines\s+(\d+)\s+to\s+(\d+)/gi);
-    if (linesToMatch) {
-      for (const m of linesToMatch) {
-        const parts = m.match(/(\d+)\s+to\s+(\d+)/i);
-        if (parts) {
-          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
-        }
-      }
-    }
-    const linesThroughMatch = raw.match(/\blines\s+(\d+)\s+through\s+(\d+)/gi);
-    if (linesThroughMatch) {
-      for (const m of linesThroughMatch) {
-        const parts = m.match(/(\d+)\s+through\s+(\d+)/i);
-        if (parts) {
-          collected.push(parseInt(parts[1], 10), parseInt(parts[2], 10));
-        }
-      }
-    }
-
-    // at line N / on line N
-    const atOnMatch = raw.match(/(?:at|on)\s+line\s+(\d+)/gi);
-    if (atOnMatch) {
-      for (const m of atOnMatch) {
-        const n = m.match(/(\d+)/);
-        if (n) collected.push(parseInt(n[1], 10));
-      }
-    }
-
-    // Line N (capital L, e.g. "Line 128 calls")
-    const lineCapMatch = raw.match(/\bLine\s+(\d+)/g);
-    if (lineCapMatch) {
-      for (const m of lineCapMatch) {
-        const n = m.match(/(\d+)/);
-        if (n) collected.push(parseInt(n[1], 10));
-      }
-    }
-
-    // line N (word boundary avoids "pipeline", "deadline")
-    const lineMatch = raw.match(/\bline\s+(\d+)/gi);
-    if (lineMatch) {
-      for (const m of lineMatch) {
-        const n = m.match(/(\d+)/);
-        if (n) collected.push(parseInt(n[1], 10));
-      }
-    }
-
-    // #LN or #LN-LM (LOCATIONS-style)
-    const hashMatch = raw.match(/#L(\d+)(?:-L(\d+))?/g);
-    if (hashMatch) {
-      for (const m of hashMatch) {
-        const parts = m.match(/#L(\d+)(?:-L(\d+))?/);
-        if (parts) {
-          collected.push(parseInt(parts[1], 10));
-          if (parts[2]) collected.push(parseInt(parts[2], 10));
-        }
-      }
-    }
-  }
-
-  const unique = [...new Set(collected)].filter((n) => n > 0);
-  unique.sort((a, b) => a - b);
-  return unique;
-}
-
-/**
- * Get code snippet from file for context
- */
-export async function getCodeSnippet(
-  workdir: string,
-  path: string,
-  line: number | null,
-  commentBody?: string
-): Promise<string> {
-  try {
-    const filePath = join(workdir, path);
-    const content = await readFile(filePath, 'utf-8');
-    const lines = content.split('\n');
-
-    // WHY unified anchors: A comment may have comment.line=11 (GitHub API) and body text
-    // "around lines 52 - 93". Using only one or the other would show the wrong code. Merging
-    // all sources and taking min/max yields one contiguous range that includes every referenced line.
-    const anchors = new Set<number>();
-    if (line !== null) anchors.add(line);
-
-    let startLine: number | null = line;
-    let endLine: number | null = line;
-
-    if (startLine === null && commentBody) {
-      const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
-      if (locationsMatch) {
-        const locationLines = locationsMatch[1].trim().split('\n');
-        for (const loc of locationLines) {
-          const lineMatch = loc.match(/#L(\d+)(?:-L(\d+))?/);
-          if (lineMatch) {
-            startLine = parseInt(lineMatch[1], 10);
-            endLine = lineMatch[2] ? parseInt(lineMatch[2], 10) : startLine + 20;
-            anchors.add(startLine);
-            if (endLine !== null) anchors.add(endLine);
-            break;
-          }
-        }
-      }
-    }
-
-    if (commentBody) {
-      const fromBody = parseLineReferencesFromBody(commentBody);
-      fromBody.forEach((n) => anchors.add(n));
-      if (fromBody.length > 0 && startLine === null) {
-        startLine = fromBody[0]!;
-        endLine = fromBody[fromBody.length - 1]!;
-      }
-    }
-
-    if (startLine === null && commentBody) {
-      const keywordLine = findAnchorLineFromCommentKeywords(lines, commentBody);
-      if (keywordLine !== null) {
-        anchors.add(keywordLine);
-        startLine = keywordLine;
-        endLine = keywordLine;
-      }
-    }
-
-    // When the comment references lines beyond the file length, the file was likely
-    // shortened/rewritten and the comment is stale. Provide the full file (if small)
-    // so the verifier can see the code is gone rather than defaulting to YES.
-    const maxAnchorAll = anchors.size > 0 ? Math.max(...anchors) : null;
-    const commentRefsBeyondFile = maxAnchorAll !== null && maxAnchorAll > lines.length;
-
-    // Small file or stale-reference: return entire file with (end of file) marker
-    const SMALL_FILE_FULL_THRESHOLD = 250;
-    if (lines.length <= SMALL_FILE_FULL_THRESHOLD || commentRefsBeyondFile) {
-      const note = commentRefsBeyondFile
-        ? `end of file — ${lines.length} lines total; comment references line ${maxAnchorAll} which no longer exists`
-        : `end of file — ${lines.length} lines total`;
-      return buildNumberedFullFileSnippet(content, note);
-    }
-
-    if (commentBody && commentNeedsConservativeAnalysisContext(commentBody)) {
-      const conservativeSnippet = buildConservativeAnalysisSnippet(content, path, line, commentBody);
-      if (conservativeSnippet) return conservativeSnippet;
-    }
-
-    if (startLine === null) {
-      // No anchors: return first 50 lines
-      return lines.slice(0, 50).join('\n') + `\n... (${lines.length - 50} more lines)`;
-    }
-
-    // Use union of anchors for range when we have body-derived refs
-    const minAnchor = anchors.size > 0 ? Math.min(...anchors) : startLine;
-    const maxAnchor = anchors.size > 0 ? Math.max(...anchors) : (endLine ?? startLine);
-
-    let start = Math.max(0, minAnchor - CODE_SNIPPET_CONTEXT_BEFORE - 1);
-    let end = Math.min(lines.length, maxAnchor + CODE_SNIPPET_CONTEXT_AFTER);
-
-    if (end - start > MAX_SNIPPET_LINES) {
-      const center = Math.floor((minAnchor + maxAnchor) / 2);
-      const half = Math.floor(MAX_SNIPPET_LINES / 2);
-      start = Math.max(0, center - half - 1);
-      end = Math.min(lines.length, start + MAX_SNIPPET_LINES);
-    }
-
-    const snippet = lines
-      .slice(start, end)
-      .map((l, i) => `${start + i + 1}: ${l}`)
-      .join('\n');
-
-    // Append (end of file) when snippet reaches the last line, or truncation marker otherwise
-    if (end >= lines.length) {
-      return snippet + `\n(end of file — ${lines.length} lines total)`;
-    }
-    return snippet + `\n... (truncated — file has ${lines.length} lines total)`;
-  } catch {
-    const createFileSnippet = await buildMissingCreateFileSnippet(workdir, path, commentBody);
-    if (createFileSnippet) return createFileSnippet;
-    return '(file not found or unreadable)';
-  }
-}
-
-/** Max size for full-file content in final audit (avoid huge prompts / context overflow). */
-const MAX_FULL_FILE_AUDIT_CHARS = 50_000;
-
-/** Max chars for wider snippet in batch analysis when initial snippet is too short (prompts.log audit: verifier said "snippet truncated"). */
-const MAX_WIDER_SNIPPET_ANALYSIS_CHARS = 12_000;
-
-const WIDER_SNIPPET_LINES = 80;
-
-/** Extract code-like tokens from comment body to anchor snippet when no line number. Prompts.log audit: first 80 lines showed only imports/class header; buggy code was deeper. */
-function findAnchorLineFromCommentKeywords(lines: string[], commentBody: string | undefined): number | null {
-  if (!commentBody || lines.length === 0) return null;
-  const tokens: string[] = [];
-  const backtickRe = /`([a-zA-Z_][a-zA-Z0-9_.]*?)`/g;
-  let m: RegExpExecArray | null;
-  while ((m = backtickRe.exec(commentBody)) !== null) {
-    if (m[1].length > 2) tokens.push(m[1]);
-  }
-  const snakeCamelRe = /\b([a-z]+_[a-z0-9_]+|[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*)\b/g;
-  while ((m = snakeCamelRe.exec(commentBody)) !== null) {
-    if (m[1].length > 3) tokens.push(m[1]);
-  }
-  const seen = new Set<string>();
-  const unique = tokens.filter((t) => {
-    if (seen.has(t)) return false;
-    seen.add(t);
-    return true;
-  });
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    for (const token of unique) {
-      if (token.length < 4) continue;
-      const re = new RegExp(`\\b${escapeRegExpForSnippet(token)}\\b`);
-      if (re.test(line)) return i + 1;
-    }
-  }
-  return null;
-}
-
-function escapeRegExpForSnippet(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** Shared windowing: parse anchors from line + commentBody, center an 80-line window, cap at MAX_WIDER_SNIPPET_ANALYSIS_CHARS. */
-function buildWindowedSnippet(
-  fileContent: string,
-  line: number | null,
-  commentBody?: string
-): string {
-  const lines = fileContent.split('\n');
-  const anchors = new Set<number>();
-  if (line !== null) anchors.add(line);
-  let startLine: number | null = line;
-  let endLine: number | null = line;
-  if (startLine === null && commentBody) {
-    const locationsMatch = commentBody.match(/LOCATIONS START\s*([\s\S]*?)\s*LOCATIONS END/);
-    if (locationsMatch) {
-      const locationLines = locationsMatch[1].trim().split('\n');
-      for (const loc of locationLines) {
-        const lineMatch = loc.match(/#L(\d+)(?:-L(\d+))?/);
-        if (lineMatch) {
-          startLine = parseInt(lineMatch[1], 10);
-          endLine = lineMatch[2] ? parseInt(lineMatch[2], 10) : startLine + 20;
-          anchors.add(startLine);
-          if (endLine !== null) anchors.add(endLine);
-          break;
-        }
-      }
-    }
-  }
-  if (commentBody) {
-    const fromBody = parseLineReferencesFromBody(commentBody);
-    fromBody.forEach((n) => anchors.add(n));
-    if (fromBody.length > 0 && startLine === null) {
-      startLine = fromBody[0]!;
-      endLine = fromBody[fromBody.length - 1]!;
-    }
-  }
-  if (startLine === null && anchors.size === 0 && commentBody) {
-    const keywordLine = findAnchorLineFromCommentKeywords(lines, commentBody);
-    if (keywordLine !== null) {
-      anchors.add(keywordLine);
-      startLine = keywordLine;
-      endLine = keywordLine;
-    }
-  }
-  const halfWindow = Math.floor(WIDER_SNIPPET_LINES / 2);
-  let start: number;
-  let end: number;
-  if (startLine !== null || anchors.size > 0) {
-    const minAnchor = anchors.size > 0 ? Math.min(...anchors) : startLine!;
-    const maxAnchor = anchors.size > 0 ? Math.max(...anchors) : (endLine ?? startLine!);
-    const center = Math.floor((minAnchor + maxAnchor) / 2);
-    start = Math.max(0, center - 1 - halfWindow);
-    end = Math.min(lines.length, start + WIDER_SNIPPET_LINES);
-  } else {
-    start = 0;
-    end = Math.min(lines.length, WIDER_SNIPPET_LINES);
-  }
-  const slice = lines
-    .slice(start, end)
-    .map((l, i) => `${start + i + 1}: ${l}`)
-    .join('\n');
-  return slice.length > MAX_WIDER_SNIPPET_ANALYSIS_CHARS
-    ? slice.substring(0, MAX_WIDER_SNIPPET_ANALYSIS_CHARS) + '\n... (truncated)'
-    : slice;
-}
-
-/**
- * Return a wider file excerpt for batch analysis when the normal snippet is too short.
- * Gives the verifier enough context to avoid "snippet truncated; cannot verify" YES responses.
- * Uses same anchor logic as getCodeSnippet (line + commentBody LOCATIONS + parseLineReferencesFromBody) so the window is centered on the relevant range.
- */
-export async function getWiderSnippetForAnalysis(
-  workdir: string,
-  path: string,
-  line: number | null,
-  commentBody?: string
-): Promise<string> {
-  try {
-    const filePath = join(workdir, path);
-    const content = await readFile(filePath, 'utf-8');
-    return buildWindowedSnippet(content, line, commentBody);
-  } catch {
-    return '(file not found or unreadable)';
-  }
-}
-
-/** Build a snippet from raw file content. Used when file is not in workdir but we have content from git show. */
-function buildSnippetFromRepoContent(
-  content: string,
-  line: number | null,
-  commentBody?: string,
-  filePath = '(repo content)'
-): string {
-  if (commentBody && commentNeedsConservativeAnalysisContext(commentBody)) {
-    const conservativeSnippet = buildConservativeAnalysisSnippet(content, filePath, line, commentBody);
-    if (conservativeSnippet) return conservativeSnippet;
-  }
-  return buildWindowedSnippet(content, line, commentBody);
-}
-
-function isLikelyCreateFilePath(path: string): boolean {
-  return /(?:^|\/)__tests__\/|(?:^|\/)[^/]+\.(?:test|spec)\.(?:ts|tsx|js|jsx)$/i.test(path);
-}
-
-function inferSourceCandidatesFromMissingTestPath(testPath: string, commentBody?: string): string[] {
-  const candidates: string[] = [];
-  const seen = new Set<string>();
-  const add = (value: string | undefined) => {
-    if (!value || seen.has(value)) return;
-    seen.add(value);
-    candidates.push(value);
-  };
-
-  add(testPath.replace(/\/__tests__\//g, '/').replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/i, '.$2'));
-  add(testPath.replace(/\.(test|spec)\.(ts|tsx|js|jsx)$/i, '.$2'));
-
-  const referencedPaths = commentBody?.match(/`([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|tsx|js|jsx))`/g) ?? [];
-  for (const ref of referencedPaths) add(ref.replace(/`/g, ''));
-
-  return candidates;
-}
-
-/**
- * Build context for issues whose target file does not exist yet.
- *
- * WHY: Missing test/spec files should not degrade to the generic unreadable-file
- * placeholder. The fixer needs to see that the correct action is "create this
- * file", ideally with nearby source context when we can infer it.
- */
-async function buildMissingCreateFileSnippet(
-  workdir: string,
-  missingPath: string,
-  commentBody?: string
-): Promise<string | null> {
-  if (!isLikelyCreateFilePath(missingPath)) return null;
-
-  const intro = [
-    `Requested new file \`${missingPath}\` does not exist yet.`,
-    'Treat this as a create-file issue and add the missing test/spec file.',
-  ];
-
-  for (const candidate of inferSourceCandidatesFromMissingTestPath(missingPath, commentBody)) {
-    try {
-      const content = await readFile(join(workdir, candidate), 'utf-8');
-      return [
-        ...intro,
-        '',
-        `Nearby source context from \`${candidate}\`:`,
-        '',
-        buildSnippetFromRepoContent(content, null, commentBody, candidate),
-      ].join('\n');
-    } catch {
-      // Try the next candidate.
-    }
-  }
-
-  if (commentBody?.trim()) {
-    return [...intro, '', 'Review comment:', sanitizeCommentForPrompt(commentBody)].join('\n');
-  }
-  return intro.join('\n');
-}
-
-/**
- * Get full file content for final audit so the LLM sees complete context
- * instead of truncated snippets that can cause false "UNFIXED" verdicts.
- */
-export async function getFullFileForAudit(workdir: string, path: string): Promise<string> {
-  try {
-    const filePath = join(workdir, path);
-    const content = await readFile(filePath, 'utf-8');
-    if (content.length > MAX_FULL_FILE_AUDIT_CHARS) {
-      const lines = content.split('\n');
-      const keep = Math.floor(MAX_FULL_FILE_AUDIT_CHARS / 80);
-      return lines
-        .slice(0, keep)
-        .map((l, i) => `${i + 1}: ${l}`)
-        .join('\n')
-        + `\n... (${lines.length - keep} more lines omitted for size)`;
-    }
-    return content
-      .split('\n')
-      .map((l, i) => `${i + 1}: ${l}`)
-      .join('\n');
-  } catch {
-    return '(file not found or unreadable)';
-  }
-}
-
-/**
- * Find which review comments still represent unresolved issues
- */
 /** Optional options for findUnresolvedIssues (e.g. line map from git diff for post-push). */
 export type FindUnresolvedIssuesOptions = {
   /** Map path -> (oldLine -> newLine) from git diff base..HEAD. Use when code moved so comment line refs stay valid. */
@@ -1298,17 +119,22 @@ function getAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string,
   const issueLike = { comment: { ...comment, path: primaryPath }, codeSnippet, stillExists: true, explanation: explanation ?? '' };
   const testPath = getTestPathForSourceFileIssue(issueLike, { forceTestPath: reviewSuggestsFixInTest(comment.body ?? '') });
   const renameTarget = getRenameTargetPath(issueLike);
-  const extraPaths = [testPath, renameTarget].filter((p): p is string => Boolean(p));
+  const hiddenTestTargets = getMentionedTestFilePaths(issueLike);
+  const extraPaths = [testPath, renameTarget, ...hiddenTestTargets].filter((p): p is string => Boolean(p));
   if (extraPaths.length === 0) return undefined;
   return filterAllowedPathsForFix([primaryPath, ...extraPaths]);
 }
 
-/** Allowed paths for a new issue: test path when relevant, plus any paths listed in "delete/remove these files" body. */
+/** Allowed paths for a new issue: test path when relevant, plus any paths listed in "delete/remove these files" body. Never returns []. */
 function getEffectiveAllowedPathsForNewIssue(comment: ReviewComment, primaryPath: string, codeSnippet: string, explanation: string | undefined): string[] {
   const base = getAllowedPathsForNewIssue(comment, primaryPath, codeSnippet, explanation) ?? [primaryPath];
   const deletePaths = getPathsToDeleteFromCommentBody(comment.body ?? '');
-  if (deletePaths.length === 0) return base;
-  return filterAllowedPathsForFix([...base, ...deletePaths]);
+  if (deletePaths.length === 0) {
+    const filtered = filterAllowedPathsForFix(base);
+    return filtered.length > 0 ? filtered : [primaryPath];
+  }
+  const merged = filterAllowedPathsForFix([...base, ...deletePaths]);
+  return merged.length > 0 ? merged : [primaryPath];
 }
 
 /** When comment.path is a basename (no directory), resolve to full path from diff if present. Prompts.log audit: fixer was sent wrong file (root reporting.py) when issue was about benchmarks/bfcl/reporting.py. */
@@ -1323,8 +149,8 @@ function resolvePathFromDiff(commentPath: string, changedFiles: string[] | undef
 function isCommentPositiveOnly(body: string): boolean {
   if (!body || body.length > 2000) return false;
   const trimmed = body.trim();
-  if (!/(?:^|\n)#*\s*✅\s*What's Good|Documentation:.*are now accurate|only contains positive feedback|looks clean and follows .*spec|nice work on the frontmatter structure|no hardcoded credentials|doesn'?t expose any sensitive APIs|no security (?:issues|concerns) identified/i.test(trimmed)) return false;
-  if (/\b(?:fix|change|should|incorrect|missing|add|remove|update|⚠️|❌|issue\s+(is|with)|bug|error)\b/i.test(trimmed)) return false;
+  if (!/(?:^|\n)#*\s*✅\s*What's Good|Documentation:.*are now accurate|only contains positive feedback|looks clean and follows .*spec|nice work on the frontmatter structure|no hardcoded credentials|doesn'?t expose any sensitive APIs|no security (?:issues|concerns) identified|correctly reflects|nice attention to detail|(?:docs?|documentation) in sync/i.test(trimmed)) return false;
+  if (/\b(?:fix|change|should|incorrect|missing|add|remove|update|⚠️|❌|issue\s+(is|with)|bug|error|concern)\b/i.test(trimmed)) return false;
   return true;
 }
 
@@ -1376,8 +202,28 @@ export async function findUnresolvedIssues(
 
   const iterationCount = stateContext.state?.iterations?.length ?? 0;
   const effectiveExpiry = getVerificationExpiryForIterationCount(iterationCount);
-  const staleVerifications = Verification.getStaleVerifications(stateContext, effectiveExpiry);
-  
+  const staleVerificationsRaw = Verification.getStaleVerifications(stateContext, effectiveExpiry);
+  // WHY: output.log audit — don't re-check or unmark comments just recovered from git this run.
+  const recoveredIds = stateContext.state?.recoveredFromGitCommentIds;
+  const recoveredSet = recoveredIds?.length ? new Set(recoveredIds) : undefined;
+  if (recoveredIds?.length) {
+    stateContext.state!.recoveredFromGitCommentIds = undefined;
+  }
+  let staleVerifications = recoveredIds?.length
+    ? staleVerificationsRaw.filter((id) => !recoveredIds.includes(id))
+    : staleVerificationsRaw;
+  const changedFiles = findUnresolvedIssuesOptions?.changedFiles;
+  if (changedFiles?.length) {
+    // Only re-check stale verifications for comments whose file changed (output.log audit).
+    const changedSet = new Set(changedFiles);
+    staleVerifications = staleVerifications.filter((id) => {
+      const c = comments.find((co) => co.id === id);
+      if (!c?.path) return true;
+      if (changedSet.has(c.path)) return true;
+      return [...changedSet].some((f) => f.endsWith('/' + c.path) || c.path.endsWith('/' + f));
+    });
+  }
+
   // First pass: filter out already-verified issues, run solvability checks (sync),
   // then batch-fetch all code snippets concurrently.
   // WHY two-phase: Solvability checks are synchronous (file existence, attempt counts)
@@ -1392,7 +238,6 @@ export async function findUnresolvedIssues(
   }> = [];
 
   // Phase 1: Sync filtering (verified, solvability)
-  const changedFiles = findUnresolvedIssuesOptions?.changedFiles;
   const needSnippets: Array<{
     comment: ReviewComment;
     snippetLine: number | null;
@@ -1401,11 +246,8 @@ export async function findUnresolvedIssues(
   }> = [];
 
   for (const comment of comments) {
-    // GitHub marks threads as outdated when the commented line no longer exists in the current diff.
-    // Treat them as not unaddressed so PRR's list matches the PR conversation view.
-    if (comment.outdated) {
-      continue;
-    }
+    // WHY not skip outdated: GitHub "outdated" means the diff hunk moved, not that the issue is fixed
+    // (DEVELOPMENT.md §2). Still run solvability + LLM existence check so we don't miss bugs that remain.
 
     const isStale = staleVerifications.includes(comment.id);
     
@@ -1453,7 +295,9 @@ export async function findUnresolvedIssues(
       continue;
     }
 
-    if ((stateContext.state?.couldNotInjectCountByCommentId?.[comment.id] ?? 0) >= COULD_NOT_INJECT_DISMISS_THRESHOLD) {
+    const couldNotInjectCount = stateContext.state?.couldNotInjectCountByCommentId?.[comment.id] ?? 0;
+    const couldNotInjectThreshold = looksLikeCreateFileIssue(comment) ? COULD_NOT_INJECT_CREATE_FILE_THRESHOLD : COULD_NOT_INJECT_DISMISS_THRESHOLD;
+    if (couldNotInjectCount >= couldNotInjectThreshold) {
       Dismissed.dismissIssue(
         stateContext,
         comment.id,
@@ -1470,6 +314,21 @@ export async function findUnresolvedIssues(
     // Deterministic solvability check (zero LLM cost)
     const solvability = assessSolvability(workdir, comment, stateContext);
     if (!solvability.solvable) {
+      // Pill cycle 2 #6: Auto-verify after N ALREADY_FIXED verdicts instead of dismissing
+      if (solvability.autoVerify && solvability.dismissCategory === 'already-fixed') {
+        debug('Auto-verifying issue after multiple ALREADY_FIXED verdicts', {
+          commentId: comment.id,
+          path: comment.path,
+          reason: solvability.reason,
+        });
+        Verification.markVerified(stateContext, comment.id);
+        // Add to verifiedThisSession if available (it's set on stateContext)
+        if (stateContext.verifiedThisSession) {
+          stateContext.verifiedThisSession.add(comment.id);
+        }
+        continue;
+      }
+      
       // CRITICAL: dismissIssue ONLY — do NOT call markVerified.
       // If the file comes back (revert, re-add), we want to re-analyze it.
       const reason = solvability.reason ?? `Issue not solvable (${solvability.dismissCategory ?? 'unknown'})`;
@@ -1483,6 +342,37 @@ export async function findUnresolvedIssues(
         comment.body,
         solvability.remediationHint
       );
+      
+      // Pill #7: Cascade dismissal to sibling sub-items when dismissing for outdated model advice
+      // (same file+line means same underlying issue; all sub-items should be dismissed consistently)
+      if (solvability.dismissCategory === 'not-an-issue' && /outdated.*model/i.test(reason)) {
+        const match = /^ic-(\d+)-(\d+)$/.exec(comment.id);
+        if (match) {
+          const parentId = match[1];
+          const siblings = comments.filter(c => 
+            c.id.startsWith(`ic-${parentId}-`) && 
+            c.id !== comment.id &&
+            c.path === comment.path &&
+            c.line === comment.line
+          );
+          for (const sibling of siblings) {
+            if (!Dismissed.isCommentDismissed(stateContext, sibling.id) && !Verification.isVerified(stateContext, sibling.id)) {
+              Dismissed.dismissIssue(
+                stateContext,
+                sibling.id,
+                `${reason} (cascaded from sibling sub-item)`,
+                solvability.dismissCategory!,
+                sibling.path,
+                sibling.line,
+                sibling.body,
+                solvability.remediationHint
+              );
+              debug('Cascaded dismissal to sibling sub-item', { parent: comment.id, sibling: sibling.id, category: solvability.dismissCategory });
+            }
+          }
+        }
+      }
+      
       if (solvability.dismissCategory === 'stale') {
         dismissedStaleFiles++;
       } else if (solvability.dismissCategory === 'chronic-failure') {
@@ -1512,9 +402,12 @@ export async function findUnresolvedIssues(
         'This is a lifecycle/order-sensitive issue. Answer NO only if the shown code provides concrete evidence that the full behavior is now correct.',
       ];
     }
+    // resolvedPath: solvability first, then rename/diff hints, then PR-scoped basename tie-break.
+    // WHY resolveTrackedPathWithPrFiles last: bare filenames can match many tracked files; the PR
+    // diff list disambiguates to the path actually changed on this branch (DEVELOPMENT.md — path accounting).
     const resolvedPath = solvability.resolvedPath
       ?? resolvePathFromDiff(comment.path, changedFiles)
-      ?? resolveTrackedPath(workdir, comment.path, comment.body)
+      ?? resolveTrackedPathWithPrFiles(workdir, comment.path, comment.body ?? '', changedFiles)
       ?? undefined;
     needSnippets.push({ comment, snippetLine, contextHints, resolvedPath });
   }
@@ -1566,7 +459,12 @@ export async function findUnresolvedIssues(
   // re-ran LLM dedup (~200k chars wasted). Reuse grouping for full set and filter to current toCheck.
   const allCommentIds = comments.map(c => c.id).sort().join(',');
   const persisted = stateContext.state?.dedupCache;
-  const dedupCacheHit = persisted?.commentIds === allCommentIds && Array.isArray(persisted.dedupedIds) && persisted.duplicateMap && typeof persisted.duplicateMap === 'object';
+  const dedupCacheHit =
+    persisted?.commentIds === allCommentIds &&
+    Array.isArray(persisted.dedupedIds) &&
+    persisted.duplicateMap &&
+    typeof persisted.duplicateMap === 'object' &&
+    persisted.schema === 'dedup-v2';
 
   let dedupResult: DedupResult;
 
@@ -1617,13 +515,19 @@ export async function findUnresolvedIssues(
       };
     }
 
-    // Phase 2: LLM semantic deduplication (catches what heuristics miss)
-    // Only runs when files have 3+ remaining issues — lightweight, typically <2k tokens.
+    // Phase 2: LLM semantic deduplication (catches what heuristics miss).
+    // Phase 3: Cross-file root-cause dedup (gated on 5+ survivors, one cheap-model call).
     // Rate limits: global 1 concurrent + 6s delay + 429 retry backoff keep us under 10/min.
     try {
       dedupResult = await llmDedup(dedupResult, toCheck, llm);
     } catch (err) {
       warn(`LLM dedup failed, proceeding with heuristic-only results: ${err}`);
+    }
+
+    try {
+      dedupResult = await crossFileDedup(dedupResult, llm);
+    } catch (err) {
+      warn(`Cross-file dedup failed, proceeding without it: ${err}`);
     }
 
     // Persist dedup results keyed by full comment set so next run (or push iteration) can skip LLM when comments unchanged.
@@ -1632,6 +536,8 @@ export async function findUnresolvedIssues(
         commentIds: allCommentIds,
         duplicateMap: Object.fromEntries(dedupResult.duplicateMap),
         dedupedIds: dedupResult.dedupedToCheck.map(item => item.comment.id),
+        // WHY versioned: cross-file phase invalidates caches written before schema existed.
+        schema: 'dedup-v2',
       };
     }
   }
@@ -1743,13 +649,13 @@ export async function findUnresolvedIssues(
   }
 
   if (options.reverify && skippedCache > 0) {
-    console.log(chalk.yellow(`  --reverify: Re-checking ${skippedCache} previously cached as "fixed"`));
+    console.log(chalk.yellow(`  --reverify: Re-checking ${formatNumber(skippedCache)} previously cached as "fixed"`));
   } else if (alreadyResolved > 0) {
-    console.log(chalk.gray(`  ${alreadyResolved} already verified as fixed (cached)`));
+    console.log(chalk.gray(`  ${formatNumber(alreadyResolved)} already verified as fixed (cached)`));
   }
   
   if (staleRecheck > 0) {
-    console.log(chalk.yellow(`  ${staleRecheck} stale verifications (>${effectiveExpiry} iterations old) - re-checking`));
+    console.log(chalk.yellow(`  ${formatNumber(staleRecheck)} stale verifications (>${formatNumber(effectiveExpiry)} iterations old) - re-checking`));
   }
 
   // Report comment status stats
@@ -1799,10 +705,13 @@ export async function findUnresolvedIssues(
       const fHash = fileHashes.get(comment.path) || '__missing__';
       if (result.stale) {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', result.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: result.explanation });
       } else if (result.exists) {
         CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', result.explanation, 3, 3, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: result.explanation, importance: 3, ease: 3 });
       } else {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', result.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: result.explanation });
       }
 
       if (result.stale) {
@@ -1915,31 +824,42 @@ export async function findUnresolvedIssues(
   } else {
     // Batch mode - one LLM call for all comments
     console.log(chalk.gray(`  Batch analyzing ${formatNumber(freshToAnalyze.length)} comments with LLM...`));
-    // Prompts.log audit: when snippet is too short, verifier returns "snippet truncated; cannot verify". Expand once before sending.
-    const batchInput = await Promise.all(
-      freshToAnalyze.map(async (item, index) => {
+    // Prompts.log audit (Cycle 38): one snippet per file so we don't send the same file content twice for multiple issues on the same file (token saving).
+    // When snippet is too short or a11y, expand once per file. When file not in workdir, try getFileContentFromRepo once per file.
+    const pathToFirstIndex = new Map<string, number>();
+    for (let i = 0; i < freshToAnalyze.length; i++) {
+      const p = freshToAnalyze[i]!.resolvedPath ?? freshToAnalyze[i]!.comment.path;
+      if (!pathToFirstIndex.has(p)) pathToFirstIndex.set(p, i);
+    }
+    const snippetByPath = new Map<string, string>();
+    await Promise.all(
+      [...pathToFirstIndex.entries()].map(async ([primaryPath, firstIndex]) => {
+        const item = freshToAnalyze[firstIndex]!;
         let codeSnippet = item.codeSnippet;
-        const primaryPath = item.resolvedPath ?? item.comment.path;
-        if (isSnippetTooShort(codeSnippet)) {
+        if (isSnippetTooShort(codeSnippet) || commentAsksForAccessibility(item.comment.body)) {
           codeSnippet = await getWiderSnippetForAnalysis(workdir, primaryPath, item.comment.line, item.comment.body);
         }
-        // When file was not in workdir, try reading from repo (e.g. git show HEAD:path) so verifier has context.
         if (codeSnippet === '(file not found or unreadable)' && findUnresolvedIssuesOptions?.getFileContentFromRepo) {
           const content = await findUnresolvedIssuesOptions.getFileContentFromRepo(primaryPath);
           if (content) {
             codeSnippet = buildSnippetFromRepoContent(content, item.comment.line, item.comment.body, primaryPath);
           }
         }
-        return {
-          id: `issue_${index + 1}`,
-          comment: sanitizeCommentForPrompt(item.comment.body),
-          filePath: primaryPath,
-          line: item.comment.line,
-          codeSnippet,
-          contextHints: item.contextHints,
-        };
+        snippetByPath.set(primaryPath, codeSnippet);
       })
     );
+    const batchInput = freshToAnalyze.map((item, index) => {
+      const primaryPath = item.resolvedPath ?? item.comment.path;
+      const codeSnippet = snippetByPath.get(primaryPath) ?? item.codeSnippet;
+      return {
+        id: `issue_${index + 1}`,
+        comment: sanitizeCommentForPrompt(item.comment.body),
+        filePath: primaryPath,
+        line: item.comment.line,
+        codeSnippet,
+        contextHints: item.contextHints,
+      };
+    });
 
     // Build model context for smart model selection (unless --model-rotation is set)
     let modelContext: ModelRecommendationContext | undefined;
@@ -1973,7 +893,7 @@ export async function findUnresolvedIssues(
       const maxIssuesPerBatch = overrides?.maxIssuesPerBatch;
       for (let attempt = 0; ; attempt++) {
         try {
-          return await llm.batchCheckIssuesExist(input, modelContext, maxContextChars, maxIssuesPerBatch);
+          return await llm.batchCheckIssuesExist(input, modelContext, maxContextChars, maxIssuesPerBatch, 'batch-verify');
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           const isTransient = /500|502|504|timeout|gateway|ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg);
@@ -2057,7 +977,7 @@ export async function findUnresolvedIssues(
       if (r?.exists && !Verification.isVerified(stateContext, freshToAnalyze[i].comment.id)) toFixFromBatch++;
     }
     const toFixCount = toFixFromBatch + cachedOpenNotInBatch;
-    if (toFixCount >= 5 && modelContext?.availableModels?.length) {
+    if (toFixCount >= 5 && (modelContext?.availableModels?.length ?? 0) > 1) {
       const summaryLines = [...batchResult.issues.entries()].map(([id, r]) => {
         const triage = r.exists ? ` I${r.importance} D${r.ease}` : '';
         const snippet = r.explanation.slice(0, 200).replace(/\n/g, ' ');
@@ -2099,6 +1019,8 @@ export async function findUnresolvedIssues(
     // Process results
     for (let i = 0; i < freshToAnalyze.length; i++) {
       const { comment, codeSnippet, contextHints, resolvedPath } = freshToAnalyze[i];
+      // Use widened snippet from batch input when we expanded for a11y or short snippet (fixer gets same context as analyzer).
+      const snippetForFix = batchInput[i]?.codeSnippet ?? codeSnippet;
       const issueId = batchInput[i].id.toLowerCase();
       const result = results.get(issueId);
 
@@ -2123,12 +1045,12 @@ export async function findUnresolvedIssues(
 
         unresolved.push({
           comment,
-          codeSnippet,
+          codeSnippet: snippetForFix,
           stillExists: true,
           explanation: 'Unable to determine status',
           triage: { importance: 3, ease: 3 },  // Default: fallback path
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, undefined),
           resolvedPath,
         });
         continue;
@@ -2157,10 +1079,13 @@ export async function findUnresolvedIssues(
       const fHash = fileHashes.get(comment.path) || '__missing__';
       if (effectiveResult.stale) {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', effectiveResult.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: effectiveResult.explanation });
       } else if (effectiveResult.exists) {
         CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', effectiveResult.explanation, effectiveResult.importance ?? 3, effectiveResult.ease ?? 3, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: effectiveResult.explanation, importance: effectiveResult.importance ?? 3, ease: effectiveResult.ease ?? 3 });
       } else {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', effectiveResult.explanation, comment.path, fHash);
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: effectiveResult.explanation });
       }
 
       if (effectiveResult.stale) {
@@ -2193,16 +1118,27 @@ export async function findUnresolvedIssues(
 
           unresolved.push({
             comment,
-            codeSnippet,
+            codeSnippet: snippetForFix,
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
         }
       } else if (effectiveResult.exists) {
+        // Stale re-check: batch said "still exists" — if comment was previously verified, unmark so it re-enters the fix queue.
+        // WHY: output.log audit — push iter 2 had 2 unresolved (reporting.py) but "All 2 already verified — skipping fixer"
+        // because they stayed in verifiedFixed; re-check had correctly said stillExists but we never unmarked.
+        if (Verification.isVerified(stateContext, comment.id)) {
+          if (recoveredSet?.has(comment.id)) {
+            debug('Skipping unmark (recovered from git this run)', { commentId: comment.id, path: comment.path });
+          } else {
+            Verification.unmarkVerified(stateContext, comment.id);
+            debug('Unmarked verified (stale re-check said still exists)', { commentId: comment.id, path: comment.path });
+          }
+        }
         // Check if this is a canonical issue with duplicates
         const duplicates = dedupResult.duplicateMap.get(comment.id);
         const mergedDuplicates = duplicates?.map(dupId => {
@@ -2218,12 +1154,12 @@ export async function findUnresolvedIssues(
 
         unresolved.push({
           comment,
-          codeSnippet,
+          codeSnippet: snippetForFix,
           stillExists: true,
           explanation: effectiveResult.explanation,
           triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
           mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+          allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
           resolvedPath,
         });
       } else {
@@ -2259,12 +1195,12 @@ export async function findUnresolvedIssues(
 
           unresolved.push({
             comment,
-            codeSnippet,
+            codeSnippet: snippetForFix,
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
             mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
-            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, effectiveResult.explanation),
+            allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
         }
