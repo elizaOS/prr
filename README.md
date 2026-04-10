@@ -202,7 +202,7 @@ story --help      # PR narrative & changelog
 
 ## Configuration
 
-**Operator env quick reference** (see `.env.example` for comments):
+Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`. Optional: `PRR_LLM_PROVIDER`, `PRR_LLM_MODEL`. See root [README](../../README.md) and [.env.example](../../.env.example).
 
 | Variable | Purpose |
 |----------|---------|
