@@ -178,10 +178,6 @@ npm run typecheck
 node dist/tools/prr/index.js <pr-url>
 ```
 
-### Story: PR or branch narrative & changelog
-
-The **story** tool builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a PR or branch. Three modes: **PR** (title/body + commits + files), **single branch** (commit history only, no comparison), **two branches** (`--compare <branch>`; order auto-detected, story is about the branch you passed first). See **[tools/story/README.md](tools/story/README.md)** for full documentation and WHYs.
-
 ### Split-plan: PR decomposition planner
 
 The **split-plan** tool analyzes a large PR (diffs, commits, dependencies), discovers open PRs on the same base branch as “buckets,” and writes a human-editable `.split-plan.md` with a dependency analysis and a proposed split into smaller, reviewable PRs. *Why*: LLM agents often produce PRs that mix refactors, features, and fixes; splitting by concern keeps reviews human-sized. **split-exec** reads that plan and iteratively cherry-picks commits into existing or new PR branches and opens new PRs. See **[tools/split-plan/README.md](tools/split-plan/README.md)** and **[tools/split-exec/README.md](tools/split-exec/README.md)** for full documentation and WHYs.
@@ -199,6 +195,30 @@ split-plan --help  # PR decomposition planner
 split-exec --help  # Execute split plan (cherry-pick, push, create PRs)
 story --help      # PR narrative & changelog
 ```
+
+### Story: PR or branch narrative & changelog
+
+The **story** tool builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a PR or branch. Three modes: **PR** (title/body + commits + files), **single branch** (commit history only, no comparison), **two branches** (`--compare <branch>`; order auto-detected, story is about the branch you passed first). See **[tools/story/README.md](tools/story/README.md)** for full documentation and WHYs.
+
+```bash
+# PR
+story https://github.com/owner/repo/pull/123
+story owner/repo#456
+
+# Single branch (commit history only)
+story owner/repo@feature/siwe
+story https://github.com/owner/repo/tree/feature/siwe
+
+# Two branches (story from older → newer; primary branch = first arg)
+story https://github.com/owner/repo/tree/v2-develop --compare v1-develop
+
+# Write to file; verbose; tune context size
+story owner/repo#456 --output CHANGELOG.md
+story owner/repo@branch -v --max-commits 200 --max-files 500
+story --help   # PR narrative & changelog
+```
+
+Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`). Logs: `story-output.log`, `story-prompts.log`.
 
 ## Configuration
 
@@ -351,8 +371,6 @@ story owner/repo#456 --output CHANGELOG.md
 story owner/repo@branch -v --max-commits 200 --max-files 500
 story --help   # PR narrative & changelog
 ```
-
-Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`). Logs: `story-output.log`, `story-prompts.log`.
 
 ```bash
 prr https://github.com/owner/repo/pull/123 --keep-workdir
