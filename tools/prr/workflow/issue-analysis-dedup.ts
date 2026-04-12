@@ -5,7 +5,11 @@
 import chalk from 'chalk';
 import type { ReviewComment } from '../github/types.js';
 import type { StateContext } from '../state/state-context.js';
+import type { DismissedIssue } from '../state/types.js';
 import * as CommentStatusAPI from '../state/state-comment-status.js';
+import * as Dismissed from '../state/state-dismissed.js';
+import * as Verification from '../state/state-verification.js';
+import { getDuplicateClusterCommentIds } from './utils.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { stripSeverityFraming } from './helpers/review-body-normalize.js';
 import type { LLMClient } from '../llm/client.js';
@@ -98,30 +102,282 @@ export function resolveOverlappingDedupGroupsByIndex<T extends DedupGroupItem>(
 }
 
 /**
- * Propagate the same comment status to all duplicates of a canonical.
- * WHY: Duplicates are only analyzed via the canonical; without this they stay "unseen" in the debug table.
+ * Propagate the same comment status to every other member of the LLM dedup cluster.
+ * **WHY:** Only one row per cluster is LLM-analyzed; siblings must mirror status in **`commentStatuses`**
+ * (debug table / cache hits). Uses **`resolveEffectiveDuplicateMapForComments`** so persisted **`dedupCache`**
+ * still expands the cluster when **`duplicateMap`** is empty. Uses **`getDuplicateClusterCommentIds`** so
+ * propagation works when **`analyzedCommentId`** is a duplicate (map keys are canonical ids only).
  */
 export function propagateStatusToDuplicates(
   stateContext: StateContext,
-  canonicalId: string,
+  analyzedCommentId: string,
   dedupResult: DedupResult,
   fileHashes: Map<string, string>,
   status:
     | { kind: 'resolved'; classification: string; explanation: string }
     | { kind: 'open'; classification: string; explanation: string; importance: number; ease: number },
+  allComments?: readonly ReviewComment[],
 ): void {
-  const dupIds = dedupResult.duplicateMap.get(canonicalId) ?? [];
-  for (const dupId of dupIds) {
-    const dupItem = dedupResult.duplicateItems.get(dupId);
-    if (!dupItem) continue;
-    const path = dupItem.comment.path;
-    const fHash = fileHashes.get(path) || '__missing__';
+  const list = allComments?.length ? [...allComments] : undefined;
+  const map =
+    resolveEffectiveDuplicateMapForComments(stateContext, dedupResult.duplicateMap, list) ??
+    dedupResult.duplicateMap;
+  const cluster = getDuplicateClusterCommentIds(analyzedCommentId, map);
+  for (const otherId of cluster) {
+    if (otherId === analyzedCommentId) continue;
+    const dupItem = dedupResult.duplicateItems.get(otherId);
+    const path =
+      dupItem?.comment.path ?? list?.find((c) => c.id === otherId)?.path ?? '';
+    const fHash = path ? fileHashes.get(path) || '__missing__' : '__missing__';
     if (status.kind === 'resolved') {
-      CommentStatusAPI.markResolved(stateContext, dupId, status.classification as 'stale' | 'fixed', status.explanation, path, fHash);
+      CommentStatusAPI.markResolved(
+        stateContext,
+        otherId,
+        status.classification as 'stale' | 'fixed',
+        status.explanation,
+        path,
+        fHash,
+      );
     } else {
-      CommentStatusAPI.markOpen(stateContext, dupId, status.classification as 'exists', status.explanation, status.importance, status.ease, path, fHash);
+      CommentStatusAPI.markOpen(
+        stateContext,
+        otherId,
+        status.classification as 'exists',
+        status.explanation,
+        status.importance,
+        status.ease,
+        path,
+        fHash,
+      );
     }
   }
+}
+
+/** Sibling review threads for **`UnresolvedIssue.mergedDuplicates`** (fix prompt / dedup UX). */
+export interface MergedDuplicateRow {
+  commentId: string;
+  author: string;
+  body: string;
+  path: string;
+  line: number | null;
+}
+
+/**
+ * Rows for every *other* comment in the same LLM dedup cluster as the anchor (representative) row.
+ * **WHY:** Call sites used **`duplicateMap.get(anchorId)`**, which misses when **`duplicateMap`** is empty
+ * but **`clusterMapForAnalysis`** (from **`resolveEffectiveDuplicateMapForComments`**) still restores the cluster
+ * from **`dedup-v2`** cache, and when a sibling is missing from **`duplicateItems`** but present in **`allComments`**.
+ */
+export function buildMergedDuplicatesForAnchor(
+  anchorCommentId: string,
+  clusterMap: Map<string, string[]> | undefined,
+  duplicateItems: DedupResult['duplicateItems'],
+  allComments?: readonly ReviewComment[],
+): MergedDuplicateRow[] | undefined {
+  const otherIds = getDuplicateClusterCommentIds(anchorCommentId, clusterMap).filter(
+    (id) => id !== anchorCommentId,
+  );
+  if (otherIds.length === 0) return undefined;
+  const list = allComments?.length ? [...allComments] : undefined;
+  const rows: MergedDuplicateRow[] = [];
+  for (const dupId of otherIds) {
+    const dupItem = duplicateItems.get(dupId);
+    if (dupItem) {
+      rows.push({
+        commentId: dupItem.comment.id,
+        author: dupItem.comment.author,
+        body: dupItem.comment.body,
+        path: dupItem.comment.path,
+        line: dupItem.comment.line,
+      });
+      continue;
+    }
+    const c = list?.find((x) => x.id === dupId);
+    if (c) {
+      rows.push({
+        commentId: c.id,
+        author: c.author,
+        body: c.body,
+        path: c.path,
+        line: c.line,
+      });
+    }
+  }
+  return rows.length > 0 ? rows : undefined;
+}
+
+/**
+ * Dismiss every id in the LLM dedup cluster (canonical + dupes).
+ * WHY: `propagateStatusToDuplicates` only updates commentStatuses; persisted **`dismissedIssues`**
+ * and thread-reply accounting need each thread id dismissed — same gap as verify/recovery cluster marking.
+ */
+export function dismissDuplicateCluster(
+  stateContext: StateContext,
+  anchorComment: ReviewComment,
+  duplicateMap: Map<string, string[]>,
+  duplicateItems: DedupResult['duplicateItems'],
+  reason: string,
+  category: DismissedIssue['category'],
+  remediationHint?: string,
+): void {
+  for (const cid of getDuplicateClusterCommentIds(anchorComment.id, duplicateMap)) {
+    const rc = cid === anchorComment.id ? anchorComment : duplicateItems.get(cid)?.comment;
+    if (!rc) continue;
+    Dismissed.dismissIssue(
+      stateContext,
+      cid,
+      reason,
+      category,
+      rc.path,
+      rc.line,
+      rc.body ?? '',
+      cid === anchorComment.id ? remediationHint : undefined,
+    );
+  }
+}
+
+/**
+ * Same as {@link dismissDuplicateCluster} but resolves sibling rows from **`allComments`**
+ * (fix loop / push iteration have no `duplicateItems` map). Missing ids are skipped.
+ */
+export function dismissDuplicateClusterFromComments(
+  stateContext: StateContext,
+  anchorComment: ReviewComment,
+  duplicateMap: Map<string, string[]> | undefined,
+  allComments: ReviewComment[],
+  reason: string,
+  category: DismissedIssue['category'],
+  remediationHint?: string,
+): void {
+  const byId = new Map(allComments.map((c) => [c.id, c]));
+  for (const cid of getDuplicateClusterCommentIds(anchorComment.id, duplicateMap)) {
+    const rc = cid === anchorComment.id ? anchorComment : byId.get(cid);
+    if (!rc) continue;
+    Dismissed.dismissIssue(
+      stateContext,
+      cid,
+      reason,
+      category,
+      rc.path,
+      rc.line,
+      rc.body ?? '',
+      cid === anchorComment.id ? remediationHint : undefined,
+    );
+  }
+}
+
+/**
+ * Rows for {@link dismissDuplicateClusterFromComments} when the full PR list may be missing.
+ * Unions **`issues[].comment`** with **`allComments`** (same id: PR row wins) so cluster siblings still in the fix batch
+ * get dismissed together instead of anchor-only **`dismissIssue`**.
+ */
+export function mergeCommentsForClusterDismiss(
+  allComments: readonly ReviewComment[] | undefined,
+  issues: readonly { comment: ReviewComment }[],
+): ReviewComment[] {
+  const byId = new Map<string, ReviewComment>();
+  for (const { comment } of issues) {
+    byId.set(comment.id, comment);
+  }
+  if (allComments?.length) {
+    for (const c of allComments) {
+      byId.set(c.id, c);
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Cluster ids that are **verified or dismissed** after a cluster dismiss attempt.
+ * **WHY:** {@link dismissDuplicateClusterFromComments} skips ids missing from the PR row list; callers
+ * must not remove those ids from the fix queue anyway or we get an empty queue while threads stay open
+ * (BUG DETECTED repopulate — same class as `filterUnresolvedKeepUnaccountedClusterMembers` in no-changes).
+ */
+export function getClusterIdsAccountedOnState(
+  stateContext: StateContext,
+  anchorId: string,
+  duplicateMap: Map<string, string[]> | undefined,
+): string[] {
+  return getDuplicateClusterCommentIds(anchorId, duplicateMap).filter(
+    (cid) =>
+      Dismissed.isCommentDismissed(stateContext, cid) || Verification.isVerified(stateContext, cid),
+  );
+}
+
+/**
+ * Reuse **`state.dedupCache.duplicateMap`** when the PR comment id key is unchanged (`dedup-v2`).
+ * **WHY:** Pre-dedup dismissals (solvability, positive-only, placeholder, could-not-inject) used to touch only
+ * one thread id; siblings stayed open until after the LLM dedup phase re-ran.
+ */
+export function getPersistedDedupMapForCommentSet(
+  stateContext: StateContext,
+  allCommentIdsKey: string,
+): Map<string, string[]> | undefined {
+  const persisted = stateContext.state?.dedupCache;
+  if (
+    !persisted ||
+    persisted.commentIds !== allCommentIdsKey ||
+    persisted.schema !== 'dedup-v2' ||
+    !persisted.duplicateMap ||
+    typeof persisted.duplicateMap !== 'object'
+  ) {
+    return undefined;
+  }
+  return new Map<string, string[]>(Object.entries(persisted.duplicateMap));
+}
+
+/**
+ * Map to use for cluster dismissals mid–fix-loop when **`duplicateMap`** was not passed or is empty
+ * but **`state.dedupCache`** still matches the current PR comment id set (`dedup-v2`).
+ * **WHY:** `recheckSolvability` / `verifyFixes` used to single-dismiss when `duplicateMap` was missing;
+ * duplicate threads stayed open until the next analysis pass.
+ */
+export function resolveEffectiveDuplicateMapForComments(
+  stateContext: StateContext,
+  duplicateMap: Map<string, string[]> | undefined,
+  allComments: ReviewComment[] | undefined,
+): Map<string, string[]> | undefined {
+  if (duplicateMap && duplicateMap.size > 0) {
+    return duplicateMap;
+  }
+  if (!allComments?.length) {
+    return duplicateMap;
+  }
+  const key = [...allComments.map((c) => c.id)].sort().join(',');
+  return getPersistedDedupMapForCommentSet(stateContext, key) ?? duplicateMap;
+}
+
+/**
+ * Cluster map for **`trySingleIssueFix` / `tryDirectLLMFix`** when **`allComments`** may be absent.
+ * **WHY:** `duplicateMapForSession` can be empty while **`state.dedupCache`** still holds `dedup-v2` data;
+ * without this, recovery only marked/dismissed the anchor thread.
+ * When **`allComments`** is present and its sorted id key **≠** `dedupCache.commentIds`, skips persisted
+ * fallback (comment set changed without a matching cache key).
+ */
+export function resolveDuplicateMapForRecovery(
+  stateContext: StateContext,
+  duplicateMap: Map<string, string[]> | undefined,
+  allComments?: ReviewComment[],
+): Map<string, string[]> | undefined {
+  const fromComments = resolveEffectiveDuplicateMapForComments(stateContext, duplicateMap, allComments);
+  if (fromComments && fromComments.size > 0) {
+    return fromComments;
+  }
+  const persisted = stateContext.state?.dedupCache;
+  const idsKey = allComments?.length ? [...allComments.map((c) => c.id)].sort().join(',') : undefined;
+  if (
+    persisted?.schema === 'dedup-v2' &&
+    persisted.commentIds &&
+    persisted.duplicateMap &&
+    typeof persisted.duplicateMap === 'object' &&
+    (!idsKey || idsKey === persisted.commentIds)
+  ) {
+    const m = getPersistedDedupMapForCommentSet(stateContext, persisted.commentIds);
+    if (m && m.size > 0) {
+      return m;
+    }
+  }
+  return fromComments ?? duplicateMap;
 }
 
 /**

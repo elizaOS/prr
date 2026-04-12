@@ -245,6 +245,7 @@ story --help      # PR narrative & changelog
 | `PRR_THINKING_BUDGET` | Extended thinking token budget for Claude-class models; values above **500,000** clamp with a warning (**`shared/config.ts`**) |
 | `PRR_LLM_MIN_DELAY_MS` | Override min ms between ElizaCloud request starts per slot (default **6,000** — see **`shared/constants/models.ts`**) |
 | `PRR_LLM_TASK_TIMEOUT_MS` | Optional cap (ms) on concurrent pool tasks (**`0`** = none) |
+| `PRR_LLM_API_REQUEST_TIMEOUT_MS` | **llm-api** only: fixed per-request timeout (ms) for non-full-file fix calls; unset = auto **90s → 180s** by prompt size (full-file rewrite stays **180s**) |
 | `PRR_CLONE_TIMEOUT_MS` / `PRR_FETCH_TIMEOUT_MS` | Clone / fetch timeouts for large remotes (**AGENTS.md** / **Troubleshooting**) |
 | `PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR` | `1` — disable automatic insertion of missing **`=======`** between conflict markers |
 | `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY` / `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL` | Disable catalog **0a6** dismissal and/or quoted-literal auto-heal (**AGENTS.md**) |

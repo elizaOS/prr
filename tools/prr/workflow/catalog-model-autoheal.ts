@@ -4,7 +4,9 @@
  *
  * **When:** `main-loop-setup` immediately after comments are fetched and `currentCommentIds` are set,
  * **before** per-path file hashes used for analysis cache — WHY: healed content must be what the
- * analyzer and cache keys see.
+ * analyzer and cache keys see. **Dedup cluster:** when **`state.dedupCache`** matches the current
+ * comment-id set (`dedup-v2`), **`markVerified`** applies to the full LLM dedup cluster (canonical
+ * keeps **`catalog-autoheal`** / **`catalog-autoheal-noop`**; dupes reference canonical id).
  *
  * **Commit gate:** Same as fixer path — `verifiedThisSession` must be non-empty. We `markVerified`
  * each healed comment so `commitAndPushChanges` can run on the "no unresolved issues" branch.
@@ -21,8 +23,38 @@ import { debug } from '../../../shared/logger.js';
 import { formatNumber } from '../ui/reporter.js';
 import { resolveTrackedPath } from './helpers/solvability.js';
 import { getOutdatedModelCatalogDismissal } from './helpers/outdated-model-advice.js';
+import { getDuplicateClusterCommentIds } from './utils.js';
 
 const ENV_DISABLE_AUTOHEAL = 'PRR_DISABLE_MODEL_CATALOG_AUTOHEAL';
+
+/**
+ * Mark canonical + dedup siblings verified after catalog heal.
+ * Canonical row keeps **`catalog-autoheal`** / **`catalog-autoheal-noop`**; dupes use **`autoVerifiedFrom = canonicalId`**.
+ * WHY: Auto-heal runs before analysis — use persisted **`dedupCache.duplicateMap`** when comment IDs match.
+ */
+function markCatalogHealVerifiedCluster(
+  stateContext: StateContext,
+  currentCommentId: string,
+  duplicateMap: Map<string, string[]> | undefined,
+  vs: Set<string>,
+  anchorMarker: 'catalog-autoheal' | 'catalog-autoheal-noop',
+): boolean {
+  const clusterIds = getDuplicateClusterCommentIds(currentCommentId, duplicateMap);
+  const canonicalId = clusterIds[0]!;
+  let any = false;
+  for (const cid of clusterIds) {
+    if (Verification.isVerified(stateContext, cid)) continue;
+    const marker = cid === canonicalId ? anchorMarker : canonicalId;
+    try {
+      Verification.markVerified(stateContext, cid, marker);
+      vs.add(cid);
+      any = true;
+    } catch (e) {
+      debug('[Auto-heal] markVerified failed', { commentId: cid.slice(0, 7), err: String(e) });
+    }
+  }
+  return any;
+}
 
 /**
  * Lines above/below the GitHub review anchor to search for quoted model literals.
@@ -126,6 +158,21 @@ export function applyCatalogModelAutoHeals(
   }
   const vs = stateContext.verifiedThisSession;
 
+  const sortedCommentKey = comments.map((c) => c.id).sort().join(',');
+  const persistedDedup = stateContext.state?.dedupCache;
+  let duplicateMapForHeal: Map<string, string[]> | undefined;
+  if (
+    persistedDedup?.commentIds === sortedCommentKey &&
+    persistedDedup.schema === 'dedup-v2' &&
+    persistedDedup.duplicateMap &&
+    typeof persistedDedup.duplicateMap === 'object'
+  ) {
+    duplicateMapForHeal = new Map(Object.entries(persistedDedup.duplicateMap));
+    debug('[Auto-heal] Persisted dedup map available for cluster verification', {
+      groupCount: duplicateMapForHeal.size,
+    });
+  }
+
   let checkedCount = 0;
   let matchedCount = 0;
   let skippedNoPath = 0;
@@ -147,6 +194,19 @@ export function applyCatalogModelAutoHeals(
     }
     
     matchedCount++;
+    const clusterEarly = getDuplicateClusterCommentIds(comment.id, duplicateMapForHeal);
+    const canonicalEarly = clusterEarly[0]!;
+    if (
+      comment.id !== canonicalEarly &&
+      clusterEarly.some((id) => Verification.isVerified(stateContext, id))
+    ) {
+      debug('[Auto-heal] Skipping duplicate row — cluster already verified', {
+        commentId: comment.id.slice(0, 7),
+        canonicalId: canonicalEarly.slice(0, 7),
+      });
+      continue;
+    }
+
     debug('[Auto-heal] Found outdated model advice comment', {
       commentId: comment.id.slice(0, 7),
       path: comment.path,
@@ -272,23 +332,24 @@ export function applyCatalogModelAutoHeals(
       const goodQuoted = countQuotedModelIdLiterals(allLines, good);
       if (wrongQuoted === 0 && goodQuoted > 0) {
         verifiedNoOp++;
-        vs.add(comment.id);
-        verificationTouched = true;
-        try {
-          Verification.markVerified(stateContext, comment.id, 'catalog-autoheal-noop');
-          debug('[Auto-heal] No file change needed — file already uses catalog model id in literals', {
-            commentId: comment.id.slice(0, 7),
-            resolvedPath: rel,
-            catalogGoodId: good,
-            wronglySuggestedId: wrongly,
-            goodQuotedLiterals: goodQuoted,
-          });
-        } catch (e) {
-          debug('[Auto-heal] markVerified failed (catalog-autoheal-noop)', {
-            commentId: comment.id.slice(0, 7),
-            err: String(e),
-          });
+        if (
+          markCatalogHealVerifiedCluster(
+            stateContext,
+            comment.id,
+            duplicateMapForHeal,
+            vs,
+            'catalog-autoheal-noop',
+          )
+        ) {
+          verificationTouched = true;
         }
+        debug('[Auto-heal] No file change needed — file already uses catalog model id in literals', {
+          commentId: comment.id.slice(0, 7),
+          resolvedPath: rel,
+          catalogGoodId: good,
+          wronglySuggestedId: wrongly,
+          goodQuotedLiterals: goodQuoted,
+        });
         console.log(
           chalk.cyan(
             `  Catalog auto-heal: no edit needed — ${rel} already has \`${good}\` in string literal(s); marked review ${comment.id.slice(0, 7)}… verified (outdated model advice)`,
@@ -326,20 +387,12 @@ export function applyCatalogModelAutoHeals(
       : [...allLines.slice(0, start), ...newWindow, ...allLines.slice(end)];
     writeFileSync(abs, merged.join('\n'), 'utf8');
     modified.push(rel);
-    vs.add(comment.id);
-    verificationTouched = true;
-
-    try {
-      Verification.markVerified(stateContext, comment.id, 'catalog-autoheal');
-      debug('[Auto-heal] Marked comment as verified', { commentId: comment.id.slice(0, 7) });
-    } catch (e) {
-      // WHY swallow: Disk is already healed; missing state should not abort the run. Commit message
-      // may list fewer issues than healed files until state loads on a later run.
-      debug('[Auto-heal] markVerified failed (state not loaded?)', { 
-        commentId: comment.id.slice(0, 7), 
-        err: String(e) 
-      });
+    if (
+      markCatalogHealVerifiedCluster(stateContext, comment.id, duplicateMapForHeal, vs, 'catalog-autoheal')
+    ) {
+      verificationTouched = true;
     }
+    debug('[Auto-heal] Marked cluster as verified (disk heal)', { commentId: comment.id.slice(0, 7) });
     
     console.log(
       chalk.cyan(

@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import { debug, debugPrompt, debugPromptError, debugResponse, formatNumber } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, getLlmApiRequestTimeoutMs, LLM_REQUEST_TIMEOUT_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
 import { getMaxFixPromptCharsForModel, getMaxElizacloudHardInputCeiling, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient } from '../llm/elizacloud.js';
 import { openAiChatCompletionContentToString } from '../llm/openai-chat-content.js';
@@ -456,9 +456,9 @@ Working directory: ${workdir}`;
       throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${maxEnrichedChars.toLocaleString()} for ${model}). Reduce batch size or file count.`);
     }
 
-    // Full-file rewrite prompts are larger; use a longer timeout so the request can complete.
-    const requestTimeoutMs = rewriteFiles.length > 0 ? LLM_REQUEST_TIMEOUT_FULL_FILE_MS : LLM_REQUEST_TIMEOUT_MS;
-    debug('Request timeout for this call', { timeoutMs: requestTimeoutMs, isFullFileRewrite: rewriteFiles.length > 0 });
+    const isFullFileRewrite = rewriteFiles.length > 0;
+    const requestTimeoutMs = getLlmApiRequestTimeoutMs(enrichedPrompt.length, isFullFileRewrite);
+    debug('Request timeout for this call', { timeoutMs: requestTimeoutMs, isFullFileRewrite });
 
     // Cooldown: after 3+ consecutive 504/timeouts, pause so gateway can recover.
     if (this.consecutive504Count >= CONSECUTIVE_504_COOLDOWN_THRESHOLD) {

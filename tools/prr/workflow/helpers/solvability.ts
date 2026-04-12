@@ -27,6 +27,11 @@ import {
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 import { getOutdatedModelCatalogDismissal } from './outdated-model-advice.js';
 import { isTrackedGitSubmodulePath } from '../../../../shared/git/git-submodule-path.js';
+import {
+  dismissDuplicateClusterFromComments,
+  mergeCommentsForClusterDismiss,
+  resolveEffectiveDuplicateMapForComments,
+} from '../issue-analysis-dedup.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
@@ -685,6 +690,7 @@ export function assessSolvability(
           if (retargetResult.found) {
             return {
               solvable: true,
+              resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
               retargetedLine: retargetResult.line,
               contextHints: [`Code for \`${identifiers[0]}\` found at line ${retargetResult.line} (comment targeted line ${comment.line})`],
             };
@@ -704,6 +710,7 @@ export function assessSolvability(
           const msg = `Comment targets line ${comment.line} but file only has ${totalLines} lines, and only weak built-in/type identifiers (${weakIdentifiers.join(', ')}) were extracted — keep the issue open for broader analysis instead of dismissing as stale`;
           return {
             solvable: true,
+            resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
             contextHints: [msg],
           };
         }
@@ -737,6 +744,7 @@ export function assessSolvability(
           if (retargetResult.found && Math.abs(retargetResult.line! - comment.line) > 10) {
             return {
               solvable: true,
+              resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
               retargetedLine: retargetResult.line,
               contextHints: [`Code for \`${identifiers[0]}\` found at line ${retargetResult.line} (comment targeted line ${comment.line})`],
             };
@@ -772,7 +780,7 @@ export function assessSolvability(
   // WHY: Same issue failing N+ times burns tokens; only count attempts on same file content so refactors reset the counter
   const attempts = Performance.getIssueAttempts(stateContext, comment.id);
   let failedAttempts = attempts.filter(a => a.result === 'failed' || a.result === 'no-changes');
-  const currentHash = hashFileContentSync(fullPath);
+  const currentHash = hashFileContentSync(effectiveFullPath);
   failedAttempts = failedAttempts.filter(a => !a.fileContentHash || a.fileContentHash === currentHash);
   if (failedAttempts.length >= CHRONIC_FAILURE_THRESHOLD) {
     debug('Solvability dismiss: chronic-failure', { commentId: comment.id, path: comment.path, failedAttempts: failedAttempts.length, threshold: CHRONIC_FAILURE_THRESHOLD });
@@ -971,7 +979,10 @@ export async function recheckSolvability(
   changedFiles: string[],
   workdir: string,
   stateContext: StateContext,
-  getCodeSnippetFn: (path: string, line: number | null, body?: string) => Promise<string>
+  getCodeSnippetFn: (path: string, line: number | null, body?: string) => Promise<string>,
+  /** When set with allComments, dismiss every id in the LLM dedup cluster (file deleted → stale for all threads). */
+  duplicateMap?: Map<string, string[]>,
+  allComments?: ReviewComment[],
 ): Promise<{ updated: UnresolvedIssue[]; dismissed: number; refreshed: number }> {
   let dismissed = 0;
   let refreshed = 0;
@@ -1006,20 +1017,37 @@ export async function recheckSolvability(
 
   const updated: UnresolvedIssue[] = [...unchanged];
 
+  const effectiveDupMap = resolveEffectiveDuplicateMapForComments(
+    stateContext,
+    duplicateMap,
+    allComments,
+  );
+  const dismissRowsDeleted = mergeCommentsForClusterDismiss(allComments, unresolvedIssues);
   for (const { issue, newSnippet } of snippetResults) {
     if (newSnippet === SNIPPET_PLACEHOLDER) {
       // File was deleted by fixer - dismiss as stale
-      // CRITICAL: dismissIssue ONLY, NOT markVerified (see plan gotcha #1)
-      const primaryPath = issue.resolvedPath ?? issue.comment.path;
-      Dismissed.dismissIssue(
-        stateContext,
-        issue.comment.id,
-        'File deleted by fixer',
-        'stale',
-        primaryPath,
-        issue.comment.line,
-        issue.comment.body
-      );
+      // CRITICAL: dismiss only (not markVerified). Expand to LLM dedup cluster when map + row lookup list are available.
+      if (dismissRowsDeleted.length > 0) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          issue.comment,
+          effectiveDupMap,
+          dismissRowsDeleted,
+          'File deleted by fixer',
+          'stale',
+        );
+      } else {
+        const primaryPath = issue.resolvedPath ?? issue.comment.path;
+        Dismissed.dismissIssue(
+          stateContext,
+          issue.comment.id,
+          'File deleted by fixer',
+          'stale',
+          primaryPath,
+          issue.comment.line,
+          issue.comment.body
+        );
+      }
       dismissed++;
       continue;
     }

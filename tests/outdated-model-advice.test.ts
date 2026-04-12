@@ -308,6 +308,68 @@ describe('applyCatalogModelAutoHeals', () => {
     }
   });
 
+  it('noop heal marks dedup cluster when dedupCache matches full comment set', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-heal-cluster-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir, env: gitEnv });
+      const rel = 'examples/telegram-agent.ts';
+      mkdirSync(join(dir, 'examples'), { recursive: true });
+      const lines: string[] = [];
+      for (let i = 0; i < 70; i++) {
+        if (i === 5) lines.push('export const OPENAI_SMALL_MODEL = "gpt-5-mini";');
+        else lines.push(`// line ${i}`);
+      }
+      writeFileSync(join(dir, rel), lines.join('\n') + '\n');
+      execFileSync('git', ['add', '.'], { cwd: dir, env: gitEnv });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, env: gitEnv });
+
+      const body =
+        '❌ CRITICAL: Model name typo in example\nChange gpt-5-mini to gpt-4o-mini';
+      const canonical: ReviewComment = {
+        id: 'ic_canon',
+        threadId: 't_canon',
+        author: 'claude',
+        body,
+        path: rel,
+        line: 50,
+        createdAt: new Date().toISOString(),
+      };
+      const dupe: ReviewComment = {
+        id: 'ic_dupe',
+        threadId: 't_dupe',
+        author: 'greptile',
+        body,
+        path: rel,
+        line: 51,
+        createdAt: new Date().toISOString(),
+      };
+      const sortedIds = ['ic_canon', 'ic_dupe'].sort().join(',');
+      const ctx: StateContext = {
+        statePath: join(dir, '.pr-resolver-state.json'),
+        state: {
+          iterations: [],
+          verifiedFixed: [],
+          verifiedComments: [],
+          dismissedIssues: [],
+          dedupCache: {
+            commentIds: sortedIds,
+            duplicateMap: { ic_canon: ['ic_dupe'] },
+            dedupedIds: ['ic_canon'],
+            schema: 'dedup-v2',
+          },
+        } as ResolverState,
+        currentPhase: 'test',
+      };
+      const outcome = applyCatalogModelAutoHeals(dir, [canonical, dupe], ctx);
+      expect(outcome.modifiedPaths).toEqual([]);
+      expect(outcome.verificationTouched).toBe(true);
+      expect(ctx.verifiedThisSession?.has('ic_canon')).toBe(true);
+      expect(ctx.verifiedThisSession?.has('ic_dupe')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('skips auto-heal when workdir has uncommitted changes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prr-heal-dirty-'));
     try {

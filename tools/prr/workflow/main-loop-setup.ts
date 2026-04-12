@@ -39,6 +39,10 @@ import { applyCatalogModelAutoHeals } from './catalog-model-autoheal.js';
 import { setDynamicRepoTopLevelDirs } from '../../../shared/path-utils.js';
 import { assessSolvability, resolveTrackedPath } from './helpers/solvability.js';
 import {
+  dismissDuplicateClusterFromComments,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
+import {
   buildDependencyGraph,
   computeBlastRadius,
   getBlastRadiusDepth,
@@ -235,7 +239,11 @@ export async function processCommentsAndPrepareFixLoop(
     (cache.fileHashesKeyDigest != null ? cache.fileHashesKeyDigest === fileHashesKeyDigest : true);
   if (cacheHit) {
     unresolvedIssues = cache.unresolvedIssues;
-    duplicateMap = cache.duplicateMap;
+    // Re-resolve against persisted dedup-v2: cached duplicateMap may be empty from an older analysis
+    // path while state.dedupCache still matches this comment set (same as findUnresolvedIssues return).
+    duplicateMap =
+      resolveEffectiveDuplicateMapForComments(stateContext, cache.duplicateMap, comments) ??
+      cache.duplicateMap;
     prChangedFiles = cache.changedFiles;
     stateContext.blastRadiusPaths =
       cache.blastRadiusPaths && cache.blastRadiusPaths.length > 0 ? new Set(cache.blastRadiusPaths) : undefined;
@@ -351,7 +359,8 @@ export async function processCommentsAndPrepareFixLoop(
       spinner,
       getCodeSnippet,
       stateContext,
-      workdir
+      workdir,
+      duplicateMap,
     );
     if (newCommentsResult.hasNewComments) {
       comments.length = 0;
@@ -375,7 +384,8 @@ export async function processCommentsAndPrepareFixLoop(
       spinner,
       getCodeSnippet,
       getFullFile,
-      workdir // Pill cycle 2 #4: Pass workdir for Rule 6 validation
+      workdir, // Pill cycle 2 #4: Pass workdir for Rule 6 validation
+      duplicateMap,
     );
     
     if (auditResult.failedAudit.length > 0) {
@@ -383,6 +393,11 @@ export async function processCommentsAndPrepareFixLoop(
       // Re-run solvability on audit-failed items so we don't re-enter with unsolvable issues (e.g. (PR comment), deleted file).
       unresolvedIssues.length = 0;
       const failedItems = auditResult.failedAudit;
+      const effectiveDupForAuditReentry = resolveEffectiveDuplicateMapForComments(
+        stateContext,
+        duplicateMap,
+        comments,
+      );
       let reEnterCount = 0;
       for (let i = 0; i < failedItems.length; i++) {
         const { comment, explanation } = failedItems[i];
@@ -393,17 +408,16 @@ export async function processCommentsAndPrepareFixLoop(
             ? resolveTrackedPath(workdir, comment.path, comment.body ?? '') ?? comment.path
             : (comment.path ?? '');
         if (!solvability.solvable) {
-          Dismissed.dismissIssue(
+          dismissDuplicateClusterFromComments(
             stateContext,
-            comment.id,
+            comment,
+            effectiveDupForAuditReentry,
+            comments,
             solvability.reason ?? explanation,
             solvability.dismissCategory ?? 'not-an-issue',
-            primaryPath,
-            comment.line,
-            comment.body ?? '',
-            solvability.remediationHint
+            solvability.remediationHint,
           );
-          debug('Audit re-entry: dismissed unsolvable issue', { commentId: comment.id, reason: solvability.reason });
+          debug('Audit re-entry: dismissed unsolvable issue (cluster)', { commentId: comment.id, reason: solvability.reason });
           continue;
         }
         const codeSnippet = await getCodeSnippet(primaryPath, comment.line, comment.body);

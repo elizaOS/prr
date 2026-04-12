@@ -318,7 +318,7 @@ export async function llmComplete(
     let elizaAcquired = false;
     try {
       if (deps.provider === 'elizacloud') {
-        await acquireElizacloud().then(() => elizaAcquired = true); // uses exported fn so same global limit as llm-api runner
+        await acquireElizacloud(); // same global limit / spacing as llm-api runner (`shared/llm/rate-limit.ts`)
         elizaAcquired = true;
       }
       const max429Retries = deps.provider === 'elizacloud' ? 3 : 0;

@@ -23,6 +23,10 @@ import { debug, formatNumber } from '../../../shared/logger.js';
 import { getMidLoopNewCommentCap } from '../../../shared/constants.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solvability.js';
+import {
+  dismissDuplicateClusterFromComments,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
 
 // Note: All imports must be at module top level - do not use dynamic imports inside functions
 
@@ -48,6 +52,7 @@ import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solv
  * @param headSha - Optional PR head SHA for the check
  * @param stateContext - State context (for solvability and dismissals)
  * @param workdir - Repo workdir (for solvability path checks). If missing, solvability is skipped for new comments.
+ * @param duplicateMap - LLM dedup map from this push iteration’s analysis — dismiss cluster when a new thread is unsolvable.
  */
 export async function processNewBotReviews(
   github: GitHubAPI,
@@ -61,7 +66,8 @@ export async function processNewBotReviews(
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   headSha?: string,
   stateContext?: StateContext,
-  workdir?: string
+  workdir?: string,
+  duplicateMap?: Map<string, string[]>,
 ): Promise<void> {
   // Check for new bot reviews if expected time has passed. Skip fetch when head unchanged and recently fetched (backoff).
   const newReviewResult = await checkForNewBotReviews(owner, repo, prNumber, existingCommentIds, headSha);
@@ -81,22 +87,27 @@ export async function processNewBotReviews(
     // and burned 10+ fix iterations each. Apply the same filter as findUnresolvedIssues.
     const solvableComments: ReviewComment[] = [];
     if (workdir && stateContext) {
+      const lookupComments = [...comments, ...newComments];
+      const effectiveDupForLookup = resolveEffectiveDuplicateMapForComments(
+        stateContext,
+        duplicateMap,
+        lookupComments,
+      );
       for (const comment of newComments) {
         // WHY: Track every new comment ID (including ones we will dismiss) so the next checkForNewBotReviews does not return them again as "new".
         existingCommentIds.add(comment.id);
         const solvability = assessSolvability(workdir, comment, stateContext);
         if (!solvability.solvable) {
-          Dismissed.dismissIssue(
+          dismissDuplicateClusterFromComments(
             stateContext,
-            comment.id,
+            comment,
+            effectiveDupForLookup,
+            lookupComments,
             solvability.reason ?? 'Not solvable',
             solvability.dismissCategory ?? 'not-an-issue',
-            comment.path,
-            comment.line,
-            comment.body,
-            solvability.remediationHint
+            solvability.remediationHint,
           );
-          debug('P1: dismissed unsolvable new comment (solvability)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
+          debug('P1: dismissed unsolvable new comment (solvability, cluster)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
         } else {
           solvableComments.push(comment);
         }

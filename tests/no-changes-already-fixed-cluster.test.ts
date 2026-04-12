@@ -11,6 +11,9 @@ import type { LLMClient } from '../tools/prr/llm/client.js';
 import { handleNoChangesWithVerification } from '../tools/prr/workflow/no-changes-verification.js';
 import { createLessonsContext } from '../tools/prr/state/lessons-context.js';
 import * as Dismissed from '../tools/prr/state/state-dismissed.js';
+import * as Verification from '../tools/prr/state/state-verification.js';
+import { parseNoChangesExplanation } from '../tools/prr/workflow/utils.js';
+import { createMockLLMClient } from './test-utils/llm-mock.js';
 
 function review(id: string): ReviewComment {
   return {
@@ -78,5 +81,46 @@ describe('handleNoChangesWithVerification ALREADY_FIXED cluster', () => {
     expect(result.updatedUnresolvedIssues).toHaveLength(0);
     expect(Dismissed.isCommentDismissed(ctx, 'comment-A')).toBe(true);
     expect(Dismissed.isCommentDismissed(ctx, 'comment-B')).toBe(true);
+  });
+
+  it('batch verify (legacy already-fixed claim) marks entire dedup cluster verified', async () => {
+    const ctx = makeCtx();
+    const anchor = review('comment-A');
+    const dupRow: ReviewComment = { ...anchor, id: 'comment-B' };
+    const issue: UnresolvedIssue = {
+      comment: anchor,
+      codeSnippet: 'code',
+      stillExists: true,
+      explanation: 'test',
+    };
+    const duplicateMap = new Map<string, string[]>([['comment-A', ['comment-B']]]);
+    const lessons = createLessonsContext('o', 'r', 'main', '/tmp/lessons');
+    const llm = createMockLLMClient({
+      batchCheckResponses: {
+        issue_1: { exists: false, explanation: 'verifier ok', stale: false },
+      },
+    });
+
+    const result = await handleNoChangesWithVerification(
+      [issue],
+      'llm-api',
+      'anthropic/test',
+      'The implementation is already correct and no changes are needed here.',
+      llm,
+      ctx,
+      lessons,
+      ctx.verifiedThisSession!,
+      parseNoChangesExplanation,
+      undefined,
+      [anchor, dupRow],
+      duplicateMap,
+    );
+
+    expect(result.shouldBreak).toBe(true);
+    expect(result.updatedUnresolvedIssues).toHaveLength(0);
+    expect(Verification.isVerified(ctx, 'comment-A')).toBe(true);
+    expect(Verification.isVerified(ctx, 'comment-B')).toBe(true);
+    expect(ctx.verifiedThisSession!.has('comment-A')).toBe(true);
+    expect(ctx.verifiedThisSession!.has('comment-B')).toBe(true);
   });
 });

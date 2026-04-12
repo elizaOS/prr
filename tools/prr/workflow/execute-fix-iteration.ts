@@ -17,7 +17,6 @@ import type { StateContext } from '../state/state-context.js';
 import { setPhase, addTokenUsage, getState } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
 import * as Verification from '../state/state-verification.js';
-import * as Dismissed from '../state/state-dismissed.js';
 import * as Iterations from '../state/state-iterations.js';
 import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
@@ -30,6 +29,11 @@ import { debug, debugStep, startTimer, endTimer, formatDuration, formatNumber } 
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import * as ResolverProc from '../resolver-proc.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import {
+  dismissDuplicateClusterFromComments,
+  getClusterIdsAccountedOnState,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
 import { parseResultCode } from './utils.js';
 import { stripPrrFromDiffStat } from './bot-prediction-llm.js';
 import { tryRestoreFromBaseIfRequested } from './restore-from-base.js';
@@ -214,9 +218,19 @@ export async function executeFixIteration(
   progressThisCycle: number,
   getCurrentModel: () => string | undefined,
   parseNoChangesExplanation: (output: string) => string | null,
-  trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
+  trySingleIssueFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verified?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>,
   tryRotation: (failureErrorType?: string) => boolean,
-  tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
+  tryDirectLLMFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verified?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>,
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>,
   /** Current fix iteration (1-based). When 1, use conservative prompt cap to avoid timeout (audit). */
   fixIteration: number,
@@ -241,6 +255,7 @@ export async function executeFixIteration(
   skippedDuplicatePrompt?: boolean;
 }> {
   const spinner = ora();
+  const dupForCluster = resolveEffectiveDuplicateMapForComments(stateContext, duplicateMap, comments);
 
   // H3 (output.log audit): Dismiss issues whose file has accumulated too many S/R or hallucinated-stub failures.
   let workingUnresolved = unresolvedIssues;
@@ -251,16 +266,17 @@ export async function executeFixIteration(
     for (const issue of workingUnresolved) {
       const primaryForCounts = getIssuePrimaryPath(issue);
       if ((failureCounts.get(primaryForCounts) ?? 0) >= HALLUCINATION_DISMISS_THRESHOLD) {
-        Dismissed.dismissIssue(
+        dismissDuplicateClusterFromComments(
           stateContext,
-          issue.comment.id,
+          issue.comment,
+          dupForCluster,
+          comments,
           'Repeated failed fix attempts (output did not match file); manual review recommended.',
           'remaining',
-          primaryForCounts,
-          issue.comment.line,
-          issue.comment.body
         );
-        dismissedIds.add(issue.comment.id);
+        for (const cid of getClusterIdsAccountedOnState(stateContext, issue.comment.id, dupForCluster)) {
+          dismissedIds.add(cid);
+        }
       }
     }
     if (dismissedIds.size > 0) {
@@ -277,18 +293,18 @@ export async function executeFixIteration(
     for (const issue of workingUnresolved) {
       const solvability = assessSolvability(workdir, issue.comment, stateContext);
       if (solvability.solvable) continue;
-      const primaryPath = getIssuePrimaryPath(issue);
-      Dismissed.dismissIssue(
+      dismissDuplicateClusterFromComments(
         stateContext,
-        issue.comment.id,
+        issue.comment,
+        dupForCluster,
+        comments,
         solvability.reason ?? 'Not solvable',
         solvability.dismissCategory ?? 'not-an-issue',
-        primaryPath,
-        issue.comment.line,
-        issue.comment.body,
-        solvability.remediationHint
+        solvability.remediationHint,
       );
-      dismissedIds.add(issue.comment.id);
+      for (const cid of getClusterIdsAccountedOnState(stateContext, issue.comment.id, dupForCluster)) {
+        dismissedIds.add(cid);
+      }
     }
     if (dismissedIds.size > 0) {
       workingUnresolved = workingUnresolved.filter((i) => !dismissedIds.has(i.comment.id));
@@ -818,7 +834,7 @@ export async function executeFixIteration(
       parseNoChangesExplanation,
       workdir,
       comments,
-      duplicateMap,
+      dupForCluster,
     );
     
     let updatedConsecutiveFailures = consecutiveFailures;
@@ -869,11 +885,13 @@ export async function executeFixIteration(
     // output.log audit: earlier bail-out for this issue set — dismiss as remaining and continue with others.
     if (updatedConsecutiveFailures >= NO_PROGRESS_DISMISS_THRESHOLD && issuesForPrompt.length > 0) {
       const reason = `No progress after ${formatNumber(updatedConsecutiveFailures)} attempts across models; continuing with other issues.`;
+      const dismissedIds = new Set<string>();
       for (const issue of issuesForPrompt) {
-        const primaryPath = getIssuePrimaryPath(issue);
-        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'remaining', primaryPath, issue.comment.line, issue.comment.body ?? '');
+        dismissDuplicateClusterFromComments(stateContext, issue.comment, dupForCluster, comments, reason, 'remaining');
+        for (const cid of getClusterIdsAccountedOnState(stateContext, issue.comment.id, dupForCluster)) {
+          dismissedIds.add(cid);
+        }
       }
-      const dismissedIds = new Set(issuesForPrompt.map((i) => i.comment.id));
       const remaining = workingUnresolved.filter((i) => !dismissedIds.has(i.comment.id));
       console.log(chalk.yellow(`  No progress after ${formatNumber(updatedConsecutiveFailures)} no-change attempt(s) — dismissing ${formatNumber(issuesForPrompt.length)} issue(s) as remaining; continuing with ${formatNumber(remaining.length)} other(s).`));
       return {

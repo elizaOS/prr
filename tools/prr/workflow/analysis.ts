@@ -20,6 +20,14 @@ import * as Performance from '../state/state-performance.js';
 import type { CLIOptions } from '../cli.js';
 import { formatNumber } from '../ui/reporter.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
+import {
+  dismissDuplicateClusterFromComments,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
+import {
+  markVerifiedClusterForFixedIssue,
+  unmarkVerifiedClustersForFinalAuditFailures,
+} from './duplicate-cluster-verify.js';
 import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../../../shared/logger.js';
 import { shouldSkipFinalAuditLlmForPath } from '../../../shared/path-utils.js';
 import { assessSolvability, SNIPPET_PLACEHOLDER, resolveTrackedPath } from './helpers/solvability.js';
@@ -203,7 +211,9 @@ export async function checkForNewComments(
   spinner: Ora,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   stateContext: StateContext,
-  workdir: string
+  workdir: string,
+  /** LLM dedup map from last analysis — dismiss siblings when solvability drops a canonical/dupe. */
+  duplicateMap?: Map<string, string[]>,
 ): Promise<{
   hasNewComments: boolean;
   updatedComments: ReviewComment[];
@@ -235,23 +245,28 @@ export async function checkForNewComments(
     // Add new comments to our list
     const updatedComments = [...existingComments];
     const updatedUnresolvedIssues = [...unresolvedIssues];
+    const lookupComments = [...existingComments, ...newComments];
+    const effectiveDupForNewComments = resolveEffectiveDuplicateMapForComments(
+      stateContext,
+      duplicateMap,
+      lookupComments,
+    );
 
     const solvableComments: ReviewComment[] = [];
     const resolvedPaths = new Map<string, string>();
     for (const comment of newComments) {
       const solvability = assessSolvability(workdir, comment, stateContext);
       if (!solvability.solvable) {
-        Dismissed.dismissIssue(
+        dismissDuplicateClusterFromComments(
           stateContext,
-          comment.id,
+          comment,
+          effectiveDupForNewComments,
+          lookupComments,
           solvability.reason ?? 'Not solvable',
           solvability.dismissCategory ?? 'not-an-issue',
-          comment.path,
-          comment.line,
-          comment.body,
-          solvability.remediationHint
+          solvability.remediationHint,
         );
-        debug('New comment dismissed by solvability', { commentId: comment.id, path: comment.path, reason: solvability.reason });
+        debug('New comment dismissed by solvability (cluster)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
         continue;
       }
       if (solvability.resolvedPath) {
@@ -339,7 +354,9 @@ export async function runFinalAudit(
     body: string
   ) => Promise<string | import('./issue-analysis-snippet-helpers.js').FullFileForAuditResult>,
   /** Pill cycle 2 #4: When set, validate Rule 6 (file deleted) by checking git ls-tree before accepting FIXED verdict. */
-  workdir?: string
+  workdir?: string,
+  /** LLM dedup clusters — mark/unmark siblings consistently when audit passes (same as fix verification / recovery). */
+  duplicateMap?: Map<string, string[]>
 ): Promise<{
   failedAudit: Array<{ comment: ReviewComment; explanation: string }>;
   auditPassed: boolean;
@@ -355,6 +372,7 @@ export async function runFinalAudit(
   debug('Starting final audit (verification cache not cleared - results are additive)');
 
   stateContext.finalAuditUncertainThisRun = [];
+  const dupForFinalAudit = resolveEffectiveDuplicateMapForComments(stateContext, duplicateMap, comments);
 
   // Pill-output #11: runtime overlap check (load() also repairs; this surfaces bugs in-session)
   const verifiedSet = new Set(Verification.getVerifiedComments(stateContext));
@@ -593,7 +611,12 @@ export async function runFinalAudit(
             line: comment.line,
             excerpt: result.explanation.slice(0, 80),
           });
-          Verification.markVerified(stateContext, comment.id);
+          markVerifiedClusterForFixedIssue(
+            stateContext,
+            comment.id,
+            dupForFinalAudit,
+            stateContext.verifiedThisSession,
+          );
         } else {
           failedAudit.push({ comment, explanation: result.explanation });
         }
@@ -641,7 +664,12 @@ export async function runFinalAudit(
             explanation: result.explanation?.slice(0, 200),
           });
         }
-        Verification.markVerified(stateContext, comment.id);
+        markVerifiedClusterForFixedIssue(
+          stateContext,
+          comment.id,
+          dupForFinalAudit,
+          stateContext.verifiedThisSession,
+        );
       }
     } else {
       // No result from audit - treat as needing review (fail-safe)
@@ -649,10 +677,13 @@ export async function runFinalAudit(
     }
   }
 
-  // Single unmark pass for all failed-audit comments (WHY: main-loop-setup used to unmark too → duplicate logs).
-  for (const { comment } of failedAudit) {
-    Verification.unmarkVerified(stateContext, comment.id);
-  }
+  // Single unmark pass: whole dedup cluster per failure (WHY: markVerifiedCluster on pass marks siblings;
+  // per-id unmark left dupes verified — skip fixer / inconsistent queue vs README "safe over sorry").
+  unmarkVerifiedClustersForFinalAuditFailures(
+    stateContext,
+    failedAudit.map((f) => f.comment.id),
+    dupForFinalAudit,
+  );
 
   if (filteredNoAction > 0) {
     debug('Audit filtered no-action-needed', { count: filteredNoAction });

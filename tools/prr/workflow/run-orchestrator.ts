@@ -88,9 +88,19 @@ export interface RunCallbacks {
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>;
   printUnresolvedIssues: (issues: UnresolvedIssue[]) => void;
   parseNoChangesExplanation: (output: string) => string | null;
-  trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  trySingleIssueFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>;
   tryRotation: (failureErrorType?: string) => boolean;
-  tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  tryDirectLLMFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>;
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
   onDisableRunner?: (runnerName: string) => void;
   /** Reset model rotation to first model for this push iteration (pushIteration > 1). WHY: Each push cycle gets best model first instead of retrying the model that may have just 500'd or timed out. */

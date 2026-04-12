@@ -69,6 +69,17 @@ export interface StateContext {
    * Undefined when blast radius was not built this analysis (disabled, failure, or cache without field).
    */
   blastRadiusPaths?: Set<string>;
+  /**
+   * Ephemeral: `git diff --name-only` vs PR base for this push iteration (from main-loop-setup).
+   * WHY: Basename-only API paths (e.g. `auto-optimizer.ts`) need `resolveTrackedPathWithPrFiles` in
+   * recovery and single-issue prompts when `issue.resolvedPath` is missing — same disambiguation as analysis.
+   */
+  prChangedFilesForRecovery?: string[];
+  /**
+   * Ephemeral: LLM dedup cluster map for this push iteration (from issue analysis).
+   * WHY: Recovery / single-issue paths must mark the full duplicate cluster verified, not only the queued id.
+   */
+  duplicateMapForSession?: Map<string, string[]>;
 }
 
 export function createStateContext(workdir: string): StateContext {

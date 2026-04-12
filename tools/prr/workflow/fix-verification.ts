@@ -13,6 +13,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { readFile } from 'fs/promises';
 import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
+import type { ReviewComment } from '../github/types.js';
 import type { SimpleGit } from 'simple-git';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase, getState } from '../state/state-context.js';
@@ -26,6 +27,12 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { isInfrastructureFailure } from './helpers/recovery.js';
 import { isEmptyDiffVerdict } from './utils.js';
+import { markVerifiedClusterForFixedIssue } from './duplicate-cluster-verify.js';
+import {
+  dismissDuplicateClusterFromComments,
+  mergeCommentsForClusterDismiss,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration, formatNumber, pluralize } from '../../../shared/logger.js';
 import { VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
@@ -483,7 +490,9 @@ export async function verifyFixes(
   getCurrentModel?: () => string | undefined,
   getRunner?: () => Runner,
   /** Files modified in any previous push iteration this run. WHY: pill-output — iteration 2 dismissed as file-unchanged issues whose file was fixed in iteration 1. */
-  filesModifiedInPreviousIterations?: Set<string>
+  filesModifiedInPreviousIterations?: Set<string>,
+  /** Full PR threads — file-unchanged dismiss expands to LLM dedup cluster when present. */
+  comments?: ReviewComment[],
 ): Promise<{
   verifiedCount: number;
   failedCount: number;
@@ -519,6 +528,11 @@ export async function verifyFixes(
       for (const p of filesModifiedInPreviousIterations) effectiveChangedSet.add(p);
     }
     const effectiveChangedFiles = [...effectiveChangedSet];
+    const dupForVerifyCluster = resolveEffectiveDuplicateMapForComments(
+      stateContext,
+      duplicateMap,
+      comments,
+    );
 
     for (const issue of unresolvedIssues) {
       // WHY skip: Recovery phases (trySingleIssueFix, tryDirectLLMFix) verify
@@ -556,20 +570,35 @@ export async function verifyFixes(
 
     // Mark unchanged files as failed (only after threshold) and document as dismissed
     // NOTE: No validation needed here - we're providing an explicit, meaningful reason
+    const unchangedReason =
+      'File was not modified by the fixer tool, so issue could not have been addressed';
+    const dismissRowsUnchanged = mergeCommentsForClusterDismiss(comments, unresolvedIssues);
     for (const issue of unchangedIssues) {
       const primaryPath = getIssuePrimaryPath(issue);
       Iterations.addVerificationResult(stateContext, issue.comment.id, {
         passed: false,
         reason: 'File was not modified',
       });
-      Dismissed.dismissIssue(stateContext, 
-        issue.comment.id,
-        'File was not modified by the fixer tool, so issue could not have been addressed',
-        'file-unchanged',
-        primaryPath,
-        issue.comment.line,
-        issue.comment.body
-      );
+      if (dismissRowsUnchanged.length > 0) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          issue.comment,
+          dupForVerifyCluster,
+          dismissRowsUnchanged,
+          unchangedReason,
+          'file-unchanged',
+        );
+      } else {
+        Dismissed.dismissIssue(
+          stateContext,
+          issue.comment.id,
+          unchangedReason,
+          'file-unchanged',
+          primaryPath,
+          issue.comment.line,
+          issue.comment.body,
+        );
+      }
       failedCount++;
     }
 
@@ -642,9 +671,13 @@ export async function verifyFixes(
             
             if (verification.fixed) {
               verifiedCount++;
-              Verification.markVerified(stateContext, issue.comment.id);
+              autoVerifiedCount += markVerifiedClusterForFixedIssue(
+                stateContext,
+                issue.comment.id,
+                dupForVerifyCluster,
+                verifiedThisSession,
+              );
               Iterations.addCommentToIteration(stateContext, issue.comment.id);
-              verifiedThisSession.add(issue.comment.id);  // Track for session filtering
               
               // Clean up fix-attempt lessons now that the issue is resolved.
               // Keeps architectural constraints, removes "Fix for X - the diff..." debris.
@@ -653,19 +686,6 @@ export async function verifyFixes(
               );
               if (cleaned > 0) {
                 debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${primaryPathSeq}:${issue.comment.line}`);
-              }
-              
-              // Auto-verify duplicates of this canonical issue
-              if (duplicateMap) {
-                const duplicates = duplicateMap.get(issue.comment.id) || [];
-                for (const dupId of duplicates) {
-                  if (!Verification.isVerified(stateContext, dupId)) {
-                    Verification.markVerified(stateContext, dupId, issue.comment.id);
-                    verifiedThisSession.add(dupId);
-                    autoVerifiedCount++;
-                    debug(`Auto-verified duplicate comment ${dupId} (canonical ${issue.comment.id} was fixed)`);
-                  }
-                }
               }
             } else {
               // output.log audit: verifier said "diff is empty" → treat as no-changes, add lesson, don't escalate.
@@ -694,13 +714,17 @@ export async function verifyFixes(
                 bugPatternAbsentInCode(issue.comment.body, currentCodeSeq)
               ) {
                 verifiedCount++;
-                Verification.markVerified(stateContext, issue.comment.id);
+                autoVerifiedCount += markVerifiedClusterForFixedIssue(
+                  stateContext,
+                  issue.comment.id,
+                  dupForVerifyCluster,
+                  verifiedThisSession,
+                );
                 Iterations.addVerificationResult(stateContext, issue.comment.id, {
                   passed: true,
                   reason: `Auto-verified: bug pattern no longer in code after ${rejectionCountSeq} verifier rejections`,
                 });
                 Iterations.addCommentToIteration(stateContext, issue.comment.id);
-                verifiedThisSession.add(issue.comment.id);
                 const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
                   lessonsContext, primaryPathSeq, issue.comment.line
                 );
@@ -905,9 +929,13 @@ export async function verifyFixes(
 
             if (verification.fixed) {
               verifiedCount++;
-              Verification.markVerified(stateContext, issue.comment.id);
+              autoVerifiedCount += markVerifiedClusterForFixedIssue(
+                stateContext,
+                issue.comment.id,
+                dupForVerifyCluster,
+                verifiedThisSession,
+              );
               Iterations.addCommentToIteration(stateContext, issue.comment.id);
-              verifiedThisSession.add(issue.comment.id);
               
               // Clean up fix-attempt lessons now that the issue is resolved
               const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
@@ -915,19 +943,6 @@ export async function verifyFixes(
               );
               if (cleaned > 0) {
                 debug(`Cleaned up ${cleaned} fix-attempt lesson(s) for ${getIssuePrimaryPath(issue)}:${issue.comment.line}`);
-              }
-              
-              // Auto-verify duplicates of this canonical issue
-              if (duplicateMap) {
-                const duplicates = duplicateMap.get(issue.comment.id) || [];
-                for (const dupId of duplicates) {
-                  if (!Verification.isVerified(stateContext, dupId)) {
-                    Verification.markVerified(stateContext, dupId, issue.comment.id);
-                    verifiedThisSession.add(dupId);
-                    autoVerifiedCount++;
-                    debug(`Auto-verified duplicate comment ${dupId} (canonical ${issue.comment.id} was fixed)`);
-                  }
-                }
               }
             } else {
               // output.log audit: verifier said "diff is empty" → treat as no-changes, add lesson, don't escalate.
@@ -953,13 +968,17 @@ export async function verifyFixes(
                 bugPatternAbsentInCode(issue.comment.body, currentCode)
               ) {
                 verifiedCount++;
-                Verification.markVerified(stateContext, issue.comment.id);
+                autoVerifiedCount += markVerifiedClusterForFixedIssue(
+                  stateContext,
+                  issue.comment.id,
+                  dupForVerifyCluster,
+                  verifiedThisSession,
+                );
                 Iterations.addVerificationResult(stateContext, issue.comment.id, {
                   passed: true,
                   reason: `Auto-verified: bug pattern no longer in code after ${rejectionCount} verifier rejections`,
                 });
                 Iterations.addCommentToIteration(stateContext, issue.comment.id);
-                verifiedThisSession.add(issue.comment.id);
                 const cleaned = LessonsAPI.Cleanup.cleanupLessonsForFixedIssue(
                   lessonsContext, getIssuePrimaryPath(issue), issue.comment.line
                 );

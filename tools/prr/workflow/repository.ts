@@ -103,7 +103,9 @@ export async function cloneOrUpdateRepository(
 }
 
 /**
- * Recover verification state from git commit messages
+ * Recover verification state from git commit messages.
+ * Dedup siblings are expanded on the first `findUnresolvedIssues` pass when **`state.dedupCache`**
+ * matches the current PR comment id set — see **`expandGitRecoveredVerificationFromDedupCache`** (`duplicate-cluster-verify.ts`).
  */
 export async function recoverVerificationState(
   git: SimpleGit,
