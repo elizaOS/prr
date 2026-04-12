@@ -6,6 +6,12 @@
  */
 
 import type { UnresolvedIssue, IssueTriage } from './types.js';
+import { isLikelyInlineReviewBotAuthor } from '../github/bot-author-normalize.js';
+
+/** Optional tie-breaks for `sortByPriority` (Cycle 80: stale bot inline vs HEAD). */
+export interface SortByPriorityOptions {
+  staleBotInlineReviewVsHead?: boolean;
+}
 
 /**
  * Issue processing order options for --priority-order CLI flag.
@@ -69,7 +75,11 @@ function hasValidSnippet(issue: UnresolvedIssue): boolean {
  * @param order Sort order
  * @returns New sorted array
  */
-export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder): UnresolvedIssue[] {
+export function sortByPriority(
+  issues: UnresolvedIssue[],
+  order: PriorityOrder,
+  options?: SortByPriorityOptions,
+): UnresolvedIssue[] {
   if (order === 'none') return [...issues];
   
   const sorted = [...issues]; // Clone to avoid mutating input
@@ -109,7 +119,14 @@ export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder):
     const bHasFeedback = !!(b.verifierContradiction || (b.verifierFeedbackHistory?.length ?? 0) > 0);
     if (aHasFeedback !== bHasFeedback) return aHasFeedback ? -1 : 1;
     // Tie-break: prefer issues with valid code snippet so capped batches keep Current Code blocks (audit).
-    return (hasValidSnippet(b) ? 1 : 0) - (hasValidSnippet(a) ? 1 : 0);
+    const snippetTie = (hasValidSnippet(b) ? 1 : 0) - (hasValidSnippet(a) ? 1 : 0);
+    if (snippetTie !== 0) return snippetTie;
+    if (options?.staleBotInlineReviewVsHead) {
+      const abot = isLikelyInlineReviewBotAuthor(a.comment.author);
+      const bbot = isLikelyInlineReviewBotAuthor(b.comment.author);
+      if (abot !== bbot) return abot ? 1 : -1;
+    }
+    return 0;
   });
   
   return sorted;

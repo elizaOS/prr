@@ -37,6 +37,7 @@ import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import { applyCatalogModelAutoHeals } from './catalog-model-autoheal.js';
 import { setDynamicRepoTopLevelDirs } from '../../../shared/path-utils.js';
+import { isLikelyInlineReviewBotAuthor } from '../github/bot-author-normalize.js';
 import { assessSolvability, resolveTrackedPath } from './helpers/solvability.js';
 import {
   dismissDuplicateClusterFromComments,
@@ -338,10 +339,17 @@ export async function processCommentsAndPrepareFixLoop(
   }
 
   // Issue graduation: process high-attempt issues first (so they get batched first; future: single-issue or human review for ≥N attempts).
+  // When bot review commit lags HEAD, deprioritize known inline review bots so fresher human threads run first (Cycle 80).
   unresolvedIssues = [...unresolvedIssues].sort((a, b) => {
     const na = Performance.getIssueAttempts(stateContext, a.comment.id).length;
     const nb = Performance.getIssueAttempts(stateContext, b.comment.id).length;
-    return nb - na;
+    if (nb !== na) return nb - na;
+    if (stateContext.staleBotInlineReviewVsHead) {
+      const abot = isLikelyInlineReviewBotAuthor(a.comment.author);
+      const bbot = isLikelyInlineReviewBotAuthor(b.comment.author);
+      if (abot !== bbot) return abot ? 1 : -1;
+    }
+    return 0;
   });
 
   // Analyze and report issues

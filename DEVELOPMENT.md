@@ -58,8 +58,8 @@ Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or *
 | Runtime / embedding / batch API / serverless / **`packages/core`** | **Product code** under review — open issues in **that** repository; prr only sees them via logs. |
 | **`CHANGELOG.md` / `ROADMAP.md`** conflicts in pill | Were **eliza** merge artifacts — maintain **`CHANGELOG.md`** and **`docs/ROADMAP.md`** here separately. |
 | **`AGENTS.md`** “companion architecture” | Describes **eliza** — **root `AGENTS.md` here** documents **prr**, pill, clone workdir, state/path rules. |
-| **CodeRabbit SHA ≠ HEAD** | Warn by default; **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** exits after workdir setup **before clone** (**`run-setup-phase.ts`**). |
-| **GitHub mergeable false / dirty** | Warn after clone by default; **`PRR_EXIT_ON_UNMERGEABLE=1`** exits **before clone** when **`--merge-base` is not set**. |
+| **CodeRabbit SHA ≠ HEAD** | Warn by default; **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** exits after workdir setup **before clone** (**`run-setup-phase.ts`**). Otherwise **`stateContext.staleBotInlineReviewVsHead`** deprioritizes known inline review-bot authors in queue + fix-prompt batch order (**`main-loop-setup.ts`**, **`severity.ts`**, **`prompt-building.ts`**) so human threads run first. |
+| **GitHub mergeable false / dirty** | Warn after clone by default; **`PRR_EXIT_ON_UNMERGEABLE=1`** exits **before clone** when **`--merge-base` is not set**. **Merge noise (informal):** GitHub says the PR does not merge cleanly into base while PRR still fixes threads — rebases/resolutions move line anchors so bot inline comments can describe **pre-merge** code; use **`--merge-base`** / resolve conflicts to align the clone with what you intend to ship. |
 | **Clear all dismissals on rebase** | Default: only **`already-fixed`** cleared on HEAD change; **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears entire **`dismissedIssues`** (**`state-core.ts`** / **`manager.ts`**). |
 | **“path-fragment” in pill** | Persisted as **`path-fragment`** in state; **`path-unresolved`** is for ambiguous basename resolution — see **AGENTS.md** path rules. |
 | **merge-tree / latent conflicts (pill #32)** | **`shared/git/git-conflicts.ts`**: after fetch, **`probeLatentMergeConflictsWithOrigin`** runs **`git merge-tree`** for **`HEAD`** vs **`origin/<prBranch>`** and (when **`prBase ≠ prBranch`**) a **second** probe vs **`origin/<prBase>`** (GitHub mergeable/dirty). **`checkAndSyncWithRemote`** warns for each; **`PRR_MATERIALIZE_LATENT_MERGE`** / **`PRR_MATERIALIZE_LATENT_MERGE_BASE`** materialize the corresponding **`git merge --no-commit`**. Skip: **`PRR_DISABLE_LATENT_MERGE_PROBE`**, **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE`**. |
@@ -680,14 +680,18 @@ export type PriorityOrder =
   | 'oldest'         // Oldest comments first (GitHub default)
   | 'none';          // No sorting (preserve input order)
 
-export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder): UnresolvedIssue[] {
+export function sortByPriority(
+  issues: UnresolvedIssue[],
+  order: PriorityOrder,
+  options?: { staleBotInlineReviewVsHead?: boolean },
+): UnresolvedIssue[] {
   if (order === 'none') return issues;
   const sorted = [...issues];  // NEVER mutate input
   sorted.sort((a, b) => {
     switch (order) {
       case 'important':
         return (a.triage?.importance ?? 3) - (b.triage?.importance ?? 3);
-      // ... other cases
+      // ... other cases + snippet tie-break; optional bot deprioritize when CodeRabbit SHA < HEAD
     }
   });
   return sorted;
@@ -708,7 +712,9 @@ If we mutated, single-issue randomization and priority sort would fight each oth
 // Same unresolvedIssues array shared with single-issue mode (randomizes)
 // and no-changes verification. Sorting at prompt boundary means we pick
 // the best issues for the batch without affecting other consumers.
-const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
+const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder, {
+  staleBotInlineReviewVsHead: !!stateContext?.staleBotInlineReviewVsHead,
+});
 const { prompt, detailedSummary } = buildPrompt(sortedIssues, lessons, { maxIssues: effectiveMax });
 ```
 

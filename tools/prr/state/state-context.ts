@@ -80,6 +80,11 @@ export interface StateContext {
    * WHY: Recovery / single-issue paths must mark the full duplicate cluster verified, not only the queued id.
    */
   duplicateMapForSession?: Map<string, string[]>;
+  /**
+   * Ephemeral: CodeRabbit (or similar) latest review commit is older than PR HEAD — inline threads may predate current code.
+   * WHY: Deprioritize known review-bot authors in queue / batch sort so human threads and fresher anchors run first (Cycle 80).
+   */
+  staleBotInlineReviewVsHead?: boolean;
 }
 
 export function createStateContext(workdir: string): StateContext {

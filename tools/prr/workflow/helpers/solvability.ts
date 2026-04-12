@@ -37,6 +37,9 @@ export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
 const repoFilesCache = new Map<string, string[]>();
 
+/** Log full `debug('Solvability dismiss: chronic-failure'…)` once per comment id per process — avoids spam when the same ids re-hit solvability each push iteration (output.log Cycle 80). */
+const chronicFailureSolvabilityDebugLogged = new Set<string>();
+
 type TrackedPathResolution =
   | { kind: 'exact'; path: string }
   | { kind: 'suffix'; path: string }
@@ -649,6 +652,37 @@ export function assessSolvability(
         reason: `Ambiguous review path "${comment.path}" matched multiple tracked files: ${formatPathCandidates(pathResolution.candidates)}`,
       };
     }
+    // Review path missing on disk but body quotes exactly one tracked file — retarget (eliza#6716: bots cite moved/renamed paths).
+    const pathHintsForMissing = [
+      ...extractPathHintsFromBody(comment.body ?? ''),
+      ...extractBareFilePathHintsFromBody(comment.body ?? ''),
+    ];
+    const uniqueExistingFromHints = new Set<string>();
+    for (const hint of pathHintsForMissing) {
+      const res = resolveTrackedPathDetailed(workdir, hint, comment.body ?? '');
+      if (res.kind === 'ambiguous') continue;
+      if ('path' in res) {
+        const p = tryResolvePathWithExtensionVariants(workdir, res.path);
+        const full = join(workdir, p);
+        if (existsSync(full)) uniqueExistingFromHints.add(p);
+      }
+    }
+    if (uniqueExistingFromHints.size === 1) {
+      const resolvedPath = [...uniqueExistingFromHints][0]!;
+      debug('Solvability: retargeted missing review path via body hints', {
+        commentId: comment.id,
+        reviewPath: comment.path,
+        resolvedPath,
+      });
+      return {
+        solvable: true,
+        resolvedPath,
+        retargetedLine: extractMaxLineRefFromBody(comment.body ?? '') ?? undefined,
+        contextHints: [
+          `Review path "${comment.path}" not found on disk; using single path inferred from comment body: ${resolvedPath}`,
+        ],
+      };
+    }
     return {
       solvable: false,
       dismissCategory: pathDismissCategoryForNotFound(comment.path, pathResolution.kind),
@@ -768,7 +802,10 @@ export function assessSolvability(
   // Check 3a: Apply failure exhaustion — output did not match file after N attempts (output.log audit: earlier dismissal with clear handoff).
   const applyFailures = stateContext.state?.applyFailureCountByCommentId?.[comment.id] ?? 0;
   if (applyFailures >= APPLY_FAILURE_DISMISS_THRESHOLD) {
-    debug('Solvability dismiss: apply-failure chronic', { commentId: comment.id, path: comment.path, applyFailures, threshold: APPLY_FAILURE_DISMISS_THRESHOLD });
+    if (!chronicFailureSolvabilityDebugLogged.has(comment.id)) {
+      chronicFailureSolvabilityDebugLogged.add(comment.id);
+      debug('Solvability dismiss: apply-failure chronic', { commentId: comment.id, path: comment.path, applyFailures, threshold: APPLY_FAILURE_DISMISS_THRESHOLD });
+    }
     return {
       solvable: false,
       dismissCategory: 'chronic-failure',
@@ -783,7 +820,10 @@ export function assessSolvability(
   const currentHash = hashFileContentSync(effectiveFullPath);
   failedAttempts = failedAttempts.filter(a => !a.fileContentHash || a.fileContentHash === currentHash);
   if (failedAttempts.length >= CHRONIC_FAILURE_THRESHOLD) {
-    debug('Solvability dismiss: chronic-failure', { commentId: comment.id, path: comment.path, failedAttempts: failedAttempts.length, threshold: CHRONIC_FAILURE_THRESHOLD });
+    if (!chronicFailureSolvabilityDebugLogged.has(comment.id)) {
+      chronicFailureSolvabilityDebugLogged.add(comment.id);
+      debug('Solvability dismiss: chronic-failure', { commentId: comment.id, path: comment.path, failedAttempts: failedAttempts.length, threshold: CHRONIC_FAILURE_THRESHOLD });
+    }
     return {
       solvable: false,
       dismissCategory: 'chronic-failure',

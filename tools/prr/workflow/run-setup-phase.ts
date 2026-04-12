@@ -98,6 +98,7 @@ export async function executeSetupPhase(
     throw new Error('State not initialized after setupWorkdirAndManagers');
   }
   const state = stateContext.state;
+  stateContext.staleBotInlineReviewVsHead = crStatus.staleInlineReviewVsHead;
   onManagersReady?.(workdir, stateContext);
 
   // Setup runner

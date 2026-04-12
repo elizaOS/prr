@@ -238,6 +238,16 @@ export async function executePushIteration(
     usedPrefetched: !!prefetched?.length,
   });
 
+  const prevCommentCount = finalCommentsRef.current.length;
+  if (pushIteration > 1 && comments.length > prevCommentCount) {
+    const delta = comments.length - prevCommentCount;
+    console.log(
+      chalk.gray(
+        `  Review comments grew from ${formatNumber(prevCommentCount)} to ${formatNumber(comments.length)} (+${formatNumber(delta)}); new threads are triaged with the current queue.`,
+      ),
+    );
+  }
+
   if (loopResult.shouldBreak) {
     // Snapshot for AAR/remaining count (same as other exit paths); usually empty when breaking here (e.g. no comments).
     finalUnresolvedIssuesRef.current = [...unresolvedIssues];

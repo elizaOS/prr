@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-04-09 · **Recorded cycles:** 79 · **Historical (legacy):** 4
+**Last updated:** 2026-04-12 · **Recorded cycles:** 80 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -14,7 +14,7 @@ Single audit log for output.log, prompts.log, and code changes. Use it to spot r
    - Find the workdir path in the log (e.g. `Reusing existing workdir: /root/.prr/work/…` or `Workdir preserved: …`).
    - For at least one issue that the log says is "already verified", "fixed", or "dismissed (already-fixed)", open the **actual file** at the cited path (and line range) in that workdir and confirm the fix is present (e.g. the bug pattern is gone). If the log says "skip fixer — all already verified" but the file still contains the bug, that is a finding (stale verification, head change, etc.).
    - This catches mismatches where state says "fixed" but the branch was rebased/reverted or verification was wrong.
-4. **After an audit:** Add a new cycle using the template below. Fill findings, improvements, and flip-flop check.
+4. **After an audit:** Always add a new cycle using the template below (audit-only or code follow-up). Fill findings, improvements, and flip-flop check.
 5. **Periodically:** Update "Recurring patterns" if a new theme appears in 2+ cycles; add regression checks if we keep fixing the same class of bug.
 
 ---
@@ -163,6 +163,25 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 80 — 2026-04-12 (output.log + prompts.log: elizaOS/eliza#6716, workdir 3120b867)
+
+**Artifacts audited:** `/root/prr/output.log` (~9,387 lines), `/root/prr/prompts.log` (llm-api-fix + in-process pairs). PRR **d72ef2d**. Workdir: **`/root/.prr/work/3120b86731d39e0a`**.
+
+**Findings:**
+- **Medium:** Default **`PRR_LLM_MODEL`** (**qwen-3-235b**) used for final audit while fixer used **Opus** — **2** threads re-queued (**UNFIXED**); model rotation / session stats already prefer stronger tools when they succeed — no hardcoded model id change requested; document operator pinning (**`PRR_FINAL_AUDIT_MODEL`**) in narrative.
+- **Medium (ops):** **`mergeable: false` / `dirty`** with PRR still running **11** push iterations — “merge noise”: conflicts with base / non-mergeable GitHub state so anchors and bot comments churn independently of local fix quality.
+- **Low:** Same **chronic-failure** comment ids logged **`Solvability dismiss: chronic-failure`** every push iteration (debug spam).
+- **Low:** Review comment count **98 → 135** mid-run — operator visibility only.
+- **Low:** **`packages/typescript/src/optimization/ab-analysis.ts`** escalation skipped (path not in tree) while body may cite a real tracked path — missed single-hint retarget.
+
+**Improvements implemented:** **`solvability.ts`:** log **`chronic-failure`** / **`apply-failure chronic`** **`debug`** once per comment id per process. **Missing review path:** if disk path absent but body hints resolve to **exactly one** existing tracked file, **retarget** (`resolvedPath` + hint). **`stateContext.staleBotInlineReviewVsHead`** from CodeRabbit check; **`main-loop-setup`** queue sort + **`sortByPriority`** ( **`prompt-building`**) deprioritize **`isLikelyInlineReviewBotAuthor`** when stale. **`push-iteration-loop`:** gray line when comment count **increases** on push iter **> 1**. **`bot-author-normalize.ts`:** **`isLikelyInlineReviewBotAuthor`**. Rules: **`audit-logs-verify-workdir.mdc`**, **`prr-audit-add-cycle.mdc`** — **always** record a cycle after log audits.
+
+**Flip-flop check:** N — additive UX, quieter logs, optional retarget widens solvable cases.
+
+**Notes:** Spot-checked workdir **`agent/typescript/index.ts`** ~**479** — **no `console.log`**; matches **RESOLVED**. **`unfollowRoom.ts:66`** — **`typeof decisionValue === "boolean"`** present; final audit **UNFIXED** was **logic-order** critique vs **`parseBoolean`**, not absent fix. **`runtime.ts`** — imported **`simpleHash`** plus **local** duplicate on failure path ~**5705** — supports audit **UNFIXED** for duplicate-hash theme.
+
+---
 
 ### Cycle 79 — 2026-04-09 (Cycle 78 audit → code improvements)
 

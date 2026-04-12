@@ -145,7 +145,7 @@ export async function analyzeBotTimingAndDisplay(
  * Check CodeRabbit status and trigger review if needed.
  * By default we do not wait on CodeRabbit; after triggering we fetch current comments once and return so the analysis/fix loop can start immediately. New CodeRabbit comments are picked up on a later run or when checking for new comments. Optional **`PRR_EXIT_ON_STALE_BOT_REVIEW`** stops before clone when the bot’s review SHA ≠ PR HEAD.
  *
- * When **`triggerCodeRabbitIfNeeded`** reports a **bot review commit** older than PR HEAD, we emit a **warn** and set **`staleInlineReviewVsHead`**. **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** in **`run-setup-phase`** exits before clone (pill-output CodeRabbit SHA mismatch).
+ * When **`triggerCodeRabbitIfNeeded`** reports a **bot review commit** older than PR HEAD, we emit a **warn** and set **`staleInlineReviewVsHead`** (mirrored on **`stateContext.staleBotInlineReviewVsHead`**). **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** in **`run-setup-phase`** exits before clone (pill-output CodeRabbit SHA mismatch). Otherwise PRR **deprioritizes** known inline review-bot authors in queue / fix-prompt batch order so human threads run first (**`main-loop-setup.ts`**, **`severity.ts`**, **`prompt-building.ts`**).
  *
  * prefetchedComments: When we trigger CodeRabbit we fetch comments once here; the caller can reuse them in the "FETCHING REVIEW COMMENTS" phase to avoid a redundant API call.
  */

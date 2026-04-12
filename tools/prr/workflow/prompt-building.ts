@@ -136,7 +136,9 @@ export function buildAndDisplayFixPrompt(
   // with single-issue focus mode (which randomizes) and no-changes verification.
   // Sorting at the prompt boundary means we pick the best issues for the batch
   // without affecting other consumers.
-  const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
+  const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder, {
+    staleBotInlineReviewVsHead: !!stateContext?.staleBotInlineReviewVsHead,
+  });
 
   // perFileLessons already built above for lessons ordering; used for inline injection per issue
   const botRiskByFile = comments && comments.length > 0

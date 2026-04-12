@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Stale bot inline vs PR HEAD:** When CodeRabbit’s review commit is older than PR HEAD (existing warn), **`stateContext.staleBotInlineReviewVsHead`** is set and known inline review bots (**`isLikelyInlineReviewBotAuthor`** in **`bot-author-normalize.ts`**) are **deprioritized** in the unresolved queue sort (**`main-loop-setup.ts`**) and fix-prompt **`sortByPriority`** (**`severity.ts`**, **`prompt-building.ts`**) so human threads run first — reduces wasted cycles on likely stale anchors without hardcoding models. **`PRR_EXIT_ON_STALE_BOT_REVIEW`** unchanged (opt-in exit before clone).
+
+- **Solvability — missing review path:** If the API path is not on disk but the comment body resolves to **exactly one** tracked file via path hints, **retarget** to that file instead of **`missing-file`** immediately (**`solvability.ts`**). Test: **`tests/solvability-missing-path-body-hint.test.ts`**.
+
+- **Solvability debug:** **`chronic-failure`** and **`apply-failure chronic`** **`debug`** lines log **once per comment id** per process (repeat dismiss passes stay quiet). Cycle **80** in **`tools/prr/AUDIT-CYCLES.md`**.
+
+- **Push iteration UX:** When review comment count **increases** after push iteration **1**, emit one gray line (**`push-iteration-loop.ts`**) so mid-run bot traffic is visible.
+
 - **llm-api request timeout:** Non-full-file fix calls scale client-side wait **90s → 120s / 150s / 180s** by enriched prompt length (tiers at **60k / 100k / 140k** chars) so large search/replace batches are less likely to hit **`Request timeout after 90s`** before the model returns. Full-file rewrite remains **180s**. Optional fixed override: **`PRR_LLM_API_REQUEST_TIMEOUT_MS`**. **`getLlmApiRequestTimeoutMs`** in **`shared/constants/polling.ts`**; **`shared/runners/llm-api.ts`**.
 
 - **Git submodule (gitlink) review paths:** **`assessSolvability`** check **0e0** dismisses threads anchored on index mode **160000** paths as **`not-an-issue`** with a remediation hint; **`issue-analysis`** treats snippet placeholder + gitlink like **`not-an-issue`**; final audit skips adversarial LLM with a synthetic **FIXED (git submodule)** when the snippet is unreadable (**`shared/git/git-submodule-path.ts`**, **`solvability.ts`**, **`issue-analysis.ts`**, **`analysis.ts`**). Tests: **`tests/git-submodule-path.test.ts`**, **`tests/solvability-submodule.test.ts`**.
