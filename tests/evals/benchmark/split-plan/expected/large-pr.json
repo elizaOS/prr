@@ -1,0 +1,56 @@
+{
+  "name": "large-pr",
+  "expectedDependencies": [
+    {
+      "from": "src/auth/types.ts",
+      "to": ["src/auth/oauth2.ts", "src/auth/jwt.ts", "src/api/routes/auth.ts", "src/middleware/auth.ts"],
+      "type": "types"
+    },
+    {
+      "from": "src/auth/oauth2.ts",
+      "to": ["src/api/routes/auth.ts"],
+      "type": "implementation"
+    },
+    {
+      "from": "src/auth/jwt.ts",
+      "to": ["src/middleware/auth.ts"],
+      "type": "implementation"
+    }
+  ],
+  "expectedSplits": [
+    {
+      "name": "auth-types",
+      "files": ["src/auth/types.ts"],
+      "commits": ["commit1"],
+      "dependencies": []
+    },
+    {
+      "name": "oauth2-implementation",
+      "files": ["src/auth/oauth2.ts", "tests/auth/oauth2.test.ts"],
+      "commits": ["commit2", "commit6"],
+      "dependencies": ["auth-types"]
+    },
+    {
+      "name": "jwt-implementation",
+      "files": ["src/auth/jwt.ts", "tests/auth/jwt.test.ts"],
+      "commits": ["commit3", "commit7"],
+      "dependencies": ["auth-types"]
+    },
+    {
+      "name": "api-integration",
+      "files": ["src/api/routes/auth.ts"],
+      "commits": ["commit4"],
+      "dependencies": ["auth-types", "oauth2-implementation"]
+    },
+    {
+      "name": "middleware",
+      "files": ["src/middleware/auth.ts"],
+      "commits": ["commit5"],
+      "dependencies": ["auth-types", "jwt-implementation"]
+    }
+  ],
+  "expectedMergeOrder": ["auth-types", "oauth2-implementation", "jwt-implementation", "api-integration", "middleware"],
+  "minDependencyAccuracy": 0.85,
+  "minSplitQuality": 0.8,
+  "minMergeOrderCorrectness": 0.9
+}

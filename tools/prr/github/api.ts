@@ -1,7 +1,18 @@
 import { Octokit } from '@octokit/rest';
 import { graphql } from '@octokit/graphql';
-import type { PRInfo, ReviewThread, ReviewComment, PRStatus, BotResponseTiming } from './types.js';
+import {
+  type PRInfo,
+  type ReviewThread,
+  type ReviewComment,
+  type PRStatus,
+  type BotResponseTiming,
+  extractFullCommitShaFromText,
+} from './types.js';
 import { debug } from '../../../shared/logger.js';
+import { logGitHubApiFailure } from './github-api-errors.js';
+import { deduplicateSameBotAcrossComments } from './issue-comment-dedup.js';
+import { normalizeReviewBotAuthorLabel } from './bot-author-normalize.js';
+import { isNonReviewContent } from './review-ingestion-filters.js';
 
 // Static configuration for PR status / bot detection (allocated once, not per call)
 const REVIEW_BOT_CHECKS = new Set(['cursor bugbot']);
@@ -27,7 +38,7 @@ const BOT_PATTERNS = [
  * Exclude from fixable/grouping so we don't send them to the fix loop.
  * WHY: Those blurbs are not code reviews; treating them as issues wasted 4+ iterations and produced only UNCLEAR/WRONG_LOCATION.
  */
-function isCodeRabbitMetaComment(comment: { author: string; body: string }): boolean {
+export function isCodeRabbitMetaComment(comment: { author: string; body: string }): boolean {
   if (!/coderabbitai\[bot\]/i.test(comment.author)) return false;
   const b = comment.body.trim();
   if (/^ℹ️\s*Recent review info/i.test(b)) return true;
@@ -79,27 +90,32 @@ export class GitHubAPI {
 
   async getPRInfo(owner: string, repo: string, prNumber: number): Promise<PRInfo> {
     debug('Fetching PR info', { owner, repo, prNumber });
-    const { data: pr } = await this.octokit.pulls.get({
-      owner,
-      repo,
-      pull_number: prNumber,
-    });
+    try {
+      const { data: pr } = await this.octokit.pulls.get({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
 
-    const info: PRInfo = {
-      owner,
-      repo,
-      number: prNumber,
-      title: pr.title,
-      body: pr.body ?? '',
-      branch: pr.head.ref,
-      baseBranch: pr.base.ref,
-      headSha: pr.head.sha,
-      cloneUrl: pr.head.repo?.clone_url || `https://github.com/${owner}/${repo}.git`,
-      mergeable: pr.mergeable,
-      mergeableState: pr.mergeable_state,
-    };
-    debug('PR info fetched', info);
-    return info;
+      const info: PRInfo = {
+        owner,
+        repo,
+        number: prNumber,
+        title: pr.title,
+        body: pr.body ?? '',
+        branch: pr.head.ref,
+        baseBranch: pr.base.ref,
+        headSha: pr.head.sha,
+        cloneUrl: pr.head.repo?.clone_url || `https://github.com/${owner}/${repo}.git`,
+        mergeable: pr.mergeable,
+        mergeableState: pr.mergeable_state,
+      };
+      debug('PR info fetched', info);
+      return info;
+    } catch (err) {
+      logGitHubApiFailure('REST pulls.get (getPRInfo)', err, { owner, repo, prNumber });
+      throw err;
+    }
   }
 
   /**
@@ -115,24 +131,55 @@ export class GitHubAPI {
     }
   }
 
+  /**
+   * Update a PR branch with the base branch using GitHub's API (equivalent to the "Update branch" button).
+   * Returns true on success (202), false on failure. The API responds asynchronously — the merge
+   * commit may not be immediately visible; callers should fetch the remote branch after.
+   */
+  async updatePRBranch(owner: string, repo: string, prNumber: number): Promise<boolean> {
+    debug('Updating PR branch via GitHub API', { owner, repo, prNumber });
+    try {
+      const { data } = await this.octokit.pulls.updateBranch({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+      debug('PR branch update accepted', { message: data?.message, url: data?.url });
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('PR branch update via API failed', { error: msg });
+      return false;
+    }
+  }
+
   async getPRStatus(owner: string, repo: string, prNumber: number, ref: string): Promise<PRStatus> {
     debug('Fetching PR status/checks', { owner, repo, prNumber, ref });
 
-    // Get all check runs for this ref using pagination
+    // Get all check runs for this ref using pagination.
+    // 422/404 can occur when Checks API is unavailable (e.g. token lacks checks:read, or repo settings).
     const allCheckRuns: Array<{ status: string; name: string }> = [];
-    for await (const response of this.octokit.paginate.iterator(
-      this.octokit.checks.listForRef,
-      {
-        owner,
-        repo,
-        ref,
-        per_page: 100,
+    try {
+      for await (const response of this.octokit.paginate.iterator(
+        this.octokit.checks.listForRef,
+        {
+          owner,
+          repo,
+          ref,
+          per_page: 100,
+        }
+      )) {
+        const runs = (response.data as any).check_runs || response.data;
+        if (Array.isArray(runs)) {
+          allCheckRuns.push(...runs);
+        }
       }
-    )) {
-      // paginate.iterator returns items directly in response.data for this endpoint
-      const runs = (response.data as any).check_runs || response.data;
-      if (Array.isArray(runs)) {
-        allCheckRuns.push(...runs);
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status === 422 || status === 404) {
+        debug('Check runs API unavailable (422/404), assuming no check runs', { owner, repo, ref });
+      } else {
+        throw err;
       }
     }
 
@@ -157,12 +204,24 @@ export class GitHubAPI {
     // Total excludes review-bot checks so CI completion reflects real CI only.
     const totalChecks = inProgressChecks.length + pendingChecks.length + completedChecks;
 
-    // Get combined status
-    const { data: status } = await this.octokit.repos.getCombinedStatusForRef({
-      owner,
-      repo,
-      ref,
-    });
+    // Get combined status (commit statuses; can also 422 if token lacks scope).
+    let status: { state: string };
+    try {
+      const res = await this.octokit.repos.getCombinedStatusForRef({
+        owner,
+        repo,
+        ref,
+      });
+      status = res.data;
+    } catch (err: unknown) {
+      const code = (err as { status?: number })?.status;
+      if (code === 422 || code === 404) {
+        debug('Combined status API unavailable (422/404), assuming success', { owner, repo, ref });
+        status = { state: 'success' };
+      } else {
+        throw err;
+      }
+    }
 
     // Get requested reviewers (pending review requests)
     const { data: pr } = await this.octokit.pulls.get({
@@ -306,6 +365,7 @@ export class GitHubAPI {
                 comments(first: 20) {
                   nodes {
                     id
+                    databaseId
                     author {
                       login
                     }
@@ -338,6 +398,7 @@ export class GitHubAPI {
               comments: {
                 nodes: Array<{
                   id: string;
+                  databaseId?: number;
                   author: { login: string } | null;
                   body: string;
                   createdAt: string;
@@ -356,12 +417,23 @@ export class GitHubAPI {
 
     do {
       pageCount++;
-      const response: GraphQLResponse = await this.graphqlWithAuth<GraphQLResponse>(query, {
-        owner,
-        repo,
-        pr: prNumber,
-        cursor,
-      });
+      let response: GraphQLResponse;
+      try {
+        response = await this.graphqlWithAuth<GraphQLResponse>(query, {
+          owner,
+          repo,
+          pr: prNumber,
+          cursor,
+        });
+      } catch (err) {
+        logGitHubApiFailure('GraphQL pullRequest.reviewThreads (getReviewThreads)', err, {
+          owner,
+          repo,
+          prNumber,
+          page: pageCount,
+        });
+        throw err;
+      }
 
       const reviewThreads = response.repository.pullRequest.reviewThreads;
       const pageInfo = reviewThreads.pageInfo;
@@ -392,6 +464,7 @@ export class GitHubAPI {
             diffSide: thread.diffSide,
             createdAt: comment.createdAt,
             isResolved: thread.isResolved,
+            databaseId: comment.databaseId ?? null,
           })),
         });
       }
@@ -423,6 +496,7 @@ export class GitHubAPI {
           line: thread.line,
           createdAt: firstComment.createdAt,
           outdated: thread.isOutdated === true,
+          databaseId: firstComment.databaseId ?? null,
         });
       }
     }
@@ -463,10 +537,7 @@ export class GitHubAPI {
    * used as identity keys for dedup and verification tracking.
    */
   private normalizeBotName(login: string): string {
-    const lower = login.toLowerCase();
-    if (lower.includes('claude')) return 'Claude';
-    if (lower.includes('greptile')) return 'Greptile';
-    return login.replace(/\[bot\]$/, '');
+    return normalizeReviewBotAuthorLabel(login);
   }
 
   /**
@@ -493,7 +564,17 @@ export class GitHubAPI {
     owner: string, repo: string, prNumber: number
   ): Promise<ReviewComment[]> {
     // Bots that post structured reviews as issue comments (we parse markdown into multiple issues).
-    const REVIEW_BOTS_PARSE: Array<string> = ['claude[bot]', 'greptile[bot]'];
+    // Include all known review bots so we see everything; omit coderabbitai[bot] (inline-only, meta comment filtered).
+    // WHY greptile-apps[bot]: GitHub uses this login for Greptile; greptile[bot] may be legacy or alternate.
+    // WHY copilot-pull-request-reviewer[bot]: GitHub PR review bot; may post summary/table as issue comment.
+    // WHY cursor[bot]: Cursor Bugbot / review bot; may post summary or inline-style as issue comment.
+    const REVIEW_BOTS_PARSE: Array<string> = [
+      'claude[bot]',
+      'greptile[bot]',
+      'greptile-apps[bot]',
+      'copilot-pull-request-reviewer[bot]',
+      'cursor[bot]',
+    ];
 
     const allIssueComments: Array<{
       id: number;
@@ -537,6 +618,10 @@ export class GitHubAPI {
           debug(`Skipping noise comment from ${botLogin}`, { id: comment.id, len: comment.body.length });
           continue;
         }
+        if (isNonReviewContent(comment.body)) {
+          debug(`Skipping non-review content from ${botLogin}`, { id: comment.id, len: comment.body.length });
+          continue;
+        }
 
         const parsed = parseMarkdownReviewIssues(comment.body);
         if (parsed.length > 0) {
@@ -569,8 +654,8 @@ export class GitHubAPI {
       }
     }
 
-    // WHY include other issue comments: PR conversation comments (from humans or other bots) that
-    // are not from claude/greptile were never fetched, so "no issues" when the user sees feedback.
+    // WHY include "other" comments: PR conversation comments from humans or bots not in
+    // REVIEW_BOTS_PARSE would otherwise be skipped, so "no issues" when the user sees feedback.
     // Include every other issue comment so we don't miss review feedback (e.g. #issuecomment-XXXX).
     const parsedBotLogins = new Set(REVIEW_BOTS_PARSE);
     const otherComments = allIssueComments.filter(
@@ -579,7 +664,11 @@ export class GitHubAPI {
     );
     // Same path fallback as bot loop: issue.path / path may be undefined from parser or inferPathLineFromBody.
     for (const c of otherComments) {
-      const author = c.user?.login ?? 'unknown';
+      const author = normalizeReviewBotAuthorLabel(c.user?.login ?? 'unknown');
+      if (isNonReviewContent(c.body)) {
+        debug(`Skipping non-review content from ${author}`, { id: c.id, len: c.body.length });
+        continue;
+      }
       const parsed = parseMarkdownReviewIssues(c.body);
       if (parsed.length > 0) {
         for (let i = 0; i < parsed.length; i++) {
@@ -608,10 +697,14 @@ export class GitHubAPI {
       }
     }
     if (otherComments.length > 0) {
-      debug(`Included ${otherComments.length} other issue comment(s) (non-claude/greptile)`);
+      debug(`Included ${otherComments.length} other issue comment(s) (not from parsed review bots)`);
     }
 
-    return results;
+    // WHY collapse here: duplicate `ic-*` ids would duplicate snippet fetches and queue rows; analysis dedup
+    // runs later and cannot undo I/O already spent. Merging re-posts keeps one row per logical finding.
+    // If we drop an `ic-*` id, resolver state keys for that id may orphan — dedup cache keys on full API id set
+    // so comment-set changes recompute grouping (see issue-analysis `dedupCache`).
+    return deduplicateSameBotAcrossComments(results);
   }
 
   /**
@@ -672,14 +765,25 @@ export class GitHubAPI {
     body: string
   ): Promise<void> {
     debug('Submitting PR review', { owner, repo, prNumber, event, bodyLength: body.length });
-    await this.octokit.pulls.createReview({
-      owner,
-      repo,
-      pull_number: prNumber,
-      event,
-      body,
-    });
-    debug('PR review submitted');
+    try {
+      await this.octokit.pulls.createReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        event,
+        body,
+      });
+      debug('PR review submitted');
+    } catch (err) {
+      logGitHubApiFailure('REST pulls.createReview (submitPullRequestReview)', err, {
+        owner,
+        repo,
+        prNumber,
+        event,
+        bodyChars: body.length,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -687,13 +791,124 @@ export class GitHubAPI {
    */
   async postComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
     debug('Posting comment to PR', { owner, repo, prNumber, bodyLength: body.length });
-    await this.octokit.issues.createComment({
-      owner,
-      repo,
-      issue_number: prNumber,
-      body,
-    });
-    debug('Comment posted successfully');
+    try {
+      await this.octokit.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+      });
+      debug('Comment posted successfully');
+    } catch (err) {
+      logGitHubApiFailure('REST issues.createComment (postComment)', err, {
+        owner,
+        repo,
+        prNumber,
+        bodyChars: body.length,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Reply to an inline review comment (creates a new comment in the same thread).
+   * Uses the numeric databaseId of the comment to reply to, not the GraphQL node ID.
+   * WHY databaseId: REST pulls.createReplyForReviewComment expects comment_id (numeric); GraphQL returns node IDs, so we store databaseId at fetch time and use it here.
+   * On 404 (comment deleted), logs and returns without throwing so callers can continue.
+   * WHY swallow 404: Comment may have been deleted by user or another tool; one missing reply should not fail the whole run.
+   */
+  async replyToReviewThread(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commentDatabaseId: number,
+    body: string
+  ): Promise<void> {
+    debug('Replying to review thread', { owner, repo, prNumber, commentDatabaseId, bodyLength: body.length });
+    try {
+      await this.octokit.pulls.createReplyForReviewComment({
+        owner,
+        repo,
+        pull_number: prNumber,
+        comment_id: commentDatabaseId,
+        body,
+      });
+      debug('Review thread reply posted');
+    } catch (err: unknown) {
+      const status = err && typeof err === 'object' && 'status' in err ? (err as { status: number }).status : undefined;
+      if (status === 404) {
+        debug('Review comment not found (404), skipping reply', { commentDatabaseId });
+        return;
+      }
+      logGitHubApiFailure('REST pulls.createReplyForReviewComment (replyToReviewThread)', err, {
+        owner,
+        repo,
+        prNumber,
+        commentDatabaseId,
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Get comment authors in a review thread (for cross-run idempotency: skip if we already replied).
+   * WHY: When PRR_BOT_LOGIN is set, callers check whether this thread already has a comment from that login; if so, we skip posting to avoid duplicate replies on re-runs.
+   * owner/repo/prNumber are unused (GraphQL node(id) only needs threadId) but kept for API consistency and future use.
+   */
+  async getThreadComments(
+    _owner: string,
+    _repo: string,
+    _prNumber: number,
+    threadId: string
+  ): Promise<Array<{ author: string }>> {
+    const query = `
+      query($threadId: ID!) {
+        node(id: $threadId) {
+          ... on PullRequestReviewThread {
+            comments(first: 25) {
+              nodes {
+                author { login }
+              }
+            }
+          }
+        }
+      }
+    `;
+    interface Res {
+      node: {
+        comments?: { nodes: Array<{ author: { login: string } | null }> };
+      } | null;
+    }
+    const res = await this.graphqlWithAuth<Res>(query, { threadId });
+    const comments = res?.node?.comments?.nodes ?? [];
+    return comments.map((c) => ({ author: c.author?.login ?? 'unknown' }));
+  }
+
+  /**
+   * Resolve a review thread (collapse it with a checkmark).
+   * threadId is the GraphQL node ID (e.g. PRRT_kwDO...). WHY GraphQL: Resolve is a mutation; REST has no direct "resolve thread" endpoint, GraphQL resolveReviewThread does.
+   * owner/repo are used only for debug logging; the mutation only needs threadId.
+   */
+  async resolveReviewThread(owner: string, repo: string, threadId: string): Promise<void> {
+    debug('Resolving review thread', { owner, repo, threadId: threadId.slice(0, 20) });
+    const mutation = `
+      mutation($threadId: ID!) {
+        resolveReviewThread(input: { threadId: $threadId }) {
+          thread { isResolved }
+        }
+      }
+    `;
+    try {
+      await this.graphqlWithAuth<{ resolveReviewThread: { thread: { isResolved: boolean } } }>(mutation, { threadId });
+      debug('Review thread resolved');
+    } catch (err) {
+      logGitHubApiFailure('GraphQL resolveReviewThread', err, {
+        owner,
+        repo,
+        threadIdPrefix: threadId.slice(0, 24),
+      });
+      throw err;
+    }
   }
 
   /**
@@ -777,14 +992,23 @@ export class GitHubAPI {
         
         // Get latest bot comment
         const latestComment = botComments[botComments.length - 1];
-        
-        // Check if the comment mentions the current SHA or was made recently
-        // CodeRabbit often includes commit SHA in its comments
-        const mentionsCurrentSha = latestComment.body?.includes(currentHeadSha.substring(0, 7)) || false;
-        
+        const body = latestComment.body ?? '';
+        const curLower = currentHeadSha.toLowerCase();
+        const fullInBody = extractFullCommitShaFromText(body);
+        if (fullInBody) {
+          return {
+            hasReviewed: true,
+            isCurrentCommit: fullInBody === curLower,
+            lastReviewSha: fullInBody,
+            lastReviewDate: latestComment.created_at,
+          };
+        }
+        // CodeRabbit often includes at least a 7-char prefix in prose
+        const mentionsCurrentSha = body.toLowerCase().includes(curLower.slice(0, 7));
         return {
           hasReviewed: true,
           isCurrentCommit: mentionsCurrentSha,
+          lastReviewSha: mentionsCurrentSha ? currentHeadSha : undefined,
           lastReviewDate: latestComment.created_at,
         };
       }
@@ -914,6 +1138,316 @@ export class GitHubAPI {
       authoredDate: new Date(c.commit.author?.date || c.commit.committer?.date || 0),
       committedDate: new Date(c.commit.committer?.date || c.commit.author?.date || 0),
     }));
+  }
+
+  /**
+   * Get list of files changed in a PR (filename, status, additions, deletions).
+   * WHY: Story and other tools need the file list for changelog context; paginates so large PRs are fully listed.
+   */
+  async getPRFiles(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+  }>> {
+    debug('Fetching PR files', { owner, repo, prNumber });
+    const files = await this.octokit.paginate(
+      this.octokit.pulls.listFiles,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    return files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+  }
+
+  /**
+   * Get list of files changed in a PR including unified diff patches.
+   * WHY: split-plan needs actual diff content to reason about concerns; getPRFiles omits patch and other callers don't need it. We add a new method instead of changing getPRFiles to avoid breaking story and other consumers.
+   * WHY patch optional: Binary files, files exceeding GitHub's diff size limit (~1MB), and rename-only files have no patch in the API response; always treat as optional.
+   * WHY warn at 3000 files: GitHub caps pulls.listFiles at 3000; user should know the list may be truncated when analyzing mega-PRs.
+   */
+  async getPRFilesWithPatches(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    patch: string | undefined;
+  }>> {
+    debug('Fetching PR files with patches', { owner, repo, prNumber });
+    const files = await this.octokit.paginate(
+      this.octokit.pulls.listFiles,
+      { owner, repo, pull_number: prNumber, per_page: 100 }
+    );
+    if (files.length >= 3000) {
+      console.warn(`Warning: PR files list may be truncated (GitHub caps at 3,000; got ${files.length.toLocaleString()})`);
+    }
+    return files.map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+      patch: (f as { patch?: string }).patch,
+    }));
+  }
+
+  /**
+   * List open PRs in the repo, optionally filtered by base branch.
+   * WHY: split-plan needs "buckets" (existing open PRs) to route changes to; filtering by base ensures we only show PRs in the same branch world (e.g. v2-develop vs v3-develop). Caller caps count and truncates body to avoid context overflow.
+   * WHY base is branch name: GitHub API expects the branch ref name (e.g. "main"), not refs/heads/main; invalid base returns empty results instead of erroring.
+   * WHY paginate: Busy repos can have 100+ open PRs; single list() would miss many. excludePRNumber is applied after fetch so the target PR is not offered as a bucket.
+   */
+  async getOpenPRs(
+    owner: string,
+    repo: string,
+    baseBranch?: string,
+    excludePRNumber?: number
+  ): Promise<Array<{
+    number: number;
+    title: string;
+    body: string;
+    branch: string;
+    baseBranch: string;
+    author: string;
+  }>> {
+    debug('Listing open PRs', { owner, repo, baseBranch: baseBranch ?? '(all)', excludePRNumber });
+    const params: { owner: string; repo: string; state: 'open'; base?: string; per_page: number } = {
+      owner,
+      repo,
+      state: 'open',
+      per_page: 100,
+    };
+    if (baseBranch) params.base = baseBranch;
+    const list = await this.octokit.paginate(this.octokit.pulls.list, params);
+    let result = list.map(pr => ({
+      number: pr.number,
+      title: pr.title,
+      body: pr.body ?? '',
+      branch: pr.head.ref,
+      baseBranch: pr.base.ref,
+      author: pr.user?.login ?? 'unknown',
+    }));
+    if (excludePRNumber != null) {
+      result = result.filter(pr => pr.number !== excludePRNumber);
+    }
+    return result;
+  }
+
+  /**
+   * List titles of recently updated (merged/closed) PRs. Used by split-plan to infer repo PR title style.
+   * WHY state closed: Merged and closed PRs reflect the repo's accepted style; open PRs may be WIP.
+   */
+  async getRecentPRTitles(owner: string, repo: string, limit: number = 30): Promise<string[]> {
+    debug('Fetching recent PR titles for style', { owner, repo, limit });
+    const { data } = await this.octokit.pulls.list({
+      owner,
+      repo,
+      state: 'closed',
+      sort: 'updated',
+      direction: 'desc',
+      per_page: Math.min(limit, 100),
+    });
+    return data.map(pr => pr.title).filter(Boolean);
+  }
+
+  /**
+   * Create a pull request. head = branch with changes, base = branch to merge into.
+   * WHY: split-exec creates new branches and opens PRs for each "New PR" split in the plan.
+   */
+  async createPullRequest(
+    owner: string,
+    repo: string,
+    head: string,
+    base: string,
+    title: string,
+    body?: string
+  ): Promise<{ number: number; url: string }> {
+    debug('Creating pull request', { owner, repo, head, base, title: title.slice(0, 50) });
+    const { data } = await this.octokit.pulls.create({
+      owner,
+      repo,
+      head,
+      base,
+      title,
+      body: body ?? '',
+    });
+    return { number: data.number, url: data.html_url ?? '' };
+  }
+
+  /**
+   * Delay between pagination pages when fetching branch commit history.
+   * WHY: Keeps us under GitHub's rate limits (5000 req/h authenticated) when fetching full history; avoids hammering the API.
+   */
+  private static readonly COMMIT_FETCH_PAGE_DELAY_MS = 400;
+
+  /**
+   * Get commit history for a branch (or ref). Returns commits in chronological order (oldest first).
+   * WHY oldest first: Narrative and changelog are easier when the model sees "then this, then that";
+   * List Commits API returns newest first so we reverse after slicing to maxCommits.
+   * Pages are rate-limited (COMMIT_FETCH_PAGE_DELAY_MS between pages) to avoid hitting GitHub limits.
+   * @param maxCommits - Cap on number of commits to fetch; 0 or omitted = no cap (fetch entire branch history).
+   */
+  async getBranchCommitHistory(
+    owner: string,
+    repo: string,
+    branch: string,
+    maxCommits: number = 0
+  ): Promise<Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>> {
+    const cap = maxCommits > 0 ? maxCommits : undefined;
+    debug('Fetching branch commit history', { owner, repo, branch, maxCommits: cap ?? 'no cap' });
+    const commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }> = [];
+    let pageCount = 0;
+    for await (const { data: commitsPage } of this.octokit.paginate.iterator(this.octokit.repos.listCommits, {
+      owner,
+      repo,
+      sha: branch,
+      per_page: 100,
+    })) {
+      if (pageCount > 0) {
+        await new Promise(resolve =>
+          setTimeout(resolve, GitHubAPI.COMMIT_FETCH_PAGE_DELAY_MS)
+        );
+      }
+      pageCount += 1;
+      for (const c of commitsPage) {
+        commits.push({
+          sha: c.sha,
+          message: c.commit.message,
+          authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
+          committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
+        });
+        if (cap !== undefined && commits.length >= cap) break;
+      }
+      if (cap !== undefined && commits.length >= cap) break;
+    }
+    return commits.reverse();
+  }
+
+  /**
+   * Get the repository’s default branch (e.g. main, master).
+   */
+  async getDefaultBranch(owner: string, repo: string): Promise<string> {
+    debug('Fetching default branch', { owner, repo });
+    const { data } = await this.octokit.repos.get({ owner, repo });
+    return data.default_branch;
+  }
+
+  /**
+   * Compare a branch (or ref) against a base ref. Returns commits and files changed.
+   * Uses GitHub compare API (BASE...HEAD). Commits are in chronological order.
+   * Note: API returns up to 250 commits per page; very large branch diffs may be truncated.
+   */
+  async getBranchComparison(
+    owner: string,
+    repo: string,
+    baseRef: string,
+    headRef: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+  }> {
+    debug('Comparing branch', { owner, repo, baseRef, headRef });
+    const basehead = `${baseRef}...${headRef}`;
+    const { data } = await this.octokit.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead,
+      per_page: 100,
+    });
+    const commits = (data.commits ?? []).map(c => ({
+      sha: c.sha,
+      message: c.commit.message,
+      authoredDate: new Date(c.commit.author?.date ?? c.commit.committer?.date ?? 0),
+      committedDate: new Date(c.commit.committer?.date ?? c.commit.author?.date ?? 0),
+    }));
+    const files = (data.files ?? []).map(f => ({
+      filename: f.filename,
+      status: f.status,
+      additions: f.additions,
+      deletions: f.deletions,
+    }));
+    return { commits, files };
+  }
+
+  /**
+   * Compare two branches in both directions; return commits and files from older → newer (chronological).
+   * Prefers the direction where primaryBranch is the "newer" ref so the story is about the primary branch.
+   * WHY prefer primary: The first argument is the branch the user cares about; when branches have diverged,
+   * we tell the story of that branch (commits in primary not in other), not the other way around.
+   */
+  async getBranchComparisonEitherDirection(
+    owner: string,
+    repo: string,
+    primaryBranch: string,
+    otherBranch: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+    olderRef: string;
+    newerRef: string;
+  }> {
+    const [primaryToOther, otherToPrimary] = await Promise.all([
+      this.getBranchComparison(owner, repo, primaryBranch, otherBranch),
+      this.getBranchComparison(owner, repo, otherBranch, primaryBranch),
+    ]);
+    const withPrimaryAsNewer = {
+      ...otherToPrimary,
+      olderRef: otherBranch,
+      newerRef: primaryBranch,
+    };
+    const withPrimaryAsOlder = {
+      ...primaryToOther,
+      olderRef: primaryBranch,
+      newerRef: otherBranch,
+    };
+    if (otherToPrimary.commits.length > 0 && primaryToOther.commits.length === 0) {
+      return withPrimaryAsNewer;
+    }
+    if (primaryToOther.commits.length > 0 && otherToPrimary.commits.length === 0) {
+      return withPrimaryAsOlder;
+    }
+    if (otherToPrimary.commits.length > 0) {
+      return withPrimaryAsNewer;
+    }
+    return withPrimaryAsOlder;
+  }
+
+  /**
+   * Compare branch to default; if 0 commits (branch equals or is behind default), try base "main" then "master".
+   * WHY: Repos may use "develop" as default while the branch of interest diverged from "main"; fallback gives a non-empty diff.
+   * Story's single-branch mode now uses getBranchCommitHistory instead; this remains for potential future compare-to-default use.
+   */
+  async getBranchComparisonWithFallback(
+    owner: string,
+    repo: string,
+    defaultBase: string,
+    headRef: string
+  ): Promise<{
+    commits: Array<{ sha: string; message: string; authoredDate: Date; committedDate: Date }>;
+    files: Array<{ filename: string; status: string; additions: number; deletions: number }>;
+    baseRef: string;
+  }> {
+    const tryBase = async (base: string) => {
+      const out = await this.getBranchComparison(owner, repo, base, headRef);
+      return { ...out, baseRef: base };
+    };
+    let result = await tryBase(defaultBase);
+    if (result.commits.length > 0) return result;
+    for (const fallback of ['main', 'master']) {
+      if (fallback === defaultBase) continue;
+      try {
+        const next = await tryBase(fallback);
+        if (next.commits.length > 0) {
+          debug('Branch compare: 0 commits vs default; using base', { base: fallback });
+          return next;
+        }
+      } catch {
+        // base ref may not exist (404)
+      }
+    }
+    return result;
   }
 
   /**
@@ -1090,6 +1624,8 @@ export class GitHubAPI {
     mode: string; 
     reason: string;
     reviewedCurrentCommit: boolean;
+    /** Latest CodeRabbit review `commit_id` (or undefined if only inferred from issue comments). */
+    botReviewCommitSha?: string;
   }> {
     debug('Checking if CodeRabbit trigger needed', { owner, repo, prNumber, currentHeadSha, cachedMode });
     
@@ -1112,11 +1648,13 @@ export class GitHubAPI {
         mode: 'up-to-date',
         reason: `CodeRabbit already reviewed current commit (${currentHeadSha.substring(0, 7)})`,
         reviewedCurrentCommit: true,
+        botReviewCommitSha: reviewStatus.lastReviewSha ?? currentHeadSha,
       };
     }
     
     // CodeRabbit exists but hasn't reviewed current commit. Use cached mode from setup when available.
     const mode = cachedMode ?? await this.getCodeRabbitMode(owner, repo, branch, prNumber);
+    const staleSha = reviewStatus.lastReviewSha;
     
     if (mode === 'auto') {
       // Auto mode - CodeRabbit should pick up changes automatically
@@ -1124,8 +1662,9 @@ export class GitHubAPI {
       return { 
         triggered: false, 
         mode: 'auto', 
-        reason: `CodeRabbit (auto mode) reviewing older commit (${reviewStatus.lastReviewSha?.substring(0, 7) || '?'}) - should auto-update`,
+        reason: `CodeRabbit (auto mode) reviewing older commit (${staleSha?.substring(0, 7) || '?'}) - should auto-update`,
         reviewedCurrentCommit: false,
+        botReviewCommitSha: staleSha,
       };
     }
     
@@ -1140,6 +1679,7 @@ export class GitHubAPI {
         ? `CodeRabbit (manual mode) - triggered review for new commit (${currentHeadSha.substring(0, 7)})`
         : `CodeRabbit needs trigger for new commit (${currentHeadSha.substring(0, 7)})`,
       reviewedCurrentCommit: false,
+      botReviewCommitSha: staleSha,
     };
   }
 
@@ -1375,9 +1915,9 @@ export function parseMarkdownReviewIssues(markdown: string): ParsedIssue[] {
         continue;
       }
 
-      // WHY fallback: fileMatch[1] can be undefined if the regex capture is empty in edge cases; guarantee string so callers never see null (avoids TypeError in join/replace downstream).
-      const path = (bareFileMatch?.path ?? fileMatch![1]) ?? '(PR comment)';
-      const line = bareFileMatch?.line ?? (fileMatch![2] ? parseInt(fileMatch![2], 10) : null);
+      // WHY optional chaining: when bareFileMatch is set, fileMatch can be null; accessing fileMatch[2] would throw. Fallbacks guarantee string path and null-safe line.
+      const path = (bareFileMatch?.path ?? fileMatch?.[1]) ?? '(PR comment)';
+      const line = bareFileMatch?.line ?? (fileMatch?.[2] ? parseInt(fileMatch[2], 10) : null);
       issues.push({ body, path, line });
     }
   }

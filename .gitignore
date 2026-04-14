@@ -27,3 +27,26 @@ bun.lockb
 output.log
 prompts.log
 debug.log
+split-exec-output.log
+split-exec-prompts.log
+split-plan-output.log
+split-plan-prompts.log
+story-output.log
+story-prompts.log
+
+# Pill / audit artifacts
+pill-output.md
+pill-summary.md
+
+# Repo-specific split plans (often from another repo)
+.split-plan.md
+
+# split-exec clone and cherry-pick workdir
+.split-exec-workdir/
+
+# split-rewrite-plan output and workdir
+.split-rewrite-plan.md
+.split-rewrite-plan.yaml
+.split-rewrite-plan.yml
+.split-rewrite-plan.json
+.split-rewrite-plan-workdir/

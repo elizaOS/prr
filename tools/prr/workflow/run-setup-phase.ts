@@ -11,7 +11,7 @@
  */
 
 import type { Ora } from 'ora';
-import type { SimpleGit } from 'simple-git';
+import { simpleGit, type SimpleGit } from 'simple-git';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { PRInfo } from '../github/types.js';
@@ -21,11 +21,18 @@ import type { LessonsContext, LessonsSyncTarget } from '../state/lessons-context
 import type { LockConfig } from '../state/lock-functions.js';
 import type { ReviewComment } from '../github/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
-import { debug, debugStep } from '../../../shared/logger.js';
+import { debug, debugStep, warn } from '../../../shared/logger.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import * as ResolverProc from '../resolver-proc.js';
+import * as State from '../state/state-core.js';
+import { setPhase } from '../state/state-context.js';
 import { resolveConflictsWithLLM as resolveConflictsImpl } from '../git/git-conflict-resolve.js';
 import { LLMClient } from '../llm/client.js';
+
+function isEnvTruthy(key: string): boolean {
+  const v = process.env[key]?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
 
 /**
  * Execute complete setup phase
@@ -56,7 +63,9 @@ export async function executeSetupPhase(
   ensureStateFileIgnored: (workdir: string) => Promise<void>,
   resolveConflictsWithLLM: (git: SimpleGit, files: string[], source: string) => Promise<{ success: boolean; remainingConflicts: string[] }>,
   getRotationContext: () => any,
-  getCurrentModel: () => string | undefined
+  getCurrentModel: () => string | undefined,
+  /** Called as soon as workdir and stateContext exist so resolver can be synced before clone. Pill #4: interrupt during clone then persists state for resume. */
+  onManagersReady?: (workdir: string, stateContext: StateContext) => void
 ): Promise<{
   workdir: string;
   stateContext: StateContext;
@@ -89,6 +98,7 @@ export async function executeSetupPhase(
     throw new Error('State not initialized after setupWorkdirAndManagers');
   }
   const state = stateContext.state;
+  onManagersReady?.(workdir, stateContext);
 
   // Setup runner
   debugStep('SETTING UP RUNNERS');
@@ -104,10 +114,71 @@ export async function executeSetupPhase(
     currentRunnerIndex = rotationState.runnerIndex;
     resolvedRunner = rotationState.runner;
   }
-  
-  // Clone or update repo
+
+  // Optional hard stop before clone when bot inline review is behind PR HEAD (pill: CodeRabbit SHA mismatch).
+  if (isEnvTruthy('PRR_EXIT_ON_STALE_BOT_REVIEW') && crStatus.staleInlineReviewVsHead) {
+    const gitStub = simpleGit(workdir);
+    return {
+      workdir,
+      stateContext,
+      lessonsContext,
+      lockConfig,
+      runner: resolvedRunner,
+      runners: ctx.runners,
+      currentRunnerIndex,
+      modelIndices: ctx.modelIndices,
+      git: gitStub,
+      shouldExit: true,
+      exitReason: 'stale_bot_review',
+      exitDetails:
+        'Bot review targets an older commit than PR HEAD (inline comments may be stale). Wait for CodeRabbit to re-review, or unset PRR_EXIT_ON_STALE_BOT_REVIEW to proceed.',
+      codeRabbitTriggered,
+      codeRabbitMode,
+      prefetchedComments: crStatus.prefetchedComments,
+    };
+  }
+
+  const githubSaysNotMergeable =
+    prInfo.mergeable === false || prInfo.mergeableState?.toLowerCase() === 'dirty';
+  if (
+    isEnvTruthy('PRR_EXIT_ON_UNMERGEABLE') &&
+    githubSaysNotMergeable &&
+    !options.mergeBase
+  ) {
+    const gitStub = simpleGit(workdir);
+    const ms = prInfo.mergeableState ?? '(unset)';
+    const mb = prInfo.mergeable === null || prInfo.mergeable === undefined ? 'unknown' : String(prInfo.mergeable);
+    return {
+      workdir,
+      stateContext,
+      lessonsContext,
+      lockConfig,
+      runner: resolvedRunner,
+      runners: ctx.runners,
+      currentRunnerIndex,
+      modelIndices: ctx.modelIndices,
+      git: gitStub,
+      shouldExit: true,
+      exitReason: 'github_unmergeable',
+      exitDetails: `GitHub reports mergeable=${mb}, mergeableState=${ms}. Resolve conflicts or pass --merge-base, or unset PRR_EXIT_ON_UNMERGEABLE to run anyway.`,
+      codeRabbitTriggered,
+      codeRabbitMode,
+      prefetchedComments: crStatus.prefetchedComments,
+    };
+  }
+
+  // Clone or update repo (set phase so interrupt during clone persists for resume — pill-output #4)
+  setPhase(stateContext, 'cloning');
   const hasVerifiedFixes = state.verifiedFixed.length > 0;
   const git = await ResolverProc.cloneOrUpdateRepository(prInfo, workdir, config.githubToken, hasVerifiedFixes, spinner, github);
+  setPhase(stateContext, 'setup');
+
+  if (githubSaysNotMergeable && !options.mergeBase) {
+    warn(
+      `GitHub reports this PR is not cleanly mergeable (mergeable: ${String(prInfo.mergeable)}, state: ${prInfo.mergeableState}). ` +
+        `PRR will still run, but fixing conflicts first or passing --merge-base may avoid wasted work.`,
+    );
+  }
 
   // Re-detect sync target existence so we don't delete repo-owned CLAUDE.md/AGENTS.md at final cleanup.
   // WHY: setWorkdir runs before clone, so on first run the workdir was empty and we recorded "didn't exist".
@@ -136,19 +207,48 @@ export async function executeSetupPhase(
   await ensureStateFileIgnored(workdir);
 
   // Recover verification state from git history
-  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext);
+  await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext, workdir, {
+    prBaseBranch: prInfo.baseBranch,
+  });
 
   // Create conflict resolution wrapper with setup phase context
   // WHY: During setup, resolver's workdir/runner are not set yet, so we need to
   // create a callback that captures the setup phase's workdir and runner
   const resolveConflictsInSetup = async (git: SimpleGit, files: string[], source: string) => {
     const llm = new LLMClient(config);
-    return resolveConflictsImpl(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel);
-  // Review: captures setup phase context before runner is initialized for conflict resolution.
+    const partialResolutions = stateContext.state
+      ? {
+          get: () => stateContext.state!.partialConflictResolutions ?? {},
+          add: (file: string, content: string) => {
+            if (!stateContext.state) return;
+            stateContext.state.partialConflictResolutions = stateContext.state.partialConflictResolutions ?? {};
+            stateContext.state.partialConflictResolutions[file] = content;
+          },
+          remove: (file: string) => {
+            if (stateContext.state?.partialConflictResolutions) delete stateContext.state.partialConflictResolutions[file];
+          },
+        }
+      : undefined;
+    return resolveConflictsImpl(git, files, source, workdir, config, llm, resolvedRunner, getCurrentModel, partialResolutions);
+  };
+
+  const clearPartialResolutionsOnMergeSuccess = (): void => {
+    if (stateContext.state) {
+      stateContext.state.partialConflictResolutions = {};
+      stateContext.state.partialConflictSavedOriginBaseSha = undefined;
+    }
   };
 
   // Check for conflicts and sync with remote (pass token so fetch does not prompt for password)
-  const syncResult = await ResolverProc.checkAndSyncWithRemote(git, prInfo.branch, spinner, resolveConflictsInSetup, config.githubToken);
+  const syncResult = await ResolverProc.checkAndSyncWithRemote(
+    git,
+    prInfo.branch,
+    spinner,
+    resolveConflictsInSetup,
+    config.githubToken,
+    options.noPush,
+    prInfo.baseBranch
+  );
   if (!syncResult.success) {
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
@@ -158,9 +258,21 @@ export async function executeSetupPhase(
     };
   }
 
-  // Check and merge base branch
-  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(git, prInfo, options, spinner, resolveConflictsInSetup);
+  // Check and merge base branch (pass githubToken so merge-commit push uses same auth as fix push)
+  const mergeResult = await ResolverProc.checkAndMergeBaseBranch(
+    git,
+    prInfo,
+    options,
+    spinner,
+    resolveConflictsInSetup,
+    config.githubToken,
+    github,
+    clearPartialResolutionsOnMergeSuccess,
+    stateContext,
+  );
   if (!mergeResult.success) {
+    // Persist state so partial conflict resolutions (if any) are saved for the next run
+    await State.saveState(stateContext);
     return {
       workdir, stateContext, lessonsContext, lockConfig, runner: resolvedRunner, runners: ctx.runners, currentRunnerIndex, modelIndices: ctx.modelIndices, git,
       shouldExit: true,

@@ -8,7 +8,7 @@ import type { Ora } from 'ora';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import type { LLMClient } from '../llm/client.js';
+import { type LLMClient, snippetShowsUuidCommentAlignedWithVersionRange } from '../llm/client.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
@@ -21,7 +21,14 @@ import type { CLIOptions } from '../cli.js';
 import { formatNumber } from '../ui/reporter.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../../../shared/logger.js';
-import { assessSolvability } from './helpers/solvability.js';
+import { shouldSkipFinalAuditLlmForPath } from '../../../shared/path-utils.js';
+import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { classifyFinalAuditUncertainExplanation } from './helpers/final-audit-uncertain.js';
+import { pathTrackedAtGitHead } from './helpers/git-path-at-head.js';
+
+/** Logged when final audit skips the LLM for a comment (synthetic / fragment path). */
+const FINAL_AUDIT_SKIP_LLM_EXPLANATION =
+  'Skipped adversarial LLM: no single on-disk file path (synthetic path, empty path, or path fragment).';
 
 /**
  * Detect audit explanations that say no fix is needed (false positive).
@@ -244,14 +251,26 @@ export async function checkForNewComments(
     );
     for (let i = 0; i < solvableComments.length; i++) {
       const comment = solvableComments[i];
-      updatedUnresolvedIssues.push({
-        comment,
-        codeSnippet: newSnippets[i],
-        stillExists: true,
-        explanation: 'New comment added during fix cycle',
-        triage: { importance: 3, ease: 3 },
-        resolvedPath: resolvedPaths.get(comment.id),
-      });
+        updatedUnresolvedIssues.push({
+          comment,
+          codeSnippet: newSnippets[i],
+          stillExists: true,
+          explanation: 'New comment added during fix cycle',
+          triage: { importance: 3, ease: 3 },
+          resolvedPath: resolvedPaths.get(comment.id),
+        });
+        // Pill #4: Log warning for late-cycle comments (not just debug)
+        console.warn(
+          chalk.yellow(
+            `  ⚠ Late-cycle comment detected: ${comment.path}:${comment.line || '?'} — added during fix cycle, will be processed in next run`,
+          ),
+        );
+        debug('Late-cycle comment added to queue', {
+          commentId: comment.id,
+          path: comment.path,
+          line: comment.line,
+          author: comment.author,
+        });
     }
     
     console.log(chalk.yellowBright(`\n┌─ QUEUE: +${formatNumber(solvableComments.length)} new issue(s) added mid-cycle ─┐`));
@@ -289,7 +308,9 @@ export async function runFinalAudit(
   spinner: Ora,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   /** When set, use full file content instead of snippets so the audit has complete context. */
-  getFullFile?: (path: string) => Promise<string>
+  getFullFile?: (path: string, line: number | null, body: string) => Promise<string>,
+  /** Pill cycle 2 #4: When set, validate Rule 6 (file deleted) by checking git ls-tree before accepting FIXED verdict. */
+  workdir?: string
 ): Promise<{
   failedAudit: Array<{ comment: ReviewComment; explanation: string }>;
   auditPassed: boolean;
@@ -300,29 +321,125 @@ export async function runFinalAudit(
   
   // Review: Verification cache is intentionally NOT cleared before audit.
   // Pass/fail results are applied per-comment below (markVerified calls).
-  // If audit fails for some comments, the caller unmarks those so the next
-  // iteration re-verifies; clearing everything would lose valid verifications.
+  // If audit fails for some comments, we unmark those once at the end of this
+  // function so the next iteration re-verifies; clearing everything would lose valid verifications.
   debug('Starting final audit (verification cache not cleared - results are additive)');
-  
+
+  stateContext.finalAuditUncertainThisRun = [];
+
+  // Pill-output #11: runtime overlap check (load() also repairs; this surfaces bugs in-session)
+  const verifiedSet = new Set(Verification.getVerifiedComments(stateContext));
+  const dismissedIds = Dismissed.getDismissedIssues(stateContext).map((d) => d.commentId);
+  const overlapIds = dismissedIds.filter((id) => verifiedSet.has(id));
+  if (overlapIds.length > 0) {
+    debug('Invariant: comment ID(s) in both verified and dismissed — should be empty after load/markVerified', {
+      count: overlapIds.length,
+      sample: overlapIds.slice(0, 8),
+    });
+    console.warn(
+      chalk.yellow(
+        `  ⚠ ${formatNumber(overlapIds.length)} comment ID(s) appear in both verified and dismissed — state may be inconsistent; see debug log`,
+      ),
+    );
+  }
+
   spinner.start('Running final audit on all issues...');
-  
-  // Gather all comments with their current code. Use full file when provided so the audit
-  // sees complete context and avoids false "UNFIXED" due to truncated snippets.
-  const auditSnippets = getFullFile
-    ? await Promise.all(comments.map(c => getFullFile(c.path)))
-    : await Promise.all(comments.map(c => getCodeSnippet(c.path, c.line, c.body)));
+
+  const llmIndices: number[] = [];
+  const skipLlmIndices: number[] = [];
+  for (let i = 0; i < comments.length; i++) {
+    if (shouldSkipFinalAuditLlmForPath(comments[i].path)) {
+      skipLlmIndices.push(i);
+    } else {
+      llmIndices.push(i);
+    }
+  }
+  if (skipLlmIndices.length > 0) {
+    debug('Final audit: skipping LLM for non-file / fragment paths', {
+      skipped: skipLlmIndices.length,
+      llmCount: llmIndices.length,
+      samplePaths: skipLlmIndices.slice(0, 5).map((i) => comments[i].path),
+    });
+  }
+
+  const llmComments = llmIndices.map((i) => comments[i]);
+  const auditSnippetsLlm = getFullFile
+    ? await Promise.all(llmComments.map((c) => getFullFile(c.path, c.line, c.body)))
+    : await Promise.all(llmComments.map((c) => getCodeSnippet(c.path, c.line, c.body)));
+
+  const auditSnippets: string[] = new Array(comments.length);
+  for (let j = 0; j < llmIndices.length; j++) {
+    auditSnippets[llmIndices[j]] = auditSnippetsLlm[j]!;
+  }
+  const skipSnippetNote = '(no file context — final audit LLM skipped for non-file path)';
+  for (const i of skipLlmIndices) {
+    auditSnippets[i] = skipSnippetNote;
+  }
+
   const { sanitizeCommentForPrompt } = await import('../analyzer/prompt-builder.js');
-  const allIssuesForAudit = comments.map((comment, i) => ({
-    id: comment.id,
-    comment: sanitizeCommentForPrompt(comment.body),
-    filePath: comment.path,
-    line: comment.line,
-    codeSnippet: auditSnippets[i],
-  }));
-  
-  const auditResults = await llm.finalAudit(allIssuesForAudit, options.maxContextChars);
+
+  const syntheticAuditResults = new Map<string, { stillExists: boolean; explanation: string }>();
+  const issuesForLlm: Array<{
+    id: string;
+    comment: string;
+    filePath: string;
+    line: number | null;
+    codeSnippet: string;
+  }> = [];
+
+  for (let j = 0; j < llmComments.length; j++) {
+    const comment = llmComments[j]!;
+    const snippet = auditSnippetsLlm[j]!;
+    if (
+      workdir &&
+      snippet === SNIPPET_PLACEHOLDER &&
+      comment.path &&
+      comment.path !== '(PR comment)' &&
+      !shouldSkipFinalAuditLlmForPath(comment.path)
+    ) {
+      const tracked = pathTrackedAtGitHead(workdir, comment.path);
+      if (tracked === false) {
+        syntheticAuditResults.set(comment.id, {
+          stillExists: false,
+          explanation:
+            'FIXED (git check): Path not present at HEAD — file removed; final audit shortcut (no adversarial LLM).',
+        });
+        debug('Final audit: skipped adversarial LLM — path absent at HEAD and snippet is unreadable placeholder', {
+          commentId: comment.id,
+          path: comment.path,
+        });
+        continue;
+      }
+    }
+    const baseComment = sanitizeCommentForPrompt(comment.body);
+    const commentForAudit = comment.outdated
+      ? `[GitHub: thread OUTDATED — diff hunk moved; judge from the shown file/excerpt, not stale line anchors.]\n${baseComment}`
+      : baseComment;
+    issuesForLlm.push({
+      id: comment.id,
+      comment: commentForAudit,
+      filePath: comment.path,
+      line: comment.line,
+      codeSnippet: snippet,
+    });
+  }
+
+  const auditResults =
+    issuesForLlm.length > 0
+      ? await llm.finalAudit(issuesForLlm, options.maxContextChars, 'final-audit')
+      : new Map<string, { stillExists: boolean; explanation: string }>();
+
+  for (const [id, row] of syntheticAuditResults) {
+    auditResults.set(id, row);
+  }
+
+  for (const i of skipLlmIndices) {
+    const c = comments[i];
+    auditResults.set(c.id, { stillExists: false, explanation: FINAL_AUDIT_SKIP_LLM_EXPLANATION });
+  }
   // L1: Respect verified-fixed verdict — don't let final audit override earlier verification (e.g. stronger model).
   const alreadyVerifiedIds = new Set(Verification.getVerifiedComments(stateContext));
+  if (!stateContext.auditOverridesThisRun) stateContext.auditOverridesThisRun = [];
   // Find issues that failed the audit - mark passing ones as verified
   const failedAudit: Array<{ comment: ReviewComment; explanation: string }> = [];
   let filteredNoAction = 0;
@@ -331,8 +448,87 @@ export async function runFinalAudit(
     if (result) {
       if (result.stillExists) {
         if (alreadyVerifiedIds.has(comment.id)) {
-          debug('L1: final audit said UNFIXED but comment was already verified — trusting verification', { commentId: comment.id, path: comment.path });
-          Verification.markVerified(stateContext, comment.id);
+          const commentIdx = comments.indexOf(comment);
+          const codeSnippetEarly = auditSnippets[commentIdx] ?? '';
+          if (
+            workdir &&
+            comment.path &&
+            comment.path !== '(PR comment)' &&
+            codeSnippetEarly === SNIPPET_PLACEHOLDER &&
+            pathTrackedAtGitHead(workdir, comment.path) === false
+          ) {
+            debug(
+              'Final audit tie-break: UNFIXED but path absent from HEAD + unreadable snippet — keeping verified (deleted file)',
+              { commentId: comment.id, path: comment.path },
+            );
+            console.warn(
+              chalk.yellow(
+                `  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but path is gone from HEAD — keeping verified (deleted file).`,
+              ),
+            );
+            continue;
+          }
+          // Pill cycle 2 #3: When audit overrides ALREADY_FIXED, require specific code-level contradiction
+          // Check if fixer marked this as ALREADY_FIXED multiple times
+          const alreadyFixedCount = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
+          const codeSnippet = auditSnippets[comments.indexOf(comment)] ?? '';
+
+          // Cycle 64 M2: If inline verify already passed this session and the snippet shows UUID
+          // regex + version-range comment alignment, don't let a flaky final audit re-open the issue
+          // (defense in depth alongside client-side post-parse demotion).
+          if (
+            stateContext.verifiedThisSession?.has(comment.id) &&
+            snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet)
+          ) {
+            debug(
+              'Final audit tie-break: UUID/comment alignment in snippet + verified this session — keeping verified',
+              { commentId: comment.id, path: comment.path },
+            );
+            console.warn(
+              chalk.yellow(
+                `  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but code shows UUID/comment alignment — keeping verified (verified this session).`,
+              ),
+            );
+            continue;
+          }
+
+          // Require code contradiction: audit must cite specific line numbers + pattern still present
+          const hasCodeContradiction = /(?:line|lines)\s+\d+.*(?:still|contains|has)\s+(?:incorrect|wrong|the\s+bug|missing)/i.test(result.explanation);
+          const mentionsPattern = /(?:still|contains|has)\s+["']?[a-z0-9-]+["']?/i.test(result.explanation);
+          
+          if (alreadyFixedCount >= 2 && !hasCodeContradiction && !mentionsPattern) {
+            // Fixer said ALREADY_FIXED multiple times, audit says UNFIXED but lacks code evidence — keep ALREADY_FIXED
+            debug('Final audit UNFIXED lacks code contradiction for multi-ALREADY_FIXED issue — keeping ALREADY_FIXED', {
+              commentId: comment.id,
+              path: comment.path,
+              alreadyFixedCount,
+              auditExplanation: result.explanation?.slice(0, 200),
+            });
+            console.warn(
+              chalk.yellow(
+                `  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} but lacks code-level contradiction (fixer said ALREADY_FIXED ${alreadyFixedCount}×) — keeping verified.`
+              )
+            );
+            // Don't unmark — keep as verified
+            continue;
+          }
+          
+          // Pill #2: safe over sorry — when final audit says UNFIXED, do not trust prior verification; re-queue.
+          debug('L1: final audit said UNFIXED for previously verified comment — unmarking and re-queuing (safe over sorry)', {
+            commentId: comment.id,
+            path: comment.path,
+            auditExplanation: result.explanation?.slice(0, 300) ?? '(none)',
+          });
+          stateContext.auditOverridesThisRun.push({
+            commentId: comment.id,
+            path: comment.path,
+            line: comment.line,
+            explanation: result.explanation?.slice(0, 200),
+          });
+          console.warn(
+            chalk.yellow(`  ⚠ Final audit said UNFIXED for ${comment.path}:${comment.line ?? '?'} — re-queuing (was verified earlier; safe over sorry).`)
+          );
+          failedAudit.push({ comment, explanation: result.explanation ?? 'Audit said UNFIXED' });
           continue;
         }
         if (isAuditNoActionNeeded(result.explanation)) {
@@ -348,6 +544,47 @@ export async function runFinalAudit(
         }
       } else {
         // Audit confirmed this is fixed - add to cache
+        // Pill cycle 2 #4: Validate Rule 6 (file deleted / outdated thread) — confirm path absent at HEAD before accepting FIXED
+        const isRule6Style = /(?:file deleted|file no longer exists|thread outdated)/i.test(result.explanation);
+        if (isRule6Style && workdir && comment.path && comment.path !== '(PR comment)') {
+          const tracked = pathTrackedAtGitHead(workdir, comment.path);
+          if (tracked === true) {
+            debug('Rule 6 validation failed: path still tracked at HEAD', {
+              commentId: comment.id,
+              path: comment.path,
+              explanation: result.explanation,
+            });
+            failedAudit.push({
+              comment,
+              explanation: `File exists in git tree — Rule 6 (file deleted / outdated) does not apply. ${result.explanation}`,
+            });
+            continue;
+          }
+          if (tracked === null) {
+            debug('Rule 6 validation inconclusive: git ls-tree check failed — accepting FIXED', {
+              commentId: comment.id,
+              path: comment.path,
+            });
+          } else {
+            debug('Rule 6 validation passed: path not at HEAD', {
+              commentId: comment.id,
+              path: comment.path,
+            });
+          }
+        }
+        const uncertainKind = classifyFinalAuditUncertainExplanation(result.explanation ?? '');
+        if (uncertainKind) {
+          if (!stateContext.finalAuditUncertainThisRun) {
+            stateContext.finalAuditUncertainThisRun = [];
+          }
+          stateContext.finalAuditUncertainThisRun.push({
+            commentId: comment.id,
+            path: comment.path,
+            line: comment.line,
+            kind: uncertainKind,
+            explanation: result.explanation?.slice(0, 200),
+          });
+        }
         Verification.markVerified(stateContext, comment.id);
       }
     } else {
@@ -355,6 +592,12 @@ export async function runFinalAudit(
       failedAudit.push({ comment, explanation: 'Audit did not return a result for this issue' });
     }
   }
+
+  // Single unmark pass for all failed-audit comments (WHY: main-loop-setup used to unmark too → duplicate logs).
+  for (const { comment } of failedAudit) {
+    Verification.unmarkVerified(stateContext, comment.id);
+  }
+
   if (filteredNoAction > 0) {
     debug('Audit filtered no-action-needed', { count: filteredNoAction });
   }
@@ -388,6 +631,15 @@ export async function runFinalAudit(
     // Final audit passed - all issues verified fixed
     spinner.succeed('Final audit passed - all issues verified fixed!');
     console.log(chalk.green('\n✓ All issues have been resolved and verified!'));
+
+    const uncertain = stateContext.finalAuditUncertainThisRun ?? [];
+    if (uncertain.length > 0) {
+      console.log(
+        chalk.yellow(
+          `  ℹ Final audit: ${formatNumber(uncertain.length)} issue(s) passed via UNCERTAIN or truncation guard (see explanations in prompts.log). Set PRR_STRICT_FINAL_AUDIT_UNCERTAIN=1 to exit 2 on these.`,
+        ),
+      );
+    }
     
     // Report summary of dismissed issues
     const dismissedIssues = Dismissed.getDismissedIssues(stateContext);

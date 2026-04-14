@@ -8,7 +8,8 @@ import { readFile } from 'fs/promises';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
-import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getConsolidateDuplicateTargetPath, getDocumentationPathFromComment, getImplPathForTestFileIssue, getMentionedTestFilePaths, getMigrationJournalPath, getPathsToDeleteFromComment, getReferencedFullPathFromComment, getRenameTargetPath, getSiblingFilePathsFromComment, getTestPathForSourceFileIssue, issueRequiresRefactor, reviewSuggestsFixInTest, sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
+import { getOutdatedModelCatalogDismissal } from './helpers/outdated-model-advice.js';
 import { filterAllowedPathsForFix, isPathAllowedForFix } from '../../../shared/path-utils.js';
 import type { BotResponseTiming, ReviewComment } from '../github/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -18,6 +19,32 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import type { ResultCode, Runner } from '../../../shared/runners/types.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+
+/**
+ * Heuristic: issue is likely "create this file" (e.g. missing test file).
+ * WHY: output.log audit — use lower couldNotInject threshold so we dismiss after 1–2 failures.
+ */
+/** True when verifier explanation says the diff is empty / no changes made. output.log audit: treat as no-changes, add lesson, don't escalate. */
+export function isEmptyDiffVerdict(explanation: string): boolean {
+  const lower = explanation.toLowerCase();
+  return (
+    /code diff is empty/i.test(lower) ||
+    /(?:no|zero) changes have been made/i.test(lower) ||
+    /diff (?:is |was )?empty/i.test(lower) ||
+    /(?:the )?diff (?:shows |contains )?(?:no |zero )?change/i.test(lower)
+  );
+}
+
+export function looksLikeCreateFileIssue(item: { path: string; body?: string | null }): boolean {
+  const path = item.path.replace(/\\/g, '/').toLowerCase();
+  const body = (item.body ?? '').toLowerCase();
+  if (/__tests__|\.test\.|\.spec\.|\/test\//.test(path)) return true;
+  if (/\b(?:add|create|write)\s+(?:a\s+)?(?:unit\s+)?test\b/.test(body)) return true;
+  if (/\b(?:missing|add)\s+(?:the\s+)?(?:test\s+)?file\b/.test(body)) return true;
+  if (/\bcreate\s+(?:this\s+)?(?:new\s+)?file\b/.test(body)) return true;
+  if (/\bnew\s+file\s+(?:should|to)\b/.test(body)) return true;
+  return false;
+}
 
 /**
  * Context object containing all state for PR resolution
@@ -236,6 +263,30 @@ export function parseResultCode(output: string): {
   return { resultCode, resultDetail, ...(caveat ? { caveat } : {}) };
 }
 
+/**
+ * All comment IDs in the same LLM/heuristic dedup cluster as `commentId` (canonical + dupes).
+ * WHY: When we dismiss one member for ALREADY_FIXED, siblings must not stay open — they caused
+ * empty-queue / BUG DETECTED repopulate (output.log audit milady#1511).
+ */
+/**
+ * Canonical comment id plus every id merged into it by LLM/heuristic dedup (or the full cluster if `commentId` is a dupe).
+ * WHY: Dismissing or verifying only one row leaves sibling thread IDs “unaccounted” while the queue is empty
+ * (e.g. no-change ALREADY_FIXED) — see `handleNoChangesWithVerification` and DEVELOPMENT.md path accounting.
+ */
+export function getDuplicateClusterCommentIds(
+  commentId: string,
+  duplicateMap: Map<string, string[]> | undefined,
+): string[] {
+  if (!duplicateMap || duplicateMap.size === 0) return [commentId];
+  if (duplicateMap.has(commentId)) {
+    return [commentId, ...(duplicateMap.get(commentId) ?? [])];
+  }
+  for (const [canonical, dupes] of duplicateMap) {
+    if (dupes.includes(commentId)) return [canonical, ...dupes];
+  }
+  return [commentId];
+}
+
 /** Match path-like tokens (e.g. "build.ts", "src/service.ts") in CANNOT_FIX/WRONG_LOCATION detail text. */
 const OTHER_FILE_PATTERN = /\b([a-zA-Z0-9_][a-zA-Z0-9_.\/-]*\.(?:ts|tsx|js|jsx|mjs|cjs|json|py|go|rs|java|kt))\b/g;
 
@@ -415,11 +466,11 @@ export function buildSingleIssuePrompt(
   prInfo?: { title: string; body: string; baseBranch: string },
   /** When set, use this instead of issue.codeSnippet (e.g. wider snippet after WRONG_LOCATION). */
   codeSnippetOverride?: string | null,
-  options?: { pathExists?: (path: string) => boolean }
+  options?: { pathExists?: (path: string) => boolean; /** When set, include in prompt so next attempt can adjust (output.log audit). */ lastApplyError?: string }
 ): string {
   const primaryPath = issue.resolvedPath ?? issue.comment.path;
   // Get lessons relevant to this issue only (file-scoped + path-relevant global; audit M2).
-  const lessons = LessonsAPI.Retrieve.getLessonsForSingleIssue(lessonsContext, primaryPath)
+  const lessons = LessonsAPI.Retrieve.getLessonsForIssue(lessonsContext, primaryPath, issue.comment.body, issue.allowedPaths)
     .slice(-5); // Last 5 relevant lessons
   
   let prompt = `# SINGLE ISSUE FIX
@@ -464,10 +515,17 @@ Focus on fixing ONLY this one issue. Make targeted changes that fully address th
     forceTestPath: reviewSuggestsFixInTest(issue.comment.body ?? ''),
   });
   if (testPath && isPathAllowedForFix(testPath) && !allowedPaths.includes(testPath)) allowedPaths = [...allowedPaths, testPath];
+  for (const hiddenTestPath of getMentionedTestFilePaths(issue, { pathExists: options?.pathExists })) {
+    if (isPathAllowedForFix(hiddenTestPath) && !allowedPaths.includes(hiddenTestPath)) {
+      allowedPaths = [...allowedPaths, hiddenTestPath];
+    }
+  }
   allowedPaths = filterAllowedPathsForFix(allowedPaths);
+  if (allowedPaths.length === 0) allowedPaths = [primaryPath];
   prompt += `## Issue
 **TARGET FILE(S) (you MAY edit only these files):** ${allowedPaths.join(', ')}${issue.comment.line ? ` (primary: ${primaryPath}:${issue.comment.line})` : ''}
 Any change to a different file will be reverted and will not fix this issue.
+${allowedPaths.length === 1 ? `The ONLY file you may create or edit for this issue is: \`${allowedPaths[0]}\`. Do not create or edit files in any other directory (e.g. plugins/ or a colocated path).\n` : ''}
 If the review mentions another file (e.g. "duplicates … in X" or "existing in X"), that file is only a reference — fix the issue in the TARGET file(s) above (e.g. remove the duplicate here and use the shared one). Do NOT edit the referenced file unless it is listed in TARGET FILE(S).
 ${journalPath ? `Drizzle's migration journal is the JSON file \`db/migrations/meta/_journal.json\`; add an entry there. Do not add SQL (e.g. INSERT INTO __journal) or table-based journal logic.\n` : ''}
 ${allowedPaths.length > 1 ? '\n' + allowedPaths.map(p => `File: ${p}`).join('\n') + '\n' : ''}
@@ -475,6 +533,14 @@ Review Comment:
 ${sanitizeCommentForPrompt(issue.comment.body)}
 
 `;
+
+  // Inject catalog context when comment matches outdated model advice (audit prompts.log eliza#6575).
+  const catalogDismiss = getOutdatedModelCatalogDismissal(issue.comment.body ?? '');
+  if (catalogDismiss) {
+    prompt += `⚠ CATALOG CONTEXT: This review suggests changing model ID \`${catalogDismiss.pair.catalogGoodId}\` to \`${catalogDismiss.pair.wronglySuggestedId}\`, but **both IDs are valid** per \`generated/model-provider-catalog.json\`. The PR should **keep** \`${catalogDismiss.pair.catalogGoodId}\` (the catalog-correct ID). Do NOT change it to \`${catalogDismiss.pair.wronglySuggestedId}\` — that would be the wrong direction. If the code already has \`${catalogDismiss.pair.catalogGoodId}\`, respond RESULT: ALREADY_FIXED and cite the lines.
+
+`;
+  }
 
   const snippet = codeSnippetOverride !== undefined && codeSnippetOverride !== null ? codeSnippetOverride : issue.codeSnippet;
   if (snippet) {
@@ -511,11 +577,25 @@ Re-check the current file content at the lines the verifier cited — the snippe
 `;
   }
 
+  if (options?.lastApplyError) {
+    prompt += `## Previous attempt failed (adjust your edit)
+The last fix attempt failed when applying your changes:
+${options.lastApplyError}
+
+Copy the <search> block character-for-character from the Current Code above (or use a shorter 3–5 line block that uniquely matches the location). Do not use text from the review comment; the file content is the source of truth.
+
+`;
+  }
+
   if (lessons.length > 0) {
     prompt += `## Previous Failed Attempts (DO NOT REPEAT)
 ${lessons.map(l => `- ${l}`).join('\n')}
 
 `;
+    // Prompts.log audit: fixer sometimes proposed a <change> when a lesson said ALREADY_FIXED and Current Code already showed the fix.
+    if (lessons.some(l => /RESULT:\s*ALREADY_FIXED/i.test(l))) {
+      prompt += `If the Current Code above already shows the exact fix cited in an ALREADY_FIXED attempt (e.g. the cited line has the fix), respond with RESULT: ALREADY_FIXED — <cite the line> and do not output any <change> blocks.\n\n`;
+    }
   }
 
   prompt += `## Instructions

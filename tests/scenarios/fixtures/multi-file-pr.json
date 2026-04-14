@@ -1,0 +1,36 @@
+{
+  "name": "multi-file-pr",
+  "description": "Multi-file PR fixture: multiple files, multiple comments",
+  "pr": {
+    "owner": "test-org",
+    "repo": "test-repo",
+    "number": 2,
+    "title": "Multiple fixes",
+    "branch": "feature",
+    "baseBranch": "main",
+    "files": [
+      {
+        "path": "src/foo.ts",
+        "content": "export function bar() { const x = someValue || 'default'; return x; }\n"
+      },
+      {
+        "path": "src/baz.ts",
+        "content": "export function qux() { if (condition) { return value; } }\n"
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "path": "src/foo.ts",
+        "line": 1,
+        "body": "Use nullish coalescing (??) instead of logical OR (||)"
+      },
+      {
+        "id": "c2",
+        "path": "src/baz.ts",
+        "line": 3,
+        "body": "Missing return statement for else case"
+      }
+    ]
+  }
+}

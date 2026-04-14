@@ -10,7 +10,7 @@ import chalk from 'chalk';
 import { createCLI, parseArgs, getBanner, type ParsedArgs } from './cli.js';
 import { loadConfig } from './config.js';
 import { initOutputLog, closeOutputLog, getOutputLogPath, getPromptLogPath } from './logger.js';
-import { runPill } from './orchestrator.js';
+import { runPillAnalysis } from './orchestrator.js';
 
 let isShuttingDown = false;
 
@@ -69,20 +69,40 @@ async function main(): Promise<void> {
   try {
     const config = loadConfig({
       targetDir: parsed.directory,
-      ...parsed.options,
+      auditModel: parsed.options.auditModel,
+      outputOnly: parsed.options.outputOnly,
+      promptsOnly: parsed.options.promptsOnly,
+      dryRun: parsed.options.dryRun,
+      verbose: parsed.options.verbose,
+      instructionsOut: parsed.options.instructionsOut,
     });
     console.log(getBanner());
     if (config.verbose) {
       console.log(chalk.gray('Options:'), {
         directory: config.targetDir,
-        tool: config.tool,
         auditModel: config.auditModel,
-        maxCycles: config.maxCycles,
         dryRun: config.dryRun,
-        commit: config.commit,
       });
     }
-    await runPill(config);
+    const out = await runPillAnalysis(config);
+    if (out.result) {
+      console.log(chalk.cyan('\n' + out.result.pitch));
+      console.log(chalk.gray('\n  Instructions:'), out.result.instructionsPath);
+      console.log(chalk.gray('  Summary log:'), out.result.summaryPath);
+    } else {
+      const fc = (out as { filteredCount?: number }).filteredCount;
+      const reasonMsg =
+        out.reason === 'no_logs'
+          ? 'No logs to analyze.'
+          : out.reason === 'no_api_key'
+            ? 'No API key configured.'
+            : out.reason === 'api_call_failed'
+              ? `API call failed${(out as { errorMessage?: string }).errorMessage ? `: ${(out as { errorMessage?: string }).errorMessage}` : ''}.`
+              : out.reason === 'all_filtered_tool_scope'
+                ? `All suggestions filtered (outside tool-repo paths${fc != null ? `; ${fc.toLocaleString()} omitted` : ''}). Set PILL_TOOL_REPO_SCOPE_FILTER=0 to disable.`
+                : 'LLM returned zero improvements.';
+      console.log(chalk.gray('\nNo improvements to record: ' + reasonMsg));
+    }
     const outPath = getOutputLogPath();
     const promptPath = getPromptLogPath();
     if (outPath) console.log(chalk.gray('\nOutput log:'), outPath);

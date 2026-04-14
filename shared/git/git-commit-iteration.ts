@@ -20,6 +20,7 @@
 import type { SimpleGit } from 'simple-git';
 import { stageAll, runPreCommitChecks, type CommitResult } from './git-commit-core.js';
 import { buildCommitMessage } from './git-commit-message.js';
+import { ensureGitIdentity } from './git-merge.js';
 import { debug } from '../logger.js';
 
 /**
@@ -33,6 +34,8 @@ export async function commitIterationPerFile(
 ): Promise<{ committedIds: string[]; filesCommitted: number }> {
   const committedIds: string[] = [];
   if (issuesWithDetails.length === 0) return { committedIds, filesCommitted: 0 };
+
+  await ensureGitIdentity(git);
 
   const byFile = new Map<string, typeof issuesWithDetails>();
   for (const issue of issuesWithDetails) {
@@ -118,6 +121,7 @@ export async function commitIteration(
     return null; // Nothing to commit
   }
 
+  await ensureGitIdentity(git);
   await stageAll(git);
   await runPreCommitChecks(git);
 

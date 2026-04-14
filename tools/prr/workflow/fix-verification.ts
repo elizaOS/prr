@@ -25,12 +25,13 @@ import * as Performance from '../state/state-performance.js';
 import type { LessonsContext } from '../state/lessons-context.js';
 import type { LLMClient } from '../llm/client.js';
 import { isInfrastructureFailure } from './helpers/recovery.js';
+import { isEmptyDiffVerdict } from './utils.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, debugStep, startTimer, endTimer, setTokenPhase, formatDuration, formatNumber, pluralize } from '../../../shared/logger.js';
 import { VERIFIER_FEEDBACK_HISTORY_MAX } from '../../../shared/constants.js';
 import { getChangedFiles, getDiffForFile, detectFileCorruption, filterUnifiedDiffByLineRange } from '../../../shared/git/git-clone-index.js';
 import { basename, dirname, extname, join } from 'path';
-import { VERIFIER_ESCALATION_THRESHOLD, AUTO_VERIFY_PATTERN_ABSENT_THRESHOLD } from '../../../shared/constants.js';
+import { VERIFIER_ESCALATION_THRESHOLD, AUTO_VERIFY_PATTERN_ABSENT_THRESHOLD, FILE_UNCHANGED_DISMISS_THRESHOLD } from '../../../shared/constants.js';
 
 /** True when verifier explanation says the file must be deleted (not just emptied). Cycle 13 M2. */
 function isDeleteEntirelyVerdict(explanation: string): boolean {
@@ -39,6 +40,7 @@ function isDeleteEntirelyVerdict(explanation: string): boolean {
     /(?:stray|garbage) file.*(?:delete|remove)/i.test(explanation)
   );
 }
+
 import { isModelProviderCompatible, getModelsForRunner } from '../models/rotation.js';
 import type { Runner } from '../../../shared/runners/types.js';
 
@@ -82,6 +84,8 @@ function commentMentionsApiOrSignature(fix: { comment: string }): boolean {
  * True when the review comment is about cache/state lifecycle behavior rather than
  * a single local line. These issues need broader verification context so the model
  * can inspect creation, replacement, pruning, and cleanup paths together.
+ * Cycle 27: Added reply/action-state patterns so judge gets lifecycle-aware snippet
+ * (avoids STALE when "truncated code doesn't show enough of the reply action handler").
  */
 export function commentNeedsLifecycleContext(fix: { comment: string }): boolean {
   const c = fix.comment.toLowerCase();
@@ -92,7 +96,11 @@ export function commentNeedsLifecycleContext(fix: { comment: string }): boolean 
     /\bnever\s+(?:cleared|cleaned|pruned|deleted|evicted|removed)\b/.test(c) ||
     /\b(?:cleanup|clean up|prune|evict|ttl|lru)\b/.test(c) ||
     /\b(?:stale|orphaned|dangling)\s+(?:entry|entries|state|map|set|cache)\b/.test(c) ||
-    /\b(?:map|set|weakmap|weakset|cache)\s+potential\s+(?:memory\s+)?leak\b/.test(c)
+    /\b(?:map|set|weakmap|weakset|cache)\s+potential\s+(?:memory\s+)?leak\b/.test(c) ||
+    /\bhasrequestedinstate\b/.test(c) ||
+    /\brecent_messages\b/.test(c) ||
+    /\baction_state\b/.test(c) ||
+    /\breply\s+(?:action\s+)?handler\b/.test(c)
   );
 }
 
@@ -369,8 +377,9 @@ type CurrentCodeAtLineOptions = {
  * WHY anchor + size: Audit (prompts.log) showed verifier received first 2000 chars only; for a 204-line
  * file the models array at line 169 was never seen, so verifier wrongly said "still present". We now
  * return full file when small, or a larger anchored window (30/70 lines), and client uses 8k char limit.
- * When expandForTypeSignature, return full file up to MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE so verifier
- * can see function body and call sites (avoids false "role never assigned" etc.).
+ * When expandForTypeSignature and line is null, return the first MAX_LINES_FULL_FILE_VERIFY_TYPE_SIGNATURE lines.
+ * When expandForTypeSignature and line is set, return an anchored window around that line (wider than the default
+ * 30/70) so call-site / async issues still see the right region — not lines 1..500 only (prompts.log audit).
  */
 async function getCurrentCodeAtLine(
   workdir: string,
@@ -391,7 +400,23 @@ async function getCurrentCodeAtLine(
         + `\n(end of file — ${lines.length} lines total)`;
     }
 
+    // WHY anchor when line known: expandForTypeSignature used to return lines 1..500 only; batch verify then
+    // took substring(0, 8k) from the start → imports only, missing the real line (prompts.log audit runtime.ts ~1929).
     if (expandForTypeSignature) {
+      if (line != null && line > 0) {
+        const contextBefore = 100;
+        const contextAfter = 160;
+        const start = Math.max(0, line - contextBefore - 1);
+        const end = Math.min(lines.length, line + contextAfter);
+        const snippet = lines
+          .slice(start, end)
+          .map((l, i) => `${start + i + 1}: ${l}`)
+          .join('\n');
+        if (end >= lines.length) {
+          return snippet + `\n(end of file — ${lines.length} lines total)`;
+        }
+        return snippet + `\n... (truncated — file has ${lines.length} lines total)`;
+      }
       return lines
         .slice(0, fullFileLimit)
         .map((l, i) => `${i + 1}: ${l}`)
@@ -442,7 +467,9 @@ export async function verifyFixes(
   duplicateMap?: Map<string, string[]>,
   workdir?: string,
   getCurrentModel?: () => string | undefined,
-  getRunner?: () => Runner
+  getRunner?: () => Runner,
+  /** Files modified in any previous push iteration this run. WHY: pill-output — iteration 2 dismissed as file-unchanged issues whose file was fixed in iteration 1. */
+  filesModifiedInPreviousIterations?: Set<string>
 ): Promise<{
   verifiedCount: number;
   failedCount: number;
@@ -473,7 +500,12 @@ export async function verifyFixes(
     spinner.start('Verifying fixes...');
     changedFiles = await getChangedFiles(git);
     debug('Changed files', changedFiles);
-  
+    const effectiveChangedSet = new Set(changedFiles);
+    if (filesModifiedInPreviousIterations?.size) {
+      for (const p of filesModifiedInPreviousIterations) effectiveChangedSet.add(p);
+    }
+    const effectiveChangedFiles = [...effectiveChangedSet];
+
     for (const issue of unresolvedIssues) {
       // WHY skip: Recovery phases (trySingleIssueFix, tryDirectLLMFix) verify
       // their own fixes inline — if successful, they call markVerified(). Without
@@ -483,21 +515,32 @@ export async function verifyFixes(
       // Audit: When the fixer modified this issue's file this iteration, re-verify
       // even if previously verified — cache may be stale and we must not commit without re-check.
       const primaryPath = issue.resolvedPath ?? issue.comment.path;
-      if (Verification.isVerified(stateContext, issue.comment.id) && !changedFiles.includes(primaryPath)) {
+      if (Verification.isVerified(stateContext, issue.comment.id) && !effectiveChangedSet.has(primaryPath)) {
         debug('Skipping already-verified issue in verifyFixes', { id: issue.comment.id });
         continue;
       }
 
-      const related = findRelatedChangedFiles(primaryPath, changedFiles);
+      const related = findRelatedChangedFiles(primaryPath, effectiveChangedFiles);
       if (related.length > 0) {
         relatedFilesMap.set(issue.comment.id, related);
         changedIssues.push(issue);
+        if (stateContext.state) {
+          stateContext.state.fileUnchangedConsecutiveCountByCommentId = stateContext.state.fileUnchangedConsecutiveCountByCommentId ?? {};
+          stateContext.state.fileUnchangedConsecutiveCountByCommentId[issue.comment.id] = 0;
+        }
       } else {
-        unchangedIssues.push(issue);
+        const id = issue.comment.id;
+        const prev = stateContext.state?.fileUnchangedConsecutiveCountByCommentId?.[id] ?? 0;
+        const next = prev + 1;
+        if (stateContext.state) {
+          stateContext.state.fileUnchangedConsecutiveCountByCommentId = stateContext.state.fileUnchangedConsecutiveCountByCommentId ?? {};
+          stateContext.state.fileUnchangedConsecutiveCountByCommentId[id] = next;
+        }
+        if (next >= FILE_UNCHANGED_DISMISS_THRESHOLD) unchangedIssues.push(issue);
       }
     }
 
-    // Mark unchanged files as failed immediately and document as dismissed
+    // Mark unchanged files as failed (only after threshold) and document as dismissed
     // NOTE: No validation needed here - we're providing an explicit, meaningful reason
     for (const issue of unchangedIssues) {
       const primaryPath = getIssuePrimaryPath(issue);
@@ -558,6 +601,17 @@ export async function verifyFixes(
           
           try {
             const diff = await getIssueDiff(issue);
+            // output.log audit: empty diff → skip verifier LLM, add lesson, treat as failed (no-changes / rotate).
+            if (!diff || !diff.trim()) {
+              const primaryPathEmpty = issue.resolvedPath ?? issue.comment.path;
+              LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPathEmpty}:${issue.comment.line ?? '?'} - fix must produce a non-empty diff; verifier saw no file changes.`);
+              Iterations.addVerificationResult(stateContext, issue.comment.id, {
+                passed: false,
+                reason: 'Diff was empty — no actual file changes',
+              });
+              failedCount++;
+              continue;
+            }
             // Sequential verifyFix has no model override; escalation to stronger model is done in batch path only.
             const verification = await llm.verifyFix(
               issue.comment.body,
@@ -600,6 +654,12 @@ export async function verifyFixes(
                 }
               }
             } else {
+              // output.log audit: verifier said "diff is empty" → treat as no-changes, add lesson, don't escalate.
+              if (isEmptyDiffVerdict(verification.explanation)) {
+                LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${primaryPathSeq}:${issue.comment.line ?? '?'} - fix must produce a non-empty diff; verifier reported no changes.`);
+                failedCount++;
+                continue;
+              }
               const stateSeq = getState(stateContext);
               const rejectionCountSeq = (stateSeq.verifierRejectionCount?.[issue.comment.id] ?? 0) + 1;
               const currentCodeSeq = workdir
@@ -705,20 +765,35 @@ export async function verifyFixes(
           })
         );
 
-        spinner.text = `Verifying ${formatNumber(fixesToVerify.length)} fixes in batch...`;
+        // output.log audit: empty diff → skip verifier LLM, add lesson, treat as failed (no-changes / rotate).
+        const emptyDiffIds = new Set<string>();
+        for (const fix of fixesToVerify) {
+          if (!fix.diff || !fix.diff.trim()) {
+            emptyDiffIds.add(fix.id);
+            LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${fix.filePath}:${fix.line ?? '?'} - fix must produce a non-empty diff; verifier saw no file changes.`);
+            Iterations.addVerificationResult(stateContext, fix.id, {
+              passed: false,
+              reason: 'Diff was empty — no actual file changes',
+            });
+            failedCount++;
+          }
+        }
+        const fixesWithDiff = fixesToVerify.filter((f) => !emptyDiffIds.has(f.id));
+
+        spinner.text = `Verifying ${formatNumber(fixesWithDiff.length)} fixes in batch...`;
         const state = getState(stateContext);
         // Split by escalation need so we only use the stronger model for issues that had previous rejections.
-        // Create an ID set for O(1) lookup instead of O(n²) nested loops
+        // Create an ID set for O(1) lookup instead of O(n²) nested loops (only for issues with non-empty diff).
         const needStrongerIdSet = new Set(
           getCurrentModel
             ? changedIssues
-                .filter((_, i) => (state.verifierRejectionCount?.[fixesToVerify[i].id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD)
+                .filter((issue) => !emptyDiffIds.has(issue.comment.id) && (state.verifierRejectionCount?.[issue.comment.id] ?? 0) >= VERIFIER_ESCALATION_THRESHOLD)
                 .map((i) => i.comment.id)
             : []
         );
         const fixesDefault: typeof fixesToVerify = [];
         const fixesStronger: typeof fixesToVerify = [];
-        for (const fix of fixesToVerify) {
+        for (const fix of fixesWithDiff) {
           if (needStrongerIdSet.has(fix.id)) {
             fixesStronger.push(fix);
           } else {
@@ -765,12 +840,45 @@ export async function verifyFixes(
         }
 
         for (const issue of changedIssues) {
+          if (emptyDiffIds.has(issue.comment.id)) continue; // already processed above
           const verification = result.get(issue.comment.id);
           if (verification) {
             Iterations.addVerificationResult(stateContext, issue.comment.id, {
               passed: verification.fixed,
               reason: verification.explanation,
             });
+
+            // Pill #3: Cross-check for contradictions — if FIXED but explanation contains negative signals,
+            // treat as UNFIXED (safe-over-sorry). WHY: Verifier may say YES but reasoning contradicts it.
+            if (verification.fixed) {
+              const explanationLower = verification.explanation.toLowerCase();
+              const negativeSignals = [
+                /\bstill\s+have\s+(?:incorrect|wrong|the\s+bug|the\s+issue|the\s+problem)/i,
+                /\bstill\s+contains\s+(?:incorrect|wrong|the\s+bug)/i,
+                /\bbug\s+remains/i,
+                /\bnot\s+fixed/i,
+                /\bissue\s+still\s+exists/i,
+                /\bproblem\s+still\s+present/i,
+                /\bdoes\s+not\s+address/i,
+                /\bdoesn't\s+address/i,
+                /\bmissing\s+(?:the|required|necessary)/i,
+              ];
+              const hasContradiction = negativeSignals.some((pattern) => pattern.test(explanationLower));
+              if (hasContradiction) {
+                console.warn(
+                  chalk.yellow(
+                    `  ⚠ Verification contradiction: verifier said FIXED but explanation contains negative signals — treating as UNFIXED (safe-over-sorry)`,
+                  ),
+                );
+                debug('Verification contradiction detected', {
+                  commentId: issue.comment.id,
+                  explanation: verification.explanation,
+                  path: getIssuePrimaryPath(issue),
+                });
+                // Treat as UNFIXED — fall through to failedCount increment
+                verification.fixed = false;
+              }
+            }
 
             if (verification.fixed) {
               verifiedCount++;
@@ -799,6 +907,12 @@ export async function verifyFixes(
                 }
               }
             } else {
+              // output.log audit: verifier said "diff is empty" → treat as no-changes, add lesson, don't escalate.
+              if (isEmptyDiffVerdict(verification.explanation)) {
+                LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${getIssuePrimaryPath(issue)}:${issue.comment.line ?? '?'} - fix must produce a non-empty diff; verifier reported no changes.`);
+                failedCount++;
+                continue;
+              }
               const state = getState(stateContext);
               const rejectionCount = (state.verifierRejectionCount?.[issue.comment.id] ?? 0) + 1;
               const fixEntry = fixesToVerify.find((f) => f.id === issue.comment.id);

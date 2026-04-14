@@ -97,7 +97,7 @@ export class GooseRunner implements Runner {
       return { success: false, output: '', error: `Invalid model name: ${options.model}` };
     }
 
-    debugPrompt('goose', prompt, { workdir, model: options?.model });
+    const promptSlug = debugPrompt('goose', prompt, { workdir, model: options?.model });
 
     return new Promise((resolve) => {
       // `goose run --no-session -t "prompt"` for one-off non-interactive execution
@@ -142,7 +142,7 @@ export class GooseRunner implements Runner {
       });
 
       child.on('close', (code) => {
-        debugResponse('goose', stdout, { exitCode: code, stderrLength: stderr.length });
+        debugResponse(promptSlug, 'goose', stdout, { exitCode: code, stderrLength: stderr.length });
 
         const combinedOutput = stdout + stderr;
 

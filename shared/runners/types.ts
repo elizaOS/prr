@@ -51,10 +51,22 @@ export interface RunnerResult {
   usedFullFileRewrite?: boolean;
   /** True when the fixer emitted change blocks but every one was a no-op (search === replace). Skip verification and treat as no changes. WHY: Avoids running the verifier on unchanged code; workflow goes straight to rotation. */
   noMeaningfulChanges?: boolean;
+  /**
+   * Paths the runner wrote during apply; git may still be clean if final bytes match HEAD
+   * (e.g. fixer reversed an interim auto-heal so the tree matches the index). UX: reconcile with hasChanges(git).
+   */
+  pathsWrittenByRunner?: string[];
   /** When allowlist was enforced and the fixer attempted edits to files not in TARGET FILE(S). Surfaces so workflow can add a wrong-file lesson and penalize. */
   skippedDisallowedFiles?: string[];
+  /** When the fixer used <newfile> for a path that already exists (we skipped to avoid overwriting). Workflow can add a lesson: use <change> to edit, not <newfile>. */
+  skippedNewfilePathExists?: string[];
   /** True when the fixer wrote test files that are mostly placeholders (e.g. expect(true).toBe(true)). Workflow adds a lesson and treats as non-fix so we rotate. */
   placeholderTestContent?: boolean;
+  /**
+   * When noMeaningfulChanges and the reason was search/replace failed to match, workflow persists this as lastApplyError for the next fix prompt.
+   * WHY: output.log audit §2 — the model wasn't getting explicit feedback that apply failed; passing e.g. "Search/replace failed to match in: file.ts. Use exact content or shorter search block." into the next attempt lets the model adjust.
+   */
+  applyFailureSummary?: string;
 }
 
 export interface RunnerOptions {

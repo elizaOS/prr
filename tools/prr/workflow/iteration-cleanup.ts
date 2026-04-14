@@ -20,8 +20,11 @@ import type { Runner } from '../../../shared/runners/types.js';
 import type { CLIOptions } from '../cli.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, startTimer, endTimer, formatDuration, formatNumber, pluralize } from '../../../shared/logger.js';
+import { recordSessionModelVerificationOutcome } from '../models/rotation.js';
 import { commitIteration, commitIterationPerFile, pushWithRetry } from '../../../shared/git/git-commit-index.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
+import type { ReviewComment, PRInfo } from '../github/types.js';
+import type { GitHubAPI } from '../github/api.js';
 
 /**
  * Handle post-verification iteration cleanup
@@ -48,7 +51,9 @@ export async function handleIterationCleanup(
   options: CLIOptions,
   calculateExpectedBotResponseTime: (pushTime: Date) => Date | null,
   /** Cumulative fixes in this fix loop before this iteration (for "N total this fix loop" label) */
-  fixedThisCycleBefore: number = 0
+  fixedThisCycleBefore: number = 0,
+  /** Reserved for future use (replies are posted only after push in commit-and-push phase). */
+  threadReplyContext?: { comments: ReviewComment[]; prInfo: PRInfo; github: GitHubAPI; repliedThreadIds: Set<string> }
 ): Promise<{
   progressMade: number;
   expectedBotResponseTime?: Date | null;
@@ -73,7 +78,14 @@ export async function handleIterationCleanup(
   if (failedCount > 0) {
     Performance.recordModelFailure(stateContext, runner.name, currentModel || 'unknown', failedCount);
   }
-  
+  recordSessionModelVerificationOutcome(
+    stateContext,
+    runner.name,
+    currentModel ?? undefined,
+    verifiedCount,
+    failedCount
+  );
+
   // Record per-issue attempts (with file hash so chronic check only counts same-version attempts)
   const allIssuesForAttempts = [...changedIssues, ...unchangedIssues];
   const hashes = await Promise.all(
@@ -126,10 +138,10 @@ export async function handleIterationCleanup(
   const totalFixedThisFixLoop = fixedThisCycleBefore + verifiedCount;
   const fixedLabel = totalFixedThisFixLoop > verifiedCount
     ? `${formatNumber(verifiedCount)} this iteration (${formatNumber(totalFixedThisFixLoop)} total this fix loop)`
-    : `${formatNumber(verifiedCount)} issues`;
+    : `${formatNumber(verifiedCount)} ${pluralize(verifiedCount, 'issue')}`;
   console.log(chalk.gray(`\n  Iteration ${fixIteration} summary:`));
   console.log(chalk.gray(`    • Fixed: ${fixedLabel}`));
-  console.log(chalk.gray(`    • Failed: ${formatNumber(failedCount)} issues`));
+  console.log(chalk.gray(`    • Failed: ${formatNumber(failedCount)} ${pluralize(failedCount, 'issue')}`));
   if (newLessons > 0) {
     console.log(chalk.yellow(`    • New lessons: +${newLessons} (total: ${lessonsAfterVerify})`));
   } else {
@@ -181,6 +193,8 @@ export async function handleIterationCleanup(
           await pushWithRetry(git, prBranch, { githubToken: githubToken || undefined });
           const pushTime = endTimer('Push iteration fixes');
           console.log(chalk.green(`  Pushed to origin/${prBranch} (${formatDuration(pushTime)})`));
+          // WHY no fixed replies here: We post "Fixed in <sha>" only after the commit is successfully
+          // pushed in the commit-and-push phase (handleCommitAndPush), not after each incremental push.
 
           const pushTime_now = new Date();
           newExpectedBotResponseTime = calculateExpectedBotResponseTime(pushTime_now);

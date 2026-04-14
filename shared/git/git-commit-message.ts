@@ -13,7 +13,10 @@ export function generateCommitFirstLine(
 ): string {
   const scope = determineScope(filePaths);
   const desc = extractDescription(fixedIssues, filePaths);
-  const base = `${scope}: ${desc}`;
+  let base = `${scope}: ${desc}`;
+  if (base.length > 72) {
+    base = `${base.slice(0, 69)}...`;
+  }
   if (filePaths.length >= 1 && filePaths.length <= 3) {
     const names = filePaths.map((p) => p.split('/').pop() ?? p).filter(Boolean);
     const uniq = [...new Set(names)];
@@ -60,7 +63,18 @@ function determineScope(filePaths: string[]): string {
       bestScope = scope;
     }
   }
-  
+
+  // Pill-output: paths like `src/utils.ts` filter out `src` and become empty → avoid generic "misc"
+  if (bestScope === 'misc' && filePaths.length > 0) {
+    for (const path of filePaths) {
+      const segments = path.split('/').filter((s) => s && s !== '.' && s !== '..');
+      const dirSegments = segments.length > 1 ? segments.slice(0, -1) : [];
+      if (dirSegments.length > 0) {
+        return dirSegments[0]!;
+      }
+    }
+  }
+
   return bestScope;
 }
 
@@ -157,27 +171,43 @@ function extractDescription(
 
   // Try to extract specific noun phrases
   const nounMatch = allText.match(/(?:add|fix|improve|update|handle)\s+(\w+(?:\s+\w+)?)/);
-  if (nounMatch && nounMatch[1]!.length < 30) {
-    return `${allText.includes('fix') ? 'fix' : 'improve'} ${nounMatch[1]}`;
+  const nounPhrase = nounMatch?.[1];
+  if (nounPhrase && nounPhrase.length < 30) {
+    return `${allText.includes('fix') ? 'fix' : 'improve'} ${nounPhrase}`;
   }
 
   return fileBasedDesc;
 }
 
 /**
+ * Strip leading emoji / pictographic runs from review-bot comments (pill: eliza `src/commit.ts` themes).
+ * Uses `\p{Extended_Pictographic}` so new prefixes are covered without a fixed alternation list.
+ */
+function stripLeadingReviewEmojiPrefix(s: string): string {
+  let out = s.trimStart();
+  const re =
+    /^(?:[\s\uFEFF\u00AD\u200B-\u200D]*\p{Extended_Pictographic}[\uFE0F\u200D]*)+[\s\uFEFF]*/gu;
+  for (let i = 0; i < 12; i++) {
+    const next = out.replace(re, '');
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/**
  * Strip markdown/HTML formatting from text for use in commit messages
  */
 export function stripMarkdownForCommit(text: string): string {
-  return text
-    // Remove HTML tags
-    .replace(/<[^>]+>/g, '')
-    // Remove markdown emphasis (_text_, *text*, **text**, ~~text~~)
-    .replace(/[_*~]{1,2}([^_*~]+)[_*~]{1,2}/g, '$1')
-    // Remove markdown links [text](url) -> text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    // Remove common review comment prefixes/emoji patterns
-    // NOTE: Using alternation instead of character class because emojis like ⚠️ have combining characters
-    .replace(/^(?:⚠️|🔴|🟡|🟢|✅|❌|💡|📝|🐛)+\s*/gu, '')
+  return stripLeadingReviewEmojiPrefix(
+    text
+      // Remove HTML tags
+      .replace(/<[^>]+>/g, '')
+      // Remove markdown emphasis (_text_, *text*, **text**, ~~text~~)
+      .replace(/[_*~]{1,2}([^_*~]+)[_*~]{1,2}/g, '$1')
+      // Remove markdown links [text](url) -> text
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'),
+  )
     // Collapse whitespace
     .replace(/\s+/g, ' ')
     .trim();

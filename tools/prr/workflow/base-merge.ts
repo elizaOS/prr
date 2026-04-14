@@ -8,8 +8,12 @@ import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
 import type { CLIOptions } from '../cli.js';
+import type { GitHubAPI } from '../github/api.js';
+import type { StateContext } from '../state/state-context.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber } from '../../../shared/logger.js';
 import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../../../shared/git/git-clone-index.js';
+import { push } from '../../../shared/git/git-push.js';
+import { findFilesWithConflictMarkers } from '../../../shared/git/git-lock-files.js';
 
 /**
  * Check and merge base branch into PR branch
@@ -21,7 +25,12 @@ export async function checkAndMergeBaseBranch(
   prInfo: PRInfo,
   options: CLIOptions,
   spinner: Ora,
-  resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>
+  resolveConflicts: (git: SimpleGit, files: string[], source: string) => Promise<{success: boolean; remainingConflicts: string[]}>,
+  githubToken?: string,
+  github?: GitHubAPI,
+  onMergeSuccess?: () => void,
+  /** When set, stale partial conflict caches are dropped if `origin/<base>` advanced since they were saved. */
+  stateContext?: StateContext
 ): Promise<{
   success: boolean;
   exitReason?: string;
@@ -79,11 +88,46 @@ export async function checkAndMergeBaseBranch(
     };
 
     try {
-    // Fetch latest base branch and PR branch first
-    await git.fetch('origin', prInfo.baseBranch);
+    // Fetch latest base branch and PR branch.
+    // WHY explicit refspec: On --single-branch clones the default fetch config only
+    // includes the PR branch. A plain `git fetch origin <baseBranch>` downloads objects
+    // but does NOT update refs/remotes/origin/<baseBranch>, leaving a stale ref so the
+    // merge-base check thinks we're already up-to-date and the PR stays "dirty" on GitHub.
+    await git.raw(['remote', 'set-branches', '--add', 'origin', prInfo.baseBranch]);
+    await git.fetch(['origin', `+refs/heads/${prInfo.baseBranch}:refs/remotes/origin/${prInfo.baseBranch}`]);
     await git.fetch('origin', prInfo.branch);
 
-    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch);
+    // When the PR branch is behind the base (locally or per GitHub), merge with --no-ff and push so the branch is up to date. Use local state after fetch so we don't rely only on GitHub's mergeableState (which can be stale or missing). WHY: User expects PRR to "update the branch, pull target into source, and push" so the PR is not "out of date with base branch".
+    const headSha = (await git.revparse(['HEAD'])).trim();
+    const baseSha = (await git.revparse([`origin/${prInfo.baseBranch}`])).trim();
+    const mergeBaseSha = (await git.raw(['merge-base', 'HEAD', `origin/${prInfo.baseBranch}`])).trim();
+
+    const partials = stateContext?.state?.partialConflictResolutions;
+    if (partials && Object.keys(partials).length > 0) {
+      const saved = stateContext!.state!.partialConflictSavedOriginBaseSha?.trim();
+      if (saved && saved !== baseSha) {
+        const n = Object.keys(partials).length;
+        stateContext!.state!.partialConflictResolutions = {};
+        stateContext!.state!.partialConflictSavedOriginBaseSha = undefined;
+        console.warn(
+          chalk.yellow(
+            `Cleared ${formatNumber(n)} partial conflict resolution(s): origin/${prInfo.baseBranch} advanced (${saved.slice(0, 7)} → ${baseSha.slice(0, 7)}).`,
+          ),
+        );
+      }
+    }
+    const isBehindLocally = baseSha !== mergeBaseSha;
+    const forceMerge = isBehindLocally || prInfo.mergeableState?.toLowerCase() === 'behind';
+    debug('Base merge decision', {
+      headSha: headSha.slice(0, 10),
+      baseSha: baseSha.slice(0, 10),
+      mergeBaseSha: mergeBaseSha.slice(0, 10),
+      isBehindLocally,
+      githubMergeableState: prInfo.mergeableState,
+      forceMerge,
+    });
+    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge, noFastForward: forceMerge });
+    debug('Base merge result', { success: mergeResult.success, alreadyUpToDate: mergeResult.alreadyUpToDate, error: mergeResult.error });
 
     if (!mergeResult.success) {
       // Merge failed - use LLM tool to resolve conflicts
@@ -117,12 +161,24 @@ export async function checkAndMergeBaseBranch(
         );
         
         if (!resolution.success) {
+          if (
+            stateContext?.state &&
+            stateContext.state.partialConflictResolutions &&
+            Object.keys(stateContext.state.partialConflictResolutions).length > 0
+          ) {
+            stateContext.state.partialConflictSavedOriginBaseSha = baseSha;
+          }
           console.log(chalk.red('\n✗ Could not resolve all merge conflicts automatically'));
           console.log(chalk.red('  Remaining conflicts:'));
           for (const file of resolution.remainingConflicts) {
             console.log(chalk.red(`    - ${file}`));
           }
           console.log(chalk.yellow('\n  These conflicts must be resolved before prr can continue.'));
+          const resolvedCount = conflictedFiles.length - resolution.remainingConflicts.length;
+          if (resolvedCount > 0) {
+            console.log(chalk.gray(`\n  (${formatNumber(resolvedCount)} of ${formatNumber(conflictedFiles.length)} file(s) were auto-resolved; ${formatNumber(resolution.remainingConflicts.length)} still need manual resolution.)`));
+            console.log(chalk.gray('  Re-run prr to continue — already-resolved files will be reused; only remaining conflicts will be resolved.'));
+          }
           console.log(chalk.gray('\n  To resolve manually:'));
           console.log(chalk.gray(`    1. Checkout the branch: git checkout ${prInfo.branch}`));
           console.log(chalk.gray(`    2. Merge base branch: git merge ${prInfo.baseBranch}`));
@@ -142,12 +198,32 @@ export async function checkAndMergeBaseBranch(
           return {
             success: false,
             exitReason: 'merge_conflicts',
-            exitDetails: `Could not auto-resolve ${resolution.remainingConflicts.length.toLocaleString()} conflict(s) with ${prInfo.baseBranch}`
+            exitDetails: `Could not auto-resolve ${resolution.remainingConflicts.length.toLocaleString()} conflict(s) with ${prInfo.baseBranch}. Files: ${resolution.remainingConflicts.join(', ')}`
           };
         } else {
           // All conflicts resolved - stage files and complete the merge
           const codeFiles = conflictedFiles.filter((f: string) => !isLockFile(f));
           const lockFiles = conflictedFiles.filter((f: string) => isLockFile(f));
+
+          // Verify no conflict markers remain (LLM can sometimes leave <<<<<<< in output)
+          const workdir = (await git.revparse(['--show-toplevel'])).trim();
+          const stillMarked = findFilesWithConflictMarkers(workdir, codeFiles);
+          if (stillMarked.length > 0) {
+            console.log(chalk.red('\n✗ Resolved files still contain conflict markers'));
+            console.log(chalk.red('  Files: ' + stillMarked.join(', ')));
+            console.log(chalk.yellow('\n  Aborting merge. Resolve manually and re-run prr.'));
+            await abortMerge(git);
+            await git.fetch('origin', prInfo.branch);
+            await git.reset(['--hard', 'FETCH_HEAD']);
+            await git.raw(['clean', '-fd']);
+            await restoreStash();
+            endTimer('Merge base branch');
+            return {
+              success: false,
+              exitReason: 'merge_conflicts',
+              exitDetails: `Resolution left conflict markers in ${stillMarked.length} file(s)`
+            };
+          }
 
           // Lock files should be regenerated — accept theirs to unblock the merge
           if (lockFiles.length > 0) {
@@ -167,15 +243,20 @@ export async function checkAndMergeBaseBranch(
           }
           console.log(chalk.green(`✓ Conflicts resolved and merged ${prInfo.baseBranch}`));
           if (!options.noPush && !options.noCommit) {
-            try {
-              spinner.start('Pushing merge commit...');
-              await git.push('origin', prInfo.branch);
+            spinner.start('Pushing merge commit...');
+            const pushResult = await push(git, prInfo.branch, false, githubToken);
+            if (pushResult.success) {
               spinner.succeed('Pushed merge commit');
-            } catch (pushErr) {
+            } else {
               spinner.fail('Failed to push merge commit');
-              console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
+              console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local; PR will stay "out of date with base".`));
+              console.log(chalk.gray(`  To update the PR, push from the workdir: git push origin ${prInfo.branch}`));
             }
+          } else {
+            console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit). PR will stay "out of date with base" until you push:'));
+            console.log(chalk.gray(`     git push origin ${prInfo.branch}`));
           }
+          onMergeSuccess?.();
           await restoreStash();
           endTimer('Merge base branch');
           return { success: true };
@@ -183,22 +264,68 @@ export async function checkAndMergeBaseBranch(
       }
     }
     
+    const githubSaysBehind = prInfo.mergeableState?.toLowerCase() === 'behind';
+
+    const tryApiUpdateBranch = async (): Promise<void> => {
+      if (!github || !githubSaysBehind || options.noPush || options.noCommit) return;
+      debug('Local merge was no-op but GitHub says behind — falling back to GitHub API updateBranch', {
+        mergeableState: prInfo.mergeableState,
+      });
+      spinner.start(`Updating ${prInfo.branch} via GitHub API...`);
+      const ok = await github.updatePRBranch(prInfo.owner, prInfo.repo, prInfo.number);
+      if (ok) {
+        spinner.succeed(`Branch update accepted by GitHub API — fetching updated branch`);
+        await git.fetch('origin', prInfo.branch);
+        const newHead = (await git.revparse([`origin/${prInfo.branch}`])).trim();
+        await git.reset(['--hard', `origin/${prInfo.branch}`]);
+        debug('Local branch reset to API-updated remote', { newHead: newHead.slice(0, 10) });
+      } else {
+        spinner.warn('GitHub API branch update failed — branch may already be current or token lacks permission');
+      }
+    };
+
     if (mergeResult.alreadyUpToDate) {
       console.log(chalk.green(`✓ Already up-to-date with ${prInfo.baseBranch}`));
+      if (githubSaysBehind) {
+        console.log(chalk.gray(`  (GitHub says "behind" but git merge-base confirms all ${prInfo.baseBranch} commits are in ${prInfo.branch} — GitHub state may be stale)`));
+      }
+      if (!options.noPush && !options.noCommit) {
+        const status = await git.status();
+        if (status.ahead > 0) {
+          debug('Local branch is ahead after merge (unpushed commits from previous run)', { ahead: status.ahead });
+          spinner.start(`Pushing ${status.ahead} unpushed commit(s)...`);
+          const pushResult = await push(git, prInfo.branch, false, githubToken);
+          if (pushResult.success && !pushResult.nothingToPush) {
+            spinner.succeed(`Pushed ${status.ahead} unpushed commit(s)`);
+          } else if (pushResult.success) {
+            spinner.info('Push reports nothing to push (remote already has these commits)');
+          } else {
+            spinner.warn(`Push of unpushed commits failed: ${pushResult.error ?? 'Unknown'}`);
+          }
+        }
+      }
+      await tryApiUpdateBranch();
       await restoreStash();
     } else if (mergeResult.success) {
       console.log(chalk.green(`✓ Merged latest ${prInfo.baseBranch} into ${prInfo.branch}`));
       if (!options.noPush && !options.noCommit) {
-        try {
-          spinner.start('Pushing merge commit...');
-          await git.push('origin', prInfo.branch);
-          spinner.succeed('Pushed merge commit');
-        } catch (pushErr) {
+        spinner.start('Pushing merge commit...');
+        const pushResult = await push(git, prInfo.branch, false, githubToken);
+        if (pushResult.success) {
+          if (pushResult.nothingToPush) {
+            spinner.succeed('Branch already up-to-date with remote (merge brought in no new commits to push)');
+            await tryApiUpdateBranch();
+          } else {
+            spinner.succeed('Pushed merge commit');
+          }
+        } else {
           spinner.fail('Failed to push merge commit');
-          console.log(chalk.yellow(`  Push failed: ${pushErr}. Merge commit remains local.`));
+          console.log(chalk.yellow(`  Push failed: ${pushResult.error ?? 'Unknown'}. Merge commit remains local; PR will stay "out of date with base".`));
+          console.log(chalk.gray(`  To update the PR, push from the workdir: git push origin ${prInfo.branch}`));
         }
       } else {
-        console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit is set).'));
+        console.log(chalk.yellow('  Merge commit created locally (--no-push or --no-commit). PR will stay "out of date with base" until you push:'));
+        console.log(chalk.gray(`     git push origin ${prInfo.branch}`));
       }
       await restoreStash();
     }

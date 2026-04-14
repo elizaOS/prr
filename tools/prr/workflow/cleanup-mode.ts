@@ -21,6 +21,7 @@ import type { GitHubAPI } from '../github/api.js';
 import type { PRInfo } from '../github/types.js';
 import * as Lock from '../state/lock-functions.js';
 import { debug } from '../../../shared/logger.js';
+import { push as gitPushWithAuth } from '../../../shared/git/git-push.js';
 import { PRR_SECTION_START, PRR_SECTION_END } from '../state/lessons-paths.js';
 
 /**
@@ -267,7 +268,11 @@ export async function runCleanupMode(
       if (!options.noPush) {
         spinner.start('Pushing cleanup commit...');
         try {
-          await git.push('origin', prInfo.branch);
+          const pushResult = await gitPushWithAuth(git, prInfo.branch, false, config.githubToken);
+          if (!pushResult.success) {
+            spinner.fail('Push failed');
+            throw new Error(pushResult.error ?? 'Git push failed');
+          }
           spinner.succeed('Pushed cleanup commit');
         } catch (err) {
           spinner.fail('Push failed');

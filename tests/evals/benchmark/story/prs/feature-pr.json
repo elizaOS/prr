@@ -1,0 +1,60 @@
+{
+  "name": "feature-pr",
+  "description": "Feature PR with known narrative",
+  "owner": "test-org",
+  "repo": "test-repo",
+  "number": 50,
+  "title": "Add user profile management",
+  "body": "Implements user profile CRUD operations with avatar upload",
+  "branch": "feature/user-profiles",
+  "baseBranch": "main",
+  "headSha": "feature123pr456",
+  "commits": [
+    {
+      "sha": "commit1",
+      "message": "Add user profile model and schema",
+      "authoredDate": "2025-01-01T00:00:00Z"
+    },
+    {
+      "sha": "commit2",
+      "message": "Implement profile API endpoints",
+      "authoredDate": "2025-01-01T01:00:00Z"
+    },
+    {
+      "sha": "commit3",
+      "message": "Add avatar upload functionality",
+      "authoredDate": "2025-01-01T02:00:00Z"
+    },
+    {
+      "sha": "commit4",
+      "message": "Add profile validation and error handling",
+      "authoredDate": "2025-01-01T03:00:00Z"
+    }
+  ],
+  "files": [
+    {
+      "path": "src/models/UserProfile.ts",
+      "status": "added",
+      "additions": 150,
+      "deletions": 0
+    },
+    {
+      "path": "src/api/profile.ts",
+      "status": "added",
+      "additions": 200,
+      "deletions": 0
+    },
+    {
+      "path": "src/utils/avatar.ts",
+      "status": "added",
+      "additions": 100,
+      "deletions": 0
+    },
+    {
+      "path": "src/validation/profile.ts",
+      "status": "added",
+      "additions": 80,
+      "deletions": 0
+    }
+  ]
+}

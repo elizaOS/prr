@@ -27,6 +27,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 **Safe over sorry verification**: When PRR is unsure whether a fix really covers a lifecycle, cache, cleanup, or multi-path issue, it should keep the issue open instead of optimistically marking it fixed.
 
+**What real logs actually showed (and how PRR responds now)**: Audits found genuine problems — not hypotheticals — including **verified ∩ dismissed** overlap (misleading “done”), **tracked file not found** on paths that existed under a different extension or diff prefix, **bare `.d.ts` / fragment** paths misclassified, **0%-success models** burning rotation, and summaries that could look greener than the threads. Today: **state load** and **`markVerified` / `dismissIssue`** enforce mutual exclusivity and log overlap repair; **`tryResolvePathWithExtensionVariants`** + **`stripGitDiffPathPrefix`** (**`shared/path-utils.ts`**) address common `tsconfig.js` / `.tsx` / etc. cases; fragments use **`path-unresolved`** via **`isReviewPathFragment`** / **`pathDismissCategoryForNotFound`**; ElizaCloud uses **`ELIZACLOUD_SKIP_MODEL_IDS`**, **`PRR_SESSION_MODEL_SKIP_FAILURES`**, optional **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`**, and startup warnings when the post-skip rotation is very thin; **RESULTS SUMMARY** excludes dismissed IDs from the verified “fixed” count and **warns** if overlap still appears at exit. **Residual risk**: LLMs and heuristics can still be wrong on edge paths or weak verifiers — use **RESULTS SUMMARY**, **After Action Report**, **`PRR_STRICT_FINAL_AUDIT`** / **`PRR_STRICT_FINAL_AUDIT_UNCERTAIN`**, and **GitHub’s threads** together; after rebases, delete **`.pr-resolver-state.json`** in the clone workdir if numbers disagree with the PR (see Troubleshooting).
+
 **WHY**: False negatives cost another pass. False positives hide real bugs, create misleading "all fixed" states, and make PR threads look cleaner than the code really is.
 
 **Visible decisions over hidden confidence**: In verbose runs, PRR should show the actual per-comment decisions it is using internally, not just aggregate counts or a final "done" message.
@@ -36,7 +38,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 **Philosophy in practice**:
 - Run prr on a specific PR (you choose)
 - Watch it work, interrupt with Ctrl+C anytime
-- Inspect the workdir, modify files, continue
+- Inspect the **PR clone** (workdir), modify files, continue — this is **not** necessarily the directory where you ran `prr` (`process.cwd()`); see [AGENTS.md](AGENTS.md) (“Clone workdir”).
 - Push when *you* decide it's ready
 
 ## Features
@@ -47,11 +49,16 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - Uses LLM to detect which issues still exist in the code
 - **Conservative issue detection for distributed bugs**: Lifecycle/cache/leak comments and ordering/history comments now get broader analysis context before PRR decides they are already fixed. *Why*: Some bugs live across declaration, usage, cleanup, and trimming sites; a narrow anchor snippet can make a real issue look resolved.
 - **Path-resolution categories instead of blanket stale dismissals**: PRR now distinguishes `missing-file` from `path-unresolved`, and carries canonical resolved paths forward when a review cites a basename or truncated path. *Why*: "File no longer exists" was previously hiding very different root causes such as ambiguous basenames, summary-table leakage, and path fragments that only needed repo-path expansion.
+- **PR-scoped basename disambiguation**: When a bare filename matches **multiple** tracked files, PRR can resolve it to the **single** path that also appears in the PR’s **changed-file list** (diff vs base). *Why*: Issue comments on `foo.ts` should target the copy the PR actually edits, not another package’s same-named file; without this, the fix loop could skip the real path as “not in clone” (see **DEVELOPMENT.md** — path accounting).
+- **Dedup cluster + no-change `ALREADY_FIXED`**: If the fixer returns **`RESULT: ALREADY_FIXED`** with no disk edits, PRR dismisses the **whole LLM dedup group** (canonical + merged duplicates), not only the one row left in the queue. *Why*: Otherwise sibling thread IDs stay “open” in GitHub terms while the queue is empty → confusing **BUG DETECTED** repopulate and a false “remaining” handoff.
+- **After Action Report (fixed this session)**: Boilerplate bodies (e.g. leading **`### What this adds`**) and threads verified only as **duplicates** of a canonical fix are collapsed into a short count line instead of full previews. *Why*: Keeps the AAR readable without hiding how many threads were satisfied this run.
+- **Catalog-backed dismissal + auto-heal for bogus model-id advice**: Bots with stale training sometimes flag a **valid** OpenAI/Anthropic API id as a “typo” and suggest another valid id. When **both** ids appear in the committed **`generated/model-provider-catalog.json`**, PRR dismisses the comment in solvability and (by default) restores the catalog id inside quoted literals near the review line, then can commit when the run would otherwise skip the fix loop. *Why*: Avoids burning the fixer on bad vendor advice and prevents silent adoption of the wrong model string in code. See [DEVELOPMENT.md](DEVELOPMENT.md) (“Commit gate and catalog model auto-heal”) and [docs/MODELS.md](docs/MODELS.md).
 - **Shared test-path inference**: Prompt building, create-file solvability, and retries now reuse the same test-target inference helper instead of maintaining slightly different regex copies. *Why*: When those phases drift, PRR can decide one test file should be created while another phase allows or explains a different one.
 - Generates fix prompts and runs Cursor CLI, Claude Code, or opencode to fix issues
+- **Config-driven concurrency**: Optional `PRR_MAX_CONCURRENT_LLM` (default 1) caps in-flight LLM requests; analysis batches, verification, and (with llm-api) parallel fix groups share this cap. On 429, concurrency is halved for 60s. *Why*: Default keeps behavior unchanged; raising (e.g. to 3) can cut wall-clock when the backend supports it. See Configuration.
 - Verifies fixes with LLM to prevent false positives
 - **Debug issue table**: Verbose mode prints a human-readable per-comment table after analysis and again at exit. *Why*: This exposes the exact `open` / `dismissed/<category>` / `verified` decision PRR is using so you can compare it with the PR thread list.
-- **Final audit**: Adversarial re-verification of ALL issues before declaring done
+- **Final audit**: Adversarial re-verification of all issues before declaring success — asks what is still wrong (not “is it fixed?”) so weak verifiers do not rubber-stamp. Rare audit overrides (UNFIXED vs previously verified) are opt-in strict exit via `PRR_STRICT_FINAL_AUDIT`; passes via **UNCERTAIN** / truncation guard can fail CI with `PRR_STRICT_FINAL_AUDIT_UNCERTAIN`. See [DEVELOPMENT.md](DEVELOPMENT.md) and `PRR_FINAL_AUDIT_MODEL` in Configuration.
 
 ### Smart Retry Strategies
 - **Lessons learned**: Tracks what didn't work to prevent flip-flopping between solutions
@@ -62,7 +69,8 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Proportional batch reduce**: When the fix prompt exceeds the context cap, batch size is reduced proportionally (cap/promptLength) instead of halving. *Why*: Halving wasted iterations when only slightly over cap; proportional reduction converges in 1–2 steps.
 - **Rotation reset per push iteration**: At the start of each push cycle (after the first), the model index resets to the first model so each cycle gets a "best model first" attempt instead of continuing from where the previous cycle left off. *Why*: Later push iterations were reusing the last model from the previous cycle (often one that had just 500'd or timed out), wasting time.
 - **ALREADY_FIXED multi-model dismissal**: When 3+ consecutive models return ALREADY_FIXED for the same issue (any explanation), dismiss as already-fixed. Counter resets when the fixer makes changes or the issue is verified. *Why*: The existing same-explanation counter only fired when explanation text matched; a separate any-explanation counter catches the broader pattern where multiple models independently agree the issue is resolved.
-- **couldNotInject in-loop dismissal**: At the start of each fix iteration, issues that have hit the could-not-inject threshold (file not in repo + no-change cycles) are dismissed and removed from the queue; if the queue is empty afterward, the run exits as all fixed. *Why*: The threshold was only checked at push-iteration start; inside the fix loop the same issues were retried 10+ times (output.log audit). Applying the check every iteration stops the loop.
+- **couldNotInject in-loop dismissal**: At the start of each fix iteration, issues that have hit the could-not-inject threshold (file not in repo + no-change cycles) are dismissed and removed from the queue; if the queue is empty afterward, the run exits as all fixed. Create-file issues use a lower threshold (1) so we dismiss after one couldNotInject when the path was clearly "create this file". *Why*: The threshold was only checked at push-iteration start; inside the fix loop the same issues were retried 10+ times (output.log audit). Applying the check every iteration stops the loop; lower create-file threshold avoids retrying when the file is never created.
+- **Apply-failure and no-changes handling**: When the fixer's search/replace fails to match (no files written), we treat it as no meaningful changes, skip verification, and persist a short "Previous attempt: …" for the next fix prompt. Per-file S/R failure count and consecutive no-changes use tuned thresholds (3 and 2) so we dismiss as remaining earlier instead of burning iterations. *Why*: output.log audit — the model wasn't getting explicit apply-failure feedback; passing it into the next attempt and bailing sooner reduces wasted runs. See [DEVELOPMENT.md](DEVELOPMENT.md) "Fix loop audits (output.log)".
 - **Solvability for new comments**: When new bot comments arrive mid-fix-loop, they are run through the same solvability check (e.g. (PR comment), lockfiles) before being added to the queue; unsolvable ones are dismissed and not sent to the fixer. *Why*: New comments were previously added without solvability, so (PR comment) and other unfixable paths entered the queue and burned iterations (prompts.log audit).
 - **Missing test files stay actionable**: If a review asks for a test/spec file that does not exist yet, PRR keeps that issue open as a create-file target instead of dismissing it as stale. *Why*: For missing-test comments, non-existence is often the thing the fixer is supposed to change.
 - **Coverage-only wording on explicit test files stays in create-file flow**: If the review path already points at a missing `*.test.ts` file, PRR preserves that path even when the body says "coverage is missing here" instead of repeating "add tests". *Why*: The path itself is already strong evidence that the requested fix is to create or fill in that test file.
@@ -81,12 +89,14 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Rebase vs merge detection**: When finishing after conflict resolution, we detect rebase (`.git/rebase-merge`) using the repo’s absolute path so the right command runs (`rebase --continue` vs `commit`). *Why*: PRR runs in a workdir that’s often not the process cwd; a relative `.git` path would miss `rebase-merge` and wrongly run `commit` during a rebase, leaving a stuck state.
 - **Push retry cleanup**: If the post-rejection rebase fails (e.g. conflicts or "rebase-merge directory already exists"), we try `rebase --abort` first, then fall back to full git cleanup only if abort fails. *Why*: Abort restores commits; full cleanup is for stuck/corrupt state so the next run isn’t blocked.
 - **Non-interactive rebase continue**: All `rebase --continue` paths use `continueRebase(git)`, which sets `GIT_EDITOR=true` so git never opens an editor. *Why*: In headless/workdir runs there’s no TTY; the configured editor would fail with "Standard input is not a terminal" or "problem with the editor 'editor'". One helper keeps behavior consistent.
-- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically
+- **Base branch merge (explicit refspec):** When merging the PR's base branch (e.g. `v2.0.0`) into the PR branch, PRR fetches the base with an explicit refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) so the tracking ref is always updated. *Why*: On `--single-branch` clones the default fetch config only includes the PR branch; a plain `git fetch origin v2.0.0` would not update `origin/v2.0.0`, leaving a stale ref and the merge-base check incorrectly reporting "already up-to-date", so the PR would stay "dirty" on GitHub. Explicit refspec forces the ref to match the remote tip every run.
+- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically. Resolution is **3-way** (base + ours + theirs), with **sub-chunking** at AST boundaries when a conflict region exceeds the model’s segment cap, and **validation** (parse TS/JS) before write/stage. When the main path fails, a **top+tails fallback** runs (whole-file story + top of conflict + tail OURS/theirs). Parse validation failures trigger up to two retries with the error (and location) in the prompt. *Why*: Two-way merge forces the model to guess; proper merge needs the common ancestor. Oversized regions are split at statement boundaries. Fallback gives a second chance without changing the default path. See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md).
 - **Conflict prompt injection skip**: File-content injection is skipped for conflict-resolution prompts. *Why*: The conflict prompt already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), blow prompt size, and cause 504s.
 - **Large conflicted files (chunked embed)**: For files over ~30k chars with conflicts, only the conflict sections (with context) are embedded in the prompt, not the full file. *Why*: Full-file embed doubles prompt size and causes 504s; sections are enough for correct `<search>`/`<replace>` output.
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication; fetch and pull also use the token when the remote has no credentials (one-shot auth URL), so "Checking for conflicts" and pull never hang on a password prompt. **Why:** Repos cloned without token in the URL would otherwise block during fetch with no visible output; timeout + token fix it (see CHANGELOG).
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
+- **Thread replies (GitHub feedback)**: With `--reply-to-threads`, PRR posts a short reply on each review thread when it fixes or dismisses an issue (e.g. "Fixed in \`abc1234\`." or "No changes needed — already addressed before this run."). Optional `--resolve-threads` collapses replied threads. **WHY:** Reviewers see visible feedback in the PR conversation instead of only in PRR's exit summary; one reply per thread keeps noise low and leaves room for human follow-up. See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
 
 ### Token & cost optimizations
 - **Fix iterations default**: `--max-fix-iterations` defaults to `0` meaning *unlimited* — the fix loop runs until all issues are resolved or another exit (e.g. stalemate). *Why*: Previously 0 was used literally so the loop ran zero times; we now map 0 to "no cap" so the default behaves as documented.
@@ -96,7 +106,7 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Dismissal-comment pre-check**: Before calling the LLM to generate a "Note:" comment, we check a ±7 line window for an existing Note:/Review: comment, and also skip when the reason already describes a code change (already-fixed). *Why*: Avoids redundant LLM calls when a comment was already added or the fix is self-documenting.
 - **Skip dismissal LLM for already-fixed**: We no longer call the LLM to generate a Note for issues dismissed as already-fixed; code/diff is self-documenting. *Why*: Audit showed 62% of dismissal LLM responses were EXISTING; skipping saves tokens.
 - **Relax file constraint on retry**: When the fixer returns CANNOT_FIX/WRONG_LOCATION and mentions another file, we persist that path and allow it on the next attempt so the fixer can edit the correct file. *Why*: Prompts.log audit showed 7 identical 33k-char prompts for one cross-file issue; persisting the other file avoids burning all models and can resolve on retry.
-- **Persisted dedup cache**: LLM dedup results are stored in state keyed by comment ID set; repeat runs with the same comments skip the dedup LLM step. *Why*: In-memory cache reset each run; persisting saves tokens and latency.
+- **Persisted dedup cache**: LLM dedup results (including cross-file grouping) are stored in state keyed by comment ID set with **`schema: 'dedup-v2'`**; repeat runs with the same comments skip the dedup LLM steps. *Why*: In-memory cache reset each run; persisting saves tokens and latency. Older state without **`schema`** recomputes so grouping matches the current pipeline.
 - **Heuristic dedup same-caller**: Comments on the same file that share the same primary symbol (e.g. method name) and the same caller file (e.g. "runner.py:146") are merged even when authors differ. *Why*: Prompts.log audit showed duplicate issues from cursor vs claude describing the same async/caller mismatch; merging them avoids duplicate fix attempts.
 - **Dedup GROUP validation + prompt guard**: Dedup now rejects malformed `GROUP:` lines when any index is out of range or the canonical index is not in the group, and the prompt explicitly says valid indices are only `1..N`. *Why*: A prompts.log audit showed the model returning `GROUP: 2,5,7` for only 3 comments; rejecting invalid groups avoids wrong merges and the prompt reduces those hallucinations up front.
 - **Verifier strength for API/signature fixes**: Fixes whose comment mentions async/await, caller, signature, or TypeError are verified with a stronger model when available. *Why*: Weak default verifier approved a fix that missed the call-site update (e.g. print_results still calling generate_report() without await/args); stronger model catches call-site bugs.
@@ -114,7 +124,9 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Skip predict-bots when --no-wait-bot**: When `--no-wait-bot` is set, we skip the LLM "likely new bot feedback" prediction after commit. *Why*: Prediction is display-only; skipping saves ~26s when the user isn't waiting for bot reviews.
 - **Predict-bots changed-files guard**: The display-only predictor skips tiny meta-only diffs (e.g. small `.gitignore` changes), tells the model to output only files present in the commit diff, and filters predictions to `changedFiles`. *Why*: A prompts.log audit showed the predictor hallucinating `scripts/build-skills-docs.js` from a `.gitignore`-only diff; filtering to actual changed files saves tokens and removes noisy UX output.
 - **Lesson caps for large batches**: When fixing 10+ issues at once, we cap global and per-file lessons so the prompt stays under ~100k chars. *Why*: Prevents gateway timeouts and prompt poisoning from oversized prompts.
-- **LLM dedup only for 3+ issues**: The LLM dedup step runs only for files with at least 3 remaining issues after heuristic dedup. *Why*: For 2-comment files, heuristic grouping is enough; skipping the LLM saves tokens with no meaningful loss.
+- **LLM dedup (per file)**: Runs when a file has **3+** survivors after heuristic dedup, **or** exactly **2** when **authors differ** and **`primarySymbolFromBody`** matches (after severity/framing strip). *Why*: Heuristics cover same-author pairs; cross-bot pairs on the same bug (e.g. Claude + Cursor on **`_multiplier`**) need one cheap-model merge. *Why not always 2*: Same-author pairs of two are usually already merged heuristically; extra LLM calls only when the signal is strong.
+- **Issue-comment ingestion**: Non-review bodies (README/setup dumps, very short non-actionable text) are filtered before markdown parsing; parsed **`ic-*`** rows from the same author/path are collapsed by similarity **before** snippet fetch. *Why*: Re-posted bot reviews and pasted docs inflated the queue and file reads (elizaOS/cloud#417 class PRs).
+- **Cross-file dedup (Phase 3)**: When **≥5** issues remain after per-file dedup, one batched cheap-model pass may merge items on **different files** that share the same root-cause fix; canonical gets a **`contextHints`** line listing sibling paths. *Why*: One mistake repeated across services (e.g. CoT + temperature) should not require four separate fix cycles.
 - **maxFixIterations 0 = unlimited**: `--max-fix-iterations 0` is treated as unlimited (not zero). *Why*: Without this, 0 meant zero iterations and the run did analysis-only with no fix attempts.
 - **File injection by issue count & dynamic budget**: Injected file contents are chosen by how many issues reference each file (most first); total injection budget is tied to the model’s context cap. *Why*: Puts the injection cap toward files most likely to need search/replace; avoids overshooting small-context or underusing large-context models.
 - **Batch injection filter (rounds 2+)**: In later fix rounds, file injection is limited to files that still have at least one unfixed issue via `allowedPathsForInjection`. *Why*: Already-fixed files waste context budget; filtering keeps the prompt focused and leaves room for files that need changes.
@@ -144,22 +156,103 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 
 ## Installation
 
-This repo contains **prr** (PR Resolver) and **pill** (Program Improvement Log Looker). Both use a shared library under `shared/`; tool code lives under `tools/prr/` and `tools/pill/`.
+This repo contains **prr** (PR Resolver), **pill** (Program Improvement Log Looker), **split-plan** (PR decomposition planner), **split-exec** (execute split plan), and **story** (PR narrative & changelog). All use a shared library under `shared/`; tool code lives under `tools/prr/`, `tools/pill/`, `tools/split-plan/`, `tools/split-exec/`, and `tools/story/`.
+
+### Repository layout (contributors & agents)
+
+**WHY document this:** PRR clones the **target PR’s repo** into a **workdir**; this monorepo is the **tool source**. Confusing the two causes wrong paths in patches and audits.
+
+| Layer | Path | Role |
+|-------|------|------|
+| **Shared** | `shared/` | Logger (plus timing/token modules), config, git helpers, **`shared/constants/`** (barrel via **`shared/constants.ts`** shim), runners, path-utils — **no imports of** `tools/pill/` **from here** (**WHY:** lower layer stays tool-agnostic). |
+| **PRR** | `tools/prr/` | CLI, **`resolver.ts`**, **`resolver-proc.ts`** (re-export facade only), **`workflow/`**, **`llm/`**, **`github/`**, **`state/`**. |
+| **Other tools** | `tools/pill/`, `tools/split-plan/`, … | Each tool has its own entry point; **pill after logs** runs from those CLIs via **`after-close-logs.ts`**, not from **`shared/logger.ts`** (**WHY:** layering). |
+
+For architecture diagrams, key file tables, and fix-loop internals, see **[DEVELOPMENT.md](DEVELOPMENT.md)**. For clone workdir rules, constants file names, and conventions (e.g. option bags **`XOptions`**), see **[AGENTS.md](AGENTS.md)**. For **optional future** structural ideas (e.g. moving **`GitHubAPI`** / **`LLMClient`** into `shared/`), see **[docs/ROADMAP.md](docs/ROADMAP.md)**. Completed refactors are recorded in **[CHANGELOG.md](CHANGELOG.md)**.
 
 ```bash
 npm install
-npm run build
+npm run typecheck
 
 # Run prr directly
 node dist/tools/prr/index.js <pr-url>
-
-# Or link globally (both prr and pill available)
-npm link
-prr --version   # See the cat!
-pill --help    # Pill CLI
 ```
 
+### Split-plan: PR decomposition planner
+
+The **split-plan** tool analyzes a large PR (diffs, commits, dependencies), discovers open PRs on the same base branch as “buckets,” and writes a human-editable `.split-plan.md` with a dependency analysis and a proposed split into smaller, reviewable PRs. *Why*: LLM agents often produce PRs that mix refactors, features, and fixes; splitting by concern keeps reviews human-sized. **split-exec** reads that plan and iteratively cherry-picks commits into existing or new PR branches and opens new PRs. See **[tools/split-plan/README.md](tools/split-plan/README.md)** and **[tools/split-exec/README.md](tools/split-exec/README.md)** for full documentation and WHYs.
+
+### Pill: Program Improvement Log Looker
+
+**pill** audits a project using its output.log and prompts.log (from prr, story, split-exec, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. Pill runs on close only when you pass **`--pill`** (prr, story, split-exec, split-plan). See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
+
+```bash
+# Or link globally (prr, pill, split-plan, split-exec, and story available)
+npm link
+prr --version     # See the cat!
+pill --help       # Pill CLI
+split-plan --help  # PR decomposition planner
+split-exec --help  # Execute split plan (cherry-pick, push, create PRs)
+story --help      # PR narrative & changelog
+```
+
+### Story: PR or branch narrative & changelog
+
+The **story** tool builds a narrative, feature catalog, and changelog (Added/Changed/Fixed/Removed) from a PR or branch. Three modes: **PR** (title/body + commits + files), **single branch** (commit history only, no comparison), **two branches** (`--compare <branch>`; order auto-detected, story is about the branch you passed first). See **[tools/story/README.md](tools/story/README.md)** for full documentation and WHYs.
+
+```bash
+# PR
+story https://github.com/owner/repo/pull/123
+story owner/repo#456
+
+# Single branch (commit history only)
+story owner/repo@feature/siwe
+story https://github.com/owner/repo/tree/feature/siwe
+
+# Two branches (story from older → newer; primary branch = first arg)
+story https://github.com/owner/repo/tree/v2-develop --compare v1-develop
+
+# Write to file; verbose; tune context size
+story owner/repo#456 --output CHANGELOG.md
+story owner/repo@branch -v --max-commits 200 --max-files 500
+story --help   # PR narrative & changelog
+```
+
+Requires the same config as prr: `GITHUB_TOKEN` and an LLM provider (e.g. `ELIZACLOUD_API_KEY` or `ANTHROPIC_API_KEY`). Logs: `story-output.log`, `story-prompts.log`.
+
 ## Configuration
+
+Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`. Optional: `PRR_LLM_PROVIDER`, `PRR_LLM_MODEL`. See root [README](../../README.md) and [.env.example](../../.env.example).
+
+| Variable | Purpose |
+|----------|---------|
+| `GITHUB_TOKEN` | GitHub API access |
+| `PRR_GIT_SHA` / `PRR_SOURCE_COMMIT` | Optional — stamp startup/`output.log` when the prr tree has **no** `.git` (vendored install). If `.git` exists in the prr package root, revision comes from `git rev-parse` instead. **Not** `GITHUB_SHA` (host repo). |
+| `ELIZACLOUD_API_KEY` / provider keys | LLM gateway or direct API |
+| `PRR_LLM_MODEL` | Pin the primary fixer/verifier model |
+| `PRR_VERIFIER_MODEL` | Stronger model for batch verification (when default is weak) |
+| `PRR_FINAL_AUDIT_MODEL` | Model for adversarial final-audit pass only |
+| `PRR_STRICT_FINAL_AUDIT` | `1` / `true` — exit **2** when final audit re-queues were overridden (audit said UNFIXED for previously verified issues) |
+| `PRR_STRICT_FINAL_AUDIT_UNCERTAIN` | `1` / `true` — exit **2** when the run succeeds but final audit **passed** any issue via **UNCERTAIN** or **truncation guard** |
+| `PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE` | `1` / `true` — with `--reply-to-threads`, also post a short reply for **`chronic-failure`** dismissals (default: skip) |
+| `PRR_MAX_CONCURRENT_LLM` | In-flight LLM cap (default `1`) |
+| `PRR_ELIZACLOUD_SERVER_ERROR_RETRIES` | ElizaCloud only: inner **500/502/504** retry index per `complete()` call (**0–15**). Unset: **3** HTTP attempts locally, **5** when **`CI=true`**. Override in CI for flaky gateways (e.g. empty 500 bodies on batch check). |
+| `PRR_ELIZACLOUD_GATEWAY_FALLBACK_MODELS` | ElizaCloud only: comma-separated model ids tried **after** **2** consecutive gateway/server-class errors on the current model in one `complete()` (e.g. DeepInfra **502** on Qwen). **`off`** / **`none`** / **`0`** disables. Default chain skips ids in the built-in skip list unless **`PRR_ELIZACLOUD_INCLUDE_MODELS`** re-enables them. **`getElizacloudGatewayFallbackModels`** in **`shared/constants.ts`**. |
+| `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` | Comma-separated ids **added** to the built-in ElizaCloud skip list (`shared/constants.ts` **`ELIZACLOUD_SKIP_MODEL_IDS`**) |
+| `PRR_ELIZACLOUD_INCLUDE_MODELS` | Comma-separated ids to **remove** from the built-in skip list (re-enable after transient timeouts) |
+| `PRR_SESSION_MODEL_SKIP_FAILURES` | Skip a model for the rest of the run after N zero-fix verification failures (`0` = off) |
+| `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS` | Every N fix iterations, clear session skips so rotation retries those models (`0` / unset = off) |
+| `PRR_DIMINISHING_RETURNS_ITERATIONS` | Warn after N consecutive iterations with no new verified fixes (`0` = off) |
+| `PRR_EXIT_ON_STALE_BOT_REVIEW` | `1` / `true` — exit setup **before clone** if bot review SHA ≠ PR HEAD (stale inline comments) |
+| `PRR_EXIT_ON_UNMERGEABLE` | `1` / `true` — exit setup **before clone** when GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set** |
+| `PRR_CLEAR_ALL_DISMISSED_ON_HEAD` | `1` / `true` — on PR HEAD change, clear **all** dismissals (default: only **`already-fixed`**) |
+| `PRR_DISABLE_LATENT_MERGE_PROBE` | `1` / `true` — skip **`git merge-tree`** dry-merge vs `origin/<prBranch>` during sync (default: probe on) |
+| `PRR_DISABLE_LATENT_MERGE_PROBE_BASE` | `1` / `true` — skip the **second** dry-merge vs `origin/<prBase>` (GitHub mergeable/dirty); default runs when base ≠ PR branch |
+| `PRR_MATERIALIZE_LATENT_MERGE` | `1` / `true` — when the PR-tip probe predicts conflicts, run **`git merge origin/<branch> --no-commit --no-ff`** before pull so LLM conflict resolution can run early |
+| `PRR_MATERIALIZE_LATENT_MERGE_BASE` | `1` / `true` — when the **PR-vs-base** probe predicts conflicts, run **`git merge origin/<prBase> --no-commit --no-ff`** for early LLM resolution |
+| `PRR_BOT_LOGIN` | GitHub login for thread-reply idempotency when using `--reply-to-threads` |
+
+**CLI (related):** pass **`--merge-base`** when GitHub reports the PR as not mergeable / dirty and you want PRR to merge the PR base before the fix loop.
 
 Create a `.env` file (see `.env.example`):
 
@@ -174,13 +267,66 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 
 # Or use OpenAI
 # PRR_LLM_PROVIDER=openai
-# PRR_LLM_MODEL=gpt-5.2
+# PRR_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-xxxx
 
 # Default fixer tool (rotates automatically when stuck)
 # If not set, prr will auto-detect which tool is installed
 # PRR_TOOL=cursor
+
+# Optional: max concurrent LLM requests (default 1). Raise to reduce wall-clock time when the backend allows.
+# PRR_MAX_CONCURRENT_LLM=3
+# Optional: min delay in ms between starting successive requests per slot (default 6000). Override if tuning rate limits.
+# PRR_LLM_MIN_DELAY_MS=6000
+# Optional: comma-separated ElizaCloud model IDs to include even if on the skip list (e.g. if timeouts were gateway-specific).
+# PRR_ELIZACLOUD_INCLUDE_MODELS=openai/gpt-4o-mini,anthropic/claude-3.7-sonnet
 ```
+
+**Concurrency (optional)**  
+- **`PRR_MAX_CONCURRENT_LLM`** (integer 1–32, default unset ⇒ 1): Maximum number of LLM requests in flight at once. Analysis batches, verification, and (when using llm-api) parallel fix groups all share this cap. **WHY:** Default 1 keeps behavior unchanged and avoids 429s; raising it (e.g. to 3) lets analysis and fix run in parallel and can cut wall-clock time significantly when the backend (e.g. ElizaCloud) supports it.  
+- **`PRR_LLM_MIN_DELAY_MS`** (integer ≥ 0, default unset ⇒ 6000): Minimum milliseconds between starting successive requests per slot. **WHY:** Spacing requests reduces burst 429s; override only when tuning for a specific gateway.
+
+**ElizaCloud skip-list override (optional)**  
+- **`PRR_ELIZACLOUD_INCLUDE_MODELS`** (comma-separated model IDs): Models to *include* in rotation even if they are on the default skip list (e.g. `openai/gpt-4o`, `openai/gpt-4o-mini`, `anthropic/claude-3.7-sonnet`). **WHY:** Those models are skipped by default because audits showed timeouts or 0% fix rate on some gateways; if your environment is different, set this to re-enable them (e.g. `PRR_ELIZACLOUD_INCLUDE_MODELS=openai/gpt-4o-mini`). Full IDs or short names (e.g. `gpt-4o-mini`) both work.
+
+**Fix-loop hygiene (optional)**  
+- **`PRR_SESSION_MODEL_SKIP_FAILURES`** (integer, default **4**; set **`0`** to disable): After this many cumulative verification failures for a tool/model pair **with no verified fix in this process**, skip that model until the next run; a verified fix clears the skip. **WHY:** Audit runs showed 0%-success models still consuming rotation slots; skipping for the rest of the session saves tokens without editing the static skip list in code.  
+- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`** (integer; unset = off): Every N completed fix iterations, clear **session** skips so those models can rotate again **without** restarting PRR. **WHY:** Pill-output #847 — otherwise a model skipped early is dead until process exit; periodic reset gives one more chance after other models have run.  
+- **`PRR_DIMINISHING_RETURNS_ITERATIONS`** (integer, default **10**; set **`0`** to disable): Emit one **warning** when this many consecutive fix iterations produce **no** new verified fixes. **WHY:** Gives operators a visible cue to intervene (merge base, manual edits, or stop) instead of burning API budget quietly.
+
+**Clone / fetch (optional)**  
+- **`PRR_CLONE_TIMEOUT_MS`** (default 900000): Max ms for the initial clone. Large repos or slow connections may need more (e.g. 600000 for 10 min). Progress is logged every 30s.
+- **`PRR_CLONE_DEPTH`** (optional): If set to a positive integer (e.g. `1`), clone uses **`git clone --depth`** (shallow clone). Faster on huge repos; trade-off: incomplete history.
+- **`PRR_FETCH_TIMEOUT_MS`** (default 60000): Max ms for fetch during update/merge. Increase for slow networks. Non-integer env values use the default; **`--verbose`** logs a debug line if the value is invalid.
+- **`PRR_LLM_TASK_TIMEOUT_MS`** (optional): Max ms per concurrent pool worker for LLM batch verification and parallel fix groups. Unset or `0` = no cap; env values below 5000 ms clamp to 5000.
+- **Latent merge probe (sync):** After **`git fetch`**, **`checkForConflicts`** runs **`git merge-tree --write-tree`** on **`HEAD`** vs **`origin/<prBranch>`** (Git 2.38+) so PRR can warn about conflicts **before** `git status` shows an in-progress merge. A **second** probe runs **`HEAD`** vs **`origin/<prBase>`** when the PR’s GitHub base differs from the PR branch — closer to **mergeable / dirty** than the PR-tip probe alone. **`PRR_MATERIALIZE_LATENT_MERGE=1`** / **`PRR_MATERIALIZE_LATENT_MERGE_BASE=1`** start the matching real **`git merge --no-commit`**. **`PRR_DISABLE_LATENT_MERGE_PROBE=1`** / **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE=1`** turn each probe off (e.g. huge repos).
+
+**Provider model catalog (optional)**  
+- **`PRR_MODEL_CATALOG_PATH`**: Absolute or relative path to a `model-provider-catalog.json` override. **WHY:** Forks or air-gapped runs can point at a custom snapshot; default is the repo’s `generated/model-provider-catalog.json`.
+- **`PRR_DISABLE_MODEL_CATALOG_SOLVABILITY=1`**: Skips solvability check **0a6** (no dismissal of “both ids in catalog” model-typo advice). **WHY:** Escape hatch if framing regex misfires or you want every comment analyzed by the LLM regardless.
+- **`PRR_DISABLE_MODEL_CATALOG_AUTOHEAL=1`**: Skips deterministic file rewrite for those comments (dismissal still applies when solvability is enabled). **WHY:** Inspect or fix strings manually without PRR touching the workdir.
+
+**Audit / exit (optional)**  
+- **`PRR_STRICT_FINAL_AUDIT`**: Set to `true` or `1` to exit with code **2** when the run succeeds but **audit overrides** exist (final audit said **UNFIXED** for issues that were previously verified; PRR normally re-queues those — overrides are a rare edge case tracked in state). Default exit remains **0** in that case.
+- **`PRR_STRICT_FINAL_AUDIT_UNCERTAIN`**: Exit **2** when the run succeeds but at least one issue **passed** final audit via **`UNCERTAIN`** or the **truncation guard** (audit did not affirm a normal **FIXED**). Default **0**.
+- **`PRR_FINAL_AUDIT_MODEL`**: Model id for the **adversarial final-audit** pass only. If unset, PRR uses **`PRR_VERIFIER_MODEL`** if set, else **`PRR_LLM_MODEL`**. **WHY:** Small default verifiers can mark UNFIXED by repeating review text while the prompt already shows fixed code; pinning a stronger model (often the same as the fixer) reduces false re-queues.
+
+On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves effective concurrency for 60s so the next run backs off without a code change.
+
+### Troubleshooting (state, summary, logs)
+
+- **Where state lives:** Per-PR resolver state is **`.pr-resolver-state.json`** at the **root of the clone workdir** (same directory as the PR checkout — see verbose lines like **Reusing existing workdir** or **Workdir preserved**). Lessons may live under **`.prr/`** inside that clone; resolver state is **not** only under **`.prr/`**.
+- **Stale or contradictory decisions:** If the debug issue table or **RESULTS SUMMARY** looks wrong after a rebase, force-push, or manual edits, delete **`.pr-resolver-state.json`** in that workdir and re-run PRR (or remove the workdir with **`--no-keep-workdir`** on a previous run, then run again so clone is fresh). **WHY:** Head-change rules clear **verified** (and some dismissals), but a corrupted or hand-edited file can still confuse a run.
+- **Same comment ID in both verified and dismissed:** PRR enforces **verified ∩ dismissed = ∅** on **load** and when marking verified/dismissed; overlap at end-of-run is unexpected — treat as a bug and **delete the state file** after capturing **`output.log`**. Debug logs may still list **Overlap IDs** during the run while repair runs.
+- **“Cleaned N overlap” / “removed … from verifiedFixed” on startup:** Normal **one-time** repair of legacy state; no action if the run then looks sane. If the same message repeats every run or **RESULTS SUMMARY** still shows **verified ∩ dismissed**, delete **`.pr-resolver-state.json`** in the clone workdir (see **Where state lives** above) and use **`prr --clean-state`** on the PR if that file was committed by mistake.
+- **`verifiedFixed` huge vs current PR (yellow warning):** Often stale IDs from older PR heads; pruning uses **`currentCommentIds`** for display. Clearing state resets counts.
+- **Final audit re-queues:** **RESULTS SUMMARY** shows **Final audit re-queued: N** when the adversarial pass said **UNFIXED** for issues that were previously verified (safe-over-sorry). Details and paths appear in the **After Action Report** block and in **`output.log`**.
+- **Re-verify everything:** **`--reverify`** ignores cached verification for another pass without deleting state (see CLI table).
+- **State committed to git by mistake:** Run **`prr`** with **`--clean-state`** on the same PR URL to remove **`.pr-resolver-state.json`** from git tracking in the workdir (cleanup mode); use **`--clean-all`** for broader cleanup. See **`prr --help`**.
+- **`PRR_FETCH_TIMEOUT_MS`:** Non-numeric values fall back to the default; with **`--verbose`**, a debug line notes invalid values. Check for typos if your setting seems ignored.
+- **`PRR_LLM_TASK_TIMEOUT_MS`:** Optional per pool-task wall-clock cap (ms) for concurrent LLM batches / fix groups (`runWithConcurrency`). Unset or `0` = no cap. Env values below `5,000` ms are clamped to `5,000`. Invalid values disable the cap and log a debug line when verbose. Programmatic override: `runWithConcurrency(tasks, n, { taskTimeoutMs })` (no clamp; for advanced use / tests).
+- **Partial base-merge resolutions:** When merge with **`origin/<base>`** fails part-way, PRR stores resolved file text in state for the next run. If **`origin/<base>`** moves to a new commit before you re-run, that cache is **cleared** so you don’t reuse content from an old merge attempt.
+- **Model catalog missing:** If **`generated/model-provider-catalog.json`** is absent, solvability **0a6** (dismiss bogus “model typo” noise) is **skipped** with a one-time console warning — run **`npm run update-model-catalog`** (or set **`PRR_MODEL_CATALOG_PATH`**).
 
 ### Why These Defaults?
 
@@ -204,8 +350,29 @@ prr https://github.com/owner/repo/pull/123 --tool claude-code
 
 # Dry run - show issues without fixing
 prr https://github.com/owner/repo/pull/123 --dry-run
+```
 
-# Keep work directory for inspection
+### Story (examples)
+
+```bash
+# PR
+story https://github.com/owner/repo/pull/123
+story owner/repo#456
+
+# Single branch (commit history only)
+story owner/repo@feature/siwe
+story https://github.com/owner/repo/tree/feature/siwe
+
+# Two branches (story from older → newer; primary branch = first arg)
+story https://github.com/owner/repo/tree/v2-develop --compare v1-develop
+
+# Write to file; verbose; tune context size
+story owner/repo#456 --output CHANGELOG.md
+story owner/repo@branch -v --max-commits 200 --max-files 500
+story --help   # PR narrative & changelog
+```
+
+```bash
 prr https://github.com/owner/repo/pull/123 --keep-workdir
 
 # Re-verify all issues (ignore verification cache)
@@ -248,8 +415,12 @@ prr https://github.com/owner/repo/pull/123 \
 | `--no-bell` | off | Disable terminal bell on completion |
 | `--keep-workdir` | on | Keep work directory after completion |
 | `--no-batch` | off | Disable batched LLM calls |
-| `--verbose` | on | Debug output |
+| `--verbose` | on | Extra debug output on the console. **`prompts.log`** (in CWD or `PRR_LOG_DIR`) is **not** controlled by this flag: it records full prompt/response text when the **in-process** LLM runs (`LLMClient` in the main process). It may stay **empty** if the run never calls that path (e.g. exits at merge conflicts first) or fixers run only in a **subprocess** (see AGENTS.md). Use **`PRR_DEBUG_PROMPTS=1`** for per-prompt files under `~/.prr/debug/`. |
+| `--reply-to-threads` | off | Post a short reply on each review thread when PRR fixes or dismisses an issue. Use `PRR_REPLY_TO_THREADS=true` to enable via env. **WHY:** Gives reviewers visible feedback in the PR; opt-in so default runs stay unchanged. |
+| `--no-reply-to-threads` | (default) | Do not post replies on review threads. |
+| `--resolve-threads` | off | When replying, also resolve the review thread (collapse with checkmark). **WHY:** Optional; some teams prefer to resolve threads only after human review. |
 
+Defaults marked **on** (e.g. `--auto-push`, `--keep-workdir`) are true by default; use `--no-auto-push` or `--no-keep-workdir` to disable them.
 
 **Note on `--no-*` options**: Commander.js handles these specially. `--no-commit` sets an internal flag to `false`, not a separate `noCommit` option. This is why you use `--no-commit` to disable committing (the default is to commit).
 
@@ -289,17 +460,18 @@ concurrency:
 jobs:
   prr:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'run-prr'
-    uses: OWNER/prr/.github/workflows/run-prr-server.yml@main
+    uses: OWNER/prr/.github/workflows/run-prr-server.yml@babylon
     with:
       pr_number: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
       prr_repo: 'OWNER/prr'
+      prr_ref: 'babylon'
     secrets:
       PRR_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ELIZACLOUD_API_KEY: ${{ secrets.ELIZACLOUD_API_KEY }}
       # or ANTHROPIC_API_KEY / OPENAI_API_KEY
 ```
 
-Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`), and use the branch you want (`@main` or `@v1`).
+Replace `OWNER` with the GitHub org/user that hosts the PRR repo (e.g. `elizaOS`), and use the branch you want (`@main` or `@v1`). **Important:** When using a branch in `uses:` (e.g. `@babylon`), pass the same value as `prr_ref` (e.g. `prr_ref: 'babylon'`) so the job checks out that branch; otherwise the default branch is used and the run may fail.
 
 2. **Configure secrets** in that repo:
 
@@ -421,7 +593,7 @@ When fixes fail, prr escalates through multiple strategies:
 - **Remote sync conflicts**: Previous interrupted merge/rebase left conflict markers
 - **Pull conflicts**: Branch diverged while prr was working
 - **Stash conflicts**: Interrupted run had uncommitted changes
-- **Base branch merge**: PR conflicts with target branch (main/master)
+- **Base branch merge**: PR conflicts with target branch (main/master). PRR fetches the base branch with an explicit refspec so the merge sees the latest base tip (see Git Integration: "Base branch merge (explicit refspec)"); if the merge has conflicts, PRR resolves them with the LLM and pushes the merge commit before the fix loop.
 
 **Why two attempts for code files?**
 - Fixer tools are good at agentic changes but sometimes miss conflict markers
@@ -432,6 +604,11 @@ When fixes fail, prr escalates through multiple strategies:
 - Git might mark a file as resolved (not in `status.conflicted`)
 - But file might still contain `<<<<<<<` markers if tool staged prematurely
 - Double-check catches false positives
+
+**Fallback and parse retries**
+- If the main strategy (chunked or single-shot) fails for a file, PRR tries a **top+tails fallback**: chunk the entire file to build a short "story", then for each conflict send only the **top** (context + start of conflict) and **tails** (last lines of OURS and THEIRS) plus base top/tail; the model produces a full resolution from that. *Why*: We don't process the whole file this way unless we need to; when the main path has already failed, this gives the model a different view (how each side ends) and often succeeds.
+- For TS/JS we **validate** resolved content (parse) before write/stage. If validation fails (e.g. `'*/' expected`), we **retry** resolution up to twice with the parse error (and location) in the prompt so the model can fix syntax. *Why*: Many parse failures are trivial (unclosed comment, missing comma); a few retries with the exact error avoid giving up on fixable output.
+- See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md) for flow, constants, and the top+tails design.
 
 ### Bail-Out Mechanism
 
@@ -495,6 +672,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 ## Work Directory
 
+- **What it is:** The **clone** of the **repository under review** (PR branch checkout), where PRR runs git and fixers. **Not** the prr tool’s own source tree and **not** required to equal `process.cwd()`.
 - Location: `~/.prr/work/<hash>`
 - Hash is based on `owner/repo#number` - same PR reuses same directory
 - Cleaned up by default on success
@@ -502,7 +680,7 @@ When fixes fail, prr escalates through multiple strategies:
 
 ## State File
 
-State is persisted in `<workdir>/.pr-resolver-state.json`:
+State is persisted in `<clone-workdir>/.pr-resolver-state.json` (the PR checkout path above):
 
 ```json
 {
@@ -709,22 +887,22 @@ Without logging in first, you'll see authentication errors when prr tries to run
 
 **Dynamic Model Discovery**: prr automatically discovers available models by running `agent models` on startup. No hardcoded model lists to maintain.
 
-Model names change over time — use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **example** models; actual availability depends on your Cursor account/plan:
+Model names change over time — see `docs/MODELS.md` for latest (e.g. Claude 4.6, GPT-5). Use `agent models`, `cursor-agent --list-models`, or `curl https://api.cursor.com/v0/models` for the canonical list. The table below shows **illustrative examples**:
 
 | Model | Notes |
 |-------|-------|
 | `auto` | Let Cursor pick |
-| `claude-4-opus-thinking` | Claude Opus (thinking) |
-| `claude-4-sonnet-thinking` | Claude Sonnet (thinking) |
-| `o3` | OpenAI reasoning |
-| `gpt-5` | GPT-5 |
+| `claude-sonnet-4-6` | Claude Sonnet 4.6 (see docs/MODELS.md) |
+| `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 (example) |
+| `gpt-4o` | OpenAI (example) |
+| `o3` | OpenAI reasoning (when available) |
 
 **Model rotation strategy**: prr interleaves model families for better coverage:
 
 
 ```text
-Round 1: claude-4-opus-thinking (Claude) → gpt-5 (GPT) → o3 (OpenAI)
-Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
+Round 1: claude-sonnet-4-5 (Claude) → gpt-4o (GPT) → o3 (OpenAI)
+Round 2: next in rotation ...
 ... then next tool ...
 // Review: interleaving models enhances diversity in responses, reducing similar failure patterns.
 ```
@@ -734,7 +912,7 @@ Round 2: claude-4-sonnet-thinking (Claude) → gpt-4.1 (GPT) → grok-2 (Other)
 
 ```bash
 # Example: override model (bypasses rotation)
-prr https://github.com/owner/repo/pull/123 --model claude-4-opus-thinking
+prr https://github.com/owner/repo/pull/123 --model claude-sonnet-4-5-20250929
 
 # Let prr rotate through models automatically (recommended)
 prr https://github.com/owner/repo/pull/123
@@ -776,6 +954,13 @@ ls ~/.prr/debug/*/*.txt
 # View most recent
 ls -lt ~/.prr/debug/*/*.txt | head -5
 ```
+
+### Common log messages
+
+- **"Overlap IDs (verifiedFixed ∩ dismissed)"** — A comment ID appeared in both verified and dismissed state (e.g. from an older run or state bug). State load now cleans this automatically; you may see "Cleaned N overlap" once. If it recurs, reset state: delete `.pr-resolver-state.json` in the workdir or run with `--reset-state` (see [State File](#state-file)).
+- **"Tracked file not found for review path: X"** — The comment's path didn't match a repo file. PRR tries extension variants (e.g. `tsconfig.js` → `tsconfig.json`, or `.d.ts` in `types/`) before dismissing; if still missing, the issue is dismissed as missing-file.
+- **"No model configured; defaulting to: …"** — You didn't set `PRR_LLM_MODEL`; PRR chose a default. Set `PRR_LLM_MODEL` to pin a specific model.
+- **"Configured model unavailable; using: …"** — Your configured model was skipped (e.g. on the skip list) or not available; PRR fell back. Set `PRR_LLM_MODEL` to another model, or `PRR_ELIZACLOUD_INCLUDE_MODELS` to re-enable a skipped model (see AGENTS.md "Model skip list").
 
 ## License
 

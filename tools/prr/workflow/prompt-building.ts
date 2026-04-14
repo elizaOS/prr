@@ -15,8 +15,10 @@
  */
 
 import chalk from 'chalk';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { LessonsContext } from '../state/lessons-context.js';
+import type { StateContext } from '../state/state-context.js';
+import { getState } from '../state/state-context.js';
 import type { PRInfo } from '../github/types.js';
 import type { ReviewComment } from '../github/types.js';
 import { formatLessonForDisplay } from '../state/lessons-normalize.js';
@@ -58,8 +60,12 @@ export function buildAndDisplayFixPrompt(
   modelContext?: { provider: 'elizacloud' | 'anthropic' | 'openai'; model: string },
   /** When provided, used to resolve test file paths so TARGET FILE(S) point to the path that exists (e.g. __tests__/integration vs colocated). */
   pathExists?: (path: string) => boolean,
+  /** **PR clone root** (absolute); passed to **`buildFixPrompt`** — **not** `process.cwd()`. See **AGENTS.md** (“Clone workdir”). */
+  workdir?: string,
   /** When true, use a conservative cap (80k) to avoid gateway timeout on first attempt (audit: 94k timed out). */
   firstFixAttempt?: boolean,
+  /** When provided, last apply error is injected into prompt and cleared for included issues (output.log audit). */
+  stateContext?: StateContext,
 ): {
   prompt: string;
   detailedSummary: string;
@@ -74,13 +80,23 @@ export function buildAndDisplayFixPrompt(
   const lessonsBeforeFix = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
   
   // Get lessons for all files being fixed
-  const affectedFiles = [...new Set(unresolvedIssues.map(i => i.comment.path))];
-  // Build per-file map first so we can prefer file-specific lessons and cap global
+  const affectedFiles = [...new Set(unresolvedIssues.map((i) => getIssuePrimaryPath(i)))];
+  // Build per-issue lessons first so unrelated same-file failures do not contaminate other issues.
+  const perIssueLessons = new Map<string, string[]>();
   const perFileLessons = new Map<string, string[]>();
-  for (const filePath of affectedFiles) {
-    const fileLessons = LessonsAPI.Retrieve.getLessonsForFile(lessonsContext, filePath);
-    if (fileLessons.length > 0) {
-      perFileLessons.set(filePath, fileLessons);
+  for (const issue of unresolvedIssues) {
+    const primaryPath = getIssuePrimaryPath(issue);
+    const issueLessons = LessonsAPI.Retrieve.getLessonsForIssue(
+      lessonsContext,
+      primaryPath,
+      issue.comment.body,
+      issue.allowedPaths
+    );
+    if (issueLessons.length > 0) {
+      perIssueLessons.set(issue.comment.id, issueLessons);
+      if (!perFileLessons.has(primaryPath)) perFileLessons.set(primaryPath, []);
+      const merged = [...(perFileLessons.get(primaryPath) ?? []), ...issueLessons];
+      perFileLessons.set(primaryPath, [...new Set(merged)]);
     }
   }
   // Prefer file-specific lessons; cap global and filter by path relevance (prompts.log audit: cross-domain lessons bloat prompt).
@@ -98,7 +114,7 @@ export function buildAndDisplayFixPrompt(
     return roots.has(firstSeg);
   };
   const pathRelevantGlobal = globalFiltered.filter(pathRelevant);
-  const fileOnlyListRaw = affectedFiles.flatMap(f => perFileLessons.get(f) ?? []);
+  const fileOnlyListRaw = [...perIssueLessons.values()].flat();
   const fileOnlyList = fileOnlyListRaw.filter(pathRelevant);
   const maxGlobal = unresolvedIssues.length <= 2 ? 1 : 3;
   const maxTotalLessons = 15;
@@ -143,11 +159,34 @@ export function buildAndDisplayFixPrompt(
   let detailedSummary: string;
   let lessonsIncluded: number;
   let currentMax = effectiveMax;
+  const issuesInPrompt = (n: number) => sortedIssues.slice(0, n);
+  const getFirstLastApplyError = (issues: UnresolvedIssue[]): string | undefined => {
+    if (!stateContext?.state?.lastApplyErrorByCommentId) return undefined;
+    const map = stateContext.state.lastApplyErrorByCommentId;
+    for (const i of issues) {
+      const err = map[i.comment.id];
+      if (err) return err;
+    }
+    return undefined;
+  };
   while (true) {
+    const batchIssues = issuesInPrompt(currentMax);
+    const lastApplyError = stateContext ? getFirstLastApplyError(batchIssues) : undefined;
     const result = buildPrompt(
       sortedIssues,
       lessons,
-      { maxIssues: currentMax, perFileLessons, prInfo, diffStat, botRiskByFile, pathExists }
+      {
+        maxIssues: currentMax,
+        perFileLessons,
+        perIssueLessons,
+        prInfo,
+        diffStat,
+        botRiskByFile,
+        pathExists,
+        workdir,
+        lastApplyError,
+        consecutiveNoChanges: consecutiveZeroFixIterations,
+      }
     );
     if (result.prompt.length <= effectiveCap || currentMax <= MIN_ISSUES_PER_PROMPT) {
       prompt = result.prompt;
@@ -164,6 +203,16 @@ export function buildAndDisplayFixPrompt(
     );
     currentMax = Math.max(1, Math.min(nextMax, currentMax - 1)); // ensure we actually reduce but never go below 1
     debug('Fix prompt over cap, reducing batch', { nextMax: currentMax, promptLength: result.prompt.length, cap: effectiveCap });
+  }
+
+  // Clear last apply errors for issues we included so we don't show stale error next time.
+  if (stateContext?.state?.lastApplyErrorByCommentId && currentMax > 0) {
+    const includedIds = issuesInPrompt(currentMax).map((i) => i.comment.id);
+    for (const id of includedIds) {
+      if (stateContext.state.lastApplyErrorByCommentId[id] !== undefined) {
+        delete stateContext.state.lastApplyErrorByCommentId[id];
+      }
+    }
   }
 
   if (detailedSummary.length > 0 && unresolvedIssues.length > 0) {
@@ -221,6 +270,9 @@ export function buildAndDisplayFixPrompt(
   }
   
   debug('Fix prompt length', prompt.length);
+  if (prompt.length === 0 && unresolvedIssues.length > 0) {
+    debug('Fix prompt empty because all issues in queue are already verified');
+  }
   const newLessonsCount = LessonsAPI.Retrieve.getNewLessonsCount(lessonsContext);
   debug('Lessons in prompt', { total: lessonsIncluded, newThisSession: newLessonsCount });
 
@@ -230,10 +282,10 @@ export function buildAndDisplayFixPrompt(
   // "All N in queue already verified — skipping fixer" so we don't duplicate with a generic line.
   const shouldSkip = prompt.length === 0 || unresolvedIssues.length === 0;
   if (shouldSkip && unresolvedIssues.length > 0) {
-    debug('Empty prompt or no issues - skipping fixer');
+    debug('Skipping fixer: all issues in queue already verified (prompt empty)');
     console.log(chalk.green('\n✓ Nothing to fix - all issues resolved'));
   } else if (shouldSkip) {
-    debug('Empty prompt or no issues - skipping fixer');
+    debug('Skipping fixer: 0 issues in queue');
   }
 
   return {

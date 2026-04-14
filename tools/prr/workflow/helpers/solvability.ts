@@ -8,16 +8,24 @@
 import { execFileSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join, resolve, sep } from 'path';
+import chalk from 'chalk';
 import type { ReviewComment } from '../../github/types.js';
 import type { StateContext } from '../../state/state-context.js';
 import type { UnresolvedIssue } from '../../analyzer/types.js';
 import { getTestPathForIssueLike, isTestOrSpecPath, issueRequestsTestsText } from '../../analyzer/test-path-inference.js';
 import * as Performance from '../../state/state-performance.js';
 import * as Dismissed from '../../state/state-dismissed.js';
-import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
-import { pluralize } from '../../../../shared/logger.js';
+import { ALREADY_FIXED_EXHAUST_THRESHOLD, ALREADY_FIXED_ANY_THRESHOLD, APPLY_FAILURE_DISMISS_THRESHOLD, CANNOT_FIX_EXHAUST_THRESHOLD, CHRONIC_FAILURE_THRESHOLD, CANNOT_FIX_MISSING_CONTENT_THRESHOLD, VERIFIER_REJECTION_DISMISS_THRESHOLD, WRONG_FILE_EXHAUST_THRESHOLD, WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD } from '../../../../shared/constants.js';
+import { pluralize, debug } from '../../../../shared/logger.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
+import {
+  isReviewPathFragment,
+  pathDismissCategoryForNotFound,
+  stripGitDiffPathPrefix,
+  tryResolvePathWithExtensionVariants,
+} from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
+import { getOutdatedModelCatalogDismissal } from './outdated-model-advice.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
@@ -28,7 +36,8 @@ type TrackedPathResolution =
   | { kind: 'suffix'; path: string }
   | { kind: 'body-hint'; path: string }
   | { kind: 'ambiguous'; candidates: string[] }
-  | { kind: 'missing' };
+  | { kind: 'missing' }
+  | { kind: 'fragment' };  // e.g. ".d.ts" — not a full file path
 
 /**
  * Cached `git ls-files` output for tracked-path resolution.
@@ -60,6 +69,7 @@ function extractPathHintsFromBody(body: string): string[] {
   if (!body) return [];
   const hints: string[] = [];
   const seen = new Set<string>();
+  // Paths with extension (e.g. plugins/plugin-form/typescript/src/providers/context.ts)
   const pathRe = /`?([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))`?/g;
   let match: RegExpExecArray | null;
   while ((match = pathRe.exec(body)) !== null) {
@@ -68,7 +78,34 @@ function extractPathHintsFromBody(body: string): string[] {
     seen.add(hint);
     hints.push(hint);
   }
+  // Pill #5/#10: path-like segments without extension (e.g. ../src/providers/context, src/providers/context)
+  const pathLikeRe = /(?:\.\.\/)*(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+/g;
+  while ((match = pathLikeRe.exec(body)) !== null) {
+    const raw = match[0]!;
+    const hint = raw.replace(/^\.\.\//, '').trim();
+    if (hint.length < 4 || seen.has(hint)) continue;
+    if (/\.(ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml)$/.test(hint)) continue;
+    seen.add(hint);
+    hints.push(hint);
+  }
   return hints;
+}
+
+/** Bare filenames in body (e.g. TickerClient.tsx) for (PR comment) path inference. */
+function extractBareFilePathHintsFromBody(body: string): string[] {
+  if (!body) return [];
+  const seen = new Set<string>();
+  const bareRe = /\b([A-Za-z0-9_.-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml))\b/g;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = bareRe.exec(body)) !== null) {
+    const hint = m[1]!;
+    if (!seen.has(hint)) {
+      seen.add(hint);
+      out.push(hint);
+    }
+  }
+  return out;
 }
 
 function scorePathCandidateAgainstBody(candidate: string, body: string): number {
@@ -136,17 +173,87 @@ function isCreateFileCandidate(comment: ReviewComment, resolution: TrackedPathRe
  * which file this meant" when that is the real problem.
  */
 export function resolveTrackedPathDetailed(workdir: string, rawPath: string, commentBody = ''): TrackedPathResolution {
+  const pathIn = stripGitDiffPathPrefix(rawPath);
+  const normalizedInput = rawPath.replace(/\\/g, '/').trim();
+  if (pathIn !== normalizedInput) {
+    debug('Review path: stripped git diff a/b prefix', { rawPath, pathIn });
+  }
   const repoFiles = getTrackedRepoFiles(workdir);
   if (!repoFiles) return { kind: 'missing' };
-  const exact = repoFiles.find((f) => f === rawPath);
+  if (isReviewPathFragment(pathIn)) return { kind: 'fragment' };
+  const exact = repoFiles.find((f) => f === pathIn);
   if (exact) return { kind: 'exact', path: exact };
-  const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + rawPath) || f === rawPath);
-  if (suffixMatches.length === 0) return { kind: 'missing' };
+  const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + pathIn) || f === pathIn);
+  if (suffixMatches.length === 0) {
+    // Config extension variant: review path tsconfig.js but file is tsconfig.json (common bot mistake)
+    if (pathIn.endsWith('tsconfig.js') || pathIn === 'tsconfig.js') {
+      const altPath = pathIn.slice(0, -3) + 'json';
+      const altExact = repoFiles.find((f) => f === altPath);
+      if (altExact) {
+        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { pathIn, resolved: altExact });
+        return { kind: 'suffix', path: altExact };
+      }
+      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
+      if (altSuffix.length === 1) {
+        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { pathIn, resolved: altSuffix[0] });
+        return { kind: 'suffix', path: altSuffix[0] };
+      }
+    }
+    if (pathIn.endsWith('jsconfig.js') || pathIn === 'jsconfig.js') {
+      const altPath = pathIn.slice(0, -3) + 'json';
+      const altExact = repoFiles.find((f) => f === altPath);
+      if (altExact) {
+        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { pathIn, resolved: altExact });
+        return { kind: 'suffix', path: altExact };
+      }
+      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
+      if (altSuffix.length === 1) {
+        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { pathIn, resolved: altSuffix[0] });
+        return { kind: 'suffix', path: altSuffix[0] };
+      }
+    }
+    // Prefix variant: review path missing top-level dir (e.g. plugin-personality/... vs plugins/plugin-personality/...)
+    const commonPrefixes = ['plugins/', 'packages/', 'benchmarks/', 'tools/', 'shared/', 'examples/'];
+    for (const prefix of commonPrefixes) {
+      if (pathIn.startsWith(prefix)) continue;
+      const prefixed = prefix + pathIn;
+      const exactPrefixed = repoFiles.find((f) => f === prefixed);
+      if (exactPrefixed) {
+        debug('Review path resolved with prefix', { pathIn, prefix, resolved: exactPrefixed });
+        return { kind: 'suffix', path: exactPrefixed };
+      }
+      const suffixPrefixed = repoFiles.filter((f) => f.endsWith('/' + prefixed) || f === prefixed);
+      if (suffixPrefixed.length === 1) {
+        debug('Review path resolved with prefix', { pathIn, prefix, resolved: suffixPrefixed[0] });
+        return { kind: 'suffix', path: suffixPrefixed[0] };
+      }
+    }
+    // Extension typo: review path .ts but file is .tsx (common bot mistake); pill-output.md #4
+    if (pathIn.endsWith('.ts') && !pathIn.endsWith('.tsx')) {
+      const altPath = pathIn.slice(0, -3) + 'tsx';
+      const altExact = repoFiles.find((f) => f === altPath);
+      if (altExact) {
+        debug('Review path .ts not found; resolved to .tsx (extension typo)', { pathIn, resolved: altExact });
+        return { kind: 'suffix', path: altExact };
+      }
+      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
+      if (altSuffix.length === 1) {
+        debug('Review path .ts not found; resolved to .tsx (extension typo)', { pathIn, resolved: altSuffix[0] });
+        return { kind: 'suffix', path: altSuffix[0] };
+      }
+    }
+    return { kind: 'missing' };
+  }
   if (suffixMatches.length === 1) return { kind: 'suffix', path: suffixMatches[0] };
 
   const pathHints = extractPathHintsFromBody(commentBody);
   for (const hint of pathHints) {
-    const hinted = suffixMatches.find((f) => f === hint || f.endsWith('/' + hint));
+    const hinted = suffixMatches.find((f) => {
+      if (f === hint || f.endsWith('/' + hint)) return true;
+      // Pill #5/#10: hint may be path without extension (e.g. src/providers/context) → match .../context.ts
+      if (f.includes(hint) && (f.endsWith(hint + '.ts') || f.endsWith('/' + hint + '.ts') || f.endsWith(hint + '.tsx') || f.endsWith('/' + hint + '.tsx'))) return true;
+      return false;
+    });
     if (hinted) return { kind: 'body-hint', path: hinted };
   }
 
@@ -157,7 +264,7 @@ export function resolveTrackedPathDetailed(workdir: string, rawPath: string, com
     return { kind: 'body-hint', path: scored[0].candidate };
   }
 
-  if (!rawPath.includes('/')) {
+  if (!pathIn.includes('/')) {
     return { kind: 'ambiguous', candidates: suffixMatches };
   }
   return { kind: 'suffix', path: suffixMatches.reduce((a, b) => (a.length <= b.length ? a : b)) };
@@ -166,6 +273,32 @@ export function resolveTrackedPathDetailed(workdir: string, rawPath: string, com
 export function resolveTrackedPath(workdir: string, rawPath: string, commentBody?: string): string | null {
   const resolved = resolveTrackedPathDetailed(workdir, rawPath, commentBody);
   return 'path' in resolved ? resolved.path : null;
+}
+
+/**
+ * Like {@link resolveTrackedPath}, but when the basename is ambiguous in the repo,
+ * picks the unique candidate that appears in `prChangedFiles` (PR diff vs base).
+ * WHY: output.log audit (milady#1511) — `smoke.testcafe.js` matched multiple paths;
+ * the file touched by the PR is the intended target for issue comments.
+ * If zero or several candidates appear in `prChangedFiles`, falls back to `resolveTrackedPath`
+ * (no guess) — **WHY:** avoid wrong-file edits when the PR touches multiple same-named files or none.
+ */
+export function resolveTrackedPathWithPrFiles(
+  workdir: string,
+  rawPath: string,
+  commentBody = '',
+  prChangedFiles?: string[] | undefined,
+): string | null {
+  const det = resolveTrackedPathDetailed(workdir, rawPath, commentBody);
+  if (det.kind === 'ambiguous' && prChangedFiles?.length) {
+    const set = new Set(prChangedFiles);
+    const hits = det.candidates.filter((c) => set.has(c));
+    if (hits.length === 1) {
+      debug('Review path: ambiguous basename disambiguated via PR changed files', { rawPath, resolved: hits[0] });
+      return hits[0]!;
+    }
+  }
+  return resolveTrackedPath(workdir, rawPath, commentBody);
 }
 
 export interface SolvabilityResult {
@@ -177,6 +310,32 @@ export interface SolvabilityResult {
   contextHints?: string[];            // Injected into LLM prompt in Phase 3
   retargetedLine?: number;            // If smart re-targeting found the code at a different line
   resolvedPath?: string;              // Canonical tracked path when raw comment path was truncated/basename-only
+  /** Pill cycle 2 #6: When true, auto-verify instead of dismissing (e.g. after N ALREADY_FIXED verdicts) */
+  autoVerify?: boolean;
+}
+
+/**
+ * Human "closing / merged" chatter on a file line — not a code defect (audit eliza#6575).
+ * WHY: GitHub may anchor merge-status replies on arbitrary files; the fix loop then burns stale cycles.
+ */
+function isMergeClosingMetaComment(body: string | undefined): boolean {
+  if (!body || body.length > 6_000) return false;
+  const t = body.trim();
+  const looksClosing =
+    /^\s*closing[\s—:-]/i.test(t) ||
+    /\bbranch\s+was\s+already\s+merged\b/i.test(t) ||
+    /\bthis\s+work\s+is\s+(?:already\s+)?in\s+\S+/i.test(t);
+  if (!looksClosing) return false;
+  if (!/\bmerged\b/i.test(body)) return false;
+  const head = body.slice(0, 550).toLowerCase();
+  if (
+    /\b(model\s+name|typo|invalid\s+model|incorrect\s+import|undefined|error:|fix:|should\s+use|change\s+`)\b/.test(
+      head,
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -224,6 +383,15 @@ export function assessSolvability(
     };
   }
 
+  // Check 0a3b: PR merge / branch-closing status (often anchored on a code file by mistake).
+  if (isMergeClosingMetaComment(comment.body)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: 'PR merge or branch-closing message — no concrete code fix requested',
+    };
+  }
+
   // Check 0a4: "What's Good" / positive-summary meta-comments (reviewer recap, not a single fixable issue).
   // WHY: Audit showed "### ✅ What's Good" comments entered the fix loop and consumed iterations; they are meta-review, not actionable.
   if (isWhatsGoodOrPositiveSummaryComment(comment.body)) {
@@ -242,6 +410,34 @@ export function assessSolvability(
       solvable: false,
       dismissCategory: 'not-an-issue',
       reason: 'Bot progress/checklist comment — review status update, not a code issue to fix',
+    };
+  }
+
+  // Check 0a5b: Human confirmed the thread is addressed (e.g. "✅ Confirmed as addressed by @user").
+  // WHY: output.log audit eliza#6562 — no remaining code task; keeps Remaining queue noisy and burns retries.
+  if (isHumanConfirmedAddressedComment(comment.body)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: 'Reviewer/human confirmed issue already addressed — no code change requested',
+    };
+  }
+
+  // Check 0a6: Outdated vendor model-ID "typo" advice (bots vs committed catalog).
+  // WHY early in solvability: Same category as 0a4/0a5 — stop non-actionable bot text before path
+  // resolution and LLM analysis. Pair must parse + both ids in generated/model-provider-catalog.json.
+  // Heal (if enabled) runs in main-loop-setup; dismissal here keeps the issue out of unresolvedIssues.
+  const catalogDismiss = getOutdatedModelCatalogDismissal(comment.body ?? '');
+  if (catalogDismiss) {
+    console.log(
+      chalk.gray(
+        `Solvability 0a6: dismissing catalog model-id noise — ${catalogDismiss.pair.catalogGoodId} vs ${catalogDismiss.pair.wronglySuggestedId} (comment ${String(comment.id)})`,
+      ),
+    );
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason: catalogDismiss.reason,
     };
   }
 
@@ -289,9 +485,51 @@ export function assessSolvability(
     };
   }
 
-  // Check 0e: Synthetic path "(PR comment)" — no file path in comment body (inferPathLineFromBody fallback).
-  // WHY: Fixer cannot edit a non-file; every attempt fails and burns iterations; dismiss up front.
+  // Pill cycle 2 #1: Early-exit for synthetic path "(PR comment)" — dismiss before path inference to avoid wasted LLM calls.
+  // WHY: Log shows issues #0017 and #0019 both attempted the same PR-checklist comment with TARGET FILE = '(PR comment)'.
+  // These waste LLM fix calls per iteration. Only try path inference if body suggests a real file (has file-like patterns).
   if (normalizedPath === '(PR comment)') {
+    // Pill cycle 2 #12: Detect bot commands (e.g. "@coderabbitai review") with specific category
+    const bodyLower = (comment.body ?? '').toLowerCase().trim();
+    if (/^@\w+.*(?:review|analyze|check)/i.test(bodyLower)) {
+      return {
+        solvable: false,
+        dismissCategory: 'not-an-issue',
+        reason: 'Bot command (e.g. @coderabbitai review) — not a code issue to fix',
+      };
+    }
+    if (bodyLower.length < 60) {
+      return {
+        solvable: false,
+        dismissCategory: 'not-an-issue',
+        reason: 'Synthetic path "(PR comment)" — too short to infer file path',
+      };
+    }
+    
+    // Try to infer path from body (only if body has file-like patterns)
+    const pathHints = [
+      ...extractPathHintsFromBody(comment.body ?? ''),
+      ...extractBareFilePathHintsFromBody(comment.body ?? ''),
+    ];
+    const resolvedPaths = new Set<string>();
+    for (const hint of pathHints) {
+      const resolution = resolveTrackedPathDetailed(workdir, hint, comment.body ?? '');
+      if ('path' in resolution) resolvedPaths.add(resolution.path);
+    }
+    if (resolvedPaths.size === 1) {
+      const resolvedPath = [...resolvedPaths][0]!;
+      const effectiveFullPath = join(workdir, resolvedPath);
+      if (existsSync(effectiveFullPath)) {
+        const retargetedLine = extractMaxLineRefFromBody(comment.body ?? '') ?? undefined;
+        return {
+          solvable: true,
+          resolvedPath,
+          retargetedLine,
+          contextHints: ['Path inferred from (PR comment) body; fixer target may need verification.'],
+        };
+      }
+    }
+    // No single resolvable path — fixer cannot edit a non-file; dismiss.
     return {
       solvable: false,
       dismissCategory: 'not-an-issue',
@@ -303,7 +541,15 @@ export function assessSolvability(
   // WHY: Without this, comments on `generate-skills-md.ts` or `SKILL.md` were dismissed as stale
   // even though the real repo files existed at `scripts/...` / `skills/babylon/...`.
   const pathResolution = resolveTrackedPathDetailed(workdir, comment.path, comment.body);
-  const effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
+  if (pathResolution.kind === 'fragment') {
+    return {
+      solvable: false,
+      dismissCategory: 'path-unresolved',
+      reason: `Review path "${comment.path}" is a fragment (e.g. .d.ts), not a full file path — cannot resolve to a single file`,
+    };
+  }
+  let effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
+  effectivePath = tryResolvePathWithExtensionVariants(workdir, effectivePath);
   const effectiveFullPath = join(workdir, effectivePath);
 
   // Check 0e1: Issue references line numbers beyond current file length (file was shortened → comment stale).
@@ -360,6 +606,14 @@ export function assessSolvability(
       };
     }
     if (pathResolution.kind === 'ambiguous') {
+      // Pill #6: Log candidate paths for ambiguous basenames
+      debug('Ambiguous review path — multiple candidates', {
+        commentId: comment.id,
+        reviewPath: comment.path,
+        candidates: pathResolution.candidates,
+        candidateCount: pathResolution.candidates.length,
+        commentBodySnippet: (comment.body ?? '').substring(0, 200),
+      });
       return {
         solvable: false,
         dismissCategory: 'path-unresolved',
@@ -368,7 +622,7 @@ export function assessSolvability(
     }
     return {
       solvable: false,
-      dismissCategory: 'missing-file',
+      dismissCategory: pathDismissCategoryForNotFound(comment.path, pathResolution.kind),
       reason: `Tracked file not found for review path: ${comment.path}`,
     };
   }
@@ -479,6 +733,17 @@ export function assessSolvability(
     }
   }
 
+  // Check 3a: Apply failure exhaustion — output did not match file after N attempts (output.log audit: earlier dismissal with clear handoff).
+  const applyFailures = stateContext.state?.applyFailureCountByCommentId?.[comment.id] ?? 0;
+  if (applyFailures >= APPLY_FAILURE_DISMISS_THRESHOLD) {
+    debug('Solvability dismiss: apply-failure chronic', { commentId: comment.id, path: comment.path, applyFailures, threshold: APPLY_FAILURE_DISMISS_THRESHOLD });
+    return {
+      solvable: false,
+      dismissCategory: 'chronic-failure',
+      reason: `Output did not match file after ${applyFailures} attempt(s); manual review recommended.`,
+    };
+  }
+
   // Check 3: Chronic failure — total failed attempts for current file version only
   // WHY: Same issue failing N+ times burns tokens; only count attempts on same file content so refactors reset the counter
   const attempts = Performance.getIssueAttempts(stateContext, comment.id);
@@ -486,6 +751,7 @@ export function assessSolvability(
   const currentHash = hashFileContentSync(fullPath);
   failedAttempts = failedAttempts.filter(a => !a.fileContentHash || a.fileContentHash === currentHash);
   if (failedAttempts.length >= CHRONIC_FAILURE_THRESHOLD) {
+    debug('Solvability dismiss: chronic-failure', { commentId: comment.id, path: comment.path, failedAttempts: failedAttempts.length, threshold: CHRONIC_FAILURE_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'chronic-failure',
@@ -497,6 +763,7 @@ export function assessSolvability(
   // Check 3b: Verifier rejection exhaustion — verifier kept rejecting fix/ALREADY_FIXED; stop retries (remaining for human follow-up).
   const verifierRejections = stateContext.state?.verifierRejectionCount?.[comment.id] ?? 0;
   if (verifierRejections >= VERIFIER_REJECTION_DISMISS_THRESHOLD) {
+    debug('Solvability dismiss: verifier-rejection', { commentId: comment.id, path: comment.path, rejections: verifierRejections, threshold: VERIFIER_REJECTION_DISMISS_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'remaining',
@@ -507,6 +774,7 @@ export function assessSolvability(
   // Check 3c: Wrong-file exhaustion — fixer kept editing the wrong file; issue may need another file (e.g. tests, README). Stop retries.
   const wrongFileCount = stateContext.state?.wrongFileLessonCountByCommentId?.[comment.id] ?? 0;
   if (wrongFileCount >= WRONG_FILE_EXHAUST_THRESHOLD) {
+    debug('Solvability dismiss: wrong-file', { commentId: comment.id, path: comment.path, wrongFileCount, threshold: WRONG_FILE_EXHAUST_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'remaining',
@@ -517,6 +785,7 @@ export function assessSolvability(
   // Check 4: WRONG_LOCATION/UNCLEAR — after N consecutive same explanation, stop retries (remaining for human follow-up).
   const consecutiveSame = stateContext.state?.wrongLocationUnclearConsecutiveSameByCommentId?.[comment.id] ?? 0;
   if (consecutiveSame >= WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD) {
+    debug('Solvability dismiss: wrong-location/unclear', { commentId: comment.id, path: comment.path, consecutiveSame, threshold: WRONG_LOCATION_UNCLEAR_EXHAUST_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'remaining',
@@ -524,11 +793,28 @@ export function assessSolvability(
     };
   }
 
-  // Check 5a: ALREADY_FIXED any-explanation counter.
+  // Pill cycle 2 #6: Auto-verify after N ALREADY_FIXED verdicts instead of dismissing.
+  // WHY: Log shows issues marked ALREADY_FIXED 6+ times yet kept being re-queued when audit disagreed.
+  // Auto-verifying stops the oscillation loop and treats consensus as truth.
+  const alreadyFixedAny = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
+  const AUTO_VERIFY_ALREADY_FIXED_THRESHOLD = 2; // Lower than dismiss threshold — auto-verify earlier
+  if (alreadyFixedAny >= AUTO_VERIFY_ALREADY_FIXED_THRESHOLD) {
+    debug('Solvability auto-verify: already-fixed-any', { commentId: comment.id, path: comment.path, alreadyFixedAny, threshold: AUTO_VERIFY_ALREADY_FIXED_THRESHOLD });
+    // Return solvable: false but with a special flag that issue-analysis.ts will handle by auto-verifying
+    return {
+      solvable: false,
+      dismissCategory: 'already-fixed',
+      reason: `ALREADY_FIXED ${alreadyFixedAny}× (multiple models) — auto-verifying to stop oscillation`,
+      // Special marker for issue-analysis to auto-verify instead of dismissing
+      autoVerify: true,
+    };
+  }
+  
+  // Check 5a: ALREADY_FIXED any-explanation counter (dismiss threshold, higher than auto-verify).
   // WHY check here (before LLM calls): If 3+ models already said ALREADY_FIXED, re-running
   // the fixer would waste another iteration. Dismissing in solvability avoids the LLM call entirely.
-  const alreadyFixedAny = stateContext.state?.consecutiveAlreadyFixedAnyByCommentId?.[comment.id] ?? 0;
   if (alreadyFixedAny >= ALREADY_FIXED_ANY_THRESHOLD) {
+    debug('Solvability dismiss: already-fixed-any', { commentId: comment.id, path: comment.path, alreadyFixedAny, threshold: ALREADY_FIXED_ANY_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'already-fixed',
@@ -539,6 +825,7 @@ export function assessSolvability(
   // Check 5b: ALREADY_FIXED exhaustion — after N consecutive same explanation, dismiss as not-an-issue (prompts.log audit).
   const alreadyFixedConsecutive = stateContext.state?.alreadyFixedConsecutiveSameByCommentId?.[comment.id] ?? 0;
   if (alreadyFixedConsecutive >= ALREADY_FIXED_EXHAUST_THRESHOLD) {
+    debug('Solvability dismiss: already-fixed-exhaust', { commentId: comment.id, path: comment.path, alreadyFixedConsecutive, threshold: ALREADY_FIXED_EXHAUST_THRESHOLD });
     return {
       solvable: false,
       dismissCategory: 'not-an-issue',
@@ -547,9 +834,17 @@ export function assessSolvability(
   }
 
   // All checks passed - issue is solvable
+  const extensionTypoHint =
+    effectivePath !== comment.path &&
+    effectivePath.endsWith('.tsx') &&
+    comment.path.endsWith('.ts') &&
+    !comment.path.endsWith('.tsx')
+      ? ['Review path had .ts; resolved to .tsx (extension typo).']
+      : undefined;
   return {
     solvable: true,
     resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
+    contextHints: extensionTypoHint,
   };
 }
 
@@ -766,6 +1061,14 @@ function isWhatsGoodOrPositiveSummaryComment(commentBody: string): boolean {
   if (/^#+\s*✅\s*What'?s Good\b/im.test(head)) return true;
   if (/^#+\s*What'?s Good\s*$/im.test(head)) return true;
   if (/^#+\s*Strengths\b/im.test(head) && !/\b(fix|change|add|remove|update)\b.*\b(line|here)\b/i.test(head)) return true;
+  // WHY: output.log audit babylon#1213 — "### Code Quality (Positive)" entered fix loop; treat (Positive) section headers as praise-only.
+  if (/^#+\s*[^#\n]+\(Positive\)\s*$/im.test(head)) return true;
+  // Pill cycle 2 #5: Catch "Excellent documentation ✅" and similar approval patterns
+  // WHY: prompts.log audit — "Excellent documentation added" with ✅ reached fixer; catch praise-only documentation comments.
+  if (/^#+\s*Documentation\s*✅/im.test(head) && /\b(?:Excellent|Great|Good|Well[- ]written)\s+(?:documentation|docs?)\s+added\b/i.test(head)) return true;
+  if (/\b(?:Excellent|Great|Good|Well[- ]written)\s+(?:documentation|docs?)\s+added\b/i.test(head) && !/\b(?:fix|change|add|remove|update|improve|missing|lacks?)\b.*\b(?:documentation|docs?|file)\b/i.test(head)) return true;
+  // Pill cycle 2 #5: Explicit approval patterns with ✅ emoji
+  if (/\b(?:Excellent|Great|Good|Perfect|Outstanding)\s+(?:documentation|docs?|work|code|implementation)\s*✅/i.test(head)) return true;
   return false;
 }
 
@@ -787,6 +1090,15 @@ function isBotProgressOrChecklistComment(commentBody: string): boolean {
   if (hasProgressHeading && checklistCount >= 2) return true;
   if (checklistCount >= 4 && hasReviewWorkflowText) return true;
   if ((hasProgressHeading || hasReviewWorkflowText) && hasJobRunLink) return true;
+  return false;
+}
+
+/** Thread marked resolved by a human in-line (e.g. CodeRabbit + maintainer confirmation). */
+function isHumanConfirmedAddressedComment(commentBody: string): boolean {
+  const head = commentBody.slice(0, 1500);
+  if (/\bnot\s+confirmed\s+as\s+addressed\b/i.test(head)) return false;
+  if (/✅\s*[Cc]onfirmed\s+as\s+addressed\b/.test(head)) return true;
+  if (/\b[Cc]onfirmed\s+as\s+addressed\s+by\s+@/i.test(head)) return true;
   return false;
 }
 
