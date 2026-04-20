@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-03-20T02:29:30.420Z",
+  "fetchedAtIso": "2026-04-20T06:49:54.986Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,14 +8,14 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 18
+      "idCount": 19
     },
     {
       "name": "openai",
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 82
+      "idCount": 83
     }
   ],
   "providers": {
@@ -33,6 +33,7 @@
         "claude-opus-4-5",
         "claude-opus-4-5-20251101",
         "claude-opus-4-6",
+        "claude-opus-4-7",
         "claude-sonnet-4",
         "claude-sonnet-4-0",
         "claude-sonnet-4-20250514",
@@ -73,6 +74,7 @@
         "gpt-4o-transcribe",
         "gpt-4o-transcribe-diarize",
         "gpt-5",
+        "gpt-5-4",
         "gpt-5-chat-latest",
         "gpt-5-codex",
         "gpt-5-mini",
@@ -177,6 +179,7 @@
       "gpt5.4mini": "gpt-5.4-mini",
       "gpt5.4nano": "gpt-5.4-nano",
       "gpt5.4pro": "gpt-5.4-pro",
+      "gpt54": "gpt-5-4",
       "gpt5chatlatest": "gpt-5-chat-latest",
       "gpt5codex": "gpt-5-codex",
       "gpt5mini": "gpt-5-mini",
@@ -226,6 +229,7 @@
       "claudeopus45": "claude-opus-4-5",
       "claudeopus4520251101": "claude-opus-4-5-20251101",
       "claudeopus46": "claude-opus-4-6",
+      "claudeopus47": "claude-opus-4-7",
       "claudesonnet4": "claude-sonnet-4",
       "claudesonnet40": "claude-sonnet-4-0",
       "claudesonnet420250514": "claude-sonnet-4-20250514",
