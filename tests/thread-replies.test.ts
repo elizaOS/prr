@@ -69,6 +69,8 @@ describe('postThreadReplies', () => {
         getThreadCommentsCalls.push(threadId);
         return getThreadCommentsMap.get(threadId) ?? [];
       }),
+      // Synthetic login: idempotency queries run without matching real thread authors; avoids stderr warn when env unset.
+      getAuthenticatedLogin: vi.fn().mockResolvedValue('__prr_test_token_user__'),
       resolveReviewThread: vi.fn(async (_o, _r, threadId: string) => {
         resolveCalls.push(threadId);
       }),
@@ -250,6 +252,22 @@ describe('postThreadReplies', () => {
     expect(replyCalls).toHaveLength(1);
   });
 
+  it('skips reply when PRR_BOT_LOGIN is unset but getAuthenticatedLogin matches thread author (token user)', async () => {
+    vi.unstubAllEnvs();
+    getThreadCommentsMap.set('thread-1', [{ author: 'reviewer' }, { author: 'octocat' }]);
+    (mockGithub as { getAuthenticatedLogin: ReturnType<typeof vi.fn> }).getAuthenticatedLogin.mockResolvedValue(
+      'octocat',
+    );
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['c1']),
+    });
+    expect(replyCalls).toHaveLength(0);
+    expect(getThreadCommentsCalls).toContain('thread-1');
+  });
+
   it('adds thread to repliedThreadIds after successful reply', async () => {
     const comments = [makeComment('c1', 'thread-1', 100)];
     const repliedThreadIds = new Set<string>();
@@ -274,14 +292,20 @@ describe('postThreadReplies', () => {
     expect(replyCalls[0].body).toMatch(/^Dismissed: .{197}\.\.\.$/);
   });
 
-  it('returns { attempted, replied } when replyToThreads is true', async () => {
+  it('returns reply stats when replyToThreads is true', async () => {
     const comments = [makeComment('c1', 'thread-1', 100)];
     const result = await run({
       replyToThreads: true,
       comments,
       verifiedCommentIds: new Set(['c1']),
     });
-    expect(result).toEqual({ attempted: 1, replied: 1 });
+    expect(result).toEqual({
+      attempted: 1,
+      replied: 1,
+      failed422: 0,
+      failedOther: 0,
+      skippedDueTo422Stop: 0,
+    });
   });
 
   it('returns undefined when replyToThreads is false', async () => {
@@ -329,8 +353,77 @@ describe('postThreadReplies', () => {
       verifiedCommentIds: new Set(['c1']),
       dismissedIssues: [makeDismissed('c2', 'already-fixed', 'Done.')],
     });
-    expect(result).toEqual({ attempted: 2, replied: 0 });
+    expect(result).toEqual({
+      attempted: 2,
+      replied: 0,
+      failed422: 2,
+      failedOther: 0,
+      skippedDueTo422Stop: 0,
+    });
     expect(replyMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('skips short-body retry when 422 errors indicate thread/comment state (no redundant fallback call)', async () => {
+    const err422 = Object.assign(new Error('Validation Failed'), {
+      status: 422,
+      response: {
+        data: {
+          message: 'Validation Failed',
+          errors: [{ resource: 'PullRequestReviewComment', field: 'in_reply_to', code: 'invalid' }],
+        },
+      },
+    });
+    const replyMock = vi.fn(async () => {
+      throw err422;
+    });
+    mockGithub.replyToReviewThread = replyMock;
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    const result = await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['c1']),
+    });
+    expect(result).toEqual({
+      attempted: 1,
+      replied: 0,
+      failed422: 1,
+      failedOther: 0,
+      skippedDueTo422Stop: 0,
+    });
+    expect(replyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops after 3 consecutive all-422 batches and reports skipped count (verified phase only)', async () => {
+    const err422 = Object.assign(new Error('Validation Failed'), {
+      status: 422,
+      response: {
+        data: {
+          message: 'Validation Failed',
+          errors: [{ resource: 'PullRequestReviewComment', field: 'in_reply_to', code: 'invalid' }],
+        },
+      },
+    });
+    const replyMock = vi.fn(async () => {
+      throw err422;
+    });
+    mockGithub.replyToReviewThread = replyMock;
+    const comments = Array.from({ length: 10 }, (_, n) =>
+      makeComment(`c${n}`, `thread-${n}`, 100 + n),
+    );
+    const verified = new Set(comments.map((c) => c.id));
+    const result = await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: verified,
+    });
+    expect(result).toEqual({
+      attempted: 9,
+      replied: 0,
+      failed422: 9,
+      failedOther: 0,
+      skippedDueTo422Stop: 1,
+    });
+    expect(replyMock).toHaveBeenCalledTimes(9);
   });
 });
 
@@ -343,5 +436,9 @@ describe('dismissedCategoriesWithReply', () => {
     expect(dismissedCategoriesWithReply().has('chronic-failure')).toBe(false);
     vi.stubEnv('PRR_THREAD_REPLY_INCLUDE_CHRONIC_FAILURE', 'true');
     expect(dismissedCategoriesWithReply().has('chronic-failure')).toBe(true);
+  });
+
+  it('includes out-of-scope in base reply set', () => {
+    expect(dismissedCategoriesWithReply().has('out-of-scope')).toBe(true);
   });
 });

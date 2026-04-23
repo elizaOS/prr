@@ -3,13 +3,44 @@
  */
 import chalk from 'chalk';
 import { join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { unlink } from 'fs/promises';
 import type { SimpleGit } from 'simple-git';
-import { isLockFile, getLockFileInfo, findFilesWithConflictMarkers } from '../../../shared/git/git-clone-index.js';
+import {
+  isLockFile,
+  getLockFileInfo,
+  findFilesWithConflictMarkers,
+  hasConflictMarkers,
+} from '../../../shared/git/git-clone-index.js';
 import type { Config } from '../../../shared/config.js';
 import { setTokenPhase, debug } from '../../../shared/logger.js';
 
+/** Regenerate commands that read package.json (install fails if JSON still has conflict markers). */
+const JS_LOCK_REGEN_CMDS = new Set(['bun install', 'npm install', 'yarn install', 'pnpm install']);
+
+/**
+ * True when any lock file in the list is regenerated via a JS package manager that
+ * parses package.json. WHY: Running install while package.json contains `<<<<<<<`
+ * yields EJSONPARSE and wastes time (audit milady#1722 re-run).
+ */
+export function lockRegenerationRequiresCleanPackageJson(lockFiles: string[]): boolean {
+  for (const f of lockFiles) {
+    const info = getLockFileInfo(f);
+    if (info && JS_LOCK_REGEN_CMDS.has(info.regenerateCmd)) return true;
+  }
+  return false;
+}
+
+/** True when workdir package.json exists and still has merge conflict markers. */
+export function packageJsonHasConflictMarkers(workdir: string): boolean {
+  const p = join(workdir, 'package.json');
+  if (!existsSync(p)) return false;
+  try {
+    return hasConflictMarkers(readFileSync(p, 'utf-8'));
+  } catch {
+    return true;
+  }
+}
 
 export async function handleLockFileConflicts(
   git: SimpleGit,
@@ -121,8 +152,41 @@ export async function handleLockFileConflicts(
     }
   }
   
+  // WHY fallback chain: CI may not have the primary package manager (e.g. bun not
+  // installed but npm is). ENOENT on the primary command should try alternatives
+  // from the same ecosystem before giving up (audit Cycle 74, milady#1722).
+  const JS_INSTALL_FALLBACKS: string[][] = [
+    ['bun', 'install'],
+    ['npm', 'install'],
+    ['yarn', 'install'],
+    ['pnpm', 'install'],
+  ];
+
+  async function trySpawn(exe: string, args: string[]): Promise<{ ok: boolean; enoent: boolean }> {
+    if (exe.includes('/') || exe.includes('\\')) return { ok: false, enoent: false };
+    return new Promise((resolve) => {
+      const proc = spawn(exe, args, {
+        cwd: resolvedWorkdir,
+        stdio: 'inherit',
+        env: safeEnv,
+        shell: false,
+      });
+      const timeout = setTimeout(() => {
+        proc.kill('SIGTERM');
+        setTimeout(() => proc.kill('SIGKILL'), 5000);
+        resolve({ ok: false, enoent: false });
+      }, 60_000);
+      proc.on('close', (code) => { clearTimeout(timeout); resolve({ ok: code === 0, enoent: false }); });
+      proc.on('error', (err: NodeJS.ErrnoException) => {
+        clearTimeout(timeout);
+        resolve({ ok: false, enoent: err.code === 'ENOENT' });
+      });
+    });
+  }
+
+  const isJsLockCmd = (cmd: string): boolean => /^(bun|npm|yarn|pnpm)\s+install$/i.test(cmd);
+
   // Run regenerate commands using spawn with validated args
-  // Security: Only execute whitelisted commands with spawn (no shell)
   for (const cmd of regenerateCommands) {
     const cmdArgs = ALLOWED_COMMANDS[cmd];
     if (!cmdArgs) {
@@ -131,59 +195,57 @@ export async function handleLockFileConflicts(
     }
     
     const [executable, ...args] = cmdArgs;
-    
-    // Security: Verify executable is a simple name (no path components)
-    // This ensures we use the system PATH lookup, not a potentially malicious local file
-    if (executable.includes('/') || executable.includes('\\')) {
-      console.log(chalk.yellow(`    ⚠ Skipping command with path in executable: ${executable}`));
-      continue;
-    }
-    
     console.log(chalk.cyan(`    Running: ${cmd}`));
     
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn(executable, args, {
-          cwd: resolvedWorkdir,
-          stdio: 'inherit',
-          env: safeEnv,
-          shell: false, // Never use shell - prevents shell injection
-        });
-        
-        // Security: 60 second timeout prevents resource exhaustion
-        const timeout = setTimeout(() => {
-          proc.kill('SIGTERM');
-          // Give process 5s to terminate gracefully, then SIGKILL
-          setTimeout(() => proc.kill('SIGKILL'), 5000);
-          reject(new Error('Timeout exceeded (60s)'));
-        }, 60000);
-        
-        proc.on('close', (code) => {
-          clearTimeout(timeout);
-          if (code === 0) {
-            resolve();
-          } else {
-            reject(new Error(`Exit code ${code}`));
-          }
-        });
-        
-        proc.on('error', (err) => {
-          clearTimeout(timeout);
-          reject(err);
-        });
-      });
+    const result = await trySpawn(executable, args);
+    if (result.ok) {
       console.log(chalk.green(`    ✓ ${cmd} completed`));
-    } catch (e) {
-      console.log(chalk.yellow(`    ⚠ ${cmd} failed: ${e}, continuing...`));
+    } else if (result.enoent && isJsLockCmd(cmd)) {
+      // Primary not found — try JS ecosystem fallbacks
+      console.log(chalk.yellow(`    ⚠ ${executable} not found, trying fallback package managers...`));
+      let fallbackOk = false;
+      for (const [fbExe, ...fbArgs] of JS_INSTALL_FALLBACKS) {
+        if (fbExe === executable) continue;
+        console.log(chalk.cyan(`    Trying: ${fbExe} ${fbArgs.join(' ')}`));
+        const fb = await trySpawn(fbExe, fbArgs);
+        if (fb.ok) {
+          console.log(chalk.green(`    ✓ ${fbExe} ${fbArgs.join(' ')} completed (fallback)`));
+          fallbackOk = true;
+          break;
+        }
+        if (fb.enoent) continue;
+        console.log(chalk.yellow(`    ⚠ ${fbExe} ${fbArgs.join(' ')} failed, trying next...`));
+      }
+      if (!fallbackOk) {
+        console.log(chalk.yellow(`    ⚠ No JS package manager available; lock file will be removed to clear conflict`));
+      }
+    } else {
+      console.log(chalk.yellow(`    ⚠ ${cmd} failed, continuing...`));
+      console.log(
+        chalk.gray(
+          `       If package.json or the lockfile still has merge conflict markers, resolve those in the workdir first, then run ${cmd} manually.`,
+        ),
+      );
     }
   }
   
-  // Stage the regenerated lock files
+  // Stage regenerated lock files, or record deletion when regen left no file (clears UU conflicts).
+  // WHY: Blind `git add` on a missing path fails with "pathspec did not match"; `git rm` resolves
+  // many merge conflicts when we intentionally drop the lock after a failed install.
   for (const lockFile of lockFiles) {
+    const stagedPath = path.join(resolvedWorkdir, lockFile);
     try {
-      await git.add(lockFile);
+      if (fs.existsSync(stagedPath)) {
+        await git.add(lockFile);
+      } else {
+        await git
+          .raw(['rm', '-f', '--', lockFile])
+          .catch(async () => {
+            await git.raw(['add', '-u', '--', lockFile]).catch(() => {});
+          });
+      }
     } catch {
-      // File might not exist if regenerate failed, ignore
+      // Last resort: ignore (caller treats remaining git conflicts as unresolved)
     }
   }
 }

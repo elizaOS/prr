@@ -6,6 +6,14 @@ import chalk from 'chalk';
 import type { Runner } from '../../../shared/runners/types.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../../../shared/runners/detect.js';
 import { ensureRotationSession, type StateContext } from '../state/state-context.js';
+
+function modelRunStatsLine(stateContext: StateContext | undefined, runnerName: string, model: string): string {
+  const rs = stateContext?.rotationSession;
+  if (!rs) return '';
+  const st = rs.modelStats.get(sessionModelKey(runnerName, model));
+  if (!st) return '';
+  return ` — this run: ${formatNumber(st.fixes)} verified / ${formatNumber(st.failures)} failed`;
+}
 import * as Rotation from '../state/state-rotation.js';
 import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
@@ -72,13 +80,25 @@ export function maybeResetSessionSkippedModelsAfterFixIteration(
   fixIteration: number,
 ): void {
   const every = getSessionModelSkipResetAfterFixIterations();
-  if (every <= 0 || fixIteration <= 0 || fixIteration % every !== 0) return;
-  const skipped = stateContext.rotationSession?.skippedModelKeys;
-  if (!skipped?.size) return;
-  const n = skipped.size;
-  skipped.clear();
+  if (every <= 0 || fixIteration <= 0) return;
+  const rs = ensureRotationSession(stateContext);
+  const skipped = rs.skippedModelKeys;
+  if (!skipped.size) return;
+  const sinceMap = rs.sessionSkippedSinceFixIteration ?? new Map<string, number>();
+  if (!rs.sessionSkippedSinceFixIteration) rs.sessionSkippedSinceFixIteration = sinceMap;
+
+  const toRemove: string[] = [];
+  for (const key of skipped) {
+    const since = sinceMap.get(key) ?? 0;
+    if (fixIteration - since >= every) toRemove.push(key);
+  }
+  if (toRemove.length === 0) return;
+  for (const key of toRemove) {
+    skipped.delete(key);
+    sinceMap.delete(key);
+  }
   warn(
-    `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS (${formatNumber(every)}): cleared ${formatNumber(n)} session-skipped model key(s) — rotation may retry those models this run.`,
+    `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS (${formatNumber(every)}): cleared ${formatNumber(toRemove.length)} session-skipped model key(s) after ${formatNumber(every)}+ fix iteration(s) per key — rotation may retry those models this run.`,
   );
 }
 
@@ -87,7 +107,9 @@ export function recordSessionModelVerificationOutcome(
   runnerName: string,
   model: string | undefined,
   verifiedCount: number,
-  failedCount: number
+  failedCount: number,
+  /** Completed fix iteration (1-based) when this outcome is recorded — used for per-key session skip retry window. */
+  fixIteration?: number,
 ): void {
   const threshold = getSessionModelSkipFailureThreshold();
   if (threshold <= 0) return;
@@ -100,12 +122,15 @@ export function recordSessionModelVerificationOutcome(
   rs.modelStats.set(key, cur);
   if (cur.fixes > 0) {
     if (rs.skippedModelKeys.delete(key)) {
+      rs.sessionSkippedSinceFixIteration?.delete(key);
       debug('Session model skip cleared after verified fix', { key });
     }
     return;
   }
   if (cur.failures >= threshold && !rs.skippedModelKeys.has(key)) {
     rs.skippedModelKeys.add(key);
+    const iter = fixIteration ?? 0;
+    rs.sessionSkippedSinceFixIteration.set(key, iter);
     warn(
       `${runnerName} / ${m}: ${formatNumber(cur.failures)} verification failure(s) with no verified fixes this run — skipping this model until next run. ` +
         `Set PRR_SESSION_MODEL_SKIP_FAILURES=0 to disable. For persistent poor performers, extend ELIZACLOUD_SKIP_MODEL_IDS in shared/constants.ts, set PRR_ELIZACLOUD_EXTRA_SKIP_MODELS for env-specific skips, or use PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable.`,
@@ -313,7 +338,9 @@ export function advanceModel(ctx: RotationContext, stateContext: StateContext, o
     if (ctx.recommendedModelIndex < ctx.recommendedModels.length) {
       const nextModel = ctx.recommendedModels[ctx.recommendedModelIndex];
       const prevModel = ctx.recommendedModels[ctx.recommendedModelIndex - 1];
-      console.log(chalk.yellow(`\n  🔄 Next recommended model: ${prevModel} → ${nextModel}`));
+      warn(
+        `\n  🔄 Next recommended model: ${prevModel} → ${nextModel}${modelRunStatsLine(ctx.stateContext, ctx.runner.name, prevModel)}`,
+      );
       return true;
     }
     
@@ -358,7 +385,9 @@ export function rotateModel(ctx: RotationContext, stateContext: StateContext): b
   Rotation.setModelIndex(stateContext, ctx.runner.name, nextIndex);
   
   ctx.modelsTriedThisToolRound++;
-  console.log(chalk.yellow(`\n  🔄 Rotating model: ${previousModel} → ${nextModel}`));
+  warn(
+    `\n  🔄 Rotating model: ${previousModel} → ${nextModel}${modelRunStatsLine(ctx.stateContext, ctx.runner.name, previousModel)}`,
+  );
   return true;
 }
 
@@ -389,7 +418,7 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
 
   const newModel = getCurrentModel(ctx, options ?? ({} as CLIOptions));
   const modelInfo = newModel ? ` (${newModel})` : '';
-  console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`));
+  warn(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`);
   return true;
 // Review: passing options ensures consistent model selection with active CLI flags.
 }
@@ -876,6 +905,20 @@ export async function validateAndFilterModels(
       }
     }
 
+    if (isLlMApi && useElizaCloudForLlMApi && validModels.length === 0) {
+      throw new Error(
+        'ElizaCloud: no models remain after the built-in skip list and gateway filter. ' +
+          'Set PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable at least one id, or see docs/MODELS.md.',
+      );
+    }
+    if (isLlMApi && useElizaCloudForLlMApi && validModels.length === 1) {
+      console.warn(
+        chalk.yellow(
+          `  ⚠ Only ${formatNumber(1)} ElizaCloud model in rotation after skips — a single failure blocks fixes until the next rotation step. Consider PRR_ELIZACLOUD_INCLUDE_MODELS (see docs/MODELS.md). Pin the working id with PRR_LLM_MODEL (and PRR_VERIFIER_MODEL / PRR_FINAL_AUDIT_MODEL if needed — see README).`,
+        ),
+      );
+    }
+
     // User-visible warning when configured default was skipped (pill-output #2)
     if (skippedConfiguredDefault) {
       const replacement = validModels.length > 0 ? validModels[0] : '(none; add other models or remove from skip list)';
@@ -889,7 +932,7 @@ export async function validateAndFilterModels(
       !thinElizacloudPoolWarned &&
       isLlMApi &&
       useElizaCloudForLlMApi &&
-      validModels.length > 0 &&
+      validModels.length >= 2 &&
       validModels.length <= 3
     ) {
       thinElizacloudPoolWarned = true;

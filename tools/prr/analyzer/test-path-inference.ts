@@ -34,6 +34,25 @@ function normalizeRelativePath(path: string): string {
   return path.replace(/\/\.\//g, '/').replace(/\/[^/]+\/\.\.\//g, '/');
 }
 
+/**
+ * Build `name.test.ts` / `name.spec.ts` from a basename stem (no extension).
+ * WHY: When stem is already `foo.test` (from `foo.test.ts`), appending `.test` again yields `foo.test.test.ts` (recovery/prompt-builder audit).
+ */
+export function testBasenameWithSuffix(stem: string, extWithDot: string, kind: 'test' | 'spec'): string {
+  const marker = kind === 'test' ? '.test' : '.spec';
+  if (stem.toLowerCase().endsWith(marker)) {
+    return `${stem}${extWithDot}`;
+  }
+  return `${stem}${marker}${extWithDot}`;
+}
+
+/** Collapse accidental `.test.test.ts` / `.spec.spec.ts` suffixes (duplicated inference or bot typos). */
+export function normalizeDoubledTestExtension(path: string): string {
+  return path
+    .replace(/\.test\.test\.(ts|tsx|js|jsx)$/i, '.test.$1')
+    .replace(/\.spec\.spec\.(ts|tsx|js|jsx)$/i, '.spec.$1');
+}
+
 export function getTestPathForIssueLike(
   issue: TestPathIssueLike,
   options?: { pathExists?: (path: string) => boolean; forceTestPath?: boolean; keepExistingTestPath?: boolean }
@@ -45,12 +64,13 @@ export function getTestPathForIssueLike(
   const body = issue.comment.body ?? '';
   const explanation = issue.explanation ?? '';
   const combined = `${body} ${explanation}`;
+  const normOut = (p: string) => normalizeDoubledTestExtension(p.replace(/\\/g, '/'));
 
   // WHY preserve explicit test paths first: when the review is already anchored on
   // `foo.test.ts`, that path is stronger evidence than the wording in the body.
   // Coverage-only phrasing ("missing coverage here") should not kick the issue out
   // of the create-file/test-file flow just because it doesn't repeat "add tests".
-  if (isTestOrSpecPath(path)) return keepExistingTestPath ? path : null;
+  if (isTestOrSpecPath(path)) return keepExistingTestPath ? normOut(path) : null;
   if (!forceTestPath && !issueRequestsTestsText(combined)) return null;
 
   const dir = path.includes('/') ? path.replace(/\/[^/]+$/, '') : '';
@@ -64,34 +84,36 @@ export function getTestPathForIssueLike(
   };
 
   const explicitFull = body.match(/(?:^|[\s(])`?([a-zA-Z0-9_/.()-]+__tests__[a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))`?(?:\s|$|[,)])/);
-  if (explicitFull?.[1]) return explicitFull[1].replace(/^[\s(]+|[\s)]+$/g, '');
+  if (explicitFull?.[1]) return normOut(explicitFull[1].replace(/^[\s(]+|[\s)]+$/g, ''));
 
   const explicitRel = body.match(/(?:in|to|add\s+tests?\s+to?|tests?\s+in)\s+[`']?([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))[`']?(?:\s|$|[,)])/i);
   if (explicitRel?.[1]) {
     const name = explicitRel[1].replace(/^[\s'`]+|[\s'`]+$/g, '');
-    if (name.includes('/')) return name;
+    if (name.includes('/')) return normOut(name);
     if (dir) {
       const colocated = normalizeRelativePath(`${dir}/${name}`);
       const integration = normalizeRelativePath(`${dir}/../__tests__/integration/${name}`);
-      return preferOrFallback(colocated, integration);
+      return normOut(preferOrFallback(colocated, integration));
     }
-    return name;
+    return normOut(name);
   }
 
   const backtick = body.match(/`([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))`/);
   if (backtick?.[1]) {
     const name = backtick[1];
-    if (name.includes('/')) return name;
+    if (name.includes('/')) return normOut(name);
     if (dir) {
       const colocated = normalizeRelativePath(`${dir}/${name}`);
       const integration = normalizeRelativePath(`${dir}/../__tests__/integration/${name}`);
-      return preferOrFallback(colocated, integration);
+      return normOut(preferOrFallback(colocated, integration));
     }
-    return name;
+    return normOut(name);
   }
 
   if (!/\.(?:ts|tsx|js|jsx)$/.test(path)) return null;
-  const base = path.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/, '.test.$1');
+  const fileStem = path.replace(/^.*\//, '').replace(/\.(ts|tsx|js|jsx)$/i, '');
+  const ext = (path.match(/\.(ts|tsx|js|jsx)$/i) ?? [])[1] ?? 'ts';
+  const base = testBasenameWithSuffix(fileStem, `.${ext}`, 'test');
   if (dir) {
     const colocated = normalizeRelativePath(`${dir}/${base}`);
     const integration = normalizeRelativePath(`${dir}/../__tests__/integration/${base}`);
@@ -99,13 +121,13 @@ export function getTestPathForIssueLike(
     // Same src-level __tests__ (e.g. packages/typescript/src/__tests__/database.test.ts when path is src/types/database.ts). Prompts.log audit: TARGET FILE(S) listed non-existent src/types/database.test.ts.
     const srcLevelTests = /\/src\//.test(dir) ? normalizeRelativePath(`${dir}/../__tests__/${base}`) : null;
     if (pathExists && srcLevelTests) {
-      if (pathExists(srcLevelTests)) return srcLevelTests;
-      if (pathExists(colocated)) return colocated;
-      if (pathExists(testsRoot)) return testsRoot;
-      if (integration && pathExists(integration)) return integration;
-      return srcLevelTests;
+      if (pathExists(srcLevelTests)) return normOut(srcLevelTests);
+      if (pathExists(colocated)) return normOut(colocated);
+      if (pathExists(testsRoot)) return normOut(testsRoot);
+      if (integration && pathExists(integration)) return normOut(integration);
+      return normOut(srcLevelTests);
     }
-    return preferOrFallback(colocated, integration, testsRoot);
+    return normOut(preferOrFallback(colocated, integration, testsRoot));
   }
-  return base;
+  return normOut(base);
 }

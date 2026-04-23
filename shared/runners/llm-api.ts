@@ -4,12 +4,13 @@ import { mkdir } from 'fs/promises';
 import type { Runner, RunnerResult, RunnerOptions, RunnerStatus } from './types.js';
 import { DEFAULT_MODEL_ROTATIONS } from './types.js';
 import chalk from 'chalk';
-import { debug, debugPrompt, debugResponse } from '../logger.js';
+import { debug, debugPrompt, debugPromptError, debugResponse, formatNumber } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, LLM_REQUEST_TIMEOUT_MS, LLM_REQUEST_TIMEOUT_FULL_FILE_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
-import { getMaxFixPromptCharsForModel, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
+import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, getLlmApiRequestTimeoutMs, LLM_REQUEST_TIMEOUT_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
+import { getMaxFixPromptCharsForModel, getMaxElizacloudHardInputCeiling, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient } from '../llm/elizacloud.js';
+import { openAiChatCompletionContentToString } from '../llm/openai-chat-content.js';
 import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../llm/rate-limit.js';
 import { normalizePathForAllow, normalizeRepoPath } from '../path-utils.js';
 
@@ -455,8 +456,9 @@ Working directory: ${workdir}`;
       throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${maxEnrichedChars.toLocaleString()} for ${model}). Reduce batch size or file count.`);
     }
 
-    // Full-file rewrite prompts are larger; use a longer timeout so the request can complete.
-    const requestTimeoutMs = rewriteFiles.length > 0 ? LLM_REQUEST_TIMEOUT_FULL_FILE_MS : LLM_REQUEST_TIMEOUT_MS;
+    const isFullFileRewrite = rewriteFiles.length > 0;
+    const requestTimeoutMs = getLlmApiRequestTimeoutMs(enrichedPrompt.length, isFullFileRewrite);
+    debug('Request timeout for this call', { timeoutMs: requestTimeoutMs, isFullFileRewrite });
 
     // Cooldown: after 3+ consecutive 504/timeouts, pause so gateway can recover.
     if (this.consecutive504Count >= CONSECUTIVE_504_COOLDOWN_THRESHOLD) {
@@ -472,9 +474,9 @@ Working directory: ${workdir}`;
 
       if (this.provider === 'anthropic' && anthropic) {
         const model = options?.model || DEFAULT_ANTHROPIC_MODEL;
-        debug('Calling Anthropic API', { model });
+        debug('Calling Anthropic API', { model, timeoutMs: requestTimeoutMs });
         
-        console.log(`\n🧠 Calling ${model}...\n`);
+        console.log(`\n🧠 Calling ${model} (timeout ${Math.round(requestTimeoutMs / 1000)}s)...\n`);
 
         const maxTokens = getAnthropicMaxTokens(model);
         const result = await with504Retry(
@@ -498,9 +500,9 @@ Working directory: ${workdir}`;
           outputTokens: result.usage.output_tokens,
         });
       } else if ((this.provider === 'elizacloud' || this.provider === 'openai') && openai) {
-        debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model });
+        debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model, timeoutMs: requestTimeoutMs });
 
-        console.log(`\n🧠 Calling ${model}...\n`);
+        console.log(`\n🧠 Calling ${model} (timeout ${Math.round(requestTimeoutMs / 1000)}s)...\n`);
 
         if (this.provider === 'elizacloud') {
           await acquireElizacloud();
@@ -521,7 +523,7 @@ Working directory: ${workdir}`;
             requestTimeoutMs
           );
 
-          response = result.choices[0]?.message?.content || '';
+          response = openAiChatCompletionContentToString(result.choices[0]?.message?.content);
 
           debug(`${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} response received`, {
             inputTokens: result.usage?.prompt_tokens,
@@ -540,7 +542,18 @@ Working directory: ${workdir}`;
         };
       }
 
-      debugResponse(promptSlug, 'llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
+      if (!response.trim()) {
+        debugPromptError(promptSlug, 'llm-api-fix', 'Empty or whitespace-only LLM response body (HTTP success; cannot write RESPONSE to prompts.log).', {
+          workdir,
+          model: options?.model,
+          emptyBody: true,
+        });
+        console.warn(
+          chalk.yellow(`  ⚠ llm-api: empty response body from model — prompts.log ERROR entry pairs with this request’s PROMPT slug.`),
+        );
+      } else {
+        debugResponse(promptSlug, 'llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
+      }
 
       // Parse and apply file changes (pass escalated files so <file> blocks are applied even when S/R ran)
       const applyResult = await this.applyFileChanges(workdir, response, rewriteFiles, options?.allowedPathsForBatch);
@@ -574,7 +587,17 @@ Working directory: ${workdir}`;
           };
         }
         // No change blocks at all (no noMeaningfulChanges, no disallowed) — LLM didn't emit changes.
-        console.log('  No file changes extracted from LLM response');
+        const tail = response.replace(/\s+$/, '').slice(-600);
+        debug('No file changes extracted — response tail (for prompts.log correlation)', {
+          responseChars: response.length,
+          tailChars: tail.length,
+          tail,
+        });
+        console.log(
+          chalk.gray(
+            `  No file changes extracted from LLM response (${formatNumber(response.length)} chars; tail logged at debug — set PRR_DEBUG or check prompts.log)`,
+          ),
+        );
         this.consecutive504Count = 0;
         return {
           success: true,
@@ -607,6 +630,11 @@ Working directory: ${workdir}`;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       debug('LLM API error', { error: errorMessage });
+      debugPromptError(promptSlug, 'llm-api-fix', errorMessage.slice(0, 12_000), {
+        workdir,
+        model: options?.model,
+        status: (error as { status?: number })?.status,
+      });
 
       const status = (error as { status?: number })?.status;
       if (status === 429 || /429|Too many requests|rate limit/i.test(errorMessage)) {
@@ -617,8 +645,14 @@ Working directory: ${workdir}`;
       if (is504OrTimeout) {
         this.consecutive504Count++;
         if (this.provider === 'elizacloud' && model) {
-          lowerModelMaxPromptChars(this.provider ?? 'elizacloud', model, enrichedPrompt.length);
-          debug('Lowered prompt cap for model after timeout', { model, sentChars: enrichedPrompt.length });
+          const hardCeiling = getMaxElizacloudHardInputCeiling(model);
+          const promptRatio = enrichedPrompt.length / hardCeiling;
+          if (promptRatio > 0.3) {
+            lowerModelMaxPromptChars(this.provider ?? 'elizacloud', model, enrichedPrompt.length);
+            debug('Lowered prompt cap for model after timeout', { model, sentChars: enrichedPrompt.length, promptRatio: promptRatio.toFixed(2) });
+          } else {
+            debug('Timeout on small prompt relative to context — not lowering cap', { model, sentChars: enrichedPrompt.length, hardCeiling, promptRatio: promptRatio.toFixed(2) });
+          }
         }
         // De-escalate full-file rewrite so next attempt uses smaller prompt and may complete.
         if (rewriteFiles.length > 0) {

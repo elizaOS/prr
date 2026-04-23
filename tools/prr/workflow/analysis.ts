@@ -20,15 +20,36 @@ import * as Performance from '../state/state-performance.js';
 import type { CLIOptions } from '../cli.js';
 import { formatNumber } from '../ui/reporter.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
+import {
+  dismissDuplicateClusterFromComments,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
+import {
+  markVerifiedClusterForFixedIssue,
+  unmarkVerifiedClustersForFinalAuditFailures,
+} from './duplicate-cluster-verify.js';
 import { debug, debugStep, setTokenPhase, formatDuration as formatDur } from '../../../shared/logger.js';
 import { shouldSkipFinalAuditLlmForPath } from '../../../shared/path-utils.js';
-import { assessSolvability, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { assessSolvability, SNIPPET_PLACEHOLDER, resolveTrackedPath } from './helpers/solvability.js';
 import { classifyFinalAuditUncertainExplanation } from './helpers/final-audit-uncertain.js';
 import { pathTrackedAtGitHead } from './helpers/git-path-at-head.js';
+import { isTrackedGitSubmodulePath } from '../../../shared/git/git-submodule-path.js';
 
 /** Logged when final audit skips the LLM for a comment (synthetic / fragment path). */
 const FINAL_AUDIT_SKIP_LLM_EXPLANATION =
   'Skipped adversarial LLM: no single on-disk file path (synthetic path, empty path, or path fragment).';
+
+/**
+ * Repo-relative path for file reads and `git` checks; falls back to review **`path`** when unresolved.
+ * **WHY:** GitHub’s path may be a basename, diff-prefixed, or an extension variant; **`resolveTrackedPath`**
+ * matches the clone. Logs / dedup keys may still use **`comment.path`** so operators see the same string as the PR UI.
+ */
+function commentFilePathForWorkdir(workdir: string | undefined, c: Pick<ReviewComment, 'path' | 'body'>): string {
+  const raw = c.path;
+  if (raw == null || raw === '') return '';
+  if (!workdir) return raw;
+  return resolveTrackedPath(workdir, raw, c.body ?? '') ?? raw;
+}
 
 /**
  * Detect audit explanations that say no fix is needed (false positive).
@@ -122,8 +143,20 @@ export function analyzeAndReportIssues(
           ? ` (all ${formatNumber(verifiedInQueue)} already verified — will skip fixer)`
           : ` (${formatNumber(toFixCount)} to fix, ${formatNumber(verifiedInQueue)} already verified)`
         : '';
+    const hasBlast = unresolvedIssues.some((i) => i.inBlastRadius !== undefined);
+    const blastSubtitle = hasBlast
+      ? (() => {
+          const out = unresolvedIssues.filter((i) => i.inBlastRadius === false).length;
+          const inn = unresolvedIssues.length - out;
+          return ` — ${formatNumber(inn)} in blast radius, ${formatNumber(out)} out-of-scope (deprioritized)`;
+        })()
+      : '';
     console.log('');
-    console.log(chalk.yellowBright(`┌─ QUEUE: ${formatNumber(unresolvedIssues.length)} issue(s) entering fix loop${queueSubtitle} ─┐`));
+    console.log(
+      chalk.yellowBright(
+        `┌─ QUEUE: ${formatNumber(unresolvedIssues.length)} issue(s) entering fix loop${queueSubtitle}${blastSubtitle} ─┐`,
+      ),
+    );
 
     if (toFixCount > 0) {
       // Group by file for readability (skip full box when all verified — output.log audit)
@@ -178,7 +211,9 @@ export async function checkForNewComments(
   spinner: Ora,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   stateContext: StateContext,
-  workdir: string
+  workdir: string,
+  /** LLM dedup map from last analysis — dismiss siblings when solvability drops a canonical/dupe. */
+  duplicateMap?: Map<string, string[]>,
 ): Promise<{
   hasNewComments: boolean;
   updatedComments: ReviewComment[];
@@ -210,23 +245,28 @@ export async function checkForNewComments(
     // Add new comments to our list
     const updatedComments = [...existingComments];
     const updatedUnresolvedIssues = [...unresolvedIssues];
+    const lookupComments = [...existingComments, ...newComments];
+    const effectiveDupForNewComments = resolveEffectiveDuplicateMapForComments(
+      stateContext,
+      duplicateMap,
+      lookupComments,
+    );
 
     const solvableComments: ReviewComment[] = [];
     const resolvedPaths = new Map<string, string>();
     for (const comment of newComments) {
       const solvability = assessSolvability(workdir, comment, stateContext);
       if (!solvability.solvable) {
-        Dismissed.dismissIssue(
+        dismissDuplicateClusterFromComments(
           stateContext,
-          comment.id,
+          comment,
+          effectiveDupForNewComments,
+          lookupComments,
           solvability.reason ?? 'Not solvable',
           solvability.dismissCategory ?? 'not-an-issue',
-          comment.path,
-          comment.line,
-          comment.body,
-          solvability.remediationHint
+          solvability.remediationHint,
         );
-        debug('New comment dismissed by solvability', { commentId: comment.id, path: comment.path, reason: solvability.reason });
+        debug('New comment dismissed by solvability (cluster)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
         continue;
       }
       if (solvability.resolvedPath) {
@@ -307,10 +347,16 @@ export async function runFinalAudit(
   options: CLIOptions,
   spinner: Ora,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
-  /** When set, use full file content instead of snippets so the audit has complete context. */
-  getFullFile?: (path: string, line: number | null, body: string) => Promise<string>,
+  /** When set, use full file (or budget excerpt) instead of windowed snippets. May return a string (legacy) or `{ snippet, fixSiteInWindow }`. */
+  getFullFile?: (
+    path: string,
+    line: number | null,
+    body: string
+  ) => Promise<string | import('./issue-analysis-snippet-helpers.js').FullFileForAuditResult>,
   /** Pill cycle 2 #4: When set, validate Rule 6 (file deleted) by checking git ls-tree before accepting FIXED verdict. */
-  workdir?: string
+  workdir?: string,
+  /** LLM dedup clusters — mark/unmark siblings consistently when audit passes (same as fix verification / recovery). */
+  duplicateMap?: Map<string, string[]>
 ): Promise<{
   failedAudit: Array<{ comment: ReviewComment; explanation: string }>;
   auditPassed: boolean;
@@ -326,6 +372,7 @@ export async function runFinalAudit(
   debug('Starting final audit (verification cache not cleared - results are additive)');
 
   stateContext.finalAuditUncertainThisRun = [];
+  const dupForFinalAudit = resolveEffectiveDuplicateMapForComments(stateContext, duplicateMap, comments);
 
   // Pill-output #11: runtime overlap check (load() also repairs; this surfaces bugs in-session)
   const verifiedSet = new Set(Verification.getVerifiedComments(stateContext));
@@ -348,6 +395,7 @@ export async function runFinalAudit(
   const llmIndices: number[] = [];
   const skipLlmIndices: number[] = [];
   for (let i = 0; i < comments.length; i++) {
+    // INTENTIONAL: raw `comment.path` for fragment / synthetic-path gate (matches solvability and GitHub anchor).
     if (shouldSkipFinalAuditLlmForPath(comments[i].path)) {
       skipLlmIndices.push(i);
     } else {
@@ -364,12 +412,22 @@ export async function runFinalAudit(
 
   const llmComments = llmIndices.map((i) => comments[i]);
   const auditSnippetsLlm = getFullFile
-    ? await Promise.all(llmComments.map((c) => getFullFile(c.path, c.line, c.body)))
-    : await Promise.all(llmComments.map((c) => getCodeSnippet(c.path, c.line, c.body)));
+    ? await Promise.all(
+        llmComments.map(async (c) => {
+          const r = await getFullFile(commentFilePathForWorkdir(workdir, c), c.line, c.body);
+          return typeof r === 'string' ? { snippet: r, fixSiteInWindow: false } : r;
+        }),
+      )
+    : await Promise.all(
+        llmComments.map(async (c) => ({
+          snippet: await getCodeSnippet(commentFilePathForWorkdir(workdir, c), c.line, c.body),
+          fixSiteInWindow: false,
+        })),
+      );
 
   const auditSnippets: string[] = new Array(comments.length);
   for (let j = 0; j < llmIndices.length; j++) {
-    auditSnippets[llmIndices[j]] = auditSnippetsLlm[j]!;
+    auditSnippets[llmIndices[j]] = auditSnippetsLlm[j]!.snippet;
   }
   const skipSnippetNote = '(no file context — final audit LLM skipped for non-file path)';
   for (const i of skipLlmIndices) {
@@ -385,11 +443,12 @@ export async function runFinalAudit(
     filePath: string;
     line: number | null;
     codeSnippet: string;
+    fixSiteInWindow?: boolean;
   }> = [];
 
   for (let j = 0; j < llmComments.length; j++) {
     const comment = llmComments[j]!;
-    const snippet = auditSnippetsLlm[j]!;
+    const snippet = auditSnippetsLlm[j]!.snippet;
     if (
       workdir &&
       snippet === SNIPPET_PLACEHOLDER &&
@@ -397,7 +456,20 @@ export async function runFinalAudit(
       comment.path !== '(PR comment)' &&
       !shouldSkipFinalAuditLlmForPath(comment.path)
     ) {
-      const tracked = pathTrackedAtGitHead(workdir, comment.path);
+      const pathForGit = commentFilePathForWorkdir(workdir, comment);
+      if (isTrackedGitSubmodulePath(workdir, pathForGit)) {
+        syntheticAuditResults.set(comment.id, {
+          stillExists: false,
+          explanation:
+            'FIXED (git submodule): Review path is a git submodule (gitlink) — no regular file text at this anchor; final audit skipped adversarial LLM.',
+        });
+        debug('Final audit: skipped adversarial LLM — path is git submodule gitlink', {
+          commentId: comment.id,
+          path: pathForGit,
+        });
+        continue;
+      }
+      const tracked = pathTrackedAtGitHead(workdir, pathForGit);
       if (tracked === false) {
         syntheticAuditResults.set(comment.id, {
           stillExists: false,
@@ -406,7 +478,7 @@ export async function runFinalAudit(
         });
         debug('Final audit: skipped adversarial LLM — path absent at HEAD and snippet is unreadable placeholder', {
           commentId: comment.id,
-          path: comment.path,
+          path: pathForGit,
         });
         continue;
       }
@@ -418,9 +490,10 @@ export async function runFinalAudit(
     issuesForLlm.push({
       id: comment.id,
       comment: commentForAudit,
-      filePath: comment.path,
+      filePath: commentFilePathForWorkdir(workdir, comment) || comment.path || '',
       line: comment.line,
       codeSnippet: snippet,
+      fixSiteInWindow: auditSnippetsLlm[j]!.fixSiteInWindow,
     });
   }
 
@@ -455,11 +528,11 @@ export async function runFinalAudit(
             comment.path &&
             comment.path !== '(PR comment)' &&
             codeSnippetEarly === SNIPPET_PLACEHOLDER &&
-            pathTrackedAtGitHead(workdir, comment.path) === false
+            pathTrackedAtGitHead(workdir, commentFilePathForWorkdir(workdir, comment)) === false
           ) {
             debug(
               'Final audit tie-break: UNFIXED but path absent from HEAD + unreadable snippet — keeping verified (deleted file)',
-              { commentId: comment.id, path: comment.path },
+              { commentId: comment.id, path: commentFilePathForWorkdir(workdir, comment) },
             );
             console.warn(
               chalk.yellow(
@@ -538,7 +611,12 @@ export async function runFinalAudit(
             line: comment.line,
             excerpt: result.explanation.slice(0, 80),
           });
-          Verification.markVerified(stateContext, comment.id);
+          markVerifiedClusterForFixedIssue(
+            stateContext,
+            comment.id,
+            dupForFinalAudit,
+            stateContext.verifiedThisSession,
+          );
         } else {
           failedAudit.push({ comment, explanation: result.explanation });
         }
@@ -547,11 +625,12 @@ export async function runFinalAudit(
         // Pill cycle 2 #4: Validate Rule 6 (file deleted / outdated thread) — confirm path absent at HEAD before accepting FIXED
         const isRule6Style = /(?:file deleted|file no longer exists|thread outdated)/i.test(result.explanation);
         if (isRule6Style && workdir && comment.path && comment.path !== '(PR comment)') {
-          const tracked = pathTrackedAtGitHead(workdir, comment.path);
+          const pathForGit = commentFilePathForWorkdir(workdir, comment);
+          const tracked = pathTrackedAtGitHead(workdir, pathForGit);
           if (tracked === true) {
             debug('Rule 6 validation failed: path still tracked at HEAD', {
               commentId: comment.id,
-              path: comment.path,
+              path: pathForGit,
               explanation: result.explanation,
             });
             failedAudit.push({
@@ -563,12 +642,12 @@ export async function runFinalAudit(
           if (tracked === null) {
             debug('Rule 6 validation inconclusive: git ls-tree check failed — accepting FIXED', {
               commentId: comment.id,
-              path: comment.path,
+              path: pathForGit,
             });
           } else {
             debug('Rule 6 validation passed: path not at HEAD', {
               commentId: comment.id,
-              path: comment.path,
+              path: pathForGit,
             });
           }
         }
@@ -585,7 +664,12 @@ export async function runFinalAudit(
             explanation: result.explanation?.slice(0, 200),
           });
         }
-        Verification.markVerified(stateContext, comment.id);
+        markVerifiedClusterForFixedIssue(
+          stateContext,
+          comment.id,
+          dupForFinalAudit,
+          stateContext.verifiedThisSession,
+        );
       }
     } else {
       // No result from audit - treat as needing review (fail-safe)
@@ -593,10 +677,13 @@ export async function runFinalAudit(
     }
   }
 
-  // Single unmark pass for all failed-audit comments (WHY: main-loop-setup used to unmark too → duplicate logs).
-  for (const { comment } of failedAudit) {
-    Verification.unmarkVerified(stateContext, comment.id);
-  }
+  // Single unmark pass: whole dedup cluster per failure (WHY: markVerifiedCluster on pass marks siblings;
+  // per-id unmark left dupes verified — skip fixer / inconsistent queue vs README "safe over sorry").
+  unmarkVerifiedClustersForFinalAuditFailures(
+    stateContext,
+    failedAudit.map((f) => f.comment.id),
+    dupForFinalAudit,
+  );
 
   if (filteredNoAction > 0) {
     debug('Audit filtered no-action-needed', { count: filteredNoAction });
@@ -634,9 +721,11 @@ export async function runFinalAudit(
 
     const uncertain = stateContext.finalAuditUncertainThisRun ?? [];
     if (uncertain.length > 0) {
+      const trunc = uncertain.filter((u) => u.kind === 'truncation-guard').length;
+      const unc = uncertain.filter((u) => u.kind === 'uncertain').length;
       console.log(
         chalk.yellow(
-          `  ℹ Final audit: ${formatNumber(uncertain.length)} issue(s) passed via UNCERTAIN or truncation guard (see explanations in prompts.log). Set PRR_STRICT_FINAL_AUDIT_UNCERTAIN=1 to exit 2 on these.`,
+          `  ℹ Final audit: ${formatNumber(uncertain.length)} issue(s) passed via UNCERTAIN or truncation guard (${formatNumber(unc)} UNCERTAIN, ${formatNumber(trunc)} truncation guard; see prompts.log). Set PRR_STRICT_FINAL_AUDIT_UNCERTAIN=1 to exit 2 on these.`,
         ),
       );
     }

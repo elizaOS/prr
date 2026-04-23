@@ -192,6 +192,10 @@ function getMaxElizacloudTotalInputCharsSmallContextUnified(model: string): numb
  * WHY: Gateways often return HTTP 500 with no body when upstream rejects oversized input;
  * failing fast avoids useless retries and matches the budget already logged in debug fields.
  *
+ * This budget includes any runtime-lowered cap from `lowerModelMaxPromptChars`. Use
+ * {@link getMaxElizacloudHardInputCeiling} for the context-window-derived hard ceiling
+ * that ignores runtime lowering.
+ *
  * Small-context models (≤32k): **min**(legacy fix+overhead, unified token budget) so batching and
  * preflight match real context limits.
  */
@@ -199,6 +203,21 @@ export function getMaxElizacloudLlmCompleteInputChars(model: string): number {
   const legacy = getMaxFixPromptCharsForModel('elizacloud', model) + ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS;
   const unified = getMaxElizacloudTotalInputCharsSmallContextUnified(model);
   return unified != null ? Math.min(legacy, unified) : legacy;
+}
+
+/**
+ * Context-window-derived hard ceiling for input chars (ignores `modelMaxCharsOverride`).
+ * WHY: `lowerModelMaxPromptChars` adaptively shrinks the budget after timeouts, but a
+ * timeout on a 200k-context model at 34k chars is gateway lag — not context overflow.
+ * Prompts under this ceiling can always be sent; the transport should only hard-reject
+ * above it. Prompt builders should still respect the (possibly lowered) budget from
+ * `getMaxElizacloudLlmCompleteInputChars` for voluntary trimming.
+ */
+export function getMaxElizacloudHardInputCeiling(model: string): number {
+  const spec = getElizaCloudModelContextSpec(model);
+  const derived = deriveMaxFixPromptCharsFromContext(spec) + ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS;
+  const unified = getMaxElizacloudTotalInputCharsSmallContextUnified(model);
+  return unified != null ? Math.min(derived, unified) : derived;
 }
 
 /**
@@ -234,7 +253,11 @@ export function estimateElizacloudInputTokensFromCharLength(
 }
 
 /**
- * Lower the effective cap for this model after a 504 / timeout / context overflow.
+ * Lower the effective **fix-prompt** cap for this model after a 504 / timeout / context overflow.
+ * WHY floor: For large-context models (≥128k tokens) a timeout is usually gateway lag,
+ * not context overflow. Lowering the cap too aggressively (e.g. 640k → 26k on Sonnet 4.5)
+ * blocks subsequent conflict/verify prompts that are well within the context window.
+ * Floor at 50% of the context-derived cap or 60k chars, whichever is larger.
  */
 export function lowerModelMaxPromptChars(
   provider: 'elizacloud' | 'anthropic' | 'openai',
@@ -243,7 +266,12 @@ export function lowerModelMaxPromptChars(
 ): void {
   if (!model) return;
   const currentCap = getMaxFixPromptCharsForModel(provider, model);
-  const suggested = Math.max(20_000, Math.floor(sentPromptChars * 0.75));
+  const spec = getElizaCloudModelContextSpec(model);
+  const contextDerived = deriveMaxFixPromptCharsFromContext(spec);
+  const floor = spec.maxContextTokens >= 128_000
+    ? Math.max(60_000, Math.floor(contextDerived * 0.5))
+    : 20_000;
+  const suggested = Math.max(floor, Math.floor(sentPromptChars * 0.75));
   const next = Math.min(currentCap, suggested);
   modelMaxCharsOverride.set(model, next);
 }

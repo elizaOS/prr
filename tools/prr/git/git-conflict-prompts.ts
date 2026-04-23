@@ -2,7 +2,7 @@
  * Git conflict resolution prompts
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, lstatSync } from 'fs';
 import { join } from 'path';
 import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../../../shared/constants.js';
 import { hasConflictMarkers } from '../../../shared/git/git-clone-index.js';
@@ -71,9 +71,20 @@ export function buildConflictResolutionPromptWithContent(
   const unreadable: string[] = [];
 
   for (const file of conflictedFiles) {
+    // WHY lstat guard: submodules/directories throw EISDIR on readFileSync.
+    // They are resolved by the submodule handler, not the LLM prompt.
+    const fullFilePath = join(workdir, file);
+    try {
+      if (lstatSync(fullFilePath).isDirectory()) {
+        unreadable.push(file);
+        continue;
+      }
+    } catch {
+      // stat failed — fall through to readFileSync which will catch it
+    }
     let content: string;
     try {
-      content = readFileSync(join(workdir, file), 'utf-8');
+      content = readFileSync(fullFilePath, 'utf-8');
     } catch {
       unreadable.push(file);
       continue;

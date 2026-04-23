@@ -103,7 +103,9 @@ export async function cloneOrUpdateRepository(
 }
 
 /**
- * Recover verification state from git commit messages
+ * Recover verification state from git commit messages.
+ * Dedup siblings are expanded on the first `findUnresolvedIssues` pass when **`state.dedupCache`**
+ * matches the current PR comment id set — see **`expandGitRecoveredVerificationFromDedupCache`** (`duplicate-cluster-verify.ts`).
  */
 export async function recoverVerificationState(
   git: SimpleGit,
@@ -130,7 +132,9 @@ export async function recoverVerificationState(
     console.log(chalk.cyan(`Recovered ${formatNumber(n)} previously committed ${pluralize(n, 'fix', 'fixes')} from git history`));
     for (const commentId of committedFixes) {
       if (!Verification.isVerified(stateContext, commentId)) {
-        Verification.markVerified(stateContext, commentId, Verification.PRR_GIT_RECOVERY_VERIFIED_MARKER);
+        Verification.markVerified(stateContext, commentId, Verification.PRR_GIT_RECOVERY_VERIFIED_MARKER, {
+          skipSessionTracking: true,
+        });
       }
     }
     // WHY: So the first analysis skips stale re-check and unmark for these IDs (output.log audit).

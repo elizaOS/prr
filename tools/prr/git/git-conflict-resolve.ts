@@ -7,7 +7,7 @@
  * output (JSON validity, size regression) to catch truncation or corruption.
  */
 import chalk from 'chalk';
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import type { SimpleGit } from 'simple-git';
 import {
@@ -44,7 +44,11 @@ import {
   buildConflictResolutionPromptWithContent,
   splitConflictFilesIntoBatches,
 } from './git-conflict-prompts.js';
-import { handleLockFileConflicts } from './git-conflict-lockfiles.js';
+import {
+  handleLockFileConflicts,
+  lockRegenerationRequiresCleanPackageJson,
+  packageJsonHasConflictMarkers,
+} from './git-conflict-lockfiles.js';
 import {
   resolveConflictsChunked,
   resolveConflictsWithTopTailsFallback,
@@ -529,6 +533,135 @@ ${content}
 }
 
 /**
+ * Scan JSON text for duplicate keys at the top two nesting levels.
+ *
+ * WHY: `JSON.parse` silently accepts `{ "dev": "a", "dev": "b" }` (last wins),
+ * so standard validation misses this. LLMs merging package.json often produce
+ * duplicate "scripts" entries from both sides. We scan raw text rather than
+ * a custom reviver because the reviver approach breaks on nested objects.
+ *
+ * Returns the first duplicate key found, or null if none.
+ */
+function findDuplicateJsonKey(text: string): string | null {
+  // Line-based approach: works for indented JSON where keys are on separate lines
+  // (the common LLM output pattern for package.json).
+  // Track brace depth; at each level, record keys seen. When a `}` closes a level,
+  // clear that level's keys (the next `{` starts a new sibling object).
+  const MAX_DEPTH = 2;
+  let depth = 0;
+  // Stack: each depth has its own set of seen keys. Use a depth-indexed map
+  // so closing `}` clears the correct level.
+  const seenAtDepth = new Map<number, Set<string>>();
+
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+
+    // Process structural chars before checking for a key on this line.
+    // Count opens/closes carefully — a line like `},` or `}` only has one close.
+    for (const c of trimmed) {
+      if (c === '{') {
+        depth++;
+        seenAtDepth.set(depth, new Set());
+      } else if (c === '}') {
+        seenAtDepth.delete(depth);
+        depth--;
+      }
+    }
+    if (depth > MAX_DEPTH || depth < 1) continue;
+
+    const m = trimmed.match(/^"([^"]+)"\s*:/);
+    if (m) {
+      const key = m[1];
+      const seen = seenAtDepth.get(depth);
+      if (seen) {
+        if (seen.has(key)) return key;
+        seen.add(key);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Attempt programmatic repair of common LLM JSON merge artifacts before rejecting.
+ * Fixes trailing commas, missing commas between merged sections, and duplicate keys
+ * (keeps the last occurrence, matching JSON.parse semantics).
+ * Returns null if the result still doesn't parse.
+ */
+/** Extract the character position from a JSON.parse error message (e.g. "at position 4460"). */
+function extractJsonErrorPosition(err: unknown): number | null {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = msg.match(/at position (\d+)/);
+  return m ? parseInt(m[1]!, 10) : null;
+}
+
+function tryRepairJson(text: string): string | null {
+  // Bail early on conflict markers — those need resolution, not syntax repair
+  if (/^<{7}\s|^={7}$|^>{7}\s/m.test(text)) return null;
+
+  let s = text;
+
+  // 1. Remove trailing commas before } or ]
+  s = s.replace(/,(\s*[}\]])/g, '$1');
+
+  // 2. Insert missing commas: line ending with a JSON value followed by a key line.
+  //    Common when LLM resolves chunks separately — last line of chunk N has no
+  //    trailing comma, first line of chunk N+1 starts a new key.
+  //    Handles: "value", }, ], number, true, false, null
+  s = s.replace(/"(\s*\n\s*"[^"]+"\s*:)/g, '",$1');
+  s = s.replace(/}(\s*\n\s*"[^"]+"\s*:)/g, '},$1');
+  s = s.replace(/](\s*\n\s*"[^"]+"\s*:)/g, '],$1');
+  s = s.replace(/(true|false|null|\d)(\s*\n\s*"[^"]+"\s*:)/g, '$1,$2');
+
+  // 3. Try parse; if still broken, try iterative position-based comma insertion
+  //    (up to 5 rounds — each round finds the error position and inserts a comma)
+  for (let round = 0; round < 5; round++) {
+    try {
+      JSON.parse(s);
+      break;
+    } catch (e: unknown) {
+      const pos = extractJsonErrorPosition(e);
+      if (pos === null || pos <= 0) return null;
+      // Look backward from the error position for the last non-whitespace char;
+      // if it's a JSON value terminator without a trailing comma, insert one.
+      const beforeErr = s.slice(0, pos);
+      const trimmed = beforeErr.trimEnd();
+      const lastChar = trimmed[trimmed.length - 1];
+      if (lastChar && /["\d}\]eE]/.test(lastChar) && !trimmed.endsWith(',')) {
+        s = trimmed + ',' + s.slice(trimmed.length);
+      } else {
+        return null;
+      }
+    }
+  }
+  // Final verification after iterative repair
+  try { JSON.parse(s); } catch { return null; }
+
+  // 4. Remove duplicate keys (keep last occurrence) while preserving formatting.
+  //    Loop so we handle multiple different duplicate keys.
+  const MAX_DEDUP_ROUNDS = 10;
+  for (let dr = 0; dr < MAX_DEDUP_ROUNDS; dr++) {
+    const dupeKey = findDuplicateJsonKey(s);
+    if (!dupeKey) break;
+    const lines = s.split('\n');
+    const keyPattern = new RegExp(`^\\s*"${dupeKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:`);
+    const matchingIndices: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (keyPattern.test(lines[i]!)) matchingIndices.push(i);
+    }
+    if (matchingIndices.length <= 1) break;
+    for (let k = 0; k < matchingIndices.length - 1; k++) {
+      lines[matchingIndices[k]!] = '';
+    }
+    s = lines.filter(l => l !== '').join('\n');
+    s = s.replace(/,(\s*[}\]])/g, '$1');
+    try { JSON.parse(s); } catch { return null; }
+  }
+
+  return s;
+}
+
+/**
  * Validate that resolved content is sane before writing to disk.
  * 
  * WHY: LLMs sometimes catastrophically corrupt files during conflict resolution.
@@ -537,7 +670,8 @@ ${content}
  * 
  * Checks performed:
  * 1. JSON validation for .json files (catches structural corruption)
- * 2. Size regression detection (catches catastrophic truncation; skipped for keep-ours / take-theirs)
+ * 2. Duplicate key detection for JSON (catches LLM merge artifacts)
+ * 3. Size regression detection (catches catastrophic truncation; skipped for keep-ours / take-theirs)
  */
 function validateResolvedContent(
   filePath: string,
@@ -552,6 +686,13 @@ function validateResolvedContent(
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
       return { valid: false, reason: `Invalid JSON after resolution: ${message}` };
+    }
+    // WHY: JSON.parse silently accepts duplicate keys (last wins). In package.json
+    // this means dropped scripts or dependencies. Scan the raw text for dupe keys
+    // at the top two nesting levels where LLM merges commonly produce them.
+    const dupeKey = findDuplicateJsonKey(resolvedContent);
+    if (dupeKey) {
+      return { valid: false, reason: `Duplicate JSON key "${dupeKey}" — LLM merged both sides but repeated a key` };
     }
   }
 
@@ -627,9 +768,48 @@ export async function resolveConflictsWithLLM(
     console.log(chalk.cyan(`    - ${file}${isLock ? chalk.gray(' (lock file - will regenerate)') : ''}`));
   }
 
-  // Handle lock files first - delete and regenerate
-  if (lockFiles.length > 0) {
+  // Lock regeneration runs `npm install` / `bun install`, which parse package.json.
+  // WHY defer: If package.json still has <<<<<<< markers, every install fails with
+  // EJSONPARSE; we regenerate after the LLM clears JSON (milady#1722 re-run).
+  let lockRegenDeferred =
+    lockFiles.length > 0 &&
+    lockRegenerationRequiresCleanPackageJson(lockFiles) &&
+    packageJsonHasConflictMarkers(workdir);
+
+  if (lockFiles.length > 0 && !lockRegenDeferred) {
     await handleLockFileConflicts(git, lockFiles, workdir, config);
+  } else if (lockRegenDeferred) {
+    console.log(
+      chalk.cyan(
+        '  Deferring lock file regeneration until package.json has no conflict markers ' +
+          '(install would fail while JSON is conflicted).'
+      )
+    );
+  }
+
+  const runDeferredLockRegenIfNeeded = async (): Promise<void> => {
+    if (!lockRegenDeferred || lockFiles.length === 0) return;
+    if (packageJsonHasConflictMarkers(workdir)) return;
+    console.log(
+      chalk.cyan('\n  Running deferred lock file regeneration (package.json is clean)...')
+    );
+    await handleLockFileConflicts(git, lockFiles, workdir, config);
+    lockRegenDeferred = false;
+  };
+
+  // Handle submodule/directory conflicts before code files.
+  // WHY: Git submodules (gitlinks) show up as directories on disk. readFileSync throws
+  // EISDIR and the entire per-file loop catches it as a generic error, leaving the
+  // conflict unresolved and blocking the run. Detect and resolve them deterministically.
+  const submoduleConflicts = await detectSubmoduleConflicts(git, codeFiles, workdir);
+  if (submoduleConflicts.length > 0) {
+    for (const sm of submoduleConflicts) {
+      const resolved = await resolveSubmoduleConflict(git, sm, workdir);
+      if (resolved) {
+        const idx = codeFiles.indexOf(sm.file);
+        if (idx !== -1) codeFiles.splice(idx, 1);
+      }
+    }
   }
 
   // Handle delete conflicts (e.g. "deleted by them", "deleted by us")
@@ -758,7 +938,9 @@ export async function resolveConflictsWithLLM(
   } else if (codeFiles.length > 0 && skipRunnerAttempt) {
     console.log(chalk.blue(`\n  Skipping runner attempt (not available yet), using direct LLM API...`));
   }
-  
+
+  await runDeferredLockRegenIfNeeded();
+
   // Check if conflicts remain after first attempt
   // Check both git status AND actual file contents for conflict markers
   let statusAfter = await git.status();
@@ -829,6 +1011,21 @@ export async function resolveConflictsWithLLM(
       const fullPath = join(workdir, conflictFile);
 
       try {
+        // WHY: Early submodule pass can fail before package.json is fixed; retry here so
+        // index-based gitlink staging runs after the tree is cleaner (milady#1722).
+        try {
+          if (fs.lstatSync(fullPath).isDirectory()) {
+            const subOk = await resolveSubmoduleConflict(
+              git,
+              { file: conflictFile, isDirectory: true },
+              workdir
+            );
+            if (subOk) continue;
+          }
+        } catch {
+          /* missing path — fall through */
+        }
+
         let conflictedContent = fs.readFileSync(fullPath, 'utf-8');
         conflictedContent = preprocessConflictFileContent(conflictedContent);
         // WHY: When the main path fails due to parse validation we pass this into the top+tails fallback
@@ -1073,9 +1270,29 @@ export async function resolveConflictsWithLLM(
           // WHY: Catches corrupted resolutions (invalid JSON, catastrophic truncation)
           // before they get committed and pushed. Better to bail to manual resolution
           // than to push garbage.
-          const validation = validateResolvedContent(conflictFile, conflictedContent, result.content, {
+          let validation = validateResolvedContent(conflictFile, conflictedContent, result.content, {
             skipSizeRegression: resolutionSkipsSizeRegression,
           });
+          // Auto-repair common JSON merge artifacts before rejecting
+          if (!validation.valid && conflictFile.endsWith('.json')) {
+            debug('Attempting JSON auto-repair', { file: conflictFile, reason: validation.reason, contentChars: result.content.length, hasMarkers: hasConflictMarkers(result.content) });
+            const repaired = tryRepairJson(result.content);
+            if (repaired) {
+              const recheck = validateResolvedContent(conflictFile, conflictedContent, repaired, {
+                skipSizeRegression: resolutionSkipsSizeRegression,
+              });
+              if (recheck.valid) {
+                debug('JSON auto-repair succeeded', { file: conflictFile, originalReason: validation.reason });
+                console.log(chalk.blue(`    → Auto-repaired JSON (${validation.reason})`));
+                result = { resolved: true, content: repaired, explanation: result.explanation + ' (JSON auto-repaired)' };
+                validation = recheck;
+              } else {
+                debug('JSON auto-repair: repaired content still fails validation', { file: conflictFile, recheckReason: recheck.reason });
+              }
+            } else {
+              debug('JSON auto-repair: tryRepairJson returned null (could not fix)', { file: conflictFile });
+            }
+          }
           if (!validation.valid) {
             debug('Resolution rejected by validation', { file: conflictFile, reason: validation.reason });
             result = {
@@ -1201,7 +1418,26 @@ export async function resolveConflictsWithLLM(
           }
           if (fallbackResult.resolved) {
             // WHY: Same validation as main path — size/JSON and parse — so we never stage broken output.
-            const fbValidation = validateResolvedContent(conflictFile, conflictedContent, fallbackResult.content);
+            let fbContent = fallbackResult.content;
+            let fbValidation = validateResolvedContent(conflictFile, conflictedContent, fbContent);
+            if (!fbValidation.valid && conflictFile.endsWith('.json')) {
+              debug('Attempting JSON auto-repair (top+tails fallback)', { file: conflictFile, reason: fbValidation.reason, contentChars: fbContent.length, hasMarkers: hasConflictMarkers(fbContent) });
+              const repaired = tryRepairJson(fbContent);
+              if (repaired) {
+                const rc = validateResolvedContent(conflictFile, conflictedContent, repaired);
+                if (rc.valid) {
+                  debug('JSON auto-repair succeeded (top+tails fallback)', { file: conflictFile, originalReason: fbValidation.reason });
+                  console.log(chalk.blue(`    → Auto-repaired JSON in fallback (${fbValidation.reason})`));
+                  fbContent = repaired;
+                  fbValidation = rc;
+                  fallbackResult = { ...fallbackResult, content: repaired };
+                } else {
+                  debug('JSON auto-repair (top+tails): repaired content still fails validation', { file: conflictFile, recheckReason: rc.reason });
+                }
+              } else {
+                debug('JSON auto-repair (top+tails): tryRepairJson returned null', { file: conflictFile });
+              }
+            }
             if (fbValidation.valid) {
               const fbParse = await validateResolvedFileContent(fallbackResult.content, conflictFile);
               if (fbParse.valid) {
@@ -1250,6 +1486,12 @@ export async function resolveConflictsWithLLM(
     markerConflicts = await findFilesWithConflictMarkers(workdir, codeFiles);
     remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
   }
+
+  await runDeferredLockRegenIfNeeded();
+  statusAfter = await git.status();
+  gitConflicts = statusAfter.conflicted || [];
+  markerConflicts = await findFilesWithConflictMarkers(workdir, codeFiles);
+  remainingConflicts = [...new Set([...gitConflicts, ...markerConflicts])];
 
   return {
     success: remainingConflicts.length === 0,
@@ -1371,6 +1613,165 @@ async function resolveDeleteConflict(
     return true;
   } catch (e) {
     console.log(chalk.red(`    ✗ ${file}: failed to resolve delete conflict: ${e}`));
+    return false;
+  }
+}
+
+/**
+ * Submodule/directory conflict info.
+ */
+interface SubmoduleConflict {
+  file: string;
+  /** true when the path is a directory on disk (submodule checkout or gitlink). */
+  isDirectory: boolean;
+}
+
+/**
+ * Detect git submodule (gitlink) or directory conflicts.
+ *
+ * WHY: Submodules show up as directories on disk. `readFileSync` throws EISDIR,
+ * and the per-file LLM loop catches it generically — leaving the conflict unresolved
+ * and blocking the entire run (audit Cycle 74, milady#1722 `eliza` submodule).
+ *
+ * Detection: `git ls-files -s` shows mode 160000 for gitlinks. We also check
+ * `lstatSync` so plain directories (e.g. nested repos without .gitmodules) are caught.
+ */
+async function detectSubmoduleConflicts(
+  git: SimpleGit,
+  conflictedFiles: string[],
+  workdir: string
+): Promise<SubmoduleConflict[]> {
+  const results: SubmoduleConflict[] = [];
+  const { lstatSync } = await import('fs');
+
+  // Check git ls-files for mode 160000 (gitlink entries)
+  const gitlinkPaths = new Set<string>();
+  try {
+    const lsOutput = await git.raw(['ls-files', '-s', '--', ...conflictedFiles]);
+    for (const line of lsOutput.split('\n')) {
+      // Format: <mode> <hash> <stage>\t<path>
+      const m = line.match(/^160000\s+\S+\s+\d\t(.+)$/);
+      if (m) gitlinkPaths.add(m[1]);
+    }
+  } catch {
+    // ls-files may fail during merge; fall back to stat below
+  }
+
+  for (const file of conflictedFiles) {
+    const fullPath = join(workdir, file);
+    let isDir = gitlinkPaths.has(file);
+    if (!isDir) {
+      try {
+        isDir = lstatSync(fullPath).isDirectory();
+      } catch {
+        // Path doesn't exist or can't be stat'd — not a directory conflict
+      }
+    }
+    if (isDir) {
+      results.push({ file, isDirectory: true });
+    }
+  }
+  return results;
+}
+
+/**
+ * Stage a submodule gitlink from unmerged index stages (mode 160000).
+ *
+ * WHY: `git checkout --theirs -- path` fails with "does not have a commit checked out"
+ * when the submodule directory is empty or not initialized. The merge index still
+ * holds both OIDs — we can record the chosen commit directly (milady#1722 `eliza`).
+ */
+async function stageSubmoduleGitlinkFromIndex(
+  git: SimpleGit,
+  file: string,
+  preferTheirs: boolean
+): Promise<boolean> {
+  const raw = await git.raw(['ls-files', '-u', '--', file]).catch(() => '');
+  const stages = new Map<number, string>();
+  for (const line of raw.split('\n')) {
+    const m = line.match(/^160000\s+(\S+)\s+(\d)\t(.+)$/);
+    if (!m) continue;
+    const pathFromGit = m[3];
+    if (pathFromGit !== file && pathFromGit.replace(/\\/g, '/') !== file.replace(/\\/g, '/')) {
+      continue;
+    }
+    stages.set(Number(m[2]), m[1]);
+  }
+  const oid = preferTheirs
+    ? (stages.get(3) ?? stages.get(2) ?? stages.get(1))
+    : (stages.get(2) ?? stages.get(3) ?? stages.get(1));
+  if (!oid) return false;
+  await git.raw(['update-index', '--cacheinfo', `160000,${oid},${file}`]);
+  return true;
+}
+
+/**
+ * Resolve a submodule/directory conflict by accepting "theirs" (base branch) gitlink.
+ *
+ * WHY theirs: The PR is being merged into the base; the base branch typically has the
+ * authoritative submodule pointer. If both sides updated the pointer, accepting theirs
+ * keeps the base branch's commit reference. This is a safe default — the PR author can
+ * always update the submodule pointer in a follow-up commit.
+ *
+ * Order: remove dirty worktree dir → checkout --theirs/--ours → else stage OID from index.
+ * WHY rm first: Git refuses checkout when the path is a broken/empty submodule checkout.
+ */
+async function resolveSubmoduleConflict(
+  git: SimpleGit,
+  conflict: SubmoduleConflict,
+  workdir: string
+): Promise<boolean> {
+  const { file } = conflict;
+  const fullPath = join(workdir, file);
+  const resolvedRoot = resolve(workdir);
+  const resolvedPath = resolve(fullPath);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + sep)) {
+    console.log(chalk.red(`    ✗ ${file}: path escapes workdir`));
+    return false;
+  }
+
+  const rmTree = async (): Promise<void> => {
+    const fs = await import('fs');
+    try {
+      fs.rmSync(resolvedPath, { recursive: true, force: true });
+    } catch {
+      /* absent or not a directory */
+    }
+  };
+
+  try {
+    await rmTree();
+    try {
+      await git.raw(['checkout', '--theirs', '--', file]);
+      await git.add(file);
+      console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (accepted base branch pointer)`));
+      return true;
+    } catch {
+      await rmTree();
+      try {
+        await git.raw(['checkout', '--ours', '--', file]);
+        await git.add(file);
+        console.log(chalk.green(`    ✓ ${file}: submodule conflict resolved (kept current branch pointer)`));
+        return true;
+      } catch {
+        if (await stageSubmoduleGitlinkFromIndex(git, file, true)) {
+          console.log(
+            chalk.green(`    ✓ ${file}: submodule conflict resolved (staged gitlink from index, theirs)`)
+          );
+          return true;
+        }
+        if (await stageSubmoduleGitlinkFromIndex(git, file, false)) {
+          console.log(
+            chalk.green(`    ✓ ${file}: submodule conflict resolved (staged gitlink from index, ours)`)
+          );
+          return true;
+        }
+      }
+    }
+    console.log(chalk.red(`    ✗ ${file}: could not resolve submodule (no gitlink in merge index)`));
+    return false;
+  } catch (e) {
+    console.log(chalk.red(`    ✗ ${file}: failed to resolve submodule conflict: ${e}`));
     return false;
   }
 }

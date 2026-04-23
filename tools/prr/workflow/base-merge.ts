@@ -203,7 +203,6 @@ export async function checkAndMergeBaseBranch(
         } else {
           // All conflicts resolved - stage files and complete the merge
           const codeFiles = conflictedFiles.filter((f: string) => !isLockFile(f));
-          const lockFiles = conflictedFiles.filter((f: string) => isLockFile(f));
 
           // Verify no conflict markers remain (LLM can sometimes leave <<<<<<< in output)
           const workdir = (await git.revparse(['--show-toplevel'])).trim();
@@ -225,12 +224,9 @@ export async function checkAndMergeBaseBranch(
             };
           }
 
-          // Lock files should be regenerated — accept theirs to unblock the merge
-          if (lockFiles.length > 0) {
-            await git.checkout(['--theirs', '--', ...lockFiles]);
-            await git.add(lockFiles);
-            console.log(chalk.gray(`  ℹ ${formatNumber(lockFiles.length)} lock file(s) accepted from ${prInfo.baseBranch} — consider regenerating`));
-          }
+          // Lock files: already deleted/regenerated and staged inside resolveConflicts (handleLockFileConflicts).
+          // Do not checkout --theirs here — it errors with "pathspec did not match" when Git no longer
+          // has an unmerged entry, and would replace a freshly regenerated lock with the base version.
 
           await markConflictsResolved(git, codeFiles);
           const commitResult = await completeMerge(git, `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`);

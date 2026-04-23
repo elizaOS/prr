@@ -10,17 +10,29 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 **WHY:** Would reduce API round-trips when many threads are reply candidates; current parallel approach is already fast, so this is low priority unless we see latency issues on very large PRs.
 
-## Single-issue focus: allowedPaths must include issue target
+## Blast radius: optional follow-ups
 
-**Status:** **Improved** — **`trySingleIssueFix`** mirrors **`getAllowedPathsForIssues`** for **`getRenameTargetPath`** and **`issueRequestsTests` → `__tests__/…`** (same as batch). **`REPO_TOP_LEVEL`** includes common e2e roots (`e2e`, `playwright`, `cypress`, `fixtures`, `integration`, `wdio`). Empty-after-filter still falls back to **`[primaryPath]`**.
+**Status:** **Shipped** — regex import/include graph + directory + filename proximity, BFS both directions, issue annotation, optional dismiss, injection subset. See **CHANGELOG [Unreleased]** and **DEVELOPMENT.md** (Architecture — Blast radius).
 
-**Idea (ongoing):** Ensure single-issue focus always passes a runner-compatible allow set. When `allowedPaths` is empty or filtered to empty (e.g. path under a top-level not in `REPO_TOP_LEVEL`), the runner rejects every change and wrong-file counter can fire falsely.
+**Remaining (exploration only):**
 
-**WHY:** Pill audit (output.log) showed `expectedPaths: []` for single-issue fixes; the fixer correctly edited the target file but the runner rejected edits. We add top-level dirs as audits surface them, fallback to `[primaryPath]` when filter yields empty in recovery, and do not count edits to the issue's target as wrong-file.
+- **Parallel specifier resolution per file:** **`Promise.all`** over **`extractImports`** results for one source file could cut wall time; **trade-off:** burst of concurrent **`access`** / **`stat`** calls (FD pressure, noisy on slow/network FS). **WHY consider:** Very large monorepos with dense import lists.
+- **Cooperative yield:** **`setImmediate`** (or batch **`await`**) every N scanned files so a single graph build cannot monopolize the microtask queue end-to-end. **WHY:** Marginal for typical sizes; helps if **`PRR_BLAST_RADIUS_MAX_FILES`** is raised sharply.
+- **Recall without parsers:** e.g. read **`composer.json`** / **`tsconfig`** paths only if audits show systematic false negatives — **trade-off:** more config surface and maintenance; current design prefers regex + proximity over toolchain coupling.
+
+**WHY this section:** Operators and agents asked “what’s next” after the feature landed; these are **not** commitments — safe defaults and graceful degradation already cover most runs.
+
+## Single-issue focus + fixer allowed paths (non-standard repo roots)
+
+**Status:** **Done** (see **CHANGELOG [Unreleased]** — open allowed-path policy, Cycle 72). **`isPathAllowedForFix`** defaults to **open**: hard deny only (absolute, `node_modules`, `dist/`, `.cursor`, `.prr`, `root/` segment). **`PRR_STRICT_ALLOWED_PATHS=1`** restores the legacy first-segment heuristic; **`setDynamicRepoTopLevelDirs`** (from PR **`git diff --name-only`**) still extends **`REPO_TOP_LEVEL`** in strict mode. **`trySingleIssueFix`** continues to mirror **`getAllowedPathsForIssues`** for rename targets, tests, etc.
+
+**WHY (original pain):** Output.log audits showed **`expectedPaths: []`** / injection filtered when the primary path lived under a top-level dir not in the static list — runner rejected edits even though the issue targeted a real file. Open default plus docs removes the need to grow **`REPO_TOP_LEVEL`** for every customer layout; adjacent files in reviews remain editable without being in the PR diff’s first segment set.
+
+**Remaining (optional):** If strict mode users still see edge cases, consider logging when strict mode drops a path (debug-only) to tune **`REPO_TOP_LEVEL`** without flipping default behavior.
 
 ## State consistency: verifiedFixed vs dismissedIssues (mutual exclusivity)
 
-**Status:** Largely **done** — `markVerified` / `dismissIssue` and load paths enforce mutual exclusivity; `verifiedComments` included in overlap cleanup; `already-fixed` dismissals clear on HEAD change. **CHANGELOG [Unreleased]** has the full list.
+**Status:** **Done** for the write path — all comment lifecycle mutations that add/remove verified or dismissed rows go through **`transitionIssue`** (`tools/prr/state/state-transitions.ts`); **`markVerified`**, **`dismissIssue`**, **`StateManager`** helpers delegate there so **`verifiedThisSession`**, **`commentStatuses`**, and apply-failure fields stay aligned. Load paths still repair legacy overlap; **`already-fixed`** dismissals clear on HEAD change. See **CHANGELOG [Unreleased]** and **DEVELOPMENT.md**.
 
 **Remaining (optional):** Broader “clear all dismissals on HEAD change” (trade-off vs. stable not-an-issue dismissals); explicit migration notes for very old state files; extra tests if new edge cases appear.
 
@@ -44,18 +56,6 @@ From root **`pill-output.md`** triage — **prr** scope only:
 **Remaining (optional):** Lessons that forbid **`allowedPaths`** alternates without matching the primary path; richer NLP for “this file” without a literal path.
 
 **WHY (original):** Wrong-file lessons keyed under the same path blocked the fixer; load-time prune + prompt-time filter reduce reliance on single-issue-only workarounds.
-
-## Blast radius and focus masking
-
-**Idea:** Use the PR diff to compute a "blast radius" (changed files plus their upstream dependencies and downstream dependents), then focus the fix loop on that set and effectively ignore or deprioritize the rest.
-
-- **Upstream:** files that changed files import/depend on.
-- **Downstream:** files that import/depend on changed files.
-- **Use:** Restrict which issues we process and which files appear in the fix prompt so the model and tooling focus on the scope of the PR; mask off out-of-scope code.
-
-**WHY:** Audits show waste when the fix loop processes comments on files outside the PR's logical scope or when the prompt is diluted by many unrelated files. Focusing on blast radius reduces prompt size, improves fix accuracy, and avoids cross-file confusion (e.g. wrong-file exhaust). Tradeoff: some valid cross-file fixes might be deprioritized; depth limit and "changed files only" fallback keep scope reasonable.
-
-Would require: PR changed-file list (`git diff base...HEAD --name-only`), a dependency graph (e.g. TS/JS import/require parsing), radius computation (depth limit), and integration into issue filtering and prompt building. Start with TS/JS; fallback to "changed files only" when no graph is available.
 
 ## Final audit: deleted files and outdated threads
 
@@ -87,9 +87,15 @@ From [tools/prr/AUDIT-CYCLES.md](../tools/prr/AUDIT-CYCLES.md) consolidated find
 
 **WHY:** Current runs show high dismissal rates (e.g. 62% EXISTING for already-fixed, many stale/file-unchanged). That implies the generator often flags issues that the judge then dismisses. Closing the loop would reduce tokens (fewer issues to analyze/fix), improve signal-to-noise for humans, and make PRR's behavior more predictable. Tradeoff: requires generator support or a separate "dismissal → analysis prompt" pipeline; we already persist dismissal reasons, so export and pattern analysis are low-hanging first steps.
 
+## Prompt / snippet budgeting (consolidation)
+
+**Status:** **Done** for the shared layer — **`shared/prompt-budget.ts`** (`computeBudget`, `fitToBudget`, verify-batch helpers) replaces ad hoc per-call char caps for windowed snippets, full-file audit excerpts, and batch-verify “current code” truncation. **WHY:** One place to tune model limits vs reserved prompt overhead; reduces audit-cycle drift between paths.
+
+**Remaining (optional):** Thread an explicit **`modelId`** through every **`getCodeSnippet`** call site if we want fix-loop snippets to track the active fixer model (today some paths default to the generic ceiling).
+
 ## Further structural follow-ups (optional)
 
-**Idea A — Slim `LLMClient`:** Extract internal prompt builders (e.g. final-audit batching, conflict sub-prompts) into dedicated modules or a thin mixin, keeping **`complete()`** and transport as the single network entry. **WHY:** `client.ts` remains large; smaller units reduce review load and make provider-specific quirks easier to test in isolation. **Tradeoff:** Touch a hot file; needs careful re-export or import churn.
+**Idea A — Slim `LLMClient`:** **Partial** — **`llm-client-transport.ts`** and **`llm-client-types.ts`** split transport/types from **`client.ts`**; final-audit batching, conflict prompts, and other large builders may still move to dedicated modules. **WHY (remaining):** `client.ts` is still a hot file; smaller units reduce review load. **Tradeoff:** Further splits need careful re-export or import churn.
 
 **Idea B — `shared/` GitHub + LLM surfaces:** Move a stable **`GitHubAPI`** (or narrower port) to **`shared/github/`** and core **`LLMClient`** (transport + **`complete`**) to **`shared/llm/`** (names TBD) so **split-plan**, **split-exec**, and **story** depend only on **`shared/`** instead of **`tools/prr/`**. **WHY:** Clear package boundaries and fewer accidental PRR→tool cycles. **Tradeoff:** Large migration; wait until GitHub/LLM module APIs stop churning (see **AGENTS.md** — *Future shared migration*).
 

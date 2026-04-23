@@ -11,6 +11,7 @@ import {
   CODE_SNIPPET_CONTEXT_BEFORE,
   MAX_SNIPPET_LINES,
 } from '../../../shared/constants.js';
+import { computeBudget } from '../../../shared/prompt-budget.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import {
   buildNumberedFullFileSnippet,
@@ -112,6 +113,7 @@ export async function getCodeSnippet(
     const filePath = join(workdir, path);
     const content = await readFile(filePath, 'utf-8');
     const lines = content.split('\n');
+    const { availableForCode: codeCharBudget } = computeBudget({ reservedChars: 36_000 });
 
     // WHY unified anchors: A comment may have comment.line=11 (GitHub API) and body text
     // "around lines 52 - 93". Using only one or the other would show the wrong code. Merging
@@ -197,10 +199,18 @@ export async function getCodeSnippet(
       end = Math.min(lines.length, start + MAX_SNIPPET_LINES);
     }
 
-    const snippet = lines
-      .slice(start, end)
-      .map((l, i) => `${start + i + 1}: ${l}`)
-      .join('\n');
+    const shrinkCenter = Math.floor((minAnchor + maxAnchor) / 2);
+    const buildSnippet = () =>
+      lines
+        .slice(start, end)
+        .map((l, i) => `${start + i + 1}: ${l}`)
+        .join('\n');
+    let snippet = buildSnippet();
+    while (snippet.length > codeCharBudget && end - start > 12) {
+      if (end - shrinkCenter >= shrinkCenter - start) end--;
+      else start++;
+      snippet = buildSnippet();
+    }
 
     // Append (end of file) when snippet reaches the last line, or truncation marker otherwise
     if (end >= lines.length) {

@@ -5,7 +5,7 @@
  * (default 50k; PILL_OUTPUT_LOG_MAX_CHARS) to avoid 504 / FUNCTION_INVOCATION_TIMEOUT.
  */
 import { readFileSync, existsSync, statSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import type { PillConfig, PillContext } from './types.js';
 import { DEFAULT_PILL_CONTEXT_BUDGET_TOKENS } from './config.js';
 import {
@@ -126,7 +126,10 @@ export async function assembleContext(
   const prefix = config.logPrefix;
   const outputLogName = prefix ? `${prefix}-output.log` : 'output.log';
   const promptsLogName = prefix ? `${prefix}-prompts.log` : 'prompts.log';
-  const outputLogPath = join(targetDir, outputLogName);
+  const defaultOutputPath = join(targetDir, outputLogName);
+  const defaultPromptsPath = join(targetDir, promptsLogName);
+  const outputLogPath = config.outputLogPath ?? defaultOutputPath;
+  const promptsPath = config.promptsLogPath ?? defaultPromptsPath;
 
   // Debug: Log where pill is looking for logs
   console.log(`[Pill debug] Target directory: ${targetDir}`);
@@ -172,7 +175,6 @@ export async function assembleContext(
   }
 
   let promptsDigest: string | undefined;
-  const promptsPath = join(targetDir, promptsLogName);
   // Debug: Log where pill is looking for prompts.log
   console.log(`[Pill debug] Looking for prompts.log: ${promptsPath}`);
   if (existsSync(promptsPath)) {
@@ -217,20 +219,25 @@ export async function assembleContext(
   // Pill-on-itself: if primary logs are not pill's own, also include pill-output.log when present.
   const pillOutputName = 'pill-output.log';
   const pillPromptsName = 'pill-prompts.log';
-  if (outputLogName !== pillOutputName) {
-    const pillOutputPath = join(targetDir, pillOutputName);
-    if (existsSync(pillOutputPath)) {
+  const pillOutputPathInTarget = join(targetDir, pillOutputName);
+  const pillPromptsPathInTarget = join(targetDir, pillPromptsName);
+  const primaryOutputIsTargetPillSelf = resolve(outputLogPath) === resolve(pillOutputPathInTarget);
+  if (!primaryOutputIsTargetPillSelf) {
+    if (existsSync(pillOutputPathInTarget)) {
       try {
-        const pillRaw = readFileSync(pillOutputPath, 'utf-8');
+        const pillRaw = readFileSync(pillOutputPathInTarget, 'utf-8');
         if (pillRaw.trim()) {
           outputLog += '\n\n[PILL SELF-LOG]\n' + pillRaw;
         }
       } catch { /* ignore */ }
     }
-    const pillPromptsPath = join(targetDir, pillPromptsName);
-    if (existsSync(pillPromptsPath) && (!promptsDigest || promptsPath !== pillPromptsPath)) {
+    const primaryPromptsIsTargetPillSelf = resolve(promptsPath) === resolve(pillPromptsPathInTarget);
+    if (
+      existsSync(pillPromptsPathInTarget) &&
+      (!promptsDigest || !primaryPromptsIsTargetPillSelf)
+    ) {
       try {
-        const pillPromptsRaw = readFileSync(pillPromptsPath, 'utf-8');
+        const pillPromptsRaw = readFileSync(pillPromptsPathInTarget, 'utf-8');
         if (pillPromptsRaw.trim()) {
           const entries = parsePromptsLog(pillPromptsRaw);
           const formatted = formatPromptsRaw(entries);
