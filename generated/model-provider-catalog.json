@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-04-20T06:49:54.986Z",
+  "fetchedAtIso": "2026-04-27T06:58:06.529Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,21 +8,19 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 19
+      "idCount": 17
     },
     {
       "name": "openai",
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 83
+      "idCount": 86
     }
   ],
   "providers": {
     "anthropic": {
       "apiIds": [
-        "claude-3-haiku",
-        "claude-3-haiku-20240307",
         "claude-haiku-4-5",
         "claude-haiku-4-5-20251001",
         "claude-opus-4",
@@ -97,12 +95,15 @@
         "gpt-5.4-mini",
         "gpt-5.4-nano",
         "gpt-5.4-pro",
+        "gpt-5.5",
+        "gpt-5.5-pro",
         "gpt-audio",
         "gpt-audio-1.5",
         "gpt-audio-mini",
         "gpt-image-1",
         "gpt-image-1-mini",
         "gpt-image-1.5",
+        "gpt-image-2",
         "gpt-oss-120b",
         "gpt-oss-20b",
         "gpt-realtime",
@@ -179,6 +180,8 @@
       "gpt5.4mini": "gpt-5.4-mini",
       "gpt5.4nano": "gpt-5.4-nano",
       "gpt5.4pro": "gpt-5.4-pro",
+      "gpt5.5": "gpt-5.5",
+      "gpt5.5pro": "gpt-5.5-pro",
       "gpt54": "gpt-5-4",
       "gpt5chatlatest": "gpt-5-chat-latest",
       "gpt5codex": "gpt-5-codex",
@@ -191,6 +194,7 @@
       "gptimage1": "gpt-image-1",
       "gptimage1.5": "gpt-image-1.5",
       "gptimage1mini": "gpt-image-1-mini",
+      "gptimage2": "gpt-image-2",
       "gptoss120b": "gpt-oss-120b",
       "gptoss20b": "gpt-oss-20b",
       "gptrealtime": "gpt-realtime",
@@ -217,8 +221,6 @@
       "whisper1": "whisper-1"
     },
     "anthropicHyphenless": {
-      "claude3haiku": "claude-3-haiku",
-      "claude3haiku20240307": "claude-3-haiku-20240307",
       "claudehaiku45": "claude-haiku-4-5",
       "claudehaiku4520251001": "claude-haiku-4-5-20251001",
       "claudeopus4": "claude-opus-4",
