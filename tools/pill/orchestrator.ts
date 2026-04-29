@@ -343,8 +343,30 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     recordNoImprovements('no_api_key');
     return { result: null, reason: 'no_api_key' };
   }
+  if (config.llmProvider === 'nvidiacloud' && !config.nvidiaApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (nvidiacloud). Set NVIDIA_API_KEY or NVIDIA_CLOUD_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'openrouter' && !config.openrouterApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (openrouter). Set OPENROUTER_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
+    return { result: null, reason: 'no_api_key' };
+  }
 
   try {
+    // WHY wire onAssembleProgress: Large prompts.log → many story-read chapters before the audit LLM;
+    // static "Assembling context…" looked frozen (pill UX audit 2026-04).
+    const assembleConfig =
+      spinner
+        ? { ...config, onAssembleProgress: (msg: string) => update(`Assembling context — ${msg}`) }
+        : config.verbose
+          ? {
+              ...config,
+              onAssembleProgress: (msg: string) => console.log(chalk.gray(`  [pill] ${msg}`)),
+            }
+          : config;
+
     if (config.verbose) {
       console.log('Provider:', config.llmProvider);
       console.log('Audit model:', config.auditModel);
@@ -353,7 +375,7 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     }
 
     const llmClient = new LLMClient(config);
-    const ctx = await assembleContext(config, llmClient);
+    const ctx = await assembleContext(assembleConfig, llmClient);
 
     const budgetTokens = config.contextBudgetTokens ?? DEFAULT_PILL_CONTEXT_BUDGET_TOKENS;
     if (ctx.contextTrimmed && spinner) {

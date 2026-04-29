@@ -7,7 +7,7 @@ When PRR fixes or dismisses a review comment, it can post a short reply on that 
 - **Opt-in:** `--reply-to-threads` (or `PRR_REPLY_TO_THREADS=true`). Default is off so existing runs are unchanged.
 - **Fixed issues:** After the commit is **successfully pushed** (in the commit-and-push phase), PRR posts one reply per thread it verified as fixed: `Fixed in \`abc1234\`.` (short commit SHA).
 - **Dismissed issues:** At end of run, for reply-eligible dismissals (see below), PRR posts one reply per thread, e.g. `No changes needed — already addressed before this run.` or `Dismissed: <reason>`.
-- **Resolve threads:** Optional `--resolve-threads` collapses replied threads with a checkmark in the GitHub UI.
+- **Resolve threads:** On by default whenever thread replies are enabled (**`--reply-to-threads`** / **`PRR_REPLY_TO_THREADS`**). **`--no-resolve-threads`** or **`PRR_RESOLVE_THREADS=0`** leaves conversations open. PRR collapses threads with a checkmark in the GitHub UI. If a **prior** run already posted **“Fixed in …”** / a dismissal reply but threads stayed open, a **follow-up** run still resolves those threads (no duplicate reply), as long as the token’s login appears on the thread (**`getThreadComments`** idempotency check).
 
 ## WHY opt-in
 
@@ -57,6 +57,61 @@ Some “comments” are synthetic: we create them from issue comments (e.g. bot 
 
 “Fixed in \`sha\`” replies after **push** only run when a push actually happened (`!pushNothingToPush`). If you use **`--no-push`**, or the remote was already up to date after a fix, push-phase replies are skipped. **Final cleanup** calls `postThreadReplies` with **`verifiedThisSession`** (plus dismissals) so threads still get a “Fixed in …” when appropriate. **`repliedThreadIds`** prevents double posts if push-phase already replied.
 
+---
+
+## Thread working reactions (👀) — separate from thread replies
+
+PRR can post an **`eyes`** reaction on **inline** pull request review comments (**REST** [`reactions.createForPullRequestReviewComment`](https://docs.github.com/en/rest/reactions/reactions#create-reaction-for-a-pull-request-review-comment)) **while it is actively working** those comments in the fix loop. This is **not** the same feature as **thread replies** (which remain **opt-in** via **`--reply-to-threads`**).
+
+### What it does
+
+- **Default on:** **`--thread-working-reactions`** defaults to **true**; opt out with **`--no-thread-working-reactions`** or **`PRR_THREAD_WORKING_REACTIONS=0`** / **`false`** / **`off`**.
+- **When:** After **`issuesForPrompt`** is finalized and **before** the fixer runs (**`execute-fix-iteration.ts`**), and at the start of each single-issue focus iteration (**`trySingleIssueFix`** in **`recovery.ts`**).
+- **Targets:** Only issues whose **`comment.databaseId`** is a positive finite number (same rule as **`replyToReviewThread`**). Synthetic rows without a REST id are skipped.
+- **No API traffic:** **`--dry-run`**, missing **`github`** / **`prInfo`**, or **`hasGithubToken: false`** (resolver passes **`Boolean(config.githubToken?.trim())`**) → poster returns immediately.
+
+### WHY default on (product)
+
+Review bots often drop a 👀-style signal so humans know someone is looking at a thread. PRR does the same **without** requiring **`--reply-to-threads`**, so operators get lightweight GitHub-visible progress **during** long fix runs, not only after outcomes are known.
+
+### WHY separate from `--reply-to-threads`
+
+Thread replies change thread text and notification volume; they stay **opt-in** so unattended runs and read-only tokens stay safe. Reactions are **smaller surface area** (one REST POST per comment id, throttled) and are easier to disable globally when REST budget matters — so defaults can differ without coupling the two features.
+
+### WHY throttle + per-run dedupe
+
+Default-on means many comments could trigger many POSTs in one run. **`PRR_THREAD_WORKING_REACTION_MIN_MS`** (default **1,000** ms) spaces POSTs process-wide for that run. A **`Set`** on **`stateContext.threadWorkingReactionRunState.postedCommentDatabaseIds`** ensures the same id is not hammered repeatedly.
+
+### WHY record `not_found` and disable on hard `error`
+
+- **`404` / `not_found`:** The comment may be deleted or invisible; re-posting every iteration would waste calls. Treating **`not_found`** as “handled for this run” matches “don’t keep trying the same dead anchor.”
+- **`error` (e.g. 403 integration, 5xx):** Disabling for the rest of the run after the first hard failure avoids **N** identical errors on huge PRs when the token cannot react or GitHub is failing closed.
+
+### WHY backoff only on `rate_limited`
+
+GitHub may return **429** (or **403** with rate-ish wording). The poster **`sleep(2000)`** and retries **once**; if it is still rate-limited or errors, it sets **`disabledForRestOfRun`** so the **fix loop never fails** because of reactions.
+
+### WHY clear the cached poster each `PRResolver.run()`
+
+The poster closes over **`prInfo`**. Clearing **`threadWorkingReactionPoster`** at the start of each **`run()`** avoids a rare foot-gun where a long-lived **`PRResolver`** instance could keep stale **`owner/repo`** if someone reused it across PRs.
+
+### Configuration (reactions)
+
+| Option / env | Purpose |
+|--------------|---------|
+| **`--thread-working-reactions`** | Default **on** — post 👀 while working inline review comments (REST). |
+| **`--no-thread-working-reactions`** | Disable reactions for this invocation. |
+| **`PRR_THREAD_WORKING_REACTIONS`** | **`0`** / **`false`** / **`off`** — disable via env (same as **`--no-thread-working-reactions`**). |
+| **`PRR_THREAD_WORKING_REACTION_MIN_MS`** | Minimum ms between reaction POSTs in one run (default **1,000**; invalid / negative → default; capped at **60,000**). |
+
+### Code pointers
+
+- **`tools/prr/workflow/thread-working-reactions.ts`** — poster factory, spacing, dedupe, disable rules.
+- **`tools/prr/github/api.ts`** — **`createPullRequestReviewCommentReaction`** (non-throwing outcomes for 404 / 422 / rate-ish responses).
+- **`tools/prr/workflow/execute-fix-iteration.ts`** — calls **`notifyThreadWorking(issuesForPrompt)`** after prompt is built, before the fixer.
+- **`tools/prr/workflow/helpers/recovery.ts`** — **`notifyThreadWorking([issue])`** per single-issue attempt.
+- **`tools/prr/resolver.ts`** — builds the poster once per run (after **`run()`** clears any stale instance) and passes **`notifyThreadWorking`** through orchestrator callbacks.
+
 ## Configuration
 
 | Option / env | Purpose |
@@ -64,8 +119,11 @@ Some “comments” are synthetic: we create them from issue comments (e.g. bot 
 | `--reply-to-threads` | Enable posting replies on review threads when we fix or dismiss. |
 | `--no-reply-to-threads` | Disable (default). |
 | `PRR_REPLY_TO_THREADS=true` | Enable via env (e.g. CI). |
-| `--resolve-threads` | After replying, resolve the thread (collapse with checkmark). Default off. |
+| `--resolve-threads` | **Default on** when replies are enabled. After replying, resolve the thread (collapse with checkmark). Also resolves threads where **this token** already replied on a **previous** run (no re-post). |
+| `--no-resolve-threads` | Opt out: do not resolve threads after replying. |
+| `PRR_RESOLVE_THREADS` | **`0`** / **`false`** / **`off`** — disable resolving when replies are enabled via env (same as **`--no-resolve-threads`**). |
 | `PRR_BOT_LOGIN` | Optional override: GitHub login for cross-run idempotency. If unset, PRR uses the token’s login from **`GET /user`** when there are threads to reply to. |
+| **Thread working reactions (👀)** | Default **on**, separate from replies — full **WHY** / wiring / env in the **Thread working reactions** section above; CLI/env also in **README** / **AGENTS.md**. |
 
 ## 422 Validation Failed and retries
 
@@ -82,5 +140,6 @@ At the end of **`postThreadReplies`**, PRR prints a **single line** with **`form
 ## See also
 
 - **AGENTS.md** — “PRR thread replies” for a short reference.
-- **README.md** — “Thread replies (GitHub feedback)” in Features and CLI options table.
-- **Code:** `tools/prr/workflow/thread-replies.ts`, `tools/prr/github/api.ts` (`replyToReviewThread`, `resolveReviewThread`, `getThreadComments`, `getAuthenticatedLogin`).
+- **README.md** — “Thread replies (GitHub feedback)” in Features and CLI options table; thread working reactions in the same area.
+- **Code (replies):** `tools/prr/workflow/thread-replies.ts`, `tools/prr/github/api.ts` (`replyToReviewThread`, `resolveReviewThread`, `getThreadComments`, `getAuthenticatedLogin`).
+- **Code (👀 while working):** `tools/prr/workflow/thread-working-reactions.ts`, `createPullRequestReviewCommentReaction` in `tools/prr/github/api.ts`.

@@ -8,7 +8,12 @@ import type { Ora } from 'ora';
 import type { ReviewComment } from '../github/types.js';
 import type { UnresolvedIssue } from '../analyzer/types.js';
 import type { GitHubAPI } from '../github/api.js';
-import { type LLMClient, snippetShowsUuidCommentAlignedWithVersionRange } from '../llm/client.js';
+import {
+  type LLMClient,
+  isFinalAuditTruncationGuardPass,
+  isFinalAuditUuidAlignPass,
+  snippetShowsUuidCommentAlignedWithVersionRange,
+} from '../llm/client.js';
 import type { StateContext } from '../state/state-context.js';
 import { setPhase } from '../state/state-context.js';
 import * as State from '../state/state-core.js';
@@ -372,6 +377,8 @@ export async function runFinalAudit(
   debug('Starting final audit (verification cache not cleared - results are additive)');
 
   stateContext.finalAuditUncertainThisRun = [];
+  stateContext.finalAuditTruncationDemotionsThisRun = 0;
+  stateContext.finalAuditUuidAlignOverridesThisRun = 0;
   const dupForFinalAudit = resolveEffectiveDuplicateMapForComments(stateContext, duplicateMap, comments);
 
   // Pill-output #11: runtime overlap check (load() also repairs; this surfaces bugs in-session)
@@ -510,6 +517,22 @@ export async function runFinalAudit(
     const c = comments[i];
     auditResults.set(c.id, { stillExists: false, explanation: FINAL_AUDIT_SKIP_LLM_EXPLANATION });
   }
+
+  const truncationDemotions = [...auditResults.values()].filter(
+    (r) => !r.stillExists && isFinalAuditTruncationGuardPass(r.explanation),
+  ).length;
+  const uuidAlignOverrides = [...auditResults.values()].filter(
+    (r) => !r.stillExists && isFinalAuditUuidAlignPass(r.explanation),
+  ).length;
+  stateContext.finalAuditTruncationDemotionsThisRun = truncationDemotions;
+  stateContext.finalAuditUuidAlignOverridesThisRun = uuidAlignOverrides;
+  if (truncationDemotions > 0 || uuidAlignOverrides > 0) {
+    debug('Final audit post-check overrides (UNFIXED → pass)', {
+      truncationDemotions,
+      uuidAlignOverrides,
+    });
+  }
+
   // L1: Respect verified-fixed verdict — don't let final audit override earlier verification (e.g. stronger model).
   const alreadyVerifiedIds = new Set(Verification.getVerifiedComments(stateContext));
   if (!stateContext.auditOverridesThisRun) stateContext.auditOverridesThisRun = [];

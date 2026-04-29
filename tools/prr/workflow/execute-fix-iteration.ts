@@ -236,7 +236,14 @@ export async function executeFixIteration(
   fixIteration: number,
   /** LLM dedup: dismiss duplicate-cluster siblings when canonical gets ALREADY_FIXED (no-changes path). */
   duplicateMap?: Map<string, string[]>,
-  onDisableRunner?: (runnerName: string) => void
+  onDisableRunner?: (runnerName: string) => void,
+  /**
+   * Optional: post 👀 on inline review comments for `issuesForPrompt` **before** the fixer runs.
+   * WHY after `issuesForPrompt` is finalized: that is the exact set sent to the runner; reactions should
+   * match “PRR is working these threads now,” not every pre-filter row. WHY before runner: avoid extra
+   * REST latency inside the expensive LLM/edit phase; failures here are non-fatal (see `thread-working-reactions.ts`).
+   */
+  notifyThreadWorking?: (issues: UnresolvedIssue[]) => Promise<void>
 ): Promise<{
   shouldContinue: boolean;
   shouldBreak: boolean;
@@ -398,7 +405,9 @@ export async function executeFixIteration(
   
   if (promptDetails.shouldSkip) {
     if (workingUnresolved.length > 0) {
-      console.log(chalk.gray(`  All ${workingUnresolved.length} issue(s) in queue already verified — skipping fixer.`));
+      console.log(
+        chalk.gray(`  All ${formatNumber(workingUnresolved.length)} issue(s) in queue already verified — skipping fixer.`),
+      );
     }
     return {
       shouldContinue: false,
@@ -462,6 +471,10 @@ export async function executeFixIteration(
     };
   }
   lastPromptKey = promptKey;
+
+  if (notifyThreadWorking && issuesForPrompt.length > 0) {
+    await notifyThreadWorking(issuesForPrompt);
+  }
 
   // Run fixer tool
   debugStep('RUNNING FIXER TOOL');

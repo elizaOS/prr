@@ -27,6 +27,10 @@ import {
   MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS,
 } from '../../../shared/constants.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
+import { createLmStudioOpenAIClient } from '../../../shared/llm/lmstudio.js';
+import { createNvidiaCloudOpenAIClient } from '../../../shared/llm/nvidiacloud.js';
+import { createOllamaOpenAIClient } from '../../../shared/llm/ollama.js';
+import { createOpenRouterOpenAIClient } from '../../../shared/llm/openrouter.js';
 import { sanitizeCommentForPrompt } from '../analyzer/prompt-builder.js';
 import { hasConflictMarkers } from '../../../shared/git/git-lock-files.js';
 import { buildConflictResolutionPromptThreeWay } from '../git/git-conflict-chunked.js';
@@ -48,6 +52,8 @@ import {
   commentNeedsConservativeExistenceCheck,
   explanationHasConcreteFixEvidence,
   explanationMentionsMissingCodeVisibility,
+  FINAL_AUDIT_TRUNCATION_GUARD_PASS_PREFIX,
+  FINAL_AUDIT_UUID_ALIGN_PASS_EXPLANATION,
   finalAuditExplanationClaimsSnippetIsIncomplete,
   finalAuditSnippetLooksTruncatedOrExcerpt,
   snippetShowsUuidCommentAlignedWithVersionRange,
@@ -64,24 +70,40 @@ import { filterAttemptHistoryToBatch } from './llm-client-types.js';
  * you are inside `llm/` and need to avoid pulling the full client graph.
  */
 export { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
+export { createLmStudioOpenAIClient } from '../../../shared/llm/lmstudio.js';
+export { createNvidiaCloudOpenAIClient } from '../../../shared/llm/nvidiacloud.js';
+export { createOllamaOpenAIClient } from '../../../shared/llm/ollama.js';
+export { createOpenRouterOpenAIClient } from '../../../shared/llm/openrouter.js';
 export { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 export {
   commentNeedsConservativeExistenceCheck,
   explanationHasConcreteFixEvidence,
   explanationMentionsMissingCodeVisibility,
+  FINAL_AUDIT_TRUNCATION_GUARD_PASS_PREFIX,
+  FINAL_AUDIT_UUID_ALIGN_PASS_EXPLANATION,
   finalAuditExplanationClaimsSnippetIsIncomplete,
   finalAuditSnippetLooksTruncatedOrExcerpt,
+  isFinalAuditTruncationGuardPass,
+  isFinalAuditUuidAlignPass,
   snippetShowsUuidCommentAlignedWithVersionRange,
 } from './verification-heuristics.js';
 export type { ModelRecommendationContext } from './provider-probes.js';
 export {
   fetchAvailableAnthropicModels,
   fetchAvailableElizaCloudModels,
+  fetchAvailableNvidiaCloudModels,
   fetchAvailableOpenAIModels,
+  fetchAvailableLmStudioModels,
+  fetchAvailableOllamaModels,
+  fetchAvailableOpenRouterModels,
   getCheapModelForProvider,
   probeElizaCloudModel,
   validateElizaCloudKey,
+  validateLmStudioReachable,
+  validateNvidiaCloudKey,
+  validateOllamaReachable,
   validateOpenAIKey,
+  validateOpenRouterKey,
 } from './provider-probes.js';
 export {
   elizaCloudServerErrorExpectationDebug,
@@ -155,6 +177,14 @@ export class LLMClient {
         debug('PRR_VERIFIER_MODEL not set — using llmModel for verification. Set PRR_VERIFIER_MODEL for stronger verification.');
       }
       this.openai = createElizaCloudOpenAIClient(config.elizacloudApiKey!);
+    } else if (this.provider === 'nvidiacloud') {
+      this.openai = createNvidiaCloudOpenAIClient(config.nvidiaApiKey!);
+    } else if (this.provider === 'openrouter') {
+      this.openai = createOpenRouterOpenAIClient(config.openrouterApiKey!);
+    } else if (this.provider === 'ollama') {
+      this.openai = createOllamaOpenAIClient(config.ollamaApiKey ?? 'ollama');
+    } else if (this.provider === 'lmstudio') {
+      this.openai = createLmStudioOpenAIClient(config.lmstudioApiKey ?? 'lm-studio');
     } else {
       this.openai = new OpenAI({
         apiKey: config.openaiApiKey,
@@ -1550,8 +1580,7 @@ ${codeSnippet}
                   issueId: issue.id,
                 });
                 finalStatus = false;
-                finalExplanation =
-                  'FIXED (post-check): Shown code documents UUID versions 1-8 and regex uses [1-8]; prior UNFIXED repeated stale review text.';
+                finalExplanation = FINAL_AUDIT_UUID_ALIGN_PASS_EXPLANATION;
               }
             }
 
@@ -1571,7 +1600,7 @@ ${codeSnippet}
                 });
                 finalStatus = false;
                 finalExplanation =
-                  'FIXED (truncation guard): Partial snippet; model indicated visible excerpt insufficient for UNFIXED. ' +
+                  `${FINAL_AUDIT_TRUNCATION_GUARD_PASS_PREFIX} Partial snippet; model indicated visible excerpt insufficient for UNFIXED. ` +
                   finalExplanation;
               }
             }

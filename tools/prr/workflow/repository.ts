@@ -18,9 +18,18 @@ import * as Performance from '../state/state-performance.js';
 import * as Rotation from '../state/state-rotation.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import chalk from 'chalk';
-import { debug, debugStep, startTimer, endTimer, pluralize } from '../../../shared/logger.js';
-import { formatNumber } from '../ui/reporter.js';
-import { cloneOrUpdate, checkForConflicts, pullLatest, abortMerge, completeMerge, cleanupGitState, continueRebase } from '../../../shared/git/git-clone-index.js';
+import { debug, debugStep, startTimer, endTimer, pluralize, formatNumber } from '../../../shared/logger.js';
+import {
+  cloneOrUpdate,
+  checkForConflicts,
+  pullLatest,
+  abortMerge,
+  completeMerge,
+  cleanupGitState,
+  continueRebase,
+  ensureForkBaseRemote,
+  FORK_PR_BASE_REMOTE,
+} from '../../../shared/git/git-clone-index.js';
 import { scanCommittedFixes } from '../../../shared/git/git-commit-index.js';
 
 /**
@@ -85,7 +94,7 @@ export async function cloneOrUpdateRepository(
       console.log(chalk.gray(`  Repository size: ${formatRepoSize(sizeKb)}`));
     }
   }
-  // No spinner during clone — git clone/fetch output (e.g. "Cloning into...", "Receiving objects") is shown directly.
+  // No spinner during clone — WHY: git streams clone/fetch progress to the TTY; ora redraws the line and interferes. Post-clone uses ora.
   const additionalBranches = prInfo.baseBranch && prInfo.baseBranch !== prInfo.branch
     ? [prInfo.baseBranch]
     : undefined;
@@ -94,7 +103,11 @@ export async function cloneOrUpdateRepository(
     prInfo.branch,
     workdir,
     githubToken,
-    { preserveChanges: hasVerifiedFixes, additionalBranches }
+    {
+      preserveChanges: hasVerifiedFixes,
+      additionalBranches,
+      baseRepoCloneUrl: prInfo.baseRepoCloneUrl,
+    },
   );
   spinner.succeed('Repository ready');
   debug('Repository cloned/updated at', workdir);
@@ -112,7 +125,7 @@ export async function recoverVerificationState(
   branch: string,
   stateContext: StateContext,
   workdir: string,
-  options?: { prBaseBranch?: string }
+  options?: { prBaseBranch?: string; useUpstreamPrBaseForGitRecovery?: boolean }
 ): Promise<void> {
   debugStep('RECOVERING STATE FROM GIT');
   let headSha = '';
@@ -125,17 +138,28 @@ export async function recoverVerificationState(
     workdir,
     headSha: headSha || undefined,
     prBaseBranch: options?.prBaseBranch,
+    useUpstreamPrBaseForGitRecovery: options?.useUpstreamPrBaseForGitRecovery,
   });
   if (committedFixes.length > 0) {
     const n = committedFixes.length;
     stateContext.gitRecoveredVerificationCount = n;
     console.log(chalk.cyan(`Recovered ${formatNumber(n)} previously committed ${pluralize(n, 'fix', 'fixes')} from git history`));
+    let skippedAlreadyVerified = 0;
     for (const commentId of committedFixes) {
       if (!Verification.isVerified(stateContext, commentId)) {
         Verification.markVerified(stateContext, commentId, Verification.PRR_GIT_RECOVERY_VERIFIED_MARKER, {
           skipSessionTracking: true,
         });
+      } else {
+        skippedAlreadyVerified += 1;
       }
+    }
+    if (skippedAlreadyVerified > 0) {
+      console.log(
+        chalk.gray(
+          `  (${formatNumber(skippedAlreadyVerified)} id(s) already verified in state — skipped re-mark from git recovery)`,
+        ),
+      );
     }
     // WHY: So the first analysis skips stale re-check and unmark for these IDs (output.log audit).
     getState(stateContext).recoveredFromGitCommentIds = [...committedFixes];
@@ -165,10 +189,170 @@ function logLatentConflictWarning(
   console.log(chalk.gray(`  ${footer}`));
 }
 
+/** Same signature as **`resolveConflictsWithLLM`** passed into **`checkAndSyncWithRemote`**. */
+export type ResolveConflictsWithLLMFn = (
+  git: SimpleGit,
+  files: string[],
+  source: string,
+) => Promise<{ success: boolean; remainingConflicts: string[] }>;
+
+const MAX_REBASE_CONFLICT_ROUNDS = 50;
+
+export interface ResolvePullRebaseConflictsOptions {
+  /** When true, skip push after successful resolution (fix loop defers to **commit-and-push**). */
+  noPush?: boolean;
+  githubToken?: string;
+}
+
+export function isPullConflictErrorMessage(error?: string): boolean {
+  if (!error) return false;
+  const e = error.toLowerCase();
+  return e.includes('conflict') || e.includes('rebase conflicts');
+}
+
+/**
+ * After **`pullLatest`** failed with conflicts (or left rebase/merge conflict markers), run LLM
+ * conflict resolution and **`completeMerge`** / **`rebase --continue`** in a loop — same behavior
+ * as the setup sync path (**`checkAndSyncWithRemote`**). Used at **top of each fix iteration**
+ * when the remote moved (**`checkAndPullRemoteCommits`**).
+ */
+export async function resolvePullRebaseConflictsAfterFailedPull(
+  git: SimpleGit,
+  branch: string,
+  resolveConflicts: ResolveConflictsWithLLMFn,
+  options?: ResolvePullRebaseConflictsOptions,
+): Promise<{ ok: true; resolvedRounds: number } | { ok: false; error: string }> {
+  const noPush = options?.noPush === true;
+  const githubToken = options?.githubToken;
+
+  console.log(chalk.cyan('  Attempting to resolve pull/rebase conflicts automatically...'));
+  startTimer('Resolve pull conflicts');
+  let resolvedRounds = 0;
+
+  for (let round = 0; round < MAX_REBASE_CONFLICT_ROUNDS; round++) {
+    const status = await git.status();
+    const conflictedFiles = status.conflicted || [];
+
+    if (conflictedFiles.length === 0) {
+      const { getResolvedGitDir } = await import('../../../shared/git/git-merge.js');
+      const { existsSync: fsExists } = await import('fs');
+      const { join: pathJoin } = await import('path');
+      const resolvedGitDir = await getResolvedGitDir(git);
+      const inRebase =
+        fsExists(pathJoin(resolvedGitDir, 'rebase-merge')) || fsExists(pathJoin(resolvedGitDir, 'rebase-apply'));
+      if (!inRebase) break;
+      try {
+        await continueRebase(git);
+      } catch {
+        break;
+      }
+      continue;
+    }
+
+    debug('Pull/rebase deconflict round', { round: round + 1, conflictedFiles: conflictedFiles.length });
+    console.log(
+      chalk.cyan(
+        `  Deconflict round ${formatNumber(round + 1)}: ${formatNumber(conflictedFiles.length)} file(s)`,
+      ),
+    );
+
+    const resolution = await resolveConflicts(git, conflictedFiles, `origin/${branch}`);
+    debug('Pull conflict resolution result', {
+      round: round + 1,
+      success: resolution.success,
+      remaining: resolution.remainingConflicts.length,
+    });
+
+    if (!resolution.success) {
+      console.log(chalk.red('\n✗ Could not resolve pull/rebase conflicts automatically'));
+      console.log(chalk.red('  Remaining conflicts:'));
+      for (const file of resolution.remainingConflicts) {
+        console.log(chalk.red(`    - ${file}`));
+      }
+      console.log(chalk.yellow('\n  Please resolve conflicts manually before running prr.'));
+      await cleanupGitState(git);
+      endTimer('Resolve pull conflicts');
+      return { ok: false, error: 'Unresolved pull conflicts' };
+    }
+
+    resolvedRounds++;
+
+    const commitResult = await completeMerge(git, `Merge remote-tracking branch 'origin/${branch}'`);
+
+    if (!commitResult.success) {
+      const errMsg = commitResult.error || '';
+      if (errMsg.includes('CONFLICT') || errMsg.includes('conflict')) {
+        debug('Rebase --continue / merge commit hit another conflict, looping', { error: errMsg.slice(0, 120) });
+        continue;
+      }
+      console.log(chalk.red(`✗ Failed to complete merge/rebase: ${commitResult.error}`));
+      await cleanupGitState(git);
+      endTimer('Resolve pull conflicts');
+      return { ok: false, error: commitResult.error ?? 'merge/rebase failed' };
+    }
+  }
+
+  if (resolvedRounds === 0) {
+    console.log(chalk.yellow('  No conflicted files found to resolve.'));
+    await cleanupGitState(git);
+    endTimer('Resolve pull conflicts');
+    return { ok: false, error: 'Manual conflict resolution required' };
+  }
+
+  console.log(
+    chalk.green(
+      `✓ Pull/rebase conflicts resolved (${formatNumber(resolvedRounds)} round${resolvedRounds === 1 ? '' : 's'})`,
+    ),
+  );
+  if (!noPush) {
+    const { push } = await import('../../../shared/git/git-push.js');
+    const pushResult = await push(git, branch, false, githubToken);
+    if (pushResult.success && !pushResult.nothingToPush) {
+      console.log(chalk.green('  Pushed after rebase conflict resolution'));
+    } else if (pushResult.success && pushResult.nothingToPush) {
+      console.log(chalk.green('  Already up-to-date'));
+    } else {
+      console.log(chalk.yellow(`  Push failed after rebase conflict resolution: ${pushResult.error ?? 'Unknown'}`));
+    }
+  }
+  endTimer('Resolve pull conflicts');
+  return { ok: true, resolvedRounds };
+}
+
+/**
+ * **`pullLatest`** stash pop left conflict markers — same LLM resolution as setup (**`checkAndSyncWithRemote`**).
+ * Returns whether all listed files were cleaned (false = caller may proceed with warning).
+ */
+export async function resolveStashPopConflictsWithLLM(
+  git: SimpleGit,
+  resolveConflicts: ResolveConflictsWithLLMFn,
+  stashConflicts: string[],
+): Promise<boolean> {
+  if (stashConflicts.length === 0) return true;
+  console.log(chalk.cyan(`  Stash conflicts in: ${stashConflicts.join(', ')}`));
+  console.log(chalk.cyan('  Attempting to resolve stash conflicts automatically...'));
+  startTimer('Resolve stash conflicts');
+  const resolution = await resolveConflicts(git, stashConflicts, 'stashed changes');
+  if (!resolution.success) {
+    console.log(chalk.red('\n✗ Could not resolve stash conflicts automatically'));
+    console.log(chalk.red('  Remaining conflicts:'));
+    for (const file of resolution.remainingConflicts) {
+      console.log(chalk.red(`    - ${file}`));
+    }
+    console.log(chalk.yellow('\n  Stash conflicts remain - proceeding anyway'));
+    endTimer('Resolve stash conflicts');
+    return false;
+  }
+  console.log(chalk.green('✓ Stash conflicts resolved'));
+  endTimer('Resolve stash conflicts');
+  return true;
+}
+
 /**
  * Check for conflicts and sync with remote, auto-resolving if possible.
  * Pass githubToken when the remote is not configured with credentials so fetch/pull use one-shot auth.
  * **`prBaseBranch`:** GitHub PR base ref name (e.g. `main`); enables second **`merge-tree`** probe vs **`origin/<prBase>`** (GitHub dirty / mergeable).
+ * **`baseRepoCloneUrl`:** When set (fork PR), configures **`upstream`** and probes / materializes vs **`upstream/<prBase>`** so latent conflicts match GitHub’s upstream base.
  */
 export async function checkAndSyncWithRemote(
   git: SimpleGit,
@@ -178,13 +362,18 @@ export async function checkAndSyncWithRemote(
   githubToken?: string,
   /** When true, skip pushing after resolving conflicts (e.g. user passed --no-push). */
   noPush?: boolean,
-  prBaseBranch?: string
+  prBaseBranch?: string,
+  baseRepoCloneUrl?: string
 ): Promise<{success: boolean; error?: string}> {
   // Check for conflicts and sync with remote
   // WHY CHECK EARLY: Conflict markers in files will cause fixer tools to fail confusingly.
   // Better to detect and resolve conflicts upfront before entering the fix loop.
   // WHY fetchOpts: when remote has no credentials, fetch would prompt for password and hang; token unblocks.
   const fetchOpts = githubToken ? { githubToken } : undefined;
+  if (baseRepoCloneUrl?.trim()) {
+    await ensureForkBaseRemote(git, baseRepoCloneUrl.trim());
+  }
+  const prBaseRemote = baseRepoCloneUrl?.trim() ? FORK_PR_BASE_REMOTE : 'origin';
   debugStep('CHECKING FOR CONFLICTS');
   spinner.start('Fetching from origin and checking git status...');
   let conflictStatus: Awaited<ReturnType<typeof checkForConflicts>>;
@@ -192,6 +381,7 @@ export async function checkAndSyncWithRemote(
     conflictStatus = await checkForConflicts(git, branch, {
       ...fetchOpts,
       prBaseBranch: prBaseBranch?.trim() || undefined,
+      prBaseRemote: baseRepoCloneUrl?.trim() ? prBaseRemote : undefined,
     });
   } catch (err) {
     // WHY catch here: fetch can timeout or fail with message that includes git stdout/stderr; show it and return cleanly.
@@ -211,6 +401,7 @@ export async function checkAndSyncWithRemote(
   }
 
   const pb = prBaseBranch?.trim();
+  const prBaseRefRemote = baseRepoCloneUrl?.trim() ? FORK_PR_BASE_REMOTE : 'origin';
   if (
     pb &&
     pb !== branch.trim() &&
@@ -219,7 +410,7 @@ export async function checkAndSyncWithRemote(
     conflictStatus.latentConflictedFilesWithPrBase.length > 0
   ) {
     logLatentConflictWarning(
-      `⚠ Dry-merge probe (PR vs base — GitHub mergeable/dirty): merging origin/${pb} into HEAD would conflict in`,
+      `⚠ Dry-merge probe (PR vs base — GitHub mergeable/dirty): merging ${prBaseRefRemote}/${pb} into HEAD would conflict in`,
       conflictStatus.latentConflictedFilesWithPrBase,
       'This aligns with GitHub “not mergeable / dirty” more than the PR-tip probe alone. Set PRR_MATERIALIZE_LATENT_MERGE_BASE=1 to merge --no-commit now for early auto-resolve. PRR_DISABLE_LATENT_MERGE_PROBE_BASE=1 skips this probe.',
     );
@@ -227,7 +418,7 @@ export async function checkAndSyncWithRemote(
     debug('PR-base latent probe note', { prBase: pb, note: conflictStatus.latentProbePrBaseNote });
   }
 
-  /** Passed to LLM conflict resolution (`origin/…` label). Base merge uses `origin/<prBase>` when materialized here. */
+  /** Passed to LLM conflict resolution (`origin/…` label). Base merge uses `<prBaseRefRemote>/<prBase>` when materialized here. */
   let mergeConflictSourceLabel = `origin/${branch}`;
 
   const mat = process.env.PRR_MATERIALIZE_LATENT_MERGE?.trim().toLowerCase();
@@ -274,9 +465,9 @@ export async function checkAndSyncWithRemote(
       !conflictStatus.hasConflicts &&
       conflictStatus.latentConflictWithPrBase
     ) {
-      spinner.start(`Materializing merge with origin/${pb} (PR vs base latent conflicts)...`);
+      spinner.start(`Materializing merge with ${prBaseRefRemote}/${pb} (PR vs base latent conflicts)...`);
       try {
-        await git.raw(['merge', `origin/${pb}`, '--no-commit', '--no-ff']);
+        await git.raw(['merge', `${prBaseRefRemote}/${pb}`, '--no-commit', '--no-ff']);
       } catch {
         /* non-zero exit when Git stops on conflicts */
       }
@@ -288,7 +479,7 @@ export async function checkAndSyncWithRemote(
           hasConflicts: true,
           conflictedFiles: nowConflicted,
         };
-        mergeConflictSourceLabel = `origin/${pb}`;
+        mergeConflictSourceLabel = `${prBaseRefRemote}/${pb}`;
       } else {
         let mergeHead = '';
         try {
@@ -365,138 +556,32 @@ export async function checkAndSyncWithRemote(
     console.log(chalk.yellow(`⚠ Branch is ${formatNumber(conflictStatus.behindBy)} commits behind remote`));
     spinner.start('Pulling latest changes...');
     const pullResult = await pullLatest(git, branch, fetchOpts);
-    
+
+    let pullSucceeded = pullResult.success;
+
     if (!pullResult.success) {
       spinner.fail('Failed to pull');
       console.log(chalk.red(`  Error: ${pullResult.error}`));
-      
-      if (pullResult.error?.includes('conflict')) {
-        console.log(chalk.cyan(`  Attempting to resolve pull/rebase conflicts automatically...`));
-        startTimer('Resolve pull conflicts');
-        
-        // Rebase can conflict on multiple commits. Loop: resolve current
-        // conflict, continue rebase, handle next conflict if any.
-        // Cap iterations to avoid infinite loops on pathological cases.
-        const MAX_REBASE_CONFLICT_ROUNDS = 50;
-        let resolvedRounds = 0;
-        
-        for (let round = 0; round < MAX_REBASE_CONFLICT_ROUNDS; round++) {
-          const status = await git.status();
-          const conflictedFiles = status.conflicted || [];
-          
-          if (conflictedFiles.length === 0) {
-            // No more conflicts — check if rebase is still in progress (might have auto-continued).
-            // Use getResolvedGitDir so worktrees (where .git is a file) are handled (same as completeMerge).
-            const { getResolvedGitDir } = await import('../../../shared/git/git-merge.js');
-            const { existsSync: fsExists } = await import('fs');
-            const { join: pathJoin } = await import('path');
-            const resolvedGitDir = await getResolvedGitDir(git);
-            const inRebase = fsExists(pathJoin(resolvedGitDir, 'rebase-merge')) || fsExists(pathJoin(resolvedGitDir, 'rebase-apply'));
-            if (!inRebase) break;
-            // Rebase in progress but no conflicts — continue it
-            try {
-              await continueRebase(git);
-            } catch {
-              break;
-            }
-            continue;
-          }
-          
-          debug('Rebase conflict round', { round: round + 1, conflictedFiles: conflictedFiles.length });
-          console.log(chalk.cyan(`  Rebase conflict round ${round + 1}: ${conflictedFiles.length} file(s)`));
-          
-          const resolution = await resolveConflicts(
-            git,
-            conflictedFiles,
-            `origin/${branch}`
-          );
-          debug('Pull conflict resolution result', { round: round + 1, success: resolution.success, remaining: resolution.remainingConflicts.length });
-          
-          if (!resolution.success) {
-            console.log(chalk.red('\n✗ Could not resolve pull conflicts automatically'));
-            console.log(chalk.red('  Remaining conflicts:'));
-            for (const file of resolution.remainingConflicts) {
-              console.log(chalk.red(`    - ${file}`));
-            }
-            console.log(chalk.yellow('\n  Please resolve conflicts manually before running prr.'));
-            await cleanupGitState(git);
-            endTimer('Resolve pull conflicts');
-            return { success: false, error: 'Unresolved pull conflicts' };
-          }
-          
-          resolvedRounds++;
-          
-          // Continue the rebase to apply the next commit
-          const commitResult = await completeMerge(git, `Merge remote-tracking branch 'origin/${branch}'`);
-          
-          if (!commitResult.success) {
-            // completeMerge failure during rebase often means the next commit
-            // also conflicts — the error message will contain "CONFLICT".
-            // Loop back to handle it.
-            const errMsg = commitResult.error || '';
-            if (errMsg.includes('CONFLICT') || errMsg.includes('conflict')) {
-              debug('Rebase --continue hit another conflict, looping', { error: errMsg.slice(0, 120) });
-              continue;
-            }
-            console.log(chalk.red(`✗ Failed to complete rebase: ${commitResult.error}`));
-            await cleanupGitState(git);
-            endTimer('Resolve pull conflicts');
-            return { success: false, error: commitResult.error };
-          }
+
+      if (isPullConflictErrorMessage(pullResult.error)) {
+        const dr = await resolvePullRebaseConflictsAfterFailedPull(git, branch, resolveConflicts, {
+          noPush,
+          githubToken: fetchOpts?.githubToken,
+        });
+        if (!dr.ok) {
+          return { success: false, error: dr.error };
         }
-        
-        if (resolvedRounds > 0) {
-          console.log(chalk.green(`✓ Pull conflicts resolved (${resolvedRounds} rebase conflict round${resolvedRounds > 1 ? 's' : ''})`));
-          if (!noPush) {
-            spinner.start('Pushing after rebase conflict resolution...');
-            const { push } = await import('../../../shared/git/git-push.js');
-            const pushResult = await push(git, branch, false, fetchOpts?.githubToken);
-            if (pushResult.success && !pushResult.nothingToPush) {
-              spinner.succeed('Pushed after rebase conflict resolution');
-            } else if (pushResult.success && pushResult.nothingToPush) {
-              spinner.succeed('Already up-to-date');
-            } else {
-              spinner.fail('Push failed after rebase conflict resolution');
-              console.log(chalk.yellow(`  ${pushResult.error ?? 'Unknown'}. Push manually from workdir if needed.`));
-            }
-          }
-        } else {
-          console.log(chalk.yellow('  No conflicts found to resolve.'));
-          await cleanupGitState(git);
-          endTimer('Resolve pull conflicts');
-          return { success: false, error: 'Manual conflict resolution required' };
-        }
-        endTimer('Resolve pull conflicts');
+        pullSucceeded = true;
       } else {
         return { success: false, error: pullResult.error };
       }
     }
-    
-    if (pullResult.stashConflicts && pullResult.stashConflicts.length > 0) {
-      spinner.warn('Pulled with stash conflicts');
-      console.log(chalk.cyan(`  Stash conflicts in: ${pullResult.stashConflicts.join(', ')}`));
-      console.log(chalk.cyan('  Attempting to resolve stash conflicts automatically...'));
-      
-      startTimer('Resolve stash conflicts');
-      const resolution = await resolveConflicts(
-        git,
-        pullResult.stashConflicts,
-        'stashed changes'
-      );
-      
-      if (!resolution.success) {
-        console.log(chalk.red('\n✗ Could not resolve stash conflicts automatically'));
-        console.log(chalk.red('  Remaining conflicts:'));
-        for (const file of resolution.remainingConflicts) {
-          console.log(chalk.red(`    - ${file}`));
-        }
-        console.log(chalk.yellow('\n  Stash conflicts remain - proceeding anyway'));
-        // Don't bail out for stash conflicts - they're less critical
-      } else {
-        console.log(chalk.green('✓ Stash conflicts resolved'));
+
+    if (pullSucceeded) {
+      if (pullResult.stashConflicts && pullResult.stashConflicts.length > 0) {
+        spinner.warn('Pulled with stash conflicts');
+        await resolveStashPopConflictsWithLLM(git, resolveConflicts, pullResult.stashConflicts);
       }
-      endTimer('Resolve stash conflicts');
-    } else {
       spinner.succeed('Pulled latest changes');
     }
   }

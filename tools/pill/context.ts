@@ -3,6 +3,12 @@
  * Output log: included in full when small (≤30k tokens and ≤100k chars); otherwise
  * head+tail+story-read middle (like tools/story). Final output log is capped in chars
  * (default 50k; PILL_OUTPUT_LOG_MAX_CHARS) to avoid 504 / FUNCTION_INVOCATION_TIMEOUT.
+ *
+ * **Progress (`PillConfig.onAssembleProgress`):** Callers (e.g. **`orchestrator.runPillAnalysis`**) may set
+ * this so the user sees **which expensive step** is running — especially **`storyReadPlainText`** /
+ * **`processLogChapters`**, which issue **many sequential LLM requests** for large **`prompts.log`** files.
+ * **WHY:** Without updates, **`ora`** sat on **“Assembling context…”** for tens of minutes while only
+ * **`[Pill debug]`** lines explained work; operators assumed a hang.
  */
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, resolve } from 'path';
@@ -112,13 +118,17 @@ function getOutputLogMiddle(raw: string, headLines: number, tailLines: number): 
 
 /**
  * Assemble context. Pass llmClient so large logs can be story-read.
+ * Fires **`config.onAssembleProgress`** at phase boundaries and forwards **`onChapterProgress`**
+ * into story-read so spinners stay informative (see module doc **WHY**).
  */
 export async function assembleContext(
   config: PillConfig,
   llmClient?: LLMClientForProcessor
 ): Promise<PillContext> {
   const targetDir = config.targetDir;
+  const prog = config.onAssembleProgress;
 
+  prog?.('Loading docs, source, and directory tree…');
   let docs = readDocFiles(targetDir);
   let sourceFiles = readSourceFiles(targetDir, SOURCE_TOKEN_BUDGET);
   let directoryTree = readDirectoryTree(targetDir);
@@ -141,6 +151,7 @@ export async function assembleContext(
     const stats = statSync(outputLogPath);
     console.log(`[Pill debug] output.log exists: ${outputLogPath} (${stats.size} bytes)`);
     try {
+      prog?.(`Reading output.log (${stats.size.toLocaleString()} bytes)…`);
       const raw = readFileSync(outputLogPath, 'utf-8');
       const tokens = estimateTokens(raw);
       // WHY two conditions: Char threshold guards against token underestimation; avoids sending ~183k chars (504).
@@ -153,8 +164,17 @@ export async function assembleContext(
         const tail = getOutputLogTail(raw, OUTPUT_LOG_HEAD_TAIL_LINES);
         const middle = getOutputLogMiddle(raw, OUTPUT_LOG_HEAD_TAIL_LINES, OUTPUT_LOG_HEAD_TAIL_LINES);
         const excerpt = extractStructuredOutputLogEvidence(raw);
+        prog?.(
+          `Summarizing output.log middle (${tokens.toLocaleString()} tok, ${middle.length.toLocaleString()} chars)…`,
+        );
         const summaryMiddle = middle
-          ? await storyReadPlainText(middle, llmClient, { model: config.llmModel })
+          ? await storyReadPlainText(middle, llmClient, {
+              model: config.llmModel,
+              onChapterProgress: (cur, total) => {
+                if (total <= 1) return;
+                prog?.(`Output.log story-read: ${cur.toLocaleString()}/${total.toLocaleString()}…`);
+              },
+            })
           : '';
         const middleBlock = summaryMiddle
           ? ['', '[ ... middle section summarized ... ]', summaryMiddle].join('\n')
@@ -182,6 +202,7 @@ export async function assembleContext(
     console.log(`[Pill debug] prompts.log exists: ${promptsPath} (${stats.size} bytes)`);
     let rawPrompts: string;
     try {
+      prog?.(`Reading prompts.log (${stats.size.toLocaleString()} bytes)…`);
       rawPrompts = readFileSync(promptsPath, 'utf-8');
       console.log(`[Pill debug] Read prompts.log: ${rawPrompts.length} chars`);
     } catch (err) {
@@ -195,9 +216,19 @@ export async function assembleContext(
       console.log(`[Pill debug] Parsed prompts.log: ${entries.length} entries, ${withContent.length} with content, ${allEmpty ? 'ALL EMPTY' : 'has content'}`);
       const promptsTokens = estimateTokens(rawPrompts);
       if (promptsTokens <= LOG_RAW_THRESHOLD_TOKENS) {
+        prog?.(`Building prompts digest (${entries.length.toLocaleString()} entries, raw)…`);
         promptsDigest = formatPromptsRaw(entries);
       } else if (llmClient) {
-        promptsDigest = await processLogChapters(entries, llmClient, { model: config.llmModel });
+        prog?.(
+          `Summarizing prompts.log (${entries.length.toLocaleString()} entries, ${promptsTokens.toLocaleString()} tok)…`,
+        );
+        promptsDigest = await processLogChapters(entries, llmClient, {
+          model: config.llmModel,
+          onChapterProgress: (cur, total) => {
+            if (total <= 1) return;
+            prog?.(`Prompts digest: ${cur.toLocaleString()}/${total.toLocaleString()}…`);
+          },
+        });
       } else {
         promptsDigest = formatPromptsRaw(entries);
       }

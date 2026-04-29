@@ -91,13 +91,14 @@ There are plenty of AI tools that autonomously create PRs, write code, and push 
 - **Push retry cleanup**: If the post-rejection rebase fails (e.g. conflicts or "rebase-merge directory already exists"), we try `rebase --abort` first, then fall back to full git cleanup only if abort fails. *Why*: Abort restores commits; full cleanup is for stuck/corrupt state so the next run isn’t blocked.
 - **Non-interactive rebase continue**: All `rebase --continue` paths use `continueRebase(git)`, which sets `GIT_EDITOR=true` so git never opens an editor. *Why*: In headless/workdir runs there’s no TTY; the configured editor would fail with "Standard input is not a terminal" or "problem with the editor 'editor'". One helper keeps behavior consistent.
 - **Base branch merge (explicit refspec):** When merging the PR's base branch (e.g. `v2.0.0`) into the PR branch, PRR fetches the base with an explicit refspec (`+refs/heads/<branch>:refs/remotes/origin/<branch>`) so the tracking ref is always updated. *Why*: On `--single-branch` clones the default fetch config only includes the PR branch; a plain `git fetch origin v2.0.0` would not update `origin/v2.0.0`, leaving a stale ref and the merge-base check incorrectly reporting "already up-to-date", so the PR would stay "dirty" on GitHub. Explicit refspec forces the ref to match the remote tip every run.
-- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically. Resolution is **3-way** (base + ours + theirs), with **sub-chunking** at AST boundaries when a conflict region exceeds the model’s segment cap, and **validation** (parse TS/JS) before write/stage. When the main path fails, a **top+tails fallback** runs (whole-file story + top of conflict + tail OURS/theirs). Parse validation failures trigger up to two retries with the error (and location) in the prompt. *Why*: Two-way merge forces the model to guess; proper merge needs the common ancestor. Oversized regions are split at statement boundaries. Fallback gives a second chance without changing the default path. See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md).
+- **Auto-conflict resolution**: Uses LLM tools to resolve merge conflicts automatically. Resolution is **3-way** (base + ours + theirs), with **sub-chunking** at AST boundaries when a conflict region exceeds the model’s **segment char cap** **or** exceeds **`CONFLICT_OVERSIZED_LINE_THRESHOLD`** lines (`TOP_TAILS_FALLBACK_MAX_CHUNK_LINES + 20` — **WHY:** dense short-line regions can stay under the char cap but still blow one-shot merges; eliza-style route files). If AST boundaries collapse to a **single** giant segment, **fallback** splits (blank lines / line cap) before one-shotting. **Validation** (parse TS/JS, size-regression) before write/stage. **Attempt 2** (direct API) sorts by **largest conflict first**, prints **`(i of n)`** per file, and a **heartbeat** with active path; a **yellow preflight** warns when any region is too large for **top+tails** if the main merge fails. When the main path fails, **top+tails** runs where safe (cap **280** lines per region). Parse validation failures trigger up to two retries with the error (and location) in the prompt. *Why*: Two-way merge forces the model to guess; proper merge needs the common ancestor. See [tools/prr/CONFLICT-RESOLUTION.md](tools/prr/CONFLICT-RESOLUTION.md).
 - **Conflict prompt injection skip**: File-content injection is skipped for conflict-resolution prompts. *Why*: The conflict prompt already embeds each file; re-injecting would duplicate content (e.g. CHANGELOG twice), blow prompt size, and cause 504s.
 - **Large conflicted files (chunked embed)**: For files over ~30k chars with conflicts, only the conflict sections (with context) are embedded in the prompt, not the full file. *Why*: Full-file embed doubles prompt size and causes 504s; sections are enough for correct `<search>`/`<replace>` output.
 - **Token auto-injection**: Ensures GitHub token is in remote URL for push authentication; fetch and pull also use the token when the remote has no credentials (one-shot auth URL), so "Checking for conflicts" and pull never hang on a password prompt. **Why:** Repos cloned without token in the URL would otherwise block during fetch with no visible output; timeout + token fix it (see CHANGELOG).
 - **CodeRabbit auto-trigger**: Detects manual mode and triggers review on startup if needed
 - Batched commits with LLM-generated messages (not "fix review comments")
-- **Thread replies (GitHub feedback)**: With `--reply-to-threads`, PRR posts a short reply on each review thread when it fixes or dismisses an issue (e.g. "Fixed in \`abc1234\`." or "No changes needed — already addressed before this run."). Optional `--resolve-threads` collapses replied threads. **WHY:** Reviewers see visible feedback in the PR conversation instead of only in PRR's exit summary; one reply per thread keeps noise low and leaves room for human follow-up. See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
+- **Thread replies (GitHub feedback)**: With `--reply-to-threads`, PRR posts a short reply on each review thread when it fixes or dismisses an issue (e.g. "Fixed in \`abc1234\`." or "No changes needed — already addressed before this run."). **Resolving threads** (collapse with checkmark) is **on by default** with replies; use **`--no-resolve-threads`** or **`PRR_RESOLVE_THREADS=0`** to leave conversations open. **WHY:** Reviewers see visible feedback in the PR conversation instead of only in PRR's exit summary; one reply per thread keeps noise low and leaves room for human follow-up. See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
+- **Thread working reactions (👀)**: While working each inline review comment, PRR can post an **`eyes`** reaction on that comment (**REST**), **on by default**, independent of **`--reply-to-threads`**. **WHY:** Gives the same lightweight “someone is looking at this” signal many review bots use, during long fix runs, without opting into full thread replies. Throttled + deduped + disables on sustained rate-limit or first hard API error so REST issues never stall the fix loop. Opt out: **`--no-thread-working-reactions`** or **`PRR_THREAD_WORKING_REACTIONS=0`**. See **[docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md)** (section *Thread working reactions*).
 
 ### Token & cost optimizations
 - **Fix iterations default**: `--max-fix-iterations` defaults to `0` meaning *unlimited* — the fix loop runs until all issues are resolved or another exit (e.g. stalemate). *Why*: Previously 0 was used literally so the loop ran zero times; we now map 0 to "no cap" so the default behaves as documented.
@@ -190,7 +191,7 @@ The **split-plan** tool analyzes a large PR (diffs, commits, dependencies), disc
 
 ### Pill: Program Improvement Log Looker
 
-**pill** audits a project using its output.log and prompts.log (from prr, story, split-exec, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. If you keep **pill-output.md** in this repository, maintain it as a short **index** of open follow-ups and merge new pill output into that index (**DEVELOPMENT.md** — Pill output triage). It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. Pill runs on close only when you pass **`--pill`** (prr, story, split-exec, split-plan). See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
+**pill** audits a project using its output.log and prompts.log (from prr, story, split-exec, or a previous pill run) and appends an improvement plan to **pill-output.md** and **pill-summary.md**. If you keep **pill-output.md** in this repository, maintain it as a short **index** of open follow-ups and merge new pill output into that index (**DEVELOPMENT.md** — Pill output triage). It is analysis-only: no fixers, verification, or commits. *Why*: Logs are evidence of behavior (failures, retries, model rotations); turning that into an actionable plan helps improve the project without duplicating prr’s fix loop. Pill runs on close only when you pass **`--pill`** (prr, story, split-exec, split-plan). While **assembling context** (especially story-read on huge logs), the spinner shows **stages and chapter progress** (`i/n`); **`--verbose`** prints the same as gray **`[pill] …`** lines. See **[tools/pill/README.md](tools/pill/README.md)** for full documentation and WHYs.
 
 ```bash
 # Or link globally (prr, pill, split-plan, split-exec, and story available)
@@ -210,7 +211,11 @@ story --help      # PR narrative & changelog
 |----------|---------|
 | `GITHUB_TOKEN` | GitHub API access |
 | `PRR_GIT_SHA` / `PRR_SOURCE_COMMIT` | Optional — stamp startup/`output.log` when the prr tree has **no** `.git` (vendored install). If `.git` exists in the prr package root, revision comes from `git rev-parse` instead. **Not** `GITHUB_SHA` (host repo). |
-| `ELIZACLOUD_API_KEY` / provider keys | LLM gateway or direct API |
+| `ELIZACLOUD_API_KEY` / provider keys | LLM gateway or direct API: **`ANTHROPIC_API_KEY`**, **`OPENAI_API_KEY`**, **`NVIDIA_API_KEY`** or **`NVIDIA_CLOUD_API_KEY`** (NVIDIA NIM / integrate API), **`OPENROUTER_API_KEY`** (OpenRouter). First-class providers: **`nvidiacloud`**, **`openrouter`**, **`ollama`**, **`lmstudio`** (see below). |
+| `NVIDIA_BASE_URL` | Optional — OpenAI-compatible API root for **`nvidiacloud`** (default **`https://integrate.api.nvidia.com/v1`**). |
+| `OPENROUTER_BASE_URL` | Optional — API root for **`openrouter`** (default **`https://openrouter.ai/api/v1`**). |
+| `OPENROUTER_HTTP_REFERER` / `OPENROUTER_APP_TITLE` | Optional — OpenRouter [ranking headers](https://openrouter.ai/docs) (`HTTP-Referer`, `X-Title`) when using **`openrouter`**. |
+| `OPENAI_BASE_URL` | Optional — when using **`PRR_LLM_PROVIDER=openai`** or the **`llm-api`** fixer, the OpenAI client / HTTP layer uses this as the API root. For **local OpenAI-compatible** servers it must end with **`/v1`** (e.g. Ollama **`http://host:11434/v1`**, LM Studio **`http://localhost:1234/v1`**). This is **not** Ollama’s native **`/api/...`** URL (that tree is a different protocol). See **Local OpenAI-compatible backends** below. You can still point **`openai`** at NVIDIA or OpenRouter URLs if you prefer one key layout; first-class **`nvidiacloud`** / **`openrouter`** IDs give clearer defaults and diagnostics. |
 | `PRR_LLM_MODEL` | Pin the primary fixer/verifier model |
 | `PRR_VERIFIER_MODEL` | Stronger model for batch verification (when default is weak) |
 | `PRR_FINAL_AUDIT_MODEL` | Model for adversarial final-audit pass only |
@@ -226,7 +231,7 @@ story --help      # PR narrative & changelog
 | `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS` | After N fix iterations **since each model was session-skipped**, drop that key so rotation can retry it (`0` / unset = off) |
 | `PRR_DIMINISHING_RETURNS_ITERATIONS` | Warn after N consecutive iterations with no new verified fixes (`0` = off) |
 | `PRR_EXIT_ON_STALE_BOT_REVIEW` | `1` / `true` — exit setup **before clone** if bot review SHA ≠ PR HEAD (stale inline comments) |
-| `PRR_EXIT_ON_UNMERGEABLE` | `1` / `true` — exit setup **before clone** when GitHub reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--merge-base` is not set** |
+| `PRR_EXIT_ON_UNMERGEABLE` | `1` / `true` — exit when GitHub (REST) reports **`mergeable: false`** or **`mergeableState: dirty`** and **`--no-merge-base`** is in effect: **before clone** (setup) **and** at the **start of each push iteration** after a fresh `pulls.get` (so `mergeable: null` at first fetch does not skip the check). With default base merge, PRR still runs but logs visible merge-noise warnings (see **DEVELOPMENT.md** / Cycle 80). |
 | `PRR_CLEAR_ALL_DISMISSED_ON_HEAD` | `1` / `true` — on PR HEAD change, clear **all** dismissals (default: clear **`already-fixed`** and **`chronic-failure`**; keep other categories) |
 | `PRR_STRICT_ALLOWED_PATHS` | `1` / `true` — restore **legacy** first-segment allowlist for fixer paths (static **`REPO_TOP_LEVEL`** + PR **`changedFiles`** roots). **Default (unset):** any repo-relative path passes except absolute, **`node_modules`**, **`dist/`**, **`.cursor` / `.prr` / `root`**. **WHY default open:** audits showed unknown roots like **`agent/`** were stripped from **`allowedPaths`**, blocking injection and wasting iterations; adjacent files in reviews need to be editable without maintaining a global dir list. |
 | `PRR_MID_LOOP_NEW_COMMENT_CAP` | Max new bot threads to enqueue **per mid–fix-loop batch** (default **`45`**). **`0`** = unlimited. Defers overflow until the next full comment analysis. |
@@ -242,10 +247,13 @@ story --help      # PR narrative & changelog
 | `PRR_MATERIALIZE_LATENT_MERGE_BASE` | `1` / `true` — when the **PR-vs-base** probe predicts conflicts, run **`git merge origin/<prBase> --no-commit --no-ff`** for early LLM resolution |
 | `PRR_BOT_LOGIN` | Optional override for thread-reply idempotency; if unset, PRR uses `GET /user` with your token |
 | `PRR_REPLY_TO_THREADS` | `true` / `1` — opt in to posting thread replies (same as CLI **`--reply-to-threads`**) |
+| `PRR_RESOLVE_THREADS` | **`0`** / **`false`** / **`off`** — when replies are on, do **not** resolve review threads (default is to resolve; same as **`--no-resolve-threads`**) |
+| `PRR_THREAD_WORKING_REACTIONS` | **`0`** / **`false`** / **`off`** — disable 👀 on review comments while working issues (default: on; same as **`--no-thread-working-reactions`**) |
+| `PRR_THREAD_WORKING_REACTION_MIN_MS` | Minimum ms between reaction POSTs in one run (default **`1000`**; invalid values fall back to default) |
 | `PRR_THINKING_BUDGET` | Extended thinking token budget for Claude-class models; values above **500,000** clamp with a warning (**`shared/config.ts`**) |
 | `PRR_LLM_MIN_DELAY_MS` | Override min ms between ElizaCloud request starts per slot (default **6,000** — see **`shared/constants/models.ts`**) |
 | `PRR_LLM_TASK_TIMEOUT_MS` | Optional cap (ms) on concurrent pool tasks (**`0`** = none) |
-| `PRR_LLM_API_REQUEST_TIMEOUT_MS` | **llm-api** only: fixed per-request timeout (ms) for non-full-file fix calls; unset = auto **90s → 180s** by prompt size (full-file rewrite stays **180s**) |
+| `PRR_LLM_API_REQUEST_TIMEOUT_MS` | **llm-api** only: fixed per-request timeout (ms) for non-full-file fix calls; unset = auto **90s → 180s** by prompt size (full-file rewrite stays **180s**). **Merge-conflict** batches (`MERGE CONFLICT RESOLUTION`) use **lower** char thresholds for the same caps (**18k+ → 120s**, **28k+ → 150s**, **45k+ → 180s**) so ~30–40k batches are less likely to hit client timeouts |
 | `PRR_CLONE_TIMEOUT_MS` / `PRR_FETCH_TIMEOUT_MS` | Clone / fetch timeouts for large remotes (**AGENTS.md** / **Troubleshooting**) |
 | `PRR_DISABLE_CONFLICT_SEPARATOR_REPAIR` | `1` — disable automatic insertion of missing **`=======`** between conflict markers |
 | `PRR_DISABLE_MODEL_CATALOG_SOLVABILITY` / `PRR_DISABLE_MODEL_CATALOG_AUTOHEAL` | Disable catalog **0a6** dismissal and/or quoted-literal auto-heal (**AGENTS.md**) |
@@ -270,6 +278,16 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 # PRR_LLM_MODEL=gpt-4o
 # OPENAI_API_KEY=sk-xxxx
 
+# Or NVIDIA NIM / integrate (OpenAI-compatible)
+# PRR_LLM_PROVIDER=nvidiacloud
+# NVIDIA_API_KEY=nvapi-...
+# PRR_LLM_MODEL=meta/llama-3.1-405b-instruct
+
+# Or OpenRouter
+# PRR_LLM_PROVIDER=openrouter
+# OPENROUTER_API_KEY=sk-or-...
+# PRR_LLM_MODEL=google/gemini-2.0-flash-001
+
 # Default fixer tool (rotates automatically when stuck)
 # If not set, prr will auto-detect which tool is installed
 # PRR_TOOL=cursor
@@ -283,6 +301,56 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 # Optional: legacy strict first-segment allowlist for fixer paths (see README “Fixer allowed paths”).
 # PRR_STRICT_ALLOWED_PATHS=1
 ```
+
+**Local OpenAI-compatible backends (Ollama, LM Studio)**  
+Both servers expose an **OpenAI-compatible** **`/v1`** HTTP API. PRR supports them two ways:
+
+1. **Preferred — first-class providers:** **`PRR_LLM_PROVIDER=ollama`** or **`lmstudio`** (see bullets below). **WHY:** Dedicated defaults (`OLLAMA_BASE_URL` / `LMSTUDIO_BASE_URL`), **`max_tokens`**-style request fields, startup reachability checks, and **`llm-api`** selection follow **`PRR_LLM_PROVIDER`** so the fixer subprocess matches PRR’s analysis backend without hand-syncing **`OPENAI_BASE_URL`**.
+
+2. **Legacy — generic OpenAI client:** **`PRR_LLM_PROVIDER=openai`** plus **`OPENAI_BASE_URL`** ending in **`/v1`**, **`OPENAI_API_KEY`** (often any non-empty string locally), and **`PRR_LLM_MODEL`**. **WHY:** One code path for any OpenAI-compatible root (including OpenRouter/NVIDIA URLs) when you already use that layout; same **`/v1`** rule — the SDK and **`llm-api`** call **`models.list`** and **`/chat/completions`** under that root.
+
+**Ollama (first-class):** Default **`OLLAMA_BASE_URL`** is **`http://127.0.0.1:11434/v1`**. If you use **`OLLAMA_HOST`** / a reverse proxy on another port, set **`OLLAMA_BASE_URL`** to **`…/v1`**, not **`…/api`** (**WHY:** **`/api/*`** is Ollama’s native JSON API, not OpenAI-compatible).
+
+**LM Studio (first-class):** Start the local server (default **`LMSTUDIO_BASE_URL`** **`http://127.0.0.1:1234/v1`** — see **[developer OpenAI-compat docs](https://lmstudio.ai/docs/developer/openai-compat)**). **`PRR_LLM_MODEL` is required** — use the model id from the LM Studio server UI. **WHY:** There is no single universal default id across installs.
+
+**Smoke-test** (from any machine that can reach the server):
+
+```bash
+curl -sS "${OPENAI_BASE_URL%/}/models" | head
+curl -sS -X POST "${OPENAI_BASE_URL%/}/chat/completions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${OPENAI_API_KEY:-ollama}" \
+  -d "{\"model\":\"${PRR_LLM_MODEL}\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}],\"max_tokens\":128}"
+```
+
+**Limitations:** Model rotation / skip lists are tuned for cloud gateways; local runs are best with **`PRR_TOOL=llm-api`** or another fixer that uses your keys, and a single pinned **`PRR_LLM_MODEL`**. Some reasoning-heavy models may fill **`completion_tokens`** in a server-specific **`reasoning`** field until **`max_completion_tokens`** is high enough — if PRR logs empty LLM bodies for **`PRR_LLM_PROVIDER=openai`**, try a higher completion budget on the server or a model that returns the answer in **`message.content`**.
+
+**`llm-api`, explicit providers, and model-list validation (WHY)**  
+- **`PRR_LLM_PROVIDER=openrouter`** or **`nvidiacloud`**: **`llm-api`** uses that backend **only when the matching key is set** (`OPENROUTER_API_KEY`, or **`NVIDIA_API_KEY`** / **`NVIDIA_CLOUD_API_KEY`**). If you set the provider explicitly but omit the key, **`checkStatus`** reports **not ready** instead of silently falling through to ElizaCloud when **`ELIZACLOUD_API_KEY`** is also present. **WHY:** Avoids the subprocess fixer hitting a different gateway than PRR’s main config (audit: key-order vs explicit intent).
+
+- **`isAvailable()`** sets both internal and **public** **`provider`** on success so logs between availability checks and **`getClient()`** show the correct backend. **WHY:** Operators and debug paths read **`runner.provider`** immediately after detection.
+
+- **Startup rotation (`validateAndFilterModels` in `tools/prr/models/rotation.ts`):** OpenRouter/NVIDIA model lists use keys from **`loadConfig()`** **or**, if those fields were not passed through, **`OPENROUTER_API_KEY`** / **`getNvidiaApiKeyFromEnv()`** from the environment. **`llm-api`**’s resolved **`provider`** also gates whether OpenRouter/NVIDIA **`/v1/models`** is queried. **WHY:** Keeps list-fetch aligned with **`checkStatus`** when config objects and env differ (split-brain).
+
+- **Empty `GET /v1/models` (or equivalent)** — network failure, local server down, or empty response: For **`llm-api`** on OpenAI-compatible backends (OpenRouter, NVIDIA, Ollama, LM Studio, native OpenAI/Anthropic when lists are used), rotation entries built from fallbacks or LM Studio’s pinned **`PRR_LLM_MODEL`** are **kept** when the fetched set is empty; PRR only **removes** a model when the provider returned a **non-empty** list and the id is missing. **WHY:** Otherwise a failed list call stripped every fallback and the fixer had nothing to rotate to (audit: local providers).
+
+- **Reachability (`validateOllamaReachable` / `validateLmStudioReachable`):** Connection errors are detected from the full **`Error`** chain including **`cause`** (OpenAI SDK often wraps **`ECONNREFUSED`** there). **WHY:** Fail fast with a clear message instead of misclassifying as an unknown API error.
+
+**NVIDIA Cloud and OpenRouter (first-class providers)**  
+Both use the same **OpenAI-compatible** transport as **`openai`** / ElizaCloud (chat + **`models.list`**), with provider-specific env vars and defaults in **`shared/config.ts`** and **`shared/constants/models.ts`**:
+
+- **`PRR_LLM_PROVIDER=nvidiacloud`** — set **`NVIDIA_API_KEY`** or **`NVIDIA_CLOUD_API_KEY`**. Optional **`NVIDIA_BASE_URL`** (default **`https://integrate.api.nvidia.com/v1`**). Default **`PRR_LLM_MODEL`** when unset: **`meta/llama-3.1-405b-instruct`** (override if your account exposes different NIM ids). **`llm-api`**, **pill**, and **split-plan** use the same provider id.
+- **`PRR_LLM_PROVIDER=openrouter`** — set **`OPENROUTER_API_KEY`**. Optional **`OPENROUTER_BASE_URL`** (default **`https://openrouter.ai/api/v1`**), **`OPENROUTER_HTTP_REFERER`**, **`OPENROUTER_APP_TITLE`**. Default model when unset: **`google/gemini-2.0-flash-001`** (OpenRouter-style **`vendor/model`** ids — pin **`PRR_LLM_MODEL`** to what your key can access).
+- **`PRR_LLM_PROVIDER=ollama`** — local **OpenAI-compatible** bridge (default **`OLLAMA_BASE_URL`** **`http://127.0.0.1:11434/v1`**). Optional **`OLLAMA_API_KEY`** (default **`ollama`** for the SDK). Default **`PRR_LLM_MODEL`** when unset: **`llama3.2`** — override to a model you have pulled. **`llm-api`** honors **`PRR_LLM_PROVIDER`** first so the fixer matches PRR’s backend.
+- **`PRR_LLM_PROVIDER=lmstudio`** — LM Studio local server (default **`LMSTUDIO_BASE_URL`** **`http://127.0.0.1:1234/v1`**). Optional **`LMSTUDIO_API_KEY`** (default **`lm-studio`**). **`PRR_LLM_MODEL` is required** (no universal default id — use the model id from the LM Studio server UI). Same **`PRR_LLM_PROVIDER`** priority for **`llm-api`**.
+
+**Compatibility:** You can still use **`PRR_LLM_PROVIDER=openai`** with **`OPENAI_BASE_URL`** set to Ollama, LM Studio, OpenRouter, or NVIDIA **`…/v1`** and a matching **`OPENAI_API_KEY`**; first-class **`nvidiacloud`** / **`openrouter`** / **`ollama`** / **`lmstudio`** are preferred for defaults, **`max_tokens`** vs **`max_completion_tokens`**, key discovery in **`llm-api`**, and startup validation messages. **`generated/model-provider-catalog.json`** is **not** extended for these gateways in the first pass — runtime **`/v1/models`** discovery is used for rotation where applicable.
+
+**OpenAI-compatible chat: `max_tokens` vs `max_completion_tokens` (WHY)**  
+Official **OpenAI** and **ElizaCloud** chat completions accept **`max_completion_tokens`** (and newer OpenAI models reject legacy **`max_tokens`**). Many third-party **`/v1/chat/completions`** stacks (notably **NVIDIA**, **OpenRouter**, **Ollama**, and **LM Studio**) still expect **`max_tokens`** only; sending **`max_completion_tokens`** alone can return **400**. PRR, **`llm-api`**, and **pill** therefore branch on provider when building the request body (**`shared/llm/openai-compat-chat-params.ts`** — single place so transport, subprocess fixer, and pill stay aligned).
+
+**pill (`--pill`) and OpenAI-compat providers (WHY)**  
+Standalone **pill** and **`prr --pill`** use the same env keys as PRR. The pill CLI’s default **`--audit-model`** is still an Anthropic id for historical reasons; when the **detected** provider is **`openai`**, **`nvidiacloud`**, **`openrouter`**, **`ollama`**, or **`lmstudio`** and you did not set **`PILL_AUDIT_MODEL`**, pill substitutes that provider’s default audit/story models so requests are not sent to the wrong API (**`tools/pill/config.ts`**). **`PILL_LLM_PROVIDER=lmstudio`** requires **`PILL_LLM_MODEL`** (same as PRR). Override anytime with **`PILL_AUDIT_MODEL`**, **`PILL_LLM_MODEL`**, or **`PILL_LLM_PROVIDER`**. Details: **[tools/pill/README.md](tools/pill/README.md)** (LLM provider and default models).
 
 **Concurrency (optional)**  
 - **`PRR_MAX_CONCURRENT_LLM`** (integer 1–32, default unset ⇒ 1): Maximum number of LLM requests in flight at once. Analysis batches, verification, and (when using llm-api) parallel fix groups all share this cap. **WHY:** Default 1 keeps behavior unchanged and avoids 429s; raising it (e.g. to 3) lets analysis and fix run in parallel and can cut wall-clock time significantly when the backend (e.g. ElizaCloud) supports it.  
@@ -333,6 +401,7 @@ On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves eff
 - **Stale or contradictory decisions:** If the debug issue table or **RESULTS SUMMARY** looks wrong after a rebase, force-push, or manual edits, delete **`.pr-resolver-state.json`** in that workdir and re-run PRR (or remove the workdir with **`--no-keep-workdir`** on a previous run, then run again so clone is fresh). **WHY:** Head-change rules clear **verified** (and some dismissals), but a corrupted or hand-edited file can still confuse a run.
 - **Same comment ID in both verified and dismissed:** PRR enforces **verified ∩ dismissed = ∅** on **load** and when marking verified/dismissed; overlap at end-of-run is unexpected — treat as a bug and **delete the state file** after capturing **`output.log`**. Debug logs may still list **Overlap IDs** during the run while repair runs.
 - **“Cleaned N overlap” / “removed … from verifiedFixed” on startup:** Normal **one-time** repair of legacy state; no action if the run then looks sane. If the same message repeats every run or **RESULTS SUMMARY** still shows **verified ∩ dismissed**, delete **`.pr-resolver-state.json`** in the clone workdir (see **Where state lives** above) and use **`prr --clean-state`** on the PR if that file was committed by mistake.
+- **`PRR_STRICT_STATE_OVERLAP=1`:** Optional — **fails load** (throws) when verified and dismissed still share a comment id **before** auto-repair, so corrupt hand-edited state does not silently continue. Default (unset) keeps automatic overlap cleanup. See **`.env.example`** / **AGENTS.md**.
 - **`verifiedFixed` huge vs current PR (yellow warning):** Often stale IDs from older PR heads; pruning uses **`currentCommentIds`** for display. Clearing state resets counts.
 - **Final audit re-queues:** **RESULTS SUMMARY** shows **Final audit re-queued: N** when the adversarial pass said **UNFIXED** for issues that were previously verified (safe-over-sorry). Details and paths appear in the **After Action Report** block and in **`output.log`**.
 - **Re-verify everything:** **`--reverify`** ignores cached verification for another pass without deleting state (see CLI table).
@@ -342,6 +411,7 @@ On 429 (rate limit), PRR calls `notifyRateLimitHit()` and temporarily halves eff
 - **Partial base-merge resolutions:** When merge with **`origin/<base>`** fails part-way, PRR stores resolved file text in state for the next run. If **`origin/<base>`** moves to a new commit before you re-run, that cache is **cleared** so you don’t reuse content from an old merge attempt.
 - **Model catalog missing:** If **`generated/model-provider-catalog.json`** is absent, solvability **0a6** (dismiss bogus “model typo” noise) is **skipped** with a one-time console warning — run **`npm run update-model-catalog`** (or set **`PRR_MODEL_CATALOG_PATH`**).
 - **Thread replies: many HTTP 422 / “Validation Failed”:** PRR prints a **summary line** (succeeded vs 422 vs other vs skipped). Mass 422 usually means review comments are anchored on an **old commit** (see startup warning when a bot’s review SHA ≠ PR HEAD) or GitHub will not accept a reply on that thread anymore. **Mitigations:** wait for bots to re-review current HEAD, see **`PRR_EXIT_ON_STALE_BOT_REVIEW`** in **AGENTS.md**, and **[docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md)** (422 section).
+- **Thread working reactions: no 👀 or “disabled further” warning:** Reactions require a token that can **`POST`** [reactions on pull request review comments](https://docs.github.com/en/rest/reactions/reactions#create-reaction-for-a-pull-request-review-comment) and a numeric **`databaseId`** on the comment (synthetic rows are skipped). **`--dry-run`** never calls the API. If you see a **yellow** line that reactions were **disabled for this run**, GitHub returned rate-limit or a hard error — use **`--no-thread-working-reactions`** / **`PRR_THREAD_WORKING_REACTIONS=0`** on token-tight CI, or widen spacing with **`PRR_THREAD_WORKING_REACTION_MIN_MS`**. **WHY:** Default-on should stay safe for automation: one clear message beats hundreds of identical errors. Details: **[docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md)**.
 - **Pre-commit hooks / staged-file automation:** This **prr** repository does **not** ship bundled git hooks (pill sometimes cites hook paths from **application** repos). See **AGENTS.md** (**Pre-commit hooks**); install hooks in the repo you are developing, not here.
 
 ### Why These Defaults?
@@ -436,7 +506,10 @@ prr https://github.com/owner/repo/pull/123 \
 | `--verbose` | on | Extra debug output on the console. **`prompts.log`** (in CWD or `PRR_LOG_DIR`) is **not** controlled by this flag: it records full prompt/response text when the **in-process** LLM runs (`LLMClient` in the main process). It may stay **empty** if the run never calls that path (e.g. exits at merge conflicts first) or fixers run only in a **subprocess** (see AGENTS.md). Use **`PRR_DEBUG_PROMPTS=1`** for per-prompt files under `~/.prr/debug/`. |
 | `--reply-to-threads` | off | Post a short reply on each review thread when PRR fixes or dismisses an issue. Use `PRR_REPLY_TO_THREADS=true` to enable via env. **WHY:** Gives reviewers visible feedback in the PR; opt-in so default runs stay unchanged. |
 | `--no-reply-to-threads` | (default) | Do not post replies on review threads. |
-| `--resolve-threads` | off | When replying, also resolve the review thread (collapse with checkmark). **WHY:** Optional; some teams prefer to resolve threads only after human review. |
+| `--resolve-threads` | on (when replies on) | When replying, also resolve the review thread (collapse with checkmark). **Default:** enabled whenever **`--reply-to-threads`** / **`PRR_REPLY_TO_THREADS`** is on. **WHY:** Avoids “fixed in SHA” replies with threads still open on GitHub. |
+| `--no-resolve-threads` | off | Leave review threads open after replying (opt out of default resolve). |
+| `--thread-working-reactions` | **on** | Post 👀 on each **inline** PR review comment while PRR is working that thread (REST; throttled). **WHY:** Visible “working on it” signal like review bots. |
+| `--no-thread-working-reactions` | off | Disable 👀 reactions (saves GitHub REST calls when rate-limit sensitive). |
 
 Defaults marked **on** (e.g. `--auto-push`, `--keep-workdir`) are true by default; use `--no-auto-push` or `--no-keep-workdir` to disable them.
 

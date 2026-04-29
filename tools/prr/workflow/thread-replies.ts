@@ -444,14 +444,38 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     }
   }
 
-  // WHY resolve only after we actually replied: Resolving without a reply would collapse the thread with no PRR message; we resolve only threads we just replied to.
-  if (resolveThreads && threadsRepliedThisCall.length > 0) {
-    for (const threadId of threadsRepliedThisCall) {
-      try {
-        await github.resolveReviewThread(owner, repo, threadId);
-        debug('Resolved thread', { threadId: threadId.slice(0, 20) });
-      } catch (err) {
-        debug('Failed to resolve thread', { threadId: threadId.slice(0, 20), error: String(err) });
+  // Collapse threads when **`--resolve-threads`**: after a fresh reply, and on follow-up runs when we already
+  // posted “Fixed in …” / dismissal text but GitHub left **`isResolved: false`** (common when the first run used
+  // **`--reply-to-threads`** only — see fork PR audits). Only resolve threads we are claiming as verified-fixed
+  // or reply-eligible dismissed **and** where **`getThreadComments`** showed our login already posted (avoids
+  // resolving threads PRR never spoke on).
+  if (resolveThreads) {
+    const threadIdsToResolve = new Set<string>(threadsRepliedThisCall);
+    if (botLogin) {
+      for (const commentId of verifiedCommentIds) {
+        const entry = getThreadEntry(commentId);
+        if (!entry) continue;
+        if (alreadyRepliedByUsMap.get(entry.threadId) === true) {
+          threadIdsToResolve.add(entry.threadId);
+        }
+      }
+      for (const d of dismissedIssues) {
+        if (!dismissedWithReply.has(d.category)) continue;
+        const entry = getThreadEntry(d.commentId);
+        if (!entry) continue;
+        if (alreadyRepliedByUsMap.get(entry.threadId) === true) {
+          threadIdsToResolve.add(entry.threadId);
+        }
+      }
+    }
+    if (threadIdsToResolve.size > 0) {
+      for (const threadId of threadIdsToResolve) {
+        try {
+          await github.resolveReviewThread(owner, repo, threadId);
+          debug('Resolved thread', { threadId: threadId.slice(0, 20) });
+        } catch (err) {
+          debug('Failed to resolve thread', { threadId: threadId.slice(0, 20), error: String(err) });
+        }
       }
     }
   }

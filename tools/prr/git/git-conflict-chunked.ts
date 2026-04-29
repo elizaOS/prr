@@ -14,6 +14,7 @@ import {
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   ASYMMETRIC_CONFLICT_SIDE_RATIO,
   MAX_SINGLE_CHUNK_CHARS,
+  CONFLICT_OVERSIZED_LINE_THRESHOLD,
   FILE_OVERVIEW_SEGMENT_CHARS,
   FILE_OVERVIEW_MIN_CHUNKS,
   FILE_OVERVIEW_MIN_FILE_CHARS,
@@ -801,7 +802,16 @@ async function resolveOversizedChunk(
   const baseSegmentForChunk = getBaseSegmentForChunk(baseContent, chunk);
   const baseSegmentLines = baseSegmentForChunk.split('\n');
   const linesForEdges = ours.length >= theirs.length ? ours : theirs;
-  const edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
+  let edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
+  // WHY: TS route files can be one huge top-level block (few `sf.statements`) so coalesce merges the
+  // entire conflict into one segment (edges = [0, N]) — same failure mode as skipping sub-chunks entirely.
+  if (edges.length <= 2 && linesForEdges.length > CONFLICT_OVERSIZED_LINE_THRESHOLD) {
+    debug('Oversized chunk: AST/coalesce yielded one segment; forcing blank-line / line-cap splits', {
+      filePath,
+      lines: linesForEdges.length,
+    });
+    edges = findConflictChunkEdgesFallback(linesForEdges, maxSegmentChars);
+  }
 
   if (edges.length <= 2) {
     return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk, previousParseError, fileOverview);
@@ -891,12 +901,15 @@ export async function resolveConflictsChunked(
   const baseContentNorm = baseContent ?? '';
   const segmentCap = maxSegmentChars ?? MAX_SINGLE_CHUNK_CHARS;
 
-  // WHY check oversized per chunk: A single conflict region can be 50k+ lines; sending it in one prompt
-  // would exceed context and cause 504/truncation. We sub-chunk at AST boundaries and resolve each segment.
+  // WHY check oversized per chunk: (1) Char cap — one prompt must not exceed segment size × three sides + overhead.
+  // (2) Line cap (`CONFLICT_OVERSIZED_LINE_THRESHOLD`) — dense short-line regions can stay under the char cap
+  // but still break one-shot `RESOLVED` output (audit: eliza#6733). Sub-chunk at AST / fallback boundaries.
   for (const chunk of chunks) {
     const { ours, theirs } = extractConflictSides(chunk.conflictLines);
     const largerSideChars = Math.max(ours.join('\n').length, theirs.join('\n').length);
-    const isOversized = largerSideChars > segmentCap;
+    const largerSideLineCount = Math.max(ours.length, theirs.length);
+    const isOversized =
+      largerSideChars > segmentCap || largerSideLineCount > CONFLICT_OVERSIZED_LINE_THRESHOLD;
 
     const overview = fileOverview ?? undefined;
     const result = isOversized

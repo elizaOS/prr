@@ -15,6 +15,8 @@ import {
 } from '../../../shared/constants.js';
 import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../../../shared/llm/rate-limit.js';
 import { openAiChatCompletionContentToString } from '../../../shared/llm/openai-chat-content.js';
+/** WHY import: NVIDIA/OpenRouter need `max_tokens` on `chat.completions.create`; ElizaCloud/OpenAI use `max_completion_tokens`. */
+import { openAiCompatMaxOutputFields } from '../../../shared/llm/openai-compat-chat-params.js';
 import {
   ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS,
   ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
@@ -32,6 +34,7 @@ import {
   maskApiKey,
   sanitizeForJson,
 } from './error-helpers.js';
+import { isLikelyNonRetryableElizaCloudError } from '../../../shared/llm/elizacloud-retry-policy.js';
 import type { CompleteOptions, LLMResponse } from './llm-client-types.js';
 
 export interface LlmTransportDeps {
@@ -209,8 +212,14 @@ export async function completeOpenAIDep(
     }
 
     const requestOpts = deps.runAbortSignal ? { signal: deps.runAbortSignal } : undefined;
+    // WHY spread `openAiCompatMaxOutputFields`: do not send both max_tokens and max_completion_tokens — some
+    // gateways 400 on unknown fields; helper picks one shape per provider.
     const response = await deps.openai.chat.completions.create(
-      { model: chosenModel, messages, max_completion_tokens: maxCompletionTokens },
+      {
+        model: chosenModel,
+        messages,
+        ...openAiCompatMaxOutputFields(maxCompletionTokens, deps.provider),
+      },
       requestOpts
     );
 
@@ -352,6 +361,12 @@ export async function llmComplete(
                     : base504;
                 debug('ElizaCloud error (response context)', payload504);
               }
+              if (deps.provider === 'elizacloud' && isLikelyNonRetryableElizaCloudError(e504)) {
+                debug('ElizaCloud non-retryable error (billing/pricing/auth) — skipping gateway backoff', {
+                  ...getElizaCloudErrorContext(e504),
+                });
+                throw e504;
+              }
               const timeoutMsg = e504 instanceof Error && /timeout/i.test(e504.message);
               const contextOverflow = isLikelyContextLengthExceededError(e504);
               const totalChars = prompt.length + (systemPrompt?.length ?? 0);
@@ -400,10 +415,11 @@ export async function llmComplete(
                 !overHardCeiling
               ) {
                 const delayMs = Array.isArray(backoff504Ms) ? backoff504Ms[attempt504] ?? backoff504Ms[backoff504Ms.length - 1] : backoff504Ms;
-                debug('Server error or request timeout, retrying', {
+                debug('Gateway/server error or timeout, retrying', {
                   attempt: attempt504 + 1,
                   maxRetries: max504Retries,
                   delayMs,
+                  kind: timeoutMsg ? 'timeout' : 'server_error',
                   model: deps.provider === 'elizacloud' ? requestModel : chosenModel,
                   ...(deps.provider === 'elizacloud'
                     ? elizaCloudServerErrorExpectationDebug(requestModel, prompt, systemPrompt)

@@ -91,12 +91,14 @@ export function applyDismissedIssuesLoadNormalization(issues: DismissedIssue[]):
  * Verified-array dedupe, no-progress reset, and timing hydration — shared by {@link loadState}
  * and {@link StateManager.load} (pill-output StateManager parity).
  */
-export function applyResolverStateLoadCoreNormalization(state: ResolverState): void {
+export function applyResolverStateLoadCoreNormalization(state: ResolverState): { mutated: boolean } {
+  let mutated = false;
   if (state.verifiedFixed && state.verifiedFixed.length > 0) {
     const before = state.verifiedFixed.length;
     state.verifiedFixed = [...new Set(state.verifiedFixed)];
     const dupsRemoved = before - state.verifiedFixed.length;
     if (dupsRemoved > 0) {
+      mutated = true;
       console.log(
         `Deduplicated verifiedFixed: removed ${formatNumber(dupsRemoved)} duplicate(s) (${formatNumber(state.verifiedFixed.length)} unique)`,
       );
@@ -115,11 +117,13 @@ export function applyResolverStateLoadCoreNormalization(state: ResolverState): v
     state.verifiedComments = [...seen.values()];
     const dupsRemovedNew = beforeNew - state.verifiedComments.length;
     if (dupsRemovedNew > 0) {
+      mutated = true;
       console.log(`Deduplicated verifiedComments: removed ${formatNumber(dupsRemovedNew)} duplicate(s)`);
     }
   }
 
   if (state.noProgressCycles) {
+    mutated = true;
     state.noProgressCycles = 0;
   }
 
@@ -129,13 +133,16 @@ export function applyResolverStateLoadCoreNormalization(state: ResolverState): v
   if (state.totalTokenUsage) {
     loadOverallTokenUsage(state.totalTokenUsage);
   }
+  return { mutated };
 }
 
 /**
  * Ephemeral git-recovery markers and stale skip-list stats — after dismissed/verified overlap cleanup.
  */
-export function applyResolverStatePostOverlapCleanup(state: ResolverState): void {
+export function applyResolverStatePostOverlapCleanup(state: ResolverState): { mutated: boolean } {
+  let mutated = false;
   if (state.recoveredFromGitCommentIds !== undefined) {
+    mutated = true;
     state.recoveredFromGitCommentIds = undefined;
   }
 
@@ -152,13 +159,58 @@ export function applyResolverStatePostOverlapCleanup(state: ResolverState): void
         }
       }
       if (removed > 0) {
+        mutated = true;
         console.log(`Cleared ${formatNumber(removed)} model performance entries for skipped models`);
       }
     }
   }
+  return { mutated };
+}
+
+/** Comment ids present in both verified stores and dismissed (mutual-exclusivity violation on disk). */
+export function getVerifiedDismissedOverlapIds(state: ResolverState): string[] {
+  const dismissedIdSet = new Set((state.dismissedIssues ?? []).map((d) => d.commentId));
+  const verifiedIdSet = new Set([
+    ...(state.verifiedFixed ?? []),
+    ...(state.verifiedComments?.map((v) => v.commentId) ?? []),
+  ]);
+  return [...verifiedIdSet].filter((id) => dismissedIdSet.has(id));
+}
+
+/** When set, {@link loadState} / {@link StateManager.load} throw instead of auto-repairing overlap (pill-output). */
+export function isStrictStateOverlapEnabled(): boolean {
+  const v = process.env.PRR_STRICT_STATE_OVERLAP?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * After load-time repair (overlap, dedupe, HEAD sync, etc.), flush state to disk so a crash does not
+ * leave corrupt JSON to be repaired every run. **Default on** — set **`PRR_PERSIST_STATE_AFTER_LOAD_REPAIR=0`**
+ * to skip (e.g. read-only inspection).
+ */
+export function isPersistStateAfterLoadRepairEnabled(): boolean {
+  const v = process.env.PRR_PERSIST_STATE_AFTER_LOAD_REPAIR?.trim().toLowerCase();
+  if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false;
+  return true;
+}
+
+/**
+ * If `PRR_STRICT_STATE_OVERLAP` is enabled and verified∩dismissed is non-empty, throw before cleanup mutates.
+ * WHY: Optional fail-closed for hand-edited or corrupted `.pr-resolver-state.json` (default remains auto-repair).
+ */
+export function assertNoVerifiedDismissedOverlapOrThrow(state: ResolverState): void {
+  if (!isStrictStateOverlapEnabled()) return;
+  const overlap = getVerifiedDismissedOverlapIds(state);
+  if (overlap.length === 0) return;
+  const show = overlap.slice(0, 15).join(', ');
+  const more = overlap.length > 15 ? ` …(+${formatNumber(overlap.length - 15)} more)` : '';
+  throw new Error(
+    `PRR_STRICT_STATE_OVERLAP: state contains ${formatNumber(overlap.length)} comment id(s) in both verified and dismissed (${show}${more}). Edit .pr-resolver-state.json in the clone workdir, run prr --clean-state, or remove the overlap, then unset PRR_STRICT_STATE_OVERLAP.`,
+  );
 }
 
 export async function loadState(ctx: StateContext, pr: string, branch: string, headSha: string): Promise<ResolverState> {
+  let needsPersistRepair = false;
   if (existsSync(ctx.statePath)) {
     try {
       const content = await readFile(ctx.statePath, 'utf-8');
@@ -169,6 +221,7 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
         ctx.state = createInitialState(pr, branch, headSha);
       } else {
         if (ctx.state.headSha !== headSha) {
+          needsPersistRepair = true;
           const prevSha = ctx.state.headSha?.slice(0, 7);
           ctx.state.headSha = headSha;
           delete ctx.state.sessionSkippedModelKeys;
@@ -224,10 +277,14 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
         const { compactLessons } = await import('./state-lessons.js');
         const removed = await compactLessons(ctx);
         if (removed > 0) {
-          console.log(`Compacted ${removed} duplicate lessons (${ctx.state.lessonsLearned.length} unique remaining)`);
+          needsPersistRepair = true;
+          console.log(
+            `Compacted ${formatNumber(removed)} duplicate lessons (${formatNumber(ctx.state.lessonsLearned.length)} unique remaining)`,
+          );
         }
         
-        applyResolverStateLoadCoreNormalization(ctx.state);
+        const coreNorm = applyResolverStateLoadCoreNormalization(ctx.state);
+        if (coreNorm.mutated) needsPersistRepair = true;
 
         if (!ctx.state.dismissedIssues) {
           ctx.state.dismissedIssues = [];
@@ -240,13 +297,17 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
         } = applyDismissedIssuesLoadNormalization(ctx.state.dismissedIssues);
         ctx.state.dismissedIssues = normalizedDismissed;
         if (fragmentNormalized > 0) {
+          needsPersistRepair = true;
           console.log(`Normalized ${formatNumber(fragmentNormalized)} legacy fragment dismissal(s) to path-fragment`);
         }
         if (dismissedDupes > 0) {
+          needsPersistRepair = true;
           console.log(
             `Deduplicated dismissedIssues: removed ${formatNumber(dismissedDupes)} duplicate row(s) for the same comment id (kept latest dismissedAt / canonical path category)`,
           );
         }
+
+        assertNoVerifiedDismissedOverlapOrThrow(ctx.state);
 
         // Keep verifiedFixed and dismissedIssues mutually exclusive (output.log audit: overlapVerifiedAndDismissed; pill #3).
         // (1) Remove from dismissed when it's in verified. (2) Remove from verified when it's in dismissed.
@@ -261,6 +322,7 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           ctx.state.dismissedIssues = ctx.state.dismissedIssues.filter((d) => !verifiedSet.has(d.commentId));
           const removedD = beforeD - ctx.state.dismissedIssues.length;
           if (removedD > 0) {
+            needsPersistRepair = true;
             const ids = overlapDismissed.map((d) => d.commentId);
             const show = ids.slice(0, 15).join(', ');
             const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
@@ -275,6 +337,7 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           ctx.state.verifiedFixed = ctx.state.verifiedFixed.filter((id) => !dismissedIds.has(id));
           const removedV = beforeV - ctx.state.verifiedFixed.length;
           if (removedV > 0) {
+            needsPersistRepair = true;
             const show = removedIds.slice(0, 15).join(', ');
             const more = removedIds.length > 15 ? ` …(+${formatNumber(removedIds.length - 15)} more)` : '';
             console.warn(
@@ -288,6 +351,7 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           ctx.state.verifiedComments = ctx.state.verifiedComments.filter((v) => !dismissedIds.has(v.commentId));
           const removedVc = beforeVc - ctx.state.verifiedComments.length;
           if (removedVc > 0) {
+            needsPersistRepair = true;
             const ids = removedVcRows.map((v) => v.commentId);
             const show = ids.slice(0, 15).join(', ');
             const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
@@ -297,11 +361,16 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
           }
         }
 
-        applyResolverStatePostOverlapCleanup(ctx.state);
+        const postOverlap = applyResolverStatePostOverlapCleanup(ctx.state);
+        if (postOverlap.mutated) needsPersistRepair = true;
       }
     } catch (error) {
+      if (error instanceof Error && error.message.startsWith('PRR_STRICT_STATE_OVERLAP:')) {
+        throw error;
+      }
       console.warn('Failed to load state file, creating new state:', error);
       ctx.state = createInitialState(pr, branch, headSha);
+      needsPersistRepair = false;
     }
   } else {
     ctx.state = createInitialState(pr, branch, headSha);
@@ -309,6 +378,10 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
 
   if (ctx.state) {
     hydrateRotationSessionFromPersistedState(ctx);
+    if (needsPersistRepair && isPersistStateAfterLoadRepairEnabled()) {
+      await saveState(ctx);
+      console.log('Persisted resolver state after load-time repair (PRR_PERSIST_STATE_AFTER_LOAD_REPAIR)');
+    }
   }
 
   return ctx.state;
@@ -337,7 +410,15 @@ export function pruneVerifiedToCurrentCommentIds(
   return { removedVerified, removedVerifiedComments };
 }
 
-export async function saveState(ctx: StateContext): Promise<void> {
+export interface SaveStateOptions {
+  /**
+   * Skip merging in-memory rotation session into JSON (**`StateManager`** load-repair flush has no
+   * stable **`rotationSession`** on context — would otherwise delete **`sessionSkippedModelKeys`**).
+   */
+  skipRotationPersist?: boolean;
+}
+
+export async function saveState(ctx: StateContext, options?: SaveStateOptions): Promise<void> {
   if (!ctx.state) {
     throw new Error('No state to save. Call load() first.');
   }
@@ -356,7 +437,9 @@ export async function saveState(ctx: StateContext): Promise<void> {
     await mkdir(dir, { recursive: true });
   }
 
-  persistRotationSessionToState(ctx);
+  if (!options?.skipRotationPersist) {
+    persistRotationSessionToState(ctx);
+  }
   await writeFile(ctx.statePath, JSON.stringify(ctx.state, null, 2), 'utf-8');
 }
 

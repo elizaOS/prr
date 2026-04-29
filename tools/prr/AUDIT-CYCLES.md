@@ -1,6 +1,6 @@
 # Audit cycles
 
-**Last updated:** 2026-04-12 · **Recorded cycles:** 80 · **Historical (legacy):** 4
+**Last updated:** 2026-04-14 · **Recorded cycles:** 82 · **Historical (legacy):** 4
 
 Single audit log for output.log, prompts.log, and code changes. Use it to spot recurring patterns and avoid flip-flopping.
 
@@ -55,7 +55,7 @@ Improvements should reinforce these, not reverse.
 | **Approval/noise filter** | Summary/meta-review tables, rollup headings (**`Remaining Issues`**, **`Issues Fixed Since Previous Reviews`**, etc.), approval comments ("Approve", "LGTM", "All issues resolved"), PR metadata requests — all dismissed in solvability (0a2 / 0a3 / 0a). |
 | **Judge / verifier** | Judge NO must cite specific code or line numbers; format colons. Verifier: LESSON only for NO; for duplicate/shared-util steer to canonical lib/utils/..., not reference file; "Code before fix" empty/artifact → base verdict on Current Code and diff; multi-fix same file → judge by review comment. STALE→YES override when explanation indicates code/snippet not visible or "can't evaluate" (per judge instructions: if you would say "not in excerpt", say YES not STALE). |
 | **Output / UX** | Pluralize (1 file / N files); timing aggregated by phase; model recommendation only when real reasoning; AAR title from first meaningful line. Exhausted issues appear in AAR and handoff until resolved (fix, conversation, or other). |
-| **Conflict resolution** | Skip batch when prompt > 40 KB; hasConflictMarkers(); 504/timeout → chunked fallback; heartbeat every 30 s. **Submodule/directory** conflicts: `rm -rf` worktree path then checkout; **`git update-index --cacheinfo 160000,oid`** from `ls-files -u` when checkout says "no commit checked out" (Cycle 75). **Defer JS lock regen** when package.json has conflict markers; run after code merge (Cycle 75). **Lock file fallback:** ENOENT on primary pkg manager → try JS ecosystem alternatives. **JSON dupe key:** `findDuplicateJsonKey` rejects LLM output with repeated keys. |
+| **Conflict resolution** | Skip batch when prompt > 40 KB; hasConflictMarkers(); 504/timeout → chunked fallback; heartbeat every 30 s (shows **file i/n** + path). **Sub-chunk:** **`CONFLICT_OVERSIZED_LINE_THRESHOLD`** (line cap tied to top+tails) + forced **fallback** edges when AST yields one segment. **Attempt 2:** queue sorted by **largest conflict region first**; warn when any region exceeds **top+tails** cap. **Submodule/directory** conflicts: `rm -rf` worktree path then checkout; **`git update-index --cacheinfo 160000,oid`** from `ls-files -u` when checkout says "no commit checked out" (Cycle 75). **Defer JS lock regen** when package.json has conflict markers; run after code merge (Cycle 75). **Lock file fallback:** ENOENT on primary pkg manager → try JS ecosystem alternatives. **JSON dupe key:** `findDuplicateJsonKey` rejects LLM output with repeated keys. |
 | **Dedup across authors** | Same file + same primary symbol + same caller file (e.g. runner.py) → heuristic merge even when authors differ. LLM dedup still runs for 3+ issues per file; GROUP lines take priority over NONE. |
 | **Verifier strength** | Escalation for previous rejections; stronger model for API/signature-related fixes (async, await, caller, TypeError). Weak default verifier kept approving call-site bugs. |
 | **Dismissal comments** | Skip when reason says "file no longer exists" / "file not found"; skip when file missing in workdir; post-filter comments that only restate code (e.g. "extracts metrics"). |
@@ -132,7 +132,7 @@ Quick checks each audit. Drill into the category that matches what you changed.
 - [ ] Exhausted issues appear in AAR (full detail + resolution hints) and in handoff; final summary shows exhausted when remaining=0.
 - [ ] CodeRabbit "Recent review info" filtered in getReviewComments.
 - [ ] Injected file content for fixer is raw (no "N | "); instruction not to add line prefixes in output.
-- [ ] Conflict: batch skipped when prompt > 40 KB; hasConflictMarkers(); 504 → chunked retry; heartbeat every 30 s.
+- [ ] Conflict: batch skipped when prompt > 40 KB; hasConflictMarkers(); 504 → chunked retry; heartbeat every 30 s (file i/n + path); line-oversized regions sub-chunk; Attempt 2 largest-first + top+tails preflight when relevant.
 
 ---
 
@@ -163,6 +163,42 @@ Copy the block below for each new cycle.
 ---
 
 ## Recorded cycles
+
+### Cycle 82 — 2026-04-14 (output.log: elizaOS/eliza#7008, workdir 84c7ad34)
+
+**Artifacts audited:** `/root/prr/output.log` (~1,534 lines). Workdir: **`/root/.prr/work/84c7ad34fd64045e`**.
+
+**Findings:**
+- **Medium:** **`PRR_LLM_MODEL`** unset → default **qwen-3-235b** for batch verify + **final audit** while fixer is **Opus** — final audit **re-queued 7** previously verified threads (**UNFIXED**); align with **`PRR_FINAL_AUDIT_MODEL`** (README / AGENTS).
+- **Medium:** **Single-model rotation** — built-in skip list left only **`anthropic/claude-opus-4.5`** after four models dropped; **`anthropic/claude-sonnet-4.5`** (dot) was in **`ELIZACLOUD_SKIP_MODEL_IDS`** alongside catalog hyphen ids — confusing Sonnet 4.5 path for operators and **`tryDirectLLMFix`**.
+- **Low:** Console line **“Removed N unavailable model(s)”** was misleading — removals were **skip list + gateway list**, not only slow-pool failures.
+- **Low:** **`mergeable: false` / dirty`** + **~14 min clone** — merge-noise warnings present (Cycle 80); expected for dirty PR.
+- **Low:** **Blast radius graph build failed** each push iteration — all issues in-scope; noisy.
+
+**Improvements implemented:** **`npm run update-model-catalog`** (refreshed **`generated/model-provider-catalog.json`**). **`ELIZACLOUD_SKIP_MODEL_IDS`:** removed **`anthropic/claude-sonnet-4.5`**. **`recovery.ts`:** **`tryDirectLLMFix`** ElizaCloud id → **`anthropic/claude-sonnet-4-5-20250929`**. **`rotation.ts`:** user-visible **dropped … (skip list, not listed, or slow-pool)** line. **`docs/MODELS.md`** skip table. **CHANGELOG [Unreleased]**. **Follow-up:** **`elizacloud-final-audit-fallback.ts`** + **`index.ts`** — when ElizaCloud analysis model is weak and **`PRR_FINAL_AUDIT_MODEL`** unset, set **`config.finalAuditModel`** to strong available id; **`main-loop-setup.ts`** blast-radius warn includes error snippet; tests **`tests/elizacloud-final-audit-fallback.test.ts`**.
+
+**Flip-flop check:** N — skip list narrows (re-enable via **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** if a gateway truly needs the dot id); UX copy additive.
+
+**Notes:** Spot-checked **`apps/app-lifeops/src/actions/computer-use.ts`** ~**31** — dynamic **`import()`** of **`@elizaos/plugin-computeruse`** with comment per log **RESOLVED** line — **fix present**.
+
+---
+
+### Cycle 81 — 2026-04-14 (output.log + prompts.log: elizaOS/eliza#6733, workdir f0e9d89d)
+
+**Artifacts audited:** `/root/prr/output.log` (~807 lines), `/root/prr/prompts.log` (llm-api-fix batches + in-process conflict pairs). Workdir: **`/root/.prr/work/f0e9d89dad09fb67`**.
+
+**Findings:**
+- **Medium:** **Attempt 2** processed **`knowledge-routes.ts`** first (git order); it failed (**catastrophic size regression** then **top+tails skipped**, 1268 > 280 lines) while **6** other files still had markers — **~16** in-process conflict LLM calls and **~$1** estimated on a run that **exited merge_conflicts** without review work. **Largest-region-first** ordering surfaces the worst file first for operator visibility; **stop-after-first-failure** was rejected as default (would leave **7** conflicted files instead of **1** manual in this run).
+- **Low:** **`mergeable: false` / `dirty`** at fetch — expected noise for large base merges; not a PRR logic bug.
+- **Low:** Default **`PRR_LLM_MODEL`** (**qwen-3-235b**) vs **Sonnet** for conflicts — rotation already picks Sonnet for Attempt 2 when configured.
+
+**Improvements implemented:** **`git-conflict-resolve.ts`:** always sort **Attempt 2** by descending **max conflict region lines**; **preflight** yellow line when any region **>** `TOP_TAILS_FALLBACK_MAX_CHUNK_LINES` (no env flag); removed **`PRR_CONFLICT_FAIL_FAST`** / early-stop branches (no half-measure flag; keep full partial resolution). **`.env.example`:** removed fail-fast stub. **`reporter.ts`:** **`merge_conflicts`** exit with empty queue — no green “No issues remaining”; neutral line + GitHub review markdown bullet (same audit session). **`getLlmApiRequestTimeoutMs`:** **`MERGE CONFLICT RESOLUTION`** batches use **18k / 28k / 45k** char tiers → **120s / 150s / 180s** (follow-up to **#0005** / **#0009** **90s** timeouts on ~**30–36k** prompts).
+
+**Flip-flop check:** Y — removes env-gated fail-fast; default Attempt 2 order changes (largest first vs prior git order); reporter wording only when **`merge_conflicts`**.
+
+**Notes:** Spot-checked **`packages/agent/src/api/knowledge-routes.ts`** in workdir — **no** `<<<<<<<` markers present **now** (post-run tree may differ from log snapshot at exit: **1** file still conflicted per log). Spot-checked **`trajectory-routes.ts`** — **no** conflict markers (matches log: resolved after sub-chunk retries). No review-thread “fixed” rows to verify (**0** threads at fetch). **prompts.log:** **`#0005`** / **`#0009`** **`ERROR`** = **`Request timeout after 90s`** — matches output.log llm-api-fix timeouts; remaining slugs have paired RESPONSE bodies. **Follow-up implemented:** **`reporter.ts`** — **`merge_conflicts`** + **`remainingCount === 0`** prints gray “no threads processed” + neutral GitHub summary bullet instead of green “✓ No issues remaining”.
+
+---
 
 ### Cycle 80 — 2026-04-12 (output.log + prompts.log: elizaOS/eliza#6716, workdir 3120b867)
 

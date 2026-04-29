@@ -20,7 +20,7 @@ import { pluralize, debug } from '../../../../shared/logger.js';
 import { isLockFile, getLockFileInfo } from '../../../../shared/git/git-lock-files.js';
 import {
   isReviewPathFragment,
-  pathDismissCategoryForNotFound,
+  dismissPathNotFound,
   stripGitDiffPathPrefix,
   tryResolvePathWithExtensionVariants,
 } from '../../../../shared/path-utils.js';
@@ -685,7 +685,7 @@ export function assessSolvability(
     }
     return {
       solvable: false,
-      dismissCategory: pathDismissCategoryForNotFound(comment.path, pathResolution.kind),
+      dismissCategory: dismissPathNotFound(comment.path, pathResolution.kind),
       reason: `Tracked file not found for review path: ${comment.path}`,
     };
   }

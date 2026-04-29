@@ -10,6 +10,13 @@ Items here are potential directions to explore, not committed plans. Each idea i
 
 **WHY:** Would reduce API round-trips when many threads are reply candidates; current parallel approach is already fast, so this is low priority unless we see latency issues on very large PRs.
 
+## Thread working reactions (👀): optional follow-ups
+
+**Exploration only** (landed behavior is in **CHANGELOG** and **`docs/THREAD-REPLIES.md`** — roadmap stays for “what we might do next,” not shipped narratives).
+
+- **Remove reactions when done:** After verify / thread reply, **DELETE** the 👀 reaction so the thread returns to a neutral state. **WHY consider:** Less visual clutter on long-lived PRs. **Trade-off:** doubles REST traffic and needs ordering vs replies so we do not fight GitHub’s concurrency rules.
+- **React during issue-analysis:** Post 👀 while the analyzer walks comments (before the fix loop). **WHY consider:** Finer “PRR saw this” signal during slow analysis on huge PRs. **Trade-off:** multiplies REST volume exactly when comment counts are largest; current design intentionally limits reactions to **fix loop** entry points to keep default-on safe.
+
 ## Blast radius: optional follow-ups
 
 **Status:** **Shipped** — regex import/include graph + directory + filename proximity, BFS both directions, issue annotation, optional dismiss, injection subset. See **CHANGELOG [Unreleased]** and **DEVELOPMENT.md** (Architecture — Blast radius).
@@ -92,6 +99,17 @@ From [tools/prr/AUDIT-CYCLES.md](../tools/prr/AUDIT-CYCLES.md) consolidated find
 **Status:** **Done** for the shared layer — **`shared/prompt-budget.ts`** (`computeBudget`, `fitToBudget`, verify-batch helpers) replaces ad hoc per-call char caps for windowed snippets, full-file audit excerpts, and batch-verify “current code” truncation. **WHY:** One place to tune model limits vs reserved prompt overhead; reduces audit-cycle drift between paths.
 
 **Remaining (optional):** Thread an explicit **`modelId`** through every **`getCodeSnippet`** call site if we want fix-loop snippets to track the active fixer model (today some paths default to the generic ceiling).
+
+## Conflict resolution + pill assembly UX
+
+**Status:** **Shipped** — see **CHANGELOG [Unreleased]** (line-heavy conflict **sub-chunk** threshold tied to **top+tails** cap; **AST** single-segment → **fallback** edge splits; **Attempt 2** largest-region-first queue, **`Resolving (i of n)`**, heartbeat with active path, **yellow** top+tails oversize preflight; **pill** spinner / **`[pill]`** lines during **context assembly** and **story-read chapter i/n**).
+
+**Docs:** **DEVELOPMENT.md** (fix-loop conflict + pill assembly), **README** (auto-conflict + pill bullets), **AGENTS.md** (pill large logs), **tools/prr/CONFLICT-RESOLUTION.md** (Attempt 2 + WHY line threshold), **tools/pill/README.md** (context step 1).
+
+**Remaining (exploration only):**
+
+- **Per sub-chunk spinner text** inside **`resolveConflictsChunked`** (e.g. “sub-chunk 3/12”) — **WHY consider:** very large single-file merges; **trade-off:** noisy logs and ora redraw churn.
+- **Optional env** to restore **git-order** Attempt 2 instead of largest-first — **WHY unlikely:** largest-first aids triage; git order is rarely required for determinism.
 
 ## Further structural follow-ups (optional)
 

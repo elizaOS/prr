@@ -15,7 +15,15 @@
 import chalk from 'chalk';
 import { loadConfig } from '../../shared/config.js';
 import { createCLI, parseArgs } from './cli.js';
-import { validateElizaCloudKey, fetchAvailableElizaCloudModels, validateOpenAIKey } from './llm/client.js';
+import {
+  validateElizaCloudKey,
+  fetchAvailableElizaCloudModels,
+  validateOpenAIKey,
+  validateNvidiaCloudKey,
+  validateOpenRouterKey,
+  validateOllamaReachable,
+  validateLmStudioReachable,
+} from './llm/client.js';
 import { ELIZACLOUD_FALLBACK_MODEL, getEffectiveElizacloudSkipModelIds, getEffectiveMaxConcurrentLLM } from '../../shared/constants.js';
 import { PRResolver } from './resolver.js';
 import { printToolStatus, checkPrrUpdate, updateAllTools } from './upgrade.js';
@@ -27,6 +35,10 @@ import {
   shouldSuggestPrrGitShaInCi,
 } from '../../shared/prr-runtime-meta.js';
 import { isFailureExitReason } from './ui/reporter.js';
+import {
+  isWeakElizacloudBatchVerifierModelId,
+  pickStrongElizaCloudAuditFallback,
+} from './elizacloud-final-audit-fallback.js';
 
 // Start output log tee immediately — captures all console output to ./output.log in CWD
 try {
@@ -149,10 +161,30 @@ async function main(): Promise<void> {
     if (config.openaiApiKey) process.env.OPENAI_API_KEY = config.openaiApiKey;
     if (config.anthropicApiKey) process.env.ANTHROPIC_API_KEY = config.anthropicApiKey;
     if (config.elizacloudApiKey) process.env.ELIZACLOUD_API_KEY = config.elizacloudApiKey;
+    if (config.nvidiaApiKey) {
+      process.env.NVIDIA_API_KEY = config.nvidiaApiKey;
+      process.env.NVIDIA_CLOUD_API_KEY = config.nvidiaApiKey;
+    }
+    if (config.openrouterApiKey) process.env.OPENROUTER_API_KEY = config.openrouterApiKey;
+    if (config.ollamaApiKey) process.env.OLLAMA_API_KEY = config.ollamaApiKey;
+    if (config.lmstudioApiKey) process.env.LMSTUDIO_API_KEY = config.lmstudioApiKey;
 
     // Fail fast if OpenAI key is invalid (only when OpenAI is the active LLM provider)
     if (config.llmProvider === 'openai' && config.openaiApiKey) {
       await validateOpenAIKey(config.openaiApiKey);
+    }
+
+    if (config.llmProvider === 'nvidiacloud' && config.nvidiaApiKey) {
+      await validateNvidiaCloudKey(config.nvidiaApiKey);
+    }
+    if (config.llmProvider === 'openrouter' && config.openrouterApiKey) {
+      await validateOpenRouterKey(config.openrouterApiKey);
+    }
+    if (config.llmProvider === 'ollama' && config.ollamaApiKey) {
+      await validateOllamaReachable(config.ollamaApiKey);
+    }
+    if (config.llmProvider === 'lmstudio' && config.lmstudioApiKey) {
+      await validateLmStudioReachable(config.lmstudioApiKey);
     }
 
     // Fail fast if ElizaCloud key is invalid; use an available model if default isn't listed
@@ -179,6 +211,25 @@ async function main(): Promise<void> {
           console.warn(chalk.yellow(`  Configured model unavailable; using: ${chosen}. Set PRR_LLM_MODEL to pin.`));
         } else {
           console.warn(chalk.yellow(`  No model configured; defaulting to: ${chosen}. Set PRR_LLM_MODEL to pin.`));
+        }
+      }
+      // Cycle 82: gateway substitution (or explicit weak PRR_LLM_MODEL) must not drive adversarial final audit —
+      // same id causes false UNFIXED re-queues (AGENTS / README: pin PRR_FINAL_AUDIT_MODEL).
+      if (available.size > 0) {
+        const skipSet = new Set<string>(getEffectiveElizacloudSkipModelIds());
+        const strong = pickStrongElizaCloudAuditFallback(available, skipSet);
+        if (
+          strong &&
+          isWeakElizacloudBatchVerifierModelId(config.llmModel) &&
+          !process.env.PRR_FINAL_AUDIT_MODEL?.trim() &&
+          !config.finalAuditModel
+        ) {
+          config.finalAuditModel = strong;
+          console.warn(
+            chalk.yellow(
+              `  Analysis model ${config.llmModel} is weak for adversarial final audit — using ${strong} (PRR_FINAL_AUDIT_MODEL unset). Set PRR_FINAL_AUDIT_MODEL to override.`,
+            ),
+          );
         }
       }
     }

@@ -21,6 +21,46 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
 export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 
 /**
+ * NVIDIA NIM / Build OpenAI-compatible API root (see @elizaos/plugin-nvidiacloud).
+ */
+export const NVIDIA_API_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+
+/**
+ * Default chat model for PRR when `PRR_LLM_PROVIDER=nvidiacloud` and `PRR_LLM_MODEL` unset.
+ * WHY: Plugin README lists reliable XML/control choices; 405B is the strong default for review/fix work.
+ */
+export const DEFAULT_NVIDIA_LLM_MODEL = 'meta/llama-3.1-405b-instruct';
+
+/**
+ * OpenRouter OpenAI-compatible API root (see @elizaos/plugin-openrouter).
+ */
+export const OPENROUTER_API_BASE_URL = 'https://openrouter.ai/api/v1';
+
+/**
+ * Default chat model for PRR when `PRR_LLM_PROVIDER=openrouter` and `PRR_LLM_MODEL` unset.
+ * WHY: Matches plugin’s fast default family (`google/gemini-2.0-flash-001` in README fallbacks).
+ */
+export const DEFAULT_OPENROUTER_LLM_MODEL = 'google/gemini-2.0-flash-001';
+
+/**
+ * Ollama OpenAI-compatible bridge default (`ollama serve` — see Ollama docs for `/v1`).
+ * WHY 127.0.0.1: Matches common local bind; override with **`OLLAMA_BASE_URL`** for Docker / remote.
+ */
+export const OLLAMA_OPENAI_COMPAT_BASE_URL = 'http://127.0.0.1:11434/v1';
+
+/**
+ * LM Studio local server OpenAI-compatible default (Developer tab → Server).
+ * WHY 1234: Documented default port; override with **`LMSTUDIO_BASE_URL`**.
+ */
+export const LMSTUDIO_OPENAI_COMPAT_BASE_URL = 'http://127.0.0.1:1234/v1';
+
+/**
+ * Default chat model when **`PRR_LLM_PROVIDER=ollama`** and **`PRR_LLM_MODEL`** unset.
+ * WHY: Common tag in Ollama docs; operators should set **`PRR_LLM_MODEL`** to a model they **`ollama pull`**’d.
+ */
+export const DEFAULT_OLLAMA_LLM_MODEL = 'llama3.2';
+
+/**
  * Default LLM model for ElizaCloud provider.
  * ElizaCloud is an OpenAI-compatible gateway that routes to multiple providers.
  * Eliza Cloud uses owner/model IDs (e.g. anthropic/claude-sonnet-4-5-20250929).
@@ -50,14 +90,12 @@ export type ElizaCloudSkipReason = 'timeout' | 'zero-fix-rate';
  *
  * **Maintainer refresh:** When **RESULTS SUMMARY → Model Performance** shows a model at **0%** verified
  * fixes across meaningful attempts, add it here with **`ELIZACLOUD_SKIP_REASON`** **`zero-fix-rate`** and a
- * short evidence comment. **Last reviewed:** 2026-04-08 — no new static entries from recent CI conflict
- * runs (client **90s** timeouts on bulk **llm-api** are operator/config, not automatic skip-list adds).
+ * short evidence comment. **Last reviewed:** 2026-04-12 — removed **`anthropic/claude-sonnet-4.5`** (dot alias; use catalog **`claude-sonnet-4-5-20250929`**). Prior 2026-04-08: no new static entries from CI conflict runs.
  */
 export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-5.2-codex',
   'anthropic/claude-3-opus',
   'openai/gpt-4.1',
-  'anthropic/claude-sonnet-4.5',
   'openai/gpt-5.1-codex-max',
   'anthropic/claude-3.7-sonnet',
   'openai/gpt-4o',

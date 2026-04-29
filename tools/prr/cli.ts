@@ -83,6 +83,8 @@ export interface CLIOptions {
   replyToThreads: boolean;
   /** When replying to threads, also resolve the thread (collapse with checkmark). */
   resolveThreads: boolean;
+  /** Post 👀 on inline review comments while working each issue (default on; throttled). */
+  threadWorkingReactions: boolean;
 }
 
 export interface ParsedArgs {
@@ -175,8 +177,21 @@ export function createCLI(): Command {
     .option('--pill', 'Run pill analysis on the output log when the run finishes', false)
     .option('--reply-to-threads', 'Post a short reply on each review thread when PRR fixes or dismisses an issue', false)
     .option('--no-reply-to-threads', 'Do not post replies on review threads (default)')
-    .option('--resolve-threads', 'When replying, also resolve the review thread (collapse with checkmark)', false)
-    .option('--no-resolve-threads', 'Do not resolve threads after replying (default)');
+    .option(
+      '--resolve-threads',
+      'When using thread replies, also resolve review threads (collapse with checkmark). Default: on whenever replies are enabled.',
+      true,
+    )
+    .option('--no-resolve-threads', 'Leave review threads open after replying (opt out of default resolve)')
+    .option(
+      '--thread-working-reactions',
+      'Post 👀 on inline PR review comments while PRR works each issue (REST; throttled + deduped; see docs/THREAD-REPLIES.md). Default: on — mirrors common bot "looking" signals without requiring --reply-to-threads.',
+      true,
+    )
+    .option(
+      '--no-thread-working-reactions',
+      'Disable 👀 reactions (use on token-tight CI or when REST budget matters; same as PRR_THREAD_WORKING_REACTIONS=0)',
+    );
 
   return program;
 }
@@ -274,7 +289,21 @@ export function parseArgs(program: Command): ParsedArgs {
       noWaitBot: opts.noWaitBot === true,
       pill: opts.pill ?? false,
       replyToThreads: opts.replyToThreads === true || process.env.PRR_REPLY_TO_THREADS === 'true',
-      resolveThreads: opts.resolveThreads === true,
+      // When thread replies are on, resolve threads by default (GitHub “job” includes closing conversations).
+      // Opt out: `--no-resolve-threads` or `PRR_RESOLVE_THREADS=0` / `false` / `off`.
+      resolveThreads: (() => {
+        const reply =
+          opts.replyToThreads === true || process.env.PRR_REPLY_TO_THREADS === 'true';
+        if (!reply) return false;
+        const envR = process.env.PRR_RESOLVE_THREADS?.trim().toLowerCase();
+        if (envR === '0' || envR === 'false' || envR === 'off') return false;
+        return opts.resolveThreads !== false;
+      })(),
+      threadWorkingReactions: (() => {
+        const envT = process.env.PRR_THREAD_WORKING_REACTIONS?.trim().toLowerCase();
+        if (envT === '0' || envT === 'false' || envT === 'off') return false;
+        return opts.threadWorkingReactions !== false;
+      })(),
     },
   };
 }

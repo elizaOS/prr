@@ -17,17 +17,29 @@ function modelRunStatsLine(stateContext: StateContext | undefined, runnerName: s
 import * as Rotation from '../state/state-rotation.js';
 import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
-import type { Config } from '../../../shared/config.js';
+import { type Config, getNvidiaApiKeyFromEnv } from '../../../shared/config.js';
 import { warn, debug, formatNumber } from '../../../shared/logger.js';
 import {
   DEFAULT_ELIZACLOUD_MODEL,
+  DEFAULT_NVIDIA_LLM_MODEL,
+  DEFAULT_OLLAMA_LLM_MODEL,
+  DEFAULT_OPENROUTER_LLM_MODEL,
   getEffectiveElizacloudSkipModelIds,
   getElizaCloudSkipReason,
   getSessionModelSkipFailureThreshold,
   getSessionModelSkipResetAfterFixIterations,
   MAX_MODELS_PER_TOOL_ROUND,
 } from '../../../shared/constants.js';
-import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
+import {
+  fetchAvailableOpenAIModels,
+  fetchAvailableAnthropicModels,
+  fetchAvailableElizaCloudModels,
+  fetchAvailableLmStudioModels,
+  fetchAvailableNvidiaCloudModels,
+  fetchAvailableOllamaModels,
+  fetchAvailableOpenRouterModels,
+  probeElizaCloudModel,
+} from '../llm/client.js';
 import * as Performance from '../state/state-performance.js';
 
 /**
@@ -284,6 +296,16 @@ export function isModelProviderCompatible(runner: Runner, model: string): boolea
     return modelProvider === 'openai' || modelProvider === 'anthropic' || modelProvider === null;
   }
 
+  // OpenRouter / NVIDIA accept many vendor-prefixed ids; recommendations may use any routed id.
+  if (
+    runnerProvider === 'openrouter' ||
+    runnerProvider === 'nvidiacloud' ||
+    runnerProvider === 'ollama' ||
+    runnerProvider === 'lmstudio'
+  ) {
+    return true;
+  }
+
   // Detect the model's provider from its name
   const modelProvider = detectModelProvider(model, runnerProvider);
 
@@ -493,10 +515,14 @@ export function tryRotation(
         ctx.cycleHadOnlyTimeouts = false;
       } else {
         const cycles = Bailout.incrementNoProgressCycles(stateContext);
-        console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
+        console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${formatNumber(cycles)} with zero progress`));
 
         if (options.maxStaleCycles > 0 && cycles >= options.maxStaleCycles) {
-          console.log(chalk.red(`\n  🛑 Bail-out triggered: ${cycles} cycles with no progress (max: ${options.maxStaleCycles})`));
+          console.log(
+            chalk.red(
+              `\n  🛑 Bail-out triggered: ${formatNumber(cycles)} cycles with no progress (max: ${formatNumber(options.maxStaleCycles)})`,
+            ),
+          );
           return true;  // Signal bail-out
         }
       }
@@ -687,6 +713,14 @@ function stripProviderPrefix(model: string): string {
 /** Chat/completion-style OpenAI model ID prefix (exclude embeddings, whisper, etc.). */
 const OPENAI_CHAT_PREFIX = /^(gpt-|o[1-9]|o4-)/i;
 
+/** Build rotation from any OpenAI-compatible `/v1/models` list (OpenRouter, NVIDIA). */
+function buildRotationFromOpenAICompatibleSet(ids: Set<string>): string[] {
+  const skip = (id: string) => /embed|whisper|tts|audio|image|moderation|realtime|transcrib/i.test(id);
+  return Array.from(ids)
+    .filter((id) => !skip(id))
+    .sort();
+}
+
 /**
  * Build rotation order from OpenAI model set. Prefer known strong/fast IDs first, then alphabetical.
  */
@@ -721,17 +755,22 @@ function buildRotationFromAnthropicSet(ids: Set<string>): string[] {
 
 /**
  * Validate rotation models against provider APIs and remove unavailable ones.
- * 
+ *
  * WHY: Models like "gpt-5.3-codex" may not exist or may not be accessible
  * to the user's API key. Without validation, the fixer retries multiple times
  * per unavailable model (3-5 retries × connection timeout), wasting minutes.
- * 
- * Calls GET /v1/models on both OpenAI and Anthropic (if keys are present)
- * once at startup and prunes the rotation lists.
- * 
- * For llm-api with native OpenAI/Anthropic, rotation is built FROM the API list
+ *
+ * Calls GET /v1/models (or provider equivalents) once at startup and prunes lists.
+ * OpenRouter/NVIDIA keys are taken from function args **or** matching env vars
+ * (**WHY:** config may omit keys while subprocess/env still has them — keep list fetch aligned with `llm-api`).
+ *
+ * For **llm-api** on OpenAI-compatible backends (OpenRouter, NVIDIA, Ollama, LM Studio, etc.), when the
+ * fetched model set is **empty**, rotation entries are **kept** (**WHY:** failed or empty `/v1/models` must not
+ * wipe fallbacks / LM Studio pinned `PRR_LLM_MODEL`); pruning only applies when the set is non-empty and an id is missing.
+ *
+ * For llm-api with native OpenAI/Anthropic, rotation is built FROM the API list where possible
  * (no hardcoded list to maintain).
- * 
+ *
  * Skips runners that manage their own models (cursor).
  * If an API call fails (bad key, network), models for that provider are kept as-is.
  */
@@ -741,7 +780,9 @@ export async function validateAndFilterModels(
   anthropicApiKey?: string,
   elizacloudApiKey?: string,
   /** Resolved configured model (e.g. PRR_LLM_MODEL); warn when this one is skipped (pill-output.md). */
-  configuredModel?: string
+  configuredModel?: string,
+  nvidiaApiKey?: string,
+  openrouterApiKey?: string,
 ): Promise<{ removed: Array<{ runner: string; model: string }>}> {
   const removed: Array<{ runner: string; model: string }> = [];
   let thinElizacloudPoolWarned = false;
@@ -753,6 +794,7 @@ export async function validateAndFilterModels(
   }
   
   const hasLlMApi = runnersToValidate.some(r => r.name === 'elizacloud' || r.name === 'llm-api');
+  const llmApiRunner = runnersToValidate.find(r => r.name === 'llm-api');
   const needsOpenAI = runnersToValidate.some(r => {
     const p = RUNNER_PROVIDER_MAP[r.name];
     return p === 'openai' || p === 'mixed';
@@ -763,11 +805,33 @@ export async function validateAndFilterModels(
   }) || (hasLlMApi && !!anthropicApiKey);
   // 'elizacloud' is the preferred-tool alias; the actual runner is 'llm-api' (Direct LLM API)
   const needsElizaCloud = hasLlMApi;
-  
+  // Merge env so list fetch matches llm-api when config.*Key was not threaded but OPENROUTER_* / NVIDIA_* are set.
+  const effectiveOpenRouterKey = openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim() || '';
+  const effectiveNvidiaKey = nvidiaApiKey?.trim() || getNvidiaApiKeyFromEnv() || '';
+  // WHY runner.provider: if llm-api is openrouter/nvidiacloud, keep needs* true so filtering uses that branch;
+  // fetch + yellow warn only run when effective*Key is non-empty (no key → empty set, no spurious warn).
+  const needsOpenRouter =
+    hasLlMApi && (!!effectiveOpenRouterKey || llmApiRunner?.provider === 'openrouter');
+  const needsNvidia =
+    hasLlMApi && (!!effectiveNvidiaKey || llmApiRunner?.provider === 'nvidiacloud');
+  const prrLlmProv = process.env.PRR_LLM_PROVIDER?.trim();
+  const needsOllama = hasLlMApi && prrLlmProv === 'ollama';
+  const needsLmstudio = hasLlMApi && prrLlmProv === 'lmstudio';
+  const ollamaListKey = process.env.OLLAMA_API_KEY?.trim() || 'ollama';
+  const lmstudioListKey = process.env.LMSTUDIO_API_KEY?.trim() || 'lm-studio';
+
   // Fetch available models from all providers in parallel
   console.log(chalk.gray('  Validating model access...'));
-  
-  const [openaiModels, anthropicModels, elizacloudModels] = await Promise.all([
+
+  const [
+    openaiModels,
+    anthropicModels,
+    elizacloudModels,
+    openrouterModels,
+    nvidiaModels,
+    ollamaModels,
+    lmstudioModels,
+  ] = await Promise.all([
     needsOpenAI && openaiApiKey
       ? fetchAvailableOpenAIModels(openaiApiKey)
       : Promise.resolve(new Set<string>()),
@@ -777,6 +841,14 @@ export async function validateAndFilterModels(
     needsElizaCloud && elizacloudApiKey
       ? fetchAvailableElizaCloudModels(elizacloudApiKey)
       : Promise.resolve(new Set<string>()),
+    needsOpenRouter && effectiveOpenRouterKey
+      ? fetchAvailableOpenRouterModels(effectiveOpenRouterKey)
+      : Promise.resolve(new Set<string>()),
+    needsNvidia && effectiveNvidiaKey
+      ? fetchAvailableNvidiaCloudModels(effectiveNvidiaKey)
+      : Promise.resolve(new Set<string>()),
+    needsOllama ? fetchAvailableOllamaModels(ollamaListKey) : Promise.resolve(new Set<string>()),
+    needsLmstudio ? fetchAvailableLmStudioModels(lmstudioListKey) : Promise.resolve(new Set<string>()),
   ]);
   
   // Log what we got (debug only)
@@ -805,9 +877,41 @@ export async function validateAndFilterModels(
   } else if (needsElizaCloud && elizacloudApiKey) {
     console.log(chalk.yellow('  ⚠ Could not fetch ElizaCloud model list'));
   }
-  
+
+  if (openrouterModels.size > 0) {
+    debug(`Available OpenRouter models (${openrouterModels.size}):`, Array.from(openrouterModels).slice(0, 20).sort());
+  } else if (needsOpenRouter && effectiveOpenRouterKey) {
+    console.log(chalk.yellow('  ⚠ Could not fetch OpenRouter model list'));
+  }
+
+  if (nvidiaModels.size > 0) {
+    debug(`Available NVIDIA Cloud models (${nvidiaModels.size}):`, Array.from(nvidiaModels).slice(0, 20).sort());
+  } else if (needsNvidia && effectiveNvidiaKey) {
+    console.log(chalk.yellow('  ⚠ Could not fetch NVIDIA Cloud model list'));
+  }
+
+  if (ollamaModels.size > 0) {
+    debug(`Available Ollama models (${ollamaModels.size}):`, Array.from(ollamaModels).slice(0, 20).sort());
+  } else if (needsOllama) {
+    console.log(chalk.yellow('  ⚠ Could not fetch Ollama model list'));
+  }
+
+  if (lmstudioModels.size > 0) {
+    debug(`Available LM Studio models (${lmstudioModels.size}):`, Array.from(lmstudioModels).slice(0, 20).sort());
+  } else if (needsLmstudio) {
+    console.log(chalk.yellow('  ⚠ Could not fetch LM Studio model list'));
+  }
+
   // If all fetches failed or returned empty, skip filtering entirely
-  if (openaiModels.size === 0 && anthropicModels.size === 0 && elizacloudModels.size === 0) {
+  if (
+    openaiModels.size === 0 &&
+    anthropicModels.size === 0 &&
+    elizacloudModels.size === 0 &&
+    openrouterModels.size === 0 &&
+    nvidiaModels.size === 0 &&
+    ollamaModels.size === 0 &&
+    lmstudioModels.size === 0
+  ) {
     console.log(chalk.yellow('  ⚠ No model lists available - skipping validation'));
     return { removed };
   }
@@ -827,6 +931,29 @@ export async function validateAndFilterModels(
         ? buildRotationFromAnthropicSet(anthropicModels)
         : ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']; // fallback when API list fails
       debug(`llm-api (anthropic): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'openrouter') {
+      runner.supportedModels = openrouterModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(openrouterModels)
+        : [DEFAULT_OPENROUTER_LLM_MODEL, 'openai/gpt-4o-mini'];
+      debug(`llm-api (openrouter): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'nvidiacloud') {
+      runner.supportedModels = nvidiaModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(nvidiaModels)
+        : [DEFAULT_NVIDIA_LLM_MODEL, 'meta/llama-3.1-8b-instruct'];
+      debug(`llm-api (nvidiacloud): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'ollama') {
+      runner.supportedModels = ollamaModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(ollamaModels)
+        : [DEFAULT_OLLAMA_LLM_MODEL, 'llama3.2:latest'];
+      debug(`llm-api (ollama): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'lmstudio') {
+      const pinned = configuredModel?.trim();
+      runner.supportedModels = lmstudioModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(lmstudioModels)
+        : pinned
+          ? [pinned]
+          : [];
+      debug(`llm-api (lmstudio): built rotation from API (${runner.supportedModels.length} models)`);
     }
   }
   
@@ -841,7 +968,7 @@ export async function validateAndFilterModels(
     const validModels: string[] = [];
     let skippedConfiguredDefault: string | null = null;
     const isLlMApi = runner.name === 'elizacloud' || runner.name === 'llm-api';
-    const useElizaCloudForLlMApi = isLlMApi && models.some(m => m.includes('/'));
+    const useElizaCloudForLlMApi = isLlMApi && runner.provider === 'elizacloud';
 
     for (const model of models) {
       // Eliza Cloud backend: validate against elizacloud set
@@ -867,8 +994,25 @@ export async function validateAndFilterModels(
       }
       // llm-api with list built from API (openai/anthropic): already from provider set, keep if in set
       if (isLlMApi && runner.provider && runner.provider !== 'elizacloud') {
-        const available = runner.provider === 'openai' ? openaiModels : anthropicModels;
-        if (available.has(model)) {
+        const available =
+          runner.provider === 'openai'
+            ? openaiModels
+            : runner.provider === 'anthropic'
+              ? anthropicModels
+              : runner.provider === 'openrouter'
+                ? openrouterModels
+                : runner.provider === 'nvidiacloud'
+                  ? nvidiaModels
+                  : runner.provider === 'ollama'
+                    ? ollamaModels
+                    : runner.provider === 'lmstudio'
+                      ? lmstudioModels
+                      : new Set<string>();
+        // WHY empty set: `/v1/models` fetch failed or returned nothing — keep rotation entries
+        // (Ollama/LM Studio fallbacks, LM Studio pinned id) instead of stripping every model (audit: local providers).
+        if (available.size === 0) {
+          validModels.push(model);
+        } else if (available.has(model)) {
           validModels.push(model);
         } else {
           removed.push({ runner: runner.name, model });
@@ -983,9 +1127,13 @@ export async function validateAndFilterModels(
     }
   }
 
-  // Report what we removed
+  // Report what we removed (skip list, not advertised by ElizaCloud list fetch, or slow-pool probe — not all are "unavailable")
   if (removed.length > 0) {
-    console.log(chalk.yellow(`  Removed ${removed.length.toLocaleString()} unavailable model(s):`));
+    console.log(
+      chalk.yellow(
+        `  Dropped ${formatNumber(removed.length)} model(s) from rotation (skip list, not listed by ElizaCloud, or slow-pool ineligible):`,
+      ),
+    );
     for (const { runner, model } of removed) {
       console.log(chalk.yellow(`    ✗ ${runner}: ${model}`));
     }
@@ -1019,7 +1167,15 @@ export async function setupRunner(
   // WHY: Remove models the user doesn't have access to BEFORE any fixer runs,
   // instead of discovering them one-by-one through failed retries
   const allDetectedRunners = detected.map(d => d.runner);
-  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey, config.llmModel);
+  await validateAndFilterModels(
+    allDetectedRunners,
+    config.openaiApiKey,
+    config.anthropicApiKey,
+    config.elizacloudApiKey,
+    config.llmModel,
+    config.nvidiaApiKey,
+    config.openrouterApiKey,
+  );
 
   // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
   let primaryRunner: Runner;

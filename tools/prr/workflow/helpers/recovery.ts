@@ -22,7 +22,7 @@ import type { LessonsContext } from '../../state/lessons-context.js';
 import type { LLMClient } from '../../llm/client.js';
 import type { Runner } from '../../../../shared/runners/types.js';
 import * as LessonsAPI from '../../state/lessons-index.js';
-import { debug, setTokenPhase, startTimer, endTimer } from '../../../../shared/logger.js';
+import { debug, formatNumber, setTokenPhase, startTimer, endTimer } from '../../../../shared/logger.js';
 import { isEmptyDiffVerdict, parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComment } from '../utils.js';
 import { markVerifiedClusterForFixedIssue } from '../duplicate-cluster-verify.js';
 import {
@@ -101,6 +101,12 @@ export async function trySingleIssueFix(
   openaiApiKey?: string,
   /** Full PR threads — same dedup key as mid-loop paths when expanding clusters from `dedup-v2`. */
   allComments?: readonly ReviewComment[],
+  /**
+   * Optional: post 👀 when entering single-issue focus for one issue (after the “Focusing on…” lines).
+   * WHY: Same UX as batch mode — humans see which thread the runner is about to touch. Uses the same
+   * poster as `executeFixIteration` (resolver-injected) so dedupe + rate-limit state is shared per run.
+   */
+  notifyThreadWorking?: (issues: UnresolvedIssue[]) => Promise<void>,
 ): Promise<boolean> {
   // Prioritize by: (0) WRONG_LOCATION with wider-snippet requested first (prompts.log audit),
   // then (1) highest importance, (2) easiest to fix. Issues without triage go to the end.
@@ -126,7 +132,9 @@ export async function trySingleIssueFix(
     allComments?.length ? [...allComments] : undefined,
   );
 
-  console.log(chalk.cyan(`\n  Focusing on ${toTry.length} issues one at a time (prioritized by severity + ease)...`));
+  console.log(
+    chalk.cyan(`\n  Focusing on ${formatNumber(toTry.length)} issues one at a time (prioritized by severity + ease)...`),
+  );
   
   let anyFixed = false;
   /** Files successfully changed in this single-issue loop (so we don't treat them as "wrong" on later attempts). */
@@ -145,9 +153,15 @@ export async function trySingleIssueFix(
         prChangedForPaths,
       )
       ?? issue.comment.path;
-    console.log(chalk.cyan(`\n  [${i + 1}/${toTry.length}] Focusing on: ${primaryPath}:${issue.comment.line || '?'}`));
+    console.log(
+      chalk.cyan(
+        `\n  [${formatNumber(i + 1)}/${formatNumber(toTry.length)}] Focusing on: ${primaryPath}:${issue.comment.line || '?'}`,
+      ),
+    );
     console.log(chalk.gray(`    "${issue.comment.body.split('\n')[0].substring(0, 60)}..."`));
-    
+
+    await notifyThreadWorking?.([issue]);
+
     try {
     // Compute allowed paths once (needed for enrichment and runner). Mirror buildSingleIssuePrompt / getAllowedPathsForIssues so runner and prompt agree (ROADMAP single-issue).
     let allowedForIssue = issue.allowedPaths?.length ? filterAllowedPathsForFix(issue.allowedPaths) : [primaryPath];
@@ -415,7 +429,11 @@ export async function trySingleIssueFix(
         const issueTargetPaths = [primaryPath, issue.comment.path, issue.resolvedPath].filter(Boolean) as string[];
         const trulyWrong = actuallyNewWrong.filter((f) => !issueTargetPaths.includes(f));
         if (trulyWrong.length > 0) {
-          console.log(chalk.yellow(`    ○ Changed other files instead: ${changedFiles.slice(0, 3).join(', ')}${changedFiles.length > 3 ? ` (+${changedFiles.length - 3} more)` : ''}`));
+          console.log(
+            chalk.yellow(
+              `    ○ Changed other files instead: ${changedFiles.slice(0, 3).join(', ')}${changedFiles.length > 3 ? ` (+${formatNumber(changedFiles.length - 3)} more)` : ''}`,
+            ),
+          );
           debug('Fixer modified wrong files', {
             expectedPaths: allowedForIssue,
             actualFiles: changedFiles,
@@ -547,9 +565,14 @@ export async function trySingleIssueFix(
  * attempt on a model that has ~0% fix success rate.
  */
 const DIRECT_FIX_MODELS: Record<string, string> = {
-  elizacloud: 'anthropic/claude-sonnet-4.5',      // ElizaCloud: API ID
+  // Match **`DEFAULT_ELIZACLOUD_MODEL`** (hyphen snapshot id) — avoid legacy dot spelling `claude-sonnet-4.5` skipped / rejected on gateway.
+  elizacloud: 'anthropic/claude-sonnet-4-5-20250929',
   anthropic: 'claude-sonnet-4-5-20250929',         // Strong coder, reasonable cost
   openai: 'gpt-4.1',                              // Smartest non-reasoning model
+  /** WHY: @elizaos/plugin-nvidiacloud — strong default instruct for last-resort fix. */
+  nvidiacloud: 'meta/llama-3.1-405b-instruct',
+  /** WHY: @elizaos/plugin-openrouter — strong routed id for last-resort fix. */
+  openrouter: 'anthropic/claude-sonnet-4-5-20250929',
 };
 
 export async function tryDirectLLMFix(
@@ -600,7 +623,11 @@ export async function tryDirectLLMFix(
       // Guard against large files exceeding model context
       const stat = fs.statSync(filePath);
       if (stat.size > MAX_PROMPT_FILE_BYTES) {
-        console.log(chalk.gray(`    - Skipped ${primaryPath}: file too large (${Math.round(stat.size / 1024)}KB > ${MAX_PROMPT_FILE_BYTES / 1024}KB limit)`));
+        console.log(
+          chalk.gray(
+            `    - Skipped ${primaryPath}: file too large (${formatNumber(Math.round(stat.size / 1024))}KB > ${formatNumber(Math.round(MAX_PROMPT_FILE_BYTES / 1024))}KB limit)`,
+          ),
+        );
         continue;
       }
       const fileContent = fs.readFileSync(filePath, 'utf-8');
@@ -608,7 +635,9 @@ export async function tryDirectLLMFix(
       // Skip files too large for direct LLM rewrite
       const MAX_FILE_CHARS = 100_000; // ~25K tokens
       if (fileContent.length > MAX_FILE_CHARS) {
-        console.log(chalk.gray(`    - Skipped ${primaryPath}: file too large for direct LLM fix (${fileContent.length} chars)`));
+        console.log(
+          chalk.gray(`    - Skipped ${primaryPath}: file too large for direct LLM fix (${formatNumber(fileContent.length)} chars)`),
+        );
         continue;
       }
       

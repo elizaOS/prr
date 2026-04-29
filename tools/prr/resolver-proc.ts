@@ -59,7 +59,11 @@ export {
   cloneOrUpdateRepository,
   recoverVerificationState,
   checkAndSyncWithRemote,
+  isPullConflictErrorMessage,
+  resolvePullRebaseConflictsAfterFailedPull,
+  resolveStashPopConflictsWithLLM,
 } from './workflow/repository.js';
+export type { ResolveConflictsWithLLMFn } from './workflow/repository.js';
 
 // Base branch merge workflows
 export {

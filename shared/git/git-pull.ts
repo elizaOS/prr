@@ -4,7 +4,7 @@
  * check so we don't prompt for password when remote has no credentials (see git-conflicts.ts).
  */
 import type { SimpleGit } from 'simple-git';
-import { debug } from '../logger.js';
+import { debug, formatNumber } from '../logger.js';
 import { abortMerge } from './git-merge.js';
 import { fetchOriginBranch, type FetchOptions } from './git-conflicts.js';
 
@@ -30,7 +30,9 @@ export async function pullLatest(
     try {
       await git.stash(['push', '-u', '-m', 'prr-auto-stash-before-pull']);
       didStash = true;
-      console.log(`  Stashed ${status.modified.length + status.created.length + status.deleted.length} local changes`);
+      console.log(
+        `  Stashed ${formatNumber(status.modified.length + status.created.length + status.deleted.length)} local changes`,
+      );
     } catch (stashError) {
       debug('Failed to stash', { error: stashError });
       console.warn(
@@ -73,7 +75,9 @@ export async function pullLatest(
     if (ahead > 0 && behind > 0) {
       // Branches have diverged - need to rebase our commits on top of remote
       debug('Branches diverged, rebasing local commits on remote');
-      console.log(`  Rebasing ${ahead} local commit(s) onto ${behind} remote commit(s)...`);
+      console.log(
+        `  Rebasing ${formatNumber(ahead)} local commit(s) onto ${formatNumber(behind)} remote commit(s)...`,
+      );
       
       try {
         await git.rebase([`origin/${branch}`]);

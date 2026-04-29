@@ -1,11 +1,22 @@
 export interface PillConfig {
   targetDir: string;
-  llmProvider: 'anthropic' | 'openai' | 'elizacloud';
+  llmProvider:
+    | 'anthropic'
+    | 'openai'
+    | 'elizacloud'
+    | 'nvidiacloud'
+    | 'openrouter'
+    | 'ollama'
+    | 'lmstudio';
   auditModel: string;
   llmModel: string;
   elizacloudApiKey?: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
+  nvidiaApiKey?: string;
+  openrouterApiKey?: string;
+  ollamaApiKey?: string;
+  lmstudioApiKey?: string;
   /** '' | undefined = output.log; 'story' = story-output.log; 'pill' = pill-output.log */
   logPrefix?: string;
   /**
@@ -38,6 +49,11 @@ export interface PillConfig {
   promptsOnly: boolean;
   dryRun: boolean;
   verbose: boolean;
+  /**
+   * Short status lines during `assembleContext` (large log story-read, prompts digest).
+   * Wired from the orchestrator spinner when not verbose.
+   */
+  onAssembleProgress?: (message: string) => void;
 }
 
 export interface PillContext {

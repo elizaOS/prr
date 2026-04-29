@@ -2,6 +2,8 @@
 // MODEL ROTATION & TOOL SWITCHING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+import { formatNumber } from '../logger.js';
+
 /**
  * How many models to try on current tool before switching to next tool.
  * WHY: Different tools have different strengths; cycling faster helps unstick loops.
@@ -23,13 +25,33 @@ export const DEFAULT_MAX_STALE_CYCLES = 1;
 export const MAX_DISTINCT_FAILED_ATTEMPTS = 4;
 
 /**
+ * Parse PRR_CHRONIC_FAILURE_THRESHOLD: integer ≥ 1, default 5. Invalid or non-finite env → 5 (no silent `||` on 0).
+ * Exported for unit tests.
+ */
+export function parseChronicFailureThresholdFromEnv(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return 5;
+  const trimmed = raw.trim();
+  const n = parseInt(trimmed, 10);
+  if (!Number.isFinite(n)) {
+    if (trimmed.length > 0) {
+      console.warn(
+        `[PRR] Ignoring invalid PRR_CHRONIC_FAILURE_THRESHOLD (expected integer); using default ${formatNumber(5)}. Received: ${JSON.stringify(trimmed)}`,
+      );
+    }
+    return 5;
+  }
+  return Math.max(1, n);
+}
+
+/**
  * Total failed fix attempts (across all sessions) before dismissing as chronic failure.
  * WHY: Same issue failing 5+ times burns tokens with no progress; auto-dismiss and let human review.
  * Override with PRR_CHRONIC_FAILURE_THRESHOLD env (integer).
  */
-export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && process.env.PRR_CHRONIC_FAILURE_THRESHOLD
-  ? Math.max(1, parseInt(process.env.PRR_CHRONIC_FAILURE_THRESHOLD, 10) || 5)
-  : 5;
+export const CHRONIC_FAILURE_THRESHOLD =
+  typeof process !== 'undefined'
+    ? parseChronicFailureThresholdFromEnv(process.env.PRR_CHRONIC_FAILURE_THRESHOLD)
+    : 5;
 
 /**
  * Max new bot review threads to enqueue in one mid-fix-loop batch (PRR_MID_LOOP_NEW_COMMENT_CAP).

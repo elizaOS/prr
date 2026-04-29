@@ -16,7 +16,7 @@
 
 ## How it works
 
-1. **Context assembly** — Reads docs, source (with token budget), directory tree, and the target **output.log** and **prompts.log**. Log file names depend on `logPrefix` (see below). Large logs are summarized so the audit request stays within context and avoids 504 / FUNCTION_INVOCATION_TIMEOUT.
+1. **Context assembly** — Reads docs, source (with token budget), directory tree, and the target **output.log** and **prompts.log**. Log file names depend on `logPrefix` (see below). Large logs are summarized so the audit request stays within context and avoids 504 / FUNCTION_INVOCATION_TIMEOUT. **Progress (WHY):** Assembly can take **many minutes** when **`prompts.log`** is megabytes (story-read runs dozens of sequential LLM “chapters”). The default **spinner** text updates through **stages** (reading logs, summarizing, **chapter i/n**); **`--verbose`** prints the same as gray **`[pill] …`** lines so CI logs are not silent. Implemented via **`PillConfig.onAssembleProgress`** and **`StoryReadOptions.onChapterProgress`** (`orchestrator.ts` → `context.ts` → `shared/llm/story-read.ts`).
 2. **Audit LLM** — Sends context to the configured audit model with a system prompt that asks for: a **pitch** (engaging 1–2 paragraph summary), a **summary** (technical overview), and **improvements** (file, description, rationale, severity, category).
 3. **Output** — Appends one dated section to **pill-output.md** (full plan) and one entry to **pill-summary.md** (pitch + link). Uses `.toLocaleString()` for user-facing counts (no dependency on shared logger; see workspace rule).
 
@@ -51,14 +51,21 @@ pill . --output-log ~/runs/prr-2026-04-05/output.log --prompts-log ~/runs/prr-20
 - **&lt;directory&gt;** — Directory that contains the project to audit (docs, source, tree). Log files default to this directory unless overridden below.
 - **--output-log &lt;path&gt;** — Use this file as **output.log** instead of `&lt;directory&gt;/[prefix-]output.log`. Handy to rerun pill on a saved copy or logs in another folder (path is resolved from the current working directory). Overrides **`PILL_OUTPUT_LOG_PATH`**.
 - **--prompts-log &lt;path&gt;** — Same for **prompts.log**. Overrides **`PILL_PROMPTS_LOG_PATH`**. You can set only one of the pair; the other still uses the default name under **&lt;directory&gt;**.
-- **--audit-model &lt;model&gt;** — Model for the audit call (default: claude-opus-4-6).
+- **--audit-model &lt;model&gt;** — Model for the audit call (default: **`claude-opus-4-6`** for Eliza/Anthropic workflows). **WHY:** When the detected provider is **`openai`**, **`nvidiacloud`**, **`openrouter`**, **`ollama`**, or **`lmstudio`** and **`PILL_AUDIT_MODEL`** is unset, **`loadConfig`** replaces this default with that provider’s model id so the audit request matches the API (**`tools/pill/config.ts`**). Override with **`PILL_AUDIT_MODEL`** or an explicit **`--audit-model`**.
 - **--output-only** — Use only output.log (no prompts.log).
 - **--prompts-only** — Use only prompts.log (no output.log).
 - **--dry-run** — Run audit and show results; do not write pill-output.md or pill-summary.md.
 - **--instructions-out &lt;path&gt;** — Override path for pill-output.md.
 - **-v, --verbose** — Verbose logging (provider, model, token counts, plan preview).
 
-Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/.env` (target overrides home). Same env vars as prr/story (e.g. `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`).
+Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/.env` (target overrides home). Same env vars as prr/story (e.g. `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `NVIDIA_API_KEY` / `NVIDIA_CLOUD_API_KEY`).
+
+### LLM provider and default models (WHY)
+
+- **`PILL_LLM_PROVIDER`** (optional) — Force **`elizacloud`**, **`anthropic`**, **`openai`**, **`nvidiacloud`**, **`openrouter`**, **`ollama`**, or **`lmstudio`**. If unset, pill picks a provider from whichever API key is present (order: ElizaCloud → Anthropic → OpenAI → OpenRouter → NVIDIA), same idea as PRR so one **`.env`** works for both tools. **`ollama`** / **`lmstudio`** are not auto-detected from URLs — set **`PILL_LLM_PROVIDER`** explicitly.
+- **`PILL_AUDIT_MODEL`** / **`PILL_LLM_MODEL`** (optional) — Override the audit model (JSON plan + chunked audits) and the **story-read** / light completion model. **WHY provider defaults:** The CLI **`--audit-model`** default remains **`claude-opus-4-6`** because most pill docs assumed ElizaCloud or Anthropic. When the detected provider is **`openai`**, **`nvidiacloud`**, **`openrouter`**, **`ollama`**, or **`lmstudio`** and **`PILL_AUDIT_MODEL`** is **not** set, **`loadConfig`** substitutes that provider’s default audit and LLM models from **`shared/constants`** (or **`PILL_LLM_MODEL`** for **`lmstudio`**) so the first HTTP call is not a Claude id against the wrong gateway. **`PILL_LLM_PROVIDER=lmstudio`** requires **`PILL_LLM_MODEL`**. If you **did** pass **`--audit-model`** or **`PILL_AUDIT_MODEL`**, that value is used as-is (advanced: OpenRouter audit on one id, story on another via **`PILL_LLM_MODEL`** only).
+- **WHY colons in model ids:** **`PILL_LLM_MODEL`** may use Ollama-style tags (e.g. **`gpt-oss:20b`**). Validation matches **`shared/config.ts`** **`MODEL_NAME_PATTERN`** (allows **`:`**, rejects **`//`**).
+- **WHY shared `openAiCompatMaxOutputFields`:** Pill’s OpenAI-compatible **`chat.completions.create`** uses **`max_tokens`** for **`nvidiacloud`**, **`openrouter`**, **`ollama`**, and **`lmstudio`**, and **`max_completion_tokens`** for **`elizacloud`** and **`openai`** — third-party **`/v1`** hosts often reject **`max_completion_tokens`**. Implementation: **`shared/llm/openai-compat-chat-params.ts`** (**`tools/pill/llm/client.ts`**).
 
 - **PILL_CONTEXT_BUDGET_TOKENS** (optional, 8000–128000) — Max context tokens for the assembled context (default **35000**). Per-section caps scale with the budget. If you hit 504, try **20000** or lower.
 - **PILL_AUDIT_MAX_USER_CHARS** (optional, **6000–80000**) — Hard cap on **user** message size **per audit HTTP request** (single request or each chunk). If unset: default ceiling **~20k** chars, **~12k** for Opus-class / `o3-` / `gpt-5` (excluding mini/nano) audit models (Vercel invocation timeout). Raise only if you use a direct API (not ElizaCloud) or a fast model.
@@ -86,7 +93,7 @@ When pill records **no improvements**, it returns a distinct **reason** so you c
 | Reason | Meaning | What to do |
 |--------|---------|------------|
 | **no_logs** | Output/prompts log for this prefix is empty or missing. | Ensure the tool that produced the logs (prr, story, split-exec) wrote to the expected files (e.g. `split-exec-output.log` when prefix is `split-exec`). Run from the directory that contains those logs, pass that directory to the pill CLI, or use **`--output-log`** / **`--prompts-log`** to point at the files. |
-| **no_api_key** | No LLM API key configured for the chosen provider. | Set the right key in `.env`: `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` (see Configuration in main README). When pill runs from the hook, it uses the same env as the parent process. |
+| **no_api_key** | No LLM API key configured for the chosen provider. | Set the right key in `.env`: `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `NVIDIA_API_KEY` / `NVIDIA_CLOUD_API_KEY`, or `OPENROUTER_API_KEY` (see Configuration in main README). When pill runs from the hook, it uses the same env as the parent process. |
 | **api_call_failed** | The audit LLM request failed (network, rate limit, model error). | Check the error message in the console or in the log line. Ensure the model ID is valid and the key has access. Look at **pill-prompts.log** for the request if it was written before the failure. |
 | **zero_improvements_from_llm** | The audit ran successfully but the LLM suggested zero improvements. | Not a failure — the logs were analyzed and the model had nothing to add. |
 | **all_filtered_tool_scope** | Every suggestion used paths outside the tool-repo allowlist (e.g. clone `src/` / `packages/`). | Expected when scope filter is on and the model only echoed the PR. Set **`PILL_TOOL_REPO_SCOPE_FILTER=0`** if you want those rows in **`pill-output.md`**. |

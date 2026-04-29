@@ -125,6 +125,44 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ---
 
+## NVIDIA Cloud (NIM / integrate API)
+
+PRR uses the **OpenAI-compatible** surface documented for NVIDIA NIM / Build (`https://integrate.api.nvidia.com/v1` by default). Model ids are typically **`meta/…`**, **`nvidia/…`**, etc., as returned by **`GET /v1/models`**.
+
+- **Config:** **`PRR_LLM_PROVIDER=nvidiacloud`**, **`NVIDIA_API_KEY`** or **`NVIDIA_CLOUD_API_KEY`**, optional **`NVIDIA_BASE_URL`**, **`PRR_LLM_MODEL`** (defaults in **`shared/constants/models.ts`** — availability is account-dependent).
+- **Chat completions:** Many NIM **`/v1/chat/completions`** stacks expect **`max_tokens`**, not **`max_completion_tokens`**. PRR branches per provider in **`shared/llm/openai-compat-chat-params.ts`** (**WHY:** avoid 400s from strict OpenAI-compat proxies).
+- **Catalog:** PRR does **not** use **`generated/model-provider-catalog.json`** for NVIDIA stale-advice dismissal; use runtime discovery / pinned ids.
+
+---
+
+## OpenRouter
+
+[OpenRouter](https://openrouter.ai/) exposes an OpenAI-compatible API at **`https://openrouter.ai/api/v1`**. Model ids are **`provider/model`** strings (e.g. **`anthropic/claude-sonnet-4-5-20250929`**, **`openai/gpt-4o-mini`**).
+
+- **Config:** **`PRR_LLM_PROVIDER=openrouter`**, **`OPENROUTER_API_KEY`**, optional **`OPENROUTER_BASE_URL`**, optional **`OPENROUTER_HTTP_REFERER`** / **`OPENROUTER_APP_TITLE`** for attribution headers.
+- **Chat completions:** OpenRouter’s OpenAI-compatible API typically accepts **`max_tokens`** for generation caps; PRR uses the same helper as NVIDIA (**`shared/llm/openai-compat-chat-params.ts`**) so **`max_completion_tokens`** is not sent to hosts that reject it.
+- **Catalog:** Same as NVIDIA — no checked-in catalog rows for OpenRouter; pin **`PRR_LLM_MODEL`** to ids your key can call.
+
+---
+
+## Ollama (local)
+
+Ollama exposes an **OpenAI-compatible** API (default **`http://127.0.0.1:11434/v1`**). Override with **`OLLAMA_BASE_URL`**. Model ids are typically short names or tags (e.g. **`llama3.2`**, **`llama3.2:latest`**, **`gpt-oss:20b`**).
+
+- **Config:** **`PRR_LLM_PROVIDER=ollama`**, optional **`OLLAMA_API_KEY`** (placeholder for the SDK; default **`ollama`**). **`PRR_LLM_MODEL`** defaults to **`llama3.2`** when unset (**`shared/constants/models.ts`**); set it to a model you have **`ollama pull`**’d.
+- **Chat completions:** Use **`max_tokens`** (same helper as NVIDIA/OpenRouter — **`shared/llm/openai-compat-chat-params.ts`**).
+
+---
+
+## LM Studio (local)
+
+[LM Studio](https://lmstudio.ai/) can run a local OpenAI-compatible server (default **`http://127.0.0.1:1234/v1`**). Override with **`LMSTUDIO_BASE_URL`**. The loaded model id is **user-defined** in the app — there is no universal default string in PRR.
+
+- **Config:** **`PRR_LLM_PROVIDER=lmstudio`**, **`PRR_LLM_MODEL` required** (must match the id from the server / **`GET /v1/models`**). Optional **`LMSTUDIO_API_KEY`** (default **`lm-studio`**).
+- **Chat completions:** **`max_tokens`** path (same **`openAiCompatMaxOutputFields`** branch as Ollama).
+
+---
+
 ## Using this in PRR
 
 - **ElizaCloud / context limits:** Edit **`ELIZACLOUD_MODEL_CONTEXT`** in `shared/llm/model-context-limits.ts`. Each entry sets **`maxContextTokens`** (total context window for that API model ID). PRR derives fix-prompt char caps from that (small contexts use a denser tokenization estimate). Optional **`maxFixPromptCharsCap`** tightens the derived value when the gateway still times out. Unknown gateway models use a conservative default until you add a row. Use **`ELIZACLOUD_MODEL_ID_ALIASES`** and pattern aliases in that file when the same physical model appears under multiple strings (e.g. `Qwen/Qwen3-14B` → `alibaba/qwen-3-14b`).
@@ -134,16 +172,16 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 ### Rotation order and skip list
 
 - **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from `shared/constants.ts`. Do not assume the static table in `types.ts` is the exact live order.
+- **OpenRouter / NVIDIA keys at startup:** **`validateAndFilterModels`** merges **`config.*`** keys with **`OPENROUTER_API_KEY`** / **`NVIDIA_*`** from the environment so **`GET /v1/models`** can still run when only env is populated. For **OpenAI-compatible** **`llm-api`** backends, an **empty** model list does **not** remove every fallback id (including LM Studio’s pinned **`PRR_LLM_MODEL`**). **WHY:** Avoid wrong-gateway list fetches when multiple keys exist, and avoid a failed local **`/v1/models`** call wiping the whole rotation (README / DEVELOPMENT.md).
 - **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`**. The table below is a **snapshot for operators**; if it disagrees with the source array, **trust the source file** and update this table when you change skips.
 
-**Last reviewed (skip table):** 2026-04-05 — constants sync + env skip-list validation (`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS` / `INCLUDE` malformed tokens ignored with one-time warn).
+**Last reviewed (skip table):** 2026-04-12 — removed dot-alias **`anthropic/claude-sonnet-4.5`** (conflicted with canonical **`anthropic/claude-sonnet-4-5-20250929`** / catalog hyphen ids).
 
 | Model id | Reason in **`ELIZACLOUD_SKIP_REASON`** | Notes |
 |----------|----------------------------------------|--------|
 | `openai/gpt-5.2-codex` | *(default `timeout`)* | Gateway / rotation audit |
 | `anthropic/claude-3-opus` | *(default `timeout`)* | |
 | `openai/gpt-4.1` | *(default `timeout`)* | |
-| `anthropic/claude-sonnet-4.5` | *(default `timeout`)* | |
 | `openai/gpt-5.1-codex-max` | *(default `timeout`)* | |
 | `anthropic/claude-3.7-sonnet` | `timeout` | Known timeout/504 on gateway |
 | `openai/gpt-4o` | `timeout` | |

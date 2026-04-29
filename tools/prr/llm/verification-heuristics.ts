@@ -93,6 +93,28 @@ export function finalAuditExplanationClaimsSnippetIsIncomplete(explanation: stri
   );
 }
 
+/**
+ * Prefix on final-audit **pass** explanations when an UNFIXED verdict was demoted because the
+ * snippet looked excerpt/truncation-shaped and the model’s rationale hinged on incomplete view.
+ * **Must match** the string assigned in `LLMClient.finalAudit` (`client.ts`).
+ */
+export const FINAL_AUDIT_TRUNCATION_GUARD_PASS_PREFIX = 'FIXED (truncation guard):' as const;
+
+export function isFinalAuditTruncationGuardPass(explanation: string): boolean {
+  return explanation.startsWith(FINAL_AUDIT_TRUNCATION_GUARD_PASS_PREFIX);
+}
+
+/**
+ * Explanation assigned when final audit said UNFIXED but post-check detected UUID `[1-8]` + comment
+ * alignment (Cycle 65). **Must match** `LLMClient.finalAudit` (`client.ts`).
+ */
+export const FINAL_AUDIT_UUID_ALIGN_PASS_EXPLANATION =
+  'FIXED (post-check): Shown code documents UUID versions 1-8 and regex uses [1-8]; prior UNFIXED repeated stale review text.' as const;
+
+export function isFinalAuditUuidAlignPass(explanation: string): boolean {
+  return explanation === FINAL_AUDIT_UUID_ALIGN_PASS_EXPLANATION;
+}
+
 export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {
   return (
     /snippet.*(?:truncated|unavailable)/i.test(explanation) ||

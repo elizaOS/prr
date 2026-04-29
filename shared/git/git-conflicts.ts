@@ -65,13 +65,35 @@ export interface FetchOptions {
   githubToken?: string;
 }
 
+/** Git remote name PRR uses for **`base.repo`** when the PR is opened from a fork. */
+export const FORK_PR_BASE_REMOTE = 'upstream';
+
+/**
+ * Ensure **`upstream`** points at the PR base repository (no token persisted in `.git/config`).
+ * WHY: On fork PRs, **`origin`** is the fork; **`origin/develop`** is the fork’s base tip, not **`elizaOS/eliza`**’s **`develop`** that GitHub merges against.
+ */
+export async function ensureForkBaseRemote(git: SimpleGit, baseRepoCloneUrl: string): Promise<void> {
+  const url = baseRepoCloneUrl.trim();
+  if (!url) return;
+  const remotes = await git.getRemotes(true);
+  const has = remotes.some((r) => r.name === FORK_PR_BASE_REMOTE);
+  if (has) {
+    await git.remote(['set-url', FORK_PR_BASE_REMOTE, url]);
+  } else {
+    await git.addRemote(FORK_PR_BASE_REMOTE, url);
+  }
+}
+
 /**
  * Run git fetch via spawn so we can capture stdout/stderr and show them on timeout.
- * When githubToken is provided and origin is HTTPS without credentials, uses one-shot
+ * When githubToken is provided and the remote is HTTPS without credentials, uses one-shot
  * auth URL (same as push) so fetch does not prompt for password.
+ *
+ * @param remote — e.g. **`origin`** (PR head repo) or **`upstream`** (base repo on fork PRs).
  */
-export async function fetchOriginBranch(
+export async function fetchRemoteBranch(
   git: SimpleGit,
+  remote: string,
   branch: string,
   options?: FetchOptions
 ): Promise<void> {
@@ -94,35 +116,40 @@ export async function fetchOriginBranch(
   // When using refspec we inject branch into refs/heads/...; invalid names produce a bad refspec or unsafe spawn args.
   const safeForRefspec = isBranchRefSafeForOriginFetch(branch);
 
+  const remoteRef = `${remote}/${branch}`;
   let args: string[];
   try {
-    const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: workdir, encoding: 'utf8' }).trim();
+    const remoteUrl = execFileSync('git', ['remote', 'get-url', remote], { cwd: workdir, encoding: 'utf8' }).trim();
     const hasTokenInUrl = remoteUrl.includes('@') && remoteUrl.startsWith('https://');
     if (safeForRefspec && !hasTokenInUrl && options?.githubToken && remoteUrl.startsWith('https://')) {
       const authUrl = remoteUrl.replace('https://', `https://${options.githubToken}@`);
-      // WHY refspec: fetch <url> <refspec> updates refs/remotes/origin/branch so git.status() behind/ahead is correct.
-      args = ['fetch', authUrl, `refs/heads/${branch}:refs/remotes/origin/${branch}`];
-      debug('Fetch with one-shot auth URL');
+      // WHY refspec: fetch <url> <refspec> updates refs/remotes/<remote>/<branch> so merge-base and status stay correct.
+      args = ['fetch', authUrl, `refs/heads/${branch}:refs/remotes/${remote}/${branch}`];
+      debug('Fetch with one-shot auth URL', { remote, branch });
     } else {
       let skipReason: string | undefined;
       if (!safeForRefspec) skipReason = 'branch ref not safe for embedded refspec';
-      else if (!remoteUrl.startsWith('https://')) skipReason = 'origin remote is not https';
+      else if (!remoteUrl.startsWith('https://')) skipReason = 'remote URL is not https';
       else if (!options?.githubToken) skipReason = 'no githubToken in options';
       else if (hasTokenInUrl) skipReason = 'remote URL already embeds credentials';
       if (skipReason) {
-        debug('Fetch using plain git fetch origin (one-shot auth not used)', { skipReason, branch });
+        debug('Fetch using plain git fetch (one-shot auth not used)', { skipReason, remote, branch });
       }
-      args = ['fetch', 'origin', branch];
+      args = ['fetch', remote, branch];
     }
   } catch (err) {
-    debug('Fetch URL construction failed, falling back to plain fetch origin branch', {
+    debug('Fetch URL construction failed, falling back to plain git fetch remote branch', {
       err: err instanceof Error ? err.message : String(err),
+      remote,
       branch,
     });
-    args = ['fetch', 'origin', branch];
+    args = ['fetch', remote, branch];
   }
 
-  debug('Starting git fetch', { command: `git ${args.join(' ')}`, workdir });
+  debug('Starting git fetch', {
+    command: redactUrlCredentials(`git ${args.join(' ')}`),
+    workdir,
+  });
 
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, {
@@ -140,15 +167,19 @@ export async function fetchOriginBranch(
       fn();
     };
 
-    proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.stdout?.on('data', (d: Buffer) => {
+      stdout += d.toString();
+    });
+    proc.stderr?.on('data', (d: Buffer) => {
+      stderr += d.toString();
+    });
 
     const timeout = setTimeout(() => {
       clearTimeout(timeout);
       proc.kill('SIGKILL');
       settle(() => {
         const out = [
-          `Fetch timed out after ${formatNumber(Math.round(FETCH_TIMEOUT_MS / 1000))}s. Check network and remote access (origin/${branch}). Set PRR_FETCH_TIMEOUT_MS for slow connections.`,
+          `Fetch timed out after ${formatNumber(Math.round(FETCH_TIMEOUT_MS / 1000))}s. Check network and remote access (${remoteRef}). Set PRR_FETCH_TIMEOUT_MS for slow connections.`,
           '',
           'Output from git fetch:',
           stdout ? `stdout:\n${redactUrlCredentials(stdout)}` : '',
@@ -177,13 +208,24 @@ export async function fetchOriginBranch(
       clearTimeout(timeout);
       settle(() =>
         reject(
-            new Error(
-              `git fetch failed: ${redactUrlCredentials(err.message)}\nstderr: ${redactUrlCredentials(stderr)}`
-            )
+          new Error(
+            `git fetch failed: ${redactUrlCredentials(err.message)}\nstderr: ${redactUrlCredentials(stderr)}`
           )
+        )
       );
     });
   });
+}
+
+/**
+ * Run git fetch for **`origin/<branch>`** (same as **`fetchRemoteBranch(git, 'origin', branch, options)`**).
+ */
+export async function fetchOriginBranch(
+  git: SimpleGit,
+  branch: string,
+  options?: FetchOptions
+): Promise<void> {
+  return fetchRemoteBranch(git, 'origin', branch, options);
 }
 
 export interface ConflictStatus {
@@ -265,7 +307,7 @@ export interface LatentMergeProbeResult {
 }
 
 /**
- * Dry-merge `HEAD` with `origin/<branch>` using `git merge-tree` (Git 2.38+).
+ * Dry-merge `HEAD` with **`<remote>/<branch>`** (default **`origin`**) using `git merge-tree` (Git 2.38+).
  * Does not modify the working tree or index.
  *
  * WHY: After `fetch`, `git status` does not show conflicts until a merge/rebase is in progress.
@@ -277,7 +319,7 @@ export interface LatentMergeProbeResult {
 export async function probeLatentMergeConflictsWithOrigin(
   git: SimpleGit,
   branch: string,
-  options?: { disableEnvVar?: string }
+  options?: { disableEnvVar?: string; remote?: string }
 ): Promise<LatentMergeProbeResult> {
   const envKey = options?.disableEnvVar ?? 'PRR_DISABLE_LATENT_MERGE_PROBE';
   const disable = process.env[envKey]?.trim().toLowerCase();
@@ -286,7 +328,8 @@ export async function probeLatentMergeConflictsWithOrigin(
   }
 
   const cwd = await resolveGitWorkdir(git);
-  const remoteRef = `origin/${branch}`;
+  const remote = (options?.remote ?? 'origin').trim() || 'origin';
+  const remoteRef = `${remote}/${branch}`;
   const branchOk =
     branch.trim().length > 0 && !/[\s\\~^:?*[\x00-\x1f\x7f]/.test(branch) && !branch.includes('..');
   if (!branchOk) {
@@ -347,14 +390,15 @@ export async function probeLatentMergeConflictsWithOrigin(
  * **`hasConflicts` / `conflictedFiles`:** in-progress merge/rebase only (`git status`).
  * **`latentConflictWithOrigin`:** dry-merge `HEAD` vs `origin/<branch>` (PR head vs remote PR tip).
  * **`latentConflictWithPrBase`:** when **`options.prBaseBranch`** is set and differs from **`branch`**, second probe:
- * dry-merge `HEAD` vs `origin/<prBase>` — closer to GitHub **mergeable / dirty** than PR-tip alone.
+ * dry-merge `HEAD` vs **`<prBaseRemote>/<prBase>`** (default **`origin/<prBase>`**) — closer to GitHub **mergeable / dirty** than PR-tip alone.
+ * **`prBaseRemote`:** use **`upstream`** on fork PRs after **`ensureForkBaseRemote`** + fetch.
  */
 export async function checkForConflicts(
   git: SimpleGit,
   branch: string,
-  options?: FetchOptions & { prBaseBranch?: string }
+  options?: FetchOptions & { prBaseBranch?: string; prBaseRemote?: string }
 ): Promise<ConflictStatus> {
-  debug('Checking for conflicts', { branch, prBaseBranch: options?.prBaseBranch });
+  debug('Checking for conflicts', { branch, prBaseBranch: options?.prBaseBranch, prBaseRemote: options?.prBaseRemote });
 
   await fetchOriginBranch(git, branch, options);
 
@@ -394,16 +438,19 @@ export async function checkForConflicts(
     const branchTrim = branch.trim();
     const shouldProbePrBase = Boolean(prBase && prBase !== branchTrim && prBase.length > 0);
     if (shouldProbePrBase && prBase) {
+      const prBaseRemote = (options?.prBaseRemote ?? 'origin').trim() || 'origin';
       try {
-        await fetchOriginBranch(git, prBase, options);
+        await fetchRemoteBranch(git, prBaseRemote, prBase, options);
       } catch (err) {
         debug('fetch for PR-base latent probe failed (probe may still use existing ref)', {
           prBase,
+          prBaseRemote,
           err: err instanceof Error ? err.message : String(err),
         });
       }
       const probeBase = await probeLatentMergeConflictsWithOrigin(git, prBase, {
         disableEnvVar: 'PRR_DISABLE_LATENT_MERGE_PROBE_BASE',
+        remote: prBaseRemote,
       });
       if (probeBase.ran) {
         latentConflictWithPrBase = probeBase.hasLatentConflicts;

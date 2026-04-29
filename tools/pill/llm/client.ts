@@ -1,11 +1,25 @@
 /**
- * LLM client for audit and verify. Supports Anthropic, OpenAI, ElizaCloud.
- * ElizaCloud uses X-API-Key and OpenAI-compatible base URL.
+ * LLM client for pill: story-read / assembly LLM calls and audit **`chat.completions`** (or Anthropic messages).
+ * Supports Anthropic, OpenAI, ElizaCloud, NVIDIA Cloud, OpenRouter.
+ * WHY **`openAiCompatMaxOutputFields`**: NVIDIA and OpenRouter **`/v1/chat/completions`** stacks typically
+ * expect **`max_tokens`**; ElizaCloud/OpenAI use **`max_completion_tokens`** — shared helper keeps pill aligned
+ * with PRR transport and **`llm-api`** (**`shared/llm/openai-compat-chat-params.ts`**).
  */
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { PillConfig } from '../types.js';
 import { openAiChatCompletionContentToString } from '../../../shared/llm/openai-chat-content.js';
+import { openAiCompatMaxOutputFields } from '../../../shared/llm/openai-compat-chat-params.js';
+import { createLmStudioOpenAIClient } from '../../../shared/llm/lmstudio.js';
+import { createNvidiaCloudOpenAIClient } from '../../../shared/llm/nvidiacloud.js';
+import { createOllamaOpenAIClient } from '../../../shared/llm/ollama.js';
+import { createOpenRouterOpenAIClient } from '../../../shared/llm/openrouter.js';
+import {
+  LMSTUDIO_OPENAI_COMPAT_BASE_URL,
+  NVIDIA_API_BASE_URL,
+  OLLAMA_OPENAI_COMPAT_BASE_URL,
+  OPENROUTER_API_BASE_URL,
+} from '../../../shared/constants.js';
 import { debugPrompt, debugPromptError, debugResponse } from '../logger.js';
 
 const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
@@ -104,6 +118,16 @@ export class LLMClient {
     } else if (config.llmProvider === 'openai') {
       if (!config.openaiApiKey) throw new Error('OpenAI API key required but not set');
       this.openai = new OpenAI({ apiKey: config.openaiApiKey });
+    } else if (config.llmProvider === 'nvidiacloud') {
+      if (!config.nvidiaApiKey) throw new Error('NVIDIA API key required but not set');
+      this.openai = createNvidiaCloudOpenAIClient(config.nvidiaApiKey);
+    } else if (config.llmProvider === 'openrouter') {
+      if (!config.openrouterApiKey) throw new Error('OpenRouter API key required but not set');
+      this.openai = createOpenRouterOpenAIClient(config.openrouterApiKey);
+    } else if (config.llmProvider === 'ollama') {
+      this.openai = createOllamaOpenAIClient(config.ollamaApiKey ?? 'ollama');
+    } else if (config.llmProvider === 'lmstudio') {
+      this.openai = createLmStudioOpenAIClient(config.lmstudioApiKey ?? 'lm-studio');
     }
   }
 
@@ -139,12 +163,27 @@ export class LLMClient {
       return /connection error|fetch failed|socket hang up|network request failed|TLS|certificate/i.test(msg);
     };
 
+    const nvidiaBase = (process.env.NVIDIA_BASE_URL?.trim() || NVIDIA_API_BASE_URL).replace(/\/$/, '');
+    const openrouterBase = (process.env.OPENROUTER_BASE_URL?.trim() || OPENROUTER_API_BASE_URL).replace(/\/$/, '');
+    const ollamaBase = (process.env.OLLAMA_BASE_URL?.trim() || OLLAMA_OPENAI_COMPAT_BASE_URL).replace(/\/$/, '');
+    const lmstudioBase = (process.env.LMSTUDIO_BASE_URL?.trim() || LMSTUDIO_OPENAI_COMPAT_BASE_URL).replace(
+      /\/$/,
+      '',
+    );
     const requestUrl =
       this.provider === 'anthropic'
         ? ANTHROPIC_MESSAGES_URL
         : this.provider === 'elizacloud'
           ? `${ELIZACLOUD_API_BASE_URL}/chat/completions`
-          : OPENAI_CHAT_URL;
+          : this.provider === 'nvidiacloud'
+            ? `${nvidiaBase}/chat/completions`
+            : this.provider === 'openrouter'
+              ? `${openrouterBase}/chat/completions`
+              : this.provider === 'ollama'
+                ? `${ollamaBase}/chat/completions`
+                : this.provider === 'lmstudio'
+                  ? `${lmstudioBase}/chat/completions`
+                  : OPENAI_CHAT_URL;
     const requestContext = {
       url: requestUrl,
       method: 'POST',
@@ -152,7 +191,8 @@ export class LLMClient {
     };
 
     const max429Retries = this.provider === 'elizacloud' ? 3 : 2;
-    const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
+    const backoffMs =
+      this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
     let lastErr: unknown;
 
     for (let attempt = 0; attempt <= max429Retries; attempt++) {
@@ -247,7 +287,7 @@ export class LLMClient {
     const response = await this.openai.chat.completions.create({
       model: chosenModel,
       messages,
-      max_completion_tokens: 16384,
+      ...openAiCompatMaxOutputFields(16_384, this.provider),
     });
     const content = openAiChatCompletionContentToString(response.choices[0]?.message?.content);
     return {

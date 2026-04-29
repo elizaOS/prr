@@ -7,11 +7,36 @@ import chalk from 'chalk';
 import { debug, debugPrompt, debugPromptError, debugResponse, formatNumber } from '../logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL, DEFAULT_OPENAI_MODEL, ELIZACLOUD_API_BASE_URL, getLlmApiRequestTimeoutMs, LLM_REQUEST_TIMEOUT_MS, MAX_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP, REWRITE_ESCALATION_RESERVE_CHARS } from '../constants.js';
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_ELIZACLOUD_MODEL,
+  DEFAULT_NVIDIA_LLM_MODEL,
+  DEFAULT_OLLAMA_LLM_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  DEFAULT_OPENROUTER_LLM_MODEL,
+  ELIZACLOUD_API_BASE_URL,
+  LMSTUDIO_OPENAI_COMPAT_BASE_URL,
+  NVIDIA_API_BASE_URL,
+  OLLAMA_OPENAI_COMPAT_BASE_URL,
+  OPENROUTER_API_BASE_URL,
+  getLlmApiRequestTimeoutMs,
+  LLM_REQUEST_TIMEOUT_MS,
+  MAX_FIX_PROMPT_CHARS,
+  MAX_ENRICHED_FIX_PROMPT_CHARS,
+  MAX_ENRICHED_FIX_PROMPT_HARD_CAP,
+  REWRITE_ESCALATION_RESERVE_CHARS,
+} from '../constants.js';
 import { getMaxFixPromptCharsForModel, getMaxElizacloudHardInputCeiling, lowerModelMaxPromptChars } from '../llm/model-context-limits.js';
 import { createElizaCloudOpenAIClient } from '../llm/elizacloud.js';
+import { createLmStudioOpenAIClient } from '../llm/lmstudio.js';
+import { createNvidiaCloudOpenAIClient } from '../llm/nvidiacloud.js';
+import { createOllamaOpenAIClient } from '../llm/ollama.js';
+import { createOpenRouterOpenAIClient } from '../llm/openrouter.js';
 import { openAiChatCompletionContentToString } from '../llm/openai-chat-content.js';
+/** WHY: subprocess fixer hits the same OpenAI-compat hosts as PRR — NVIDIA/OpenRouter need `max_tokens`. */
+import { openAiCompatMaxOutputFields } from '../llm/openai-compat-chat-params.js';
 import { acquireElizacloud, releaseElizacloud, notifyRateLimitHit } from '../llm/rate-limit.js';
+import { isLikelyNonRetryableElizaCloudError } from '../llm/elizacloud-retry-policy.js';
 import { normalizePathForAllow, normalizeRepoPath } from '../path-utils.js';
 
 /**
@@ -192,7 +217,17 @@ function get504ResponseContext(error: unknown): { status?: number; statusText?: 
 }
 
 /** Effective request URL for the current provider (for 504 logging). */
-function getEffectiveRequestUrl(provider: 'elizacloud' | 'anthropic' | 'openai', model?: string): string {
+function getEffectiveRequestUrl(
+  provider:
+    | 'elizacloud'
+    | 'anthropic'
+    | 'openai'
+    | 'nvidiacloud'
+    | 'openrouter'
+    | 'ollama'
+    | 'lmstudio',
+  model?: string,
+): string {
   switch (provider) {
     case 'elizacloud':
       return `${ELIZACLOUD_API_BASE_URL}/chat/completions`;
@@ -202,6 +237,22 @@ function getEffectiveRequestUrl(provider: 'elizacloud' | 'anthropic' | 'openai',
       return process.env.OPENAI_BASE_URL
         ? `${process.env.OPENAI_BASE_URL.replace(/\/$/, '')}/chat/completions`
         : 'https://api.openai.com/v1/chat/completions';
+    case 'nvidiacloud': {
+      const b = (process.env.NVIDIA_BASE_URL?.trim() || NVIDIA_API_BASE_URL).replace(/\/$/, '');
+      return `${b}/chat/completions`;
+    }
+    case 'openrouter': {
+      const b = (process.env.OPENROUTER_BASE_URL?.trim() || OPENROUTER_API_BASE_URL).replace(/\/$/, '');
+      return `${b}/chat/completions`;
+    }
+    case 'ollama': {
+      const b = (process.env.OLLAMA_BASE_URL?.trim() || OLLAMA_OPENAI_COMPAT_BASE_URL).replace(/\/$/, '');
+      return `${b}/chat/completions`;
+    }
+    case 'lmstudio': {
+      const b = (process.env.LMSTUDIO_BASE_URL?.trim() || LMSTUDIO_OPENAI_COMPAT_BASE_URL).replace(/\/$/, '');
+      return `${b}/chat/completions`;
+    }
     default:
       return `${provider} (model: ${model ?? 'unknown'})`;
   }
@@ -232,12 +283,26 @@ async function with504Retry<T>(fn: () => Promise<T>, logContext?: string, timeou
       return await withRequestTimeout(timeoutMs, fn);
     } catch (e) {
       lastError = e;
+      if (isLikelyNonRetryableElizaCloudError(e)) {
+        debug('ElizaCloud error looks non-retryable (billing/pricing/auth) — skipping backoff retries', {
+          ...(logContext ? { context: logContext } : {}),
+          message: e instanceof Error ? e.message : String(e),
+        });
+        throw e;
+      }
       const isTimeout = e instanceof Error && /timeout/i.test(e.message);
       const retryable = isServerError(e) || isTimeout;
       if (attempt < MAX_504_RETRIES && retryable) {
         const delayMs = BACKOFF_MS[attempt];
-        debug('Server error or request timeout, retrying', { attempt: attempt + 1, maxRetries: MAX_504_RETRIES, delayMs, ...(logContext ? { context: logContext } : {}) });
-        await new Promise(r => setTimeout(r, delayMs));
+        const kind = isTimeout ? 'timeout' : 'server_error';
+        debug('Gateway/server error or timeout, retrying', {
+          attempt: attempt + 1,
+          maxRetries: MAX_504_RETRIES,
+          delayMs,
+          kind,
+          ...(logContext ? { context: logContext } : {}),
+        });
+        await new Promise((r) => setTimeout(r, delayMs));
       } else {
         throw e;
       }
@@ -263,8 +328,9 @@ export class LLMAPIRunner implements Runner {
   /** Set at checkStatus (elizacloud) or validateAndFilterModels (openai/anthropic from API list). */
   supportedModels?: string[];
   /** Exposed so rotation can build supportedModels from provider's model list (no hardcoded lists). */
-  provider?: 'elizacloud' | 'anthropic' | 'openai';
-  private _provider: 'elizacloud' | 'anthropic' | 'openai' = 'elizacloud';
+  provider?: 'elizacloud' | 'anthropic' | 'openai' | 'nvidiacloud' | 'openrouter' | 'ollama' | 'lmstudio';
+  private _provider: 'elizacloud' | 'anthropic' | 'openai' | 'nvidiacloud' | 'openrouter' | 'ollama' | 'lmstudio' =
+    'elizacloud';
   private anthropic?: Anthropic;
   private openai?: OpenAI;
   /** Track search/replace failures per file across iterations within a session. */
@@ -277,35 +343,124 @@ export class LLMAPIRunner implements Runner {
   private consecutive504Count = 0;
 
   async isAvailable(): Promise<boolean> {
+    const prrLlm = process.env.PRR_LLM_PROVIDER?.trim();
+    if (prrLlm === 'ollama') {
+      this._provider = 'ollama';
+      this.provider = 'ollama';
+      return true;
+    }
+    if (prrLlm === 'lmstudio') {
+      this._provider = 'lmstudio';
+      this.provider = 'lmstudio';
+      return true;
+    }
+    if (prrLlm === 'openrouter') {
+      if (process.env.OPENROUTER_API_KEY?.trim()) {
+        this._provider = 'openrouter';
+        this.provider = 'openrouter';
+        return true;
+      }
+      return false;
+    }
+    if (prrLlm === 'nvidiacloud') {
+      const nk = process.env.NVIDIA_API_KEY?.trim() || process.env.NVIDIA_CLOUD_API_KEY?.trim();
+      if (nk) {
+        this._provider = 'nvidiacloud';
+        this.provider = 'nvidiacloud';
+        return true;
+      }
+      return false;
+    }
     if (process.env.ELIZACLOUD_API_KEY) {
       this._provider = 'elizacloud';
+      this.provider = 'elizacloud';
       return true;
     }
     if (process.env.ANTHROPIC_API_KEY) {
       this._provider = 'anthropic';
+      this.provider = 'anthropic';
       return true;
     }
     if (process.env.OPENAI_API_KEY) {
       this._provider = 'openai';
+      this.provider = 'openai';
+      return true;
+    }
+    if (process.env.OPENROUTER_API_KEY) {
+      this._provider = 'openrouter';
+      this.provider = 'openrouter';
+      return true;
+    }
+    const nvidiaKey = process.env.NVIDIA_API_KEY?.trim() || process.env.NVIDIA_CLOUD_API_KEY?.trim();
+    if (nvidiaKey) {
+      this._provider = 'nvidiacloud';
+      this.provider = 'nvidiacloud';
       return true;
     }
     return false;
   }
 
+  /**
+   * Resolves **`provider`** / **`_provider`** from **`PRR_LLM_PROVIDER`** and env keys.
+   * **WHY explicit `openrouter` / `nvidiacloud`:** If the user sets one of those but omits the matching key,
+   * return **not ready** with a clear error — do **not** fall through to **`ELIZACLOUD_API_KEY`**, or the
+   * **`llm-api`** subprocess would call a different gateway than PRR’s main **`loadConfig()`** path (audit).
+   */
   async checkStatus(): Promise<RunnerStatus> {
+    const prrLlm = process.env.PRR_LLM_PROVIDER?.trim();
+    const hasOllama = prrLlm === 'ollama';
+    const hasLmstudio = prrLlm === 'lmstudio';
     const hasElizaCloud = !!process.env.ELIZACLOUD_API_KEY;
     const hasAnthropic = !!process.env.ANTHROPIC_API_KEY;
     const hasOpenAI = !!process.env.OPENAI_API_KEY;
+    const hasOpenRouter = !!process.env.OPENROUTER_API_KEY;
+    const hasNvidia = !!(process.env.NVIDIA_API_KEY?.trim() || process.env.NVIDIA_CLOUD_API_KEY?.trim());
 
-    if (!hasElizaCloud && !hasAnthropic && !hasOpenAI) {
+    if (!hasOllama && !hasLmstudio && !hasElizaCloud && !hasAnthropic && !hasOpenAI && !hasOpenRouter && !hasNvidia) {
       return {
         installed: false,
         ready: false,
-        error: 'No API key found (set ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)',
+        error:
+          'No API key found (set ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY / NVIDIA_CLOUD_API_KEY, or PRR_LLM_PROVIDER=ollama|lmstudio|openrouter|nvidiacloud for local or routed OpenAI-compatible servers)',
       };
     }
 
-    this._provider = hasElizaCloud ? 'elizacloud' : hasAnthropic ? 'anthropic' : 'openai';
+    if (prrLlm === 'openrouter' && !hasOpenRouter) {
+      return {
+        installed: true,
+        ready: false,
+        error:
+          'PRR_LLM_PROVIDER is openrouter but OPENROUTER_API_KEY is not set. Set the key or choose a different PRR_LLM_PROVIDER.',
+      };
+    }
+    if (prrLlm === 'nvidiacloud' && !hasNvidia) {
+      return {
+        installed: true,
+        ready: false,
+        error:
+          'PRR_LLM_PROVIDER is nvidiacloud but neither NVIDIA_API_KEY nor NVIDIA_CLOUD_API_KEY is set. Set a key or choose a different PRR_LLM_PROVIDER.',
+      };
+    }
+
+    const explicitOpenrouter = prrLlm === 'openrouter' && hasOpenRouter;
+    const explicitNvidia = prrLlm === 'nvidiacloud' && hasNvidia;
+    this._provider = hasOllama
+      ? 'ollama'
+      : hasLmstudio
+        ? 'lmstudio'
+        : explicitOpenrouter
+          ? 'openrouter'
+          : explicitNvidia
+            ? 'nvidiacloud'
+            : hasElizaCloud
+              ? 'elizacloud'
+              : hasAnthropic
+                ? 'anthropic'
+                : hasOpenAI
+                  ? 'openai'
+                  : hasOpenRouter
+                    ? 'openrouter'
+                    : 'nvidiacloud';
     this.provider = this._provider;
 
     // ElizaCloud: use static list (owner/model IDs). OpenAI/Anthropic: supportedModels
@@ -315,24 +470,67 @@ export class LLMAPIRunner implements Runner {
     }
     // else: openai/anthropic leave supportedModels unset; rotation will set from API list
 
+    const versionLabel =
+      this._provider === 'elizacloud'
+        ? 'ElizaCloud Gateway'
+        : this._provider === 'anthropic'
+          ? 'Anthropic Claude'
+          : this._provider === 'openai'
+            ? 'OpenAI GPT'
+            : this._provider === 'openrouter'
+              ? 'OpenRouter'
+              : this._provider === 'ollama'
+                ? 'Ollama (local)'
+                : this._provider === 'lmstudio'
+                  ? 'LM Studio (local)'
+                  : 'NVIDIA Cloud';
+
     return {
       installed: true,
       ready: true,
-      version: this._provider === 'elizacloud' ? 'ElizaCloud Gateway' : this._provider === 'anthropic' ? 'Anthropic Claude' : 'OpenAI GPT',
+      version: versionLabel,
     };
   }
 
   /** Ensure provider is explicitly selected based on available API keys */
   private ensureProvider(): void {
+    const prrLlm = process.env.PRR_LLM_PROVIDER?.trim();
+    if (prrLlm === 'ollama') {
+      this._provider = 'ollama';
+      this.provider = 'ollama';
+      return;
+    }
+    if (prrLlm === 'lmstudio') {
+      this._provider = 'lmstudio';
+      this.provider = 'lmstudio';
+      return;
+    }
+    if (prrLlm === 'openrouter' && process.env.OPENROUTER_API_KEY?.trim()) {
+      this._provider = 'openrouter';
+      this.provider = 'openrouter';
+      return;
+    }
+    const nvidiaKeyEnsure = process.env.NVIDIA_API_KEY?.trim() || process.env.NVIDIA_CLOUD_API_KEY?.trim();
+    if (prrLlm === 'nvidiacloud' && nvidiaKeyEnsure) {
+      this._provider = 'nvidiacloud';
+      this.provider = 'nvidiacloud';
+      return;
+    }
     if (process.env.ELIZACLOUD_API_KEY) {
       this._provider = 'elizacloud';
       this.provider = 'elizacloud';
     } else if (process.env.ANTHROPIC_API_KEY) {
       this._provider = 'anthropic';
-      this.provider = 'anthropic'; 
+      this.provider = 'anthropic';
     } else if (process.env.OPENAI_API_KEY) {
       this._provider = 'openai';
       this.provider = 'openai';
+    } else if (process.env.OPENROUTER_API_KEY) {
+      this._provider = 'openrouter';
+      this.provider = 'openrouter';
+    } else if (process.env.NVIDIA_API_KEY?.trim() || process.env.NVIDIA_CLOUD_API_KEY?.trim()) {
+      this._provider = 'nvidiacloud';
+      this.provider = 'nvidiacloud';
     }
   }
 
@@ -344,9 +542,24 @@ export class LLMAPIRunner implements Runner {
     }
     if (this.provider === 'elizacloud' && !this.openai) {
       this.openai = createElizaCloudOpenAIClient(process.env.ELIZACLOUD_API_KEY!);
-    } 
+    }
+    if (this.provider === 'openrouter' && !this.openai) {
+      this.openai = createOpenRouterOpenAIClient(process.env.OPENROUTER_API_KEY!);
+    }
+    if (this.provider === 'nvidiacloud' && !this.openai) {
+      const nk = process.env.NVIDIA_API_KEY?.trim() || process.env.NVIDIA_CLOUD_API_KEY?.trim();
+      if (nk) this.openai = createNvidiaCloudOpenAIClient(nk);
+    }
     if (this.provider === 'openai' && !this.openai) {
       this.openai = new OpenAI();
+    }
+    if (this.provider === 'ollama' && !this.openai) {
+      const k = process.env.OLLAMA_API_KEY?.trim() || 'ollama';
+      this.openai = createOllamaOpenAIClient(k);
+    }
+    if (this.provider === 'lmstudio' && !this.openai) {
+      const k = process.env.LMSTUDIO_API_KEY?.trim() || 'lm-studio';
+      this.openai = createLmStudioOpenAIClient(k);
     }
     return { anthropic: this.anthropic, openai: this.openai };
   }
@@ -360,7 +573,12 @@ export class LLMAPIRunner implements Runner {
     
     const available = await this.isAvailable();
     if (!available) {
-      return { success: false, output: '', error: 'No API key found (set ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)' };
+      return {
+        success: false,
+        output: '',
+        error:
+          'No API key found (set ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY / NVIDIA_CLOUD_API_KEY, or PRR_LLM_PROVIDER=ollama|lmstudio|openrouter|nvidiacloud where applicable)',
+      };
     }
     debug('LLM API runner starting', { provider: this.provider, workdir, promptLength: prompt.length });
 
@@ -417,11 +635,49 @@ Working directory: ${workdir}`;
     // Parse file paths mentioned in the prompt (e.g. "File: path/to/file.ts:123")
     // and append the current file contents. This is the #1 fix for search/replace
     // failures: the LLM can see exactly what's in the file instead of guessing.
-    const model = options?.model || (this.provider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : DEFAULT_OPENAI_MODEL);
-    const baseCap =
+    const model =
+      options?.model ||
+      (this.provider === 'elizacloud'
+        ? DEFAULT_ELIZACLOUD_MODEL
+        : this.provider === 'nvidiacloud'
+          ? DEFAULT_NVIDIA_LLM_MODEL
+          : this.provider === 'openrouter'
+            ? DEFAULT_OPENROUTER_LLM_MODEL
+            : this.provider === 'ollama'
+              ? DEFAULT_OLLAMA_LLM_MODEL
+              : this.provider === 'lmstudio'
+                ? (process.env.PRR_LLM_MODEL?.trim() ?? '')
+                : DEFAULT_OPENAI_MODEL);
+    const fixCapProvider:
+      | 'elizacloud'
+      | 'openai'
+      | 'nvidiacloud'
+      | 'openrouter'
+      | 'ollama'
+      | 'lmstudio' =
       this.provider === 'elizacloud'
-        ? getMaxFixPromptCharsForModel('elizacloud', model)
-        : MAX_FIX_PROMPT_CHARS;
+        ? 'elizacloud'
+        : this.provider === 'nvidiacloud'
+          ? 'nvidiacloud'
+          : this.provider === 'openrouter'
+            ? 'openrouter'
+            : this.provider === 'ollama'
+              ? 'ollama'
+              : this.provider === 'lmstudio'
+                ? 'lmstudio'
+                : 'openai';
+    if (this.provider === 'lmstudio' && (!model || !model.trim())) {
+      return {
+        success: false,
+        output: '',
+        error:
+          'PRR_LLM_MODEL is required when using llm-api with PRR_LLM_PROVIDER=lmstudio. Set it in the environment (prr mirrors config into the child process).',
+      };
+    }
+    const baseCap =
+      this.provider === 'anthropic'
+        ? MAX_FIX_PROMPT_CHARS
+        : getMaxFixPromptCharsForModel(fixCapProvider, model);
     const maxEnrichedChars = Math.min(baseCap * 2.5, MAX_ENRICHED_FIX_PROMPT_CHARS, MAX_ENRICHED_FIX_PROMPT_HARD_CAP);
     const capForInjection = Math.max(0, maxEnrichedChars - REWRITE_ESCALATION_RESERVE_CHARS);
     const { enrichedPrompt: injectedPrompt, injectedPaths } = this.injectFileContents(workdir, prompt, capForInjection, options?.allowedPathsForInjection);
@@ -457,8 +713,11 @@ Working directory: ${workdir}`;
     }
 
     const isFullFileRewrite = rewriteFiles.length > 0;
-    const requestTimeoutMs = getLlmApiRequestTimeoutMs(enrichedPrompt.length, isFullFileRewrite);
-    debug('Request timeout for this call', { timeoutMs: requestTimeoutMs, isFullFileRewrite });
+    const isMergeConflictResolution = enrichedPrompt.startsWith('MERGE CONFLICT RESOLUTION');
+    const requestTimeoutMs = getLlmApiRequestTimeoutMs(enrichedPrompt.length, isFullFileRewrite, {
+      isMergeConflictResolution,
+    });
+    debug('Request timeout for this call', { timeoutMs: requestTimeoutMs, isFullFileRewrite, isMergeConflictResolution });
 
     // Cooldown: after 3+ consecutive 504/timeouts, pause so gateway can recover.
     if (this.consecutive504Count >= CONSECUTIVE_504_COOLDOWN_THRESHOLD) {
@@ -499,8 +758,28 @@ Working directory: ${workdir}`;
           inputTokens: result.usage.input_tokens,
           outputTokens: result.usage.output_tokens,
         });
-      } else if ((this.provider === 'elizacloud' || this.provider === 'openai') && openai) {
-        debug(`Calling ${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} API`, { model, timeoutMs: requestTimeoutMs });
+      } else if (
+        (this.provider === 'elizacloud' ||
+          this.provider === 'openai' ||
+          this.provider === 'nvidiacloud' ||
+          this.provider === 'openrouter' ||
+          this.provider === 'ollama' ||
+          this.provider === 'lmstudio') &&
+        openai
+      ) {
+        const providerLabel =
+          this.provider === 'elizacloud'
+            ? 'ElizaCloud'
+            : this.provider === 'nvidiacloud'
+              ? 'NVIDIA Cloud'
+              : this.provider === 'openrouter'
+                ? 'OpenRouter'
+                : this.provider === 'ollama'
+                  ? 'Ollama'
+                  : this.provider === 'lmstudio'
+                    ? 'LM Studio'
+                    : 'OpenAI';
+        debug(`Calling ${providerLabel} API`, { model, timeoutMs: requestTimeoutMs });
 
         console.log(`\n🧠 Calling ${model} (timeout ${Math.round(requestTimeoutMs / 1000)}s)...\n`);
 
@@ -508,24 +787,25 @@ Working directory: ${workdir}`;
           await acquireElizacloud();
         }
         try {
-          // Use max_completion_tokens: newer OpenAI models (e.g. gpt-5.1, reasoning) reject
-          // max_tokens and require this parameter instead.
+          // WHY not always max_completion_tokens: OpenAI’s newer APIs (and ElizaCloud) prefer it; NVIDIA /
+          // OpenRouter OpenAI-compat stacks often reject it — see `openAiCompatMaxOutputFields`.
           const result = await with504Retry(
-            () => openai.chat.completions.create({
-              model,
-              max_completion_tokens: 16000,
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: enrichedPrompt },
-              ],
-            }),
-            this.provider === 'elizacloud' ? 'elizacloud' : 'openai',
+            () =>
+              openai.chat.completions.create({
+                model,
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: enrichedPrompt },
+                ],
+                ...openAiCompatMaxOutputFields(16_000, this.provider),
+              }),
+            this.provider,
             requestTimeoutMs
           );
 
           response = openAiChatCompletionContentToString(result.choices[0]?.message?.content);
 
-          debug(`${this.provider === 'elizacloud' ? 'ElizaCloud' : 'OpenAI'} response received`, {
+          debug(`${providerLabel} response received`, {
             inputTokens: result.usage?.prompt_tokens,
             outputTokens: result.usage?.completion_tokens,
           });
@@ -648,7 +928,7 @@ Working directory: ${workdir}`;
           const hardCeiling = getMaxElizacloudHardInputCeiling(model);
           const promptRatio = enrichedPrompt.length / hardCeiling;
           if (promptRatio > 0.3) {
-            lowerModelMaxPromptChars(this.provider ?? 'elizacloud', model, enrichedPrompt.length);
+            lowerModelMaxPromptChars('elizacloud', model, enrichedPrompt.length);
             debug('Lowered prompt cap for model after timeout', { model, sentChars: enrichedPrompt.length, promptRatio: promptRatio.toFixed(2) });
           } else {
             debug('Timeout on small prompt relative to context — not lowering cap', { model, sentChars: enrichedPrompt.length, hardCeiling, promptRatio: promptRatio.toFixed(2) });

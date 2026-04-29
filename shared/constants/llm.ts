@@ -218,6 +218,15 @@ export const MIN_LINES_FOR_SIZE_REGRESSION_CHECK = 100;
  */
 export const TOP_TAILS_FALLBACK_MAX_CHUNK_LINES = 280;
 
+/**
+ * If the larger conflict side has more lines than this, run **sub-chunk** resolution even when
+ * `ours`/`theirs` text fits under `maxSegmentChars` (char-only oversized misses dense short-line regions).
+ * WHY: eliza#6733 `knowledge-routes.ts` — ~1,268-line region under a 25k char cap still went one-shot and
+ * truncated. Tie to {@link TOP_TAILS_FALLBACK_MAX_CHUNK_LINES}: anything above top+tails cap cannot be
+ * salvaged by that fallback after a failed main merge, so it must never rely on one full-region shot.
+ */
+export const CONFLICT_OVERSIZED_LINE_THRESHOLD = TOP_TAILS_FALLBACK_MAX_CHUNK_LINES + 20;
+
 /** Lines of context before conflict to include in "top" for top+tails fallback. */
 export const TOP_TAILS_CONTEXT_LINES = 15;
 /** First N lines of the conflict block (with markers) to include in "top". */

@@ -21,6 +21,9 @@
 import type { SimpleGit } from 'simple-git';
 import { debug, formatNumber, warn } from '../logger.js';
 
+/** Must match **`FORK_PR_BASE_REMOTE`** in **`git-conflicts.ts`** (fork PR base remote name). */
+const GIT_SCAN_FORK_BASE_REMOTE = 'upstream';
+
 /** One warning per process per workdir+reason when merge base for prr-fix scan is missing (pill-output #559). */
 const warnedScanBaseFallback = new Set<string>();
 /** One warning per process per workdir when git log --grep scan throws (non-fatal degrade). */
@@ -49,10 +52,26 @@ function scanCacheKey(
   return `${workdir}\0${branch}\0${headSha}\0${base}\0${resolvedBaseLabel}`;
 }
 
-/** Resolve `origin/<prBase>` or first existing of origin/main|master|develop for `base..branch` log range. */
-async function resolveScanBaseBranch(git: SimpleGit, prBaseBranch?: string): Promise<string | null> {
+/**
+ * Resolve **`upstream/<prBase>`** then **`origin/<prBase>`** (when fork recovery), else **`origin/<prBase>`**,
+ * then first existing of **`origin/main|master|develop`** for **`base..branch`** `git log` range.
+ */
+async function resolveScanBaseBranch(
+  git: SimpleGit,
+  prBaseBranch?: string,
+  preferUpstreamForPrBase?: boolean
+): Promise<string | null> {
   const prBase = prBaseBranch?.trim();
   if (prBase) {
+    if (preferUpstreamForPrBase) {
+      const upRef = `${GIT_SCAN_FORK_BASE_REMOTE}/${prBase}`;
+      try {
+        await git.raw(['rev-parse', '--verify', upRef]);
+        return upRef;
+      } catch {
+        /* upstream missing or not fetched — try origin */
+      }
+    }
     const prRef = `origin/${prBase}`;
     try {
       await git.raw(['rev-parse', '--verify', prRef]);
@@ -98,6 +117,11 @@ export interface ScanCommittedFixesOptions {
    * rely on `-n 100`; using the real PR base matches pill/external audits expecting a proper merge range.
    */
   prBaseBranch?: string;
+  /**
+   * When true (fork PR with **`base.repo` ≠ head**), **`resolveScanBaseBranch`** prefers **`upstream/<prBase>`**
+   * so **`prr-fix:`** recovery matches GitHub’s merge base. Requires **`upstream`** ref (see setup prefetch).
+   */
+  useUpstreamPrBaseForGitRecovery?: boolean;
 }
 
 /**
@@ -139,7 +163,7 @@ export async function scanCommittedFixes(
 ): Promise<string[]> {
   let resolvedBase: string | null = null;
   try {
-    resolvedBase = await resolveScanBaseBranch(git, opts?.prBaseBranch);
+    resolvedBase = await resolveScanBaseBranch(git, opts?.prBaseBranch, opts?.useUpstreamPrBaseForGitRecovery);
   } catch (error) {
     debug('resolveScanBaseBranch failed', { error });
     resolvedBase = null;

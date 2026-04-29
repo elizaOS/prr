@@ -11,25 +11,46 @@ import dotenv from 'dotenv';
 import chalk from 'chalk';
 import { homedir } from 'os';
 import { join } from 'path';
-import { DEFAULT_ANTHROPIC_MODEL, DEFAULT_ELIZACLOUD_MODEL } from './constants.js';
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  DEFAULT_ELIZACLOUD_MODEL,
+  DEFAULT_NVIDIA_LLM_MODEL,
+  DEFAULT_OLLAMA_LLM_MODEL,
+  DEFAULT_OPENROUTER_LLM_MODEL,
+} from './constants.js';
 
 dotenv.config();
 
 /** Supported LLM provider backends */
-export type LLMProvider = 'elizacloud' | 'anthropic' | 'openai';
+export type LLMProvider =
+  | 'elizacloud'
+  | 'anthropic'
+  | 'openai'
+  | 'nvidiacloud'
+  | 'openrouter'
+  | 'ollama'
+  | 'lmstudio';
 
 /** Available fixer tools that can apply code changes */
 export type FixerTool = 'elizacloud' | 'cursor' | 'opencode' | 'claude-code' | 'aider' | 'codex' | 'gemini' | 'junie' | 'goose' | 'openhands' | 'llm-api' | 'auto';
 
 const REAL_FIXER_TOOLS = ['elizacloud', 'cursor', 'opencode', 'claude-code', 'aider', 'codex', 'gemini', 'junie', 'goose', 'openhands', 'llm-api'] as const;
 export type RealFixerTool = typeof REAL_FIXER_TOOLS[number];
+
+/** NVIDIA Build key from env (plugin accepts either name). */
+export function getNvidiaApiKeyFromEnv(): string | undefined {
+  const a = process.env.NVIDIA_API_KEY?.trim();
+  const b = process.env.NVIDIA_CLOUD_API_KEY?.trim();
+  return a || b || undefined;
+}
+
 /**
  * Application configuration loaded from environment.
  */
 export interface Config {
   /** GitHub personal access token with repo scope */
   githubToken: string;
-  /** LLM provider for analysis (elizacloud, anthropic, or openai) */
+  /** LLM provider for analysis */
   llmProvider: LLMProvider;
   /** Model name/identifier for the LLM provider */
   llmModel: string;
@@ -49,6 +70,14 @@ export interface Config {
   anthropicApiKey?: string;
   /** OpenAI API key (required if provider is openai) */
   openaiApiKey?: string;
+  /** NVIDIA Build / NIM API key (required if provider is nvidiacloud) */
+  nvidiaApiKey?: string;
+  /** OpenRouter API key (required if provider is openrouter) */
+  openrouterApiKey?: string;
+  /** Ollama placeholder API key (optional; default ollama) when provider is ollama */
+  ollamaApiKey?: string;
+  /** LM Studio placeholder API key (optional; default lm-studio) when provider is lmstudio */
+  lmstudioApiKey?: string;
   /** Default fixer tool to use (auto = detect available) */
   defaultTool?: FixerTool;
   /** Base directory for working directories */
@@ -93,6 +122,16 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
   return value.trim();
 }
 
+const VALID_PROVIDERS: LLMProvider[] = [
+  'elizacloud',
+  'anthropic',
+  'openai',
+  'nvidiacloud',
+  'openrouter',
+  'ollama',
+  'lmstudio',
+];
+
 /**
  * Load and validate application configuration from environment.
  *
@@ -103,10 +142,10 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
  *
  * Required environment variables:
  * - GITHUB_TOKEN: GitHub personal access token
- * - ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY: LLM provider API key
+ * - One LLM key for the chosen provider (see README / .env.example)
  *
  * Optional environment variables:
- * - PRR_LLM_PROVIDER: 'elizacloud', 'anthropic', or 'openai' (auto-detects if not set)
+ * - PRR_LLM_PROVIDER: provider id (auto-detects if not set)
  * - PRR_LLM_MODEL: Model name (defaults based on provider)
  * - PRR_VERIFIER_MODEL: Stronger model for verification (recommended when default is weak; reduces false negatives)
  * - PRR_FINAL_AUDIT_MODEL: Model for adversarial final-audit pass only (e.g. anthropic/claude-opus-4.5 when llmModel is a small verifier)
@@ -129,12 +168,18 @@ export function loadConfig(): Config {
     llmProvider = 'anthropic';
   } else if (process.env.OPENAI_API_KEY) {
     llmProvider = 'openai';
+  } else if (process.env.OPENROUTER_API_KEY) {
+    llmProvider = 'openrouter';
+  } else if (getNvidiaApiKeyFromEnv()) {
+    llmProvider = 'nvidiacloud';
   } else {
     llmProvider = 'elizacloud'; // will error below with helpful message
   }
 
-  if (llmProvider !== 'elizacloud' && llmProvider !== 'anthropic' && llmProvider !== 'openai') {
-    throw new Error(`Invalid LLM provider: ${llmProvider}. Must be 'elizacloud', 'anthropic', or 'openai'`);
+  if (!VALID_PROVIDERS.includes(llmProvider)) {
+    throw new Error(
+      `Invalid LLM provider: ${llmProvider}. Must be one of: ${VALID_PROVIDERS.join(', ')}`,
+    );
   }
 
   // Parse and validate thinking budget if set
@@ -166,25 +211,47 @@ export function loadConfig(): Config {
     defaultModel = DEFAULT_ELIZACLOUD_MODEL;
   } else if (llmProvider === 'anthropic') {
     defaultModel = DEFAULT_ANTHROPIC_MODEL;
+  } else if (llmProvider === 'nvidiacloud') {
+    defaultModel = DEFAULT_NVIDIA_LLM_MODEL;
+  } else if (llmProvider === 'openrouter') {
+    defaultModel = DEFAULT_OPENROUTER_LLM_MODEL;
+  } else if (llmProvider === 'ollama') {
+    defaultModel = DEFAULT_OLLAMA_LLM_MODEL;
   } else {
-    // Use gpt-4o: a stable, widely-available OpenAI API model
+    // openai, lmstudio (lmstudio overrides below), gpt-4o for openai
     // Note: gpt-5.3 does not exist as a general API model (only gpt-5.3-codex for paid ChatGPT)
-    defaultModel = 'gpt-4o';
+    defaultModel = llmProvider === 'lmstudio' ? '' : 'gpt-4o';
   }
 
   const verifierModelRaw = process.env.PRR_VERIFIER_MODEL?.trim();
   const finalAuditModelRaw = process.env.PRR_FINAL_AUDIT_MODEL?.trim();
   const splitPlanModelRaw = process.env.SPLIT_PLAN_LLM_MODEL?.trim();
 
-  const llmModelRaw = getEnvOrDefault('PRR_LLM_MODEL', defaultModel);
-  let llmModel = llmModelRaw;
-  if (!isValidModelName(llmModel)) {
-    console.warn(
-      chalk.yellow(
-        `PRR_LLM_MODEL is not a valid model id (${llmModelRaw.slice(0, 80)}${llmModelRaw.length > 80 ? '…' : ''}) — falling back to default for provider.`,
-      ),
-    );
-    llmModel = defaultModel;
+  let llmModel: string;
+  if (llmProvider === 'lmstudio') {
+    const rawLm = process.env.PRR_LLM_MODEL?.trim() ?? '';
+    if (!rawLm) {
+      throw new Error(
+        'PRR_LLM_MODEL is required when PRR_LLM_PROVIDER=lmstudio. Set it to the model id shown in LM Studio (Local Server / loaded model), e.g. the id used in /v1/chat/completions.',
+      );
+    }
+    if (!isValidModelName(rawLm)) {
+      throw new Error(
+        `PRR_LLM_MODEL is not a valid model id for lmstudio (${rawLm.slice(0, 80)}${rawLm.length > 80 ? '…' : ''}). Use the id from LM Studio’s server UI.`,
+      );
+    }
+    llmModel = rawLm;
+  } else {
+    const llmModelRaw = getEnvOrDefault('PRR_LLM_MODEL', defaultModel);
+    llmModel = llmModelRaw;
+    if (!isValidModelName(llmModel)) {
+      console.warn(
+        chalk.yellow(
+          `PRR_LLM_MODEL is not a valid model id (${llmModelRaw.slice(0, 80)}${llmModelRaw.length > 80 ? '…' : ''}) — falling back to default for provider.`,
+        ),
+      );
+      llmModel = defaultModel;
+    }
   }
 
   const optionalModel = (envKey: string, raw: string | undefined): string | undefined => {
@@ -218,8 +285,22 @@ export function loadConfig(): Config {
     config.elizacloudApiKey = getEnvOrThrow('ELIZACLOUD_API_KEY');
   } else if (llmProvider === 'anthropic') {
     config.anthropicApiKey = getEnvOrThrow('ANTHROPIC_API_KEY');
-  } else {
+  } else if (llmProvider === 'openai') {
     config.openaiApiKey = getEnvOrThrow('OPENAI_API_KEY');
+  } else if (llmProvider === 'nvidiacloud') {
+    const nk = getNvidiaApiKeyFromEnv();
+    if (!nk) {
+      throw new Error(
+        'Missing NVIDIA API key for PRR_LLM_PROVIDER=nvidiacloud. Set NVIDIA_API_KEY or NVIDIA_CLOUD_API_KEY in .env.',
+      );
+    }
+    config.nvidiaApiKey = nk;
+  } else if (llmProvider === 'openrouter') {
+    config.openrouterApiKey = getEnvOrThrow('OPENROUTER_API_KEY');
+  } else if (llmProvider === 'ollama') {
+    config.ollamaApiKey = getEnvOrDefault('OLLAMA_API_KEY', 'ollama');
+  } else if (llmProvider === 'lmstudio') {
+    config.lmstudioApiKey = getEnvOrDefault('LMSTUDIO_API_KEY', 'lm-studio');
   }
 
   // Also pick up the OTHER provider's key if available (optional).
@@ -239,6 +320,22 @@ export function loadConfig(): Config {
     const v = process.env.ANTHROPIC_API_KEY?.trim();
     if (v) config.anthropicApiKey = v;
   }
+  if (!config.nvidiaApiKey) {
+    const v = getNvidiaApiKeyFromEnv();
+    if (v) config.nvidiaApiKey = v;
+  }
+  if (!config.openrouterApiKey) {
+    const v = process.env.OPENROUTER_API_KEY?.trim();
+    if (v) config.openrouterApiKey = v;
+  }
+  if (!config.ollamaApiKey) {
+    const v = process.env.OLLAMA_API_KEY?.trim();
+    if (v) config.ollamaApiKey = v;
+  }
+  if (!config.lmstudioApiKey) {
+    const v = process.env.LMSTUDIO_API_KEY?.trim();
+    if (v) config.lmstudioApiKey = v;
+  }
 
   if (
     process.env.PRR_DISABLE_MODEL_CATALOG_SOLVABILITY?.trim() === '1' &&
@@ -257,11 +354,11 @@ export function loadConfig(): Config {
 
 /**
  * Pattern for validating model names.
- * Allows alphanumeric, dots, underscores, hyphens, and forward slashes
- * (for provider-prefixed names like "anthropic/claude-3-opus").
+ * Allows alphanumeric, dots, underscores, hyphens, colons, and forward slashes
+ * (provider-prefixed names like "anthropic/claude-3-opus", Ollama/LM Studio tags like "llama3.2:latest").
  * Rejects `//` and other ambiguous slash runs.
  */
-export const MODEL_NAME_PATTERN = /^(?!.*\/\/)[A-Za-z0-9._\/-]+$/;
+export const MODEL_NAME_PATTERN = /^(?!.*\/\/)[A-Za-z0-9._\/:-]+$/;
 
 /** Max length for env-supplied model ids (defense against garbage / paste errors). */
 export const MODEL_NAME_MAX_LENGTH = 200;

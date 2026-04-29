@@ -16,6 +16,46 @@ import type { LLMClient } from '../llm/client.js';
 import { LLM_DEDUP_MAX_CONCURRENT } from '../../../shared/constants.js';
 import { debug, formatNumber, warn } from '../../../shared/logger.js';
 
+/** Loose match for dedup-v2 “no merges” contract (`NONE` may appear with other lines the parser ignores). */
+function dedupContentMentionsNoneLoose(content: string): boolean {
+  return content.toUpperCase().includes('NONE');
+}
+
+/**
+ * Warn when the model returned text but we parsed zero merge groups (pill-output / prompts.log audit).
+ * WHY: Silent fallback looked like success; operators should check prompts.log or retry.
+ */
+function warnDedupModelNoUsableGroups(params: {
+  scope: string;
+  phase: string;
+  itemCount: number;
+  content: string;
+  minItemsForProseWarn: number;
+}): void {
+  const { scope, phase, itemCount, content, minItemsForProseWarn } = params;
+  const trimmed = content.trim();
+  if (trimmed.length === 0) return;
+  if (dedupContentMentionsNoneLoose(content)) return;
+
+  const hasGroup = /GROUP:/i.test(trimmed);
+  const preview = trimmed.length > 160 ? `${trimmed.slice(0, 157)}…` : trimmed;
+
+  if (hasGroup) {
+    if (itemCount < 2) return;
+    console.warn(
+      chalk.yellow(
+        `  ⚠ ${phase} (${scope}): GROUP line(s) present but none were usable (indices, line split, or canonical). ${formatNumber(itemCount)} item(s); proceeding without merges — see prompts.log.`,
+      ),
+    );
+  } else if (itemCount >= minItemsForProseWarn) {
+    console.warn(
+      chalk.yellow(
+        `  ⚠ ${phase} (${scope}): expected \`NONE\` or \`GROUP: …\` lines; got ${formatNumber(trimmed.length)} chars with no valid merges. Preview: ${preview}`,
+      ),
+    );
+  }
+}
+
 /**
  * Dedup cache is persisted in state (stateContext.state.dedupCache).
  * WHY: In-memory cache reset each run; audit showed all dedup LLM calls returning NONE on repeat runs.
@@ -868,8 +908,17 @@ ${summaries}`;
       const mergedGroups = resolveOverlappingDedupGroupsByIndex(groups, items);
       // Only treat as NONE when no GROUP lines were parsed. Audit (prompts.log): model may output
       // `GROUP: …` plus a trailing `NONE` line — regex still captures groups; do not discard.
-      if (mergedGroups.length === 0 && content.toUpperCase().includes('NONE')) {
+      if (mergedGroups.length === 0 && dedupContentMentionsNoneLoose(content)) {
         return { filePath, groups: [], error: undefined };
+      }
+      if (mergedGroups.length === 0) {
+        warnDedupModelNoUsableGroups({
+          scope: filePath,
+          phase: 'dedup-v2-grouping',
+          itemCount: items.length,
+          content,
+          minItemsForProseWarn: 3,
+        });
       }
       return { filePath, groups: mergedGroups };
     } catch (err) {
@@ -1057,7 +1106,16 @@ export async function crossFileDedup(dedupResult: DedupResult, llm: LLMClient): 
       debug(`Cross-file dedup: merged ${formatNumber(dupes.length)} into ${canonical.comment.path}`);
     }
 
-    if (newDuplicateIds.size === 0) return dedupResult;
+    if (newDuplicateIds.size === 0) {
+      warnDedupModelNoUsableGroups({
+        scope: 'cross-file candidates',
+        phase: 'dedup-v2-cross-file',
+        itemCount: items.length,
+        content,
+        minItemsForProseWarn: 5,
+      });
+      return dedupResult;
+    }
 
     const updatedDeduped = dedupResult.dedupedToCheck.filter(item => !newDuplicateIds.has(item.comment.id));
     console.log(chalk.gray(

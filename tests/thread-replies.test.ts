@@ -216,6 +216,20 @@ describe('postThreadReplies', () => {
     expect(resolveCalls).toEqual(['thread-1']);
   });
 
+  it('resolves verified threads on follow-up when PRR already replied (reply skipped, resolveThreads true)', async () => {
+    getThreadCommentsMap.set('thread-1', [{ author: 'reviewer' }, { author: 'octocat' }]);
+    (mockGithub as { getAuthenticatedLogin: ReturnType<typeof vi.fn> }).getAuthenticatedLogin.mockResolvedValue('octocat');
+    const comments = [makeComment('c1', 'thread-1', 100)];
+    await run({
+      replyToThreads: true,
+      comments,
+      verifiedCommentIds: new Set(['c1']),
+      resolveThreads: true,
+    });
+    expect(replyCalls).toHaveLength(0);
+    expect(resolveCalls).toEqual(['thread-1']);
+  });
+
   it('does not call resolveReviewThread when resolveThreads is false', async () => {
     const comments = [makeComment('c1', 'thread-1', 100)];
     await run({

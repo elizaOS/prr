@@ -29,6 +29,13 @@ describe('getLlmApiRequestTimeoutMs', () => {
     expect(getLlmApiRequestTimeoutMs(140_001, false)).toBe(180_000);
   });
 
+  it('merge-conflict batches use lower thresholds (18k→120s, 28k→150s, 45k→180s)', () => {
+    expect(getLlmApiRequestTimeoutMs(10_000, false, { isMergeConflictResolution: true })).toBe(LLM_REQUEST_TIMEOUT_MS);
+    expect(getLlmApiRequestTimeoutMs(20_000, false, { isMergeConflictResolution: true })).toBe(120_000);
+    expect(getLlmApiRequestTimeoutMs(36_000, false, { isMergeConflictResolution: true })).toBe(150_000);
+    expect(getLlmApiRequestTimeoutMs(50_000, false, { isMergeConflictResolution: true })).toBe(180_000);
+  });
+
   it('respects PRR_LLM_API_REQUEST_TIMEOUT_MS for non-full-file', () => {
     vi.stubEnv(ENV_KEY, '240000');
     expect(getLlmApiRequestTimeoutMs(200_000, false)).toBe(240_000);

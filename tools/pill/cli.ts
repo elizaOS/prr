@@ -5,9 +5,12 @@
 import { Command, InvalidOptionArgumentError } from 'commander';
 import path from 'path';
 
+/** WHY same character class as `shared/config` `MODEL_NAME_PATTERN`: Ollama/LM Studio tags use `:`. */
 function validateModel(value: string): string {
-  if (!/^[A-Za-z0-9._\/-]+$/.test(value)) {
-    throw new InvalidOptionArgumentError(`Invalid model name: "${value}". Use only letters, numbers, dots, slashes, hyphens.`);
+  if (!/^(?!.*\/\/)[A-Za-z0-9._\/:-]+$/.test(value)) {
+    throw new InvalidOptionArgumentError(
+      `Invalid model name: "${value}". Use only letters, numbers, dots, slashes, hyphens, colons (no //).`,
+    );
   }
   return value;
 }

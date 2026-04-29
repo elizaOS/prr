@@ -146,6 +146,15 @@ describe('checkForConflicts PR-base probe', () => {
     expect(st.latentConflictedFilesWithPrBase).toContain('f.txt');
   });
 
+  it('uses prBaseRemote for PR-base probe when upstream tracks same main as origin', async () => {
+    gitRun(workDir, ['remote', 'add', 'upstream', bareDir]);
+    gitRun(workDir, ['fetch', 'upstream', 'main']);
+    const git = simpleGit(workDir);
+    const st = await checkForConflicts(git, 'pr', { prBaseBranch: 'main', prBaseRemote: 'upstream' });
+    expect(st.latentConflictWithPrBase).toBe(true);
+    expect(st.latentConflictedFilesWithPrBase).toContain('f.txt');
+  });
+
   it('skips PR-base probe when prBaseBranch equals branch', async () => {
     const git = simpleGit(workDir);
     const st = await checkForConflicts(git, 'pr', { prBaseBranch: 'pr' });

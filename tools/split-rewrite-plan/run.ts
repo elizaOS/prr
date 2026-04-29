@@ -93,12 +93,28 @@ async function getCommitShasInOrder(
   return shas.reverse();
 }
 
-/** Get changed paths for a commit (relative to repo root, as returned by git). */
-async function getChangedPaths(
+/**
+ * Changed paths at `sha` vs its first parent — aligned with `git log --first-parent`.
+ * WHY: `git diff-tree -r --name-only <sha>` prints nothing for merge commits, so every
+ * "Merge branch 'develop' into …" looked like it touched no files and was skipped, yielding empty rewrite plans.
+ */
+export async function getCommitChangedPathsFirstParent(
   git: { raw: (args: string[]) => Promise<string> },
   sha: string
 ): Promise<string[]> {
-  const out = await git.raw(['diff-tree', '--no-commit-id', '-r', '--name-only', sha]);
+  let parent: string | null = null;
+  try {
+    const out = await git.raw(['rev-parse', '-q', '--verify', `${sha}^`]);
+    const s = out.trim();
+    if (s) parent = s;
+  } catch {
+    parent = null;
+  }
+  if (parent) {
+    const out = await git.raw(['diff-tree', '--no-commit-id', '-r', '--name-only', parent, sha]);
+    return out.trim().split('\n').filter(Boolean);
+  }
+  const out = await git.raw(['diff-tree', '--root', '--no-commit-id', '-r', '--name-only', sha]);
   return out.trim().split('\n').filter(Boolean);
 }
 
@@ -123,7 +139,7 @@ export async function runSplitRewritePlan(
 
   const workdir = options.workdir ?? join(process.cwd(), '.split-rewrite-plan-workdir');
   const cloneUrl = `https://github.com/${plan.owner}/${plan.repo}.git`;
-  spinner.start('Cloning or updating repository...');
+  // No spinner during clone — WHY: git streams clone/fetch progress to the TTY; ora redraws the line and interferes. Post-clone uses ora.
   const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
     additionalBranches: [plan.targetBranch],
   });
@@ -153,7 +169,7 @@ export async function runSplitRewritePlan(
   let prefixFallbackCount = 0;
 
   for (const sha of commitShas) {
-    const paths = await getChangedPaths(git, sha);
+    const paths = await getCommitChangedPathsFirstParent(git, sha);
     const pathToBranch = new Map<string, string>();
     for (const p of paths) {
       const norm = normalizePath(p);

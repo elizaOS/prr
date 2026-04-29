@@ -38,6 +38,11 @@ import {
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   DEFAULT_ELIZACLOUD_MODEL,
+  DEFAULT_NVIDIA_LLM_MODEL,
+  DEFAULT_OLLAMA_LLM_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  DEFAULT_OPENROUTER_LLM_MODEL,
+  TOP_TAILS_FALLBACK_MAX_CHUNK_LINES,
 } from '../../../shared/constants.js';
 import {
   buildConflictResolutionPrompt,
@@ -126,6 +131,35 @@ function countConflictMarkerLines(content: string): { openers: number; middle: n
     else if (s.startsWith('>>>>>>>')) closers++;
   }
   return { openers, middle, closers };
+}
+
+/** Largest conflict-side line count among regions (for fail-fast ordering and preflight). */
+function maxConflictRegionLines(conflictedContent: string): number {
+  const chunks = extractConflictChunks(conflictedContent, 0);
+  let max = 0;
+  for (const chunk of chunks) {
+    const { ours, theirs } = extractConflictSides(chunk.conflictLines);
+    max = Math.max(max, ours.length, theirs.length);
+  }
+  return max;
+}
+
+function buildConflictRegionLineStats(
+  workdir: string,
+  files: readonly string[],
+): { file: string; maxRegionLines: number }[] {
+  return files.map((file) => {
+    if (isLockFile(file)) return { file, maxRegionLines: -1 };
+    try {
+      const p = join(workdir, file);
+      let raw = readFileSync(p, 'utf-8');
+      raw = preprocessConflictFileContent(raw);
+      if (!hasConflictMarkers(raw)) return { file, maxRegionLines: 0 };
+      return { file, maxRegionLines: maxConflictRegionLines(raw) };
+    } catch {
+      return { file, maxRegionLines: 0 };
+    }
+  });
 }
 
 function isExplicitMarkerlessPolicyFile(filePath: string): boolean {
@@ -762,7 +796,7 @@ export async function resolveConflictsWithLLM(
   let codeFiles = conflictedFiles.filter(f => !isLockFile(f));
   const lockFiles = conflictedFiles.filter(f => isLockFile(f));
 
-  console.log(chalk.cyan(`  Conflicted files (${conflictedFiles.length}):`));
+  console.log(chalk.cyan(`  Conflicted files (${formatNumber(conflictedFiles.length)}):`));
   for (const file of conflictedFiles) {
     const isLock = isLockFile(file);
     console.log(chalk.cyan(`    - ${file}${isLock ? chalk.gray(' (lock file - will regenerate)') : ''}`));
@@ -842,7 +876,11 @@ export async function resolveConflictsWithLLM(
       }
       const reusedCount = toApply.filter(f => !stillWithMarkers.includes(f)).length;
       if (reusedCount > 0) {
-        console.log(chalk.green(`  Reused ${reusedCount} partial resolution(s); ${stillWithMarkers.length} file(s) still need resolution.`));
+        console.log(
+          chalk.green(
+            `  Reused ${formatNumber(reusedCount)} partial resolution(s); ${formatNumber(stillWithMarkers.length)} file(s) still need resolution.`,
+          ),
+        );
       }
       codeFiles = stillWithMarkers;
     }
@@ -854,7 +892,15 @@ export async function resolveConflictsWithLLM(
   // Compute model context limit for conflict resolution prompts.
   // The LLM client uses its default model (e.g., qwen-3-14b on ElizaCloud);
   // we need to respect that model's context window.
-  const llmProvider = (llm as any).provider as 'elizacloud' | 'anthropic' | 'openai' | undefined;
+  const llmProvider = (llm as any).provider as
+    | 'elizacloud'
+    | 'anthropic'
+    | 'openai'
+    | 'nvidiacloud'
+    | 'openrouter'
+    | 'ollama'
+    | 'lmstudio'
+    | undefined;
   const llmModel = (llm as any).model as string | undefined;
   const modelMaxChars = (llmProvider && llmModel)
     ? getMaxFixPromptCharsForModel(llmProvider, llmModel)
@@ -913,7 +959,9 @@ export async function resolveConflictsWithLLM(
           );
           const runResult = await activeRunner.run(workdir, batchPrompt, { model: getCurrentModel() });
           if (!runResult.success) {
-            console.log(chalk.yellow(`  ${activeRunner.name} failed on batch ${i + 1}, will try direct API...`));
+            console.log(
+              chalk.yellow(`  ${activeRunner.name} failed on batch ${formatNumber(i + 1)}, will try direct API...`),
+            );
           } else {
             console.log(chalk.cyan('  Staging resolved files from this batch...'));
             for (const file of batch) {
@@ -965,8 +1013,21 @@ export async function resolveConflictsWithLLM(
     // its default (qwen-3-14b on ElizaCloud) which is weaker and more prone to 504s.
     // DEFAULT_ELIZACLOUD_MODEL (claude-sonnet-4-5) matches what the runner used in Attempt 1.
     const rotationModel = getCurrentModel() ?? undefined;
-    const conflictModel = rotationModel
-      ?? (llmProvider === 'elizacloud' ? DEFAULT_ELIZACLOUD_MODEL : undefined);
+    const conflictModel =
+      rotationModel ??
+      (llmProvider === 'elizacloud'
+        ? DEFAULT_ELIZACLOUD_MODEL
+        : llmProvider === 'nvidiacloud'
+          ? DEFAULT_NVIDIA_LLM_MODEL
+          : llmProvider === 'openrouter'
+            ? DEFAULT_OPENROUTER_LLM_MODEL
+            : llmProvider === 'openai'
+              ? DEFAULT_OPENAI_MODEL
+              : llmProvider === 'ollama'
+                ? DEFAULT_OLLAMA_LLM_MODEL
+                : llmProvider === 'lmstudio'
+                  ? llmModel
+                  : undefined);
     const effectiveModel = conflictModel ?? llmModel;
     const effectiveMaxChars = (llmProvider && effectiveModel)
       ? getMaxFixPromptCharsForModel(llmProvider, effectiveModel)
@@ -978,10 +1039,24 @@ export async function resolveConflictsWithLLM(
       Math.min(25_000, Math.floor((effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3))
     );
     debug('Attempt 2 model selection', { rotationModel, conflictModel, effectiveModel, llmClientDefault: llmModel, maxSegmentChars });
-    console.log(chalk.cyan(`\n  Attempt 2: Using direct ${config.llmProvider} API${conflictModel ? ` (${conflictModel})` : ''} to resolve ${remainingConflicts.length} remaining conflicts...`));
+    console.log(
+      chalk.cyan(
+        `\n  Attempt 2: Using direct ${config.llmProvider} API${conflictModel ? ` (${conflictModel})` : ''} to resolve ${formatNumber(remainingConflicts.length)} remaining conflicts...`,
+      ),
+    );
     
     const fs = await import('fs');
     const CONFLICT_HEARTBEAT_INTERVAL_MS = 30_000;
+    /**
+     * Queue position for Attempt 2 heartbeats (updated each file before long LLM work).
+     * WHY: Chunked conflict resolution can run many minutes per file; heartbeat used to print only
+     * elapsed time so operators could not tell *which* file was active (eliza#6733-style long merges).
+     */
+    const attempt2Progress: { position: number; total: number; path: string } = {
+      position: 0,
+      total: 0,
+      path: '',
+    };
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     const stopHeartbeat = (): void => {
       if (heartbeatTimer) {
@@ -994,7 +1069,20 @@ export async function resolveConflictsWithLLM(
       const start = Date.now();
       heartbeatTimer = setInterval(() => {
         const elapsedSec = Math.floor((Date.now() - start) / 1000);
-        console.log(chalk.gray(`  Still resolving... (${Math.floor(elapsedSec / 60)}m ${elapsedSec % 60}s)`));
+        const p = attempt2Progress;
+        const pathForLine =
+          p.path.length > 72 ? `…${p.path.slice(-(72 - 1))}` : p.path;
+        const where =
+          p.position > 0 && p.total > 0
+            ? `file ${formatNumber(p.position)} of ${formatNumber(p.total)}${pathForLine ? ` — ${pathForLine}` : ''}`
+            : '…';
+        console.log(
+          chalk.gray(
+            `  Still resolving (${where}) — ${formatNumber(Math.floor(elapsedSec / 60))}m ${formatNumber(
+              elapsedSec % 60,
+            )}s`,
+          ),
+        );
       }, CONFLICT_HEARTBEAT_INTERVAL_MS);
     };
 
@@ -1003,8 +1091,43 @@ export async function resolveConflictsWithLLM(
       return /504|timeout|gateway|deployment.*error|error occurred with your deployment/i.test(msg);
     }
 
+    const regionLineStats = buildConflictRegionLineStats(workdir, remainingConflicts);
+    const maxRegionByFile = new Map(regionLineStats.map((s) => [s.file, s.maxRegionLines]));
+    let attempt2Queue = [...remainingConflicts];
+    // WHY: Try the hardest merges first (cheap index scan). If the largest region still cannot be merged,
+    // smaller files are still attempted so the worktree reaches maximum auto-resolution before exit
+    // (audit: eliza#6733 — stopping after the first failure would leave many files conflicted for manual work).
+    if (attempt2Queue.length > 1) {
+      attempt2Queue.sort(
+        (a, b) => (maxRegionByFile.get(b) ?? 0) - (maxRegionByFile.get(a) ?? 0),
+      );
+      console.log(
+        chalk.cyan(
+          `  Attempt 2 queue: ${formatNumber(attempt2Queue.length)} file(s), largest conflict regions first.`,
+        ),
+      );
+    }
+    const topTailsOversized = regionLineStats.filter(
+      (s) => s.maxRegionLines > TOP_TAILS_FALLBACK_MAX_CHUNK_LINES,
+    );
+    if (topTailsOversized.length > 0) {
+      const ex = topTailsOversized[0]!;
+      const more = topTailsOversized.length - 1;
+      console.log(
+        chalk.yellow(
+          `  ${formatNumber(topTailsOversized.length)} file(s) have a conflict region over ${formatNumber(
+            TOP_TAILS_FALLBACK_MAX_CHUNK_LINES,
+          )} lines — top+tails fallback cannot run if the main merge fails for that file, e.g. ${ex.file} (${formatNumber(
+            ex.maxRegionLines,
+          )} lines).` + (more > 0 ? ` (+${formatNumber(more)} more)` : ''),
+        ),
+      );
+    }
 
-    for (const conflictFile of remainingConflicts) {
+    attempt2Progress.total = attempt2Queue.length;
+    const attempt2QueueTotal = attempt2Queue.length;
+    for (let queueIndex = 0; queueIndex < attempt2Queue.length; queueIndex++) {
+      const conflictFile = attempt2Queue[queueIndex]!;
       // Skip lock files in case they slipped through
       if (isLockFile(conflictFile)) continue;
 
@@ -1047,7 +1170,15 @@ export async function resolveConflictsWithLLM(
           continue;
         }
 
-        console.log(chalk.cyan(`    Resolving: ${conflictFile}`));
+        attempt2Progress.position = queueIndex + 1;
+        attempt2Progress.total = attempt2QueueTotal;
+        attempt2Progress.path = conflictFile;
+
+        console.log(
+          chalk.cyan(
+            `    Resolving (${formatNumber(queueIndex + 1)} of ${formatNumber(attempt2QueueTotal)}): ${conflictFile}`,
+          ),
+        );
         const nestedWt = hasNestedConflictMarkers(conflictedContent);
         const markerLines = countConflictMarkerLines(conflictedContent);
         if (nestedWt) {
@@ -1182,7 +1313,9 @@ export async function resolveConflictsWithLLM(
           isGeneratedArtifactFile(conflictFile) &&
           hasAsymmetricConflict(conflictedContent)
         )) {
-          console.log(chalk.blue(`    → Using asymmetric merge for generated file (${fileSize}KB)`));
+          console.log(
+            chalk.blue(`    → Using asymmetric merge for generated file (${formatNumber(fileSize)}KB)`),
+          );
           startHeartbeat();
           try {
             result = await resolveAsymmetricConflict(
@@ -1204,10 +1337,10 @@ export async function resolveConflictsWithLLM(
         )) {
           resolutionPath = 'chunked';
           const reason = conflictedContent.length > effectiveMaxChars
-            ? `file (${fileSize}KB) exceeds model context — chunking`
+            ? `file (${formatNumber(fileSize)}KB) exceeds model context — chunking`
             : conflictedContent.length > CONFLICT_USE_CHUNKED_FIRST_CHARS
-              ? `${fileSize}KB file`
-              : `${conflictChunkCount} conflict chunks`;
+              ? `${formatNumber(fileSize)}KB file`
+              : `${formatNumber(conflictChunkCount)} conflict chunks`;
           console.log(chalk.blue(`    → Using chunked strategy (${reason})`));
           startHeartbeat();
           try {

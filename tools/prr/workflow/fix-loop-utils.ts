@@ -24,6 +24,12 @@ import { getMidLoopNewCommentCap } from '../../../shared/constants.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solvability.js';
 import {
+  isPullConflictErrorMessage,
+  resolvePullRebaseConflictsAfterFailedPull,
+  resolveStashPopConflictsWithLLM,
+  type ResolveConflictsWithLLMFn,
+} from './repository.js';
+import {
   dismissDuplicateClusterFromComments,
   resolveEffectiveDuplicateMapForComments,
 } from './issue-analysis-dedup.js';
@@ -330,6 +336,8 @@ export async function checkEmptyIssues(
  * @param repo - Repository name
  * @param prNumber - Pull request number
  * @param getCodeSnippet - Function to fetch code snippets
+ * @param resolveConflictsWithLLM - Same as setup **`checkAndSyncWithRemote`** — used when pull leaves conflict markers (top of fix iteration).
+ * @param noPush - When true, deconflict does not push (fix loop defers to **commit-and-push**).
  * @returns Exit signal if conflicts detected, continue signal with new SHA otherwise
  */
 export async function checkAndPullRemoteCommits(
@@ -342,7 +350,9 @@ export async function checkAndPullRemoteCommits(
   repo: string,
   prNumber: number,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
-  githubToken?: string
+  githubToken: string | undefined,
+  resolveConflictsWithLLM: ResolveConflictsWithLLMFn,
+  noPush: boolean,
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -361,53 +371,70 @@ export async function checkAndPullRemoteCommits(
     return { shouldBreak: false };
   }
   if (remoteStatus.behind > 0) {
-    console.log(chalk.yellow(`\n⚠ Remote has ${remoteStatus.behind} new commit(s) - pulling...`));
-    
+    console.log(
+      chalk.yellow(`\n⚠ Remote has ${formatNumber(remoteStatus.behind)} new commit(s) - pulling...`),
+    );
+
     const pullResult = await pullLatest(git, branch, fetchOpts);
+    let pullSucceeded = pullResult.success;
+
     if (!pullResult.success) {
       console.log(chalk.red(`  Failed to pull: ${pullResult.error}`));
-      if (pullResult.error?.includes('conflict')) {
-        // Conflicts need manual resolution - bail out
-        console.log(chalk.red('  Conflicts detected. Please resolve manually and restart.'));
-        return {
-          shouldBreak: true,
-          exitReason: 'error',
-          exitDetails: 'Pull conflicts require manual resolution',
-        };
+      if (isPullConflictErrorMessage(pullResult.error)) {
+        const dr = await resolvePullRebaseConflictsAfterFailedPull(git, branch, resolveConflictsWithLLM, {
+          noPush,
+          githubToken,
+        });
+        if (!dr.ok) {
+          return {
+            shouldBreak: true,
+            exitReason: 'error',
+            exitDetails: dr.error,
+          };
+        }
+        pullSucceeded = true;
+        console.log(chalk.green(`  ✓ Auto-resolved pull/rebase conflicts (${formatNumber(dr.resolvedRounds)} round(s))`));
+      } else {
+        console.log(chalk.yellow('  Continuing with potentially stale code...'));
       }
-      // Other pull errors - continue but warn
-      console.log(chalk.yellow('  Continuing with potentially stale code...'));
-    } else {
-      console.log(chalk.green(`  ✓ Pulled ${remoteStatus.behind} commit(s)`));
-      
-      // Invalidate verification cache - code has changed
-      // WHY: Previous "fixed" status may no longer be valid
+    }
+
+    if (pullSucceeded) {
+      if (pullResult.stashConflicts && pullResult.stashConflicts.length > 0) {
+        await resolveStashPopConflictsWithLLM(git, resolveConflictsWithLLM, pullResult.stashConflicts);
+      }
+
+      if (pullResult.success || isPullConflictErrorMessage(pullResult.error)) {
+        console.log(chalk.green(`  ✓ Pulled ${formatNumber(remoteStatus.behind)} commit(s)`));
+      }
+
       const previouslyVerified = Verification.getVerifiedComments(stateContext).length;
       if (previouslyVerified > 0) {
-        console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
-        debug('Stale verification: clearing all after remote pull', { previouslyVerified, behind: remoteStatus.behind });
+        console.log(
+          chalk.yellow(`  Invalidating ${formatNumber(previouslyVerified)} cached verifications (code changed)`),
+        );
+        debug('Stale verification: clearing all after remote pull', {
+          previouslyVerified,
+          behind: remoteStatus.behind,
+        });
         Verification.clearAllVerifications(stateContext);
       }
-      
-      // Re-fetch code snippets for unresolved issues concurrently
-      // WHY parallel: Each snippet is an independent file read; code at those
-      // lines may have changed after the pull.
+
       console.log(chalk.gray(`  Refreshing code snippets for ${formatNumber(unresolvedIssues.length)} issues...`));
       const refreshedSnippets = await Promise.all(
-        unresolvedIssues.map(issue =>
-          getCodeSnippet(getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body)
-        )
+        unresolvedIssues.map((issue) =>
+          getCodeSnippet(getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body),
+        ),
       );
       for (let i = 0; i < unresolvedIssues.length; i++) {
-        unresolvedIssues[i].codeSnippet = refreshedSnippets[i];
+        unresolvedIssues[i].codeSnippet = refreshedSnippets[i]!;
       }
-      
-      // Update PR info with new head SHA
+
       try {
         const updatedPR = await github.getPRInfo(owner, repo, prNumber);
         const newHeadSha = updatedPR.headSha;
         debug('Updated PR head SHA', { newSha: newHeadSha });
-        
+
         return {
           shouldBreak: false,
           updatedHeadSha: newHeadSha,

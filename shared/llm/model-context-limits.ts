@@ -138,9 +138,17 @@ function isOpenAiGpt4oMiniModel(model: string): boolean {
  * Get max fix prompt chars (before file injection) for a provider/model.
  */
 export function getMaxFixPromptCharsForModel(
-  provider: 'elizacloud' | 'anthropic' | 'openai',
+  provider: 'elizacloud' | 'anthropic' | 'openai' | 'nvidiacloud' | 'openrouter' | 'ollama' | 'lmstudio',
   model: string
 ): number {
+  if (
+    provider === 'nvidiacloud' ||
+    provider === 'openrouter' ||
+    provider === 'ollama' ||
+    provider === 'lmstudio'
+  ) {
+    return MAX_FIX_PROMPT_CHARS;
+  }
   if ((provider === 'openai' || provider === 'elizacloud') && model && isOpenAiGpt4oMiniModel(model)) {
     const override = modelMaxCharsOverride.get(model);
     if (override !== undefined) return override;
@@ -260,7 +268,7 @@ export function estimateElizacloudInputTokensFromCharLength(
  * Floor at 50% of the context-derived cap or 60k chars, whichever is larger.
  */
 export function lowerModelMaxPromptChars(
-  provider: 'elizacloud' | 'anthropic' | 'openai',
+  provider: 'elizacloud' | 'anthropic' | 'openai' | 'nvidiacloud' | 'openrouter' | 'ollama' | 'lmstudio',
   model: string,
   sentPromptChars: number
 ): void {

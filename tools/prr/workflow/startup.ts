@@ -98,7 +98,7 @@ export async function analyzeBotTimingAndDisplay(
       console.log(chalk.cyan('\n📊 Bot Response Timing (observed on this PR):'));
       for (const timing of botTimings) {
         console.log(chalk.gray(
-          `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${timing.responseCount})`
+          `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${formatNumber(timing.responseCount)})`
         ));
       }
       // Recommend wait time based on 75th percentile (not max — outliers waste time).
@@ -113,7 +113,11 @@ export async function analyzeBotTimingAndDisplay(
         Math.ceil(p75Wait / 1000 / 30) * 30, // Round up to nearest 30s
         MAX_RECOMMENDED_WAIT_S
       );
-      console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s (p75, capped at ${MAX_RECOMMENDED_WAIT_S}s)`));
+      console.log(
+        chalk.gray(
+          `   Recommended wait after push: ~${formatNumber(recommendedWait)}s (p75, capped at ${formatNumber(MAX_RECOMMENDED_WAIT_S)}s)`,
+        ),
+      );
       
       // Calculate when we expect bot reviews to arrive
       if (lastCommitTime) {
@@ -311,7 +315,7 @@ export async function setupWorkdirAndManagers(
     if (lockStatus.isLocked && !lockStatus.isOurs) {
       console.log(chalk.yellow(`⚠ Another prr instance is working on this PR`));
       console.log(chalk.gray(`  Instance: ${lockStatus.holder?.instanceId} on ${lockStatus.holder?.hostname}`));
-      console.log(chalk.gray(`  Claimed issues: ${lockStatus.claimedIssues.length}`));
+      console.log(chalk.gray(`  Claimed issues: ${formatNumber(lockStatus.claimedIssues.length)}`));
       console.log(chalk.gray(`  We will avoid those issues`));
     }
   }
@@ -320,7 +324,7 @@ export async function setupWorkdirAndManagers(
   // WHY: Lessons about files that no longer exist are useless clutter
   const prunedDeletedFiles = LessonsAPI.Prune.pruneDeletedFiles(lessonsContext, workdir);
   if (prunedDeletedFiles > 0) {
-    console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
+    console.log(chalk.gray(`Pruned ${formatNumber(prunedDeletedFiles)} lessons for deleted files`));
     await LessonsAPI.Save.save(lessonsContext);
   }
   

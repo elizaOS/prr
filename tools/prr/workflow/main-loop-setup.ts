@@ -30,7 +30,7 @@ import type { CLIOptions } from '../cli.js';
 import type { Config } from '../../../shared/config.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber, formatDuration, setTokenPhase } from '../../../shared/logger.js';
 import * as ResolverProc from '../resolver-proc.js';
-import { computeLineMapFromDiff } from '../../../shared/git/git-diff.js';
+import { computeLineMapFromDiff, resolveRemoteTrackingRefForPrBase } from '../../../shared/git/git-diff.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import { createHash } from 'crypto';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
@@ -259,9 +259,9 @@ export async function processCommentsAndPrepareFixLoop(
     setPhase(stateContext, 'analyzing');
     setTokenPhase('Analyze issues');
     startTimer('Analyze issues');
-    const baseRef = prInfo.baseBranch ? `origin/${prInfo.baseBranch}` : 'HEAD~1';
+    const baseRef = await resolveRemoteTrackingRefForPrBase(git, prInfo);
     const lineMap = await computeLineMapFromDiff(git, baseRef, 'HEAD');
-    if (lineMap.size > 0) debug('Line map from diff', { files: lineMap.size });
+    if (lineMap.size > 0) debug('Line map from diff', { baseRef, files: lineMap.size });
     let changedFiles: string[] = [];
     try {
       const out = await git.raw(['diff', '--name-only', baseRef, 'HEAD']);
@@ -305,10 +305,14 @@ export async function processCommentsAndPrepareFixLoop(
           buildTimeMs: Date.now() - t0,
         });
       } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const short = msg.length > 160 ? `${msg.slice(0, 160)}…` : msg;
         console.warn(
-          chalk.yellow('Blast radius graph build failed; all issues treated as in-scope (no deprioritization).'),
+          chalk.yellow(
+            `Blast radius graph build failed (${short}); all issues treated as in-scope (no deprioritization).`,
+          ),
         );
-        debug('Blast radius error', { error: e instanceof Error ? e.message : String(e) });
+        debug('Blast radius error', { error: msg });
         blastRadius = undefined;
         stateContext.blastRadiusPaths = undefined;
       }

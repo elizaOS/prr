@@ -57,7 +57,17 @@ export function buildAndDisplayFixPrompt(
   /** When set, use this cap instead of MAX_FIX_PROMPT_CHARS (e.g. per-model for ElizaCloud). */
   maxPromptChars?: number,
   /** Provider + model for per-model cap when maxPromptChars not set (e.g. runner.provider + getCurrentModel()). */
-  modelContext?: { provider: 'elizacloud' | 'anthropic' | 'openai'; model: string },
+  modelContext?: {
+    provider:
+      | 'elizacloud'
+      | 'anthropic'
+      | 'openai'
+      | 'nvidiacloud'
+      | 'openrouter'
+      | 'ollama'
+      | 'lmstudio';
+    model: string;
+  },
   /** When provided, used to resolve test file paths so TARGET FILE(S) point to the path that exists (e.g. __tests__/integration vs colocated). */
   pathExists?: (path: string) => boolean,
   /** **PR clone root** (absolute); passed to **`buildFixPrompt`** — **not** `process.cwd()`. See **AGENTS.md** (“Clone workdir”). */

@@ -55,6 +55,15 @@ export interface StateContext {
     kind: 'uncertain' | 'truncation-guard';
     explanation?: string;
   }>;
+  /**
+   * Ephemeral: count of issues where final audit initially parsed as UNFIXED but the excerpt/truncation
+   * guard demoted to pass (`FIXED (truncation guard):…`). WHY: output.log audit — surface in RESULTS SUMMARY.
+   */
+  finalAuditTruncationDemotionsThisRun?: number;
+  /**
+   * Ephemeral: count of UNFIXED→pass overrides when UUID `[1-8]` + comment already align in snippet (Cycle 65).
+   */
+  finalAuditUuidAlignOverridesThisRun?: number;
   /** Set during git recovery; consumed when logging prune so operators see recovered vs pruned context. */
   gitRecoveredVerificationCount?: number;
   /** Ephemeral: skip tool/model for rest of run after threshold failures with no fixes (see PRR_SESSION_MODEL_SKIP_FAILURES). */
@@ -85,6 +94,23 @@ export interface StateContext {
    * WHY: Deprioritize known review-bot authors in queue / batch sort so human threads and fresher anchors run first (Cycle 80).
    */
   staleBotInlineReviewVsHead?: boolean;
+  /**
+   * Ephemeral: consecutive push iterations where GitHub REST still reports not mergeable while **`mergeBase`** is enabled (default).
+   * WHY: Reset when GitHub reports clean/mergeable; used for one stronger nudge after several cycles (Cycle 80 merge noise).
+   */
+  githubDirtyMergeBasePushCount?: number;
+  /** Ephemeral: printed the "still not mergeable after N push iterations" nudge once this run. */
+  githubDirtyMergeBaseNudgePrinted?: boolean;
+  /**
+   * Ephemeral: throttle + dedupe + run-wide disable for 👀 reactions on PR review comments
+   * (`PRR_THREAD_WORKING_REACTIONS` / `createThreadWorkingReactionPoster`).
+   */
+  threadWorkingReactionRunState?: {
+    /** Comment databaseIds we already reacted on or attempted (dedupe for the run; includes 404/error). */
+    postedCommentDatabaseIds: Set<number>;
+    lastPostAtMs: number;
+    disabledForRestOfRun: boolean;
+  };
 }
 
 export function createStateContext(workdir: string): StateContext {

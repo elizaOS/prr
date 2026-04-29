@@ -13,6 +13,7 @@ import type { SimpleGit } from 'simple-git';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
+import { applyFreshPrInfoFromRest, githubPrSaysNotMergeable } from '../github/pr-mergeable.js';
 import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -147,6 +148,8 @@ export interface PushIterationCallbacks {
   checkForNewBotReviews: (owner: string, repo: string, number: number, existingIds: Set<string>, headSha?: string) => Promise<{ newComments: ReviewComment[]; message: string } | null>;
   calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null;
   waitForBotReviews: (owner: string, repo: string, number: number, sha: string) => Promise<void>;
+  /** Post 👀 on inline review comments before batch fixer work (optional). */
+  notifyThreadWorking?: (issues: UnresolvedIssue[]) => Promise<void>;
 }
 
 /** Service dependencies for push iteration */
@@ -204,8 +207,75 @@ export async function executePushIteration(
     findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues,
     getCurrentModel, getRunner, parseNoChangesExplanation, trySingleIssueFix, tryRotation,
     tryDirectLLMFix, executeBailOut, checkForNewBotReviews, calculateExpectedBotResponseTime, waitForBotReviews,
+    notifyThreadWorking,
   } = callbacks;
   const { llm, options, config, spinner } = services;
+
+  function envExitOnUnmergeable(): boolean {
+    const v = process.env.PRR_EXIT_ON_UNMERGEABLE?.trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }
+
+  // Refresh mergeable / head from GitHub so push iterations see current API state (Cycle 80).
+  try {
+    const freshPr = await github.getPRInfo(owner, repo, number);
+    applyFreshPrInfoFromRest(prInfoRef.current, freshPr);
+  } catch (err) {
+    warn(
+      `Could not refresh PR from GitHub (mergeable state may be stale): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const pr = prInfoRef.current;
+  if (envExitOnUnmergeable() && !options.mergeBase && githubPrSaysNotMergeable(pr)) {
+    const ms = pr.mergeableState ?? '(unset)';
+    const mb = pr.mergeable === null || pr.mergeable === undefined ? 'unknown' : String(pr.mergeable);
+    return {
+      shouldBreak: true,
+      exitReason: 'github_unmergeable',
+      exitDetails: `GitHub reports mergeable=${mb}, mergeableState=${ms}. Resolve conflicts, drop --no-merge-base to integrate base, or unset PRR_EXIT_ON_UNMERGEABLE.`,
+      updatedRapidFailureCount: rapidFailureCount,
+      updatedLastFailureTime: lastFailureTime,
+      updatedConsecutiveFailures: consecutiveFailures,
+      updatedModelFailuresInCycle: modelFailuresInCycle,
+      updatedProgressThisCycle: progressThisCycle,
+      committedThisIteration: false,
+    };
+  }
+  if (githubPrSaysNotMergeable(pr)) {
+    if (!options.mergeBase) {
+      if (pushIteration > 1) {
+        console.log(
+          chalk.gray(
+            `  GitHub still not mergeable (mergeable=${String(pr.mergeable)}, state=${pr.mergeableState ?? '(unset)'}) — push iteration ${formatNumber(pushIteration)}; omit ${chalk.white('--no-merge-base')} for default base integration, or ${chalk.white('PRR_EXIT_ON_UNMERGEABLE=1')} to exit.`,
+          ),
+        );
+      }
+    } else {
+      stateContext.githubDirtyMergeBasePushCount = (stateContext.githubDirtyMergeBasePushCount ?? 0) + 1;
+      const dirtyCount = stateContext.githubDirtyMergeBasePushCount;
+      if (dirtyCount >= 3 && !stateContext.githubDirtyMergeBaseNudgePrinted) {
+        stateContext.githubDirtyMergeBaseNudgePrinted = true;
+        console.log(
+          chalk.yellow(
+            `\n  GitHub still reports not mergeable after ${formatNumber(dirtyCount)} push iteration(s) — fixes may churn until base conflicts are resolved and mergeable clears.`,
+          ),
+        );
+        console.log(
+          chalk.gray(
+            '     Check latent merge / base-merge messages in output.log; resolve conflicts on GitHub or locally, then re-run.\n',
+          ),
+        );
+      } else if (pushIteration > 1) {
+        console.log(
+          chalk.gray(
+            `  GitHub mergeable=${String(pr.mergeable)}, state=${pr.mergeableState ?? '(unset)'} — push iteration ${formatNumber(pushIteration)} (${formatNumber(dirtyCount)} consecutive while API reports not mergeable)`,
+          ),
+        );
+      }
+    }
+  } else {
+    stateContext.githubDirtyMergeBasePushCount = 0;
+  }
 
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
@@ -303,6 +373,7 @@ export async function executePushIteration(
     // Pre-iteration checks
     const preChecks = await ResolverProc.executePreIterationChecks(
       fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, getRunner(), options,
+      callbacks.resolveConflictsWithLLM,
       checkForNewBotReviews, getCodeSnippet, getCurrentModel, config.githubToken,
       workdir,
       prChangedFiles,
@@ -427,7 +498,8 @@ export async function executePushIteration(
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut,
       fixIteration,
       effectiveDuplicateMap,
-      callbacks.onDisableRunner
+      callbacks.onDisableRunner,
+      notifyThreadWorking,
     );
     
     // Audit: don't count duplicate-prompt skip as an iteration (next iteration keeps same number).

@@ -1,6 +1,13 @@
 /**
  * Configuration for pill. Loads .env from target directory and ~/.pill/.env.
  * Auto-detects provider from API keys. Trims all env values (trailing newlines cause 401s).
+ *
+ * WHY provider-specific defaults: The pill CLI still ships with an Anthropic-heavy **`--audit-model`**
+ * default (`cli.ts`). Operators who only set **`OPENROUTER_API_KEY`** (or NVIDIA / OpenAI) would otherwise
+ * POST that Claude id to a non-Anthropic **`/v1/chat/completions`** host — instant 4xx and confusing “pill
+ * broken” reports. **`loadConfig`** substitutes **`shared/constants`** defaults when **`PILL_AUDIT_MODEL`**
+ * is unset and the incoming audit model is still that legacy CLI default; **`PILL_LLM_MODEL`** defaults
+ * per provider for story-read. See **`tools/pill/README.md`** and **DEVELOPMENT.md** (Pill LLM provider…).
  */
 import dotenv from 'dotenv';
 import { homedir } from 'os';
@@ -8,9 +15,19 @@ import { join, resolve } from 'path';
 import { existsSync, statSync } from 'fs';
 import type { PillConfig } from './types.js';
 import { resolveToolRepoScopeFilter } from './tool-repo-scope.js';
+import { getNvidiaApiKeyFromEnv } from '../../shared/config.js';
+import {
+  DEFAULT_NVIDIA_LLM_MODEL,
+  DEFAULT_OLLAMA_LLM_MODEL,
+  DEFAULT_OPENAI_MODEL,
+  DEFAULT_OPENROUTER_LLM_MODEL,
+} from '../../shared/constants.js';
 
-const DEFAULT_AUDIT_MODEL = 'claude-opus-4-6';
-const DEFAULT_LLM_MODEL = 'claude-sonnet-4-5-20250929';
+/** Matches Commander `--audit-model` default in `cli.ts` — replaced when backend is not Anthropic/ElizaCloud. */
+export const PILL_CLI_DEFAULT_AUDIT_MODEL = 'claude-opus-4-6';
+
+const DEFAULT_ANTHROPIC_AUDIT_MODEL = 'claude-opus-4-6';
+const DEFAULT_ANTHROPIC_LLM_MODEL = 'claude-sonnet-4-5-20250929';
 
 /** Default max context tokens for pill audit. Change this to alter the default (e.g. 20_000 for small-context models). Overridable via PILL_CONTEXT_BUDGET_TOKENS. */
 export const DEFAULT_PILL_CONTEXT_BUDGET_TOKENS = 35_000;
@@ -33,9 +50,49 @@ function getEnvOrDefault(key: string, defaultValue: string): string {
   return (value !== undefined && value !== '') ? value : defaultValue;
 }
 
-const MODEL_REGEX = /^[A-Za-z0-9._\/-]+$/;
+/** Align with `shared/config.ts` `MODEL_NAME_PATTERN` (colon for Ollama/LM Studio tags). */
+const MODEL_REGEX = /^(?!.*\/\/)[A-Za-z0-9._\/:-]+$/;
 function isValidModel(name: string): boolean {
   return MODEL_REGEX.test(name);
+}
+
+function pillProviderDefaultModels(
+  provider: PillConfig['llmProvider'],
+): { auditModel: string; llmModel: string } {
+  switch (provider) {
+    case 'nvidiacloud':
+      return { auditModel: DEFAULT_NVIDIA_LLM_MODEL, llmModel: DEFAULT_NVIDIA_LLM_MODEL };
+    case 'openrouter':
+      return { auditModel: DEFAULT_OPENROUTER_LLM_MODEL, llmModel: DEFAULT_OPENROUTER_LLM_MODEL };
+    case 'ollama':
+      return { auditModel: DEFAULT_OLLAMA_LLM_MODEL, llmModel: DEFAULT_OLLAMA_LLM_MODEL };
+    case 'lmstudio': {
+      const m = getEnv('PILL_LLM_MODEL')!.trim();
+      return { auditModel: m, llmModel: m };
+    }
+    case 'openai':
+      return { auditModel: DEFAULT_OPENAI_MODEL, llmModel: DEFAULT_OPENAI_MODEL };
+    case 'elizacloud':
+    case 'anthropic':
+    default:
+      return { auditModel: DEFAULT_ANTHROPIC_AUDIT_MODEL, llmModel: DEFAULT_ANTHROPIC_LLM_MODEL };
+  }
+}
+
+/** When CLI left `--audit-model` at the Anthropic default but the active provider is OpenAI-compatible non-Claude. */
+function useProviderAuditDefaultInsteadOfCliDefault(
+  provider: PillConfig['llmProvider'],
+  inputAuditModel: string,
+): boolean {
+  if (getEnv('PILL_AUDIT_MODEL')) return false;
+  if (inputAuditModel !== PILL_CLI_DEFAULT_AUDIT_MODEL) return false;
+  return (
+    provider === 'openai' ||
+    provider === 'nvidiacloud' ||
+    provider === 'openrouter' ||
+    provider === 'ollama' ||
+    provider === 'lmstudio'
+  );
 }
 
 export interface LoadConfigInput {
@@ -67,8 +124,9 @@ function resolveOptionalLogFilePath(raw: string | undefined, label: string): str
 }
 
 /**
- * Load config: .env from target dir, then ~/.pill/.env (override: false so target wins).
- * Auto-detect provider: ELIZACLOUD > ANTHROPIC > OPENAI.
+ * Load config: .env from target dir, then ~/.pill/.env (**WHY** `override: false` on home: project **`.env`**
+ * should win for keys and overrides; **`~/.pill/.env`** is for machine-wide fallbacks only).
+ * Auto-detect provider: ELIZACLOUD > ANTHROPIC > OPENAI > OPENROUTER > NVIDIA (same priority spirit as PRR). **`ollama`** / **`lmstudio`** require explicit **`PILL_LLM_PROVIDER`** (not inferred from URLs).
  */
 export function loadConfig(input: LoadConfigInput): PillConfig {
   if (!existsSync(input.targetDir) || !statSync(input.targetDir).isDirectory()) {
@@ -82,7 +140,15 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
 
   const explicitProvider = getEnv('PILL_LLM_PROVIDER');
   let llmProvider: PillConfig['llmProvider'];
-  if (explicitProvider === 'elizacloud' || explicitProvider === 'anthropic' || explicitProvider === 'openai') {
+  if (
+    explicitProvider === 'elizacloud' ||
+    explicitProvider === 'anthropic' ||
+    explicitProvider === 'openai' ||
+    explicitProvider === 'nvidiacloud' ||
+    explicitProvider === 'openrouter' ||
+    explicitProvider === 'ollama' ||
+    explicitProvider === 'lmstudio'
+  ) {
     llmProvider = explicitProvider;
   } else if (getEnv('ELIZACLOUD_API_KEY')) {
     llmProvider = 'elizacloud';
@@ -90,16 +156,34 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     llmProvider = 'anthropic';
   } else if (getEnv('OPENAI_API_KEY')) {
     llmProvider = 'openai';
+  } else if (getEnv('OPENROUTER_API_KEY')) {
+    llmProvider = 'openrouter';
+  } else if (getNvidiaApiKeyFromEnv()) {
+    llmProvider = 'nvidiacloud';
   } else {
     throw new Error(
-      'Missing API key. Set one of: ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY in .env or ~/.pill/.env'
+      'Missing API key. Set one of: ELIZACLOUD_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY / NVIDIA_CLOUD_API_KEY, or PILL_LLM_PROVIDER=ollama|lmstudio for local OpenAI-compatible servers (see README).',
     );
   }
 
-  const auditModel = getEnvOrDefault('PILL_AUDIT_MODEL', input.auditModel);
-  const llmModel = getEnvOrDefault('PILL_LLM_MODEL', DEFAULT_LLM_MODEL);
+  if (llmProvider === 'lmstudio' && !getEnv('PILL_LLM_MODEL')?.trim()) {
+    throw new Error(
+      'PILL_LLM_MODEL is required when PILL_LLM_PROVIDER=lmstudio. Set it to the model id from LM Studio’s local server.',
+    );
+  }
+
+  // WHY `pillDefs` + `useProviderAuditDefaultInsteadOfCliDefault`: see file-level doc — avoid Anthropic CLI
+  // default on OpenAI-compat-only keys; env overrides (`PILL_AUDIT_MODEL` / `PILL_LLM_MODEL`) always win.
+  const pillDefs = pillProviderDefaultModels(llmProvider);
+  const auditModelDefault = useProviderAuditDefaultInsteadOfCliDefault(llmProvider, input.auditModel)
+    ? pillDefs.auditModel
+    : input.auditModel;
+  const auditModel = getEnvOrDefault('PILL_AUDIT_MODEL', auditModelDefault);
+  const llmModel = getEnvOrDefault('PILL_LLM_MODEL', pillDefs.llmModel);
   if (!isValidModel(auditModel) || !isValidModel(llmModel)) {
-    throw new Error('Invalid model name in config or env. Use only letters, numbers, dots, slashes, hyphens.');
+    throw new Error(
+      'Invalid model name in config or env. Use only letters, numbers, dots, slashes, hyphens, colons (no //).',
+    );
   }
 
   // WHY configurable: Small-context models (e.g. 20k) need a lower budget to avoid 504/timeout; default 35k suits larger models.
@@ -165,16 +249,36 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     config.elizacloudApiKey = getEnvOrThrow('ELIZACLOUD_API_KEY');
   } else if (llmProvider === 'anthropic') {
     config.anthropicApiKey = getEnvOrThrow('ANTHROPIC_API_KEY');
-  } else {
+  } else if (llmProvider === 'openai') {
     config.openaiApiKey = getEnvOrThrow('OPENAI_API_KEY');
+  } else if (llmProvider === 'openrouter') {
+    config.openrouterApiKey = getEnvOrThrow('OPENROUTER_API_KEY');
+  } else if (llmProvider === 'nvidiacloud') {
+    const nk = getNvidiaApiKeyFromEnv();
+    if (!nk) {
+      throw new Error('Missing NVIDIA_API_KEY or NVIDIA_CLOUD_API_KEY for PILL_LLM_PROVIDER=nvidiacloud.');
+    }
+    config.nvidiaApiKey = nk;
+  } else if (llmProvider === 'ollama') {
+    config.ollamaApiKey = getEnvOrDefault('OLLAMA_API_KEY', 'ollama');
+  } else if (llmProvider === 'lmstudio') {
+    config.lmstudioApiKey = getEnvOrDefault('LMSTUDIO_API_KEY', 'lm-studio');
   }
 
   const otherEliza = getEnv('ELIZACLOUD_API_KEY');
   const otherAnthropic = getEnv('ANTHROPIC_API_KEY');
   const otherOpenai = getEnv('OPENAI_API_KEY');
+  const otherOpenrouter = getEnv('OPENROUTER_API_KEY');
+  const otherNvidia = getNvidiaApiKeyFromEnv();
   if (otherEliza && !config.elizacloudApiKey) config.elizacloudApiKey = otherEliza;
   if (otherAnthropic && !config.anthropicApiKey) config.anthropicApiKey = otherAnthropic;
   if (otherOpenai && !config.openaiApiKey) config.openaiApiKey = otherOpenai;
+  if (otherOpenrouter && !config.openrouterApiKey) config.openrouterApiKey = otherOpenrouter;
+  if (otherNvidia && !config.nvidiaApiKey) config.nvidiaApiKey = otherNvidia;
+  const otherOllama = getEnv('OLLAMA_API_KEY');
+  const otherLmstudio = getEnv('LMSTUDIO_API_KEY');
+  if (otherOllama && !config.ollamaApiKey) config.ollamaApiKey = otherOllama;
+  if (otherLmstudio && !config.lmstudioApiKey) config.lmstudioApiKey = otherLmstudio;
 
   return config;
 }
@@ -190,7 +294,7 @@ export function tryLoadPillConfig(input: {
   try {
     return loadConfig({
       targetDir: input.targetDir,
-      auditModel: 'claude-opus-4-6',
+      auditModel: PILL_CLI_DEFAULT_AUDIT_MODEL,
       outputOnly: false,
       promptsOnly: false,
       dryRun: false,
