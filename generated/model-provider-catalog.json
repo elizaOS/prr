@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-05-04T07:07:03.604Z",
+  "fetchedAtIso": "2026-05-11T07:17:57.057Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -15,7 +15,7 @@
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 86
+      "idCount": 89
     }
   ],
   "providers": {
@@ -108,7 +108,10 @@
         "gpt-oss-20b",
         "gpt-realtime",
         "gpt-realtime-1.5",
+        "gpt-realtime-2",
         "gpt-realtime-mini",
+        "gpt-realtime-translate",
+        "gpt-realtime-whisper",
         "o1",
         "o1-mini",
         "o1-preview",
@@ -199,7 +202,10 @@
       "gptoss20b": "gpt-oss-20b",
       "gptrealtime": "gpt-realtime",
       "gptrealtime1.5": "gpt-realtime-1.5",
+      "gptrealtime2": "gpt-realtime-2",
       "gptrealtimemini": "gpt-realtime-mini",
+      "gptrealtimetranslate": "gpt-realtime-translate",
+      "gptrealtimewhisper": "gpt-realtime-whisper",
       "o1": "o1",
       "o1mini": "o1-mini",
       "o1preview": "o1-preview",
