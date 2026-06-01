@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-05-25T07:39:12.663Z",
+  "fetchedAtIso": "2026-06-01T07:51:39.412Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,7 +8,7 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 17
+      "idCount": 19
     },
     {
       "name": "openai",
@@ -32,6 +32,8 @@
         "claude-opus-4-5-20251101",
         "claude-opus-4-6",
         "claude-opus-4-7",
+        "claude-opus-4-8",
+        "claude-opus-47",
         "claude-sonnet-4",
         "claude-sonnet-4-0",
         "claude-sonnet-4-20250514",
@@ -237,7 +239,7 @@
       "claudeopus45": "claude-opus-4-5",
       "claudeopus4520251101": "claude-opus-4-5-20251101",
       "claudeopus46": "claude-opus-4-6",
-      "claudeopus47": "claude-opus-4-7",
+      "claudeopus48": "claude-opus-4-8",
       "claudesonnet4": "claude-sonnet-4",
       "claudesonnet40": "claude-sonnet-4-0",
       "claudesonnet420250514": "claude-sonnet-4-20250514",
@@ -245,6 +247,8 @@
       "claudesonnet4520250929": "claude-sonnet-4-5-20250929",
       "claudesonnet46": "claude-sonnet-4-6"
     },
-    "ambiguousHyphenless": []
+    "ambiguousHyphenless": [
+      "claudeopus47"
+    ]
   }
 }
