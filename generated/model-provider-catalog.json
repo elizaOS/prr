@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-06-15T08:05:24.537Z",
+  "fetchedAtIso": "2026-06-22T08:35:08.922Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,7 +8,7 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 19
+      "idCount": 13
     },
     {
       "name": "openai",
@@ -23,20 +23,14 @@
       "apiIds": [
         "claude-haiku-4-5",
         "claude-haiku-4-5-20251001",
-        "claude-opus-4",
-        "claude-opus-4-0",
         "claude-opus-4-1",
         "claude-opus-4-1-20250805",
-        "claude-opus-4-20250514",
         "claude-opus-4-5",
         "claude-opus-4-5-20251101",
         "claude-opus-4-6",
         "claude-opus-4-7",
         "claude-opus-4-8",
         "claude-opus-47",
-        "claude-sonnet-4",
-        "claude-sonnet-4-0",
-        "claude-sonnet-4-20250514",
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-20250929",
         "claude-sonnet-4-6"
@@ -231,18 +225,12 @@
     "anthropicHyphenless": {
       "claudehaiku45": "claude-haiku-4-5",
       "claudehaiku4520251001": "claude-haiku-4-5-20251001",
-      "claudeopus4": "claude-opus-4",
-      "claudeopus40": "claude-opus-4-0",
       "claudeopus41": "claude-opus-4-1",
       "claudeopus4120250805": "claude-opus-4-1-20250805",
-      "claudeopus420250514": "claude-opus-4-20250514",
       "claudeopus45": "claude-opus-4-5",
       "claudeopus4520251101": "claude-opus-4-5-20251101",
       "claudeopus46": "claude-opus-4-6",
       "claudeopus48": "claude-opus-4-8",
-      "claudesonnet4": "claude-sonnet-4",
-      "claudesonnet40": "claude-sonnet-4-0",
-      "claudesonnet420250514": "claude-sonnet-4-20250514",
       "claudesonnet45": "claude-sonnet-4-5",
       "claudesonnet4520250929": "claude-sonnet-4-5-20250929",
       "claudesonnet46": "claude-sonnet-4-6"
