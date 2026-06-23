@@ -36,6 +36,21 @@ import { createHash } from 'crypto';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
 import { hasChanges } from '../../../shared/git/git-clone-index.js';
 import { applyCatalogModelAutoHeals } from './catalog-model-autoheal.js';
+import { setDynamicRepoTopLevelDirs } from '../../../shared/path-utils.js';
+import { assessSolvability, resolveTrackedPath } from './helpers/solvability.js';
+import {
+  dismissDuplicateClusterFromComments,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
+import {
+  buildDependencyGraph,
+  computeBlastRadius,
+  getBlastRadiusDepth,
+  getBlastRadiusMaxFiles,
+  getBlastRadiusTimeoutMs,
+  isBlastRadiusDisabled,
+  listGitTrackedFiles,
+} from '../../../shared/dependency-graph/index.js';
 
 /**
  * Process comments and determine if fix loop should run
@@ -81,7 +96,20 @@ export async function processCommentsAndPrepareFixLoop(
    *  the CodeRabbit check already did the exact same API call. */
   prefetchedComments?: ReviewComment[],
   /** When set, reuse cached analysis if comment IDs, headSha, and file hashes for comment paths unchanged (output.log audit). */
-  analysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]>; changedFiles?: string[] } | null }
+  analysisCacheRef?: {
+    current: {
+      commentCount: number;
+      headSha: string;
+      commentIds?: string;
+      fileHashesKeyDigest?: string;
+      unresolvedIssues: UnresolvedIssue[];
+      comments: ReviewComment[];
+      duplicateMap: Map<string, string[]>;
+      changedFiles?: string[];
+      /** Normalized repo paths in blast radius when graph was built (for injection subset on cache hit). */
+      blastRadiusPaths?: string[];
+    } | null;
+  }
 ): Promise<{
   comments: ReviewComment[];
   unresolvedIssues: UnresolvedIssue[];
@@ -211,8 +239,17 @@ export async function processCommentsAndPrepareFixLoop(
     (cache.fileHashesKeyDigest != null ? cache.fileHashesKeyDigest === fileHashesKeyDigest : true);
   if (cacheHit) {
     unresolvedIssues = cache.unresolvedIssues;
-    duplicateMap = cache.duplicateMap;
+    // Re-resolve against persisted dedup-v2: cached duplicateMap may be empty from an older analysis
+    // path while state.dedupCache still matches this comment set (same as findUnresolvedIssues return).
+    duplicateMap =
+      resolveEffectiveDuplicateMapForComments(stateContext, cache.duplicateMap, comments) ??
+      cache.duplicateMap;
     prChangedFiles = cache.changedFiles;
+    stateContext.blastRadiusPaths =
+      cache.blastRadiusPaths && cache.blastRadiusPaths.length > 0 ? new Set(cache.blastRadiusPaths) : undefined;
+    // WHY: Populate path-utils dynamic top-level segments for strict allow mode + stripGitDiffPathPrefix
+    // before findUnresolvedIssues runs filterAllowedPathsForFix (see shared/path-utils.ts file header).
+    if (prChangedFiles) setDynamicRepoTopLevelDirs(prChangedFiles);
     analyzeTime = 0;
     console.log(chalk.gray(`  Reusing cached analysis (${formatNumber(comments.length)} comments, same IDs + file hashes)`));
     debug('Reused analysis cache', { commentCount: comments.length, headSha: headSha.slice(0, 7), fileHashesDigest: fileHashesKeyDigest });
@@ -232,6 +269,8 @@ export async function processCommentsAndPrepareFixLoop(
       // Base ref may not exist (e.g. first push)
     }
     prChangedFiles = changedFiles.length > 0 ? changedFiles : undefined;
+    // WHY: Same as cache-hit branch — issue.allowedPaths and runner injection see consistent segments.
+    if (prChangedFiles) setDynamicRepoTopLevelDirs(prChangedFiles);
     console.log(chalk.gray(`Analyzing ${formatNumber(comments.length)} review comments...`));
     const getFileContentFromRepo = async (path: string): Promise<string | null> => {
       try {
@@ -240,10 +279,45 @@ export async function processCommentsAndPrepareFixLoop(
         return null;
       }
     };
+
+    let blastRadius: Map<string, number> | undefined;
+    stateContext.blastRadiusPaths = undefined;
+    // Blast radius: best-effort graph from PR changed files + imports/proximity. WHY try/catch:
+    // timeout, max-files, git/fs errors must not fail analysis — omit map so all issues stay in-scope
+    // (same behavior as PRR_DISABLE_BLAST_RADIUS). blastRadiusPaths drives llm-api injection subset only.
+    if (!isBlastRadiusDisabled() && changedFiles.length > 0) {
+      try {
+        const t0 = Date.now();
+        const allFiles = await listGitTrackedFiles(workdir);
+        const graph = await buildDependencyGraph(workdir, {
+          maxFiles: getBlastRadiusMaxFiles(),
+          timeoutMs: getBlastRadiusTimeoutMs(),
+        });
+        blastRadius = computeBlastRadius(graph, changedFiles, getBlastRadiusDepth(), allFiles);
+        stateContext.blastRadiusPaths = new Set(blastRadius.keys());
+        debug('Blast radius', {
+          changedFiles: changedFiles.length,
+          graphNodes: graph.nodeCount,
+          graphEdges: graph.edgeCount,
+          radiusFiles: blastRadius.size,
+          depth: getBlastRadiusDepth(),
+          buildTimeMs: Date.now() - t0,
+        });
+      } catch (e) {
+        console.warn(
+          chalk.yellow('Blast radius graph build failed; all issues treated as in-scope (no deprioritization).'),
+        );
+        debug('Blast radius error', { error: e instanceof Error ? e.message : String(e) });
+        blastRadius = undefined;
+        stateContext.blastRadiusPaths = undefined;
+      }
+    }
+
     const analysisResult = await findUnresolvedIssues(comments, comments.length, {
       lineMap: lineMap.size > 0 ? lineMap : undefined,
       getFileContentFromRepo,
       changedFiles: prChangedFiles,
+      blastRadius,
     });
     unresolvedIssues = analysisResult.unresolved;
     duplicateMap = analysisResult.duplicateMap;
@@ -258,6 +332,7 @@ export async function processCommentsAndPrepareFixLoop(
         comments: [...comments],
         duplicateMap: new Map(duplicateMap),
         changedFiles: prChangedFiles,
+        blastRadiusPaths: blastRadius && blastRadius.size > 0 ? [...blastRadius.keys()] : undefined,
       };
     }
   }
@@ -284,7 +359,8 @@ export async function processCommentsAndPrepareFixLoop(
       spinner,
       getCodeSnippet,
       stateContext,
-      workdir
+      workdir,
+      duplicateMap,
     );
     if (newCommentsResult.hasNewComments) {
       comments.length = 0;
@@ -308,40 +384,52 @@ export async function processCommentsAndPrepareFixLoop(
       spinner,
       getCodeSnippet,
       getFullFile,
-      workdir // Pill cycle 2 #4: Pass workdir for Rule 6 validation
+      workdir, // Pill cycle 2 #4: Pass workdir for Rule 6 validation
+      duplicateMap,
     );
     
     if (auditResult.failedAudit.length > 0) {
       // runFinalAudit() already unmarked every failed-audit comment (single place — avoids duplicate unmark logs).
       // Re-run solvability on audit-failed items so we don't re-enter with unsolvable issues (e.g. (PR comment), deleted file).
-      const { assessSolvability } = await import('./helpers/solvability.js');
       unresolvedIssues.length = 0;
       const failedItems = auditResult.failedAudit;
+      const effectiveDupForAuditReentry = resolveEffectiveDuplicateMapForComments(
+        stateContext,
+        duplicateMap,
+        comments,
+      );
       let reEnterCount = 0;
       for (let i = 0; i < failedItems.length; i++) {
         const { comment, explanation } = failedItems[i];
         const solvability = assessSolvability(workdir, comment, stateContext);
+        // File ops + dismiss record: resolved repo path when basename-only review path maps to one file.
+        const primaryPath =
+          comment.path != null && comment.path !== ''
+            ? resolveTrackedPath(workdir, comment.path, comment.body ?? '') ?? comment.path
+            : (comment.path ?? '');
         if (!solvability.solvable) {
-          Dismissed.dismissIssue(
+          dismissDuplicateClusterFromComments(
             stateContext,
-            comment.id,
+            comment,
+            effectiveDupForAuditReentry,
+            comments,
             solvability.reason ?? explanation,
             solvability.dismissCategory ?? 'not-an-issue',
-            comment.path,
-            comment.line,
-            comment.body ?? '',
-            solvability.remediationHint
+            solvability.remediationHint,
           );
-          debug('Audit re-entry: dismissed unsolvable issue', { commentId: comment.id, reason: solvability.reason });
+          debug('Audit re-entry: dismissed unsolvable issue (cluster)', { commentId: comment.id, reason: solvability.reason });
           continue;
         }
-        const codeSnippet = await getCodeSnippet(comment.path, comment.line, comment.body);
+        const codeSnippet = await getCodeSnippet(primaryPath, comment.line, comment.body);
+        const resolvedPath =
+          comment.path != null && primaryPath !== comment.path ? primaryPath : undefined;
         unresolvedIssues.push({
           comment,
           codeSnippet,
           stillExists: true,
           explanation,
           triage: { importance: 2, ease: 3 },
+          ...(resolvedPath ? { resolvedPath } : {}),
         });
         reEnterCount++;
       }

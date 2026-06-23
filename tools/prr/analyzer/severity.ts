@@ -75,6 +75,11 @@ export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder):
   const sorted = [...issues]; // Clone to avoid mutating input
   
   sorted.sort((a, b) => {
+    // Blast radius: in-scope (true/undefined) before explicit out-of-scope (false). WHY undefined = no graph.
+    const aOut = a.inBlastRadius === false ? 1 : 0;
+    const bOut = b.inBlastRadius === false ? 1 : 0;
+    if (aOut !== bOut) return aOut - bOut;
+
     let primary: number;
     switch (order) {
       case 'important':

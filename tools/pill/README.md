@@ -43,9 +43,14 @@
 node dist/tools/pill/index.js <directory> [options]
 # or after npm link
 pill <directory> [options]
+
+# Rerun on specific log files (e.g. copies under ~/runs); audit code in . but read logs from paths:
+pill . --output-log ~/runs/prr-2026-04-05/output.log --prompts-log ~/runs/prr-2026-04-05/prompts.log
 ```
 
-- **&lt;directory&gt;** — Directory that contains the log files and project to audit (e.g. `.` or `~/.prr` if logs are there).
+- **&lt;directory&gt;** — Directory that contains the project to audit (docs, source, tree). Log files default to this directory unless overridden below.
+- **--output-log &lt;path&gt;** — Use this file as **output.log** instead of `&lt;directory&gt;/[prefix-]output.log`. Handy to rerun pill on a saved copy or logs in another folder (path is resolved from the current working directory). Overrides **`PILL_OUTPUT_LOG_PATH`**.
+- **--prompts-log &lt;path&gt;** — Same for **prompts.log**. Overrides **`PILL_PROMPTS_LOG_PATH`**. You can set only one of the pair; the other still uses the default name under **&lt;directory&gt;**.
 - **--audit-model &lt;model&gt;** — Model for the audit call (default: claude-opus-4-6).
 - **--output-only** — Use only output.log (no prompts.log).
 - **--prompts-only** — Use only prompts.log (no output.log).
@@ -60,6 +65,7 @@ Config (API keys, provider) is loaded from `<directory>/.env` and then `~/.pill/
 - **PILL_AUDIT_CHUNK_CONCURRENCY** (optional, **1–16**, default **4**) — How many **audit** HTTP requests may run in parallel when context is split into chunks. Higher speeds large runs; use **`1`** to restore fully sequential behavior (e.g. strict rate limits).
 - **PILL_OUTPUT_LOG_MAX_CHARS** (optional) — Hard cap on output-log chars in the audit payload (default **28000**).
 - **PILL_TOOL_REPO_SCOPE_FILTER** (optional) — **`0`** / **`false`** / **`off`** disables dropping clone-only paths; **`1`** / **`true`** forces the filter on. **Unset:** filter is **on** only when **`tools/prr`** exists under **`targetDir`** (typical prr monorepo). **WHY:** Keeps **`pill-output.md`** focused on improving **this** tool repo, not the PR under review.
+- **PILL_OUTPUT_LOG_PATH** / **PILL_PROMPTS_LOG_PATH** (optional) — Absolute or cwd-relative paths to log files for a **standalone** pill run. **CLI `--output-log` / `--prompts-log` override these.** **WHY:** Rerun pill on archived or out-of-tree logs without changing **&lt;directory&gt;** (code context still comes from **&lt;directory&gt;**).
 
 ### Integrated (prr / story / split-exec / split-plan) — opt-in with --pill
 
@@ -79,7 +85,7 @@ When pill records **no improvements**, it returns a distinct **reason** so you c
 
 | Reason | Meaning | What to do |
 |--------|---------|------------|
-| **no_logs** | Output/prompts log for this prefix is empty or missing. | Ensure the tool that produced the logs (prr, story, split-exec) wrote to the expected files (e.g. `split-exec-output.log` when prefix is `split-exec`). Run from the directory that contains those logs, or pass that directory to the pill CLI. |
+| **no_logs** | Output/prompts log for this prefix is empty or missing. | Ensure the tool that produced the logs (prr, story, split-exec) wrote to the expected files (e.g. `split-exec-output.log` when prefix is `split-exec`). Run from the directory that contains those logs, pass that directory to the pill CLI, or use **`--output-log`** / **`--prompts-log`** to point at the files. |
 | **no_api_key** | No LLM API key configured for the chosen provider. | Set the right key in `.env`: `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` (see Configuration in main README). When pill runs from the hook, it uses the same env as the parent process. |
 | **api_call_failed** | The audit LLM request failed (network, rate limit, model error). | Check the error message in the console or in the log line. Ensure the model ID is valid and the key has access. Look at **pill-prompts.log** for the request if it was written before the failure. |
 | **zero_improvements_from_llm** | The audit ran successfully but the LLM suggested zero improvements. | Not a failure — the logs were analyzed and the model had nothing to add. |

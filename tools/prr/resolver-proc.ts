@@ -43,6 +43,7 @@ export {
   getFullFileForAudit,
   findUnresolvedIssues,
 } from './workflow/issue-analysis.js';
+export type { FullFileForAuditResult } from './workflow/issue-analysis.js';
 
 // Startup workflows
 export {

@@ -13,10 +13,19 @@ export interface AggregatedTokenUsage {
   output_tokens: number;
 }
 
-/** In-memory only (not persisted in .pr-resolver-state.json): session-level model skip after repeated failures. */
+/**
+ * Session-level model skip after repeated failures. **Mostly persisted** in
+ * `.pr-resolver-state.json` (`sessionSkippedModelKeys` / `sessionModelStats`) so restarts skip bad
+ * models without re-burning budget — opt out with **`PRR_PERSIST_SESSION_MODEL_SKIP=0`**.
+ */
 export interface RotationSessionTracking {
   skippedModelKeys: Set<string>;
   modelStats: Map<string, { fixes: number; failures: number }>;
+  /**
+   * Fix iteration (1-based) when each key was added to `skippedModelKeys`.
+   * WHY: Per-key retry — remove from skip after N iterations for that key only (vs clearing all skips).
+   */
+  sessionSkippedSinceFixIteration: Map<string, number>;
 }
 
 export interface StateContext {
@@ -54,6 +63,23 @@ export interface StateContext {
   diminishingReturnsZeroVerifyStreak?: number;
   /** Ephemeral: already logged one diminishing-returns warning this run. */
   diminishingReturnsWarned?: boolean;
+  /**
+   * Repo-relative paths in the blast-radius set (changed files + graph BFS + proximity), normalized with `/`.
+   * **WHY:** Fixer batch allowlist stays full; prompt injection is intersected with this set to save context.
+   * Undefined when blast radius was not built this analysis (disabled, failure, or cache without field).
+   */
+  blastRadiusPaths?: Set<string>;
+  /**
+   * Ephemeral: `git diff --name-only` vs PR base for this push iteration (from main-loop-setup).
+   * WHY: Basename-only API paths (e.g. `auto-optimizer.ts`) need `resolveTrackedPathWithPrFiles` in
+   * recovery and single-issue prompts when `issue.resolvedPath` is missing — same disambiguation as analysis.
+   */
+  prChangedFilesForRecovery?: string[];
+  /**
+   * Ephemeral: LLM dedup cluster map for this push iteration (from issue analysis).
+   * WHY: Recovery / single-issue paths must mark the full duplicate cluster verified, not only the queued id.
+   */
+  duplicateMapForSession?: Map<string, string[]>;
 }
 
 export function createStateContext(workdir: string): StateContext {
@@ -69,9 +95,70 @@ export function createStateContext(workdir: string): StateContext {
 
 export function ensureRotationSession(ctx: StateContext): RotationSessionTracking {
   if (!ctx.rotationSession) {
-    ctx.rotationSession = { skippedModelKeys: new Set(), modelStats: new Map() };
+    ctx.rotationSession = {
+      skippedModelKeys: new Set(),
+      modelStats: new Map(),
+      sessionSkippedSinceFixIteration: new Map(),
+    };
+  }
+  if (!ctx.rotationSession.sessionSkippedSinceFixIteration) {
+    ctx.rotationSession.sessionSkippedSinceFixIteration = new Map();
   }
   return ctx.rotationSession;
+}
+
+/** Restore session skip + stats from persisted state after `loadState` (pill-output). */
+export function hydrateRotationSessionFromPersistedState(ctx: StateContext): void {
+  if (!ctx.state) return;
+  if (process.env.PRR_PERSIST_SESSION_MODEL_SKIP?.trim() === '0') return;
+  const s = ctx.state;
+  const keys = s.sessionSkippedModelKeys;
+  const stats = s.sessionModelStats;
+  const since = s.sessionSkippedSinceFixIteration;
+  const hasKeys = keys && keys.length > 0;
+  const hasStats = stats && Object.keys(stats).length > 0;
+  const hasSince = since && Object.keys(since).length > 0;
+  if (!hasKeys && !hasStats && !hasSince) return;
+
+  const rs = ensureRotationSession(ctx);
+  for (const k of keys ?? []) rs.skippedModelKeys.add(k);
+  if (stats) {
+    for (const [k, v] of Object.entries(stats)) {
+      rs.modelStats.set(k, { fixes: v.fixes, failures: v.failures });
+    }
+  }
+  if (since) {
+    for (const [k, v] of Object.entries(since)) {
+      rs.sessionSkippedSinceFixIteration.set(k, Number(v));
+    }
+  }
+}
+
+/** Write session skip sets into `ctx.state` before JSON save. */
+export function persistRotationSessionToState(ctx: StateContext): void {
+  if (!ctx.state || process.env.PRR_PERSIST_SESSION_MODEL_SKIP?.trim() === '0') return;
+  if (!ctx.rotationSession) {
+    delete ctx.state.sessionSkippedModelKeys;
+    delete ctx.state.sessionModelStats;
+    delete ctx.state.sessionSkippedSinceFixIteration;
+    return;
+  }
+  const rs = ctx.rotationSession;
+  if (rs.skippedModelKeys.size === 0 && rs.modelStats.size === 0) {
+    delete ctx.state.sessionSkippedModelKeys;
+    delete ctx.state.sessionModelStats;
+    delete ctx.state.sessionSkippedSinceFixIteration;
+    return;
+  }
+  ctx.state.sessionSkippedModelKeys = [...rs.skippedModelKeys];
+  ctx.state.sessionModelStats = Object.fromEntries(
+    [...rs.modelStats.entries()].map(([k, v]) => [k, { fixes: v.fixes, failures: v.failures }]),
+  );
+  if (rs.sessionSkippedSinceFixIteration.size > 0) {
+    ctx.state.sessionSkippedSinceFixIteration = Object.fromEntries(rs.sessionSkippedSinceFixIteration);
+  } else {
+    delete ctx.state.sessionSkippedSinceFixIteration;
+  }
 }
 
 export function getState(ctx: StateContext): ResolverState {

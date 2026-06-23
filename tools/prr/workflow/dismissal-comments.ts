@@ -109,6 +109,11 @@ const DISMISSAL_COMMENT_PHRASES = [
   /false\s+positive/i,
   /self-?explanatory/i,
   /intentional\s*[—\-]/i,
+  // LLM often returns EXISTING when these appear in // comments but phrases above miss (audit Cycle 78).
+  /\bintentional\b/i,
+  /\bdownstream\b/i,
+  /\berror\s+boundary\b/i,
+  /\bby\s+design\b/i,
 ];
 
 /**

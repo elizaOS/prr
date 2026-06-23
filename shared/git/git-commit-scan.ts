@@ -19,15 +19,57 @@
  * recovery share one HEAD. Tests call **`clearScanCommittedFixesCache()`**.
  */
 import type { SimpleGit } from 'simple-git';
-import { debug } from '../logger.js';
+import { debug, formatNumber, warn } from '../logger.js';
+
+/** One warning per process per workdir+reason when merge base for prr-fix scan is missing (pill-output #559). */
+const warnedScanBaseFallback = new Set<string>();
+/** One warning per process per workdir when git log --grep scan throws (non-fatal degrade). */
+const warnedScanRawFailure = new Set<string>();
+
+function scanDegradeWarnKey(workdir: string | undefined, tag: string): string {
+  return `${workdir ?? '?'}\0${tag}`;
+}
 
 /** In-process cache: same workdir + branch + HEAD → same grep scan (pill: avoid redundant git log). */
 const committedFixScanCache = new Map<string, string[]>();
 const MAX_SCAN_CACHE_ENTRIES = 64;
 
-function scanCacheKey(workdir: string, branch: string, headSha: string, prBaseBranch?: string): string {
+/**
+ * Include resolved merge base (or `n100` when using recent-commit cap) so two clones reusing the
+ * same workdir path cannot share a cache entry when fallback picks different bases (pill-output).
+ */
+function scanCacheKey(
+  workdir: string,
+  branch: string,
+  headSha: string,
+  prBaseBranch: string | undefined,
+  resolvedBaseLabel: string,
+): string {
   const base = prBaseBranch?.trim() ?? '';
-  return `${workdir}\0${branch}\0${headSha}\0${base}`;
+  return `${workdir}\0${branch}\0${headSha}\0${base}\0${resolvedBaseLabel}`;
+}
+
+/** Resolve `origin/<prBase>` or first existing of origin/main|master|develop for `base..branch` log range. */
+async function resolveScanBaseBranch(git: SimpleGit, prBaseBranch?: string): Promise<string | null> {
+  const prBase = prBaseBranch?.trim();
+  if (prBase) {
+    const prRef = `origin/${prBase}`;
+    try {
+      await git.raw(['rev-parse', '--verify', prRef]);
+      return prRef;
+    } catch {
+      /* fall through — base branch may not be fetched yet */
+    }
+  }
+  for (const candidate of ['origin/main', 'origin/master', 'origin/develop'] as const) {
+    try {
+      await git.raw(['rev-parse', '--verify', candidate]);
+      return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return null;
 }
 
 function rememberScanCache(key: string, ids: string[]): void {
@@ -41,6 +83,8 @@ function rememberScanCache(key: string, ids: string[]): void {
 /** Clear process-wide scan cache (tests or long-lived hosts). */
 export function clearScanCommittedFixesCache(): void {
   committedFixScanCache.clear();
+  warnedScanBaseFallback.clear();
+  warnedScanRawFailure.clear();
 }
 
 export interface ScanCommittedFixesOptions {
@@ -93,80 +137,93 @@ export async function scanCommittedFixes(
   branch: string,
   opts?: ScanCommittedFixesOptions
 ): Promise<string[]> {
+  let resolvedBase: string | null = null;
+  try {
+    resolvedBase = await resolveScanBaseBranch(git, opts?.prBaseBranch);
+  } catch (error) {
+    debug('resolveScanBaseBranch failed', { error });
+    resolvedBase = null;
+  }
+  const cacheKeySuffix = resolvedBase ?? 'n100';
+
+  if (resolvedBase === null) {
+    const prBase = opts?.prBaseBranch?.trim();
+    const tag = prBase ? `missing-base:pr:${prBase}` : 'missing-base:no-origin-default';
+    const wk = scanDegradeWarnKey(opts?.workdir, tag);
+    if (!warnedScanBaseFallback.has(wk)) {
+      warnedScanBaseFallback.add(wk);
+      if (prBase) {
+        warn(
+          `[PRR] Git recovery scan: could not resolve \`origin/${prBase}\` or a default branch ref (main/master/develop). Using last ${formatNumber(100)} commits instead of \`base..HEAD\` — fetch the PR base with additionalBranches if needed; older \`prr-fix:\` markers may be missed.`,
+        );
+      } else {
+        warn(
+          `[PRR] Git recovery scan: no \`origin/main\`, \`origin/master\`, or \`origin/develop\` ref — using last ${formatNumber(100)} commits for \`prr-fix:\` recovery (typical of shallow/single-branch clones).`,
+        );
+      }
+    }
+  }
+
   if (opts?.workdir && opts?.headSha) {
-    const key = scanCacheKey(opts.workdir, branch, opts.headSha, opts.prBaseBranch);
+    const key = scanCacheKey(opts.workdir, branch, opts.headSha, opts.prBaseBranch, cacheKeySuffix);
     const hit = committedFixScanCache.get(key);
     if (hit) {
-      debug('scanCommittedFixes (cache hit)', { branch, headSha: opts.headSha.slice(0, 7) });
+      debug('scanCommittedFixes (cache hit)', {
+        branch,
+        headSha: opts.headSha.slice(0, 7),
+        resolvedBase: cacheKeySuffix,
+      });
       return [...hit];
     }
   }
+
   try {
-    // Find the base branch — PR's GitHub base first, then common default names
-    const baseBranches = ['origin/main', 'origin/master', 'origin/develop'];
-    let baseBranch: string | null = null;
+    const baseBranch = resolvedBase;
 
-    const prBase = opts?.prBaseBranch?.trim();
-    if (prBase) {
-      const prRef = `origin/${prBase}`;
-      try {
-        await git.raw(['rev-parse', '--verify', prRef]);
-        baseBranch = prRef;
-      } catch {
-        // Single-branch clones may not have fetched base yet; fall through to heuristics
-      }
-    }
-
-    for (const candidate of baseBranches) {
-      if (baseBranch) break;
-      try {
-        await git.raw(['rev-parse', '--verify', candidate]);
-        baseBranch = candidate;
-        break;
-      } catch {
-        // Branch doesn't exist, try next
-      }
-    }
-    
     // If no common base branch found, fall back to searching all history
     // WHY limit to 100: Prevents scanning thousands of commits in large repos
     // WHY still safe: Typical PRs have < 20 commits, 100 is very generous
     const logArgs = baseBranch
       ? ['log', '--grep=prr-fix:', '--format=%B', `${baseBranch}..${branch}`]
       : ['log', '--grep=prr-fix:', '--format=%B', '-n', '100'];
-    
+
     debug('scanCommittedFixes', { baseBranch, branch, logArgs });
     const logOutput = await git.raw(logArgs);
-    
+
     const commentIds: string[] = [];
-    
-    // Parse all prr-fix:ID markers from commit messages
-    // Format: One marker per line: "prr-fix:IC_kwDOAbc123_defGHI"
+
+    // Parse prr-fix:ID markers (multiple per line for squash-style messages; pill-output).
     if (logOutput) {
       const lines = logOutput.split('\n');
       for (const line of lines) {
-        const match = line.match(/^prr-fix:(.+)$/);
-        if (match) {
-          // Preserve original casing from commit messages.
-          // WHY NOT lowercase: The state's verifiedFixed array stores IDs in
-          // their original case (from the GitHub API). Lowercasing here causes
-          // case-sensitive includes() checks to miss existing entries, leading
-          // to duplicate IDs accumulating across sessions.
-          commentIds.push(match[1].trim());
+        const markerRe = /prr-fix:(\S+)/g;
+        let m: RegExpExecArray | null;
+        while ((m = markerRe.exec(line)) !== null) {
+          commentIds.push(m[1]!.trim());
         }
       }
     }
-    
+
     // Deduplicate: the same ID can appear in multiple commits
-    // (e.g., re-verified after a push, or re-committed after interruption)
     const unique = [...new Set(commentIds)];
     if (opts?.workdir && opts?.headSha) {
-      rememberScanCache(scanCacheKey(opts.workdir, branch, opts.headSha, opts.prBaseBranch), unique);
+      rememberScanCache(
+        scanCacheKey(opts.workdir, branch, opts.headSha, opts.prBaseBranch, cacheKeySuffix),
+        unique,
+      );
     }
     return unique;
   } catch (error) {
     // WHY catch and return empty instead of throw:
     // Scan failure shouldn't prevent startup - we'll just verify everything fresh
+    const wk = scanDegradeWarnKey(opts?.workdir, 'log-failed');
+    if (!warnedScanRawFailure.has(wk)) {
+      warnedScanRawFailure.add(wk);
+      const detail = error instanceof Error ? error.message : String(error);
+      warn(
+        `[PRR] Git recovery scan failed (${detail}) — continuing without recovered prr-fix markers. Next verification may re-run for issues fixed in prior commits.`,
+      );
+    }
     debug('Failed to scan committed fixes', { error });
     return [];
   }

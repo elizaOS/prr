@@ -13,8 +13,10 @@ let elizacloudInFlight = 0;
 let elizacloudLastStartTime = 0;
 const elizacloudQueue: Array<() => void> = [];
 
-/** After a 429, we use halved concurrency for this many ms. */
+/** After a 429, we use halved concurrency for at least this long (plus jitter). */
 const RATE_LIMIT_BACKOFF_MS = 60_000;
+/** Extra random delay up to this many ms so concurrent processes don't wake in lockstep. */
+const RATE_LIMIT_BACKOFF_JITTER_MS = 30_000;
 let rateLimitBackoffUntil = 0;
 let wasIn429Backoff = false;
 
@@ -32,9 +34,10 @@ function getMaxInFlight(): number {
   return cap;
 }
 
-/** Call when a 429 (or rate-limit) response is received. Reduces effective concurrency for 60s. */
+/** Call when a 429 (or rate-limit) response is received. Reduces effective concurrency for ~60s + jitter. */
 export function notifyRateLimitHit(): void {
-  rateLimitBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS;
+  const jitter = Math.floor(Math.random() * (RATE_LIMIT_BACKOFF_JITTER_MS + 1));
+  rateLimitBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS + jitter;
 }
 
 /** Acquire ElizaCloud rate-limit slot (used by llm-api runner and LLM client). */

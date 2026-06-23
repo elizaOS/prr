@@ -19,6 +19,13 @@ import type { ResolverState, Iteration, VerificationResult, TokenUsageRecord, Mo
 import { createInitialState } from './types.js';
 import { loadOverallTimings, getOverallTimings, loadOverallTokenUsage, getOverallTokenUsage, formatNumber } from '../../../shared/logger.js';
 import * as Normalize from './lessons-normalize.js';
+import type { StateContext } from './state-context.js';
+import { transitionIssue } from './state-transitions.js';
+import {
+  applyDismissedIssuesLoadNormalization,
+  applyResolverStateLoadCoreNormalization,
+  applyResolverStatePostOverlapCleanup,
+} from './state-core.js';
 
 const STATE_FILENAME = '.pr-resolver-state.json';
 
@@ -49,33 +56,86 @@ export class StateManager {
           if (this.state.headSha !== headSha) {
             const prevSha = this.state.headSha?.slice(0, 7);
             this.state.headSha = headSha;
+            delete this.state.sessionSkippedModelKeys;
+            delete this.state.sessionModelStats;
+            delete this.state.sessionSkippedSinceFixIteration;
             const hadVerified = (this.state.verifiedFixed?.length ?? 0) + (this.state.verifiedComments?.length ?? 0) > 0;
             const hadPartial = Object.keys(this.state.partialConflictResolutions ?? {}).length > 0;
             // Pill #9: Also clear dismissed (especially already-fixed) on head change — stale dismissals can mask regressions
             const hadDismissed = (this.state.dismissedIssues?.length ?? 0) > 0;
             if (hadVerified) {
+              const clearedVerifiedIds = [
+                ...new Set([
+                  ...(this.state.verifiedFixed ?? []),
+                  ...(this.state.verifiedComments ?? []).map((v) => v.commentId),
+                ]),
+              ];
+              const showN = 25;
+              const idSample =
+                clearedVerifiedIds.length === 0
+                  ? ''
+                  : ` — IDs (${formatNumber(clearedVerifiedIds.length)} total, showing up to ${formatNumber(showN)}): ${clearedVerifiedIds.slice(0, showN).join(', ')}${clearedVerifiedIds.length > showN ? ' …' : ''}`;
               this.state.verifiedFixed = [];
               this.state.verifiedComments = [];
-              console.warn(`PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code`);
+              // Also clear verified/resolved entries in commentStatuses so callers don't see stale
+              // 'resolved' or 'verified' statuses for comments that are no longer confirmed fixed.
+              // WHY: Without this, commentStatuses retains 'status: resolved' for IDs that were just
+              // cleared from verifiedFixed/verifiedComments, producing misleading state maps that show
+              // a comment as resolved while the verified arrays say otherwise (Pattern H, 2026-04-05).
+              if (this.state.commentStatuses) {
+                let statusCleared = 0;
+                for (const [id, st] of Object.entries(this.state.commentStatuses)) {
+                  if ((st as { status?: string }).status === 'resolved' || (st as { status?: string }).status === 'verified') {
+                    delete this.state.commentStatuses[id];
+                    statusCleared++;
+                  }
+                }
+                if (statusCleared > 0) {
+                  console.warn(`PR head changed: also cleared ${formatNumber(statusCleared)} verified/resolved commentStatuses entries`);
+                }
+              }
+              console.warn(
+                `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code${idSample}`,
+              );
             }
             if (hadDismissed) {
               const clearAllRaw = process.env.PRR_CLEAR_ALL_DISMISSED_ON_HEAD?.trim().toLowerCase();
               const clearAll =
                 clearAllRaw === '1' || clearAllRaw === 'true' || clearAllRaw === 'yes' || clearAllRaw === 'on';
               if (clearAll) {
-                const n = this.state.dismissedIssues?.length ?? 0;
+                const priorDismissed = this.state.dismissedIssues ?? [];
+                const n = priorDismissed.length;
+                const showD = 25;
+                const dismissedIdSample =
+                  n === 0
+                    ? ''
+                    : ` — comment IDs (showing up to ${formatNumber(showD)}): ${priorDismissed
+                        .slice(0, showD)
+                        .map((d) => d.commentId)
+                        .join(', ')}${n > showD ? ' …' : ''}`;
                 this.state.dismissedIssues = [];
                 console.warn(
-                  `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD`,
+                  `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD${dismissedIdSample}`,
                 );
               } else {
-                // Clear already-fixed dismissals (most likely to be stale) but keep others (e.g. not-an-issue, stale)
-                const before = this.state.dismissedIssues?.length ?? 0;
-                this.state.dismissedIssues = (this.state.dismissedIssues ?? []).filter((d) => d.category !== 'already-fixed');
+                // Clear code-/thread-dependent dismissals; keep e.g. not-an-issue, path-unresolved, path-fragment, false-positive.
+                const prior = this.state.dismissedIssues ?? [];
+                const before = prior.length;
+                const dropCategories = new Set(['already-fixed', 'chronic-failure', 'stale']);
+                const removedRows = prior.filter((d) => dropCategories.has(d.category));
+                this.state.dismissedIssues = prior.filter((d) => !dropCategories.has(d.category));
                 const cleared = before - (this.state.dismissedIssues?.length ?? 0);
                 if (cleared > 0) {
+                  const showD = 25;
+                  const dismissedIdSample =
+                    removedRows.length === 0
+                      ? ''
+                      : ` — removed comment IDs (showing up to ${formatNumber(showD)}): ${removedRows
+                          .slice(0, showD)
+                          .map((d) => d.commentId)
+                          .join(', ')}${removedRows.length > showD ? ' …' : ''}`;
                   console.warn(
-                    `PR head changed: cleared ${formatNumber(cleared)} already-fixed dismissal(s) so they are re-checked against current code`,
+                    `PR head changed: cleared ${formatNumber(cleared)} already-fixed/chronic-failure/stale dismissal(s) so they are re-checked against current code${dismissedIdSample}`,
                   );
                 }
               }
@@ -99,27 +159,26 @@ export class StateManager {
             console.log(`Compacted ${removed} duplicate lessons (${this.state.lessonsLearned.length} unique remaining)`);
           }
           
-          // Deduplicate verifiedFixed on load
-          if (this.state.verifiedFixed && this.state.verifiedFixed.length > 0) {
-            const before = this.state.verifiedFixed.length;
-            this.state.verifiedFixed = [...new Set(this.state.verifiedFixed)];
-            const dupsRemoved = before - this.state.verifiedFixed.length;
-            if (dupsRemoved > 0) {
-              console.log(`Deduplicated verifiedFixed: removed ${dupsRemoved} duplicate(s) (${this.state.verifiedFixed.length} unique)`);
-            }
-          }
-          
-          // Load cumulative stats from previous sessions
-          if (this.state.totalTimings) {
-            loadOverallTimings(this.state.totalTimings);
-          }
-          if (this.state.totalTokenUsage) {
-            loadOverallTokenUsage(this.state.totalTokenUsage);
-          }
+          applyResolverStateLoadCoreNormalization(this.state);
 
           // Initialize new fields for backward compatibility
           if (!this.state.dismissedIssues) {
             this.state.dismissedIssues = [];
+          }
+
+          const {
+            list: normalizedDismissed,
+            fragmentNormalized,
+            dedupeRemoved: dismissedDupes,
+          } = applyDismissedIssuesLoadNormalization(this.state.dismissedIssues);
+          this.state.dismissedIssues = normalizedDismissed;
+          if (fragmentNormalized > 0) {
+            console.log(`Normalized ${formatNumber(fragmentNormalized)} legacy fragment dismissal(s) to path-fragment`);
+          }
+          if (dismissedDupes > 0) {
+            console.log(
+              `Deduplicated dismissedIssues: removed ${formatNumber(dismissedDupes)} duplicate row(s) for the same comment id (kept latest dismissedAt / canonical path category)`,
+            );
           }
 
           // Keep verifiedFixed and dismissedIssues mutually exclusive (pill #3; output.log audit).
@@ -129,35 +188,48 @@ export class StateManager {
           ]);
           const dismissedIds = new Set((this.state.dismissedIssues ?? []).map((d) => d.commentId));
           if (verifiedAll.size > 0 && (this.state.dismissedIssues?.length ?? 0) > 0) {
+            const overlapDismissed = this.state.dismissedIssues!.filter((d) => verifiedAll.has(d.commentId));
             const beforeD = this.state.dismissedIssues!.length;
             this.state.dismissedIssues = this.state.dismissedIssues!.filter((d) => !verifiedAll.has(d.commentId));
             const removedD = beforeD - this.state.dismissedIssues.length;
             if (removedD > 0) {
+              const ids = overlapDismissed.map((d) => d.commentId);
+              const show = ids.slice(0, 15).join(', ');
+              const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
               console.log(
-                `Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified)`,
+                `Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified) — comment id(s): ${show}${more}`,
               );
             }
           }
           if (dismissedIds.size > 0 && this.state.verifiedFixed?.length) {
+            const removedIds = this.state.verifiedFixed.filter((id) => dismissedIds.has(id));
             const before = this.state.verifiedFixed.length;
             this.state.verifiedFixed = this.state.verifiedFixed.filter((id) => !dismissedIds.has(id));
             const removed = before - this.state.verifiedFixed.length;
             if (removed > 0) {
+              const show = removedIds.slice(0, 15).join(', ');
+              const more = removedIds.length > 15 ? ` …(+${formatNumber(removedIds.length - 15)} more)` : '';
               console.warn(
-                `State load: removed ${formatNumber(removed)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned)`,
+                `State load: removed ${formatNumber(removed)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned): ${show}${more}`,
               );
             }
           }
           if (dismissedIds.size > 0 && this.state.verifiedComments?.length) {
+            const removedVcRows = this.state.verifiedComments.filter((v) => dismissedIds.has(v.commentId));
             const beforeVc = this.state.verifiedComments.length;
             this.state.verifiedComments = this.state.verifiedComments.filter((v) => !dismissedIds.has(v.commentId));
             const removedVc = beforeVc - this.state.verifiedComments.length;
             if (removedVc > 0) {
+              const ids = removedVcRows.map((v) => v.commentId);
+              const show = ids.slice(0, 15).join(', ');
+              const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
               console.warn(
-                `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned)`,
+                `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned): ${show}${more}`,
               );
             }
           }
+
+          applyResolverStatePostOverlapCleanup(this.state);
         }
       } catch (error) {
         console.warn('Failed to load state file, creating new state:', error);
@@ -172,6 +244,15 @@ export class StateManager {
 
   setPhase(phase: string): void {
     this.currentPhase = phase;
+  }
+
+  /** Minimal {@link StateContext} for shared transition helpers (no session Set). */
+  private toStateContext(): StateContext {
+    return {
+      statePath: this.statePath,
+      state: this.state,
+      currentPhase: this.currentPhase,
+    };
   }
 
   async markInterrupted(): Promise<void> {
@@ -260,24 +341,9 @@ export class StateManager {
     if (!this.state) {
       throw new Error('State not loaded. Call load() first.');
     }
-    
-    // Update legacy array for backwards compatibility
-    if (!this.state.verifiedFixed.includes(commentId)) {
-      this.state.verifiedFixed.push(commentId);
-    }
-    
-    // Update new detailed records
-    if (!this.state.verifiedComments) {
-      this.state.verifiedComments = [];
-    }
-    
-    // Remove existing record if any (we'll add a fresh one)
-    this.state.verifiedComments = this.state.verifiedComments.filter(v => v.commentId !== commentId);
-    
-    this.state.verifiedComments.push({
-      commentId,
-      verifiedAt: new Date().toISOString(),
-      verifiedAtIteration: this.state.iterations.length,
+    transitionIssue(this.toStateContext(), commentId, {
+      kind: 'verified',
+      forceVerificationRefresh: true,
     });
   }
 
@@ -285,17 +351,7 @@ export class StateManager {
     if (!this.state) {
       throw new Error('State not loaded. Call load() first.');
     }
-    
-    // Remove from legacy array
-    const index = this.state.verifiedFixed.indexOf(commentId);
-    if (index !== -1) {
-      this.state.verifiedFixed.splice(index, 1);
-    }
-    
-    // Remove from new detailed records
-    if (this.state.verifiedComments) {
-      this.state.verifiedComments = this.state.verifiedComments.filter(v => v.commentId !== commentId);
-    }
+    transitionIssue(this.toStateContext(), commentId, { kind: 'unverified' });
   }
 
   /**
@@ -330,7 +386,20 @@ export class StateManager {
   addDismissedIssue(
     commentId: string,
     reason: string,
-    category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted' | 'remaining' | 'chronic-failure' | 'missing-file' | 'path-unresolved',
+    category:
+      | 'already-fixed'
+      | 'not-an-issue'
+      | 'file-unchanged'
+      | 'false-positive'
+      | 'duplicate'
+      | 'stale'
+      | 'exhausted'
+      | 'remaining'
+      | 'chronic-failure'
+      | 'missing-file'
+      | 'path-unresolved'
+      | 'path-fragment'
+      | 'out-of-scope',
     filePath: string,
     line: number | null,
     commentBody: string
@@ -338,23 +407,14 @@ export class StateManager {
     if (!this.state) {
       throw new Error('State not loaded. Call load() first.');
     }
-
-    if (!this.state.dismissedIssues) {
-      this.state.dismissedIssues = [];
-    }
-
-    // Remove existing record if any (we'll add a fresh one)
-    this.state.dismissedIssues = this.state.dismissedIssues.filter(d => d.commentId !== commentId);
-
-    this.state.dismissedIssues.push({
-      commentId,
+    transitionIssue(this.toStateContext(), commentId, {
+      kind: 'dismissed',
       reason,
-      dismissedAt: new Date().toISOString(),
-      dismissedAtIteration: this.state.iterations.length,
       category,
       filePath,
       line,
       commentBody,
+      replaceExistingDismissal: true,
     });
   }
 

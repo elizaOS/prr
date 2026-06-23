@@ -18,7 +18,7 @@ import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJsonLenient } from './llm/parse-json.js';
 import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
 import { chunkPlainText } from '../../shared/llm/story-read.js';
-import { runWithConcurrency } from '../../shared/run-with-concurrency.js';
+import { runWithConcurrencyAllSettled } from '../../shared/run-with-concurrency.js';
 import { filterImprovementsByToolRepoScope } from './tool-repo-scope.js';
 
 /** Default hard cap on user message length (chars) per audit HTTP request. Override: PILL_AUDIT_MAX_USER_CHARS.
@@ -431,13 +431,22 @@ export async function runPillAnalysis(config: PillConfig): Promise<
             return parseImprovementPlan(chunkResponse.content);
           });
       });
-      const chunkPlans = await runWithConcurrency(chunkTasks, conc);
+      // WHY AllSettled: a single chunk HTTP error must not abort all remaining chunks.
+      // runWithConcurrency uses Promise.all (fail-fast); AllSettled collects partial results
+      // so the audit still produces improvements from successful chunks. (Pattern D, 2026-04-05)
+      const chunkSettled = await runWithConcurrencyAllSettled(chunkTasks, conc);
       
       // Merge chunk results: combine improvements, use first non-empty pitch/summary
+      // Log chunk failures but continue with partial results.
       const allImprovements: Improvement[] = [];
       let mergedPitch = '';
       let mergedSummary = '';
-      for (const chunkPlan of chunkPlans) {
+      for (const result of chunkSettled) {
+        if (result.status === 'rejected') {
+          console.warn(`[pill] Audit chunk failed (partial results will still be used): ${result.reason}`);
+          continue;
+        }
+        const chunkPlan = result.value;
         allImprovements.push(...chunkPlan.improvements);
         if (!mergedPitch && chunkPlan.pitch) mergedPitch = chunkPlan.pitch;
         if (!mergedSummary && chunkPlan.summary) mergedSummary = chunkPlan.summary;

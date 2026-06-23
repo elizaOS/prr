@@ -5,7 +5,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { PillConfig } from '../types.js';
-import { debugPrompt, debugResponse } from '../logger.js';
+import { openAiChatCompletionContentToString } from '../../../shared/llm/openai-chat-content.js';
+import { debugPrompt, debugPromptError, debugResponse } from '../logger.js';
 
 const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
 
@@ -116,12 +117,26 @@ export class LLMClient {
     const chosenModel = options?.model ?? this.model;
 
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
-    debugPrompt(`pill-${this.provider}`, fullPrompt, { model: chosenModel });
+    const promptSlug = debugPrompt(`pill-${this.provider}`, fullPrompt, { model: chosenModel });
 
     const is429 = (e: unknown) => (e as { status?: number })?.status === 429;
     const is5xx = (e: unknown) => {
       const s = (e as { status?: number })?.status;
       return s && s >= 500 && s < 600;
+    };
+    /** Fetch/TLS/socket failures before a normal HTTP response (OpenAI SDK often says "Connection error"). */
+    const isTransientConnectionError = (e: unknown): boolean => {
+      if (is429(e)) return false;
+      const status = (e as { status?: number })?.status;
+      if (typeof status === 'number' && status >= 400 && status < 500) return false;
+      if (is5xx(e)) return false;
+      const msg = e instanceof Error ? e.message : String(e);
+      const node = e as NodeJS.ErrnoException;
+      const c = node?.cause as NodeJS.ErrnoException | undefined;
+      const codes = [node?.code, c?.code].filter(Boolean) as string[];
+      if (codes.some((x) => /^(ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|EPIPE)$/i.test(x)))
+        return true;
+      return /connection error|fetch failed|socket hang up|network request failed|TLS|certificate/i.test(msg);
     };
 
     const requestUrl =
@@ -143,24 +158,37 @@ export class LLMClient {
     for (let attempt = 0; attempt <= max429Retries; attempt++) {
       try {
         let response: LLMResponse | undefined;
-        for (let retry5xx = 0; retry5xx <= 1; retry5xx++) {
+        const maxTransientAttempts = 3;
+        transient: for (let transientTry = 0; transientTry < maxTransientAttempts; transientTry++) {
           try {
-            response =
-              this.provider === 'anthropic'
-                ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
-                : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
-            break;
+            for (let retry5xx = 0; retry5xx <= 1; retry5xx++) {
+              try {
+                response =
+                  this.provider === 'anthropic'
+                    ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
+                    : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
+                break;
+              } catch (e) {
+                if (retry5xx < 1 && is5xx(e)) {
+                  await new Promise((r) => setTimeout(r, 10_000));
+                  continue;
+                }
+                throw e;
+              }
+            }
+            break transient;
           } catch (e) {
-            if (retry5xx < 1 && is5xx(e)) {
-              await new Promise((r) => setTimeout(r, 10_000));
+            if (transientTry < maxTransientAttempts - 1 && isTransientConnectionError(e)) {
+              const waitMs = 2000 * (transientTry + 1);
+              await new Promise((r) => setTimeout(r, waitMs));
               continue;
             }
-            throw formatErrorWithHeaders(e, requestContext);
+            throw e;
           }
         }
         if (!response) throw new Error('LLM request failed');
 
-        debugResponse(`pill-${this.provider}`, response.content, {
+        debugResponse(promptSlug, `pill-${this.provider}`, response.content, {
           model: chosenModel,
           usage: response.usage,
         });
@@ -172,6 +200,8 @@ export class LLMClient {
           await new Promise((r) => setTimeout(r, wait));
           continue;
         }
+        const msg = err instanceof Error ? err.message : String(err);
+        debugPromptError(promptSlug, `pill-${this.provider}`, msg.slice(0, 12_000), { model: chosenModel });
         throw formatErrorWithHeaders(err, requestContext);
       }
     }
@@ -219,7 +249,7 @@ export class LLMClient {
       messages,
       max_completion_tokens: 16384,
     });
-    const content = response.choices[0]?.message?.content ?? '';
+    const content = openAiChatCompletionContentToString(response.choices[0]?.message?.content);
     return {
       content,
       usage: response.usage

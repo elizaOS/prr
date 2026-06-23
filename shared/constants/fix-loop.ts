@@ -32,6 +32,20 @@ export const CHRONIC_FAILURE_THRESHOLD = typeof process !== 'undefined' && proce
   : 5;
 
 /**
+ * Max new bot review threads to enqueue in one mid-fix-loop batch (PRR_MID_LOOP_NEW_COMMENT_CAP).
+ * WHY: Each push triggers more bot comments; unbounded enqueue refills the queue faster than fixes land.
+ * 0 = unlimited. Default 45.
+ */
+export function getMidLoopNewCommentCap(): number {
+  const raw = typeof process !== 'undefined' ? process.env.PRR_MID_LOOP_NEW_COMMENT_CAP?.trim() : undefined;
+  if (raw === undefined || raw === '') return 45;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return 45;
+  if (n <= 0) return 0;
+  return n;
+}
+
+/**
  * Number of "tool modified wrong files" lessons for an issue before we mark as remaining.
  * WHY: When the fix requires a different file than the comment's path (e.g. duplicate interface in commit.ts
  * but comment is on git-push.ts), the fixer correctly refuses to change the wrong file and we burn through

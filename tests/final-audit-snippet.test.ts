@@ -8,12 +8,17 @@ describe('finalAuditSnippetLooksTruncatedOrExcerpt', () => {
     ).toBe(true);
   });
 
-  it('detects huge-file excerpt footers from getFullFileForAudit', () => {
+  it('does not treat line-centered budget excerpts as blind truncation (fix site in window)', () => {
     expect(
       finalAuditSnippetLooksTruncatedOrExcerpt(
         '1: a\n... (excerpt only — file has 2,000 lines; centered on line 500)',
       ),
-    ).toBe(true);
+    ).toBe(false);
+    expect(
+      finalAuditSnippetLooksTruncatedOrExcerpt(
+        '1: a\n... (excerpt — 2,000 lines; centered on line 500)',
+      ),
+    ).toBe(false);
     expect(
       finalAuditSnippetLooksTruncatedOrExcerpt(
         '... (1,500 more lines omitted — file exceeds 50,000 chars; no line anchor',

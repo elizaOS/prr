@@ -10,7 +10,7 @@ import {
 } from '../../../shared/path-utils.js';
 import { SNIPPET_PLACEHOLDER } from '../workflow/helpers/solvability.js';
 import { estimateTokens } from '../../../shared/utils/tokens.js';
-import { getTestPathForIssueLike, issueRequestsTestsText } from './test-path-inference.js';
+import { getTestPathForIssueLike, issueRequestsTestsText, testBasenameWithSuffix } from './test-path-inference.js';
 import { debug } from '../../../shared/logger.js';
 import { getOutdatedModelCatalogDismissal } from '../workflow/helpers/outdated-model-advice.js';
 
@@ -205,12 +205,12 @@ export function getMentionedTestFilePaths(
   if (dir && !ancestorDirs.includes(dir)) ancestorDirs.unshift(dir);
 
   for (const ancestor of ancestorDirs) {
-    push(`${ancestor}/__tests__/${stem}.test${ext}`);
-    push(`${ancestor}/__tests__/${stem}.spec${ext}`);
+    push(`${ancestor}/__tests__/${testBasenameWithSuffix(stem, ext, 'test')}`);
+    push(`${ancestor}/__tests__/${testBasenameWithSuffix(stem, ext, 'spec')}`);
   }
   if (dir) {
-    push(`${dir}/${stem}.test${ext}`);
-    push(`${dir}/${stem}.spec${ext}`);
+    push(`${dir}/${testBasenameWithSuffix(stem, ext, 'test')}`);
+    push(`${dir}/${testBasenameWithSuffix(stem, ext, 'spec')}`);
   }
 
   const existing = options?.pathExists ? ranked.filter((p) => options.pathExists!(p)) : [];

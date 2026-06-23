@@ -66,22 +66,34 @@ import {
   getVerificationExpiryForIterationCount,
   VERIFICATION_EXPIRY_ITERATIONS,
 } from '../../../shared/constants.js';
-import { filterAllowedPathsForFix } from '../../../shared/path-utils.js';
+import { filterAllowedPathsForFix, normalizeRepoPath, stripGitDiffPathPrefix } from '../../../shared/path-utils.js';
+import { isBlastRadiusDismissEnabled } from '../../../shared/dependency-graph/index.js';
 import { looksLikeCreateFileIssue, validateDismissalExplanation } from './utils.js';
+import {
+  expandGitRecoveredVerificationFromDedupCache,
+  markVerifiedClusterForFixedIssue,
+  unmarkVerifiedClusterForStaleRecheck,
+} from './duplicate-cluster-verify.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { debug, warn, formatNumber } from '../../../shared/logger.js';
 import { assessSolvability, resolveTrackedPathWithPrFiles, SNIPPET_PLACEHOLDER } from './helpers/solvability.js';
+import { isTrackedGitSubmodulePath } from '../../../shared/git/git-submodule-path.js';
 import { stripSeverityFraming } from './helpers/review-body-normalize.js';
 import { hashFileContent } from '../../../shared/utils/file-hash.js';
 import { buildLifecycleAwareVerificationSnippet, commentNeedsLifecycleContext } from './fix-verification.js';
 import { printDebugIssueTable } from './debug-issue-table.js';
 import type { DedupResult } from './issue-analysis-dedup.js';
 import {
+  buildMergedDuplicatesForAnchor,
   crossFileDedup,
+  dismissDuplicateClusterFromComments,
+  getPersistedDedupMapForCommentSet,
+  mergeCommentsForClusterDismiss,
   heuristicDedup,
   llmDedup,
   logDuplicateCandidates,
   propagateStatusToDuplicates,
+  resolveEffectiveDuplicateMapForComments,
 } from './issue-analysis-dedup.js';
 import {
   commentNeedsConservativeAnalysisContext,
@@ -102,6 +114,7 @@ export {
 } from './issue-analysis-context.js';
 export type { DedupResult } from './issue-analysis-dedup.js';
 export { getCodeSnippet } from './issue-analysis-snippets.js';
+export type { FullFileForAuditResult } from './issue-analysis-snippet-helpers.js';
 export { getFullFileForAudit, getWiderSnippetForAnalysis, parseLineReferencesFromBody } from './issue-analysis-snippet-helpers.js';
 
 /** Optional options for findUnresolvedIssues (e.g. line map from git diff for post-push). */
@@ -112,6 +125,8 @@ export type FindUnresolvedIssuesOptions = {
   getFileContentFromRepo?: (path: string) => Promise<string | null>;
   /** Files changed in the PR (e.g. from git diff --name-only). When comment.path is a basename, prefer matching full path so issue targets the correct file. */
   changedFiles?: string[];
+  /** Map path → BFS depth from changed files (imports + proximity). When set, issues get `inBlastRadius` / `blastRadiusDepth`; optional dismiss when `PRR_BLAST_RADIUS_DISMISS=1`. */
+  blastRadius?: Map<string, number>;
 };
 
 /** If the issue requests tests or review suggests fix-in-test (e.g. "fix mocks in tests"), return [primaryPath, testPath] so allowedPaths is set at issue build. */
@@ -135,6 +150,73 @@ function getEffectiveAllowedPathsForNewIssue(comment: ReviewComment, primaryPath
   }
   const merged = filterAllowedPathsForFix([...base, ...deletePaths]);
   return merged.length > 0 ? merged : [primaryPath];
+}
+
+/**
+ * Annotate unresolved issues with blast-radius fields; optionally dismiss out-of-scope when
+ * `PRR_BLAST_RADIUS_DISMISS=1`. Runs once before final save so dismissals persist.
+ */
+function applyBlastRadiusToUnresolved(
+  unresolved: UnresolvedIssue[],
+  blastRadius: Map<string, number> | undefined,
+  stateContext: StateContext,
+  duplicateMap?: Map<string, string[]>,
+  allComments?: ReviewComment[],
+): UnresolvedIssue[] {
+  if (!blastRadius || blastRadius.size === 0) {
+    return unresolved;
+  }
+  for (const issue of unresolved) {
+    const primary = issue.resolvedPath ?? issue.comment.path;
+    const k = stripGitDiffPathPrefix(normalizeRepoPath(primary));
+    const d = blastRadius.get(k) ?? blastRadius.get(primary);
+    if (d !== undefined) {
+      issue.inBlastRadius = true;
+      issue.blastRadiusDepth = d;
+    } else {
+      issue.inBlastRadius = false;
+    }
+  }
+  if (!isBlastRadiusDismissEnabled()) {
+    return unresolved;
+  }
+  const blastReason =
+    'Comment target is outside the PR dependency blast radius (imports + proximity heuristics).';
+  const blastHint =
+    'This file is outside the PR\'s dependency graph (blast radius). Review manually if the comment is valid.';
+  const mapForBlastDismiss = resolveEffectiveDuplicateMapForComments(stateContext, duplicateMap, allComments);
+  const dismissCommentRows = mergeCommentsForClusterDismiss(allComments, unresolved);
+  const kept: UnresolvedIssue[] = [];
+  for (const issue of unresolved) {
+    if (issue.inBlastRadius === false) {
+      if (dismissCommentRows.length > 0) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          issue.comment,
+          mapForBlastDismiss,
+          dismissCommentRows,
+          blastReason,
+          'out-of-scope',
+          blastHint,
+        );
+      } else {
+        const primary = issue.resolvedPath ?? issue.comment.path;
+        Dismissed.dismissIssue(
+          stateContext,
+          issue.comment.id,
+          blastReason,
+          'out-of-scope',
+          primary,
+          issue.comment.line,
+          issue.comment.body ?? '',
+          blastHint,
+        );
+      }
+    } else {
+      kept.push(issue);
+    }
+  }
+  return kept;
 }
 
 /** When comment.path is a basename (no directory), resolve to full path from diff if present. Prompts.log audit: fixer was sent wrong file (root reporting.py) when issue was about benchmarks/bfcl/reporting.py. */
@@ -199,18 +281,34 @@ export async function findUnresolvedIssues(
   let dismissedNotAnIssue = 0;
   let dismissedPlaceholder = 0;
   let dismissedRemaining = 0;
+  /** Solvability autoVerify anchors — cluster expansion runs after dedup (see `markVerifiedClusterForFixedIssue`). */
+  const pendingAutoVerifyAnchorIds: string[] = [];
 
   const iterationCount = stateContext.state?.iterations?.length ?? 0;
   const effectiveExpiry = getVerificationExpiryForIterationCount(iterationCount);
   const staleVerificationsRaw = Verification.getStaleVerifications(stateContext, effectiveExpiry);
   // WHY: output.log audit — don't re-check or unmark comments just recovered from git this run.
+  // Cluster: when dedupCache matches this comment set, mark dedup siblings verified and widen stale-skip to the cluster.
   const recoveredIds = stateContext.state?.recoveredFromGitCommentIds;
-  const recoveredSet = recoveredIds?.length ? new Set(recoveredIds) : undefined;
+  const allCommentIdsKey = comments.map((c) => c.id).sort().join(',');
+  /** When dedup cache matches this comment set, pre-dedup dismissals expand to the LLM cluster (same as post-dedup). */
+  const persistedDedupMapForCommentSet = getPersistedDedupMapForCommentSet(stateContext, allCommentIdsKey);
+  let recoveredStaleSkipIds: string[] | undefined;
   if (recoveredIds?.length) {
+    const { staleSkipIds, addedVerified } = expandGitRecoveredVerificationFromDedupCache(
+      stateContext,
+      recoveredIds,
+      allCommentIdsKey,
+    );
+    recoveredStaleSkipIds = staleSkipIds;
     stateContext.state!.recoveredFromGitCommentIds = undefined;
+    if (addedVerified) {
+      await State.saveState(stateContext);
+    }
   }
-  let staleVerifications = recoveredIds?.length
-    ? staleVerificationsRaw.filter((id) => !recoveredIds.includes(id))
+  const recoveredSet = recoveredStaleSkipIds?.length ? new Set(recoveredStaleSkipIds) : undefined;
+  let staleVerifications = recoveredStaleSkipIds?.length
+    ? staleVerificationsRaw.filter((id) => !recoveredStaleSkipIds!.includes(id))
     : staleVerificationsRaw;
   const changedFiles = findUnresolvedIssuesOptions?.changedFiles;
   if (changedFiles?.length) {
@@ -266,31 +364,56 @@ export async function findUnresolvedIssues(
     }
 
     if (isCommentPositiveOnly(comment.body ?? '')) {
-      Dismissed.dismissIssue(
-        stateContext,
-        comment.id,
-        'Comment is purely positive (e.g. What\'s Good) with no actionable issue — dismissing',
-        'not-an-issue',
-        comment.path,
-        comment.line,
-        comment.body,
-        undefined
-      );
+      const positiveReason =
+        'Comment is purely positive (e.g. What\'s Good) with no actionable issue — dismissing';
+      if (persistedDedupMapForCommentSet) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          comment,
+          persistedDedupMapForCommentSet,
+          comments,
+          positiveReason,
+          'not-an-issue',
+        );
+      } else {
+        Dismissed.dismissIssue(
+          stateContext,
+          comment.id,
+          positiveReason,
+          'not-an-issue',
+          comment.path,
+          comment.line,
+          comment.body,
+          undefined,
+        );
+      }
       dismissedNotAnIssue++;
       continue;
     }
 
     if (isVercelDeploymentOrTeamComment(comment)) {
-      Dismissed.dismissIssue(
-        stateContext,
-        comment.id,
-        'Vercel deployment/team notification — not a code review; fix via Vercel dashboard',
-        'not-an-issue',
-        comment.path,
-        comment.line,
-        comment.body,
-        undefined
-      );
+      const vercelReason = 'Vercel deployment/team notification — not a code review; fix via Vercel dashboard';
+      if (persistedDedupMapForCommentSet) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          comment,
+          persistedDedupMapForCommentSet,
+          comments,
+          vercelReason,
+          'not-an-issue',
+        );
+      } else {
+        Dismissed.dismissIssue(
+          stateContext,
+          comment.id,
+          vercelReason,
+          'not-an-issue',
+          comment.path,
+          comment.line,
+          comment.body,
+          undefined,
+        );
+      }
       dismissedNotAnIssue++;
       continue;
     }
@@ -298,16 +421,29 @@ export async function findUnresolvedIssues(
     const couldNotInjectCount = stateContext.state?.couldNotInjectCountByCommentId?.[comment.id] ?? 0;
     const couldNotInjectThreshold = looksLikeCreateFileIssue(comment) ? COULD_NOT_INJECT_CREATE_FILE_THRESHOLD : COULD_NOT_INJECT_DISMISS_THRESHOLD;
     if (couldNotInjectCount >= couldNotInjectThreshold) {
-      Dismissed.dismissIssue(
-        stateContext,
-        comment.id,
-        'Target file could not be resolved in the repository (repeated could-not-inject + no-change cycles)',
-        'file-unchanged',
-        comment.path,
-        comment.line,
-        comment.body,
-        undefined
-      );
+      const cniReason =
+        'Target file could not be resolved in the repository (repeated could-not-inject + no-change cycles)';
+      if (persistedDedupMapForCommentSet) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          comment,
+          persistedDedupMapForCommentSet,
+          comments,
+          cniReason,
+          'file-unchanged',
+        );
+      } else {
+        Dismissed.dismissIssue(
+          stateContext,
+          comment.id,
+          cniReason,
+          'file-unchanged',
+          comment.path,
+          comment.line,
+          comment.body,
+          undefined,
+        );
+      }
       continue;
     }
 
@@ -321,27 +457,35 @@ export async function findUnresolvedIssues(
           path: comment.path,
           reason: solvability.reason,
         });
-        Verification.markVerified(stateContext, comment.id);
-        // Add to verifiedThisSession if available (it's set on stateContext)
-        if (stateContext.verifiedThisSession) {
-          stateContext.verifiedThisSession.add(comment.id);
-        }
+        pendingAutoVerifyAnchorIds.push(comment.id);
         continue;
       }
       
       // CRITICAL: dismissIssue ONLY — do NOT call markVerified.
       // If the file comes back (revert, re-add), we want to re-analyze it.
       const reason = solvability.reason ?? `Issue not solvable (${solvability.dismissCategory ?? 'unknown'})`;
-      Dismissed.dismissIssue(
-        stateContext,
-        comment.id,
-        reason,
-        solvability.dismissCategory!,
-        comment.path,
-        comment.line,
-        comment.body,
-        solvability.remediationHint
-      );
+      if (persistedDedupMapForCommentSet) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          comment,
+          persistedDedupMapForCommentSet,
+          comments,
+          reason,
+          solvability.dismissCategory!,
+          solvability.remediationHint,
+        );
+      } else {
+        Dismissed.dismissIssue(
+          stateContext,
+          comment.id,
+          reason,
+          solvability.dismissCategory!,
+          comment.path,
+          comment.line,
+          comment.body,
+          solvability.remediationHint,
+        );
+      }
       
       // Pill #7: Cascade dismissal to sibling sub-items when dismissing for outdated model advice
       // (same file+line means same underlying issue; all sub-items should be dismissed consistently)
@@ -426,15 +570,58 @@ export async function findUnresolvedIssues(
   // Phase 3: Post-filter placeholder results
   for (const { comment, codeSnippet, contextHints, resolvedPath } of snippetResults) {
     if (codeSnippet === SNIPPET_PLACEHOLDER) {
-      Dismissed.dismissIssue(
-        stateContext,
-        comment.id,
-        'File not found or unreadable after existence check passed',
-        'stale',
-        comment.path,
-        comment.line,
-        comment.body
-      );
+      const pathForSubmoduleCheck = (resolvedPath ?? comment.path).replace(/\\/g, '/');
+      if (isTrackedGitSubmodulePath(workdir, pathForSubmoduleCheck)) {
+        const subReason =
+          'Review path is a git submodule (gitlink) — no regular file text for snippets after existence check';
+        const subHint =
+          'Run git submodule update --init, or fix in the submodule repo / parent manifest.';
+        if (persistedDedupMapForCommentSet) {
+          dismissDuplicateClusterFromComments(
+            stateContext,
+            comment,
+            persistedDedupMapForCommentSet,
+            comments,
+            subReason,
+            'not-an-issue',
+            subHint,
+          );
+        } else {
+          Dismissed.dismissIssue(
+            stateContext,
+            comment.id,
+            subReason,
+            'not-an-issue',
+            comment.path,
+            comment.line,
+            comment.body,
+            subHint,
+          );
+        }
+        dismissedNotAnIssue++;
+      } else {
+        const phStaleReason = 'File not found or unreadable after existence check passed';
+        if (persistedDedupMapForCommentSet) {
+          dismissDuplicateClusterFromComments(
+            stateContext,
+            comment,
+            persistedDedupMapForCommentSet,
+            comments,
+            phStaleReason,
+            'stale',
+          );
+        } else {
+          Dismissed.dismissIssue(
+            stateContext,
+            comment.id,
+            phStaleReason,
+            'stale',
+            comment.path,
+            comment.line,
+            comment.body,
+          );
+        }
+      }
       dismissedPlaceholder++;
       continue;
     }
@@ -542,6 +729,24 @@ export async function findUnresolvedIssues(
     }
   }
 
+  /** Persisted fallback when `dedupResult.duplicateMap` is empty (e.g. heuristic dedup threw) but `dedup-v2` cache matches. */
+  const clusterMapForAnalysis = resolveEffectiveDuplicateMapForComments(
+    stateContext,
+    dedupResult.duplicateMap,
+    comments,
+  );
+
+  if (pendingAutoVerifyAnchorIds.length > 0) {
+    for (const aid of pendingAutoVerifyAnchorIds) {
+      markVerifiedClusterForFixedIssue(
+        stateContext,
+        aid,
+        clusterMapForAnalysis,
+        stateContext.verifiedThisSession,
+      );
+    }
+  }
+
   // Use deduplicated list for analysis
   const toAnalyze = dedupResult.dedupedToCheck;
 
@@ -566,7 +771,7 @@ export async function findUnresolvedIssues(
   );
 
   // Build a set for fast lookup in the status check loop (after dedup, before status split).
-  // HISTORY: staleVerifications forces re-check of comments verified 5+ iterations ago.
+  // HISTORY: staleVerifications forces re-check of comments past verification-expiry (see getVerificationExpiryForIterationCount).
   // Without this bypass, Phase 0 hooks would mark them 'resolved', Phase 2 hash relaxation
   // would return the status, and line 774 would re-dismiss them — defeating stale re-check.
   const staleVerificationSet = new Set(staleVerifications);
@@ -580,7 +785,7 @@ export async function findUnresolvedIssues(
     
     // Both --reverify and stale verifications force fresh LLM analysis.
     // --reverify: user explicitly wants to re-check everything.
-    // staleVerifications: comment was verified 5+ iterations ago, fix may have regressed.
+    // staleVerifications: comment was verified long enough ago (iteration-scaled expiry), fix may have regressed.
     // Without this, Phase 0 hooks + Phase 2 hash relaxation would make these
     // bypass the LLM entirely, defeating the purpose of stale verification.
     const forceReanalyze = options.reverify || staleVerificationSet.has(item.comment.id);
@@ -593,17 +798,12 @@ export async function findUnresolvedIssues(
       statusHits++;
 
       // Issue still exists — reuse persisted classification
-      const duplicates = dedupResult.duplicateMap.get(item.comment.id);
-      const mergedDuplicates = duplicates?.map(dupId => {
-        const dupItem = dedupResult.duplicateItems.get(dupId);
-        return dupItem ? {
-          commentId: dupItem.comment.id,
-          author: dupItem.comment.author,
-          body: dupItem.comment.body,
-          path: dupItem.comment.path,
-          line: dupItem.comment.line,
-        } : null;
-      }).filter((d): d is NonNullable<typeof d> => d !== null);
+      const mergedDuplicates = buildMergedDuplicatesForAnchor(
+        item.comment.id,
+        clusterMapForAnalysis,
+        dedupResult.duplicateItems,
+        comments,
+      );
 
       unresolved.push({
         comment: item.comment,
@@ -611,7 +811,7 @@ export async function findUnresolvedIssues(
         stillExists: true,
         explanation: validStatus.explanation,
         triage: { importance: validStatus.importance, ease: validStatus.ease },
-        mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+        mergedDuplicates,
         allowedPaths: getEffectiveAllowedPathsForNewIssue(item.comment, item.resolvedPath ?? item.comment.path, item.codeSnippet, validStatus.explanation),
         resolvedPath: item.resolvedPath,
       });
@@ -619,12 +819,24 @@ export async function findUnresolvedIssues(
       // Resolved but not in verifiedFixed (stale dismissal) — re-dismiss preserving existing category
       const existing = Dismissed.getDismissedIssue(stateContext, item.comment.id);
       if (existing) {
-        Dismissed.dismissIssue(stateContext, item.comment.id, existing.reason ?? 'Previously dismissed', existing.category,
-          item.comment.path, item.comment.line, item.comment.body, existing.remediationHint);
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          item.comment,
+          clusterMapForAnalysis,
+          comments,
+          existing.reason ?? 'Previously dismissed',
+          existing.category,
+          existing.remediationHint,
+        );
       } else {
-        Dismissed.dismissIssue(stateContext, item.comment.id, validStatus.explanation ?? 'Resolved (no explanation recorded)',
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          item.comment,
+          clusterMapForAnalysis,
+          comments,
+          validStatus.explanation ?? 'Resolved (no explanation recorded)',
           validStatus.classification === 'stale' ? 'stale' : 'already-fixed',
-          item.comment.path, item.comment.line, item.comment.body);
+        );
       }
       statusHits++;
     } else {
@@ -677,7 +889,9 @@ export async function findUnresolvedIssues(
     return {
       unresolved,
       recommendedModelIndex: 0,
-      duplicateMap: dedupResult.duplicateMap,
+      // Session map must match cluster expansion used above (`clusterMapForAnalysis`), not only the
+      // in-memory dedup rebuild — when dedup throws or yields an empty map, dedup-v2 cache still applies.
+      duplicateMap: clusterMapForAnalysis ?? dedupResult.duplicateMap,
     };
   }
 
@@ -705,42 +919,35 @@ export async function findUnresolvedIssues(
       const fHash = fileHashes.get(comment.path) || '__missing__';
       if (result.stale) {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', result.explanation, comment.path, fHash);
-        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: result.explanation });
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: result.explanation }, comments);
       } else if (result.exists) {
         CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', result.explanation, 3, 3, comment.path, fHash);
-        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: result.explanation, importance: 3, ease: 3 });
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: result.explanation, importance: 3, ease: 3 }, comments);
       } else {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', result.explanation, comment.path, fHash);
-        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: result.explanation });
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: result.explanation }, comments);
       }
 
       if (result.stale) {
         // Issue is stale (code fundamentally restructured) - dismiss without marking verified
         if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
-          Dismissed.dismissIssue(
+          dismissDuplicateClusterFromComments(
             stateContext,
-            comment.id,
+            comment,
+            clusterMapForAnalysis,
+            comments,
             result.explanation,
             'stale',
-            comment.path,
-            comment.line,
-            comment.body
           );
         } else {
           warn(`Stale issue missing valid explanation - marking as unresolved`);
           
-          // Check if this is a canonical issue with duplicates
-          const duplicates = dedupResult.duplicateMap.get(comment.id);
-          const mergedDuplicates = duplicates?.map(dupId => {
-            const dupItem = dedupResult.duplicateItems.get(dupId);
-            return dupItem ? {
-              commentId: dupItem.comment.id,
-              author: dupItem.comment.author,
-              body: dupItem.comment.body,
-              path: dupItem.comment.path,
-              line: dupItem.comment.line,
-            } : null;
-          }).filter((d): d is NonNullable<typeof d> => d !== null);
+          const mergedDuplicates = buildMergedDuplicatesForAnchor(
+            comment.id,
+            clusterMapForAnalysis,
+            dedupResult.duplicateItems,
+            comments,
+          );
 
           unresolved.push({
             comment,
@@ -748,24 +955,19 @@ export async function findUnresolvedIssues(
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
-            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+            mergedDuplicates,
             allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
             resolvedPath,
           });
         }
       } else if (result.exists) {
-        // Check if this is a canonical issue with duplicates
-        const duplicates = dedupResult.duplicateMap.get(comment.id);
-        const mergedDuplicates = duplicates?.map(dupId => {
-          const dupItem = dedupResult.duplicateItems.get(dupId);
-          return dupItem ? {
-            commentId: dupItem.comment.id,
-            author: dupItem.comment.author,
-            body: dupItem.comment.body,
-            path: dupItem.comment.path,
-            line: dupItem.comment.line,
-          } : null;
-        }).filter((d): d is NonNullable<typeof d> => d !== null);
+        unmarkVerifiedClusterForStaleRecheck(stateContext, comment.id, clusterMapForAnalysis, recoveredSet);
+        const mergedDuplicates = buildMergedDuplicatesForAnchor(
+          comment.id,
+          clusterMapForAnalysis,
+          dedupResult.duplicateItems,
+          comments,
+        );
 
         unresolved.push({
           comment,
@@ -773,40 +975,38 @@ export async function findUnresolvedIssues(
           stillExists: true,
           explanation: result.explanation,
           triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
-          mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+          mergedDuplicates,
           allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, result.explanation),
           resolvedPath,
         });
       } else {
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
         if (validateDismissalExplanation(result.explanation, comment.path, comment.line)) {
-          // Valid explanation - document why it doesn't need fixing
-          Verification.markVerified(stateContext, comment.id);
-          Dismissed.dismissIssue(
+          // Valid explanation - document why it doesn't need fixing (full dedup cluster)
+          markVerifiedClusterForFixedIssue(
             stateContext,
             comment.id,
+            clusterMapForAnalysis,
+            stateContext.verifiedThisSession,
+          );
+          dismissDuplicateClusterFromComments(
+            stateContext,
+            comment,
+            clusterMapForAnalysis,
+            comments,
             result.explanation,
             'already-fixed',
-            comment.path,
-            comment.line,
-            comment.body
           );
         } else {
           // Invalid/missing explanation - treat as unresolved (potential bug)
           warn(`Cannot dismiss without valid explanation - marking as unresolved`);
           
-          // Check if this is a canonical issue with duplicates
-          const duplicates = dedupResult.duplicateMap.get(comment.id);
-          const mergedDuplicates = duplicates?.map(dupId => {
-            const dupItem = dedupResult.duplicateItems.get(dupId);
-            return dupItem ? {
-              commentId: dupItem.comment.id,
-              author: dupItem.comment.author,
-              body: dupItem.comment.body,
-              path: dupItem.comment.path,
-              line: dupItem.comment.line,
-            } : null;
-          }).filter((d): d is NonNullable<typeof d> => d !== null);
+          const mergedDuplicates = buildMergedDuplicatesForAnchor(
+            comment.id,
+            clusterMapForAnalysis,
+            dedupResult.duplicateItems,
+            comments,
+          );
 
           unresolved.push({
             comment,
@@ -814,7 +1014,7 @@ export async function findUnresolvedIssues(
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: 3, ease: 3 },  // Default: sequential mode has no triage
-            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+            mergedDuplicates,
             allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, codeSnippet, undefined),
             resolvedPath,
           });
@@ -1030,18 +1230,12 @@ export async function findUnresolvedIssues(
         
         // Don't cache: LLM failure, next iteration should retry
         
-        // Check if this is a canonical issue with duplicates
-        const duplicates = dedupResult.duplicateMap.get(comment.id);
-        const mergedDuplicates = duplicates?.map(dupId => {
-          const dupItem = dedupResult.duplicateItems.get(dupId);
-          return dupItem ? {
-            commentId: dupItem.comment.id,
-            author: dupItem.comment.author,
-            body: dupItem.comment.body,
-            path: dupItem.comment.path,
-            line: dupItem.comment.line,
-          } : null;
-        }).filter((d): d is NonNullable<typeof d> => d !== null);
+        const mergedDuplicates = buildMergedDuplicatesForAnchor(
+          comment.id,
+          clusterMapForAnalysis,
+          dedupResult.duplicateItems,
+          comments,
+        );
 
         unresolved.push({
           comment,
@@ -1049,7 +1243,7 @@ export async function findUnresolvedIssues(
           stillExists: true,
           explanation: 'Unable to determine status',
           triage: { importance: 3, ease: 3 },  // Default: fallback path
-          mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+          mergedDuplicates,
           allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, undefined),
           resolvedPath,
         });
@@ -1079,42 +1273,35 @@ export async function findUnresolvedIssues(
       const fHash = fileHashes.get(comment.path) || '__missing__';
       if (effectiveResult.stale) {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'stale', effectiveResult.explanation, comment.path, fHash);
-        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: effectiveResult.explanation });
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'stale', explanation: effectiveResult.explanation }, comments);
       } else if (effectiveResult.exists) {
         CommentStatusAPI.markOpen(stateContext, comment.id, 'exists', effectiveResult.explanation, effectiveResult.importance ?? 3, effectiveResult.ease ?? 3, comment.path, fHash);
-        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: effectiveResult.explanation, importance: effectiveResult.importance ?? 3, ease: effectiveResult.ease ?? 3 });
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'open', classification: 'exists', explanation: effectiveResult.explanation, importance: effectiveResult.importance ?? 3, ease: effectiveResult.ease ?? 3 }, comments);
       } else {
         CommentStatusAPI.markResolved(stateContext, comment.id, 'fixed', effectiveResult.explanation, comment.path, fHash);
-        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: effectiveResult.explanation });
+        propagateStatusToDuplicates(stateContext, comment.id, dedupResult, fileHashes, { kind: 'resolved', classification: 'fixed', explanation: effectiveResult.explanation }, comments);
       }
 
       if (effectiveResult.stale) {
         // Issue is stale (code fundamentally restructured) - dismiss without marking verified
         if (validateDismissalExplanation(effectiveResult.explanation, comment.path, comment.line)) {
-          Dismissed.dismissIssue(
+          dismissDuplicateClusterFromComments(
             stateContext,
-            comment.id,
+            comment,
+            clusterMapForAnalysis,
+            comments,
             effectiveResult.explanation,
             'stale',
-            comment.path,
-            comment.line,
-            comment.body
           );
         } else {
           warn(`Stale issue missing valid explanation - marking as unresolved`);
           
-          // Check if this is a canonical issue with duplicates
-          const duplicates = dedupResult.duplicateMap.get(comment.id);
-          const mergedDuplicates = duplicates?.map(dupId => {
-            const dupItem = dedupResult.duplicateItems.get(dupId);
-            return dupItem ? {
-              commentId: dupItem.comment.id,
-              author: dupItem.comment.author,
-              body: dupItem.comment.body,
-              path: dupItem.comment.path,
-              line: dupItem.comment.line,
-            } : null;
-          }).filter((d): d is NonNullable<typeof d> => d !== null);
+          const mergedDuplicates = buildMergedDuplicatesForAnchor(
+            comment.id,
+            clusterMapForAnalysis,
+            dedupResult.duplicateItems,
+            comments,
+          );
 
           unresolved.push({
             comment,
@@ -1122,35 +1309,22 @@ export async function findUnresolvedIssues(
             stillExists: true,
             explanation: 'LLM indicated issue is stale, but provided insufficient explanation',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
-            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+            mergedDuplicates,
             allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
         }
       } else if (effectiveResult.exists) {
-        // Stale re-check: batch said "still exists" — if comment was previously verified, unmark so it re-enters the fix queue.
+        // Stale re-check: batch said "still exists" — unmark verified cluster so dupes don't stay "skip fixer".
         // WHY: output.log audit — push iter 2 had 2 unresolved (reporting.py) but "All 2 already verified — skipping fixer"
         // because they stayed in verifiedFixed; re-check had correctly said stillExists but we never unmarked.
-        if (Verification.isVerified(stateContext, comment.id)) {
-          if (recoveredSet?.has(comment.id)) {
-            debug('Skipping unmark (recovered from git this run)', { commentId: comment.id, path: comment.path });
-          } else {
-            Verification.unmarkVerified(stateContext, comment.id);
-            debug('Unmarked verified (stale re-check said still exists)', { commentId: comment.id, path: comment.path });
-          }
-        }
-        // Check if this is a canonical issue with duplicates
-        const duplicates = dedupResult.duplicateMap.get(comment.id);
-        const mergedDuplicates = duplicates?.map(dupId => {
-          const dupItem = dedupResult.duplicateItems.get(dupId);
-          return dupItem ? {
-            commentId: dupItem.comment.id,
-            author: dupItem.comment.author,
-            body: dupItem.comment.body,
-            path: dupItem.comment.path,
-            line: dupItem.comment.line,
-          } : null;
-        }).filter((d): d is NonNullable<typeof d> => d !== null);
+        unmarkVerifiedClusterForStaleRecheck(stateContext, comment.id, clusterMapForAnalysis, recoveredSet);
+        const mergedDuplicates = buildMergedDuplicatesForAnchor(
+          comment.id,
+          clusterMapForAnalysis,
+          dedupResult.duplicateItems,
+          comments,
+        );
 
         unresolved.push({
           comment,
@@ -1158,40 +1332,37 @@ export async function findUnresolvedIssues(
           stillExists: true,
           explanation: effectiveResult.explanation,
           triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
-          mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+          mergedDuplicates,
           allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
           resolvedPath,
         });
       } else {
         // Issue appears to be already fixed - but we can ONLY dismiss if we have a valid explanation
         if (validateDismissalExplanation(effectiveResult.explanation, comment.path, comment.line)) {
-          // Valid explanation - document why it doesn't need fixing
-          Verification.markVerified(stateContext, comment.id);
-          Dismissed.dismissIssue(
+          markVerifiedClusterForFixedIssue(
             stateContext,
             comment.id,
+            clusterMapForAnalysis,
+            stateContext.verifiedThisSession,
+          );
+          dismissDuplicateClusterFromComments(
+            stateContext,
+            comment,
+            clusterMapForAnalysis,
+            comments,
             effectiveResult.explanation,
             'already-fixed',
-            comment.path,
-            comment.line,
-            comment.body
           );
         } else {
           // Invalid/missing explanation - treat as unresolved (potential bug)
           warn(`Cannot dismiss without valid explanation - marking as unresolved`);
           
-          // Check if this is a canonical issue with duplicates
-          const duplicates = dedupResult.duplicateMap.get(comment.id);
-          const mergedDuplicates = duplicates?.map(dupId => {
-            const dupItem = dedupResult.duplicateItems.get(dupId);
-            return dupItem ? {
-              commentId: dupItem.comment.id,
-              author: dupItem.comment.author,
-              body: dupItem.comment.body,
-              path: dupItem.comment.path,
-              line: dupItem.comment.line,
-            } : null;
-          }).filter((d): d is NonNullable<typeof d> => d !== null);
+          const mergedDuplicates = buildMergedDuplicatesForAnchor(
+            comment.id,
+            clusterMapForAnalysis,
+            dedupResult.duplicateItems,
+            comments,
+          );
 
           unresolved.push({
             comment,
@@ -1199,7 +1370,7 @@ export async function findUnresolvedIssues(
             stillExists: true,
             explanation: 'LLM indicated issue does not exist, but provided insufficient explanation to dismiss',
             triage: { importance: effectiveResult.importance, ease: effectiveResult.ease },
-            mergedDuplicates: mergedDuplicates && mergedDuplicates.length > 0 ? mergedDuplicates : undefined,
+            mergedDuplicates,
             allowedPaths: getEffectiveAllowedPathsForNewIssue(comment, resolvedPath ?? comment.path, snippetForFix, effectiveResult.explanation),
             resolvedPath,
           });
@@ -1216,17 +1387,24 @@ export async function findUnresolvedIssues(
     }
   }
 
+  const unresolvedAfterBlast = applyBlastRadiusToUnresolved(
+    unresolved,
+    findUnresolvedIssuesOptions?.blastRadius,
+    stateContext,
+    clusterMapForAnalysis,
+    comments,
+  );
   await State.saveState(stateContext);
   await LessonsAPI.Save.save(lessonsContext);
   if (options.verbose) {
-    printDebugIssueTable('after analysis', comments, stateContext, unresolved);
+    printDebugIssueTable('after analysis', comments, stateContext, unresolvedAfterBlast);
   }
-  
+
   return {
-    unresolved,
+    unresolved: unresolvedAfterBlast,
     recommendedModels,
     recommendedModelIndex,
     modelRecommendationReasoning,
-    duplicateMap: dedupResult.duplicateMap,
+    duplicateMap: clusterMapForAnalysis ?? dedupResult.duplicateMap,
   };
 }

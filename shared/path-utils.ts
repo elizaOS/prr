@@ -1,10 +1,37 @@
 /**
- * Path helpers for PRR. Used when building allowedPaths / TARGET FILE(S) so we never
- * send absolute or internal paths to the fixer (avoids "file outside workdir" and wasted LLM calls).
+ * Path helpers for PRR. Used when building allowedPaths / TARGET FILE(S) for the fixer and
+ * when normalizing review paths (diff prefixes, extension variants, fragments).
+ *
+ * ## Allowed paths — WHY open by default (Cycle 72)
+ *
+ * Historically we rejected any path whose first segment looked like an npm package name unless
+ * it appeared in a static `REPO_TOP_LEVEL` list. **WHY that seemed right:** comment bodies can
+ * mention paths such as `lodash/fp/merge.js` that must not become editable targets. In practice
+ * those paths almost never exist in the clone; `pathExists` / injection already fail safely.
+ * **What went wrong:** repos with legitimate top-level dirs not in the static set (`agent/`,
+ * `cmd/`, `contracts/`, …) had **every** issue on those files stripped from allowedPaths and
+ * injection — the model could not see the file, edits were rejected, and iterations burned with
+ * no progress. **Default today:** allow any repo-relative path that passes **hard deny** rules
+ * only (absolute paths, `node_modules`, `dist/`, `.cursor` / `.prr` / `root` segments). **Opt-in
+ * strict:** `PRR_STRICT_ALLOWED_PATHS=1` restores the first-segment heuristic; then
+ * `setDynamicRepoTopLevelDirs(prChangedFiles)` adds first segments from the PR diff so
+ * non-standard roots touched by the PR are still allowed without editing the static list.
  */
 
 import { join } from 'path';
 import { existsSync } from 'fs';
+
+/**
+ * Legacy “package-like first segment” filter for `isPathAllowedForFix`.
+ *
+ * **WHY it exists:** In strict mode, block paths whose first segment looks like an external
+ * package id (`foo-bar/baz`) unless it is in `REPO_TOP_LEVEL` or `dynamicRepoTopLevel`, to reduce
+ * noise from pasted dependency paths in review bodies.
+ *
+ * **WHY default is off:** Same heuristic blocked real monorepo roots; audits showed silent
+ * empty allowlists and wrong-file / couldNotInject churn outweighed the rare bad path case.
+ */
+const strictAllowedPaths = /^(1|true|yes)$/i.test(process.env.PRR_STRICT_ALLOWED_PATHS ?? '');
 
 /** Segments that indicate an internal path not under the repo (e.g. .cursor plans, .prr state). */
 const INTERNAL_PATH_SEGMENTS = ['.cursor', '.prr', 'root'];
@@ -15,6 +42,7 @@ const INTERNAL_PATH_SEGMENTS = ['.cursor', '.prr', 'root'];
  */
 const EXTENSION_VARIANT_MAP: Record<string, string[]> = {
   '.js': ['.json', '.ts', '.jsx', '.mjs', '.cjs'],
+  '.json': ['.js', '.ts', '.cjs', '.mjs'],
   '.ts': ['.tsx', '.js', '.json', '.mts', '.cts'],
   '.tsx': ['.ts', '.jsx'],
   '.jsx': ['.tsx', '.js'],
@@ -66,7 +94,10 @@ export function stripGitDiffPathPrefix(rawPath: string): string {
   const rest = m[2]!;
   const first = rest.split('/')[0] ?? '';
   if (!first) return t;
-  if (GIT_DIFF_PREFIX_STRIP_FIRST_SEGMENTS.has(first) || first.startsWith('@')) {
+  // WHY dynamicRepoTopLevel: under strict allowed paths, odd roots only strip when in REPO_TOP_LEVEL
+  // or PR changed files; open mode does not need it for allow checks but diff paths like
+  // `a/agent/foo.ts` still benefit from stripping once `setDynamicRepoTopLevelDirs` ran.
+  if (GIT_DIFF_PREFIX_STRIP_FIRST_SEGMENTS.has(first) || dynamicRepoTopLevel.has(first) || first.startsWith('@')) {
     return rest;
   }
   if (first === 'package.json' || first === 'pnpm-lock.yaml' || first === 'bun.lockb') {
@@ -111,14 +142,56 @@ export function tryResolvePathWithExtensionVariants(workdir: string, path: strin
   return path;
 }
 
-/** Top-level dirs that are typical repo source (not node_modules or external package refs from comments). */
+/**
+ * Typical first-segment names for repo source trees. **Used when `PRR_STRICT_ALLOWED_PATHS=1`:**
+ * together with `dynamicRepoTopLevel`, paths whose first segment matches `/^[a-z@][a-z0-9.-]*$/`
+ * must appear here or in the PR changed-file set or they are rejected. **WHY keep the set:**
+ * strict mode operators get predictable defaults without listing every possible root. **WHY not
+ * rely on this alone:** the list cannot cover every customer repo; open default + dynamic set
+ * covers the common failure mode (Cycle 72).
+ */
 const REPO_TOP_LEVEL = new Set([
   'src', 'lib', 'app', 'apps', 'packages', 'plugins', 'scripts', 'test', 'tests', 'docs', 'build', 'tools', 'shared',
   '.github', 'config', 'public', 'components', 'db', 'migrations', 'api', 'server', 'client', 'examples',
   'types', 'typings', 'benchmarks',
-  /** Common e2e / integration roots (TestCafe, Playwright, Cypress, etc.) — WHY: otherwise `isPathAllowedForFix` treats first segment as external package-like and strips paths from TARGET FILE(S). */
+  /** E2e / integration roots — WHY: strict mode would otherwise reject Playwright/Cypress trees. */
   'e2e', 'playwright', 'cypress', 'fixtures', 'integration', 'wdio',
 ]);
+
+/**
+ * First path segments seen on files changed in the PR (`git diff --name-only` base...HEAD).
+ *
+ * **WHY:** When `PRR_STRICT_ALLOWED_PATHS=1`, this extends `REPO_TOP_LEVEL` so roots that only
+ * appear in *this* PR (e.g. `agent/`) are not misclassified as “external package” paths.
+ * **WHY still call it when strict mode is off:** `stripGitDiffPathPrefix` uses the same set so
+ * unified-diff-style paths like `a/agent/foo.ts` normalize correctly after analysis runs.
+ */
+const dynamicRepoTopLevel = new Set<string>();
+
+/**
+ * Record PR top-level segments before building issues / prompts / runner allowlists.
+ * **Call site:** `processCommentsAndPrepareFixLoop` after resolving `changedFiles` (fresh diff or
+ * analysis cache), before `findUnresolvedIssues`.
+ *
+ * **WHY before analysis:** `getEffectiveAllowedPathsForNewIssue` → `filterAllowedPathsForFix` runs
+ * during issue construction; without this, strict mode + cache miss would filter valid targets.
+ */
+export function setDynamicRepoTopLevelDirs(changedFiles: string[]): void {
+  dynamicRepoTopLevel.clear();
+  for (const file of changedFiles) {
+    const normalized = normalizeRepoPath(file);
+    const first = normalized.split('/')[0];
+    if (!first || first === '.' || first === '..') continue;
+    if (first === 'node_modules' || first === 'dist') continue;
+    if (INTERNAL_PATH_SEGMENTS.some(seg => first === seg)) continue;
+    dynamicRepoTopLevel.add(first);
+  }
+}
+
+/** Visible for testing. */
+export function getDynamicRepoTopLevelDirs(): ReadonlySet<string> {
+  return dynamicRepoTopLevel;
+}
 
 /**
  * Normalize a path to forward slashes and trim (no leading ./ strip).
@@ -144,6 +217,9 @@ export type TrackedPathResolutionKind =
   | 'ambiguous'
   | 'missing'
   | 'fragment';
+
+/** Dismissal when a review path cannot be mapped to a single tracked file (pill-output / AGENTS). */
+export type PathDismissCategory = 'missing-file' | 'path-unresolved' | 'path-fragment';
 
 /**
  * True when the review path cannot denote a single repo file (extension-only / bot fragments).
@@ -175,15 +251,19 @@ export function shouldSkipFinalAuditLlmForPath(path: string | undefined | null):
 /**
  * When a tracked file is not found after resolution, pick a single dismissal category.
  * WHY: Same logical case must not flip between missing-file and path-unresolved (pill-output).
+ * **Fragments** (bare `.d.ts`, extension-only): **`path-fragment`**. **Ambiguous** basename matches: **`path-unresolved`**.
  */
 export function pathDismissCategoryForNotFound(
   reviewPath: string,
   resolutionKind: TrackedPathResolutionKind
-): 'missing-file' | 'path-unresolved' {
-  if (resolutionKind === 'fragment' || resolutionKind === 'ambiguous') return 'path-unresolved';
-  if (isReviewPathFragment(reviewPath)) return 'path-unresolved';
+): PathDismissCategory {
+  if (resolutionKind === 'fragment' || isReviewPathFragment(reviewPath)) return 'path-fragment';
+  if (resolutionKind === 'ambiguous') return 'path-unresolved';
   return 'missing-file';
 }
+
+/** Alias for {@link pathDismissCategoryForNotFound} — single name for “not found” dismissal (pill-output). */
+export const dismissPathNotFound = pathDismissCategoryForNotFound;
 
 /**
  * Fix URL-encoding artifacts in path segments (e.g. from GitHub links in comment bodies).
@@ -200,9 +280,17 @@ export function normalizePathSegmentEncoding(path: string): string {
 }
 
 /**
- * True if the path is safe to use as an allowed path for the fixer (repo-relative, not internal).
- * WHY: Comment bodies can contain absolute paths (e.g. /root/.cursor/plans/foo.plan.md). Adding
- * those to allowedPaths causes "file outside workdir" and wasted LLM calls.
+ * Whether a string may appear in the fixer allowlist / injection set.
+ *
+ * **Always denied (hard rules — WHY):**
+ * - Absolute paths — would escape the clone or hit host paths from pasted plans.
+ * - `.cursor`, `.prr`, leading `root/` segment — tool state, not PR product code.
+ * - `node_modules` (anywhere), `dist/` prefix — generated or vendored; editing is unsafe/noisy.
+ *
+ * **Optional strict segment rule:** When `PRR_STRICT_ALLOWED_PATHS=1`, reject paths whose first
+ * segment looks like a package id unless it is in `REPO_TOP_LEVEL` or `dynamicRepoTopLevel`.
+ * **Default (strict off):** any other repo-relative path is allowed so reviews can target
+ * adjacent files and uncommon roots without silent stripping (see file-level WHY above).
  */
 export function isPathAllowedForFix(path: string): boolean {
   if (!path || typeof path !== 'string') return false;
@@ -213,15 +301,17 @@ export function isPathAllowedForFix(path: string): boolean {
     if (normalized.includes(`/${seg}/`) || normalized.startsWith(`${seg}/`)) return false;
   }
   if (normalized.includes('node_modules') || normalized.startsWith('dist/')) return false;
-  const first = normalized.split('/')[0];
-  if (first && !REPO_TOP_LEVEL.has(first) && /^[a-z@][a-z0-9.-]*$/.test(first)) return false;
+  if (strictAllowedPaths) {
+    const first = normalized.split('/')[0];
+    if (first && !REPO_TOP_LEVEL.has(first) && !dynamicRepoTopLevel.has(first) && /^[a-z@][a-z0-9.-]*$/.test(first)) return false;
+  }
   return true;
 }
 
 /**
- * Filter an array of paths to only those allowed for fix (repo-relative, not internal).
- * Normalizes path segment encoding (e.g. "2F" prefix from URL-encoded "/") so TARGET FILE(S)
- * never show artifacts like "packages/.../2Fmessage-service.test.ts".
+ * Deduplicate and filter paths through `isPathAllowedForFix`.
+ * **WHY normalize encoding first:** GitHub-linked comments can leave `%2F` artifacts as `2F` in
+ * a segment; we fix that so TARGET FILE(S) and runner sets stay consistent (pill-output audit).
  */
 export function filterAllowedPathsForFix(paths: string[]): string[] {
   const normalized = paths

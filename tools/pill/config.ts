@@ -4,7 +4,7 @@
  */
 import dotenv from 'dotenv';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { existsSync, statSync } from 'fs';
 import type { PillConfig } from './types.js';
 import { resolveToolRepoScopeFilter } from './tool-repo-scope.js';
@@ -47,6 +47,23 @@ export interface LoadConfigInput {
   verbose: boolean;
   logPrefix?: string;
   instructionsOut?: string;
+  /** Resolved absolute path; wins over PILL_OUTPUT_LOG_PATH */
+  outputLogPath?: string;
+  /** Resolved absolute path; wins over PILL_PROMPTS_LOG_PATH */
+  promptsLogPath?: string;
+}
+
+/** Resolve optional log path to absolute file path, or undefined. */
+function resolveOptionalLogFilePath(raw: string | undefined, label: string): string | undefined {
+  if (raw === undefined || raw === '') return undefined;
+  const abs = resolve(raw);
+  if (!existsSync(abs)) {
+    throw new Error(`Pill: ${label} not found: ${abs}`);
+  }
+  if (!statSync(abs).isFile()) {
+    throw new Error(`Pill: ${label} is not a regular file: ${abs}`);
+  }
+  return abs;
 }
 
 /**
@@ -116,6 +133,15 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
 
   const toolRepoScopeFilter = resolveToolRepoScopeFilter(input.targetDir, getEnv('PILL_TOOL_REPO_SCOPE_FILTER'));
 
+  const outputLogPath = resolveOptionalLogFilePath(
+    input.outputLogPath ?? getEnv('PILL_OUTPUT_LOG_PATH'),
+    'Output log (PILL_OUTPUT_LOG_PATH or --output-log)'
+  );
+  const promptsLogPath = resolveOptionalLogFilePath(
+    input.promptsLogPath ?? getEnv('PILL_PROMPTS_LOG_PATH'),
+    'Prompts log (PILL_PROMPTS_LOG_PATH or --prompts-log)'
+  );
+
   const config: PillConfig = {
     targetDir: input.targetDir,
     llmProvider,
@@ -130,6 +156,8 @@ export function loadConfig(input: LoadConfigInput): PillConfig {
     promptsOnly: input.promptsOnly,
     dryRun: input.dryRun,
     verbose: input.verbose,
+    outputLogPath,
+    promptsLogPath,
   };
   config.instructionsOut = input.instructionsOut;
 

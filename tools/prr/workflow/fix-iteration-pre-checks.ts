@@ -67,6 +67,7 @@ export async function executePreIterationChecks(
   // WHY: Required for P1 (prompts.log audit) — new comments are run through assessSolvability when workdir is set; without it, (PR comment) and other unsolvable items would enter the fix queue mid-loop.
   workdir?: string,
   changedFiles?: string[],
+  duplicateMap?: Map<string, string[]>,
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -87,7 +88,8 @@ export async function executePreIterationChecks(
       getCodeSnippet,
       prInfo.headSha,
       stateContext,
-      workdir
+      workdir,
+      duplicateMap,
     );
   }
   
