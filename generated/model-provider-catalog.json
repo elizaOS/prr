@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-07-06T14:23:45.841Z",
+  "fetchedAtIso": "2026-07-13T07:10:47.134Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,14 +8,14 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 15
+      "idCount": 16
     },
     {
       "name": "openai",
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 89
+      "idCount": 98
     }
   ],
   "providers": {
@@ -30,6 +30,7 @@
         "claude-opus-4-6",
         "claude-opus-4-7",
         "claude-opus-4-8",
+        "claude-opus-46",
         "claude-opus-47",
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-20250929",
@@ -43,7 +44,10 @@
         "babbage-002",
         "chatgpt-4o",
         "chatgpt-4o-latest",
+        "chatgpt-docs",
         "chatgpt-image-latest",
+        "chatgpt-preview",
+        "chatgpt-staging",
         "codex-mini-latest",
         "computer-use-preview",
         "dall-e-2",
@@ -95,6 +99,10 @@
         "gpt-5.4-pro",
         "gpt-5.5",
         "gpt-5.5-pro",
+        "gpt-5.6",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
         "gpt-audio",
         "gpt-audio-1.5",
         "gpt-audio-mini",
@@ -107,6 +115,8 @@
         "gpt-realtime",
         "gpt-realtime-1.5",
         "gpt-realtime-2",
+        "gpt-realtime-2.1",
+        "gpt-realtime-2.1-mini",
         "gpt-realtime-mini",
         "gpt-realtime-translate",
         "gpt-realtime-whisper",
@@ -137,7 +147,10 @@
       "babbage002": "babbage-002",
       "chatgpt4o": "chatgpt-4o",
       "chatgpt4olatest": "chatgpt-4o-latest",
+      "chatgptdocs": "chatgpt-docs",
       "chatgptimagelatest": "chatgpt-image-latest",
+      "chatgptpreview": "chatgpt-preview",
+      "chatgptstaging": "chatgpt-staging",
       "codexminilatest": "codex-mini-latest",
       "computerusepreview": "computer-use-preview",
       "dalle2": "dall-e-2",
@@ -183,6 +196,10 @@
       "gpt5.4pro": "gpt-5.4-pro",
       "gpt5.5": "gpt-5.5",
       "gpt5.5pro": "gpt-5.5-pro",
+      "gpt5.6": "gpt-5.6",
+      "gpt5.6luna": "gpt-5.6-luna",
+      "gpt5.6sol": "gpt-5.6-sol",
+      "gpt5.6terra": "gpt-5.6-terra",
       "gpt54": "gpt-5-4",
       "gpt5chatlatest": "gpt-5-chat-latest",
       "gpt5codex": "gpt-5-codex",
@@ -201,6 +218,8 @@
       "gptrealtime": "gpt-realtime",
       "gptrealtime1.5": "gpt-realtime-1.5",
       "gptrealtime2": "gpt-realtime-2",
+      "gptrealtime2.1": "gpt-realtime-2.1",
+      "gptrealtime2.1mini": "gpt-realtime-2.1-mini",
       "gptrealtimemini": "gpt-realtime-mini",
       "gptrealtimetranslate": "gpt-realtime-translate",
       "gptrealtimewhisper": "gpt-realtime-whisper",
@@ -231,7 +250,6 @@
       "claudeopus4120250805": "claude-opus-4-1-20250805",
       "claudeopus45": "claude-opus-4-5",
       "claudeopus4520251101": "claude-opus-4-5-20251101",
-      "claudeopus46": "claude-opus-4-6",
       "claudeopus48": "claude-opus-4-8",
       "claudesonnet45": "claude-sonnet-4-5",
       "claudesonnet4520250929": "claude-sonnet-4-5-20250929",
@@ -240,6 +258,7 @@
       "claudesonnet5introductorypricing": "claude-sonnet-5-introductory-pricing"
     },
     "ambiguousHyphenless": [
+      "claudeopus46",
       "claudeopus47"
     ]
   }
