@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-08-03T07:11:19.833Z",
+  "fetchedAtIso": "2026-08-10T06:31:44.898Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,7 +8,7 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 16
+      "idCount": 14
     },
     {
       "name": "openai",
@@ -23,8 +23,6 @@
       "apiIds": [
         "claude-haiku-4-5",
         "claude-haiku-4-5-20251001",
-        "claude-opus-4-1",
-        "claude-opus-4-1-20250805",
         "claude-opus-4-5",
         "claude-opus-4-5-20251101",
         "claude-opus-4-6",
@@ -246,8 +244,6 @@
     "anthropicHyphenless": {
       "claudehaiku45": "claude-haiku-4-5",
       "claudehaiku4520251001": "claude-haiku-4-5-20251001",
-      "claudeopus41": "claude-opus-4-1",
-      "claudeopus4120250805": "claude-opus-4-1-20250805",
       "claudeopus45": "claude-opus-4-5",
       "claudeopus4520251101": "claude-opus-4-5-20251101",
       "claudeopus46": "claude-opus-4-6",
