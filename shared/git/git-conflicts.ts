@@ -223,12 +223,34 @@ async function resolveGitWorkdir(git: SimpleGit): Promise<string> {
  * Parse `git merge-tree` stderr/stdout for conflict paths.
  * Handles `Merge conflict in path` and `CONFLICT (type): path ...` (e.g. modify/delete).
  */
+/** True when git is too old or merge-tree failed for a non-conflict reason. */
+export function mergeTreeFailureLooksUnsupported(combinedOutput: string): boolean {
+  const o = combinedOutput.toLowerCase();
+  return (
+    /is not a git command/.test(o) ||
+    /unknown option/.test(o) ||
+    /ambiguous argument/.test(o) ||
+    /bad object/.test(o) ||
+    /unknown revision/.test(o)
+  );
+}
+
 export function parseMergeTreeConflictPaths(combinedOutput: string): string[] {
   const files = new Set<string>();
   for (const m of combinedOutput.matchAll(/Merge conflict in (.+)$/gm)) {
     files.add(m[1].trim());
   }
-  for (const m of combinedOutput.matchAll(/^CONFLICT \([^)]+\):\s*(\S+)/gm)) {
+  // WHY anchored "CONFLICT ... Merge conflict in <path>": git merge-tree emits
+  //   CONFLICT (submodule): Merge conflict in eliza
+  //   CONFLICT (content): Merge conflict in package.json
+  // The old (\S+) after the colon captured "Merge" as a file path.
+  // Only capture from "Merge conflict in ..." on this line format.
+  for (const m of combinedOutput.matchAll(/^CONFLICT \([^)]+\):\s*Merge conflict in (.+)$/gm)) {
+    files.add(m[1].trim());
+  }
+  // Also capture other CONFLICT formats that don't use "Merge conflict in"
+  // e.g. "CONFLICT (modify/delete): path deleted in ..."
+  for (const m of combinedOutput.matchAll(/^CONFLICT \([^)]+\):\s*(\S+)\s+(?:deleted|renamed|added)/gm)) {
     files.add(m[1].trim());
   }
   return [...files];
@@ -299,7 +321,23 @@ export async function probeLatentMergeConflictsWithOrigin(
     const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; code?: number };
     const out = `${e.stdout?.toString?.() ?? e.stdout ?? ''}\n${e.stderr?.toString?.() ?? e.stderr ?? ''}`;
     const files = parseMergeTreeConflictPaths(out);
-    return { ran: true, hasLatentConflicts: true, files };
+    if (files.length > 0) {
+      return { ran: true, hasLatentConflicts: true, files };
+    }
+    if (mergeTreeFailureLooksUnsupported(out)) {
+      return {
+        ran: false,
+        hasLatentConflicts: false,
+        files: [],
+        skipReason: 'git merge-tree unavailable or failed (need Git 2.38+ for latent merge probe)',
+      };
+    }
+    return {
+      ran: true,
+      hasLatentConflicts: false,
+      files: [],
+      skipReason: 'merge-tree exited without parseable conflict paths',
+    };
   }
 }
 

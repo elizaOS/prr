@@ -175,13 +175,39 @@ export function loadConfig(): Config {
   const verifierModelRaw = process.env.PRR_VERIFIER_MODEL?.trim();
   const finalAuditModelRaw = process.env.PRR_FINAL_AUDIT_MODEL?.trim();
   const splitPlanModelRaw = process.env.SPLIT_PLAN_LLM_MODEL?.trim();
+
+  const llmModelRaw = getEnvOrDefault('PRR_LLM_MODEL', defaultModel);
+  let llmModel = llmModelRaw;
+  if (!isValidModelName(llmModel)) {
+    console.warn(
+      chalk.yellow(
+        `PRR_LLM_MODEL is not a valid model id (${llmModelRaw.slice(0, 80)}${llmModelRaw.length > 80 ? '…' : ''}) — falling back to default for provider.`,
+      ),
+    );
+    llmModel = defaultModel;
+  }
+
+  const optionalModel = (envKey: string, raw: string | undefined): string | undefined => {
+    const t = raw?.trim();
+    if (!t) return undefined;
+    if (!isValidModelName(t)) {
+      console.warn(
+        chalk.yellow(
+          `Ignoring ${envKey} — not a valid model id (${t.slice(0, 80)}${t.length > 80 ? '…' : ''}).`,
+        ),
+      );
+      return undefined;
+    }
+    return t;
+  };
+
   const config: Config = {
     githubToken: getEnvOrThrow('GITHUB_TOKEN'),
     llmProvider,
-    llmModel: getEnvOrDefault('PRR_LLM_MODEL', defaultModel),
-    verifierModel: verifierModelRaw && verifierModelRaw.length > 0 ? verifierModelRaw : undefined,
-    finalAuditModel: finalAuditModelRaw && finalAuditModelRaw.length > 0 ? finalAuditModelRaw : undefined,
-    splitPlanModel: splitPlanModelRaw && splitPlanModelRaw.length > 0 ? splitPlanModelRaw : undefined,
+    llmModel,
+    verifierModel: optionalModel('PRR_VERIFIER_MODEL', verifierModelRaw),
+    finalAuditModel: optionalModel('PRR_FINAL_AUDIT_MODEL', finalAuditModelRaw),
+    splitPlanModel: optionalModel('SPLIT_PLAN_LLM_MODEL', splitPlanModelRaw),
     defaultTool: validateTool(getEnvOrDefault('PRR_TOOL', 'auto')),
     workdirBase: join(homedir(), '.prr', 'work'),
     anthropicThinkingBudget: thinkingBudget,
@@ -233,8 +259,12 @@ export function loadConfig(): Config {
  * Pattern for validating model names.
  * Allows alphanumeric, dots, underscores, hyphens, and forward slashes
  * (for provider-prefixed names like "anthropic/claude-3-opus").
+ * Rejects `//` and other ambiguous slash runs.
  */
-export const MODEL_NAME_PATTERN = /^[A-Za-z0-9._\/-]+$/;
+export const MODEL_NAME_PATTERN = /^(?!.*\/\/)[A-Za-z0-9._\/-]+$/;
+
+/** Max length for env-supplied model ids (defense against garbage / paste errors). */
+export const MODEL_NAME_MAX_LENGTH = 200;
 
 /**
  * Validate that a model name is safe and well-formed.
@@ -246,6 +276,7 @@ export const MODEL_NAME_PATTERN = /^[A-Za-z0-9._\/-]+$/;
  * @returns True if model name matches expected pattern
  */
 export function isValidModelName(model: string): boolean {
+  if (!model || model.length > MODEL_NAME_MAX_LENGTH) return false;
   return MODEL_NAME_PATTERN.test(model);
 }
 

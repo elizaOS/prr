@@ -6,9 +6,18 @@ import { execFileSync } from 'child_process';
 import { simpleGit } from 'simple-git';
 import {
   parseMergeTreeConflictPaths,
+  mergeTreeFailureLooksUnsupported,
   probeLatentMergeConflictsWithOrigin,
   checkForConflicts,
 } from '../shared/git/git-conflicts.js';
+
+describe('mergeTreeFailureLooksUnsupported', () => {
+  it('detects old-git / unknown-option style errors', () => {
+    expect(mergeTreeFailureLooksUnsupported("git: 'merge-tree' is not a git command")).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('error: unknown option `write-tree`')).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('CONFLICT (content): Merge conflict in f.txt')).toBe(false);
+  });
+});
 
 describe('parseMergeTreeConflictPaths', () => {
   it('parses Merge conflict in and CONFLICT lines', () => {

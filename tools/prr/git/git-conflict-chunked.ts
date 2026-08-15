@@ -7,6 +7,7 @@
  */
 
 import type { LLMClient } from '../llm/client.js';
+import { getConflictFileTypeRules } from '../llm/error-helpers.js';
 import { debug } from '../../../shared/logger.js';
 import {
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
@@ -113,7 +114,11 @@ export function buildConflictResolutionPromptThreeWay(
   const parseHint = previousParseError
     ? `\n\nIMPORTANT: A previous resolution attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is complete, valid code (e.g. close all block comments with */, no missing commas or brackets).\n`
     : '';
-  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}
+  const fileRules = filePath ? getConflictFileTypeRules(filePath) : '';
+  const fileRulesBlock = fileRules
+    ? `\n\nApply to the RESOLVED block:${fileRules}`
+    : '';
+  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}${fileRulesBlock}
 
 BASE (common ancestor):
 \`\`\`
@@ -1211,6 +1216,28 @@ export async function resolveConflictsWithTopTailsFallback(
         resolvedLines = resolvedCode.split('\n');
         explanations.push(`Lines ${chunk.startLine}-${chunk.endLine}: top+tails`);
       }
+      // Strip contextBefore lines that the model may have echoed back.
+      // The stitching code already preserves non-conflict lines before the chunk,
+      // so including them in the resolved output would duplicate them.
+      if (chunk.contextBefore.length > 0 && resolvedLines.length > chunk.contextBefore.length) {
+        const ctxLines = chunk.contextBefore;
+        let prefixMatch = true;
+        for (let ci = 0; ci < ctxLines.length; ci++) {
+          if (resolvedLines[ci]?.trim() !== ctxLines[ci]?.trim()) {
+            prefixMatch = false;
+            break;
+          }
+        }
+        if (prefixMatch) {
+          debug('Top+tails: stripping echoed contextBefore from resolved output', {
+            filePath,
+            strippedLines: ctxLines.length,
+            chunkStart: chunk.startLine,
+          });
+          resolvedLines = resolvedLines.slice(ctxLines.length);
+        }
+      }
+
       resolutions.set(chunk.startLine, resolvedLines);
     } catch (e) {
       debug('Top+tails fallback LLM error', { filePath, error: e });

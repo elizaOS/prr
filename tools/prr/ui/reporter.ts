@@ -320,9 +320,13 @@ export function printFinalSummary(
   const auditOverridesThisRun = stateContext.auditOverridesThisRun ?? [];
 
   if (overlapIds.length > 0) {
+    const showOverlap = 20;
+    const overlapSample = overlapIds.slice(0, showOverlap).join(', ');
+    const more =
+      overlapIds.length > showOverlap ? ` … (+${formatNumber(overlapIds.length - showOverlap)} more)` : '';
     console.warn(
       chalk.yellow(
-        `  ⚠ verified ∩ dismissed still shows ${formatNumber(overlapIds.length)} ID(s) at summary time — unexpected. Delete .pr-resolver-state.json in the clone workdir (see README Troubleshooting), then re-run.`,
+        `  ⚠ verified ∩ dismissed still shows ${formatNumber(overlapIds.length)} ID(s) at summary time — unexpected. Overlap: ${overlapSample}${more}. Delete .pr-resolver-state.json in the clone workdir (see README Troubleshooting), then re-run.`,
       ),
     );
   }
@@ -337,7 +341,18 @@ export function printFinalSummary(
   if (exitDetails) {
     console.log(chalk.gray(`     ${exitDetails}`));
   }
-  
+  const successLikeExit =
+    effectiveReason === 'all_fixed' ||
+    effectiveReason === 'all_resolved' ||
+    effectiveReason === 'audit_passed';
+  if (successLikeExit && remainingCount !== undefined && remainingCount > 0) {
+    console.log(
+      chalk.gray(
+        `     Note: Fix loop finished for all active threads. Remaining (${formatNumber(remainingCount)}) counts exhausted or “remaining” locations in state (deduped by file:line), not open fix-queue work.`,
+      ),
+    );
+  }
+
   // Fixed issues (only count issues actually fixed by the tool, not pre-existing fixes)
   // Use verifiedThisSession (the actual Set of IDs verified during iteration loops)
   // instead of delta counting, which undercounts re-verifications of issues already
@@ -380,11 +395,28 @@ export function printFinalSummary(
     }
   }
 
+  // Pill-output #407: surface UNCERTAIN vs truncation-guard counts in the summary (not only debug).
+  const finalAuditUncertain = stateContext.finalAuditUncertainThisRun ?? [];
+  if (finalAuditUncertain.length > 0) {
+    const trunc = finalAuditUncertain.filter((u) => u.kind === 'truncation-guard').length;
+    const unc = finalAuditUncertain.filter((u) => u.kind === 'uncertain').length;
+    console.log(
+      chalk.gray(
+        `\n  ℹ Final audit non-affirming passes: ${formatNumber(finalAuditUncertain.length)} (${formatNumber(unc)} UNCERTAIN, ${formatNumber(trunc)} truncation guard)`,
+      ),
+    );
+  }
+
   // Pill-output #18: keep final-audit re-queue count with other outcome lines (fixed / dismissed), not only above Exit.
   if (auditOverridesThisRun.length > 0) {
     console.log(
       chalk.cyan(
         `\n  ◆ Final audit re-queued: ${formatNumber(auditOverridesThisRun.length)} issue(s) (adversarial pass said UNFIXED for previously verified — see After Action Report)`,
+      ),
+    );
+    console.log(
+      chalk.gray(
+        `     (This count is only threads that were verified then challenged by final audit — not the same as “Remaining” unless those were the only open issues.)`,
       ),
     );
     if (
@@ -394,7 +426,7 @@ export function printFinalSummary(
     ) {
       console.log(
         chalk.gray(
-          `     (If Remaining below differs: re-queue is per thread; Remaining dedupes by file:line and can shrink after fixes.)`,
+          `     If Remaining below differs: re-queue is per thread id; Remaining dedupes by file:line and can include issues never verified this run.`,
         ),
       );
     }
@@ -966,7 +998,7 @@ export async function printAfterActionReport(
     }
   }
 
-  // Summary — Fixed, Dismissed, Remaining (by unique comment IDs so total never exceeds comment count).
+  // Summary — Fixed, Dismissed, Remaining (union of distinct comment IDs across buckets vs fetched rows).
   console.log(chalk.cyan('\n━━━ Summary ━━━'));
   const fixedIds = new Set(
     comments
@@ -995,7 +1027,16 @@ export async function printAfterActionReport(
     ),
   );
   if (totalAccounted !== comments.length) {
-    console.log(chalk.gray(`  (Unique comment IDs in these buckets: ${formatNumber(totalAccounted)})`));
+    console.log(
+      chalk.gray(
+        `  Distinct comment IDs in at least one bucket: ${formatNumber(totalAccounted)} (loaded: ${formatNumber(commentsFetched)})`,
+      ),
+    );
+    console.log(
+      chalk.gray(
+        "  → Buckets can be larger if dismissed/remaining/exhausted reference IDs not in this run's fetch; smaller if many loaded comments are only outdated / out of queue.",
+      ),
+    );
   }
   console.log(chalk.green(`  Fixed: ${formatNumber(fixedCount)}${fixedThisSessionCount > 0 ? ` (${formatNumber(fixedThisSessionCount)} this session)` : ''}`));
   console.log(chalk.gray(`  Dismissed: ${formatNumber(dismissedCount)}`));

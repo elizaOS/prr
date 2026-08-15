@@ -20,8 +20,13 @@ import type { PRInfo } from '../github/types.js';
 import { checkRemoteAhead } from '../../../shared/git/git-conflicts.js';
 import { pullLatest } from '../../../shared/git/git-pull.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
+import { getMidLoopNewCommentCap } from '../../../shared/constants.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solvability.js';
+import {
+  dismissDuplicateClusterFromComments,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
 
 // Note: All imports must be at module top level - do not use dynamic imports inside functions
 
@@ -47,6 +52,7 @@ import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solv
  * @param headSha - Optional PR head SHA for the check
  * @param stateContext - State context (for solvability and dismissals)
  * @param workdir - Repo workdir (for solvability path checks). If missing, solvability is skipped for new comments.
+ * @param duplicateMap - LLM dedup map from this push iteration’s analysis — dismiss cluster when a new thread is unsolvable.
  */
 export async function processNewBotReviews(
   github: GitHubAPI,
@@ -60,7 +66,8 @@ export async function processNewBotReviews(
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   headSha?: string,
   stateContext?: StateContext,
-  workdir?: string
+  workdir?: string,
+  duplicateMap?: Map<string, string[]>,
 ): Promise<void> {
   // Check for new bot reviews if expected time has passed. Skip fetch when head unchanged and recently fetched (backoff).
   const newReviewResult = await checkForNewBotReviews(owner, repo, prNumber, existingCommentIds, headSha);
@@ -80,22 +87,27 @@ export async function processNewBotReviews(
     // and burned 10+ fix iterations each. Apply the same filter as findUnresolvedIssues.
     const solvableComments: ReviewComment[] = [];
     if (workdir && stateContext) {
+      const lookupComments = [...comments, ...newComments];
+      const effectiveDupForLookup = resolveEffectiveDuplicateMapForComments(
+        stateContext,
+        duplicateMap,
+        lookupComments,
+      );
       for (const comment of newComments) {
         // WHY: Track every new comment ID (including ones we will dismiss) so the next checkForNewBotReviews does not return them again as "new".
         existingCommentIds.add(comment.id);
         const solvability = assessSolvability(workdir, comment, stateContext);
         if (!solvability.solvable) {
-          Dismissed.dismissIssue(
+          dismissDuplicateClusterFromComments(
             stateContext,
-            comment.id,
+            comment,
+            effectiveDupForLookup,
+            lookupComments,
             solvability.reason ?? 'Not solvable',
             solvability.dismissCategory ?? 'not-an-issue',
-            comment.path,
-            comment.line,
-            comment.body,
-            solvability.remediationHint
+            solvability.remediationHint,
           );
-          debug('P1: dismissed unsolvable new comment (solvability)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
+          debug('P1: dismissed unsolvable new comment (solvability, cluster)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
         } else {
           solvableComments.push(comment);
         }
@@ -110,26 +122,41 @@ export async function processNewBotReviews(
     } else {
       solvableComments.push(...newComments);
     }
-    // Add solvable new comments to tracking — fetch all snippets concurrently
+
+    const cap = getMidLoopNewCommentCap();
+    const overflow =
+      cap > 0 && solvableComments.length > cap ? solvableComments.length - cap : 0;
+    const toEnqueue = overflow > 0 ? solvableComments.slice(0, cap) : solvableComments;
+    if (overflow > 0) {
+      console.log(
+        chalk.yellow(
+          `   Capping mid-loop enqueue: ${formatNumber(toEnqueue.length)} of ${formatNumber(solvableComments.length)} new thread(s) (PRR_MID_LOOP_NEW_COMMENT_CAP=${formatNumber(cap)}). ${formatNumber(overflow)} remain in the PR but are deferred until the next full analysis.`,
+        ),
+      );
+    }
+
+    // Register every solvable new comment on the PR list so later phases see full thread set; only `toEnqueue` enters the fix queue now.
     for (const comment of solvableComments) {
       existingCommentIds.add(comment.id);
       comments.push(comment);
+    }
+    for (const comment of toEnqueue) {
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
     }
     const newSnippets = await Promise.all(
-      solvableComments.map((c) => getCodeSnippet(c.path, c.line, c.body))
+      toEnqueue.map((c) => getCodeSnippet(c.path, c.line, c.body))
     );
-    for (let i = 0; i < solvableComments.length; i++) {
+    for (let i = 0; i < toEnqueue.length; i++) {
       unresolvedIssues.push({
-        comment: solvableComments[i],
+        comment: toEnqueue[i],
         codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment from bot review',
         triage: { importance: 3, ease: 3 },
       });
     }
-    
-    console.log(chalk.cyan(`   Added ${formatNumber(solvableComments.length)} new issue(s) to workflow\n`));
+
+    console.log(chalk.cyan(`   Added ${formatNumber(toEnqueue.length)} new issue(s) to workflow\n`));
   }
 }
 

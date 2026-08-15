@@ -193,14 +193,6 @@ async function main(): Promise<void> {
     const maxConcurrent = getEffectiveMaxConcurrentLLM();
     console.log(chalk.gray(`  LLM concurrency: ${maxConcurrent === 1 ? '1 (default)' : maxConcurrent} — set PRR_MAX_CONCURRENT_LLM to tune`));
 
-    if (options.replyToThreads && !process.env.PRR_BOT_LOGIN?.trim()) {
-      console.warn(
-        chalk.yellow(
-          '  --reply-to-threads: PRR_BOT_LOGIN is not set — cross-run idempotency is off; re-runs may post duplicate thread replies. Set PRR_BOT_LOGIN to your bot GitHub login.',
-        ),
-      );
-    }
-
     // Create and run resolver
     resolver = new PRResolver(config, options);
     await resolver.run(prUrl);

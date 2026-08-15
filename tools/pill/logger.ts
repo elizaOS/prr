@@ -38,18 +38,27 @@ function safeStringify(value: unknown, pretty = false): string {
 
 function writeToPromptLog(
   slug: string,
-  kind: 'PROMPT' | 'RESPONSE',
+  kind: 'PROMPT' | 'RESPONSE' | 'ERROR',
   label: string,
   body: string,
   metadata?: Record<string, unknown>
 ): void {
   if (!promptLogPath) return;
   try {
-    let header = `${DELIMITER}\n ${slug}  ${kind}: ${label} (${body.length} chars)\n`;
+    const content = typeof body === 'string' ? body : String(body ?? '');
+    if ((kind === 'PROMPT' || kind === 'RESPONSE') && (content.length === 0 || content.trim().length === 0)) {
+      appendFileSync(
+        promptLogPath,
+        `--- PILL_PROMPTLOG_EMPTY_BODY slug=${slug} kind=${kind} label=${JSON.stringify(label)} at=${new Date().toISOString()} ---\n`,
+        'utf-8',
+      );
+      return;
+    }
+    let header = `${DELIMITER}\n ${slug}  ${kind}: ${label} (${content.length} chars)\n`;
     header += ` ${new Date().toISOString()}\n`;
     if (metadata) header += ` ${safeStringify(metadata, true)}\n`;
     header += `${DELIMITER}\n`;
-    appendFileSync(promptLogPath, header + body + `\n${DELIMITER}\n\n`, 'utf-8');
+    appendFileSync(promptLogPath, header + content + `\n${DELIMITER}\n\n`, 'utf-8');
   } catch (err) {
     console.error('Prompt log write failed:', err);
   }
@@ -120,22 +129,46 @@ export function getPromptLogPath(): string | null {
   return promptLogPath;
 }
 
-export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): void {
+/** Returns slug — pass to {@link debugResponse} / {@link debugPromptError} for the same request. */
+export function debugPrompt(label: string, prompt: string, metadata?: Record<string, unknown>): string {
   promptLogCounter++;
   const slug = promptSlug(promptLogCounter, label);
   const requestId = randomUUID();
   promptRequestIdBySlug.set(slug, requestId);
   const mergedMeta = { ...metadata, requestId };
   writeToPromptLog(slug, 'PROMPT', label, prompt, mergedMeta);
+  return slug;
 }
 
-/** Uses the same counter as the preceding debugPrompt so PROMPT/RESPONSE share a slug for pairing. */
-export function debugResponse(label: string, response: string, metadata?: Record<string, unknown>): void {
-  const slug = promptSlug(promptLogCounter, label);
+export function debugResponse(slug: string, label: string, response: string, metadata?: Record<string, unknown>): void {
   const requestId = promptRequestIdBySlug.get(slug);
   const mergedMeta = requestId ? { ...metadata, requestId } : metadata;
   if (requestId) promptRequestIdBySlug.delete(slug);
+  const trimmed = typeof response === 'string' ? response.trim() : '';
+  if (!trimmed) {
+    writeToPromptLog(
+      slug,
+      'ERROR',
+      label,
+      'Empty or whitespace-only response body (HTTP success; no RESPONSE written).',
+      { ...mergedMeta, emptyBody: true },
+    );
+    return;
+  }
   writeToPromptLog(slug, 'RESPONSE', label, response, mergedMeta);
+}
+
+export function debugPromptError(
+  slug: string,
+  label: string,
+  errorMessage: string,
+  metadata?: Record<string, unknown>,
+): void {
+  if (!promptLogPath) return;
+  const requestId = promptRequestIdBySlug.get(slug);
+  const mergedMeta = requestId ? { ...metadata, requestId } : metadata;
+  if (requestId) promptRequestIdBySlug.delete(slug);
+  writeToPromptLog(slug, 'ERROR', label, errorMessage, mergedMeta);
 }
 
 export function debug(_msg: string, _data?: unknown): void {

@@ -222,9 +222,11 @@ describe('getFullFileForAudit', () => {
     tempDirs.push(dir);
     writeFileSync(join(dir, 'small.ts'), ['alpha', 'beta', 'gamma'].join('\n'), 'utf-8');
     const out = await getFullFileForAudit(dir, 'small.ts', 2, '');
-    expect(out).toContain('1: alpha');
-    expect(out).toContain('2: beta');
-    expect(out).toContain('3: gamma');
+    expect(out.snippet).toContain('[PRR final-audit context]');
+    expect(out.snippet).toContain('1: alpha');
+    expect(out.snippet).toContain('2: beta');
+    expect(out.snippet).toContain('3: gamma');
+    expect(out.fixSiteInWindow).toBe(true);
   });
 
   it('centers excerpt on review line when file exceeds audit char cap', async () => {
@@ -238,8 +240,25 @@ describe('getFullFileForAudit', () => {
     expect(content.length).toBeGreaterThan(50_000);
     writeFileSync(join(dir, 'big.ts'), content, 'utf-8');
     const out = await getFullFileForAudit(dir, 'big.ts', 1500, '');
-    expect(out).toContain('excerpt only');
-    expect(out).toMatch(/1500:\s*\/\/ line 1500/);
-    expect(out).not.toMatch(/^1:\s*\/\/ line 1/m);
+    expect(out.snippet).toContain('[PRR final-audit context]');
+    expect(out.snippet).toMatch(/excerpt —/);
+    expect(out.snippet).toMatch(/1500:\s*\/\/ line 1500/);
+    expect(out.snippet).not.toMatch(/^1:\s*\/\/ line 1/m);
+    expect(out.fixSiteInWindow).toBe(true);
+  });
+
+  it('marks fixSiteInWindow false for head-only excerpt when no line anchor', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-audit-'));
+    tempDirs.push(dir);
+    const lines: string[] = [];
+    for (let i = 1; i <= 8000; i++) {
+      lines.push(`// line ${i} ${'x'.repeat(60)}`);
+    }
+    writeFileSync(join(dir, 'huge.ts'), lines.join('\n'), 'utf-8');
+    const out = await getFullFileForAudit(dir, 'huge.ts', null, '');
+    expect(out.fixSiteInWindow).toBe(false);
+    expect(out.snippet).toContain('[PRR final-audit context]');
+    expect(out.snippet).toMatch(/1:\s*\/\/ line 1/);
+    expect(out.snippet.length).toBeLessThan(lines.join('\n').length);
   });
 });

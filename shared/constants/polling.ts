@@ -64,3 +64,31 @@ export const LLM_REQUEST_TIMEOUT_MS = 90_000; // 90 seconds
  * so the request can complete before the gateway returns 504.
  */
 export const LLM_REQUEST_TIMEOUT_FULL_FILE_MS = 180_000; // 3 minutes
+
+/**
+ * Client-side wait for each llm-api HTTP attempt (wrapped by with504Retry in shared/runners/llm-api.ts).
+ * Full-file rewrite prompts use {@link LLM_REQUEST_TIMEOUT_FULL_FILE_MS} always.
+ *
+ * Large search/replace prompts (e.g. 100k+ chars) often need more than 90s wall time; output.log audits
+ * showed Opus timing out at 90s with ~137k input while `isFullFileRewrite` was false.
+ *
+ * **Override:** set **`PRR_LLM_API_REQUEST_TIMEOUT_MS`** to a positive integer (ms) to use a fixed cap for
+ * non-full-file fix calls (skips size tiers below).
+ */
+export function getLlmApiRequestTimeoutMs(promptCharCount: number, isFullFileRewrite: boolean): number {
+  if (isFullFileRewrite) {
+    return LLM_REQUEST_TIMEOUT_FULL_FILE_MS;
+  }
+  const raw = process.env.PRR_LLM_API_REQUEST_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) {
+      return n;
+    }
+  }
+  let ms = LLM_REQUEST_TIMEOUT_MS;
+  if (promptCharCount > 60_000) ms = Math.max(ms, 120_000);
+  if (promptCharCount > 100_000) ms = Math.max(ms, 150_000);
+  if (promptCharCount > 140_000) ms = Math.max(ms, 180_000);
+  return Math.min(ms, LLM_REQUEST_TIMEOUT_FULL_FILE_MS);
+}

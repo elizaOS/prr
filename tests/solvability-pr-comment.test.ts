@@ -128,6 +128,112 @@ describe('(PR comment) path inference in solvability', () => {
   });
 });
 
+describe('review rollup headings (solvability 0a2 — Cycle 72)', () => {
+  it('dismisses "### Remaining Issues" recap anchored on a file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    mkdirSync(join(dir, 'agent'), { recursive: true });
+    writeFileSync(join(dir, 'agent', 'x.ts'), 'export {};\n', 'utf8');
+    execFileSync('git', ['add', 'agent/x.ts'], { cwd: dir, stdio: 'ignore' });
+    const comment: ReviewComment = {
+      id: 'ic-rollup-rem',
+      threadId: 't-r1',
+      author: 'coderabbitai',
+      path: 'agent/x.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+      body: '### Remaining Issues\n\n- [ ] Thread A still open\n- [ ] Thread B still open\n',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+    expect(result.reason).toMatch(/meta-review|rollup/i);
+  });
+
+  it('dismisses "Issues Fixed Since Previous Reviews" heading', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-fix'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    writeFileSync(join(dir, 'z.ts'), 'export const z = 1;\n', 'utf8');
+    execFileSync('git', ['add', 'z.ts'], { cwd: dir, stdio: 'ignore' });
+    const comment: ReviewComment = {
+      id: 'ic-rollup-fixed',
+      threadId: 't-r2',
+      author: 'coderabbitai',
+      path: 'z.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+      body: '## Issues Fixed Since Previous Reviews\n\n✅ Item one\n',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+  });
+
+  it('dismisses bold-only "Issues Fixed Since Previous Reviews" (no # heading)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-bold'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    writeFileSync(join(dir, 'a.ts'), 'export const a = 1;\n', 'utf8');
+    execFileSync('git', ['add', 'a.ts'], { cwd: dir, stdio: 'ignore' });
+    const comment: ReviewComment = {
+      id: 'ic-rollup-bold',
+      threadId: 't-r2b',
+      author: 'coderabbitai',
+      path: 'a.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+      body: '**Issues Fixed Since Previous Reviews**\n\n- ✅ Thread one addressed\n',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+  });
+
+  it('dismisses HTML h3 "Issues Fixed Since Previous Reviews"', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-html'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    writeFileSync(join(dir, 'b.ts'), 'export const b = 1;\n', 'utf8');
+    execFileSync('git', ['add', 'b.ts'], { cwd: dir, stdio: 'ignore' });
+    const comment: ReviewComment = {
+      id: 'ic-rollup-html',
+      threadId: 't-r2h',
+      author: 'coderabbitai',
+      path: 'b.ts',
+      line: 1,
+      createdAt: new Date().toISOString(),
+      body: '<h3>Issues Fixed Since Previous Reviews</h3>\n<p>Recap only.</p>\n',
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+  });
+
+  it('dismisses (PR comment) with rollup heading before path inference', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-solv-rollup-pr'));
+    tempDirs.push(dir);
+    initGitRepo(dir);
+    const longBody =
+      '### Remaining Issues\n\n' +
+      '- [ ] a\n'.repeat(20) +
+      'Some filler so body length exceeds short-path threshold.';
+    const comment: ReviewComment = {
+      id: 'ic-rollup-pr',
+      threadId: 't-r3',
+      author: 'coderabbitai',
+      path: '(PR comment)',
+      line: null,
+      createdAt: new Date().toISOString(),
+      body: longBody,
+    };
+    const result = assessSolvability(dir, comment, makeStateContext(dir));
+    expect(result.solvable).toBe(false);
+    expect(result.dismissCategory).toBe('not-an-issue');
+  });
+});
+
 describe('human-confirmed addressed (solvability 0a5b)', () => {
   it('dismisses when maintainer confirmed the thread is addressed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'prr-solv-confirmed-'));

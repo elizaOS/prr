@@ -25,10 +25,12 @@ const DISMISSED_CATEGORIES_BASE = new Set<string>([
   'false-positive',
   'remaining',
   'exhausted',
-  'path-unresolved', // e.g. .d.ts fragment — reply so thread has visible feedback
+  'path-unresolved', // ambiguous basename / cannot pick one file — reply so thread has visible feedback
+  'path-fragment', // extension-only / bare .d.ts — reply so thread has visible feedback
   'missing-file', // file not found — reply so thread has visible feedback
   'duplicate',
   'file-unchanged',
+  'out-of-scope', // blast radius (opt-in dismiss) — manual review if comment still valid
 ]);
 
 /** Categories that receive a dismissed-thread reply for this process (base set + optional chronic-failure). */
@@ -76,6 +78,62 @@ function getErrorDetails(err: unknown): { status?: number; message: string; body
   return { status, message, body };
 }
 
+/** GitHub REST cap for review reply bodies (leave margin below 65,536). */
+const REVIEW_REPLY_BODY_MAX_CHARS = 60_000;
+
+function clampReplyBodyForGitHub(body: string): string {
+  if (body.length <= REVIEW_REPLY_BODY_MAX_CHARS) return body;
+  return `${body.slice(0, REVIEW_REPLY_BODY_MAX_CHARS - 24)}\n[body truncated]`;
+}
+
+/**
+ * When true, 422 is almost certainly stale thread / diff position / comment id — a shorter body will not help.
+ * Skip the second API call (pill-output audits: redundant fallback still 422s).
+ */
+function threadReply422SkipShortBodyRetry(err: unknown): boolean {
+  const { body } = getErrorDetails(err);
+  if (body != null && typeof body === 'object' && !Array.isArray(body) && 'errors' in body) {
+    const errors = (body as { errors?: unknown }).errors;
+    if (Array.isArray(errors)) {
+      for (const raw of errors) {
+        if (!raw || typeof raw !== 'object') continue;
+        const e = raw as { field?: string; resource?: string; code?: string };
+        const field = (e.field ?? '').toLowerCase();
+        const resource = (e.resource ?? '').toLowerCase();
+        if (field === 'body' || field.endsWith('_body')) return false;
+        if (resource.includes('pullrequestreviewcomment') || resource.includes('pull_request_review')) return true;
+        if (
+          field === 'in_reply_to' ||
+          field === 'commit_id' ||
+          field === 'path' ||
+          field === 'position' ||
+          field === 'line' ||
+          field === 'side' ||
+          field === 'subject_type' ||
+          field === 'diff_hunk'
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  const s =
+    typeof body === 'string'
+      ? body
+      : body != null
+        ? JSON.stringify(body)
+        : '';
+  const lower = s.toLowerCase();
+  if (/\bfield["']?\s*:\s*["']body["']/.test(s) || /\bcode["']?\s*:\s*["']too_large["']/.test(s)) {
+    return false;
+  }
+  return (
+    /pullrequestreviewcomment|in_reply_to|"field":"commit_id"|"field":"path"|"field":"position"|"field":"line"|"field":"side"|diff_hunk/.test(
+      lower,
+    )
+  );
+}
+
 /**
  * Post reply; on 422/Validation Failed log full error body and retry once with shortened message.
  * WHY full error: GitHub's reason (body format, thread state) is in the response; we log it so we can fix.
@@ -92,8 +150,10 @@ async function postReplyWithRetry(
   body: string,
   fallbackBody: string
 ): Promise<{ ok: boolean; is422?: boolean }> {
+  const primary = clampReplyBodyForGitHub(body);
+  const fallback = clampReplyBodyForGitHub(fallbackBody);
   try {
-    await github.replyToReviewThread(owner, repo, prNumber, databaseId, body);
+    await github.replyToReviewThread(owner, repo, prNumber, databaseId, primary);
     return { ok: true };
   } catch (err) {
     const { status, message, body: errBody } = getErrorDetails(err);
@@ -103,9 +163,13 @@ async function postReplyWithRetry(
     } else {
       debug('Failed to post reply', { threadId, error: message });
     }
-    if (fallbackBody !== body) {
+    const skipShortRetry = validationFailed && threadReply422SkipShortBodyRetry(err);
+    if (skipShortRetry) {
+      debug('Skipping short-body reply retry — 422 looks like thread/diff/comment state, not body length', { threadId });
+    }
+    if (!skipShortRetry && fallback !== primary) {
       try {
-        await github.replyToReviewThread(owner, repo, prNumber, databaseId, fallbackBody);
+        await github.replyToReviewThread(owner, repo, prNumber, databaseId, fallback);
         return { ok: true };
       } catch (retryErr) {
         const retryDetails = getErrorDetails(retryErr);
@@ -121,20 +185,26 @@ async function postReplyWithRetry(
   }
 }
 
-/** Return type: when replyToThreads is true, returns counts for user-visible summary on high failure rate (output.log audit). */
+/** Return type: when replyToThreads is true, returns counts for user-visible summary (output.log audit / 422 storms). */
 export interface PostThreadRepliesResult {
   attempted: number;
   replied: number;
+  /** Failures where GitHub returned 422 / validation (stale thread, bad anchor, etc.). */
+  failed422: number;
+  /** Failures for other reasons (network, 403, non-422 errors). */
+  failedOther: number;
+  /** Candidates not attempted after we stopped on consecutive all-422 batches. */
+  skippedDueTo422Stop: number;
 }
 
-/** Consecutive 422s after which we stop attempting further replies (avoids retry storm; output.log audit). */
-const MAX_CONSECUTIVE_422_BEFORE_STOP = 3;
+/** Consecutive batches where **every** reply in the batch failed with 422 — then stop (avoids parallel 422 miscount; pill-output). */
+const MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP = 3;
 
 /**
  * Post a reply on each review thread that was verified-fixed or dismissed (with reply).
  * Skips ic-* threads (issue comments); skips threads already in repliedThreadIds.
  * Updates repliedThreadIds in-place after each successful reply.
- * On 3 consecutive 422 Validation Failed, stops attempting more replies and returns counts.
+ * On 3 consecutive batches where every reply in the batch returns 422, stops attempting more replies (serial batch accounting; pill-output).
  * Caller may print a summary when replied/attempted is very low (e.g. <10%).
  */
 export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise<PostThreadRepliesResult | void> {
@@ -174,11 +244,19 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     commentToThread.get(commentId) ?? commentToThread.get(commentId.toLowerCase());
 
   const threadsRepliedThisCall: string[] = [];
-  const botLogin = process.env.PRR_BOT_LOGIN?.trim() || undefined;
   let attempted = 0;
   let replied = 0;
-  let consecutive422 = 0;
+  let failed422 = 0;
+  let failedOther = 0;
+  let skippedDueTo422Stop = 0;
+  let consecutiveAll422Batches = 0;
   let stopReplyDueTo422 = false;
+
+  const tallyFailure = (result: { ok: boolean; is422?: boolean }): void => {
+    if (result.ok) return;
+    if (result.is422 === true) failed422++;
+    else failedOther++;
+  };
 
   // Collect candidate thread IDs we might reply to (for batched cross-run idempotency check).
   const candidateThreadIds = new Set<string>();
@@ -192,9 +270,21 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     if (entry && !repliedThreadIds.has(entry.threadId)) candidateThreadIds.add(entry.threadId);
   }
 
+  let botLogin = process.env.PRR_BOT_LOGIN?.trim() || undefined;
+  if (!botLogin && candidateThreadIds.size > 0) {
+    botLogin = await github.getAuthenticatedLogin();
+  }
+
   // Batch-fetch "already replied by us" for all candidates in parallel (one API call per thread, parallelized).
   // WHY parallel: Sequential getThreadComments would make latency linear in thread count; Promise.all keeps wall-clock time low.
   const alreadyRepliedByUsMap = new Map<string, boolean>();
+  if (!botLogin && candidateThreadIds.size > 0) {
+    console.warn(
+      chalk.yellow(
+        '  Thread replies: could not determine bot login (set PRR_BOT_LOGIN or use a token allowed to call GET /user); cross-run idempotency is off.',
+      ),
+    );
+  }
   if (botLogin && candidateThreadIds.size > 0) {
     const results = await Promise.all(
       Array.from(candidateThreadIds, async (threadId) => {
@@ -224,6 +314,20 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     verifiedReplies.push({ entry, body: `Fixed in \`${short}\`.` });
   }
 
+  /** How many dismissed-thread replies would still be attempted (uses current repliedThreadIds — call after verified phase updates). */
+  const countDismissedReplyCandidates = (): number => {
+    let n = 0;
+    for (const d of dismissedIssues) {
+      if (!dismissedWithReply.has(d.category)) continue;
+      const entry = getThreadEntry(d.commentId);
+      if (!entry) continue;
+      if (repliedThreadIds.has(entry.threadId)) continue;
+      if (alreadyRepliedByUsMap.get(entry.threadId) === true) continue;
+      n++;
+    }
+    return n;
+  };
+
   // Process verified replies with concurrency limit (3 parallel)
   const REPLY_CONCURRENCY = 3;
   for (let i = 0; i < verifiedReplies.length && !stopReplyDueTo422; i += REPLY_CONCURRENCY) {
@@ -234,35 +338,37 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
         const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'Addressed.');
         if (result.ok) {
           replied++;
-          consecutive422 = 0;
           repliedThreadIds.add(entry.threadId);
           threadsRepliedThisCall.push(entry.threadId);
           debug('Posted fixed reply on thread', { threadId: entry.threadId });
         } else {
-          if (result.is422) {
-            consecutive422++;
-            if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-              console.log(
-                chalk.yellow(
-                  `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_422_BEFORE_STOP)} consecutive 422s (Validation Failed).`,
-                ),
-              );
-              stopReplyDueTo422 = true;
-            }
-          } else {
-            consecutive422 = 0;
-          }
+          tallyFailure(result);
         }
         return result;
       })
     );
-    // Check if any result triggered stop
-    if (results.some(r => r.is422 && consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP)) {
+    const anyOk = results.some((r) => r.ok);
+    const all422 =
+      results.length > 0 && results.every((r) => !r.ok && r.is422 === true);
+    if (anyOk) consecutiveAll422Batches = 0;
+    else if (all422) consecutiveAll422Batches++;
+    else consecutiveAll422Batches = 0;
+    if (consecutiveAll422Batches >= MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP) {
+      const nextIdx = i + batch.length;
+      skippedDueTo422Stop = verifiedReplies.length - nextIdx + countDismissedReplyCandidates();
+      console.log(
+        chalk.yellow(
+          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed). ` +
+            `Posted ${formatNumber(replied)} of ${formatNumber(attempted)} so far; ${formatNumber(skippedDueTo422Stop)} thread(s) not attempted. ` +
+            `Often caused by comments anchored on an old commit (re-run after bots re-review) or threads GitHub no longer accepts replies on — see docs/THREAD-REPLIES.md.`,
+        ),
+      );
+      stopReplyDueTo422 = true;
       break;
     }
   }
 
-  // Pill #10: Batch dismissed replies with concurrency limit
+  // Build dismissed list after verified replies so repliedThreadIds matches threads we already "Fixed in …" (avoid duplicate queue entries).
   const dismissedReplies: Array<{ entry: { threadId: string; databaseId: number }; body: string }> = [];
   for (const d of dismissedIssues) {
     if (!dismissedWithReply.has(d.category)) continue;
@@ -280,14 +386,19 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
       body = 'Could not auto-fix (wrong file or repeated failures); manual review recommended.';
     } else if (d.category === 'chronic-failure') {
       body = 'Could not auto-verify after repeated failures; batch-dismissed. Manual review if still needed.';
-    } else if (d.category === 'path-unresolved') {
-      body = 'Could not auto-fix (path unresolved); manual review recommended.';
+    } else if (d.category === 'path-unresolved' || d.category === 'path-fragment') {
+      body =
+        d.category === 'path-fragment'
+          ? 'Could not auto-fix (path fragment — not a single file); manual review recommended.'
+          : 'Could not auto-fix (path unresolved); manual review recommended.';
     } else if (d.category === 'missing-file') {
       body = 'Could not auto-fix (file not found); manual review recommended.';
     } else if (d.category === 'duplicate') {
       body = 'Treated as duplicate of another comment; no separate fix.';
     } else if (d.category === 'file-unchanged') {
       body = 'No change in this file this run; manual review if still needed.';
+    } else if (d.category === 'out-of-scope') {
+      body = 'Outside PR scope — manual review recommended.';
     } else {
       body = `Dismissed: ${oneLine(d.reason)}`;
     }
@@ -303,30 +414,32 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
         const result = await postReplyWithRetry(github, owner, repo, prNumber, entry.databaseId, entry.threadId, body, 'No change needed.');
         if (result.ok) {
           replied++;
-          consecutive422 = 0;
           repliedThreadIds.add(entry.threadId);
           threadsRepliedThisCall.push(entry.threadId);
           debug('Posted dismissed reply on thread', { threadId: entry.threadId });
         } else {
-          if (result.is422) {
-            consecutive422++;
-            if (consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP) {
-              console.log(
-                chalk.yellow(
-                  `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_422_BEFORE_STOP)} consecutive 422s (Validation Failed).`,
-                ),
-              );
-              stopReplyDueTo422 = true;
-            }
-          } else {
-            consecutive422 = 0;
-          }
+          tallyFailure(result);
         }
         return result;
       })
     );
-    // Check if any result triggered stop
-    if (results.some(r => r.is422 && consecutive422 >= MAX_CONSECUTIVE_422_BEFORE_STOP)) {
+    const anyOk = results.some((r) => r.ok);
+    const all422 =
+      results.length > 0 && results.every((r) => !r.ok && r.is422 === true);
+    if (anyOk) consecutiveAll422Batches = 0;
+    else if (all422) consecutiveAll422Batches++;
+    else consecutiveAll422Batches = 0;
+    if (consecutiveAll422Batches >= MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP) {
+      const nextIdx = i + batch.length;
+      skippedDueTo422Stop = dismissedReplies.length - nextIdx;
+      console.log(
+        chalk.yellow(
+          `Stopping thread replies after ${formatNumber(MAX_CONSECUTIVE_ALL_422_BATCHES_BEFORE_STOP)} consecutive batches where every reply returned 422 (Validation Failed). ` +
+            `Posted ${formatNumber(replied)} of ${formatNumber(attempted)} so far; ${formatNumber(skippedDueTo422Stop)} thread(s) not attempted. ` +
+            `Often caused by comments anchored on an old commit (re-run after bots re-review) or threads GitHub no longer accepts replies on — see docs/THREAD-REPLIES.md.`,
+        ),
+      );
+      stopReplyDueTo422 = true;
       break;
     }
   }
@@ -343,5 +456,22 @@ export async function postThreadReplies(opts: PostThreadRepliesOptions): Promise
     }
   }
 
-  return { attempted, replied };
+  if (attempted > 0) {
+    const pieces: string[] = [
+      `${formatNumber(replied)} of ${formatNumber(attempted)} thread reply attempt(s) succeeded`,
+    ];
+    if (failed422 > 0) pieces.push(`${formatNumber(failed422)} Validation Failed (422)`);
+    if (failedOther > 0) pieces.push(`${formatNumber(failedOther)} other failure(s)`);
+    if (skippedDueTo422Stop > 0) {
+      pieces.push(`${formatNumber(skippedDueTo422Stop)} not attempted (stopped after repeated 422 batches)`);
+    }
+    const line = `  Thread replies: ${pieces.join('; ')}.`;
+    if (replied === attempted && skippedDueTo422Stop === 0) {
+      console.log(chalk.gray(line));
+    } else {
+      console.log(chalk.yellow(line));
+    }
+  }
+
+  return { attempted, replied, failed422, failedOther, skippedDueTo422Stop };
 }

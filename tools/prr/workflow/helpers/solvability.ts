@@ -26,6 +26,12 @@ import {
 } from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 import { getOutdatedModelCatalogDismissal } from './outdated-model-advice.js';
+import { isTrackedGitSubmodulePath } from '../../../../shared/git/git-submodule-path.js';
+import {
+  dismissDuplicateClusterFromComments,
+  mergeCommentsForClusterDismiss,
+  resolveEffectiveDuplicateMapForComments,
+} from '../issue-analysis-dedup.js';
 
 export const SNIPPET_PLACEHOLDER = '(file not found or unreadable)';
 
@@ -304,7 +310,15 @@ export function resolveTrackedPathWithPrFiles(
 export interface SolvabilityResult {
   solvable: boolean;
   reason?: string;                    // For logging
-  dismissCategory?: 'stale' | 'remaining' | 'not-an-issue' | 'chronic-failure' | 'already-fixed' | 'missing-file' | 'path-unresolved';
+  dismissCategory?:
+    | 'stale'
+    | 'remaining'
+    | 'not-an-issue'
+    | 'chronic-failure'
+    | 'already-fixed'
+    | 'missing-file'
+    | 'path-unresolved'
+    | 'path-fragment';
   /** Next-step for humans (e.g. lockfile: "Run: bun install") */
   remediationHint?: string;
   contextHints?: string[];            // Injected into LLM prompt in Phase 3
@@ -362,14 +376,15 @@ export function assessSolvability(
     };
   }
 
-  // Check 0a2: Summary/meta-review comments (reviewer recap tables: "| Issue | Status |" with ✅/❌/Fixed/Still missing)
+  // Check 0a2: Summary/meta-review comments (status tables, "### Summary", CodeRabbit rollups)
   // WHY: These are status recaps of many issues, not a single fixable item. Treating them as one issue causes
-  // verifier confusion (e.g. "patchComponent tests: Still missing" row → NO with wrong reasoning). Dismiss so we don't fix "the summary".
+  // verifier confusion (e.g. "patchComponent tests: Still missing" row → NO with wrong reasoning) or burns
+  // single-issue / couldNotInject cycles on headings like "### Remaining Issues" (Cycle 72 / eliza#6702).
   if (isSummaryOrMetaReviewComment(comment.body)) {
     return {
       solvable: false,
       dismissCategory: 'not-an-issue',
-      reason: 'Summary or meta-review comment (status recap table), not a single fixable issue',
+      reason: 'Summary or meta-review comment (status recap / rollup heading), not a single fixable issue',
     };
   }
 
@@ -544,13 +559,27 @@ export function assessSolvability(
   if (pathResolution.kind === 'fragment') {
     return {
       solvable: false,
-      dismissCategory: 'path-unresolved',
+      dismissCategory: 'path-fragment',
       reason: `Review path "${comment.path}" is a fragment (e.g. .d.ts), not a full file path — cannot resolve to a single file`,
     };
   }
   let effectivePath = 'path' in pathResolution ? pathResolution.path : comment.path;
   effectivePath = tryResolvePathWithExtensionVariants(workdir, effectivePath);
   const effectiveFullPath = join(workdir, effectivePath);
+
+  // Check 0e0: Git submodule (gitlink) at review path — no regular file for line-level fixes or snippets.
+  // WHY: Bots anchor on paths with index mode 160000; reads return placeholder and we used to dismiss as
+  // generic stale ("unreadable") or miss solvability when the checkout is a directory and comment.line is null.
+  if (isTrackedGitSubmodulePath(workdir, effectivePath)) {
+    return {
+      solvable: false,
+      dismissCategory: 'not-an-issue',
+      reason:
+        'Review path is a git submodule (gitlink) — not a regular source file in this repo; automated line-level fixes do not apply at this anchor',
+      remediationHint:
+        'Run git submodule update --init if you need a local checkout, or address the feedback in the submodule repository or parent manifest (.gitmodules / workspace).',
+    };
+  }
 
   // Check 0e1: Issue references line numbers beyond current file length (file was shortened → comment stale).
   // WHY: output.log audit — DATABASE_API_README.md had 37 lines but review referenced "lines 56-57, 120-121"; verifier couldn't confirm and we burned 3+ iterations.
@@ -661,6 +690,7 @@ export function assessSolvability(
           if (retargetResult.found) {
             return {
               solvable: true,
+              resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
               retargetedLine: retargetResult.line,
               contextHints: [`Code for \`${identifiers[0]}\` found at line ${retargetResult.line} (comment targeted line ${comment.line})`],
             };
@@ -680,6 +710,7 @@ export function assessSolvability(
           const msg = `Comment targets line ${comment.line} but file only has ${totalLines} lines, and only weak built-in/type identifiers (${weakIdentifiers.join(', ')}) were extracted — keep the issue open for broader analysis instead of dismissing as stale`;
           return {
             solvable: true,
+            resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
             contextHints: [msg],
           };
         }
@@ -713,6 +744,7 @@ export function assessSolvability(
           if (retargetResult.found && Math.abs(retargetResult.line! - comment.line) > 10) {
             return {
               solvable: true,
+              resolvedPath: effectivePath !== comment.path ? effectivePath : undefined,
               retargetedLine: retargetResult.line,
               contextHints: [`Code for \`${identifiers[0]}\` found at line ${retargetResult.line} (comment targeted line ${comment.line})`],
             };
@@ -748,7 +780,7 @@ export function assessSolvability(
   // WHY: Same issue failing N+ times burns tokens; only count attempts on same file content so refactors reset the counter
   const attempts = Performance.getIssueAttempts(stateContext, comment.id);
   let failedAttempts = attempts.filter(a => a.result === 'failed' || a.result === 'no-changes');
-  const currentHash = hashFileContentSync(fullPath);
+  const currentHash = hashFileContentSync(effectiveFullPath);
   failedAttempts = failedAttempts.filter(a => !a.fileContentHash || a.fileContentHash === currentHash);
   if (failedAttempts.length >= CHRONIC_FAILURE_THRESHOLD) {
     debug('Solvability dismiss: chronic-failure', { commentId: comment.id, path: comment.path, failedAttempts: failedAttempts.length, threshold: CHRONIC_FAILURE_THRESHOLD });
@@ -947,7 +979,10 @@ export async function recheckSolvability(
   changedFiles: string[],
   workdir: string,
   stateContext: StateContext,
-  getCodeSnippetFn: (path: string, line: number | null, body?: string) => Promise<string>
+  getCodeSnippetFn: (path: string, line: number | null, body?: string) => Promise<string>,
+  /** When set with allComments, dismiss every id in the LLM dedup cluster (file deleted → stale for all threads). */
+  duplicateMap?: Map<string, string[]>,
+  allComments?: ReviewComment[],
 ): Promise<{ updated: UnresolvedIssue[]; dismissed: number; refreshed: number }> {
   let dismissed = 0;
   let refreshed = 0;
@@ -982,20 +1017,37 @@ export async function recheckSolvability(
 
   const updated: UnresolvedIssue[] = [...unchanged];
 
+  const effectiveDupMap = resolveEffectiveDuplicateMapForComments(
+    stateContext,
+    duplicateMap,
+    allComments,
+  );
+  const dismissRowsDeleted = mergeCommentsForClusterDismiss(allComments, unresolvedIssues);
   for (const { issue, newSnippet } of snippetResults) {
     if (newSnippet === SNIPPET_PLACEHOLDER) {
       // File was deleted by fixer - dismiss as stale
-      // CRITICAL: dismissIssue ONLY, NOT markVerified (see plan gotcha #1)
-      const primaryPath = issue.resolvedPath ?? issue.comment.path;
-      Dismissed.dismissIssue(
-        stateContext,
-        issue.comment.id,
-        'File deleted by fixer',
-        'stale',
-        primaryPath,
-        issue.comment.line,
-        issue.comment.body
-      );
+      // CRITICAL: dismiss only (not markVerified). Expand to LLM dedup cluster when map + row lookup list are available.
+      if (dismissRowsDeleted.length > 0) {
+        dismissDuplicateClusterFromComments(
+          stateContext,
+          issue.comment,
+          effectiveDupMap,
+          dismissRowsDeleted,
+          'File deleted by fixer',
+          'stale',
+        );
+      } else {
+        const primaryPath = issue.resolvedPath ?? issue.comment.path;
+        Dismissed.dismissIssue(
+          stateContext,
+          issue.comment.id,
+          'File deleted by fixer',
+          'stale',
+          primaryPath,
+          issue.comment.line,
+          issue.comment.body
+        );
+      }
       dismissed++;
       continue;
     }
@@ -1022,6 +1074,41 @@ export async function recheckSolvability(
  * metadata keyword AND an action verb in the same sentence.
  */
 function isSummaryOrMetaReviewComment(commentBody: string): boolean {
+  // WHY 3k: Bots sometimes prepend logos, HTML, or “Recent review info” before the rollup heading (eliza#6702 audit).
+  const rollupWindow = commentBody.slice(0, 3000);
+  // Cycle 72: CodeRabbit (and similar) posts section headers that summarize many threads — not one code fix.
+  // WHY early regex: These often fail table/### Summary heuristics but still enter the fix loop and consume focus slots.
+  const rollupHeading =
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bRemaining Issues\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bIssues\s+Fixed\s+Since\s+Previous\s+Reviews\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bIssues\s+Addressed\s+in\s+Previous\s+Reviews\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bPreviously\s+Fixed\s+Issues\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bOutstanding\s+Issues\b/im.test(rollupWindow) ||
+    /(?:^|\n)\s*#{1,3}\s*[^\n]*\bIssues\s+from\s+Previous\s+Reviews\b/im.test(rollupWindow);
+  if (rollupHeading) return true;
+
+  // Bold-only or **wrapped** headings (stored body may omit # if the host normalizes markdown).
+  const rollupBold =
+    /(?:^|\n)\s*\*{1,2}\s*Remaining Issues\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Issues\s+Fixed\s+Since\s+Previous\s+Reviews\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Issues\s+Addressed\s+in\s+Previous\s+Reviews\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Previously\s+Fixed\s+Issues\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Outstanding\s+Issues\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow) ||
+    /(?:^|\n)\s*\*{1,2}\s*Issues\s+from\s+Previous\s+Reviews\s*\*{0,2}\s*(?:\n|$)/im.test(rollupWindow);
+  if (rollupBold) return true;
+
+  // HTML headings (some bots/issues store rendered-style snippets).
+  const rollupHtml =
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bRemaining Issues\b[\s\S]{0,80}?<\/h[1-6]>/i.test(rollupWindow) ||
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bIssues\s+Fixed\s+Since\s+Previous\s+Reviews\b[\s\S]{0,80}?<\/h[1-6]>/i.test(
+      rollupWindow,
+    ) ||
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bIssues\s+Addressed\s+in\s+Previous\s+Reviews\b[\s\S]{0,80}?<\/h[1-6]>/i.test(
+      rollupWindow,
+    ) ||
+    /<h[1-6]\b[^>]*>[\s\S]{0,400}?\bOutstanding\s+Issues\b[\s\S]{0,80}?<\/h[1-6]>/i.test(rollupWindow);
+  if (rollupHtml) return true;
+
   const head = commentBody.slice(0, 800);
   // Table with Status column and status-like cells (✅/❌/Fixed/Still missing/Addressed)
   const hasStatusTable =

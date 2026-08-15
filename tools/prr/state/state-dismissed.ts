@@ -14,14 +14,12 @@
  * The distinction matters for reporting: dismissed issues need human attention,
  * verified ones don't.
  *
- * WHY commentStatuses sync hooks: dismissIssue() flips commentStatuses to
- * "resolved" and undismissIssue() deletes the entry. Without this, the
- * analysis pass would see a stale "open" status and re-analyze a dismissed
- * comment, potentially un-dismissing it. See state-comment-status.ts.
+ * {@link dismissIssue} delegates to {@link transitionIssue} so verified arrays
+ * and commentStatuses stay consistent.
  */
 import type { StateContext } from './state-context.js';
-import { getState } from './state-context.js';
 import type { DismissedIssue } from './types.js';
+import { transitionIssue } from './state-transitions.js';
 
 /**
  * Dismiss a comment — record that it doesn't need fixing, with a reason.
@@ -45,51 +43,15 @@ export function dismissIssue(
   commentBody: string,
   remediationHint?: string
 ): void {
-  const state = getState(ctx);
-  
-  if (!state.dismissedIssues) {
-    state.dismissedIssues = [];
-  }
-  
-  const currentIteration = state.iterations.length;
-  // Pill cycle 2 #9: Enforce mutual exclusivity at write time — when we dismiss, remove from verified.
-  if (state.verifiedFixed?.length) {
-    state.verifiedFixed = state.verifiedFixed.filter((id) => id !== commentId);
-  }
-  // Also remove from verifiedComments array (not just legacy verifiedFixed)
-  if (state.verifiedComments?.length) {
-    const index = state.verifiedComments.findIndex(v => v.commentId === commentId);
-    if (index !== -1) {
-      state.verifiedComments.splice(index, 1);
-    }
-  }
-  const existing = state.dismissedIssues.find(d => d.commentId === commentId);
-  if (!existing) {
-    const entry: DismissedIssue = {
-      commentId,
-      reason,
-      dismissedAt: new Date().toISOString(),
-      dismissedAtIteration: currentIteration,
-      category,
-      filePath,
-      line,
-      commentBody,
-    };
-    if (remediationHint !== undefined) entry.remediationHint = remediationHint;
-    state.dismissedIssues.push(entry);
-  }
-  
-  // Sync commentStatuses: flip to resolved and persist dismiss category
-  if (state.commentStatuses?.[commentId]) {
-    state.commentStatuses[commentId] = {
-      ...state.commentStatuses[commentId],
-      status: 'resolved',
-      classification: 'stale',
-      dismissCategory: category,
-      updatedAt: new Date().toISOString(),
-      updatedAtIteration: currentIteration,
-    };
-  }
+  transitionIssue(ctx, commentId, {
+    kind: 'dismissed',
+    reason,
+    category,
+    filePath,
+    line,
+    commentBody,
+    remediationHint,
+  });
 }
 
 /**
@@ -100,21 +62,7 @@ export function dismissIssue(
  * force a clean slate.
  */
 export function undismissIssue(ctx: StateContext, commentId: string): void {
-  const state = getState(ctx);
-  
-  if (!state.dismissedIssues) {
-    state.dismissedIssues = [];
-  }
-  
-  const index = state.dismissedIssues.findIndex(d => d.commentId === commentId);
-  if (index !== -1) {
-    state.dismissedIssues.splice(index, 1);
-  }
-  
-  // Delete commentStatuses entry so the comment gets re-analyzed
-  if (state.commentStatuses?.[commentId]) {
-    delete state.commentStatuses[commentId];
-  }
+  transitionIssue(ctx, commentId, { kind: 'undismissed' });
 }
 
 export function getDismissedIssues(ctx: StateContext): DismissedIssue[] {
@@ -126,13 +74,13 @@ export function isCommentDismissed(ctx: StateContext, commentId: string): boolea
   if (!state?.dismissedIssues) {
     return false;
   }
-  
-  return state.dismissedIssues.some(d => d.commentId === commentId);
+
+  return state.dismissedIssues.some((d) => d.commentId === commentId);
 }
 
 /** Get the dismissed issue entry for a comment, if any. Used to preserve category/reason on re-dismiss. */
 export function getDismissedIssue(ctx: StateContext, commentId: string): DismissedIssue | undefined {
   const state = ctx.state;
   if (!state?.dismissedIssues) return undefined;
-  return state.dismissedIssues.find(d => d.commentId === commentId);
+  return state.dismissedIssues.find((d) => d.commentId === commentId);
 }

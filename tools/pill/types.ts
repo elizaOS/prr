@@ -8,6 +8,16 @@ export interface PillConfig {
   openaiApiKey?: string;
   /** '' | undefined = output.log; 'story' = story-output.log; 'pill' = pill-output.log */
   logPrefix?: string;
+  /**
+   * Absolute path to the output log to audit. When unset, uses `join(targetDir, logPrefix-output.log | output.log)`.
+   * CLI `--output-log` or env `PILL_OUTPUT_LOG_PATH`.
+   */
+  outputLogPath?: string;
+  /**
+   * Absolute path to the prompts log. When unset, uses default name under targetDir.
+   * CLI `--prompts-log` or env `PILL_PROMPTS_LOG_PATH`.
+   */
+  promptsLogPath?: string;
   /** Override path for pill-output.md (e.g. from --instructions-out). */
   instructionsOut?: string;
   /** Max context tokens for the audit request (user + system). Overridable via PILL_CONTEXT_BUDGET_TOKENS. Default 35k; use 20k for small-context models. */

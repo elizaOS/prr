@@ -123,6 +123,16 @@ export function loadModelProviderCatalog(path?: string): ModelProviderCatalog {
     warnCatalogOnce(warnKey, `Model catalog at ${p} is missing providers.openai/apiIds or providers.anthropic/apiIds — using empty catalog.`);
     return emptyCatalogFresh();
   }
+  const sanitizeApiIds = (arr: unknown): string[] =>
+    Array.isArray(arr)
+      ? arr.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim())
+      : [];
+  catalog.providers.openai.apiIds = sanitizeApiIds(catalog.providers.openai.apiIds);
+  catalog.providers.anthropic.apiIds = sanitizeApiIds(catalog.providers.anthropic.apiIds);
+  if (catalog.providers.openai.apiIds.length === 0 && catalog.providers.anthropic.apiIds.length === 0) {
+    warnCatalogOnce(warnKey, `Model catalog at ${p} has no valid string entries in provider apiIds — using empty catalog.`);
+    return emptyCatalogFresh();
+  }
   if (!catalog.lookup?.openaiHyphenless || !catalog.lookup?.anthropicHyphenless || !Array.isArray(catalog.lookup?.ambiguousHyphenless)) {
     warnCatalogOnce(warnKey, `Model catalog at ${p} is missing lookup tables — using empty catalog.`);
     return emptyCatalogFresh();

@@ -4,8 +4,10 @@ import {
   ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
   ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS,
   estimateElizacloudInputTokensFromCharLength,
+  getMaxElizacloudHardInputCeiling,
   getMaxElizacloudLlmCompleteInputChars,
   getMaxFixPromptCharsForModel,
+  lowerModelMaxPromptChars,
 } from '../shared/llm/model-context-limits.js';
 
 describe('getMaxElizacloudLlmCompleteInputChars', () => {
@@ -23,6 +25,28 @@ describe('getMaxElizacloudLlmCompleteInputChars', () => {
   it('is large for high-context ElizaCloud models', () => {
     const total = getMaxElizacloudLlmCompleteInputChars('openai/gpt-4o-mini');
     expect(total).toBeGreaterThan(80_000);
+  });
+});
+
+describe('getMaxElizacloudHardInputCeiling', () => {
+  it('hard ceiling is not affected by lowerModelMaxPromptChars on large-context models', () => {
+    const model = 'anthropic/claude-sonnet-4-5-20250929';
+    const ceilingBefore = getMaxElizacloudHardInputCeiling(model);
+    expect(ceilingBefore).toBeGreaterThan(600_000);
+
+    lowerModelMaxPromptChars('elizacloud', model, 35_000);
+    const softAfter = getMaxElizacloudLlmCompleteInputChars(model);
+    const ceilingAfter = getMaxElizacloudHardInputCeiling(model);
+
+    expect(ceilingAfter).toBe(ceilingBefore);
+    expect(softAfter).toBeLessThan(ceilingAfter);
+  });
+
+  it('floor prevents large-context models from being lowered below 60k', () => {
+    const model = 'anthropic/claude-sonnet-4-5-20250929';
+    lowerModelMaxPromptChars('elizacloud', model, 35_000);
+    const fix = getMaxFixPromptCharsForModel('elizacloud', model);
+    expect(fix).toBeGreaterThanOrEqual(60_000);
   });
 });
 

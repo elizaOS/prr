@@ -25,6 +25,8 @@ import { parseResultCode, parseOtherFileFromResultDetail, isReferencePathInComme
 import type { ReviewComment } from '../github/types.js';
 import { getMentionedTestFilePaths, getTestPathForSourceFileIssue, reviewSuggestsFixInTest, reviewTargetsMentionedTestFile } from '../analyzer/prompt-builder.js';
 import * as Dismissed from '../state/state-dismissed.js';
+import type { DismissedIssue } from '../state/types.js';
+import { resolveEffectiveDuplicateMapForComments } from './issue-analysis-dedup.js';
 
 /**
  * Number of issues to spot-check before committing to full verification.
@@ -91,6 +93,77 @@ function persistInferredTestTargets(
 }
 
 /**
+ * After cluster dismiss attempts, only remove queued rows that are verified or dismissed.
+ * WHY: We used to splice every cluster id out of the queue even when `dismissIssue` was skipped
+ * (no row in `comments`), which left those threads neither verified nor dismissed → empty queue +
+ * BUG DETECTED repopulate (eliza #6702 audit).
+ */
+function filterUnresolvedKeepUnaccountedClusterMembers(
+  unresolvedIssues: UnresolvedIssue[],
+  clusterIds: string[],
+  stateContext: StateContext,
+): UnresolvedIssue[] {
+  const clusterSet = new Set(clusterIds);
+  return unresolvedIssues.filter((i) => {
+    if (!clusterSet.has(i.comment.id)) return true;
+    return (
+      !Verification.isVerified(stateContext, i.comment.id) &&
+      !Dismissed.isCommentDismissed(stateContext, i.comment.id)
+    );
+  });
+}
+
+/**
+ * Row for `dismissIssue` when a cluster id is missing from the fetched `comments` list.
+ * Prefer full API row, then any queued issue, anchor, else same file/line/body as anchor with `id`.
+ */
+function resolveCommentRowForClusterDismiss(
+  cid: string,
+  anchorIssue: UnresolvedIssue,
+  comments: ReviewComment[] | undefined,
+  unresolvedIssues: UnresolvedIssue[],
+  clusterSet: Set<string>,
+): ReviewComment | undefined {
+  const fromList = comments?.find((co) => co.id === cid);
+  if (fromList) return fromList;
+  const fromQueue = unresolvedIssues.find((i) => i.comment.id === cid)?.comment;
+  if (fromQueue) return fromQueue;
+  if (cid === anchorIssue.comment.id) return anchorIssue.comment;
+  if (!clusterSet.has(cid)) return undefined;
+  return { ...anchorIssue.comment, id: cid };
+}
+
+/**
+ * Dismiss the full LLM dedup cluster for no-changes paths (CANNOT_FIX exhaust, hidden-target, etc.).
+ * Mirrors ALREADY_FIXED cluster handling — single-row dismiss left siblings unaccounted (BUG DETECTED repopulate).
+ */
+function dismissNoChangesCluster(
+  stateContext: StateContext,
+  anchorIssue: UnresolvedIssue,
+  duplicateMap: Map<string, string[]> | undefined,
+  comments: ReviewComment[] | undefined,
+  unresolvedIssues: UnresolvedIssue[],
+  dismissText: string,
+  category: DismissedIssue['category'],
+  remediationHint?: string,
+): string[] {
+  const clusterIds = getDuplicateClusterCommentIds(anchorIssue.comment.id, duplicateMap);
+  const clusterSet = new Set(clusterIds);
+  for (const cid of clusterIds) {
+    if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
+      continue;
+    }
+    const c = resolveCommentRowForClusterDismiss(cid, anchorIssue, comments, unresolvedIssues, clusterSet);
+    if (!c) {
+      debug('no-changes cluster dismiss: skip (no row resolvable)', { commentId: cid });
+      continue;
+    }
+    Dismissed.dismissIssue(stateContext, cid, dismissText, category, c.path, c.line, c.body, remediationHint);
+  }
+  return clusterIds;
+}
+
+/**
  * Handle no-changes scenario after fixer runs.
  *
  * WHY: When a fixer makes no changes, it could mean: issues already fixed (verify), fixer confused
@@ -103,10 +176,10 @@ function persistInferredTestTargets(
  * 4. Track no-changes for performance stats
  * 5. Return whether to continue, break, or proceed to rotation
  *
- * Pass `comments` + `duplicateMap` so single-issue **ALREADY_FIXED** and **ALREADY_FIXED any-threshold**
- * dismiss the **entire dedup cluster** (`getDuplicateClusterCommentIds`). **WHY:** Auto-verify on real
- * fixes already marks duplicates when one canonical change lands; the no-change path used to dismiss
- * only the queued row, leaving cluster siblings neither verified nor dismissed → BUG DETECTED repopulate.
+ * Pass `comments` + `duplicateMap` so **ALREADY_FIXED** paths, **CANNOT_FIX** exhaust, and **hidden-target**
+ * dismissals use the **full dedup cluster** (`getDuplicateClusterCommentIds` + `resolveCommentRowForClusterDismiss`).
+ * **WHY:** Auto-verify on real fixes already marks duplicates when one canonical change lands; single-row dismiss
+ * left cluster siblings neither verified nor dismissed → BUG DETECTED repopulate.
  */
 export async function handleNoChangesWithVerification(
   unresolvedIssues: UnresolvedIssue[],
@@ -130,6 +203,7 @@ export async function handleNoChangesWithVerification(
   updatedUnresolvedIssues: UnresolvedIssue[];
   progressMade: number;
 }> {
+  const dupForCluster = resolveEffectiveDuplicateMapForComments(stateContext, duplicateMap, comments);
   console.log(chalk.yellow(`\nNo changes made by ${runnerName}${currentModel ? ` (${currentModel})` : ''}`));
 
   // WHY try RESULT first: Structured codes (ALREADY_FIXED, UNCLEAR, WRONG_LOCATION, etc.) allow
@@ -149,17 +223,22 @@ export async function handleNoChangesWithVerification(
           // Prompts.log audit: single-issue ALREADY_FIXED with no code blocks was re-sent (duplicate 78k prompt). Dismiss immediately so we don't retry the same prompt.
           if (unresolvedIssues.length === 1) {
             const detailMsg = detail || 'fixer confirmed no changes needed';
-            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, dupForCluster);
+            const clusterSet = new Set(clusterIds);
             const dismissText = `ALREADY_FIXED — ${detailMsg}`;
             for (const cid of clusterIds) {
               if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
                 continue;
               }
-              const c =
-                comments?.find((co) => co.id === cid) ??
-                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              const c = resolveCommentRowForClusterDismiss(
+                cid,
+                firstIssueAf,
+                comments,
+                unresolvedIssues,
+                clusterSet,
+              );
               if (!c) {
-                debug('ALREADY_FIXED cluster: skip dismiss (no comment row)', { commentId: cid });
+                debug('ALREADY_FIXED cluster: skip dismiss (no row resolvable)', { commentId: cid });
                 continue;
               }
               Dismissed.dismissIssue(
@@ -173,13 +252,16 @@ export async function handleNoChangesWithVerification(
                 undefined,
               );
             }
-            const clusterSet = new Set(clusterIds);
             Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
             return {
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
+              updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                unresolvedIssues,
+                clusterIds,
+                stateContext,
+              ),
               progressMade: 0,
             };
           }
@@ -203,16 +285,20 @@ export async function handleNoChangesWithVerification(
           debug('ALREADY_FIXED any-counter', { commentId: firstIssueAf.comment.id, anyCount, threshold: ALREADY_FIXED_ANY_THRESHOLD });
           if (anyCount >= ALREADY_FIXED_ANY_THRESHOLD) {
             debug('ALREADY_FIXED dismiss: any-threshold reached', { commentId: firstIssueAf.comment.id, anyCount });
-            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, duplicateMap);
+            const clusterIds = getDuplicateClusterCommentIds(firstIssueAf.comment.id, dupForCluster);
             const dismissText = `ALREADY_FIXED ${anyCount}× (multiple models) — dismissing as already-fixed`;
             const clusterSet = new Set(clusterIds);
             for (const cid of clusterIds) {
               if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
                 continue;
               }
-              const c =
-                comments?.find((co) => co.id === cid) ??
-                (cid === firstIssueAf.comment.id ? firstIssueAf.comment : undefined);
+              const c = resolveCommentRowForClusterDismiss(
+                cid,
+                firstIssueAf,
+                comments,
+                unresolvedIssues,
+                clusterSet,
+              );
               if (!c) continue;
               Dismissed.dismissIssue(stateContext, cid, dismissText, 'already-fixed', c.path, c.line, c.body, undefined);
             }
@@ -221,27 +307,54 @@ export async function handleNoChangesWithVerification(
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => !clusterSet.has(i.comment.id)),
+              updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                unresolvedIssues,
+                clusterIds,
+                stateContext,
+              ),
               progressMade: 0,
             };
           }
           if (consecutive >= ALREADY_FIXED_EXHAUST_THRESHOLD) {
-            Dismissed.dismissIssue(
-              stateContext,
-              firstIssueAf.comment.id,
-              `ALREADY_FIXED ${consecutive}× with same explanation — dismissing as not-an-issue`,
-              'not-an-issue',
-              firstIssueAf.comment.path,
-              firstIssueAf.comment.line,
-              firstIssueAf.comment.body,
-              undefined
-            );
+            const clusterIdsEx = getDuplicateClusterCommentIds(firstIssueAf.comment.id, dupForCluster);
+            const clusterSetEx = new Set(clusterIdsEx);
+            const dismissTextEx = `ALREADY_FIXED ${consecutive}× with same explanation — dismissing as not-an-issue`;
+            for (const cid of clusterIdsEx) {
+              if (Verification.isVerified(stateContext, cid) || Dismissed.isCommentDismissed(stateContext, cid)) {
+                continue;
+              }
+              const c = resolveCommentRowForClusterDismiss(
+                cid,
+                firstIssueAf,
+                comments,
+                unresolvedIssues,
+                clusterSetEx,
+              );
+              if (!c) {
+                debug('ALREADY_FIXED exhaust cluster: skip dismiss (no row resolvable)', { commentId: cid });
+                continue;
+              }
+              Dismissed.dismissIssue(
+                stateContext,
+                cid,
+                dismissTextEx,
+                'not-an-issue',
+                c.path,
+                c.line,
+                c.body,
+                undefined,
+              );
+            }
             Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
             return {
               shouldBreak: false,
               shouldContinue: false,
               verifiedCount: 0,
-              updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssueAf.comment.id),
+              updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                unresolvedIssues,
+                clusterIdsEx,
+                stateContext,
+              ),
               progressMade: 0,
             };
           }
@@ -264,22 +377,26 @@ export async function handleNoChangesWithVerification(
               const consecutive = state.cannotFixConsecutiveByCommentId[firstIssue0.comment.id];
               debug('CANNOT_FIX consecutive count', { commentId: firstIssue0.comment.id, count: consecutive });
               if (consecutive >= CANNOT_FIX_EXHAUST_THRESHOLD) {
-                Dismissed.dismissIssue(
+                const cannotFixDismiss = `CANNOT_FIX ${consecutive}× — ${(structuredResult.resultDetail ?? '').trim().substring(0, 120) || 'not fixable via code changes'}`;
+                const clusterIdsCf = dismissNoChangesCluster(
                   stateContext,
-                  firstIssue0.comment.id,
-                  `CANNOT_FIX ${consecutive}× — ${(structuredResult.resultDetail ?? '').trim().substring(0, 120) || 'not fixable via code changes'}`,
+                  firstIssue0,
+                  dupForCluster,
+                  comments,
+                  unresolvedIssues,
+                  cannotFixDismiss,
                   'not-an-issue',
-                  firstIssue0.comment.path,
-                  firstIssue0.comment.line,
-                  firstIssue0.comment.body ?? '',
-                  undefined
                 );
                 Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
                 return {
                   shouldBreak: false,
                   shouldContinue: false,
                   verifiedCount: 0,
-                  updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue0.comment.id),
+                  updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                    unresolvedIssues,
+                    clusterIdsCf,
+                    stateContext,
+                  ),
                   progressMade: 0,
                 };
               }
@@ -306,22 +423,26 @@ export async function handleNoChangesWithVerification(
               const inferredTargets = persistInferredTestTargets(firstIssue0, detail, workdir, stateContext);
               const missingTargetCount = stateContext.state?.missingTargetFileCountByCommentId?.[firstIssue0.comment.id] ?? 0;
               if (inferredTargets.length === 0 && missingTargetCount >= 2) {
-                Dismissed.dismissIssue(
+                const hiddenTargetMsg = `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`;
+                const clusterIdsHt = dismissNoChangesCluster(
                   stateContext,
-                  firstIssue0.comment.id,
-                  `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                  firstIssue0,
+                  dupForCluster,
+                  comments,
+                  unresolvedIssues,
+                  hiddenTargetMsg,
                   'remaining',
-                  getIssuePrimaryPath(firstIssue0),
-                  firstIssue0.comment.line,
-                  firstIssue0.comment.body ?? '',
-                  undefined
                 );
                 Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
                 return {
                   shouldBreak: false,
                   shouldContinue: false,
                   verifiedCount: 0,
-                  updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue0.comment.id),
+                  updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                    unresolvedIssues,
+                    clusterIdsHt,
+                    stateContext,
+                  ),
                   progressMade: 0,
                 };
               }
@@ -346,22 +467,26 @@ export async function handleNoChangesWithVerification(
             const inferredTargets = persistInferredTestTargets(firstIssue0, detail, workdir, stateContext);
             const missingTargetCount = stateContext.state?.missingTargetFileCountByCommentId?.[firstIssue0.comment.id] ?? 0;
             if (inferredTargets.length === 0 && missingTargetCount >= 2) {
-              Dismissed.dismissIssue(
+              const hiddenTargetMsgU = `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`;
+              const clusterIdsHu = dismissNoChangesCluster(
                 stateContext,
-                firstIssue0.comment.id,
-                `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                firstIssue0,
+                dupForCluster,
+                comments,
+                unresolvedIssues,
+                hiddenTargetMsgU,
                 'remaining',
-                getIssuePrimaryPath(firstIssue0),
-                firstIssue0.comment.line,
-                firstIssue0.comment.body ?? '',
-                undefined
               );
               Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
               return {
                 shouldBreak: false,
                 shouldContinue: false,
                 verifiedCount: 0,
-                updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue0.comment.id),
+                updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                  unresolvedIssues,
+                  clusterIdsHu,
+                  stateContext,
+                ),
                 progressMade: 0,
               };
             }
@@ -414,22 +539,26 @@ export async function handleNoChangesWithVerification(
             const inferredTargets = persistInferredTestTargets(firstIssue1, detail, workdir, stateContext);
             const missingTargetCount = state.missingTargetFileCountByCommentId?.[firstIssue1.comment.id] ?? 0;
             if (inferredTargets.length === 0 && missingTargetCount >= 2) {
-              Dismissed.dismissIssue(
+              const hiddenTargetMsgW = `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`;
+              const clusterIdsHw = dismissNoChangesCluster(
                 stateContext,
-                firstIssue1.comment.id,
-                `Hidden target file could not be inferred after ${missingTargetCount} attempts — review points to a test file that is not identifiable from current context`,
+                firstIssue1,
+                dupForCluster,
+                comments,
+                unresolvedIssues,
+                hiddenTargetMsgW,
                 'remaining',
-                getIssuePrimaryPath(firstIssue1),
-                firstIssue1.comment.line,
-                firstIssue1.comment.body ?? '',
-                undefined
               );
               Performance.recordModelNoChanges(stateContext, runnerName, currentModel);
               return {
                 shouldBreak: false,
                 shouldContinue: false,
                 verifiedCount: 0,
-                updatedUnresolvedIssues: unresolvedIssues.filter((i) => i.comment.id !== firstIssue1.comment.id),
+                updatedUnresolvedIssues: filterUnresolvedKeepUnaccountedClusterMembers(
+                  unresolvedIssues,
+                  clusterIdsHw,
+                  stateContext,
+                ),
                 progressMade: 0,
               };
             }
@@ -600,7 +729,15 @@ export async function handleNoChangesWithVerification(
           // (falls through to the end of this block)
         } else {
           // Full verification (spot-check passed)
-          const fullResult = await verifyAllIssues(unresolvedIssues, llm, stateContext, runnerName, currentModel, verifiedThisSession);
+          const fullResult = await verifyAllIssues(
+            unresolvedIssues,
+            llm,
+            stateContext,
+            runnerName,
+            currentModel,
+            verifiedThisSession,
+            dupForCluster,
+          );
           if (fullResult) {
             return fullResult;
           }
@@ -608,7 +745,15 @@ export async function handleNoChangesWithVerification(
         }
       } else {
         // Small number of issues — verify all directly (no spot-check needed)
-        const fullResult = await verifyAllIssues(unresolvedIssues, llm, stateContext, runnerName, currentModel, verifiedThisSession);
+        const fullResult = await verifyAllIssues(
+          unresolvedIssues,
+          llm,
+          stateContext,
+          runnerName,
+          currentModel,
+          verifiedThisSession,
+          dupForCluster,
+        );
         if (fullResult) {
           return fullResult;
         }
@@ -710,7 +855,9 @@ async function verifyAllIssues(
   stateContext: StateContext,
   runnerName: string,
   currentModel: string | undefined,
-  verifiedThisSession: Set<string>
+  verifiedThisSession: Set<string>,
+  /** When set, verifying one cluster member marks the full dedup cluster (same as fix-verification / ALREADY_FIXED dismiss). */
+  duplicateMap?: Map<string, string[]>,
 ): Promise<{
   shouldBreak: boolean;
   shouldContinue: boolean;
@@ -743,8 +890,13 @@ async function verifyAllIssues(
     
     if (result && !result.exists) {
       verifiedAsFixed++;
-      Verification.markVerified(stateContext, issue.comment.id);
-      verifiedThisSession.add(issue.comment.id);
+      const anchorId = issue.comment.id;
+      const clusterIds = getDuplicateClusterCommentIds(anchorId, duplicateMap);
+      for (const cid of clusterIds) {
+        if (Verification.isVerified(stateContext, cid)) continue;
+        Verification.markVerified(stateContext, cid, cid === anchorId ? undefined : anchorId);
+        verifiedThisSession.add(cid);
+      }
       {
         const primaryPath = getIssuePrimaryPath(issue);
         console.log(chalk.greenBright(`    ✓ RESOLVED: ${primaryPath}${issue.comment.line != null ? `:${issue.comment.line}` : ''} — ${result.explanation}`));

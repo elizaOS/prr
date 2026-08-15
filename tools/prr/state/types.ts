@@ -85,7 +85,20 @@ export interface DismissedIssue {
   reason: string;                 // Detailed explanation of why it doesn't need fixing
   dismissedAt: string;            // ISO timestamp when dismissed
   dismissedAtIteration: number;   // Which iteration it was dismissed in
-  category: 'already-fixed' | 'not-an-issue' | 'file-unchanged' | 'false-positive' | 'duplicate' | 'stale' | 'exhausted' | 'remaining' | 'chronic-failure' | 'missing-file' | 'path-unresolved';
+  category:
+    | 'already-fixed'
+    | 'not-an-issue'
+    | 'file-unchanged'
+    | 'false-positive'
+    | 'duplicate'
+    | 'stale'
+    | 'exhausted'
+    | 'remaining'
+    | 'chronic-failure'
+    | 'missing-file'
+    | 'path-unresolved'
+    | 'path-fragment'
+    | 'out-of-scope';
   filePath: string;               // File the comment was about
   line: number | null;            // Line number if specified
   commentBody: string;            // Original review comment text
@@ -280,6 +293,15 @@ export interface ResolverState {
    * WHY: If the base branch advances, cached file contents may be wrong for the new merge — clear partials.
    */
   partialConflictSavedOriginBaseSha?: string;
+  /**
+   * Persisted session model skip (same PR/HEAD). WHY: In-memory skip was lost on restart, wasting
+   * rotation budget re-proving bad models (pill-output). Cleared on PR head change with verified state.
+   */
+  sessionSkippedModelKeys?: string[];
+  /** Failure/fix counts per `runner/model` key for session skip threshold — persisted with skip keys. */
+  sessionModelStats?: Record<string, { fixes: number; failures: number }>;
+  /** Fix iteration when each key was session-skipped — for PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS. */
+  sessionSkippedSinceFixIteration?: Record<string, number>;
 }
 
 export function createInitialState(pr: string, branch: string, headSha: string): ResolverState {
