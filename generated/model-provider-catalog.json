@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-08-10T06:31:44.898Z",
+  "fetchedAtIso": "2026-08-17T06:13:01.320Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,14 +8,14 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 14
+      "idCount": 13
     },
     {
       "name": "openai",
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 98
+      "idCount": 100
     }
   ],
   "providers": {
@@ -33,8 +33,7 @@
         "claude-sonnet-4-5",
         "claude-sonnet-4-5-20250929",
         "claude-sonnet-4-6",
-        "claude-sonnet-5",
-        "claude-sonnet-5-introductory-pricing"
+        "claude-sonnet-5"
       ]
     },
     "openai": {
@@ -46,6 +45,7 @@
         "chatgpt-image-latest",
         "chatgpt-preview",
         "chatgpt-staging",
+        "chatgpt-work-overview",
         "codex-mini-latest",
         "computer-use-preview",
         "davinci-002",
@@ -96,6 +96,7 @@
         "gpt-5.5",
         "gpt-5.5-pro",
         "gpt-5.6",
+        "gpt-5.6-cyber",
         "gpt-5.6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
@@ -149,6 +150,7 @@
       "chatgptimagelatest": "chatgpt-image-latest",
       "chatgptpreview": "chatgpt-preview",
       "chatgptstaging": "chatgpt-staging",
+      "chatgptworkoverview": "chatgpt-work-overview",
       "codexminilatest": "codex-mini-latest",
       "computerusepreview": "computer-use-preview",
       "davinci002": "davinci-002",
@@ -193,6 +195,7 @@
       "gpt5.5": "gpt-5.5",
       "gpt5.5pro": "gpt-5.5-pro",
       "gpt5.6": "gpt-5.6",
+      "gpt5.6cyber": "gpt-5.6-cyber",
       "gpt5.6luna": "gpt-5.6-luna",
       "gpt5.6sol": "gpt-5.6-sol",
       "gpt5.6terra": "gpt-5.6-terra",
@@ -254,8 +257,7 @@
       "claudesonnet45": "claude-sonnet-4-5",
       "claudesonnet4520250929": "claude-sonnet-4-5-20250929",
       "claudesonnet46": "claude-sonnet-4-6",
-      "claudesonnet5": "claude-sonnet-5",
-      "claudesonnet5introductorypricing": "claude-sonnet-5-introductory-pricing"
+      "claudesonnet5": "claude-sonnet-5"
     },
     "ambiguousHyphenless": []
   }
