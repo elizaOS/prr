@@ -167,7 +167,13 @@ export function hydrateRotationSessionFromPersistedState(ctx: StateContext): voi
 
 /** Write session skip sets into `ctx.state` before JSON save. */
 export function persistRotationSessionToState(ctx: StateContext): void {
-  if (!ctx.state || process.env.PRR_PERSIST_SESSION_MODEL_SKIP?.trim() === '0') return;
+  if (!ctx.state) return;
+  if (process.env.PRR_PERSIST_SESSION_MODEL_SKIP?.trim() === '0') {
+    delete ctx.state.sessionSkippedModelKeys;
+    delete ctx.state.sessionModelStats;
+    delete ctx.state.sessionSkippedSinceFixIteration;
+    return;
+  }
   if (!ctx.rotationSession) {
     delete ctx.state.sessionSkippedModelKeys;
     delete ctx.state.sessionModelStats;

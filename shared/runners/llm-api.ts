@@ -706,7 +706,7 @@ Working directory: ${workdir}`;
       debug('Escalated to full-file rewrite', { files: rewriteFiles });
     }
 
-    const promptSlug = debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model: options?.model, promptLength: enrichedPrompt.length });
+    const promptSlug = debugPrompt('llm-api-fix', enrichedPrompt, { workdir, model, promptLength: enrichedPrompt.length });
 
     if (enrichedPrompt.length > maxEnrichedChars) {
       throw new Error(`Prompt too large (${enrichedPrompt.length.toLocaleString()} chars, max ${maxEnrichedChars.toLocaleString()} for ${model}). Reduce batch size or file count.`);
@@ -825,14 +825,14 @@ Working directory: ${workdir}`;
       if (!response.trim()) {
         debugPromptError(promptSlug, 'llm-api-fix', 'Empty or whitespace-only LLM response body (HTTP success; cannot write RESPONSE to prompts.log).', {
           workdir,
-          model: options?.model,
+          model,
           emptyBody: true,
         });
         console.warn(
           chalk.yellow(`  ⚠ llm-api: empty response body from model — prompts.log ERROR entry pairs with this request’s PROMPT slug.`),
         );
       } else {
-        debugResponse(promptSlug, 'llm-api-fix', response, { workdir, model: options?.model, responseLength: response.length });
+        debugResponse(promptSlug, 'llm-api-fix', response, { workdir, model, responseLength: response.length });
       }
 
       // Parse and apply file changes (pass escalated files so <file> blocks are applied even when S/R ran)
@@ -912,7 +912,7 @@ Working directory: ${workdir}`;
       debug('LLM API error', { error: errorMessage });
       debugPromptError(promptSlug, 'llm-api-fix', errorMessage.slice(0, 12_000), {
         workdir,
-        model: options?.model,
+        model,
         status: (error as { status?: number })?.status,
       });
 
@@ -945,11 +945,11 @@ Working directory: ${workdir}`;
       // ElizaCloud: always log full response context on any error (400/500/etc.) for debugging.
       const provider = this.provider ?? 'elizacloud';
       if (provider === 'elizacloud') {
-        const url = getEffectiveRequestUrl(provider, options?.model);
+        const url = getEffectiveRequestUrl(provider, model);
         const responseContext = get504ResponseContext(error);
         debug('ElizaCloud error — URL, request, response headers & body', {
           url,
-          model: options?.model,
+          model,
           requestBody: {
             systemPromptLength: systemPrompt?.length,
             userPromptLength: enrichedPrompt?.length,
@@ -962,11 +962,11 @@ Working directory: ${workdir}`;
           responseBody: responseContext.body,
         });
       } else if (isServerError(error)) {
-        const url = getEffectiveRequestUrl(provider, options?.model);
+        const url = getEffectiveRequestUrl(provider, model);
         const responseContext = get504ResponseContext(error);
         debug('Server error — URL, request body, and response', {
           url,
-          model: options?.model,
+          model,
           requestBody: {
             systemPromptLength: systemPrompt?.length,
             userPromptLength: enrichedPrompt?.length,

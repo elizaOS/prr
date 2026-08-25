@@ -37,7 +37,7 @@ function getMaxInFlight(): number {
 /** Call when a 429 (or rate-limit) response is received. Reduces effective concurrency for ~60s + jitter. */
 export function notifyRateLimitHit(): void {
   const jitter = Math.floor(Math.random() * (RATE_LIMIT_BACKOFF_JITTER_MS + 1));
-  rateLimitBackoffUntil = Date.now() + RATE_LIMIT_BACKOFF_MS + jitter;
+  rateLimitBackoffUntil = Math.max(rateLimitBackoffUntil, Date.now() + RATE_LIMIT_BACKOFF_MS + jitter);
 }
 
 /** Acquire ElizaCloud rate-limit slot (used by llm-api runner and LLM client). */

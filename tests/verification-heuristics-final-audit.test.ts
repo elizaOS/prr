@@ -11,8 +11,13 @@ describe('finalAuditExplanationClaimsSnippetIsIncomplete', () => {
   it('is true when the model says the shown window is insufficient', () => {
     expect(finalAuditExplanationClaimsSnippetIsIncomplete('not visible in the provided excerpt')).toBe(true);
     expect(finalAuditExplanationClaimsSnippetIsIncomplete('The rest of the file may still import the old API')).toBe(
-      true,
+      false,
     );
+    expect(
+      finalAuditExplanationClaimsSnippetIsIncomplete(
+        'The rest of the file is not shown so I cannot verify the handler',
+      ),
+    ).toBe(true);
     expect(finalAuditExplanationClaimsSnippetIsIncomplete('cannot verify — excerpt does not include line 900')).toBe(
       true,
     );

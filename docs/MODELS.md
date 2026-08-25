@@ -171,9 +171,9 @@ Ollama exposes an **OpenAI-compatible** API (default **`http://127.0.0.1:11434/v
 
 ### Rotation order and skip list
 
-- **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from `shared/constants.ts`. Do not assume the static table in `types.ts` is the exact live order.
+- **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from **`shared/constants/models.ts`** (barreled as **`shared/constants.js`**). Do not assume the static table in `types.ts` is the exact live order.
 - **OpenRouter / NVIDIA keys at startup:** **`validateAndFilterModels`** merges **`config.*`** keys with **`OPENROUTER_API_KEY`** / **`NVIDIA_*`** from the environment so **`GET /v1/models`** can still run when only env is populated. For **OpenAI-compatible** **`llm-api`** backends, an **empty** model list does **not** remove every fallback id (including LM Studio’s pinned **`PRR_LLM_MODEL`**). **WHY:** Avoid wrong-gateway list fetches when multiple keys exist, and avoid a failed local **`/v1/models`** call wiping the whole rotation (README / DEVELOPMENT.md).
-- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`**. The table below is a **snapshot for operators**; if it disagrees with the source array, **trust the source file** and update this table when you change skips.
+- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants/models.ts`**. The table below is a **snapshot for operators**; if it disagrees with the source array, **trust the source file** and update this table when you change skips.
 
 **Last reviewed (skip table):** 2026-04-12 — removed dot-alias **`anthropic/claude-sonnet-4.5`** (conflicted with canonical **`anthropic/claude-sonnet-4-5-20250929`** / catalog hyphen ids).
 
@@ -195,7 +195,7 @@ Ollama exposes an **OpenAI-compatible** API (default **`http://127.0.0.1:11434/v
 - **`PRR_ELIZACLOUD_INCLUDE_MODELS`:** comma-separated — removes matching ids from the effective skip set (retry a timeout-skipped model after infra improves). Hyphenless suffix match is supported (see `getEffectiveElizacloudSkipModelIds`).
 - **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`:** comma-separated — **adds** ids to the built-in skip list for this environment only.
 - **`getElizaCloudSkipReason(id)`:** ids **not** in **`ELIZACLOUD_SKIP_REASON`** use default **`timeout`** so new skip entries still rotate with a sensible debug line until you assign **`zero-fix-rate`**.
-- **Operational habit:** When **RESULTS SUMMARY** / Model Performance shows **0%** fix rate for an ElizaCloud id, add it (with reason + comment) to **`shared/constants.ts`** and bump the “last reviewed” line above — same guidance as **AGENTS.md**.
+- **Operational habit:** When **RESULTS SUMMARY** / Model Performance shows **0%** fix rate for an ElizaCloud id, add it (with reason + comment) to **`shared/constants/models.ts`** and bump the “last reviewed” line above — same guidance as **AGENTS.md**.
 
 ### Re-evaluating skips (maintainer)
 

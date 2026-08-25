@@ -72,6 +72,14 @@ describe('specifier-resolver', () => {
     expect(await resolveSpecifier('./b', 'a.ts', 'ts', workdir, ctx)).toBe('b.ts');
   });
 
+  test('resolve TS ESM .js specifier to .ts file', async () => {
+    const workdir = await tempWorkdir();
+    await writeFile(join(workdir, 'a.ts'), '');
+    await writeFile(join(workdir, 'b.ts'), '');
+    const ctx: LangContext = {};
+    expect(await resolveSpecifier('./b.js', 'a.ts', 'ts', workdir, ctx)).toBe('b.ts');
+  });
+
   test('resolve Rust mod', async () => {
     const workdir = await tempWorkdir();
     await mkdir(join(workdir, 'src'), { recursive: true });
@@ -122,5 +130,33 @@ export { x } from './c';
     expect(radius.get('b.ts')).toBe(0);
     expect(radius.get('a.ts')).toBeDefined();
     expect(isInBlastRadius('a.ts', radius)).toBe(true);
+  });
+
+  test('maxDepth 0 does not add proximity neighbors', async () => {
+    const graph = {
+      imports: new Map<string, Set<string>>(),
+      importedBy: new Map<string, Set<string>>(),
+      nodeCount: 2,
+      edgeCount: 0,
+    };
+    const radius = computeBlastRadius(graph, ['seed.ts'], 0, ['seed.ts', 'seed.test.ts']);
+    expect([...radius.keys()]).toEqual(['seed.ts']);
+  });
+
+  test('caps scan to maxFiles without throwing', async () => {
+    const workdir = await tempWorkdir();
+    const files: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const name = `f${i}.ts`;
+      files.push(name);
+      await writeFile(join(workdir, name), 'export const x = 1;\n');
+    }
+    const graph = await buildDependencyGraph(workdir, {
+      fileList: files,
+      maxFiles: 2,
+      timeoutMs: 30_000,
+      preferFiles: ['f3.ts'],
+    });
+    expect(graph.nodeCount).toBeLessThanOrEqual(2);
   });
 });

@@ -23,6 +23,7 @@ import {
   dismissPathNotFound,
   stripGitDiffPathPrefix,
   tryResolvePathWithExtensionVariants,
+  matchTrackedPathWithExtensionAndPrefixVariants,
 } from '../../../../shared/path-utils.js';
 import { hashFileContentSync } from '../../../../shared/utils/file-hash.js';
 import { getOutdatedModelCatalogDismissal } from './outdated-model-advice.js';
@@ -194,62 +195,10 @@ export function resolveTrackedPathDetailed(workdir: string, rawPath: string, com
   if (exact) return { kind: 'exact', path: exact };
   const suffixMatches = repoFiles.filter((f) => f.endsWith('/' + pathIn) || f === pathIn);
   if (suffixMatches.length === 0) {
-    // Config extension variant: review path tsconfig.js but file is tsconfig.json (common bot mistake)
-    if (pathIn.endsWith('tsconfig.js') || pathIn === 'tsconfig.js') {
-      const altPath = pathIn.slice(0, -3) + 'json';
-      const altExact = repoFiles.find((f) => f === altPath);
-      if (altExact) {
-        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { pathIn, resolved: altExact });
-        return { kind: 'suffix', path: altExact };
-      }
-      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
-      if (altSuffix.length === 1) {
-        debug('Review path tsconfig.js not found; resolved to tsconfig.json', { pathIn, resolved: altSuffix[0] });
-        return { kind: 'suffix', path: altSuffix[0] };
-      }
-    }
-    if (pathIn.endsWith('jsconfig.js') || pathIn === 'jsconfig.js') {
-      const altPath = pathIn.slice(0, -3) + 'json';
-      const altExact = repoFiles.find((f) => f === altPath);
-      if (altExact) {
-        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { pathIn, resolved: altExact });
-        return { kind: 'suffix', path: altExact };
-      }
-      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
-      if (altSuffix.length === 1) {
-        debug('Review path jsconfig.js not found; resolved to jsconfig.json', { pathIn, resolved: altSuffix[0] });
-        return { kind: 'suffix', path: altSuffix[0] };
-      }
-    }
-    // Prefix variant: review path missing top-level dir (e.g. plugin-personality/... vs plugins/plugin-personality/...)
-    const commonPrefixes = ['plugins/', 'packages/', 'benchmarks/', 'tools/', 'shared/', 'examples/'];
-    for (const prefix of commonPrefixes) {
-      if (pathIn.startsWith(prefix)) continue;
-      const prefixed = prefix + pathIn;
-      const exactPrefixed = repoFiles.find((f) => f === prefixed);
-      if (exactPrefixed) {
-        debug('Review path resolved with prefix', { pathIn, prefix, resolved: exactPrefixed });
-        return { kind: 'suffix', path: exactPrefixed };
-      }
-      const suffixPrefixed = repoFiles.filter((f) => f.endsWith('/' + prefixed) || f === prefixed);
-      if (suffixPrefixed.length === 1) {
-        debug('Review path resolved with prefix', { pathIn, prefix, resolved: suffixPrefixed[0] });
-        return { kind: 'suffix', path: suffixPrefixed[0] };
-      }
-    }
-    // Extension typo: review path .ts but file is .tsx (common bot mistake); pill-output.md #4
-    if (pathIn.endsWith('.ts') && !pathIn.endsWith('.tsx')) {
-      const altPath = pathIn.slice(0, -3) + 'tsx';
-      const altExact = repoFiles.find((f) => f === altPath);
-      if (altExact) {
-        debug('Review path .ts not found; resolved to .tsx (extension typo)', { pathIn, resolved: altExact });
-        return { kind: 'suffix', path: altExact };
-      }
-      const altSuffix = repoFiles.filter((f) => f.endsWith('/' + altPath) || f === altPath);
-      if (altSuffix.length === 1) {
-        debug('Review path .ts not found; resolved to .tsx (extension typo)', { pathIn, resolved: altSuffix[0] });
-        return { kind: 'suffix', path: altSuffix[0] };
-      }
+    const variant = matchTrackedPathWithExtensionAndPrefixVariants(pathIn, repoFiles);
+    if (variant) {
+      debug('Review path resolved via extension/prefix variants', { pathIn, resolved: variant });
+      return { kind: 'suffix', path: variant };
     }
     return { kind: 'missing' };
   }

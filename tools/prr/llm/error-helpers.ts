@@ -135,7 +135,7 @@ export function maskApiKey(key: string | undefined): string {
  * Bullet list so it reads well alone (chunked) or after INSTRUCTIONS 1–5 (single-shot).
  */
 export function getConflictFileTypeRules(filePath: string): string {
-  if (filePath.endsWith('.json')) {
+  if (/\.json$/i.test(filePath)) {
     const lines = [
       'Output must be strict JSON (no comments, no trailing commas).',
       'No duplicate property keys in any object — invalid JSON and easy to produce when merging. Combine both sides so each key appears exactly once.',

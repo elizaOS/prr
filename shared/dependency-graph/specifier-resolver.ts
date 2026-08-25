@@ -58,7 +58,9 @@ async function resolveTsLikeSpecifier(spec: string, fromFile: string, workdir: s
   const rel = relative(workdir, join(workdir, joined));
   if (rel.startsWith('..')) return null;
   const relPosix = toPosix(rel);
-  return tryProbeExtensions(workdir, relPosix, TS_PROBE_EXT);
+  if (await fileExistsUnderWorkdir(workdir, relPosix)) return relPosix;
+  const withoutJsRuntimeExt = relPosix.replace(/\.(?:[cm]?js|jsx)$/, '');
+  return tryProbeExtensions(workdir, withoutJsRuntimeExt, TS_PROBE_EXT);
 }
 
 async function parseGoModulePath(workdir: string): Promise<string | undefined> {
@@ -108,7 +110,9 @@ async function resolveGoSpecifier(spec: string, workdir: string, ctx: LangContex
   const absDir = packageDir === '.' ? workdir : join(workdir, packageDir);
   try {
     const names = await readdir(absDir, { withFileTypes: true });
-    const goFiles = names.filter((d) => d.isFile() && d.name.endsWith('.go')).map((d) => d.name);
+    const goFiles = names
+      .filter((d) => d.isFile() && d.name.endsWith('.go') && !d.name.endsWith('_test.go'))
+      .map((d) => d.name);
     if (goFiles.length === 0) return null;
     goFiles.sort();
     const fileRel = packageDir === '.' ? goFiles[0]! : join(packageDir, goFiles[0]!);

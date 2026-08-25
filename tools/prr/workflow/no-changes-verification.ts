@@ -886,6 +886,9 @@ async function verifyAllIssues(
   
   for (let i = 0; i < unresolvedIssues.length; i++) {
     const issue = unresolvedIssues[i];
+    if (Verification.isVerified(stateContext, issue.comment.id)) {
+      continue;
+    }
     const result = verifyResults.issues.get(`issue_${i + 1}`);
     
     if (result && !result.exists) {

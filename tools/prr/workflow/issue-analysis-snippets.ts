@@ -113,7 +113,10 @@ export async function getCodeSnippet(
     const filePath = join(workdir, path);
     const content = await readFile(filePath, 'utf-8');
     const lines = content.split('\n');
-    const { availableForCode: codeCharBudget } = computeBudget({ reservedChars: 36_000 });
+    const { availableForCode: codeCharBudget } = computeBudget({
+      reservedChars: 36_000,
+      model: process.env.PRR_VERIFIER_MODEL?.trim() || process.env.PRR_LLM_MODEL?.trim(),
+    });
 
     // WHY unified anchors: A comment may have comment.line=11 (GitHub API) and body text
     // "around lines 52 - 93". Using only one or the other would show the wrong code. Merging

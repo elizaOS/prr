@@ -49,4 +49,17 @@ describe('getTestPathForIssueLike', () => {
     );
     expect(path).toBe('src/util/pay.test.ts');
   });
+
+  it('detects explicit .tsx test paths in the comment body', () => {
+    const path = getTestPathForIssueLike(
+      {
+        comment: {
+          path: 'src/Button.tsx',
+          body: 'add tests in `Button.test.tsx`',
+        },
+      },
+      {},
+    );
+    expect(path).toBe('src/Button.test.tsx');
+  });
 });

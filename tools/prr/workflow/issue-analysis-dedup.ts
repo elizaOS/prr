@@ -83,6 +83,7 @@ export interface DedupResult {
     comment: ReviewComment;
     codeSnippet: string;
     contextHints?: string[];
+    resolvedPath?: string;
   }>;
 }
 
@@ -167,7 +168,10 @@ export function propagateStatusToDuplicates(
     if (otherId === analyzedCommentId) continue;
     const dupItem = dedupResult.duplicateItems.get(otherId);
     const path =
-      dupItem?.comment.path ?? list?.find((c) => c.id === otherId)?.path ?? '';
+      dupItem?.resolvedPath ??
+      dupItem?.comment.path ??
+      list?.find((c) => c.id === otherId)?.path ??
+      '';
     const fHash = path ? fileHashes.get(path) || '__missing__' : '__missing__';
     if (status.kind === 'resolved') {
       CommentStatusAPI.markResolved(
@@ -276,9 +280,19 @@ export function dismissDuplicateCluster(
   }
 }
 
+/** Optional extras for {@link dismissDuplicateClusterFromComments}. */
+export interface DismissDuplicateClusterFromCommentsOptions {
+  /**
+   * When true, cluster ids missing from `allComments` are still dismissed using the
+   * anchor's path/body so ALREADY_FIXED does not leave sibling threads open.
+   */
+  dismissMissingWithAnchor?: boolean;
+}
+
 /**
  * Same as {@link dismissDuplicateCluster} but resolves sibling rows from **`allComments`**
- * (fix loop / push iteration have no `duplicateItems` map). Missing ids are skipped.
+ * (fix loop / push iteration have no `duplicateItems` map). Missing ids are skipped unless
+ * {@link DismissDuplicateClusterFromCommentsOptions.dismissMissingWithAnchor}.
  */
 export function dismissDuplicateClusterFromComments(
   stateContext: StateContext,
@@ -288,11 +302,25 @@ export function dismissDuplicateClusterFromComments(
   reason: string,
   category: DismissedIssue['category'],
   remediationHint?: string,
+  options?: DismissDuplicateClusterFromCommentsOptions,
 ): void {
   const byId = new Map(allComments.map((c) => [c.id, c]));
   for (const cid of getDuplicateClusterCommentIds(anchorComment.id, duplicateMap)) {
     const rc = cid === anchorComment.id ? anchorComment : byId.get(cid);
-    if (!rc) continue;
+    if (!rc) {
+      if (options?.dismissMissingWithAnchor) {
+        Dismissed.dismissIssue(
+          stateContext,
+          cid,
+          reason,
+          category,
+          anchorComment.path,
+          anchorComment.line,
+          anchorComment.body ?? '',
+        );
+      }
+      continue;
+    }
     Dismissed.dismissIssue(
       stateContext,
       cid,
@@ -308,21 +336,21 @@ export function dismissDuplicateClusterFromComments(
 
 /**
  * Rows for {@link dismissDuplicateClusterFromComments} when the full PR list may be missing.
- * Unions **`issues[].comment`** with **`allComments`** (same id: PR row wins) so cluster siblings still in the fix batch
- * get dismissed together instead of anchor-only **`dismissIssue`**.
+ * Unions **`allComments`** then **`issues[].comment`** so the **batch row wins** on the same id
+ * (fresher path/body from the current fix batch).
  */
 export function mergeCommentsForClusterDismiss(
   allComments: readonly ReviewComment[] | undefined,
   issues: readonly { comment: ReviewComment }[],
 ): ReviewComment[] {
   const byId = new Map<string, ReviewComment>();
-  for (const { comment } of issues) {
-    byId.set(comment.id, comment);
-  }
   if (allComments?.length) {
     for (const c of allComments) {
       byId.set(c.id, c);
     }
+  }
+  for (const { comment } of issues) {
+    byId.set(comment.id, comment);
   }
   return [...byId.values()];
 }

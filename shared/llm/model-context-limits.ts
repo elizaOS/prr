@@ -91,6 +91,10 @@ const ELIZACLOUD_UNKNOWN_MODEL_SPEC: ElizaCloudModelContextSpec = {
 
 const modelMaxCharsOverride = new Map<string, number>();
 
+export function resetModelMaxPromptCharsOverridesForTests(): void {
+  modelMaxCharsOverride.clear();
+}
+
 /** Resolve ElizaCloud API model string to a canonical key present in `ELIZACLOUD_MODEL_CONTEXT`, or null. */
 export function resolveElizaCloudCanonicalModelId(model: string): string | null {
   if (ELIZACLOUD_MODEL_CONTEXT[model]) return model;

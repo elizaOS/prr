@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   ELIZACLOUD_COMPLETION_CONTEXT_RESERVE_TOKENS,
   ELIZACLOUD_DEFAULT_MAX_COMPLETION_TOKENS,
@@ -8,9 +8,13 @@ import {
   getMaxElizacloudLlmCompleteInputChars,
   getMaxFixPromptCharsForModel,
   lowerModelMaxPromptChars,
+  resetModelMaxPromptCharsOverridesForTests,
 } from '../shared/llm/model-context-limits.js';
 
 describe('getMaxElizacloudLlmCompleteInputChars', () => {
+  afterEach(() => {
+    resetModelMaxPromptCharsOverridesForTests();
+  });
   it('uses unified small-context cap for Qwen 14B (min of legacy fix+overhead and token-total budget)', () => {
     const fix = getMaxFixPromptCharsForModel('elizacloud', 'alibaba/qwen-3-14b');
     const legacy = fix + ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS;
@@ -29,6 +33,9 @@ describe('getMaxElizacloudLlmCompleteInputChars', () => {
 });
 
 describe('getMaxElizacloudHardInputCeiling', () => {
+  afterEach(() => {
+    resetModelMaxPromptCharsOverridesForTests();
+  });
   it('hard ceiling is not affected by lowerModelMaxPromptChars on large-context models', () => {
     const model = 'anthropic/claude-sonnet-4-5-20250929';
     const ceilingBefore = getMaxElizacloudHardInputCeiling(model);

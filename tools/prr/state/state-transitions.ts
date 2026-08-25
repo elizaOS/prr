@@ -153,6 +153,9 @@ export function transitionIssue(ctx: StateContext, commentId: string, tr: IssueS
       const existing = state.verifiedComments.find((v) => v.commentId === commentId);
 
       if (existing) {
+        if (!(state.verifiedFixed ??= []).includes(commentId)) {
+          state.verifiedFixed.push(commentId);
+        }
         const hadDismissed = state.dismissedIssues?.some((d) => d.commentId === commentId) ?? false;
         const sameIteration = existing.verifiedAtIteration === currentIteration;
         const fromCompatible =

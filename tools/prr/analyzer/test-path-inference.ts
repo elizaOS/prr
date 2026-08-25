@@ -83,10 +83,10 @@ export function getTestPathForIssueLike(
     return colocated;
   };
 
-  const explicitFull = body.match(/(?:^|[\s(])`?([a-zA-Z0-9_/.()-]+__tests__[a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))`?(?:\s|$|[,)])/);
+  const explicitFull = body.match(/(?:^|[\s(])`?([a-zA-Z0-9_/.()-]+__tests__[a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|tsx|js|jsx))`?(?:\s|$|[,)])/);
   if (explicitFull?.[1]) return normOut(explicitFull[1].replace(/^[\s(]+|[\s)]+$/g, ''));
 
-  const explicitRel = body.match(/(?:in|to|add\s+tests?\s+to?|tests?\s+in)\s+[`']?([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))[`']?(?:\s|$|[,)])/i);
+  const explicitRel = body.match(/(?:in|to|add\s+tests?\s+to?|tests?\s+in)\s+[`']?([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|tsx|js|jsx))[`']?(?:\s|$|[,)])/i);
   if (explicitRel?.[1]) {
     const name = explicitRel[1].replace(/^[\s'`]+|[\s'`]+$/g, '');
     if (name.includes('/')) return normOut(name);
@@ -98,7 +98,7 @@ export function getTestPathForIssueLike(
     return normOut(name);
   }
 
-  const backtick = body.match(/`([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|js))`/);
+  const backtick = body.match(/`([a-zA-Z0-9_/.()-]+\.(?:test|spec)\.(?:ts|tsx|js|jsx))`/);
   if (backtick?.[1]) {
     const name = backtick[1];
     if (name.includes('/')) return normOut(name);

@@ -1121,6 +1121,12 @@ export async function validateAndFilterModels(
         }
         probed++;
       }
+      if (list.length === 0) {
+        throw new Error(
+          `ElizaCloud: no models remain after slow-pool probing for ${runner.name}. ` +
+            'Set PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable at least one working id, or see docs/MODELS.md.',
+        );
+      }
       if (list.length !== source.length) {
         runner.supportedModels = list;
       }

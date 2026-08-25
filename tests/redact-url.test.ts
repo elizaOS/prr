@@ -11,4 +11,12 @@ describe('redactUrlCredentials', () => {
   it('redacts simple token@host https URLs', () => {
     expect(redactUrlCredentials('https://abc123@github.com/x')).toBe('https://***@github.com/x');
   });
+
+  it('redacts SSH-style git@host:path URLs', () => {
+    expect(redactUrlCredentials('remote git@github.com:org/repo.git')).toBe('remote git@***:***');
+  });
+
+  it('redacts CRLF-terminated credential URLs', () => {
+    expect(redactUrlCredentials('https://secret@github.com/x\r\n')).toBe('https://***@github.com/x\r\n');
+  });
 });

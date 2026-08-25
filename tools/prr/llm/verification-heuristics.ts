@@ -82,8 +82,10 @@ export function finalAuditExplanationClaimsSnippetIsIncomplete(explanation: stri
     ) ||
     /\b(excerpt|snippet)\s+(does not|doesn't)\s+(include|show|contain)/.test(e) ||
     /\boutside\s+(of\s+)?(the\s+)?(shown|provided)\s+(code|snippet|excerpt)/.test(e) ||
-    /\b(rest|remainder)\s+of\s+the\s+file\b/.test(e) ||
-    /\belsewhere\s+in\s+the\s+file\b/.test(e) ||
+    (/\b(rest|remainder)\s+of\s+the\s+file\b/.test(e) &&
+      /\b(not|isn't|is not|cannot|can't|outside|not shown|not visible|excerpt|snippet)\b/.test(e)) ||
+    (/\belsewhere\s+in\s+the\s+file\b/.test(e) &&
+      /\b(not|isn't|is not|cannot|can't|outside|not shown|not visible|excerpt|snippet)\b/.test(e)) ||
     /\bcannot\s+(see|view|verify)\s+(the\s+)?(rest|full|remaining|complete)\b/.test(e) ||
     /\b(full|entire)\s+file\b.*\b(not|isn't)\s+(shown|provided|visible)/.test(e) ||
     /\bimplementation\s+(may be|might be|could be)\s+(elsewhere|outside)/.test(e) ||

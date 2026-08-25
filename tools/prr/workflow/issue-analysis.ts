@@ -883,11 +883,20 @@ export async function findUnresolvedIssues(
     if (statusHits > 0 && toAnalyze.length > 0) {
       console.log(chalk.green(`  ✓ All ${formatNumber(statusHits)} issue(s) served from persisted status — skipping LLM analysis`));
     }
+    const unresolvedAfterBlast = applyBlastRadiusToUnresolved(
+      unresolved,
+      findUnresolvedIssuesOptions?.blastRadius,
+      stateContext,
+      clusterMapForAnalysis,
+      comments,
+    );
+    await State.saveState(stateContext);
+    await LessonsAPI.Save.save(lessonsContext);
     if (options.verbose) {
-      printDebugIssueTable('after analysis', comments, stateContext, unresolved);
+      printDebugIssueTable('after analysis', comments, stateContext, unresolvedAfterBlast);
     }
     return {
-      unresolved,
+      unresolved: unresolvedAfterBlast,
       recommendedModelIndex: 0,
       // Session map must match cluster expansion used above (`clusterMapForAnalysis`), not only the
       // in-memory dedup rebuild — when dedup throws or yields an empty map, dedup-v2 cache still applies.

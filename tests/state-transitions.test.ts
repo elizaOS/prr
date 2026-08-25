@@ -133,4 +133,15 @@ describe('transitionIssue', () => {
     transitionIssue(ctx, 'ic_dup', d);
     expect(getState(ctx).dismissedIssues?.filter((x) => x.commentId === 'ic_dup').length).toBe(1);
   });
+
+  it('repairs verifiedFixed when verifiedComments already has the row', () => {
+    const ctx = makeCtx({
+      verifiedComments: [
+        { commentId: 'ic_v', verifiedAt: 't', verifiedAtIteration: 1 },
+      ],
+      verifiedFixed: [],
+    });
+    transitionIssue(ctx, 'ic_v', { kind: 'verified' });
+    expect(getState(ctx).verifiedFixed).toContain('ic_v');
+  });
 });

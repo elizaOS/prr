@@ -30,7 +30,7 @@ export const PROMPT_BUDGET_MAX_FULL_FILE_CHARS = 500_000;
 export function inputCeilingCharsForModel(model: string | undefined): number {
   const m = model?.trim();
   if (!m) return getMaxElizacloudLlmCompleteInputChars('openai/gpt-4o-mini');
-  if (m.includes('/') || m.startsWith('Qwen/')) return getMaxElizacloudLlmCompleteInputChars(m);
+  if (m.includes('/')) return getMaxElizacloudLlmCompleteInputChars(m);
   return getMaxFixPromptCharsForModel('openai', m) + ELIZACLOUD_LLM_COMPLETE_INPUT_OVERHEAD_CHARS;
 }
 
@@ -184,7 +184,7 @@ export function truncateNumberedCodeAroundAnchor(
   }
   let lo = center;
   let hi = center;
-  const sliceText = () => rows.slice(lo, hi + 1).map((r) => r.text).join('\n');
+  const sliceText = () => rows.slice(lo, hi + 1).map((r) => `${r.lineNum}: ${r.text}`).join('\n');
   let chunk = sliceText();
   const note = '\n... (truncated — centered on review line for prompt budget)';
   const maxBody = Math.max(400, maxChars - note.length - footerLines.reduce((s, l) => s + l.length + 1, 0));

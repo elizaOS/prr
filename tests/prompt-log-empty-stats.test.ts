@@ -42,23 +42,25 @@ describe('getEmptyPromptBodyRejectionStats / closeOutputLog empty-body summary',
 
   it('tracks PROMPT and RESPONSE refusals by kind:slug and writes breakdown to output.log on close', async () => {
     initOutputLog({ prefix: 'vitest-empty-stats' });
-    const slugP = debugPrompt('test-label', '');
-    expect(slugP).toMatch(/^#\d{4}\//);
+    try {
+      const slugP = debugPrompt('test-label', '');
+      expect(slugP).toMatch(/^#\d{4}\//);
 
-    let stats = getEmptyPromptBodyRejectionStats();
-    expect(stats.total).toBe(1);
-    expect(stats.byKindSlug).toHaveLength(1);
-    expect(stats.byKindSlug[0]?.key.startsWith('PROMPT:')).toBe(true);
-    expect(stats.byKindSlug[0]?.count).toBe(1);
+      let stats = getEmptyPromptBodyRejectionStats();
+      expect(stats.total).toBe(1);
+      expect(stats.byKindSlug).toHaveLength(1);
+      expect(stats.byKindSlug[0]?.key.startsWith('PROMPT:')).toBe(true);
+      expect(stats.byKindSlug[0]?.count).toBe(1);
 
-    debugResponse(slugP, 'test-label', '   ');
-    stats = getEmptyPromptBodyRejectionStats();
-    expect(stats.total).toBe(2);
-    expect(stats.byKindSlug.length).toBeGreaterThanOrEqual(2);
+      debugResponse(slugP, 'test-label', '   ');
+      stats = getEmptyPromptBodyRejectionStats();
+      expect(stats.total).toBe(2);
+      expect(stats.byKindSlug.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await closeOutputLog();
+    }
 
-    await closeOutputLog();
-
-    stats = getEmptyPromptBodyRejectionStats();
+    const stats = getEmptyPromptBodyRejectionStats();
     expect(stats.total).toBe(0);
     expect(stats.byKindSlug).toHaveLength(0);
 

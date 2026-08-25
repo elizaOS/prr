@@ -107,9 +107,9 @@ export function getLlmApiRequestTimeoutMs(
     if (promptCharCount > 28_000) ms = Math.max(ms, 150_000);
     if (promptCharCount > 45_000) ms = Math.max(ms, 180_000);
   } else {
-    if (promptCharCount > 60_000) ms = Math.max(ms, 120_000);
-    if (promptCharCount > 100_000) ms = Math.max(ms, 150_000);
-    if (promptCharCount > 140_000) ms = Math.max(ms, 180_000);
+    if (promptCharCount >= 60_000) ms = Math.max(ms, 120_000);
+    if (promptCharCount >= 100_000) ms = Math.max(ms, 150_000);
+    if (promptCharCount >= 140_000) ms = Math.max(ms, 180_000);
   }
   return Math.min(ms, LLM_REQUEST_TIMEOUT_FULL_FILE_MS);
 }

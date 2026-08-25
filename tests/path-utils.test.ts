@@ -21,6 +21,7 @@ import {
   setDynamicRepoTopLevelDirs,
   getDynamicRepoTopLevelDirs,
   tryResolvePathWithExtensionVariants,
+  matchTrackedPathWithExtensionAndPrefixVariants,
 } from '../shared/path-utils.js';
 
 describe('normalizeRepoPath', () => {
@@ -248,5 +249,12 @@ describe('tryResolvePathWithExtensionVariants', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('matches tracked tsconfig.js review path to tsconfig.json and prefix variants', () => {
+    expect(matchTrackedPathWithExtensionAndPrefixVariants('tsconfig.js', ['tsconfig.json'])).toBe('tsconfig.json');
+    expect(
+      matchTrackedPathWithExtensionAndPrefixVariants('plugin-x/index.ts', ['packages/plugin-x/index.ts']),
+    ).toBe('packages/plugin-x/index.ts');
   });
 });

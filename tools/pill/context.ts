@@ -11,7 +11,7 @@
  * **`[Pill debug]`** lines explained work; operators assumed a hang.
  */
 import { readFileSync, existsSync, statSync } from 'fs';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import type { PillConfig, PillContext } from './types.js';
 import { DEFAULT_PILL_CONTEXT_BUDGET_TOKENS } from './config.js';
 import {
@@ -247,13 +247,15 @@ export async function assembleContext(
     console.log(`[Pill debug] prompts.log does not exist: ${promptsPath}`);
   }
 
-  // Pill-on-itself: if primary logs are not pill's own, also include pill-output.log when present.
+  // Pill-on-itself: merge targetDir pill logs only when the selected primary logs live in targetDir.
+  // WHY: `--output-log` / archived paths outside targetDir must not pick up an unrelated local pill run.
+  const selectedLogsInTargetDir = resolve(dirname(outputLogPath)) === resolve(targetDir);
   const pillOutputName = 'pill-output.log';
   const pillPromptsName = 'pill-prompts.log';
   const pillOutputPathInTarget = join(targetDir, pillOutputName);
   const pillPromptsPathInTarget = join(targetDir, pillPromptsName);
   const primaryOutputIsTargetPillSelf = resolve(outputLogPath) === resolve(pillOutputPathInTarget);
-  if (!primaryOutputIsTargetPillSelf) {
+  if (selectedLogsInTargetDir && !primaryOutputIsTargetPillSelf) {
     if (existsSync(pillOutputPathInTarget)) {
       try {
         const pillRaw = readFileSync(pillOutputPathInTarget, 'utf-8');

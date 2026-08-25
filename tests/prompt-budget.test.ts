@@ -25,8 +25,9 @@ describe('prompt-budget', () => {
     const lines = Array.from({ length: 40 }, (_, i) => `${i + 1}: line${i + 1}`);
     const big = lines.join('\n');
     const out = truncateNumberedCodeAroundAnchor(big, 25, 400);
-    expect(out.length).toBeLessThanOrEqual(500);
-    expect(out).toContain('line25');
+    // 400-char body budget plus truncation footer (kept numbered `N: text` lines).
+    expect(out.length).toBeLessThanOrEqual(400 + 80);
+    expect(out).toContain('25: line25');
   });
 
   it('computePerFixVerifyCurrentCodeBudget shrinks with more fixes', () => {

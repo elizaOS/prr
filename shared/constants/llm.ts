@@ -27,18 +27,46 @@ export const BATCH_CHECK_MAX_CONTEXT_CHARS = 150000;
  *
  * - **Default 2** (3 attempts) when not in CI — balances flaky gateways vs long hangs.
  * - **Default 4** (5 attempts) when **`CI=true`** and **`PRR_ELIZACLOUD_SERVER_ERROR_RETRIES`** is unset — Actions often sees transient empty 500s.
- * - **`PRR_ELIZACLOUD_SERVER_ERROR_RETRIES`**: explicit override, integer **0–15**. Per-call **`complete(..., { max504Retries })`** still wins.
+ * - **`PRR_ELIZACLOUD_SERVER_ERROR_RETRIES`**: explicit override, integer **0–15** (decimal digits only — e.g. **`3abc`** is invalid, not **`3`**). Invalid values log **`console.warn`** once per distinct string and use the same defaults as unset. Per-call **`complete(..., { max504Retries })`** still wins.
  */
 const ELIZACLOUD_SERVER_ERROR_RETRIES_CAP = 15;
+
+/** Dedupe invalid-env warnings — {@link getElizacloudServerErrorMaxRetries} runs per LLM `complete`. */
+const warnedInvalidElizacloudServerErrorRetries = new Set<string>();
+
+function elizacloudServerErrorRetriesFallback(): number {
+  return process.env.CI === 'true' ? 4 : 2;
+}
+
+function warnInvalidElizacloudServerErrorRetriesOnce(raw: string): void {
+  if (warnedInvalidElizacloudServerErrorRetries.has(raw)) return;
+  warnedInvalidElizacloudServerErrorRetries.add(raw);
+  const fallback = elizacloudServerErrorRetriesFallback();
+  const capStr = ELIZACLOUD_SERVER_ERROR_RETRIES_CAP.toLocaleString();
+  const fbStr = fallback.toLocaleString();
+  console.warn(
+    `[PRR] PRR_ELIZACLOUD_SERVER_ERROR_RETRIES=${JSON.stringify(raw)} is invalid (use integer 0–${capStr}); using default ${fbStr} (${process.env.CI === 'true' ? 'CI' : 'non-CI'}).`,
+  );
+}
+
+/** Clears invalid-env warn dedupe (Vitest only — keeps tests order-independent). */
+export function clearInvalidElizacloudServerErrorRetriesWarnDedupeForTests(): void {
+  warnedInvalidElizacloudServerErrorRetries.clear();
+}
 
 export function getElizacloudServerErrorMaxRetries(): number {
   const raw = process.env.PRR_ELIZACLOUD_SERVER_ERROR_RETRIES?.trim();
   if (raw != null && raw !== '') {
-    const n = parseInt(raw, 10);
-    if (Number.isFinite(n) && n >= 0 && n <= ELIZACLOUD_SERVER_ERROR_RETRIES_CAP) return n;
+    if (!/^\d+$/.test(raw)) {
+      warnInvalidElizacloudServerErrorRetriesOnce(raw);
+      return elizacloudServerErrorRetriesFallback();
+    }
+    const n = Number(raw);
+    if (Number.isInteger(n) && n >= 0 && n <= ELIZACLOUD_SERVER_ERROR_RETRIES_CAP) return n;
+    warnInvalidElizacloudServerErrorRetriesOnce(raw);
+    return elizacloudServerErrorRetriesFallback();
   }
-  if (process.env.CI === 'true') return 4;
-  return 2;
+  return elizacloudServerErrorRetriesFallback();
 }
 
 /**
@@ -56,10 +84,11 @@ export const MAX_ISSUES_PER_PROMPT = 50;
 export const MAX_ISSUES_PER_FIX_PROMPT = 20;
 
 /**
- * Hard cap on enriched fix prompt size (base + file injection).
- * WHY: Audit showed single 515k-char prompt produced >99% waste; cap prevents mega-prompts.
+ * Cap on enriched fix prompt size (base + file injection).
+ * WHY: This used to be a 500k soft cap, but the 200k gateway hard cap always won.
+ * Keeping the exported name as an alias avoids two divergent "max enriched" values.
  */
-export const MAX_ENRICHED_FIX_PROMPT_CHARS = 500_000;
+export const MAX_ENRICHED_FIX_PROMPT_CHARS = 200_000;
 
 /**
  * Stricter cap for total request size (base + injection) to avoid 504/gateway timeouts.
@@ -88,6 +117,52 @@ export const MAX_FIX_PROMPT_CHARS = 100_000;
  * pre-flight cap reduces batch so first call stays under ~80k and completes.
  */
 export const FIRST_ATTEMPT_MAX_PROMPT_CHARS = 80_000;
+
+export interface LlmPromptSizeLimits {
+  firstAttemptMaxPromptChars: number;
+  maxFixPromptChars: number;
+  maxEnrichedFixPromptChars: number;
+  maxEnrichedFixPromptHardCap: number;
+  rewriteEscalationReserveChars: number;
+}
+
+export function assertValidLlmPromptSizeLimits(
+  limits: LlmPromptSizeLimits = {
+    firstAttemptMaxPromptChars: FIRST_ATTEMPT_MAX_PROMPT_CHARS,
+    maxFixPromptChars: MAX_FIX_PROMPT_CHARS,
+    maxEnrichedFixPromptChars: MAX_ENRICHED_FIX_PROMPT_CHARS,
+    maxEnrichedFixPromptHardCap: MAX_ENRICHED_FIX_PROMPT_HARD_CAP,
+    rewriteEscalationReserveChars: REWRITE_ESCALATION_RESERVE_CHARS,
+  },
+): void {
+  const {
+    firstAttemptMaxPromptChars,
+    maxFixPromptChars,
+    maxEnrichedFixPromptChars,
+    maxEnrichedFixPromptHardCap,
+    rewriteEscalationReserveChars,
+  } = limits;
+  const failures: string[] = [];
+  if (!(firstAttemptMaxPromptChars < maxFixPromptChars)) {
+    failures.push('FIRST_ATTEMPT_MAX_PROMPT_CHARS must be less than MAX_FIX_PROMPT_CHARS');
+  }
+  if (!(maxFixPromptChars < maxEnrichedFixPromptHardCap)) {
+    failures.push('MAX_FIX_PROMPT_CHARS must be less than MAX_ENRICHED_FIX_PROMPT_HARD_CAP');
+  }
+  if (maxEnrichedFixPromptChars !== maxEnrichedFixPromptHardCap) {
+    failures.push('MAX_ENRICHED_FIX_PROMPT_CHARS must equal MAX_ENRICHED_FIX_PROMPT_HARD_CAP');
+  }
+  if (!(maxEnrichedFixPromptHardCap - rewriteEscalationReserveChars > maxFixPromptChars)) {
+    failures.push(
+      'MAX_ENRICHED_FIX_PROMPT_HARD_CAP minus REWRITE_ESCALATION_RESERVE_CHARS must stay above MAX_FIX_PROMPT_CHARS',
+    );
+  }
+  if (failures.length > 0) {
+    throw new Error(`Invalid LLM prompt size constants: ${failures.join('; ')}`);
+  }
+}
+
+assertValidLlmPromptSizeLimits();
 
 /**
  * Minimum issues per prompt when adaptive batching reduces the batch size.
@@ -134,6 +209,10 @@ export const MAX_CONFLICT_SINGLE_SHOT_LLM_CHARS = MAX_CONFLICT_RESOLUTION_FILE_S
 /**
  * Use chunked resolution for conflict files above this size (chars) instead of
  * trying full-file first. Reduces 504/timeouts on 22–50KB files.
+ *
+ * **Attempt 1 (`llm-api`):** `buildConflictResolutionPromptWithContent` uses the same threshold so
+ * batch prompts embed conflict sections only, not the whole file — avoids a 22k–30k gap where
+ * Attempt 2 chunked first but Attempt 1 still embedded the full conflicted file.
  */
 export const CONFLICT_USE_CHUNKED_FIRST_CHARS = 22_000;
 

@@ -107,6 +107,50 @@ export function stripGitDiffPathPrefix(rawPath: string): string {
 }
 
 /**
+ * Common first-segment prefixes bots omit from review paths (plugin-foo vs packages/plugin-foo).
+ */
+export const COMMON_REVIEW_PATH_PREFIXES = [
+  'plugins/',
+  'packages/',
+  'benchmarks/',
+  'tools/',
+  'shared/',
+  'examples/',
+] as const;
+
+function uniqueTrackedMatch(pathIn: string, repoFiles: readonly string[]): string | undefined {
+  if (repoFiles.includes(pathIn)) return pathIn;
+  const suffix = repoFiles.filter((f) => f.endsWith('/' + pathIn) || f === pathIn);
+  return suffix.length === 1 ? suffix[0] : undefined;
+}
+
+/**
+ * Resolve a missing review path against a git-tracked file list using extension variants
+ * and {@link COMMON_REVIEW_PATH_PREFIXES}. **WHY:** Keep `assessSolvability` on the same
+ * rules as {@link tryResolvePathWithExtensionVariants} instead of ad-hoc branches.
+ */
+export function matchTrackedPathWithExtensionAndPrefixVariants(
+  pathIn: string,
+  repoFiles: readonly string[],
+): string | undefined {
+  const ext = pathIn.includes('.') ? pathIn.slice(pathIn.lastIndexOf('.')) : '';
+  const variants = ext ? EXTENSION_VARIANT_MAP[ext] : undefined;
+  if (variants) {
+    const base = pathIn.slice(0, pathIn.length - ext.length);
+    for (const v of variants) {
+      const hit = uniqueTrackedMatch(base + v, repoFiles);
+      if (hit) return hit;
+    }
+  }
+  for (const prefix of COMMON_REVIEW_PATH_PREFIXES) {
+    if (pathIn.startsWith(prefix)) continue;
+    const hit = uniqueTrackedMatch(prefix + pathIn, repoFiles);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/**
  * Try to resolve a path that doesn't exist by checking common extension variants.
  * WHY: Review comments sometimes reference tsconfig.js when only tsconfig.json exists, or
  * a .ts file when the repo has .tsx; dismissing as "file not found" wastes the fix loop.

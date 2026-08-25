@@ -33,6 +33,8 @@ export interface BuildDependencyGraphOptions {
   timeoutMs?: number;
   /** Override file list (tests); otherwise `git ls-files`. */
   fileList?: string[];
+  /** Prefer these paths when truncating over {@link maxFiles} (typically PR changed files). */
+  preferFiles?: string[];
 }
 
 function envInt(key: string, fallback: number): number {
@@ -64,12 +66,20 @@ export function isBlastRadiusDismissEnabled(): boolean {
   return v === '1' || /^true$/i.test(v ?? '');
 }
 
+export interface ListGitTrackedFilesOptions {
+  timeoutMs?: number;
+}
+
 /** Tracked repo paths (git output uses `/`). */
-export async function listGitTrackedFiles(workdir: string): Promise<string[]> {
+export async function listGitTrackedFiles(
+  workdir: string,
+  options?: ListGitTrackedFilesOptions,
+): Promise<string[]> {
   const { stdout } = await execFileAsync('git', ['ls-files'], {
     cwd: workdir,
     maxBuffer: 50 * 1024 * 1024,
     encoding: 'utf8',
+    ...(options?.timeoutMs ? { timeout: options.timeoutMs } : {}),
   });
   return stdout
     .split('\n')
@@ -96,12 +106,13 @@ export async function buildDependencyGraph(
   const timeoutMs = options?.timeoutMs ?? getBlastRadiusTimeoutMs();
   const started = Date.now();
 
-  const allRel = options?.fileList ?? (await listGitTrackedFiles(workdir));
-  const toScan = allRel.filter((p) => detectDepScanLang(p) != null);
+  const allRel = options?.fileList ?? (await listGitTrackedFiles(workdir, { timeoutMs }));
+  let toScan = allRel.filter((p) => detectDepScanLang(p) != null);
   if (toScan.length > maxFiles) {
-    throw new Error(
-      `blast-radius: ${toScan.length} source files exceeds PRR_BLAST_RADIUS_MAX_FILES (${maxFiles})`
-    );
+    const prefer = new Set(options?.preferFiles ?? []);
+    const preferred = toScan.filter((p) => prefer.has(p));
+    const rest = toScan.filter((p) => !prefer.has(p));
+    toScan = [...preferred, ...rest].slice(0, maxFiles);
   }
 
   const imports = new Map<string, Set<string>>();
@@ -181,7 +192,7 @@ export function computeBlastRadius(
     }
   }
 
-  if (allTrackedFiles && allTrackedFiles.length > 0) {
+  if (maxDepth >= 1 && allTrackedFiles && allTrackedFiles.length > 0) {
     const dirProx = getDirectoryNeighbors(seedFiles, allTrackedFiles);
     const nameProx = getFilenamePatternMatches(seedFiles, allTrackedFiles);
     for (const m of [dirProx, nameProx]) {

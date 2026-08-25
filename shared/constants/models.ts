@@ -140,6 +140,28 @@ function isPlausibleSkipListModelId(id: string): boolean {
   return /^[A-Za-z0-9._\/-]+$/.test(id);
 }
 
+function skipListCanonicalKeys(id: string): string[] {
+  const trimmed = id.trim();
+  const keys = new Set<string>([trimmed, trimmed.toLowerCase()]);
+  const noPrefix = trimmed.replace(/^(openai|anthropic|google|alibaba|qwen)\//i, '');
+  keys.add(noPrefix);
+  keys.add(noPrefix.toLowerCase());
+  const last = (trimmed.split('/').pop() ?? trimmed).toLowerCase();
+  keys.add(last);
+  keys.add(last.replace(/[^a-z0-9]/g, ''));
+  return [...keys];
+}
+
+function includeTokenMatchesSkipId(includeTokens: Set<string>, skipId: string): boolean {
+  const skipKeys = new Set(skipListCanonicalKeys(skipId));
+  for (const token of includeTokens) {
+    for (const k of skipListCanonicalKeys(token)) {
+      if (skipKeys.has(k)) return true;
+    }
+  }
+  return false;
+}
+
 export function getEffectiveElizacloudSkipModelIds(): string[] {
   const extraRaw = process.env.PRR_ELIZACLOUD_EXTRA_SKIP_MODELS?.trim();
   const extraParsed = extraRaw
@@ -169,8 +191,7 @@ export function getEffectiveElizacloudSkipModelIds(): string[] {
       .map((s) => s.trim())
       .filter((s) => s && isPlausibleSkipListModelId(s)),
   );
-  const match = (id: string) => include.has(id) || include.has(id.replace(/^(openai|anthropic|google)\//, ''));
-  const filtered = mergedBase.filter(id => !match(id));
+  const filtered = mergedBase.filter((id) => !includeTokenMatchesSkipId(include, id));
   if (!loggedElizacloudIncludeModels) {
     loggedElizacloudIncludeModels = true;
     const before = mergedBase.length;

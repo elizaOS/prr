@@ -94,18 +94,19 @@ export class GitHubAPI {
    */
   async getAuthenticatedLogin(): Promise<string | undefined> {
     if (!this.authenticatedLoginPromise) {
-      this.authenticatedLoginPromise = (async () => {
-        try {
-          const { data } = await this.octokit.users.getAuthenticated();
+      this.authenticatedLoginPromise = this.octokit.users
+        .getAuthenticated()
+        .then(({ data }) => {
           const login = data.login?.trim();
           return login || undefined;
-        } catch (err) {
+        })
+        .catch((err: unknown) => {
+          this.authenticatedLoginPromise = undefined;
           debug('users.getAuthenticated failed', {
             error: err instanceof Error ? err.message : String(err),
           });
           return undefined;
-        }
-      })();
+        });
     }
     return this.authenticatedLoginPromise;
   }

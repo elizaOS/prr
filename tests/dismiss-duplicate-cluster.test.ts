@@ -262,12 +262,12 @@ describe('mergeCommentsForClusterDismiss', () => {
     expect(merged.map((c) => c.id).sort()).toEqual(['a', 'b']);
   });
 
-  it('prefers allComments row over batch when same id', () => {
+  it('prefers batch issue comment over allComments when same id', () => {
     const fromList = review('a', 'from-list.ts');
     const fromBatch = review('a', 'from-batch.ts');
     const merged = mergeCommentsForClusterDismiss([fromList], [{ comment: fromBatch, codeSnippet: '', stillExists: true, explanation: '' }]);
     expect(merged).toHaveLength(1);
-    expect(merged[0]!.path).toBe('from-list.ts');
+    expect(merged[0]!.path).toBe('from-batch.ts');
   });
 });
 

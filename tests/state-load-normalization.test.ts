@@ -5,6 +5,7 @@ import {
   applyResolverStatePostOverlapCleanup,
   assertNoVerifiedDismissedOverlapOrThrow,
   getVerifiedDismissedOverlapIds,
+  repairVerifiedDismissedOverlapPreferVerified,
 } from '../tools/prr/state/state-core.js';
 
 function baseState(over: Partial<ResolverState>): ResolverState {
@@ -94,6 +95,22 @@ describe('assertNoVerifiedDismissedOverlapOrThrow', () => {
   });
 });
 
+describe('repairVerifiedDismissedOverlapPreferVerified', () => {
+  it('keeps verified and drops dismissed on overlap', () => {
+    const state = baseState({
+      verifiedFixed: ['ic_keep'],
+      verifiedComments: [
+        { commentId: 'ic_keep', verifiedAt: '2026-01-01T00:00:00Z', verifiedAtIteration: 1 },
+      ],
+      dismissedIssues: [minimalDismissed({ commentId: 'ic_keep' }), minimalDismissed({ commentId: 'ic_only_d' })],
+    });
+    const { mutated } = repairVerifiedDismissedOverlapPreferVerified(state);
+    expect(mutated).toBe(true);
+    expect(state.verifiedFixed).toEqual(['ic_keep']);
+    expect(state.verifiedComments.map((v) => v.commentId)).toEqual(['ic_keep']);
+    expect(state.dismissedIssues.map((d) => d.commentId)).toEqual(['ic_only_d']);
+  });
+});
 describe('applyResolverStatePostOverlapCleanup', () => {
   it('clears recoveredFromGitCommentIds and skip-listed model performance keys', () => {
     const state = baseState({

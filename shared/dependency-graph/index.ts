@@ -15,6 +15,7 @@ export {
   buildDependencyGraph,
   computeBlastRadius,
   isInBlastRadius,
+  type ListGitTrackedFilesOptions,
   listGitTrackedFiles,
   isBlastRadiusDisabled,
   getBlastRadiusDepth,

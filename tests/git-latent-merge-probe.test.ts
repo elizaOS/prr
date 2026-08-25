@@ -16,6 +16,9 @@ describe('mergeTreeFailureLooksUnsupported', () => {
     expect(mergeTreeFailureLooksUnsupported("git: 'merge-tree' is not a git command")).toBe(true);
     expect(mergeTreeFailureLooksUnsupported('error: unknown option `write-tree`')).toBe(true);
     expect(mergeTreeFailureLooksUnsupported('CONFLICT (content): Merge conflict in f.txt')).toBe(false);
+    expect(mergeTreeFailureLooksUnsupported('fatal: ambiguous argument')).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('fatal: bad object abc123')).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('fatal: unknown revision or path not in the working tree')).toBe(true);
   });
 });
 
@@ -28,6 +31,12 @@ describe('parseMergeTreeConflictPaths', () => {
     const paths = parseMergeTreeConflictPaths(s);
     expect(paths).toContain('f.txt');
     expect(paths).toContain('a.txt');
+  });
+
+  it('parses conflict paths that contain spaces', () => {
+    const s = 'CONFLICT (modify/delete): my file.txt deleted in topic and modified in HEAD.';
+    const paths = parseMergeTreeConflictPaths(s);
+    expect(paths).toContain('my file.txt');
   });
 });
 

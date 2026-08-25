@@ -261,6 +261,7 @@ export async function checkForNewComments(
     const resolvedPaths = new Map<string, string>();
     for (const comment of newComments) {
       const solvability = assessSolvability(workdir, comment, stateContext);
+      updatedComments.push(comment);
       if (!solvability.solvable) {
         dismissDuplicateClusterFromComments(
           stateContext,
@@ -278,7 +279,6 @@ export async function checkForNewComments(
         resolvedPaths.set(comment.id, solvability.resolvedPath);
       }
       solvableComments.push(comment);
-      updatedComments.push(comment);
     }
 
     if (solvableComments.length === 0) {

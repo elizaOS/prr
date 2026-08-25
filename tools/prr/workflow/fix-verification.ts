@@ -783,24 +783,30 @@ export async function verifyFixes(
           typeof llm.getVerifierModel === 'function' ? llm.getVerifierModel() : undefined;
         const currentModelEarly = getCurrentModel ? getCurrentModel() : undefined;
         const verifyBudgetModel = preferredVerifierEarly ?? currentModelEarly ?? '';
-        const maxCurrentOutputChars = computePerFixVerifyCurrentCodeBudget(
-          verifyBudgetModel,
-          changedIssues.length
-        );
+        const diffs = await Promise.all(changedIssues.map((issue) => getIssueDiff(issue)));
+        const emptyDiffIds = new Set<string>();
+        for (let i = 0; i < changedIssues.length; i++) {
+          const issue = changedIssues[i]!;
+          const diff = diffs[i];
+          if (!diff || !diff.trim()) {
+            emptyDiffIds.add(issue.comment.id);
+          }
+        }
+        const verifyCount = Math.max(1, changedIssues.length - emptyDiffIds.size);
+        const maxCurrentOutputChars = computePerFixVerifyCurrentCodeBudget(verifyBudgetModel, verifyCount);
         const fixesToVerify = await Promise.all(
-          changedIssues.map(async (issue) => {
+          changedIssues.map(async (issue, idx) => {
             const primaryPath = issue.resolvedPath ?? issue.comment.path;
-            const [diff, currentCode] = await Promise.all([
-              getIssueDiff(issue),
-              workdir
-                ? getCurrentCodeAtLine(workdir, primaryPath, issue.comment.line, {
+            const diff = diffs[idx];
+            const currentCode =
+              workdir && !emptyDiffIds.has(issue.comment.id)
+                ? await getCurrentCodeAtLine(workdir, primaryPath, issue.comment.line, {
                     expandForTypeSignature: commentMentionsApiOrSignature({ comment: issue.comment.body }),
                     expandForLifecycle: commentNeedsLifecycleContext({ comment: issue.comment.body }),
                     commentBody: issue.comment.body,
                     maxOutputChars: maxCurrentOutputChars,
                   })
-                : Promise.resolve(undefined),
-            ]);
+                : undefined;
             return {
               id: issue.comment.id,
               comment: issue.comment.body,
@@ -813,10 +819,8 @@ export async function verifyFixes(
         );
 
         // output.log audit: empty diff → skip verifier LLM, add lesson, treat as failed (no-changes / rotate).
-        const emptyDiffIds = new Set<string>();
         for (const fix of fixesToVerify) {
-          if (!fix.diff || !fix.diff.trim()) {
-            emptyDiffIds.add(fix.id);
+          if (emptyDiffIds.has(fix.id)) {
             LessonsAPI.Add.addLesson(lessonsContext, `Fix for ${fix.filePath}:${fix.line ?? '?'} - fix must produce a non-empty diff; verifier saw no file changes.`);
             Iterations.addVerificationResult(stateContext, fix.id, {
               passed: false,

@@ -45,6 +45,16 @@ describe('session skip persistence (state file fields)', () => {
     expect(stateContext.state.sessionSkippedModelKeys).toContain('llm-api/bad/model');
     expect(stateContext.state.sessionModelStats?.['llm-api/bad/model']?.failures).toBe(3);
   });
+
+  it('clears persisted skip fields when PRR_PERSIST_SESSION_MODEL_SKIP=0', () => {
+    vi.stubEnv('PRR_PERSIST_SESSION_MODEL_SKIP', '0');
+    const stateContext = createStateContext('/tmp/w');
+    stateContext.state = createInitialState('https://github.com/o/r/pull/2', 'branch', 'abc123');
+    stateContext.state.sessionSkippedModelKeys = ['llm-api/bad/model'];
+    persistRotationSessionToState(stateContext);
+    expect(stateContext.state.sessionSkippedModelKeys).toBeUndefined();
+    expect(stateContext.state.sessionModelStats).toBeUndefined();
+  });
 });
 
 describe('recordSessionModelVerificationOutcome', () => {

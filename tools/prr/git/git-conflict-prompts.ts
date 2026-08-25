@@ -4,12 +4,12 @@
 
 import { readFileSync, lstatSync } from 'fs';
 import { join } from 'path';
-import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../../../shared/constants.js';
+import {
+  CONFLICT_USE_CHUNKED_FIRST_CHARS,
+  CONFLICT_USE_CHUNKED_FIRST_CHUNKS,
+} from '../../../shared/constants.js';
 import { hasConflictMarkers } from '../../../shared/git/git-clone-index.js';
 import { extractConflictChunks } from './git-conflict-chunked.js';
-
-/** Above this size we embed only conflict sections, not the full file. WHY: Large files (e.g. CHANGELOG 600+ lines) double prompt size and cause 504s; conflict sections are enough for <search>/<replace>. */
-const CONFLICT_EMBED_FULL_MAX_CHARS = 30_000;
 
 /**
  * Build prompt for agentic runners (Cursor, Claude Code, Aider) that can open files.
@@ -92,9 +92,11 @@ export function buildConflictResolutionPromptWithContent(
 
     const fileHasMarkers = hasConflictMarkers(content);
     const chunks = fileHasMarkers ? extractConflictChunks(content, 7) : [];
+    // WHY `CONFLICT_USE_CHUNKED_FIRST_CHARS`: same threshold as Attempt 2 per-file resolution — avoids
+    // embedding the entire 22k–30k char file here while Attempt 2 would chunk first (504/timeouts).
     const useChunkedEmbed = fileHasMarkers
       && (
-        content.length > CONFLICT_EMBED_FULL_MAX_CHARS
+        content.length > CONFLICT_USE_CHUNKED_FIRST_CHARS
         || chunks.length >= CONFLICT_USE_CHUNKED_FIRST_CHUNKS
       );
 

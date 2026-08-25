@@ -136,6 +136,157 @@ export function applyResolverStateLoadCoreNormalization(state: ResolverState): {
   return { mutated };
 }
 
+const HEAD_CHANGE_DROP_DISMISS_CATEGORIES = new Set(['already-fixed', 'chronic-failure', 'stale']);
+
+/**
+ * Apply HEAD-SHA change resets (verified, session skip, code-dependent dismissals, commentStatuses).
+ * Used by {@link loadState} and {@link StateManager.load} so both paths stay aligned.
+ */
+export function applyHeadShaChangeResets(state: ResolverState, prevSha: string, headSha: string): void {
+  delete state.sessionSkippedModelKeys;
+  delete state.sessionModelStats;
+  delete state.sessionSkippedSinceFixIteration;
+  const hadVerified = (state.verifiedFixed?.length ?? 0) + (state.verifiedComments?.length ?? 0) > 0;
+  const hadPartial = Object.keys(state.partialConflictResolutions ?? {}).length > 0;
+  const hadDismissed = (state.dismissedIssues?.length ?? 0) > 0;
+  if (hadVerified) {
+    const clearedVerifiedIds = [
+      ...new Set([...(state.verifiedFixed ?? []), ...(state.verifiedComments ?? []).map((v) => v.commentId)]),
+    ];
+    const showN = 25;
+    const idSample =
+      clearedVerifiedIds.length === 0
+        ? ''
+        : ` — IDs (${formatNumber(clearedVerifiedIds.length)} total, showing up to ${formatNumber(showN)}): ${clearedVerifiedIds.slice(0, showN).join(', ')}${clearedVerifiedIds.length > showN ? ' …' : ''}`;
+    state.verifiedFixed = [];
+    state.verifiedComments = [];
+    if (state.commentStatuses) {
+      let statusCleared = 0;
+      for (const [id, st] of Object.entries(state.commentStatuses)) {
+        if ((st as { status?: string }).status === 'resolved' || (st as { status?: string }).status === 'verified') {
+          delete state.commentStatuses[id];
+          statusCleared++;
+        }
+      }
+      if (statusCleared > 0) {
+        console.warn(
+          `PR head changed: also cleared ${formatNumber(statusCleared)} verified/resolved commentStatuses entries`,
+        );
+      }
+    }
+    console.warn(
+      `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code${idSample}`,
+    );
+  }
+  if (hadDismissed) {
+    const clearAllRaw = process.env.PRR_CLEAR_ALL_DISMISSED_ON_HEAD?.trim().toLowerCase();
+    const clearAll =
+      clearAllRaw === '1' || clearAllRaw === 'true' || clearAllRaw === 'yes' || clearAllRaw === 'on';
+    if (clearAll) {
+      const priorDismissed = state.dismissedIssues ?? [];
+      const n = priorDismissed.length;
+      const showD = 25;
+      const dismissedIdSample =
+        n === 0
+          ? ''
+          : ` — comment IDs (showing up to ${formatNumber(showD)}): ${priorDismissed
+              .slice(0, showD)
+              .map((d) => d.commentId)
+              .join(', ')}${n > showD ? ' …' : ''}`;
+      state.dismissedIssues = [];
+      console.warn(
+        `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD${dismissedIdSample}`,
+      );
+    } else {
+      const prior = state.dismissedIssues ?? [];
+      const before = prior.length;
+      const removedRows = prior.filter((d) => HEAD_CHANGE_DROP_DISMISS_CATEGORIES.has(d.category));
+      state.dismissedIssues = prior.filter((d) => !HEAD_CHANGE_DROP_DISMISS_CATEGORIES.has(d.category));
+      const cleared = before - (state.dismissedIssues?.length ?? 0);
+      if (cleared > 0) {
+        const showD = 25;
+        const dismissedIdSample =
+          removedRows.length === 0
+            ? ''
+            : ` — removed comment IDs (showing up to ${formatNumber(showD)}): ${removedRows
+                .slice(0, showD)
+                .map((d) => d.commentId)
+                .join(', ')}${removedRows.length > showD ? ' …' : ''}`;
+        console.warn(
+          `PR head changed: cleared ${formatNumber(cleared)} already-fixed/chronic-failure/stale dismissal(s) so they are re-checked against current code${dismissedIdSample}`,
+        );
+      }
+    }
+  }
+  if (hadPartial) {
+    state.partialConflictResolutions = {};
+    state.partialConflictSavedOriginBaseSha = undefined;
+    console.warn(`PR head changed: cleared partial conflict resolutions so they are re-applied against current merge`);
+  }
+}
+
+/**
+ * Prefer verified on overlap: drop dismissed rows that also appear in verified, then strip
+ * remaining dismissed ids from verified stores. **WHY recompute dismissed ids after the first
+ * prune:** capturing the set before prune would still strip overlap ids from verified (both sides empty).
+ */
+export function repairVerifiedDismissedOverlapPreferVerified(state: ResolverState): { mutated: boolean } {
+  let mutated = false;
+  if (!state.dismissedIssues) {
+    state.dismissedIssues = [];
+  }
+  const verifiedSet = new Set([
+    ...(state.verifiedFixed ?? []),
+    ...(state.verifiedComments?.map((v) => v.commentId) ?? []),
+  ]);
+  if (verifiedSet.size > 0 && state.dismissedIssues.length > 0) {
+    const overlapDismissed = state.dismissedIssues.filter((d) => verifiedSet.has(d.commentId));
+    const beforeD = state.dismissedIssues.length;
+    state.dismissedIssues = state.dismissedIssues.filter((d) => !verifiedSet.has(d.commentId));
+    const removedD = beforeD - state.dismissedIssues.length;
+    if (removedD > 0) {
+      mutated = true;
+      const ids = overlapDismissed.map((d) => d.commentId);
+      const show = ids.slice(0, 15).join(', ');
+      const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
+      console.log(
+        `Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified) — comment id(s): ${show}${more}`,
+      );
+    }
+  }
+  const remainingDismissedIds = new Set(state.dismissedIssues.map((d) => d.commentId));
+  if (remainingDismissedIds.size > 0 && state.verifiedFixed?.length) {
+    const removedIds = state.verifiedFixed.filter((id) => remainingDismissedIds.has(id));
+    const beforeV = state.verifiedFixed.length;
+    state.verifiedFixed = state.verifiedFixed.filter((id) => !remainingDismissedIds.has(id));
+    const removedV = beforeV - state.verifiedFixed.length;
+    if (removedV > 0) {
+      mutated = true;
+      const show = removedIds.slice(0, 15).join(', ');
+      const more = removedIds.length > 15 ? ` …(+${formatNumber(removedIds.length - 15)} more)` : '';
+      console.warn(
+        `State load: removed ${formatNumber(removedV)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned): ${show}${more}`,
+      );
+    }
+  }
+  if (remainingDismissedIds.size > 0 && state.verifiedComments?.length) {
+    const removedVcRows = state.verifiedComments.filter((v) => remainingDismissedIds.has(v.commentId));
+    const beforeVc = state.verifiedComments.length;
+    state.verifiedComments = state.verifiedComments.filter((v) => !remainingDismissedIds.has(v.commentId));
+    const removedVc = beforeVc - state.verifiedComments.length;
+    if (removedVc > 0) {
+      mutated = true;
+      const ids = removedVcRows.map((v) => v.commentId);
+      const show = ids.slice(0, 15).join(', ');
+      const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
+      console.warn(
+        `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned): ${show}${more}`,
+      );
+    }
+  }
+  return { mutated };
+}
+
 /**
  * Ephemeral git-recovery markers and stale skip-list stats — after dismissed/verified overlap cleanup.
  */
@@ -222,52 +373,9 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
       } else {
         if (ctx.state.headSha !== headSha) {
           needsPersistRepair = true;
-          const prevSha = ctx.state.headSha?.slice(0, 7);
+          const prevSha = ctx.state.headSha?.slice(0, 7) ?? '';
           ctx.state.headSha = headSha;
-          delete ctx.state.sessionSkippedModelKeys;
-          delete ctx.state.sessionModelStats;
-          delete ctx.state.sessionSkippedSinceFixIteration;
-          const hadVerified =
-            (ctx.state.verifiedFixed?.length ?? 0) + (ctx.state.verifiedComments?.length ?? 0) > 0;
-          const hadPartial =
-            Object.keys(ctx.state.partialConflictResolutions ?? {}).length > 0;
-          if (hadVerified) {
-            ctx.state.verifiedFixed = [];
-            ctx.state.verifiedComments = [];
-            console.warn(
-              `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared verified state so fixes are re-checked against current code`,
-            );
-          }
-          if (hadPartial) {
-            ctx.state.partialConflictResolutions = {};
-            ctx.state.partialConflictSavedOriginBaseSha = undefined;
-            console.warn(
-              `PR head changed: cleared partial conflict resolutions so they are re-applied against current merge`,
-            );
-          }
-          // Pill / audit: dismissals tied to code/HEAD — clear already-fixed by default; optional clear-all (trade-off: other dismissals often still valid).
-          const hadDismissed = (ctx.state.dismissedIssues?.length ?? 0) > 0;
-          if (hadDismissed) {
-            const clearAllRaw = process.env.PRR_CLEAR_ALL_DISMISSED_ON_HEAD?.trim().toLowerCase();
-            const clearAll =
-              clearAllRaw === '1' || clearAllRaw === 'true' || clearAllRaw === 'yes' || clearAllRaw === 'on';
-            if (clearAll) {
-              const n = ctx.state.dismissedIssues!.length;
-              ctx.state.dismissedIssues = [];
-              console.warn(
-                `PR head changed (${prevSha} → ${headSha.slice(0, 7)}): cleared ${formatNumber(n)} dismissal(s) — PRR_CLEAR_ALL_DISMISSED_ON_HEAD`,
-              );
-            } else {
-              const before = ctx.state.dismissedIssues!.length;
-              ctx.state.dismissedIssues = ctx.state.dismissedIssues!.filter((d) => d.category !== 'already-fixed');
-              const cleared = before - ctx.state.dismissedIssues.length;
-              if (cleared > 0) {
-                console.warn(
-                  `PR head changed: cleared ${formatNumber(cleared)} already-fixed dismissal(s) so they are re-checked against current code`,
-                );
-              }
-            }
-          }
+          applyHeadShaChangeResets(ctx.state, prevSha, headSha);
         }
 
         if (ctx.state.interrupted) {
@@ -309,57 +417,8 @@ export async function loadState(ctx: StateContext, pr: string, branch: string, h
 
         assertNoVerifiedDismissedOverlapOrThrow(ctx.state);
 
-        // Keep verifiedFixed and dismissedIssues mutually exclusive (output.log audit: overlapVerifiedAndDismissed; pill #3).
-        // (1) Remove from dismissed when it's in verified. (2) Remove from verified when it's in dismissed.
-        const verifiedSet = new Set([
-          ...(ctx.state.verifiedFixed ?? []),
-          ...(ctx.state.verifiedComments?.map((v) => v.commentId) ?? []),
-        ]);
-        const dismissedIds = new Set(ctx.state.dismissedIssues.map((d) => d.commentId));
-        if (verifiedSet.size > 0 && ctx.state.dismissedIssues.length > 0) {
-          const overlapDismissed = ctx.state.dismissedIssues.filter((d) => verifiedSet.has(d.commentId));
-          const beforeD = ctx.state.dismissedIssues.length;
-          ctx.state.dismissedIssues = ctx.state.dismissedIssues.filter((d) => !verifiedSet.has(d.commentId));
-          const removedD = beforeD - ctx.state.dismissedIssues.length;
-          if (removedD > 0) {
-            needsPersistRepair = true;
-            const ids = overlapDismissed.map((d) => d.commentId);
-            const show = ids.slice(0, 15).join(', ');
-            const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
-            console.log(
-              `Cleaned ${formatNumber(removedD)} overlap (removed from dismissed; already in verified) — comment id(s): ${show}${more}`,
-            );
-          }
-        }
-        if (dismissedIds.size > 0 && ctx.state.verifiedFixed?.length) {
-          const removedIds = ctx.state.verifiedFixed.filter((id) => dismissedIds.has(id));
-          const beforeV = ctx.state.verifiedFixed.length;
-          ctx.state.verifiedFixed = ctx.state.verifiedFixed.filter((id) => !dismissedIds.has(id));
-          const removedV = beforeV - ctx.state.verifiedFixed.length;
-          if (removedV > 0) {
-            needsPersistRepair = true;
-            const show = removedIds.slice(0, 15).join(', ');
-            const more = removedIds.length > 15 ? ` …(+${formatNumber(removedIds.length - 15)} more)` : '';
-            console.warn(
-              `State load: removed ${formatNumber(removedV)} ID(s) from verifiedFixed (already in dismissed — overlap cleaned): ${show}${more}`,
-            );
-          }
-        }
-        if (dismissedIds.size > 0 && ctx.state.verifiedComments?.length) {
-          const removedVcRows = ctx.state.verifiedComments.filter((v) => dismissedIds.has(v.commentId));
-          const beforeVc = ctx.state.verifiedComments.length;
-          ctx.state.verifiedComments = ctx.state.verifiedComments.filter((v) => !dismissedIds.has(v.commentId));
-          const removedVc = beforeVc - ctx.state.verifiedComments.length;
-          if (removedVc > 0) {
-            needsPersistRepair = true;
-            const ids = removedVcRows.map((v) => v.commentId);
-            const show = ids.slice(0, 15).join(', ');
-            const more = ids.length > 15 ? ` …(+${formatNumber(ids.length - 15)} more)` : '';
-            console.warn(
-              `State load: removed ${formatNumber(removedVc)} verifiedComments record(s) (already in dismissed — overlap cleaned): ${show}${more}`,
-            );
-          }
-        }
+        const overlapRepair = repairVerifiedDismissedOverlapPreferVerified(ctx.state);
+        if (overlapRepair.mutated) needsPersistRepair = true;
 
         const postOverlap = applyResolverStatePostOverlapCleanup(ctx.state);
         if (postOverlap.mutated) needsPersistRepair = true;

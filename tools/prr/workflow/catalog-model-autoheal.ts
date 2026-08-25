@@ -38,12 +38,24 @@ function markCatalogHealVerifiedCluster(
   duplicateMap: Map<string, string[]> | undefined,
   vs: Set<string>,
   anchorMarker: 'catalog-autoheal' | 'catalog-autoheal-noop',
+  comments: ReviewComment[],
+  currentPath: string,
 ): boolean {
   const clusterIds = getDuplicateClusterCommentIds(currentCommentId, duplicateMap);
   const canonicalId = clusterIds[0]!;
+  const pathOf = (id: string): string => comments.find((c) => c.id === id)?.path ?? '';
   let any = false;
   for (const cid of clusterIds) {
     if (Verification.isVerified(stateContext, cid)) continue;
+    const siblingPath = cid === currentCommentId ? currentPath : pathOf(cid);
+    if (siblingPath && siblingPath !== currentPath) {
+      debug('[Auto-heal] Skipping cross-file cluster sibling', {
+        commentId: cid.slice(0, 7),
+        siblingPath,
+        currentPath,
+      });
+      continue;
+    }
     const marker = cid === canonicalId ? anchorMarker : canonicalId;
     try {
       Verification.markVerified(stateContext, cid, marker);
@@ -198,7 +210,11 @@ export function applyCatalogModelAutoHeals(
     const canonicalEarly = clusterEarly[0]!;
     if (
       comment.id !== canonicalEarly &&
-      clusterEarly.some((id) => Verification.isVerified(stateContext, id))
+      clusterEarly.some((id) => {
+        if (!Verification.isVerified(stateContext, id)) return false;
+        const p = comments.find((c) => c.id === id)?.path;
+        return !p || p === comment.path;
+      })
     ) {
       debug('[Auto-heal] Skipping duplicate row — cluster already verified', {
         commentId: comment.id.slice(0, 7),
@@ -339,6 +355,8 @@ export function applyCatalogModelAutoHeals(
             duplicateMapForHeal,
             vs,
             'catalog-autoheal-noop',
+            comments,
+            rel,
           )
         ) {
           verificationTouched = true;
@@ -388,7 +406,7 @@ export function applyCatalogModelAutoHeals(
     writeFileSync(abs, merged.join('\n'), 'utf8');
     modified.push(rel);
     if (
-      markCatalogHealVerifiedCluster(stateContext, comment.id, duplicateMapForHeal, vs, 'catalog-autoheal')
+      markCatalogHealVerifiedCluster(stateContext, comment.id, duplicateMapForHeal, vs, 'catalog-autoheal', comments, rel)
     ) {
       verificationTouched = true;
     }

@@ -23,9 +23,41 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 Audits and agents sometimes conflate these when logs mention “workdir” next to paths like `tools/prr/...` — the latter are almost always **this** tree; the former is the **target** checkout.
 
-## Pill output triage (`pill-output.md`)
+## Pill output triage (`pill-output.md` + **`pill-inventory/`**)
 
-**What it is:** Optional artifact from **pill** after auditing a run’s `output.log`. **`pill-output.md`** is maintained as a **short index** of **remaining** Open / Partial follow-ups (not a full historical dump — **CHANGELOG** [Unreleased], **`tools/prr/AUDIT-CYCLES.md`**, and **git history** hold landed work and older pill text).
+**What it is:** Optional artifact from **pill** after auditing a run’s **`output.log`**.
+
+### Raw inbox vs canonical backlog
+
+- **`pill-output.md`** — **Raw append inbox** only. Pill writes dated sections with **`####`** items here. It is **not** the canonical backlog: the file can grow very large and is often **gitignored** locally. **Do not** add long narrative “summary blobs” at the top; keep a short inbox notice (if any) and dated raw sections.
+- **`pill-inventory/INDEX.md`** — **Compact priority queue** (what to do next on **this** repo). Points to per-theme files under **`pill-inventory/items/`**.
+- **`pill-inventory/items/INV-NNN-*.md`** — **One actionable theme per file** (evidence, hit counts, next action, resolution). Each file includes **`## Why This Document`** (WHY it lives outside **`DEVELOPMENT.md`**: sustained operational dataset, small LLM-friendly chunks).
+
+Landed code changes and audit narrative still belong in **`CHANGELOG.md`** [Unreleased], **`tools/prr/AUDIT-CYCLES.md`**, and **git history** — the inventory tracks **open** pill themes without duplicating those docs.
+
+### Inventory fields (per `INV-*` item file)
+
+| Field | Meaning |
+|-------|---------|
+| **Status** | Open / Partial / Done / Cancelled — same spirit as pill status tags. |
+| **Priority** | High / Medium / Low — queue ordering hint. |
+| **Area** | Rough bucket (e.g. `llm`, `paths`, `verifier`). |
+| **Hits** | Count of raw pill findings merged into this same canonical issue (increment when triaging duplicates). |
+| **Events** | Dates (`YYYY-MM-DD`) of pill runs or manual triage where the theme appeared. |
+| **Evidence** | **`pill-output.md`** item anchors, paths, or short notes so raw sections can be rotated/archived later. |
+| **Next action** | One concrete next step for implementers. |
+| **Resolution** | Where it landed (paths, tests) when **Done**; empty until closed. |
+
+### Rotation workflow (after each pill append or audit)
+
+1. **Do not** implement only from raw **`pill-output.md`** — open **`pill-inventory/INDEX.md`** first.
+2. For each new **`####`** item (or repeated theme): **merge** into an existing **`INV-*`** file (bump **Hits**, append **Events** + **Evidence**) **or** create **`pill-inventory/items/INV-NNN-slug.md`** if no theme matches.
+3. Mark raw lines **N/A (external)**, **Duplicate**, or **Dismissed** when not actionable in this repo (see table below).
+4. Update **`pill-inventory/INDEX.md`** so the **Queue** reflects status, priority, hits, last event, and next action (compact table or list).
+5. When you **implement** a fix, update **both** the **`INV-*`** file **and** **`INDEX.md`** in the same commit.
+6. **After triage, remove that dated `## …` block from `pill-output.md`** (or move it to a local archive file) once **`INV-*`** evidence + **`INDEX.md`** are updated — so the inbox only shows **unprocessed** runs. **WHY:** Otherwise you cannot tell at a glance what still needs promotion; the inventory is the canonical record for processed themes.
+
+**Cursor rule:** **`.cursor/rules/pill-inventory.mdc`** — inbox vs inventory discipline for agents.
 
 **Tool-repo scope filter (default on here):** When pill’s **`targetDir`** contains **`tools/prr`**, only improvements whose **`file`** is under **`tools/`**, **`shared/`**, **`tests/`**, **`docs/`**, **`generated/`**, **`.cursor/`**, **`.github/`**, or an allowlisted root file (e.g. **`README.md`**, **`package.json`**) are **appended** to **`pill-output.md`**. Clone-shaped paths (`src/`, `packages/`, `apps/`, …) are dropped (with console / summary notes). **`PILL_TOOL_REPO_SCOPE_FILTER=0`** turns filtering off. **`PILL_TOOL_REPO_SCOPE_FILTER=1`** forces it on even when **`tools/prr`** is absent (rare).
 
@@ -33,7 +65,7 @@ Audits and agents sometimes conflate these when logs mention “workdir” next 
 
 **Mixed sources:** Items that reference **`src/`** or **`packages/`** usually mean **that other repository**, not prr’s layout — treat as **N/A (external)** when porting fixes into **this** repo. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state under **`tools/prr/state`**, not root **`src/state.ts`**). **In this repo’s docs,** lesson examples mostly use **`tools/prr/`** / **`shared/`**; a few **downstream-style** snippets (e.g. eliza **`src/runtime.rs`**) illustrate foreign-repo lesson files — not paths in this tree.
 
-**Per-item status:** When you **append** new pill sections, use **`**Status:** …`** per line; the header of **`pill-output.md`** defines **`Done (prr)`**, **`Partial (prr)`**, **`Open (prr)`**, **`N/A (external)`**, etc. Merge new items into the index and drop **Done** blocks so the file stays short.
+**Per-item status in raw pill:** When pill **appends** new sections, use **`**Status:** …`** per **`####`** line; the legend in **`pill-output.md`** defines **`Done (prr)`**, **`Partial (prr)`**, **`Open (prr)`**, **`N/A (external)`**, etc. **Promotion:** mirror that status into **`pill-inventory`** when you triage; shrinking raw **`pill-output.md`** is optional once inventory evidence exists.
 
 **WHY document this here:** Contributors otherwise grep for `src/` in pill text and assume missing files are a bug in prr. The status lines record what was implemented in **this** tree vs. what was eliza/downstream-only.
 

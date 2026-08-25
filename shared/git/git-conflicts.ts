@@ -292,7 +292,7 @@ export function parseMergeTreeConflictPaths(combinedOutput: string): string[] {
   }
   // Also capture other CONFLICT formats that don't use "Merge conflict in"
   // e.g. "CONFLICT (modify/delete): path deleted in ..."
-  for (const m of combinedOutput.matchAll(/^CONFLICT \([^)]+\):\s*(\S+)\s+(?:deleted|renamed|added)/gm)) {
+  for (const m of combinedOutput.matchAll(/^CONFLICT \([^)]+\):\s*(.+?)\s+(?:deleted|renamed|added)\b/gm)) {
     files.add(m[1].trim());
   }
   return [...files];

@@ -24,8 +24,11 @@ describe('getLlmApiRequestTimeoutMs', () => {
   });
 
   it('raises tier at 60k+, 100k+, 140k+ chars', () => {
+    expect(getLlmApiRequestTimeoutMs(60_000, false)).toBe(120_000);
     expect(getLlmApiRequestTimeoutMs(60_001, false)).toBe(120_000);
+    expect(getLlmApiRequestTimeoutMs(100_000, false)).toBe(150_000);
     expect(getLlmApiRequestTimeoutMs(100_001, false)).toBe(150_000);
+    expect(getLlmApiRequestTimeoutMs(140_000, false)).toBe(180_000);
     expect(getLlmApiRequestTimeoutMs(140_001, false)).toBe(180_000);
   });
 

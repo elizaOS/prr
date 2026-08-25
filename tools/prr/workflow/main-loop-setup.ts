@@ -53,6 +53,20 @@ import {
   listGitTrackedFiles,
 } from '../../../shared/dependency-graph/index.js';
 
+function cloneUnresolvedIssues(issues: UnresolvedIssue[]): UnresolvedIssue[] {
+  return issues.map((i) => ({
+    ...i,
+    comment: { ...i.comment },
+    allowedPaths: i.allowedPaths ? [...i.allowedPaths] : undefined,
+    mergedDuplicates: i.mergedDuplicates?.map((d) => ({ ...d })),
+    verifierFeedbackHistory: i.verifierFeedbackHistory ? [...i.verifierFeedbackHistory] : undefined,
+  }));
+}
+
+function cloneDuplicateMap(map: Map<string, string[]>): Map<string, string[]> {
+  return new Map([...map.entries()].map(([k, v]) => [k, [...v]]));
+}
+
 /**
  * Process comments and determine if fix loop should run
  * 
@@ -239,12 +253,11 @@ export async function processCommentsAndPrepareFixLoop(
     (cache.commentIds != null ? cache.commentIds === currentCommentIds : cache.commentCount === comments.length) &&
     (cache.fileHashesKeyDigest != null ? cache.fileHashesKeyDigest === fileHashesKeyDigest : true);
   if (cacheHit) {
-    unresolvedIssues = cache.unresolvedIssues;
-    // Re-resolve against persisted dedup-v2: cached duplicateMap may be empty from an older analysis
-    // path while state.dedupCache still matches this comment set (same as findUnresolvedIssues return).
-    duplicateMap =
+    unresolvedIssues = cloneUnresolvedIssues(cache.unresolvedIssues);
+    duplicateMap = cloneDuplicateMap(
       resolveEffectiveDuplicateMapForComments(stateContext, cache.duplicateMap, comments) ??
-      cache.duplicateMap;
+        cache.duplicateMap,
+    );
     prChangedFiles = cache.changedFiles;
     stateContext.blastRadiusPaths =
       cache.blastRadiusPaths && cache.blastRadiusPaths.length > 0 ? new Set(cache.blastRadiusPaths) : undefined;
@@ -289,10 +302,14 @@ export async function processCommentsAndPrepareFixLoop(
     if (!isBlastRadiusDisabled() && changedFiles.length > 0) {
       try {
         const t0 = Date.now();
-        const allFiles = await listGitTrackedFiles(workdir);
+        const timeoutMs = getBlastRadiusTimeoutMs();
+        const maxFiles = getBlastRadiusMaxFiles();
+        const allFiles = await listGitTrackedFiles(workdir, { timeoutMs });
         const graph = await buildDependencyGraph(workdir, {
-          maxFiles: getBlastRadiusMaxFiles(),
-          timeoutMs: getBlastRadiusTimeoutMs(),
+          maxFiles,
+          timeoutMs,
+          preferFiles: changedFiles,
+          fileList: allFiles,
         });
         blastRadius = computeBlastRadius(graph, changedFiles, getBlastRadiusDepth(), allFiles);
         stateContext.blastRadiusPaths = new Set(blastRadius.keys());
@@ -333,9 +350,9 @@ export async function processCommentsAndPrepareFixLoop(
         headSha,
         commentIds: currentCommentIds,
         fileHashesKeyDigest,
-        unresolvedIssues: [...unresolvedIssues],
+        unresolvedIssues: cloneUnresolvedIssues(unresolvedIssues),
         comments: [...comments],
-        duplicateMap: new Map(duplicateMap),
+        duplicateMap: cloneDuplicateMap(duplicateMap),
         changedFiles: prChangedFiles,
         blastRadiusPaths: blastRadius && blastRadius.size > 0 ? [...blastRadius.keys()] : undefined,
       };
@@ -430,6 +447,10 @@ export async function processCommentsAndPrepareFixLoop(
             solvability.remediationHint,
           );
           debug('Audit re-entry: dismissed unsolvable issue (cluster)', { commentId: comment.id, reason: solvability.reason });
+          continue;
+        }
+        if (Dismissed.isCommentDismissed(stateContext, comment.id)) {
+          debug('Audit re-entry: skip already cluster-dismissed sibling', { commentId: comment.id });
           continue;
         }
         const codeSnippet = await getCodeSnippet(primaryPath, comment.line, comment.body);
