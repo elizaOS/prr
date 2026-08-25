@@ -68,7 +68,7 @@ story owner/repo@branch --max-commits 200 --max-files 500
 
 ## Configuration
 
-Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`. Optional: `PRR_LLM_PROVIDER`, `PRR_LLM_MODEL`. See root [README](../../../README.md) and [.env.example](../../.env.example).
+Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`. Optional: `PRR_LLM_PROVIDER`, `PRR_LLM_MODEL`. See root [README](../../README.md) and [.env.example](../../.env.example).
 
 ## Input formats
 
