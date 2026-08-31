@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-08-24T06:15:25.289Z",
+  "fetchedAtIso": "2026-08-31T06:24:34.591Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,32 +8,40 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 13
+      "idCount": 21
     },
     {
       "name": "openai",
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 99
+      "idCount": 104
     }
   ],
   "providers": {
     "anthropic": {
       "apiIds": [
+        "claude-haiku-3",
+        "claude-haiku-3-5",
         "claude-haiku-4-5",
         "claude-haiku-4-5-20251001",
+        "claude-haiku-4-5-system-card",
+        "claude-opus-3",
+        "claude-opus-4",
+        "claude-opus-4-1",
         "claude-opus-4-5",
-        "claude-opus-4-5-20251101",
         "claude-opus-4-6",
         "claude-opus-4-7",
         "claude-opus-4-8",
-        "claude-opus-4-8-to-claude-opus-5",
         "claude-opus-5",
+        "claude-opus-5-system-card",
+        "claude-sonnet-3-5",
+        "claude-sonnet-3-7",
+        "claude-sonnet-4",
         "claude-sonnet-4-5",
-        "claude-sonnet-4-5-20250929",
         "claude-sonnet-4-6",
-        "claude-sonnet-5"
+        "claude-sonnet-5",
+        "claude-sonnet-5-system-card"
       ]
     },
     "openai": {
@@ -45,7 +53,10 @@
         "chatgpt-image-latest",
         "chatgpt-preview",
         "chatgpt-staging",
+        "chatgpt-work-cloud-security",
+        "chatgpt-work-local-security",
         "chatgpt-work-overview",
+        "chatgpt-work-usage-and-cost",
         "codex-mini-latest",
         "computer-use-preview",
         "davinci-002",
@@ -102,6 +113,8 @@
         "gpt-audio",
         "gpt-audio-1.5",
         "gpt-audio-mini",
+        "gpt-daybreak-blue-latest",
+        "gpt-daybreak-red-latest",
         "gpt-image-1",
         "gpt-image-1-mini",
         "gpt-image-1.5",
@@ -149,7 +162,10 @@
       "chatgptimagelatest": "chatgpt-image-latest",
       "chatgptpreview": "chatgpt-preview",
       "chatgptstaging": "chatgpt-staging",
+      "chatgptworkcloudsecurity": "chatgpt-work-cloud-security",
+      "chatgptworklocalsecurity": "chatgpt-work-local-security",
       "chatgptworkoverview": "chatgpt-work-overview",
+      "chatgptworkusageandcost": "chatgpt-work-usage-and-cost",
       "codexminilatest": "codex-mini-latest",
       "computerusepreview": "computer-use-preview",
       "davinci002": "davinci-002",
@@ -206,6 +222,8 @@
       "gptaudio": "gpt-audio",
       "gptaudio1.5": "gpt-audio-1.5",
       "gptaudiomini": "gpt-audio-mini",
+      "gptdaybreakbluelatest": "gpt-daybreak-blue-latest",
+      "gptdaybreakredlatest": "gpt-daybreak-red-latest",
       "gptimage1": "gpt-image-1",
       "gptimage1.5": "gpt-image-1.5",
       "gptimage1mini": "gpt-image-1-mini",
@@ -243,19 +261,27 @@
       "whisper1": "whisper-1"
     },
     "anthropicHyphenless": {
+      "claudehaiku3": "claude-haiku-3",
+      "claudehaiku35": "claude-haiku-3-5",
       "claudehaiku45": "claude-haiku-4-5",
       "claudehaiku4520251001": "claude-haiku-4-5-20251001",
+      "claudehaiku45systemcard": "claude-haiku-4-5-system-card",
+      "claudeopus3": "claude-opus-3",
+      "claudeopus4": "claude-opus-4",
+      "claudeopus41": "claude-opus-4-1",
       "claudeopus45": "claude-opus-4-5",
-      "claudeopus4520251101": "claude-opus-4-5-20251101",
       "claudeopus46": "claude-opus-4-6",
       "claudeopus47": "claude-opus-4-7",
       "claudeopus48": "claude-opus-4-8",
-      "claudeopus48toclaudeopus5": "claude-opus-4-8-to-claude-opus-5",
       "claudeopus5": "claude-opus-5",
+      "claudeopus5systemcard": "claude-opus-5-system-card",
+      "claudesonnet35": "claude-sonnet-3-5",
+      "claudesonnet37": "claude-sonnet-3-7",
+      "claudesonnet4": "claude-sonnet-4",
       "claudesonnet45": "claude-sonnet-4-5",
-      "claudesonnet4520250929": "claude-sonnet-4-5-20250929",
       "claudesonnet46": "claude-sonnet-4-6",
-      "claudesonnet5": "claude-sonnet-5"
+      "claudesonnet5": "claude-sonnet-5",
+      "claudesonnet5systemcard": "claude-sonnet-5-system-card"
     },
     "ambiguousHyphenless": []
   }
