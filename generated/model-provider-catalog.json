@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-08-31T06:24:34.591Z",
+  "fetchedAtIso": "2026-09-07T06:24:23.944Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -15,7 +15,7 @@
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 104
+      "idCount": 106
     }
   ],
   "providers": {
@@ -110,6 +110,8 @@
         "gpt-5.6-luna",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
+        "gpt-6",
+        "gpt-6-astra",
         "gpt-audio",
         "gpt-audio-1.5",
         "gpt-audio-mini",
@@ -219,6 +221,8 @@
       "gpt5mini": "gpt-5-mini",
       "gpt5nano": "gpt-5-nano",
       "gpt5pro": "gpt-5-pro",
+      "gpt6": "gpt-6",
+      "gpt6astra": "gpt-6-astra",
       "gptaudio": "gpt-audio",
       "gptaudio1.5": "gpt-audio-1.5",
       "gptaudiomini": "gpt-audio-mini",
