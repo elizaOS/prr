@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-09-07T06:24:23.944Z",
+  "fetchedAtIso": "2026-09-14T06:24:54.721Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -15,7 +15,7 @@
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 106
+      "idCount": 113
     }
   ],
   "providers": {
@@ -121,6 +121,11 @@
         "gpt-image-1-mini",
         "gpt-image-1.5",
         "gpt-image-2",
+        "gpt-image-2.5",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+        "gpt-live",
+        "gpt-live-1",
         "gpt-live-transcribe",
         "gpt-oss-120b",
         "gpt-oss-20b",
@@ -132,6 +137,8 @@
         "gpt-realtime-mini",
         "gpt-realtime-translate",
         "gpt-realtime-whisper",
+        "gpt-rosalind",
+        "gpt-rosalind-research",
         "gpt-transcribe",
         "o1",
         "o1-mini",
@@ -232,6 +239,11 @@
       "gptimage1.5": "gpt-image-1.5",
       "gptimage1mini": "gpt-image-1-mini",
       "gptimage2": "gpt-image-2",
+      "gptimage2.5": "gpt-image-2.5",
+      "gptimage2.5flare": "gpt-image-2.5-flare",
+      "gptimage2.5sunburst": "gpt-image-2.5-sunburst",
+      "gptlive": "gpt-live",
+      "gptlive1": "gpt-live-1",
       "gptlivetranscribe": "gpt-live-transcribe",
       "gptoss120b": "gpt-oss-120b",
       "gptoss20b": "gpt-oss-20b",
@@ -243,6 +255,8 @@
       "gptrealtimemini": "gpt-realtime-mini",
       "gptrealtimetranslate": "gpt-realtime-translate",
       "gptrealtimewhisper": "gpt-realtime-whisper",
+      "gptrosalind": "gpt-rosalind",
+      "gptrosalindresearch": "gpt-rosalind-research",
       "gpttranscribe": "gpt-transcribe",
       "o1": "o1",
       "o1mini": "o1-mini",
