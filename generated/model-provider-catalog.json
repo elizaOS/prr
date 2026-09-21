@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-09-14T06:24:54.721Z",
+  "fetchedAtIso": "2026-09-21T06:25:14.420Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -15,7 +15,7 @@
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 113
+      "idCount": 114
     }
   ],
   "providers": {
@@ -139,6 +139,7 @@
         "gpt-realtime-whisper",
         "gpt-rosalind",
         "gpt-rosalind-research",
+        "gpt-rosalind-research.webp",
         "gpt-transcribe",
         "o1",
         "o1-mini",
@@ -257,6 +258,7 @@
       "gptrealtimewhisper": "gpt-realtime-whisper",
       "gptrosalind": "gpt-rosalind",
       "gptrosalindresearch": "gpt-rosalind-research",
+      "gptrosalindresearch.webp": "gpt-rosalind-research.webp",
       "gpttranscribe": "gpt-transcribe",
       "o1": "o1",
       "o1mini": "o1-mini",
