@@ -6,20 +6,40 @@ import chalk from 'chalk';
 import type { Runner } from '../../../shared/runners/types.js';
 import { detectAvailableRunners, getRunnerByName, printRunnerSummary, DEFAULT_MODEL_ROTATIONS } from '../../../shared/runners/detect.js';
 import { ensureRotationSession, type StateContext } from '../state/state-context.js';
+
+function modelRunStatsLine(stateContext: StateContext | undefined, runnerName: string, model: string): string {
+  const rs = stateContext?.rotationSession;
+  if (!rs) return '';
+  const st = rs.modelStats.get(sessionModelKey(runnerName, model));
+  if (!st) return '';
+  return ` — this run: ${formatNumber(st.fixes)} verified / ${formatNumber(st.failures)} failed`;
+}
 import * as Rotation from '../state/state-rotation.js';
 import * as Bailout from '../state/state-bailout.js';
 import type { CLIOptions } from '../cli.js';
-import type { Config } from '../../../shared/config.js';
+import { type Config, getNvidiaApiKeyFromEnv } from '../../../shared/config.js';
 import { warn, debug, formatNumber } from '../../../shared/logger.js';
 import {
   DEFAULT_ELIZACLOUD_MODEL,
+  DEFAULT_NVIDIA_LLM_MODEL,
+  DEFAULT_OLLAMA_LLM_MODEL,
+  DEFAULT_OPENROUTER_LLM_MODEL,
   getEffectiveElizacloudSkipModelIds,
   getElizaCloudSkipReason,
   getSessionModelSkipFailureThreshold,
   getSessionModelSkipResetAfterFixIterations,
   MAX_MODELS_PER_TOOL_ROUND,
 } from '../../../shared/constants.js';
-import { fetchAvailableOpenAIModels, fetchAvailableAnthropicModels, fetchAvailableElizaCloudModels, probeElizaCloudModel } from '../llm/client.js';
+import {
+  fetchAvailableOpenAIModels,
+  fetchAvailableAnthropicModels,
+  fetchAvailableElizaCloudModels,
+  fetchAvailableLmStudioModels,
+  fetchAvailableNvidiaCloudModels,
+  fetchAvailableOllamaModels,
+  fetchAvailableOpenRouterModels,
+  probeElizaCloudModel,
+} from '../llm/client.js';
 import * as Performance from '../state/state-performance.js';
 
 /**
@@ -72,13 +92,25 @@ export function maybeResetSessionSkippedModelsAfterFixIteration(
   fixIteration: number,
 ): void {
   const every = getSessionModelSkipResetAfterFixIterations();
-  if (every <= 0 || fixIteration <= 0 || fixIteration % every !== 0) return;
-  const skipped = stateContext.rotationSession?.skippedModelKeys;
-  if (!skipped?.size) return;
-  const n = skipped.size;
-  skipped.clear();
+  if (every <= 0 || fixIteration <= 0) return;
+  const rs = ensureRotationSession(stateContext);
+  const skipped = rs.skippedModelKeys;
+  if (!skipped.size) return;
+  const sinceMap = rs.sessionSkippedSinceFixIteration ?? new Map<string, number>();
+  if (!rs.sessionSkippedSinceFixIteration) rs.sessionSkippedSinceFixIteration = sinceMap;
+
+  const toRemove: string[] = [];
+  for (const key of skipped) {
+    const since = sinceMap.get(key) ?? 0;
+    if (fixIteration - since >= every) toRemove.push(key);
+  }
+  if (toRemove.length === 0) return;
+  for (const key of toRemove) {
+    skipped.delete(key);
+    sinceMap.delete(key);
+  }
   warn(
-    `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS (${formatNumber(every)}): cleared ${formatNumber(n)} session-skipped model key(s) — rotation may retry those models this run.`,
+    `PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS (${formatNumber(every)}): cleared ${formatNumber(toRemove.length)} session-skipped model key(s) after ${formatNumber(every)}+ fix iteration(s) per key — rotation may retry those models this run.`,
   );
 }
 
@@ -87,7 +119,9 @@ export function recordSessionModelVerificationOutcome(
   runnerName: string,
   model: string | undefined,
   verifiedCount: number,
-  failedCount: number
+  failedCount: number,
+  /** Completed fix iteration (1-based) when this outcome is recorded — used for per-key session skip retry window. */
+  fixIteration?: number,
 ): void {
   const threshold = getSessionModelSkipFailureThreshold();
   if (threshold <= 0) return;
@@ -100,12 +134,15 @@ export function recordSessionModelVerificationOutcome(
   rs.modelStats.set(key, cur);
   if (cur.fixes > 0) {
     if (rs.skippedModelKeys.delete(key)) {
+      rs.sessionSkippedSinceFixIteration?.delete(key);
       debug('Session model skip cleared after verified fix', { key });
     }
     return;
   }
   if (cur.failures >= threshold && !rs.skippedModelKeys.has(key)) {
     rs.skippedModelKeys.add(key);
+    const iter = fixIteration ?? 0;
+    rs.sessionSkippedSinceFixIteration.set(key, iter);
     warn(
       `${runnerName} / ${m}: ${formatNumber(cur.failures)} verification failure(s) with no verified fixes this run — skipping this model until next run. ` +
         `Set PRR_SESSION_MODEL_SKIP_FAILURES=0 to disable. For persistent poor performers, extend ELIZACLOUD_SKIP_MODEL_IDS in shared/constants.ts, set PRR_ELIZACLOUD_EXTRA_SKIP_MODELS for env-specific skips, or use PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable.`,
@@ -259,6 +296,16 @@ export function isModelProviderCompatible(runner: Runner, model: string): boolea
     return modelProvider === 'openai' || modelProvider === 'anthropic' || modelProvider === null;
   }
 
+  // OpenRouter / NVIDIA accept many vendor-prefixed ids; recommendations may use any routed id.
+  if (
+    runnerProvider === 'openrouter' ||
+    runnerProvider === 'nvidiacloud' ||
+    runnerProvider === 'ollama' ||
+    runnerProvider === 'lmstudio'
+  ) {
+    return true;
+  }
+
   // Detect the model's provider from its name
   const modelProvider = detectModelProvider(model, runnerProvider);
 
@@ -313,7 +360,9 @@ export function advanceModel(ctx: RotationContext, stateContext: StateContext, o
     if (ctx.recommendedModelIndex < ctx.recommendedModels.length) {
       const nextModel = ctx.recommendedModels[ctx.recommendedModelIndex];
       const prevModel = ctx.recommendedModels[ctx.recommendedModelIndex - 1];
-      console.log(chalk.yellow(`\n  🔄 Next recommended model: ${prevModel} → ${nextModel}`));
+      warn(
+        `\n  🔄 Next recommended model: ${prevModel} → ${nextModel}${modelRunStatsLine(ctx.stateContext, ctx.runner.name, prevModel)}`,
+      );
       return true;
     }
     
@@ -358,7 +407,9 @@ export function rotateModel(ctx: RotationContext, stateContext: StateContext): b
   Rotation.setModelIndex(stateContext, ctx.runner.name, nextIndex);
   
   ctx.modelsTriedThisToolRound++;
-  console.log(chalk.yellow(`\n  🔄 Rotating model: ${previousModel} → ${nextModel}`));
+  warn(
+    `\n  🔄 Rotating model: ${previousModel} → ${nextModel}${modelRunStatsLine(ctx.stateContext, ctx.runner.name, previousModel)}`,
+  );
   return true;
 }
 
@@ -389,7 +440,7 @@ export function switchToNextRunner(ctx: RotationContext, stateContext: StateCont
 
   const newModel = getCurrentModel(ctx, options ?? ({} as CLIOptions));
   const modelInfo = newModel ? ` (${newModel})` : '';
-  console.log(chalk.yellow(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`));
+  warn(`\n  🔄 Switching fixer: ${previousRunner} → ${ctx.runner.name}${modelInfo}`);
   return true;
 // Review: passing options ensures consistent model selection with active CLI flags.
 }
@@ -464,10 +515,14 @@ export function tryRotation(
         ctx.cycleHadOnlyTimeouts = false;
       } else {
         const cycles = Bailout.incrementNoProgressCycles(stateContext);
-        console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${cycles} with zero progress`));
+        console.log(chalk.yellow(`\n  ⚠️  Completed cycle ${formatNumber(cycles)} with zero progress`));
 
         if (options.maxStaleCycles > 0 && cycles >= options.maxStaleCycles) {
-          console.log(chalk.red(`\n  🛑 Bail-out triggered: ${cycles} cycles with no progress (max: ${options.maxStaleCycles})`));
+          console.log(
+            chalk.red(
+              `\n  🛑 Bail-out triggered: ${formatNumber(cycles)} cycles with no progress (max: ${formatNumber(options.maxStaleCycles)})`,
+            ),
+          );
           return true;  // Signal bail-out
         }
       }
@@ -658,6 +713,14 @@ function stripProviderPrefix(model: string): string {
 /** Chat/completion-style OpenAI model ID prefix (exclude embeddings, whisper, etc.). */
 const OPENAI_CHAT_PREFIX = /^(gpt-|o[1-9]|o4-)/i;
 
+/** Build rotation from any OpenAI-compatible `/v1/models` list (OpenRouter, NVIDIA). */
+function buildRotationFromOpenAICompatibleSet(ids: Set<string>): string[] {
+  const skip = (id: string) => /embed|whisper|tts|audio|image|moderation|realtime|transcrib/i.test(id);
+  return Array.from(ids)
+    .filter((id) => !skip(id))
+    .sort();
+}
+
 /**
  * Build rotation order from OpenAI model set. Prefer known strong/fast IDs first, then alphabetical.
  */
@@ -692,17 +755,22 @@ function buildRotationFromAnthropicSet(ids: Set<string>): string[] {
 
 /**
  * Validate rotation models against provider APIs and remove unavailable ones.
- * 
+ *
  * WHY: Models like "gpt-5.3-codex" may not exist or may not be accessible
  * to the user's API key. Without validation, the fixer retries multiple times
  * per unavailable model (3-5 retries × connection timeout), wasting minutes.
- * 
- * Calls GET /v1/models on both OpenAI and Anthropic (if keys are present)
- * once at startup and prunes the rotation lists.
- * 
- * For llm-api with native OpenAI/Anthropic, rotation is built FROM the API list
+ *
+ * Calls GET /v1/models (or provider equivalents) once at startup and prunes lists.
+ * OpenRouter/NVIDIA keys are taken from function args **or** matching env vars
+ * (**WHY:** config may omit keys while subprocess/env still has them — keep list fetch aligned with `llm-api`).
+ *
+ * For **llm-api** on OpenAI-compatible backends (OpenRouter, NVIDIA, Ollama, LM Studio, etc.), when the
+ * fetched model set is **empty**, rotation entries are **kept** (**WHY:** failed or empty `/v1/models` must not
+ * wipe fallbacks / LM Studio pinned `PRR_LLM_MODEL`); pruning only applies when the set is non-empty and an id is missing.
+ *
+ * For llm-api with native OpenAI/Anthropic, rotation is built FROM the API list where possible
  * (no hardcoded list to maintain).
- * 
+ *
  * Skips runners that manage their own models (cursor).
  * If an API call fails (bad key, network), models for that provider are kept as-is.
  */
@@ -712,7 +780,9 @@ export async function validateAndFilterModels(
   anthropicApiKey?: string,
   elizacloudApiKey?: string,
   /** Resolved configured model (e.g. PRR_LLM_MODEL); warn when this one is skipped (pill-output.md). */
-  configuredModel?: string
+  configuredModel?: string,
+  nvidiaApiKey?: string,
+  openrouterApiKey?: string,
 ): Promise<{ removed: Array<{ runner: string; model: string }>}> {
   const removed: Array<{ runner: string; model: string }> = [];
   let thinElizacloudPoolWarned = false;
@@ -724,6 +794,7 @@ export async function validateAndFilterModels(
   }
   
   const hasLlMApi = runnersToValidate.some(r => r.name === 'elizacloud' || r.name === 'llm-api');
+  const llmApiRunner = runnersToValidate.find(r => r.name === 'llm-api');
   const needsOpenAI = runnersToValidate.some(r => {
     const p = RUNNER_PROVIDER_MAP[r.name];
     return p === 'openai' || p === 'mixed';
@@ -734,11 +805,33 @@ export async function validateAndFilterModels(
   }) || (hasLlMApi && !!anthropicApiKey);
   // 'elizacloud' is the preferred-tool alias; the actual runner is 'llm-api' (Direct LLM API)
   const needsElizaCloud = hasLlMApi;
-  
+  // Merge env so list fetch matches llm-api when config.*Key was not threaded but OPENROUTER_* / NVIDIA_* are set.
+  const effectiveOpenRouterKey = openrouterApiKey?.trim() || process.env.OPENROUTER_API_KEY?.trim() || '';
+  const effectiveNvidiaKey = nvidiaApiKey?.trim() || getNvidiaApiKeyFromEnv() || '';
+  // WHY runner.provider: if llm-api is openrouter/nvidiacloud, keep needs* true so filtering uses that branch;
+  // fetch + yellow warn only run when effective*Key is non-empty (no key → empty set, no spurious warn).
+  const needsOpenRouter =
+    hasLlMApi && (!!effectiveOpenRouterKey || llmApiRunner?.provider === 'openrouter');
+  const needsNvidia =
+    hasLlMApi && (!!effectiveNvidiaKey || llmApiRunner?.provider === 'nvidiacloud');
+  const prrLlmProv = process.env.PRR_LLM_PROVIDER?.trim();
+  const needsOllama = hasLlMApi && prrLlmProv === 'ollama';
+  const needsLmstudio = hasLlMApi && prrLlmProv === 'lmstudio';
+  const ollamaListKey = process.env.OLLAMA_API_KEY?.trim() || 'ollama';
+  const lmstudioListKey = process.env.LMSTUDIO_API_KEY?.trim() || 'lm-studio';
+
   // Fetch available models from all providers in parallel
   console.log(chalk.gray('  Validating model access...'));
-  
-  const [openaiModels, anthropicModels, elizacloudModels] = await Promise.all([
+
+  const [
+    openaiModels,
+    anthropicModels,
+    elizacloudModels,
+    openrouterModels,
+    nvidiaModels,
+    ollamaModels,
+    lmstudioModels,
+  ] = await Promise.all([
     needsOpenAI && openaiApiKey
       ? fetchAvailableOpenAIModels(openaiApiKey)
       : Promise.resolve(new Set<string>()),
@@ -748,6 +841,14 @@ export async function validateAndFilterModels(
     needsElizaCloud && elizacloudApiKey
       ? fetchAvailableElizaCloudModels(elizacloudApiKey)
       : Promise.resolve(new Set<string>()),
+    needsOpenRouter && effectiveOpenRouterKey
+      ? fetchAvailableOpenRouterModels(effectiveOpenRouterKey)
+      : Promise.resolve(new Set<string>()),
+    needsNvidia && effectiveNvidiaKey
+      ? fetchAvailableNvidiaCloudModels(effectiveNvidiaKey)
+      : Promise.resolve(new Set<string>()),
+    needsOllama ? fetchAvailableOllamaModels(ollamaListKey) : Promise.resolve(new Set<string>()),
+    needsLmstudio ? fetchAvailableLmStudioModels(lmstudioListKey) : Promise.resolve(new Set<string>()),
   ]);
   
   // Log what we got (debug only)
@@ -776,9 +877,41 @@ export async function validateAndFilterModels(
   } else if (needsElizaCloud && elizacloudApiKey) {
     console.log(chalk.yellow('  ⚠ Could not fetch ElizaCloud model list'));
   }
-  
+
+  if (openrouterModels.size > 0) {
+    debug(`Available OpenRouter models (${openrouterModels.size}):`, Array.from(openrouterModels).slice(0, 20).sort());
+  } else if (needsOpenRouter && effectiveOpenRouterKey) {
+    console.log(chalk.yellow('  ⚠ Could not fetch OpenRouter model list'));
+  }
+
+  if (nvidiaModels.size > 0) {
+    debug(`Available NVIDIA Cloud models (${nvidiaModels.size}):`, Array.from(nvidiaModels).slice(0, 20).sort());
+  } else if (needsNvidia && effectiveNvidiaKey) {
+    console.log(chalk.yellow('  ⚠ Could not fetch NVIDIA Cloud model list'));
+  }
+
+  if (ollamaModels.size > 0) {
+    debug(`Available Ollama models (${ollamaModels.size}):`, Array.from(ollamaModels).slice(0, 20).sort());
+  } else if (needsOllama) {
+    console.log(chalk.yellow('  ⚠ Could not fetch Ollama model list'));
+  }
+
+  if (lmstudioModels.size > 0) {
+    debug(`Available LM Studio models (${lmstudioModels.size}):`, Array.from(lmstudioModels).slice(0, 20).sort());
+  } else if (needsLmstudio) {
+    console.log(chalk.yellow('  ⚠ Could not fetch LM Studio model list'));
+  }
+
   // If all fetches failed or returned empty, skip filtering entirely
-  if (openaiModels.size === 0 && anthropicModels.size === 0 && elizacloudModels.size === 0) {
+  if (
+    openaiModels.size === 0 &&
+    anthropicModels.size === 0 &&
+    elizacloudModels.size === 0 &&
+    openrouterModels.size === 0 &&
+    nvidiaModels.size === 0 &&
+    ollamaModels.size === 0 &&
+    lmstudioModels.size === 0
+  ) {
     console.log(chalk.yellow('  ⚠ No model lists available - skipping validation'));
     return { removed };
   }
@@ -798,6 +931,29 @@ export async function validateAndFilterModels(
         ? buildRotationFromAnthropicSet(anthropicModels)
         : ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001']; // fallback when API list fails
       debug(`llm-api (anthropic): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'openrouter') {
+      runner.supportedModels = openrouterModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(openrouterModels)
+        : [DEFAULT_OPENROUTER_LLM_MODEL, 'openai/gpt-4o-mini'];
+      debug(`llm-api (openrouter): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'nvidiacloud') {
+      runner.supportedModels = nvidiaModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(nvidiaModels)
+        : [DEFAULT_NVIDIA_LLM_MODEL, 'meta/llama-3.1-8b-instruct'];
+      debug(`llm-api (nvidiacloud): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'ollama') {
+      runner.supportedModels = ollamaModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(ollamaModels)
+        : [DEFAULT_OLLAMA_LLM_MODEL, 'llama3.2:latest'];
+      debug(`llm-api (ollama): built rotation from API (${runner.supportedModels.length} models)`);
+    } else if (runner.provider === 'lmstudio') {
+      const pinned = configuredModel?.trim();
+      runner.supportedModels = lmstudioModels.size > 0
+        ? buildRotationFromOpenAICompatibleSet(lmstudioModels)
+        : pinned
+          ? [pinned]
+          : [];
+      debug(`llm-api (lmstudio): built rotation from API (${runner.supportedModels.length} models)`);
     }
   }
   
@@ -812,7 +968,7 @@ export async function validateAndFilterModels(
     const validModels: string[] = [];
     let skippedConfiguredDefault: string | null = null;
     const isLlMApi = runner.name === 'elizacloud' || runner.name === 'llm-api';
-    const useElizaCloudForLlMApi = isLlMApi && models.some(m => m.includes('/'));
+    const useElizaCloudForLlMApi = isLlMApi && runner.provider === 'elizacloud';
 
     for (const model of models) {
       // Eliza Cloud backend: validate against elizacloud set
@@ -838,8 +994,25 @@ export async function validateAndFilterModels(
       }
       // llm-api with list built from API (openai/anthropic): already from provider set, keep if in set
       if (isLlMApi && runner.provider && runner.provider !== 'elizacloud') {
-        const available = runner.provider === 'openai' ? openaiModels : anthropicModels;
-        if (available.has(model)) {
+        const available =
+          runner.provider === 'openai'
+            ? openaiModels
+            : runner.provider === 'anthropic'
+              ? anthropicModels
+              : runner.provider === 'openrouter'
+                ? openrouterModels
+                : runner.provider === 'nvidiacloud'
+                  ? nvidiaModels
+                  : runner.provider === 'ollama'
+                    ? ollamaModels
+                    : runner.provider === 'lmstudio'
+                      ? lmstudioModels
+                      : new Set<string>();
+        // WHY empty set: `/v1/models` fetch failed or returned nothing — keep rotation entries
+        // (Ollama/LM Studio fallbacks, LM Studio pinned id) instead of stripping every model (audit: local providers).
+        if (available.size === 0) {
+          validModels.push(model);
+        } else if (available.has(model)) {
           validModels.push(model);
         } else {
           removed.push({ runner: runner.name, model });
@@ -876,6 +1049,20 @@ export async function validateAndFilterModels(
       }
     }
 
+    if (isLlMApi && useElizaCloudForLlMApi && validModels.length === 0) {
+      throw new Error(
+        'ElizaCloud: no models remain after the built-in skip list and gateway filter. ' +
+          'Set PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable at least one id, or see docs/MODELS.md.',
+      );
+    }
+    if (isLlMApi && useElizaCloudForLlMApi && validModels.length === 1) {
+      console.warn(
+        chalk.yellow(
+          `  ⚠ Only ${formatNumber(1)} ElizaCloud model in rotation after skips — a single failure blocks fixes until the next rotation step. Consider PRR_ELIZACLOUD_INCLUDE_MODELS (see docs/MODELS.md). Pin the working id with PRR_LLM_MODEL (and PRR_VERIFIER_MODEL / PRR_FINAL_AUDIT_MODEL if needed — see README).`,
+        ),
+      );
+    }
+
     // User-visible warning when configured default was skipped (pill-output #2)
     if (skippedConfiguredDefault) {
       const replacement = validModels.length > 0 ? validModels[0] : '(none; add other models or remove from skip list)';
@@ -889,7 +1076,7 @@ export async function validateAndFilterModels(
       !thinElizacloudPoolWarned &&
       isLlMApi &&
       useElizaCloudForLlMApi &&
-      validModels.length > 0 &&
+      validModels.length >= 2 &&
       validModels.length <= 3
     ) {
       thinElizacloudPoolWarned = true;
@@ -934,15 +1121,25 @@ export async function validateAndFilterModels(
         }
         probed++;
       }
+      if (list.length === 0) {
+        throw new Error(
+          `ElizaCloud: no models remain after slow-pool probing for ${runner.name}. ` +
+            'Set PRR_ELIZACLOUD_INCLUDE_MODELS to re-enable at least one working id, or see docs/MODELS.md.',
+        );
+      }
       if (list.length !== source.length) {
         runner.supportedModels = list;
       }
     }
   }
 
-  // Report what we removed
+  // Report what we removed (skip list, not advertised by ElizaCloud list fetch, or slow-pool probe — not all are "unavailable")
   if (removed.length > 0) {
-    console.log(chalk.yellow(`  Removed ${removed.length.toLocaleString()} unavailable model(s):`));
+    console.log(
+      chalk.yellow(
+        `  Dropped ${formatNumber(removed.length)} model(s) from rotation (skip list, not listed by ElizaCloud, or slow-pool ineligible):`,
+      ),
+    );
     for (const { runner, model } of removed) {
       console.log(chalk.yellow(`    ✗ ${runner}: ${model}`));
     }
@@ -976,7 +1173,15 @@ export async function setupRunner(
   // WHY: Remove models the user doesn't have access to BEFORE any fixer runs,
   // instead of discovering them one-by-one through failed retries
   const allDetectedRunners = detected.map(d => d.runner);
-  await validateAndFilterModels(allDetectedRunners, config.openaiApiKey, config.anthropicApiKey, config.elizacloudApiKey, config.llmModel);
+  await validateAndFilterModels(
+    allDetectedRunners,
+    config.openaiApiKey,
+    config.anthropicApiKey,
+    config.elizacloudApiKey,
+    config.llmModel,
+    config.nvidiaApiKey,
+    config.openrouterApiKey,
+  );
 
   // Find preferred runner: CLI option > PRR_TOOL env var > auto (first available)
   let primaryRunner: Runner;

@@ -185,16 +185,11 @@ export function getOutdatedModelCatalogDismissal(body: string | undefined | null
   if (!commentSuggestsInvalidModelId(body)) {
     return null;
   }
-  
-  debug('[Auto-heal detection] Comment suggests invalid model ID', { 
-    bodySnippet: body.substring(0, 200),
-  });
-  
+
   const pair = parseModelRenameAdvice(body);
   if (!pair) {
-    debug('[Auto-heal detection] Could not parse model rename advice from body', { 
-      bodySnippet: body.substring(0, 300),
-    });
+    // WHY silent: CodeRabbit-style bodies often trip INVALID_FRAMING_RE without a parseable
+    // rename pair — per-comment debug was noise in verbose logs (audit Cycle 78).
     return null;
   }
 

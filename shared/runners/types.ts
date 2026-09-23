@@ -98,8 +98,8 @@ export interface Runner {
   installHint?: string;
   /** List of models this runner can use, in rotation order. May be set at runtime from provider API (e.g. llm-api). */
   supportedModels?: string[];
-  /** Provider backend when runner is multi-provider (e.g. llm-api: 'elizacloud' | 'openai' | 'anthropic'). Used to build rotation from API model list. */
-  provider?: 'elizacloud' | 'openai' | 'anthropic';
+  /** Provider backend when runner is multi-provider (e.g. llm-api). Used to build rotation from API model list. */
+  provider?: 'elizacloud' | 'openai' | 'anthropic' | 'nvidiacloud' | 'openrouter' | 'ollama' | 'lmstudio';
   run(workdir: string, prompt: string, options?: RunnerOptions): Promise<RunnerResult>;
   isAvailable(): Promise<boolean>;
   checkStatus(): Promise<RunnerStatus>;
@@ -241,7 +241,7 @@ export const DEFAULT_MODEL_ROTATIONS: Record<string, string[]> = {
     'openai/gpt-4o-mini',                 // Fast, cost-effective for simpler fixes
     // Note: selected for strong balance between performance and coding capability.
     'anthropic/claude-3.7-sonnet',        // Balanced coding capability
-    // anthropic/claude-3-opus, gpt-4.1, claude-sonnet-4.5, gpt-5.1-codex-max skipped via ELIZACLOUD_SKIP_MODELS
+    // anthropic/claude-3-opus, gpt-4.1, gpt-5.1-codex-max, etc. skipped via ELIZACLOUD_SKIP_MODEL_IDS (see shared/constants/models.ts)
     // google/gemini-2.0-pro-exp removed: not in ElizaCloud model list (audit: wasted rotation slot)
   ],
 };

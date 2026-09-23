@@ -16,7 +16,7 @@ import chalk from 'chalk';
 import { join } from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import { simpleGit } from 'simple-git';
-import { debug, debugStep } from '../../../shared/logger.js';
+import { debug, debugStep, formatNumber } from '../../../shared/logger.js';
 import * as Rotation from '../state/state-rotation.js';
 
 /**
@@ -122,7 +122,7 @@ export async function initializeManagers(
     if (lockStatus.isLocked && !lockStatus.isOurs) {
       console.log(chalk.yellow(`⚠ Another prr instance is working on this PR`));
       console.log(chalk.gray(`  Instance: ${lockStatus.holder?.instanceId} on ${lockStatus.holder?.hostname}`));
-      console.log(chalk.gray(`  Claimed issues: ${lockStatus.claimedIssues.length}`));
+      console.log(chalk.gray(`  Claimed issues: ${formatNumber(lockStatus.claimedIssues.length)}`));
       console.log(chalk.gray(`  We will avoid those issues`));
     }
   }
@@ -131,7 +131,7 @@ export async function initializeManagers(
   // WHY: Lessons about files that no longer exist are useless clutter
   const prunedDeletedFiles = LessonsAPI.Prune.pruneDeletedFiles(lessonsContext, workdir);
   if (prunedDeletedFiles > 0) {
-    console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
+    console.log(chalk.gray(`Pruned ${formatNumber(prunedDeletedFiles)} lessons for deleted files`));
     await LessonsAPI.Save.save(lessonsContext);
   }
   

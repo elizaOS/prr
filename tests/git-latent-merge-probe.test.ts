@@ -6,9 +6,21 @@ import { execFileSync } from 'child_process';
 import { simpleGit } from 'simple-git';
 import {
   parseMergeTreeConflictPaths,
+  mergeTreeFailureLooksUnsupported,
   probeLatentMergeConflictsWithOrigin,
   checkForConflicts,
 } from '../shared/git/git-conflicts.js';
+
+describe('mergeTreeFailureLooksUnsupported', () => {
+  it('detects old-git / unknown-option style errors', () => {
+    expect(mergeTreeFailureLooksUnsupported("git: 'merge-tree' is not a git command")).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('error: unknown option `write-tree`')).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('CONFLICT (content): Merge conflict in f.txt')).toBe(false);
+    expect(mergeTreeFailureLooksUnsupported('fatal: ambiguous argument')).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('fatal: bad object abc123')).toBe(true);
+    expect(mergeTreeFailureLooksUnsupported('fatal: unknown revision or path not in the working tree')).toBe(true);
+  });
+});
 
 describe('parseMergeTreeConflictPaths', () => {
   it('parses Merge conflict in and CONFLICT lines', () => {
@@ -19,6 +31,12 @@ describe('parseMergeTreeConflictPaths', () => {
     const paths = parseMergeTreeConflictPaths(s);
     expect(paths).toContain('f.txt');
     expect(paths).toContain('a.txt');
+  });
+
+  it('parses conflict paths that contain spaces', () => {
+    const s = 'CONFLICT (modify/delete): my file.txt deleted in topic and modified in HEAD.';
+    const paths = parseMergeTreeConflictPaths(s);
+    expect(paths).toContain('my file.txt');
   });
 });
 
@@ -133,6 +151,15 @@ describe('checkForConflicts PR-base probe', () => {
     const git = simpleGit(workDir);
     const st = await checkForConflicts(git, 'pr', { prBaseBranch: 'main' });
     expect(st.latentConflictWithOrigin).toBe(false);
+    expect(st.latentConflictWithPrBase).toBe(true);
+    expect(st.latentConflictedFilesWithPrBase).toContain('f.txt');
+  });
+
+  it('uses prBaseRemote for PR-base probe when upstream tracks same main as origin', async () => {
+    gitRun(workDir, ['remote', 'add', 'upstream', bareDir]);
+    gitRun(workDir, ['fetch', 'upstream', 'main']);
+    const git = simpleGit(workDir);
+    const st = await checkForConflicts(git, 'pr', { prBaseBranch: 'main', prBaseRemote: 'upstream' });
     expect(st.latentConflictWithPrBase).toBe(true);
     expect(st.latentConflictedFilesWithPrBase).toContain('f.txt');
   });

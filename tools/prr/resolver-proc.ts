@@ -43,6 +43,7 @@ export {
   getFullFileForAudit,
   findUnresolvedIssues,
 } from './workflow/issue-analysis.js';
+export type { FullFileForAuditResult } from './workflow/issue-analysis.js';
 
 // Startup workflows
 export {
@@ -58,7 +59,11 @@ export {
   cloneOrUpdateRepository,
   recoverVerificationState,
   checkAndSyncWithRemote,
+  isPullConflictErrorMessage,
+  resolvePullRebaseConflictsAfterFailedPull,
+  resolveStashPopConflictsWithLLM,
 } from './workflow/repository.js';
+export type { ResolveConflictsWithLLMFn } from './workflow/repository.js';
 
 // Base branch merge workflows
 export {

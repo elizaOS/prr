@@ -50,6 +50,15 @@ export function snippetShowsUuidCommentAlignedWithVersionRange(codeSnippet: stri
  * parroted review text when the model never saw the implementation region (pill-output final-audit cluster).
  */
 export function finalAuditSnippetLooksTruncatedOrExcerpt(snippet: string): boolean {
+  // Line-centered budget excerpts from fitToBudget — anchor line is in the visible window; do not
+  // treat like blind truncation for UNFIXED demotion (Pattern G / pill-output final-audit cluster).
+  if (
+    /centered on line [\d,]+/i.test(snippet) &&
+    (/\(excerpt — [\d,]+ lines; centered on line/i.test(snippet) ||
+      /\(excerpt only — file has [\d,]+ lines; centered on line/i.test(snippet))
+  ) {
+    return false;
+  }
   return (
     /truncated for model context limit — final audit/i.test(snippet) ||
     /more lines omitted — file exceeds/i.test(snippet) ||
@@ -57,6 +66,55 @@ export function finalAuditSnippetLooksTruncatedOrExcerpt(snippet: string): boole
     /\(\d[\d,]* more lines omitted for size\)/i.test(snippet) ||
     /truncated to char budget — final audit excerpt/i.test(snippet)
   );
+}
+
+/**
+ * True when the model says the **shown** snippet/excerpt is incomplete relative to what it needs
+ * (outside the window, rest of file, etc.). **WHY:** Truncation-guard demotion should apply only when
+ * the UNFIXED rationale explicitly hinges on not seeing enough code — not when the model gives a
+ * substantive UNFIXED from visible context without line quotes (pill-output).
+ */
+export function finalAuditExplanationClaimsSnippetIsIncomplete(explanation: string): boolean {
+  const e = explanation.toLowerCase();
+  return (
+    /\b(not|isn't|is not)\s+(visible|shown|included)\s+in\s+(the\s+)?(provided|shown|excerpt|snippet)/.test(
+      e,
+    ) ||
+    /\b(excerpt|snippet)\s+(does not|doesn't)\s+(include|show|contain)/.test(e) ||
+    /\boutside\s+(of\s+)?(the\s+)?(shown|provided)\s+(code|snippet|excerpt)/.test(e) ||
+    (/\b(rest|remainder)\s+of\s+the\s+file\b/.test(e) &&
+      /\b(not|isn't|is not|cannot|can't|outside|not shown|not visible|excerpt|snippet)\b/.test(e)) ||
+    (/\belsewhere\s+in\s+the\s+file\b/.test(e) &&
+      /\b(not|isn't|is not|cannot|can't|outside|not shown|not visible|excerpt|snippet)\b/.test(e)) ||
+    /\bcannot\s+(see|view|verify)\s+(the\s+)?(rest|full|remaining|complete)\b/.test(e) ||
+    /\b(full|entire)\s+file\b.*\b(not|isn't)\s+(shown|provided|visible)/.test(e) ||
+    /\bimplementation\s+(may be|might be|could be)\s+(elsewhere|outside)/.test(e) ||
+    /\breported\s+(line|region|location)\b.*\b(not\s+in|outside)\s+(the\s+)?(excerpt|snippet)/.test(e) ||
+    /\bcannot\s+verify\b.*\b(truncated|unavailable|excerpt|snippet)\b/.test(e) ||
+    /\bnot\s+visible\s+in\s+(the\s+)?(provided|current)\s+(code|snippet|excerpt)\b/.test(e)
+  );
+}
+
+/**
+ * Prefix on final-audit **pass** explanations when an UNFIXED verdict was demoted because the
+ * snippet looked excerpt/truncation-shaped and the model’s rationale hinged on incomplete view.
+ * **Must match** the string assigned in `LLMClient.finalAudit` (`client.ts`).
+ */
+export const FINAL_AUDIT_TRUNCATION_GUARD_PASS_PREFIX = 'FIXED (truncation guard):' as const;
+
+export function isFinalAuditTruncationGuardPass(explanation: string): boolean {
+  return explanation.startsWith(FINAL_AUDIT_TRUNCATION_GUARD_PASS_PREFIX);
+}
+
+/**
+ * Explanation assigned when final audit said UNFIXED but post-check detected UUID `[1-8]` + comment
+ * alignment (Cycle 65). **Must match** `LLMClient.finalAudit` (`client.ts`).
+ */
+export const FINAL_AUDIT_UUID_ALIGN_PASS_EXPLANATION =
+  'FIXED (post-check): Shown code documents UUID versions 1-8 and regex uses [1-8]; prior UNFIXED repeated stale review text.' as const;
+
+export function isFinalAuditUuidAlignPass(explanation: string): boolean {
+  return explanation === FINAL_AUDIT_UUID_ALIGN_PASS_EXPLANATION;
 }
 
 export function explanationMentionsMissingCodeVisibility(explanation: string): boolean {

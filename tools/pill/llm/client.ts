@@ -1,11 +1,26 @@
 /**
- * LLM client for audit and verify. Supports Anthropic, OpenAI, ElizaCloud.
- * ElizaCloud uses X-API-Key and OpenAI-compatible base URL.
+ * LLM client for pill: story-read / assembly LLM calls and audit **`chat.completions`** (or Anthropic messages).
+ * Supports Anthropic, OpenAI, ElizaCloud, NVIDIA Cloud, OpenRouter.
+ * WHY **`openAiCompatMaxOutputFields`**: NVIDIA and OpenRouter **`/v1/chat/completions`** stacks typically
+ * expect **`max_tokens`**; ElizaCloud/OpenAI use **`max_completion_tokens`** — shared helper keeps pill aligned
+ * with PRR transport and **`llm-api`** (**`shared/llm/openai-compat-chat-params.ts`**).
  */
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import type { PillConfig } from '../types.js';
-import { debugPrompt, debugResponse } from '../logger.js';
+import { openAiChatCompletionContentToString } from '../../../shared/llm/openai-chat-content.js';
+import { openAiCompatMaxOutputFields } from '../../../shared/llm/openai-compat-chat-params.js';
+import { createLmStudioOpenAIClient } from '../../../shared/llm/lmstudio.js';
+import { createNvidiaCloudOpenAIClient } from '../../../shared/llm/nvidiacloud.js';
+import { createOllamaOpenAIClient } from '../../../shared/llm/ollama.js';
+import { createOpenRouterOpenAIClient } from '../../../shared/llm/openrouter.js';
+import {
+  LMSTUDIO_OPENAI_COMPAT_BASE_URL,
+  NVIDIA_API_BASE_URL,
+  OLLAMA_OPENAI_COMPAT_BASE_URL,
+  OPENROUTER_API_BASE_URL,
+} from '../../../shared/constants.js';
+import { debugPrompt, debugPromptError, debugResponse } from '../logger.js';
 
 const ELIZACLOUD_API_BASE_URL = 'https://elizacloud.ai/api/v1';
 
@@ -103,6 +118,16 @@ export class LLMClient {
     } else if (config.llmProvider === 'openai') {
       if (!config.openaiApiKey) throw new Error('OpenAI API key required but not set');
       this.openai = new OpenAI({ apiKey: config.openaiApiKey });
+    } else if (config.llmProvider === 'nvidiacloud') {
+      if (!config.nvidiaApiKey) throw new Error('NVIDIA API key required but not set');
+      this.openai = createNvidiaCloudOpenAIClient(config.nvidiaApiKey);
+    } else if (config.llmProvider === 'openrouter') {
+      if (!config.openrouterApiKey) throw new Error('OpenRouter API key required but not set');
+      this.openai = createOpenRouterOpenAIClient(config.openrouterApiKey);
+    } else if (config.llmProvider === 'ollama') {
+      this.openai = createOllamaOpenAIClient(config.ollamaApiKey ?? 'ollama');
+    } else if (config.llmProvider === 'lmstudio') {
+      this.openai = createLmStudioOpenAIClient(config.lmstudioApiKey ?? 'lm-studio');
     }
   }
 
@@ -116,20 +141,49 @@ export class LLMClient {
     const chosenModel = options?.model ?? this.model;
 
     const fullPrompt = systemPrompt ? `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${prompt}` : prompt;
-    debugPrompt(`pill-${this.provider}`, fullPrompt, { model: chosenModel });
+    const promptSlug = debugPrompt(`pill-${this.provider}`, fullPrompt, { model: chosenModel });
 
     const is429 = (e: unknown) => (e as { status?: number })?.status === 429;
     const is5xx = (e: unknown) => {
       const s = (e as { status?: number })?.status;
       return s && s >= 500 && s < 600;
     };
+    /** Fetch/TLS/socket failures before a normal HTTP response (OpenAI SDK often says "Connection error"). */
+    const isTransientConnectionError = (e: unknown): boolean => {
+      if (is429(e)) return false;
+      const status = (e as { status?: number })?.status;
+      if (typeof status === 'number' && status >= 400 && status < 500) return false;
+      if (is5xx(e)) return false;
+      const msg = e instanceof Error ? e.message : String(e);
+      const node = e as NodeJS.ErrnoException;
+      const c = node?.cause as NodeJS.ErrnoException | undefined;
+      const codes = [node?.code, c?.code].filter(Boolean) as string[];
+      if (codes.some((x) => /^(ECONNRESET|ETIMEDOUT|ENOTFOUND|ECONNREFUSED|EAI_AGAIN|EPIPE)$/i.test(x)))
+        return true;
+      return /connection error|fetch failed|socket hang up|network request failed|TLS|certificate/i.test(msg);
+    };
 
+    const nvidiaBase = (process.env.NVIDIA_BASE_URL?.trim() || NVIDIA_API_BASE_URL).replace(/\/$/, '');
+    const openrouterBase = (process.env.OPENROUTER_BASE_URL?.trim() || OPENROUTER_API_BASE_URL).replace(/\/$/, '');
+    const ollamaBase = (process.env.OLLAMA_BASE_URL?.trim() || OLLAMA_OPENAI_COMPAT_BASE_URL).replace(/\/$/, '');
+    const lmstudioBase = (process.env.LMSTUDIO_BASE_URL?.trim() || LMSTUDIO_OPENAI_COMPAT_BASE_URL).replace(
+      /\/$/,
+      '',
+    );
     const requestUrl =
       this.provider === 'anthropic'
         ? ANTHROPIC_MESSAGES_URL
         : this.provider === 'elizacloud'
           ? `${ELIZACLOUD_API_BASE_URL}/chat/completions`
-          : OPENAI_CHAT_URL;
+          : this.provider === 'nvidiacloud'
+            ? `${nvidiaBase}/chat/completions`
+            : this.provider === 'openrouter'
+              ? `${openrouterBase}/chat/completions`
+              : this.provider === 'ollama'
+                ? `${ollamaBase}/chat/completions`
+                : this.provider === 'lmstudio'
+                  ? `${lmstudioBase}/chat/completions`
+                  : OPENAI_CHAT_URL;
     const requestContext = {
       url: requestUrl,
       method: 'POST',
@@ -137,30 +191,44 @@ export class LLMClient {
     };
 
     const max429Retries = this.provider === 'elizacloud' ? 3 : 2;
-    const backoffMs = this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
+    const backoffMs =
+      this.provider === 'elizacloud' ? [60_000, 60_000, 60_000] : [2000, 4000, 8000];
     let lastErr: unknown;
 
     for (let attempt = 0; attempt <= max429Retries; attempt++) {
       try {
         let response: LLMResponse | undefined;
-        for (let retry5xx = 0; retry5xx <= 1; retry5xx++) {
+        const maxTransientAttempts = 3;
+        transient: for (let transientTry = 0; transientTry < maxTransientAttempts; transientTry++) {
           try {
-            response =
-              this.provider === 'anthropic'
-                ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
-                : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
-            break;
+            for (let retry5xx = 0; retry5xx <= 1; retry5xx++) {
+              try {
+                response =
+                  this.provider === 'anthropic'
+                    ? await this.completeAnthropic(prompt, systemPrompt, chosenModel)
+                    : await this.completeOpenAI(prompt, systemPrompt, chosenModel);
+                break;
+              } catch (e) {
+                if (retry5xx < 1 && is5xx(e)) {
+                  await new Promise((r) => setTimeout(r, 10_000));
+                  continue;
+                }
+                throw e;
+              }
+            }
+            break transient;
           } catch (e) {
-            if (retry5xx < 1 && is5xx(e)) {
-              await new Promise((r) => setTimeout(r, 10_000));
+            if (transientTry < maxTransientAttempts - 1 && isTransientConnectionError(e)) {
+              const waitMs = 2000 * (transientTry + 1);
+              await new Promise((r) => setTimeout(r, waitMs));
               continue;
             }
-            throw formatErrorWithHeaders(e, requestContext);
+            throw e;
           }
         }
         if (!response) throw new Error('LLM request failed');
 
-        debugResponse(`pill-${this.provider}`, response.content, {
+        debugResponse(promptSlug, `pill-${this.provider}`, response.content, {
           model: chosenModel,
           usage: response.usage,
         });
@@ -172,6 +240,8 @@ export class LLMClient {
           await new Promise((r) => setTimeout(r, wait));
           continue;
         }
+        const msg = err instanceof Error ? err.message : String(err);
+        debugPromptError(promptSlug, `pill-${this.provider}`, msg.slice(0, 12_000), { model: chosenModel });
         throw formatErrorWithHeaders(err, requestContext);
       }
     }
@@ -217,9 +287,9 @@ export class LLMClient {
     const response = await this.openai.chat.completions.create({
       model: chosenModel,
       messages,
-      max_completion_tokens: 16384,
+      ...openAiCompatMaxOutputFields(16_384, this.provider),
     });
-    const content = response.choices[0]?.message?.content ?? '';
+    const content = openAiChatCompletionContentToString(response.choices[0]?.message?.content);
     return {
       content,
       usage: response.usage

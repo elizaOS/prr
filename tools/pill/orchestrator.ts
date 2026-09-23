@@ -18,7 +18,7 @@ import { AUDIT_SYSTEM_PROMPT } from './llm/prompts.js';
 import { extractJsonLenient } from './llm/parse-json.js';
 import { truncateHeadAndTailByChars, CHARS_PER_TOKEN } from '../../shared/utils/tokens.js';
 import { chunkPlainText } from '../../shared/llm/story-read.js';
-import { runWithConcurrency } from '../../shared/run-with-concurrency.js';
+import { runWithConcurrencyAllSettled } from '../../shared/run-with-concurrency.js';
 import { filterImprovementsByToolRepoScope } from './tool-repo-scope.js';
 
 /** Default hard cap on user message length (chars) per audit HTTP request. Override: PILL_AUDIT_MAX_USER_CHARS.
@@ -343,8 +343,30 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     recordNoImprovements('no_api_key');
     return { result: null, reason: 'no_api_key' };
   }
+  if (config.llmProvider === 'nvidiacloud' && !config.nvidiaApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (nvidiacloud). Set NVIDIA_API_KEY or NVIDIA_CLOUD_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
+    return { result: null, reason: 'no_api_key' };
+  }
+  if (config.llmProvider === 'openrouter' && !config.openrouterApiKey?.trim()) {
+    if (spinner) spinner.info('Pill: No API key configured (openrouter). Set OPENROUTER_API_KEY in .env.');
+    recordNoImprovements('no_api_key');
+    return { result: null, reason: 'no_api_key' };
+  }
 
   try {
+    // WHY wire onAssembleProgress: Large prompts.log → many story-read chapters before the audit LLM;
+    // static "Assembling context…" looked frozen (pill UX audit 2026-04).
+    const assembleConfig =
+      spinner
+        ? { ...config, onAssembleProgress: (msg: string) => update(`Assembling context — ${msg}`) }
+        : config.verbose
+          ? {
+              ...config,
+              onAssembleProgress: (msg: string) => console.log(chalk.gray(`  [pill] ${msg}`)),
+            }
+          : config;
+
     if (config.verbose) {
       console.log('Provider:', config.llmProvider);
       console.log('Audit model:', config.auditModel);
@@ -353,7 +375,7 @@ export async function runPillAnalysis(config: PillConfig): Promise<
     }
 
     const llmClient = new LLMClient(config);
-    const ctx = await assembleContext(config, llmClient);
+    const ctx = await assembleContext(assembleConfig, llmClient);
 
     const budgetTokens = config.contextBudgetTokens ?? DEFAULT_PILL_CONTEXT_BUDGET_TOKENS;
     if (ctx.contextTrimmed && spinner) {
@@ -431,13 +453,22 @@ export async function runPillAnalysis(config: PillConfig): Promise<
             return parseImprovementPlan(chunkResponse.content);
           });
       });
-      const chunkPlans = await runWithConcurrency(chunkTasks, conc);
+      // WHY AllSettled: a single chunk HTTP error must not abort all remaining chunks.
+      // runWithConcurrency uses Promise.all (fail-fast); AllSettled collects partial results
+      // so the audit still produces improvements from successful chunks. (Pattern D, 2026-04-05)
+      const chunkSettled = await runWithConcurrencyAllSettled(chunkTasks, conc);
       
       // Merge chunk results: combine improvements, use first non-empty pitch/summary
+      // Log chunk failures but continue with partial results.
       const allImprovements: Improvement[] = [];
       let mergedPitch = '';
       let mergedSummary = '';
-      for (const chunkPlan of chunkPlans) {
+      for (const result of chunkSettled) {
+        if (result.status === 'rejected') {
+          console.warn(`[pill] Audit chunk failed (partial results will still be used): ${result.reason}`);
+          continue;
+        }
+        const chunkPlan = result.value;
         allImprovements.push(...chunkPlan.improvements);
         if (!mergedPitch && chunkPlan.pitch) mergedPitch = chunkPlan.pitch;
         if (!mergedSummary && chunkPlan.summary) mergedSummary = chunkPlan.summary;

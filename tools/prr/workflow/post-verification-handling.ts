@@ -46,9 +46,19 @@ export async function handlePostVerification(
   lessonsContext: LessonsContext,
   options: CLIOptions,
   currentRunnerName: string,
-  trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
+  trySingleIssueFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verified?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>,
   tryRotation: (failureErrorType?: string) => boolean,
-  tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verified?: Set<string>) => Promise<boolean>,
+  tryDirectLLMFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verified?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>,
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>
 ): Promise<{
   shouldBreak: boolean;

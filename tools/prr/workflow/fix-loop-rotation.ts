@@ -55,13 +55,15 @@ export async function handleRotationStrategy(
   trySingleIssueFix: (
     issues: UnresolvedIssue[],
     git: SimpleGit,
-    verifiedThisSession?: Set<string>
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
   ) => Promise<boolean>,
   tryRotation: (failureErrorType?: string) => boolean,
   tryDirectLLMFix: (
     issues: UnresolvedIssue[],
     git: SimpleGit,
-    verifiedThisSession?: Set<string>
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
   ) => Promise<boolean>,
   executeBailOut: (
     unresolvedIssues: UnresolvedIssue[],
@@ -99,7 +101,7 @@ export async function handleRotationStrategy(
 
   if ((isOddFailure || trySingleIssueForNoChanges) && unresolvedIssues.length > 1 && !skipSingleIssue) {
     console.log(chalk.yellow('\n  🎯 Trying single-issue focus mode...'));
-    const singleIssueFixed = await trySingleIssueFix(unresolvedIssues, git, verifiedThisSession);
+    const singleIssueFixed = await trySingleIssueFix(unresolvedIssues, git, verifiedThisSession, comments);
     if (singleIssueFixed) {
       // Track progress for bail-out detection, but do NOT reset consecutiveFailures.
       // WHY: Resetting consecutiveFailures to 0 here causes a rotation stall bug:
@@ -139,7 +141,7 @@ export async function handleRotationStrategy(
       } else {
         // Bail-out triggered - try direct LLM one last time before giving up
         console.log(chalk.yellow('\n  🧠 Last resort: trying direct LLM API fix before bail-out...'));
-        const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
+        const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession, comments);
         if (directFixed) {
           newConsecutiveFailures = 0;
           newModelFailuresInCycle = 0;
@@ -171,7 +173,7 @@ export async function handleRotationStrategy(
         console.log(chalk.yellow('\n  ⏭ Already using direct LLM API - skipping redundant fallback'));
       } else {
         console.log(chalk.yellow('\n  🧠 All tools/models exhausted, trying direct LLM API fix...'));
-        const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession);
+        const directFixed = await tryDirectLLMFix(unresolvedIssues, git, verifiedThisSession, comments);
         if (directFixed) {
           newConsecutiveFailures = 0;
           newModelFailuresInCycle = 0;

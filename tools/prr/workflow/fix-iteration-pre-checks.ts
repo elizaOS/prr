@@ -24,6 +24,7 @@ import * as Lessons from '../state/state-lessons.js';
 import * as Performance from '../state/state-performance.js';
 import type { CLIOptions } from '../cli.js';
 import type { Runner } from '../../../shared/runners/types.js';
+import type { ResolveConflictsWithLLMFn } from './repository.js';
 import * as ResolverProc from '../resolver-proc.js';
 
 /**
@@ -55,6 +56,8 @@ export async function executePreIterationChecks(
   stateContext: StateContext,
   runner: Runner,
   options: CLIOptions,
+  /** LLM merge conflict resolution — same as **`checkAndSyncWithRemote`**; used when **`pullLatest`** leaves conflict markers (top of fix iteration). */
+  resolveConflictsWithLLM: ResolveConflictsWithLLMFn,
   checkForNewBotReviews: (
     owner: string,
     repo: string,
@@ -67,6 +70,7 @@ export async function executePreIterationChecks(
   // WHY: Required for P1 (prompts.log audit) — new comments are run through assessSolvability when workdir is set; without it, (PR comment) and other unsolvable items would enter the fix queue mid-loop.
   workdir?: string,
   changedFiles?: string[],
+  duplicateMap?: Map<string, string[]>,
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -87,7 +91,8 @@ export async function executePreIterationChecks(
       getCodeSnippet,
       prInfo.headSha,
       stateContext,
-      workdir
+      workdir,
+      duplicateMap,
     );
   }
   
@@ -122,7 +127,9 @@ export async function executePreIterationChecks(
     repo,
     number,
     getCodeSnippet,
-    githubToken
+    githubToken,
+    resolveConflictsWithLLM,
+    options.noPush,
   );
   if (remotePull.shouldBreak) {
     return {

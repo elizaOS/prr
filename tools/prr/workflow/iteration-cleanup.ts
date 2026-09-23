@@ -83,7 +83,8 @@ export async function handleIterationCleanup(
     runner.name,
     currentModel ?? undefined,
     verifiedCount,
-    failedCount
+    failedCount,
+    fixIteration,
   );
 
   // Record per-issue attempts (with file hash so chronic check only counts same-version attempts)

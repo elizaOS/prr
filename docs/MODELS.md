@@ -1,6 +1,6 @@
 # LLM Models Reference
 
-This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits in **`shared/llm/model-context-limits.ts`** (re-exported from `tools/prr/llm/model-context-limits.ts`).
+This doc summarizes **current and legacy models** from official provider docs. Use it when choosing models or updating context limits in **`shared/llm/model-context-limits.ts`** (**`tools/prr/llm/model-context-limits.ts`** re-exports the same symbols for stable imports from workflow code).
 
 **Sources (check for latest):**
 
@@ -20,6 +20,18 @@ Vendor doc pages change often; review bots may lag and suggest wrong renames (e.
 **Refresh:** `npm run update-model-catalog`. **Weekly:** GitHub Action `refresh-model-catalog.yml`. **Override file path:** `PRR_MODEL_CATALOG_PATH`.
 
 **PRR behavior:** Outdated bot comments that call a catalog-valid id a “typo” and suggest another id are **dismissed** (`assessSolvability`, check **0a6**) and optionally **auto-healed** in the workdir before issue analysis.
+
+### ElizaCloud built-in skip list — when to add or re-enable
+
+PRR maintains **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants/models.ts`** with per-id reasons in **`ELIZACLOUD_SKIP_REASON`** (`timeout` vs `zero-fix-rate`).
+
+| Criterion | Typical action |
+|-----------|------------------|
+| **Repeated 504 / gateway timeout** on modest prompts (not a one-off blip) | Add id with reason **`timeout`**; operators may re-enable with **`PRR_ELIZACLOUD_INCLUDE_MODELS`** if the gateway improves. |
+| **0% fix rate or systematic verifier/fix failures** in output.log / pill audits | Add id with reason **`zero-fix-rate`**. |
+| **Session-only bad behavior** | **`PRR_SESSION_MODEL_SKIP_FAILURES`** + persisted **`sessionSkippedModelKeys`** (see **AGENTS.md**); no catalog change required. |
+
+**Re-evaluate:** After gateway or model updates, try **`PRR_ELIZACLOUD_INCLUDE_MODELS=<id>`** on a small PR; if stable, propose removing the id from the built-in list in a PR with evidence (log snippet or audit cycle).
 
 | Mechanism | WHY |
 |-----------|-----|
@@ -113,6 +125,44 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ---
 
+## NVIDIA Cloud (NIM / integrate API)
+
+PRR uses the **OpenAI-compatible** surface documented for NVIDIA NIM / Build (`https://integrate.api.nvidia.com/v1` by default). Model ids are typically **`meta/…`**, **`nvidia/…`**, etc., as returned by **`GET /v1/models`**.
+
+- **Config:** **`PRR_LLM_PROVIDER=nvidiacloud`**, **`NVIDIA_API_KEY`** or **`NVIDIA_CLOUD_API_KEY`**, optional **`NVIDIA_BASE_URL`**, **`PRR_LLM_MODEL`** (defaults in **`shared/constants/models.ts`** — availability is account-dependent).
+- **Chat completions:** Many NIM **`/v1/chat/completions`** stacks expect **`max_tokens`**, not **`max_completion_tokens`**. PRR branches per provider in **`shared/llm/openai-compat-chat-params.ts`** (**WHY:** avoid 400s from strict OpenAI-compat proxies).
+- **Catalog:** PRR does **not** use **`generated/model-provider-catalog.json`** for NVIDIA stale-advice dismissal; use runtime discovery / pinned ids.
+
+---
+
+## OpenRouter
+
+[OpenRouter](https://openrouter.ai/) exposes an OpenAI-compatible API at **`https://openrouter.ai/api/v1`**. Model ids are **`provider/model`** strings (e.g. **`anthropic/claude-sonnet-4-5-20250929`**, **`openai/gpt-4o-mini`**).
+
+- **Config:** **`PRR_LLM_PROVIDER=openrouter`**, **`OPENROUTER_API_KEY`**, optional **`OPENROUTER_BASE_URL`**, optional **`OPENROUTER_HTTP_REFERER`** / **`OPENROUTER_APP_TITLE`** for attribution headers.
+- **Chat completions:** OpenRouter’s OpenAI-compatible API typically accepts **`max_tokens`** for generation caps; PRR uses the same helper as NVIDIA (**`shared/llm/openai-compat-chat-params.ts`**) so **`max_completion_tokens`** is not sent to hosts that reject it.
+- **Catalog:** Same as NVIDIA — no checked-in catalog rows for OpenRouter; pin **`PRR_LLM_MODEL`** to ids your key can call.
+
+---
+
+## Ollama (local)
+
+Ollama exposes an **OpenAI-compatible** API (default **`http://127.0.0.1:11434/v1`**). Override with **`OLLAMA_BASE_URL`**. Model ids are typically short names or tags (e.g. **`llama3.2`**, **`llama3.2:latest`**, **`gpt-oss:20b`**).
+
+- **Config:** **`PRR_LLM_PROVIDER=ollama`**, optional **`OLLAMA_API_KEY`** (placeholder for the SDK; default **`ollama`**). **`PRR_LLM_MODEL`** defaults to **`llama3.2`** when unset (**`shared/constants/models.ts`**); set it to a model you have **`ollama pull`**’d.
+- **Chat completions:** Use **`max_tokens`** (same helper as NVIDIA/OpenRouter — **`shared/llm/openai-compat-chat-params.ts`**).
+
+---
+
+## LM Studio (local)
+
+[LM Studio](https://lmstudio.ai/) can run a local OpenAI-compatible server (default **`http://127.0.0.1:1234/v1`**). Override with **`LMSTUDIO_BASE_URL`**. The loaded model id is **user-defined** in the app — there is no universal default string in PRR.
+
+- **Config:** **`PRR_LLM_PROVIDER=lmstudio`**, **`PRR_LLM_MODEL` required** (must match the id from the server / **`GET /v1/models`**). Optional **`LMSTUDIO_API_KEY`** (default **`lm-studio`**).
+- **Chat completions:** **`max_tokens`** path (same **`openAiCompatMaxOutputFields`** branch as Ollama).
+
+---
+
 ## Using this in PRR
 
 - **ElizaCloud / context limits:** Edit **`ELIZACLOUD_MODEL_CONTEXT`** in `shared/llm/model-context-limits.ts`. Each entry sets **`maxContextTokens`** (total context window for that API model ID). PRR derives fix-prompt char caps from that (small contexts use a denser tokenization estimate). Optional **`maxFixPromptCharsCap`** tightens the derived value when the gateway still times out. Unknown gateway models use a conservative default until you add a row. Use **`ELIZACLOUD_MODEL_ID_ALIASES`** and pattern aliases in that file when the same physical model appears under multiple strings (e.g. `Qwen/Qwen3-14B` → `alibaba/qwen-3-14b`).
@@ -121,17 +171,17 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 
 ### Rotation order and skip list
 
-- **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from `shared/constants.ts`. Do not assume the static table in `types.ts` is the exact live order.
-- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants.ts`**. The table below is a **snapshot for operators**; if it disagrees with the source array, **trust the source file** and update this table when you change skips.
+- **llm-api / ElizaCloud:** Fallback rotation order is **`DEFAULT_MODEL_ROTATIONS`** in `shared/runners/types.ts`; at runtime the list usually comes from the runner’s **`supportedModels`** (gateway/API discovery) and is **filtered** in `tools/prr/models/rotation.ts` using **`getEffectiveElizacloudSkipModelIds()`** from **`shared/constants/models.ts`** (barreled as **`shared/constants.js`**). Do not assume the static table in `types.ts` is the exact live order.
+- **OpenRouter / NVIDIA keys at startup:** **`validateAndFilterModels`** merges **`config.*`** keys with **`OPENROUTER_API_KEY`** / **`NVIDIA_*`** from the environment so **`GET /v1/models`** can still run when only env is populated. For **OpenAI-compatible** **`llm-api`** backends, an **empty** model list does **not** remove every fallback id (including LM Studio’s pinned **`PRR_LLM_MODEL`**). **WHY:** Avoid wrong-gateway list fetches when multiple keys exist, and avoid a failed local **`/v1/models`** call wiping the whole rotation (README / DEVELOPMENT.md).
+- **Skip list (authoritative):** **`ELIZACLOUD_SKIP_MODEL_IDS`** in **`shared/constants/models.ts`**. The table below is a **snapshot for operators**; if it disagrees with the source array, **trust the source file** and update this table when you change skips.
 
-**Last reviewed (skip table):** 2026-03-28 — pill-output / audit follow-up (Qwen 14B default churn, empty-response logging).
+**Last reviewed (skip table):** 2026-04-12 — removed dot-alias **`anthropic/claude-sonnet-4.5`** (conflicted with canonical **`anthropic/claude-sonnet-4-5-20250929`** / catalog hyphen ids).
 
 | Model id | Reason in **`ELIZACLOUD_SKIP_REASON`** | Notes |
 |----------|----------------------------------------|--------|
 | `openai/gpt-5.2-codex` | *(default `timeout`)* | Gateway / rotation audit |
 | `anthropic/claude-3-opus` | *(default `timeout`)* | |
 | `openai/gpt-4.1` | *(default `timeout`)* | |
-| `anthropic/claude-sonnet-4.5` | *(default `timeout`)* | |
 | `openai/gpt-5.1-codex-max` | *(default `timeout`)* | |
 | `anthropic/claude-3.7-sonnet` | `timeout` | Known timeout/504 on gateway |
 | `openai/gpt-4o` | `timeout` | |
@@ -145,9 +195,16 @@ For full list, deprecations, and pricing see [OpenAI Models](https://developers.
 - **`PRR_ELIZACLOUD_INCLUDE_MODELS`:** comma-separated — removes matching ids from the effective skip set (retry a timeout-skipped model after infra improves). Hyphenless suffix match is supported (see `getEffectiveElizacloudSkipModelIds`).
 - **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`:** comma-separated — **adds** ids to the built-in skip list for this environment only.
 - **`getElizaCloudSkipReason(id)`:** ids **not** in **`ELIZACLOUD_SKIP_REASON`** use default **`timeout`** so new skip entries still rotate with a sensible debug line until you assign **`zero-fix-rate`**.
-- **Operational habit:** When **RESULTS SUMMARY** / Model Performance shows **0%** fix rate for an ElizaCloud id, add it (with reason + comment) to **`shared/constants.ts`** and bump the “last reviewed” line above — same guidance as **AGENTS.md**.
+- **Operational habit:** When **RESULTS SUMMARY** / Model Performance shows **0%** fix rate for an ElizaCloud id, add it (with reason + comment) to **`shared/constants/models.ts`** and bump the “last reviewed” line above — same guidance as **AGENTS.md**.
+
+### Re-evaluating skips (maintainer)
+
+1. **Evidence:** Use **RESULTS SUMMARY** → **Model Performance** in **`output.log`** (per-model success/fail counts). Pill may omit tables when the log is summarized — grep **`Model Performance`** in the raw log for critical runs (**AGENTS.md**).
+2. **Timeout vs zero-fix:** **`getElizaCloudSkipReason(id)`** returns **`timeout`** (default) or **`zero-fix-rate`**. Timeout-skipped models may be worth retrying after gateway changes — set **`PRR_ELIZACLOUD_INCLUDE_MODELS`** to the full id (or short suffix per **`getEffectiveElizacloudSkipModelIds`**) for a trial run.
+3. **Edit source of truth:** Change **`ELIZACLOUD_SKIP_MODEL_IDS`** and **`ELIZACLOUD_SKIP_REASON`** in **`shared/constants/models.ts`** (barreled as **`shared/constants.js`**). Run **`npm test`**; update the snapshot table above and **Last reviewed**.
+4. **Env-only skips:** **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** merges comma-separated ids; **`PRR_ELIZACLOUD_INCLUDE_MODELS`** subtracts. Entries with **`//`**, empty tokens, or invalid characters are **dropped** with a one-time **`console.warn`** — fix the env string if a model you expected is missing from the effective list.
 
 - **Per-run performance:** Success/failure is recorded in state; rotation can prefer better-performing models within the same run. **`PRR_SESSION_MODEL_SKIP_FAILURES`** skips a tool/model for the rest of the process after repeated verification failures with zero verified fixes.
-- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** positive integer — every N completed **fix** iterations (inner loop inside a push iteration), clear **session** skips so rotation can retry those models **without** restarting the process. **`0`** / unset = off. **WHY:** Long runs otherwise never revisit a model skipped early for transient failures (pill-output #847).
+- **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`:** positive integer — each session-skipped tool/model key is removed after N **subsequent** completed **fix** iterations (counted from when that key was skipped), so rotation can retry it **without** restarting the process. **`0`** / unset = off. **WHY:** Long runs otherwise never revisit a model skipped early for transient failures (pill-output #847); per-key timing avoids clearing fresher skips on a single global boundary.
 
 *Provider model tables: last curated from linked docs; verify there for current IDs and pricing.*

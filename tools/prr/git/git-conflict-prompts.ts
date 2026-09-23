@@ -2,14 +2,14 @@
  * Git conflict resolution prompts
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, lstatSync } from 'fs';
 import { join } from 'path';
-import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../../../shared/constants.js';
+import {
+  CONFLICT_USE_CHUNKED_FIRST_CHARS,
+  CONFLICT_USE_CHUNKED_FIRST_CHUNKS,
+} from '../../../shared/constants.js';
 import { hasConflictMarkers } from '../../../shared/git/git-clone-index.js';
 import { extractConflictChunks } from './git-conflict-chunked.js';
-
-/** Above this size we embed only conflict sections, not the full file. WHY: Large files (e.g. CHANGELOG 600+ lines) double prompt size and cause 504s; conflict sections are enough for <search>/<replace>. */
-const CONFLICT_EMBED_FULL_MAX_CHARS = 30_000;
 
 /**
  * Build prompt for agentic runners (Cursor, Claude Code, Aider) that can open files.
@@ -71,9 +71,20 @@ export function buildConflictResolutionPromptWithContent(
   const unreadable: string[] = [];
 
   for (const file of conflictedFiles) {
+    // WHY lstat guard: submodules/directories throw EISDIR on readFileSync.
+    // They are resolved by the submodule handler, not the LLM prompt.
+    const fullFilePath = join(workdir, file);
+    try {
+      if (lstatSync(fullFilePath).isDirectory()) {
+        unreadable.push(file);
+        continue;
+      }
+    } catch {
+      // stat failed — fall through to readFileSync which will catch it
+    }
     let content: string;
     try {
-      content = readFileSync(join(workdir, file), 'utf-8');
+      content = readFileSync(fullFilePath, 'utf-8');
     } catch {
       unreadable.push(file);
       continue;
@@ -81,9 +92,11 @@ export function buildConflictResolutionPromptWithContent(
 
     const fileHasMarkers = hasConflictMarkers(content);
     const chunks = fileHasMarkers ? extractConflictChunks(content, 7) : [];
+    // WHY `CONFLICT_USE_CHUNKED_FIRST_CHARS`: same threshold as Attempt 2 per-file resolution — avoids
+    // embedding the entire 22k–30k char file here while Attempt 2 would chunk first (504/timeouts).
     const useChunkedEmbed = fileHasMarkers
       && (
-        content.length > CONFLICT_EMBED_FULL_MAX_CHARS
+        content.length > CONFLICT_USE_CHUNKED_FIRST_CHARS
         || chunks.length >= CONFLICT_USE_CHUNKED_FIRST_CHUNKS
       );
 

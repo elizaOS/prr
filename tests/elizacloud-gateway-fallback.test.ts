@@ -41,4 +41,12 @@ describe('getElizacloudGatewayFallbackModels', () => {
     process.env.PRR_ELIZACLOUD_INCLUDE_MODELS = 'openai/gpt-4o-mini';
     expect(getElizacloudGatewayFallbackModels('alibaba/qwen-3-14b')).toEqual(['openai/gpt-4o-mini']);
   });
+
+  it('INCLUDE_MODELS alias unskips both qwen skip-list spellings', async () => {
+    const { getEffectiveElizacloudSkipModelIds } = await import('../shared/constants/models.js');
+    process.env.PRR_ELIZACLOUD_INCLUDE_MODELS = 'alibaba/qwen-3-14b';
+    const ids = getEffectiveElizacloudSkipModelIds();
+    expect(ids).not.toContain('alibaba/qwen-3-14b');
+    expect(ids).not.toContain('Qwen/Qwen3-14B');
+  });
 });
