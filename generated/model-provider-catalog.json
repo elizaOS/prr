@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-09-21T06:25:14.420Z",
+  "fetchedAtIso": "2026-09-28T06:27:14.630Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,7 +8,7 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 21
+      "idCount": 22
     },
     {
       "name": "openai",
@@ -34,7 +34,8 @@
         "claude-opus-4-7",
         "claude-opus-4-8",
         "claude-opus-5",
-        "claude-opus-5-system-card",
+        "claude-opus-5-5",
+        "claude-opus-5-5-system-card",
         "claude-sonnet-3-5",
         "claude-sonnet-3-7",
         "claude-sonnet-4",
@@ -112,6 +113,8 @@
         "gpt-5.6-terra",
         "gpt-6",
         "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
         "gpt-audio",
         "gpt-audio-1.5",
         "gpt-audio-mini",
@@ -152,8 +155,6 @@
         "o4-mini",
         "o4-mini-deep-research",
         "omni-moderation-latest",
-        "sora-2",
-        "sora-2-pro",
         "text-embedding-3-large",
         "text-embedding-3-small",
         "text-embedding-ada-002",
@@ -231,6 +232,8 @@
       "gpt5pro": "gpt-5-pro",
       "gpt6": "gpt-6",
       "gpt6astra": "gpt-6-astra",
+      "gpt6luna": "gpt-6-luna",
+      "gpt6sol": "gpt-6-sol",
       "gptaudio": "gpt-audio",
       "gptaudio1.5": "gpt-audio-1.5",
       "gptaudiomini": "gpt-audio-mini",
@@ -271,8 +274,6 @@
       "o4mini": "o4-mini",
       "o4minideepresearch": "o4-mini-deep-research",
       "omnimoderationlatest": "omni-moderation-latest",
-      "sora2": "sora-2",
-      "sora2pro": "sora-2-pro",
       "textembedding3large": "text-embedding-3-large",
       "textembedding3small": "text-embedding-3-small",
       "textembeddingada002": "text-embedding-ada-002",
@@ -294,7 +295,8 @@
       "claudeopus47": "claude-opus-4-7",
       "claudeopus48": "claude-opus-4-8",
       "claudeopus5": "claude-opus-5",
-      "claudeopus5systemcard": "claude-opus-5-system-card",
+      "claudeopus55": "claude-opus-5-5",
+      "claudeopus55systemcard": "claude-opus-5-5-system-card",
       "claudesonnet35": "claude-sonnet-3-5",
       "claudesonnet37": "claude-sonnet-3-7",
       "claudesonnet4": "claude-sonnet-4",
