@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-09-28T06:27:14.630Z",
+  "fetchedAtIso": "2026-10-05T06:30:52.019Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -8,14 +8,14 @@
       "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 22
+      "idCount": 23
     },
     {
       "name": "openai",
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 114
+      "idCount": 118
     }
   ],
   "providers": {
@@ -42,7 +42,8 @@
         "claude-sonnet-4-5",
         "claude-sonnet-4-6",
         "claude-sonnet-5",
-        "claude-sonnet-5-system-card"
+        "claude-sonnet-5-5",
+        "claude-sonnet-5-5-system-card"
       ]
     },
     "openai": {
@@ -52,7 +53,9 @@
         "chatgpt-4o-latest",
         "chatgpt-docs",
         "chatgpt-image-latest",
+        "chatgpt-plugin",
         "chatgpt-preview",
+        "chatgpt-slack-and-teams",
         "chatgpt-staging",
         "chatgpt-work-cloud-security",
         "chatgpt-work-local-security",
@@ -115,6 +118,8 @@
         "gpt-6-astra",
         "gpt-6-luna",
         "gpt-6-sol",
+        "gpt-6.1",
+        "gpt-6.1-sol",
         "gpt-audio",
         "gpt-audio-1.5",
         "gpt-audio-mini",
@@ -171,7 +176,9 @@
       "chatgpt4olatest": "chatgpt-4o-latest",
       "chatgptdocs": "chatgpt-docs",
       "chatgptimagelatest": "chatgpt-image-latest",
+      "chatgptplugin": "chatgpt-plugin",
       "chatgptpreview": "chatgpt-preview",
+      "chatgptslackandteams": "chatgpt-slack-and-teams",
       "chatgptstaging": "chatgpt-staging",
       "chatgptworkcloudsecurity": "chatgpt-work-cloud-security",
       "chatgptworklocalsecurity": "chatgpt-work-local-security",
@@ -231,6 +238,8 @@
       "gpt5nano": "gpt-5-nano",
       "gpt5pro": "gpt-5-pro",
       "gpt6": "gpt-6",
+      "gpt6.1": "gpt-6.1",
+      "gpt6.1sol": "gpt-6.1-sol",
       "gpt6astra": "gpt-6-astra",
       "gpt6luna": "gpt-6-luna",
       "gpt6sol": "gpt-6-sol",
@@ -303,7 +312,8 @@
       "claudesonnet45": "claude-sonnet-4-5",
       "claudesonnet46": "claude-sonnet-4-6",
       "claudesonnet5": "claude-sonnet-5",
-      "claudesonnet5systemcard": "claude-sonnet-5-system-card"
+      "claudesonnet55": "claude-sonnet-5-5",
+      "claudesonnet55systemcard": "claude-sonnet-5-5-system-card"
     },
     "ambiguousHyphenless": []
   }
