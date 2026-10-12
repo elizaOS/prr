@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-10-05T06:30:52.019Z",
+  "fetchedAtIso": "2026-10-12T06:30:19.475Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -15,7 +15,7 @@
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 118
+      "idCount": 119
     }
   ],
   "providers": {
@@ -24,8 +24,8 @@
         "claude-haiku-3",
         "claude-haiku-3-5",
         "claude-haiku-4-5",
-        "claude-haiku-4-5-20251001",
-        "claude-haiku-4-5-system-card",
+        "claude-haiku-5-5",
+        "claude-haiku-5-5-system-card",
         "claude-opus-3",
         "claude-opus-4",
         "claude-opus-4-1",
@@ -57,6 +57,7 @@
         "chatgpt-preview",
         "chatgpt-slack-and-teams",
         "chatgpt-staging",
+        "chatgpt-through-a-gateway",
         "chatgpt-work-cloud-security",
         "chatgpt-work-local-security",
         "chatgpt-work-overview",
@@ -180,6 +181,7 @@
       "chatgptpreview": "chatgpt-preview",
       "chatgptslackandteams": "chatgpt-slack-and-teams",
       "chatgptstaging": "chatgpt-staging",
+      "chatgptthroughagateway": "chatgpt-through-a-gateway",
       "chatgptworkcloudsecurity": "chatgpt-work-cloud-security",
       "chatgptworklocalsecurity": "chatgpt-work-local-security",
       "chatgptworkoverview": "chatgpt-work-overview",
@@ -294,8 +296,8 @@
       "claudehaiku3": "claude-haiku-3",
       "claudehaiku35": "claude-haiku-3-5",
       "claudehaiku45": "claude-haiku-4-5",
-      "claudehaiku4520251001": "claude-haiku-4-5-20251001",
-      "claudehaiku45systemcard": "claude-haiku-4-5-system-card",
+      "claudehaiku55": "claude-haiku-5-5",
+      "claudehaiku55systemcard": "claude-haiku-5-5-system-card",
       "claudeopus3": "claude-opus-3",
       "claudeopus4": "claude-opus-4",
       "claudeopus41": "claude-opus-4-1",
