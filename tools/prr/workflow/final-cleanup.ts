@@ -199,10 +199,22 @@ export async function executeFinalCleanup(
         replyToThreads: true,
         resolveThreads: options.resolveThreads,
       });
-      // User-visible summary when most replies failed (e.g. systemic 422; output.log audit).
+      // User-visible nudge when most replies failed (details already in thread-replies summary line; output.log audit).
       if (replyStats && replyStats.attempted > 0 && replyStats.replied < replyStats.attempted * 0.1) {
         const failed = replyStats.attempted - replyStats.replied;
-        console.log(chalk.yellow(`Could not post replies on ${formatNumber(failed)} review thread(s) (GitHub returned Validation Failed). Check repo permissions and thread state.`));
+        const v422 = replyStats.failed422;
+        const other = replyStats.failedOther;
+        const hint422 =
+          v422 > 0
+            ? `${formatNumber(v422)} were HTTP 422 (stale thread / old diff anchor — see CodeRabbit vs HEAD warning). `
+            : '';
+        const hintOther = other > 0 ? `${formatNumber(other)} failed for other reasons. ` : '';
+        console.log(
+          chalk.yellow(
+            `Thread replies: ${formatNumber(failed)} of ${formatNumber(replyStats.attempted)} attempt(s) did not post. ${hint422}${hintOther}` +
+              `Check token scopes, or re-run after review bots target the current HEAD (docs/THREAD-REPLIES.md).`,
+          ),
+        );
       }
     } catch (err) {
       debug('Thread replies for dismissed (non-fatal)', { error: String(err) });

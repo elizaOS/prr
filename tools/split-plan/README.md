@@ -57,7 +57,7 @@ Prefer a capable model (e.g. Sonnet-level or equivalent). Dependency analysis an
 
 ## Configuration
 
-Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY`. Optional: `PRR_LLM_PROVIDER`, `PRR_LLM_MODEL`. See root [README](../../README.md) and [.env.example](../../.env.example).
+Same as prr: `GITHUB_TOKEN` plus one of `ELIZACLOUD_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `NVIDIA_API_KEY` / `NVIDIA_CLOUD_API_KEY`, `OPENROUTER_API_KEY`, or explicit `PRR_LLM_PROVIDER=ollama` / `lmstudio` (local; **`PRR_LLM_MODEL` required** for `lmstudio`). Optional: `PRR_LLM_PROVIDER` (`elizacloud`, `anthropic`, `openai`, `nvidiacloud`, `openrouter`, `ollama`, `lmstudio`), `PRR_LLM_MODEL`. See root [README](../../README.md) and [.env.example](../../.env.example).
 
 **SPLIT_PLAN_LLM_MODEL:** When set, split-plan uses this model for both phases. When unset, split-plan uses the provider's **fast/cheap model** (e.g. gpt-4o-mini, claude-haiku) by default to reduce gateway 504 timeouts on large PRs. Set `SPLIT_PLAN_LLM_MODEL` if you want a stronger model and accept longer runs or use a smaller `--max-patch-chars`.
 

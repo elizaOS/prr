@@ -63,6 +63,13 @@ export interface UnresolvedIssue {
    * Used for primary path in prompts and snippet fetch so the fixer sees the correct file.
    */
   resolvedPath?: string;
+  /**
+   * Blast radius: primary path is inside PR changed set + import/proximity graph (when graph was built).
+   * **WHY undefined:** Feature disabled, build failed, or no graph — treat as in-scope (no behavior change).
+   */
+  inBlastRadius?: boolean;
+  /** Shortest hop distance from a changed file (0 = changed in PR). Set when graph was built and path was in radius. */
+  blastRadiusDepth?: number;
 }
 
 /** Canonical primary path for an issue. Prefer resolvedPath once basename comments are expanded to a tracked repo path. */

@@ -11,6 +11,7 @@
     "split-plan": "./dist/tools/split-plan/index.js",
     "split-rewrite-plan": "./dist/tools/split-rewrite-plan/index.js",
     "story": "./dist/tools/story/index.js",
+    "contributor-sheet": "./dist/tools/contributor-sheet/index.js",
     "eval": "./dist/tools/eval/index.js"
   },
   "scripts": {

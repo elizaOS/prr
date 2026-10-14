@@ -38,7 +38,7 @@ Code shared across **prr**, **pill**, **story**, **split-exec**, and **split-pla
 - **`logger.ts`** — Output log tee, prompts log, debug, formatNumber. See main README and pill README for pill hook and WHY dynamic import.
 - **`config.ts`** — Loads .env, validates config. Used by prr, story, split-exec, split-plan. **`PRR_THINKING_BUDGET`** above **500,000** clamps with a warning (typo guard).
 - **`constants.ts`** — LLM limits, batch sizes, **`ELIZACLOUD_SKIP_MODEL_IDS`** / **`ELIZACLOUD_SKIP_REASON`** (authoritative ElizaCloud skip list), session-skip envs. Operator snapshot: **[docs/MODELS.md](../docs/MODELS.md)** (“Rotation order and skip list”). Overrides: **`PRR_ELIZACLOUD_INCLUDE_MODELS`**, **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** (root README).
-- **`llm/`** — rate-limit, elizacloud, model-context-limits. Used by prr and pill.
+- **`llm/`** — rate-limit, elizacloud, nvidiacloud, openrouter, model-context-limits, **`openai-compat-chat-params.ts`** (**WHY:** `max_tokens` vs `max_completion_tokens` per OpenAI-compat host so PRR, **`llm-api`**, and pill stay consistent). Used by prr and pill.
 - **`git/`** — Clone, merge, commit, push, conflict detection. Used by prr and split-exec. Recovery / **`scanCommittedFixes`**: see **AGENTS.md** / **DEVELOPMENT.md** (no **`git-hooks.ts`** in this tree — hooks live in product repos).
 - **`runners/`** — llm-api, cursor, aider, etc. Used by prr fixer lane.
 

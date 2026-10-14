@@ -86,7 +86,7 @@ export async function runCleanupMode(
   }
   
   // Clone/update repository (pass githubToken for private repo access)
-  spinner.start('Setting up repository...');
+  // No spinner during clone — WHY: git streams progress to the TTY; ora redraws the line and interferes. Post-clone uses ora.
   await cloneOrUpdateFn(prInfo.cloneUrl, prInfo.branch, workdir, config.githubToken);
   spinner.succeed('Repository ready');
   

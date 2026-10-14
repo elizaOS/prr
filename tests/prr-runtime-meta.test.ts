@@ -1,5 +1,8 @@
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import {
+  findPrrGitMetadataDir,
   formatPrrStartupVersionLine,
   getPrrPackageRoot,
   getPrrPackageVersion,
@@ -14,8 +17,13 @@ describe('prr-runtime-meta', () => {
     expect(v).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it('detects .git in this checkout', () => {
+  it('detects .git walking up from package root', () => {
     expect(hasPrrGitMetadata()).toBe(true);
+    const gitDir = findPrrGitMetadataDir();
+    expect(gitDir).toBeDefined();
+    expect(existsSync(join(gitDir!, '.git'))).toBe(true);
+    const pkg = getPrrPackageRoot();
+    expect(gitDir === pkg || pkg.startsWith(gitDir! + '/') || pkg.startsWith(gitDir! + '\\')).toBe(true);
   });
 
   it('formatPrrStartupVersionLine includes version', () => {

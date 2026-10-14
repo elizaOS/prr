@@ -6,6 +6,7 @@
 import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
 import type { PRInfo } from '../github/types.js';
+import { githubPrSaysNotMergeable } from '../github/pr-mergeable.js';
 import type { CLIOptions } from '../cli.js';
 import type { Config } from '../../../shared/config.js';
 import { startTimer, endTimer } from '../../../shared/logger.js';
@@ -15,6 +16,7 @@ import {
   abortMerge,
   completeMerge,
 } from '../../../shared/git/git-merge.js';
+import { ensureForkBaseRemote, FORK_PR_BASE_REMOTE } from '../../../shared/git/git-conflicts.js';
 import { pushWithRetry } from '../../../shared/git/git-push.js';
 
 /**
@@ -33,7 +35,7 @@ export async function handleNoComments(
   exitDetails?: string;
 }> {
   // Check if there are unresolved conflicts
-  const hasConflicts = prInfo.mergeable === false || prInfo.mergeableState === 'dirty';
+  const hasConflicts = githubPrSaysNotMergeable(prInfo);
   
   if (hasConflicts && options.mergeBase) {
     // No comments but conflicts exist - auto-resolve since --merge-base is enabled
@@ -41,10 +43,16 @@ export async function handleNoComments(
     console.log(chalk.cyan(`  Auto-resolving conflicts with ${prInfo.baseBranch}...`));
     
     startTimer('Auto-resolve conflicts');
-    // Ensure base branch ref is up-to-date before merging
-    await git.fetch('origin', prInfo.baseBranch);
+    const baseRemote = prInfo.baseRepoCloneUrl?.trim() ? FORK_PR_BASE_REMOTE : 'origin';
+    if (prInfo.baseRepoCloneUrl?.trim()) {
+      await ensureForkBaseRemote(git, prInfo.baseRepoCloneUrl.trim());
+    }
     const behind = prInfo.mergeableState === 'behind';
-    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge: behind, noFastForward: behind });
+    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, {
+      forceMerge: behind,
+      noFastForward: behind,
+      baseRemote,
+    });
     
     if (!mergeResult.success) {
       // Need LLM to resolve
@@ -53,7 +61,8 @@ export async function handleNoComments(
       const { conflictedFiles, error } = await startMergeForConflictResolution(
         git,
         prInfo.baseBranch,
-        `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`
+        `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`,
+        { baseRemote },
       );
       
       if (error && conflictedFiles.length === 0) {

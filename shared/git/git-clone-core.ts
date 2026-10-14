@@ -14,6 +14,7 @@ import { join, dirname } from 'path';
 import { debug } from '../logger.js';
 import { DEFAULT_CLONE_TIMEOUT_MS } from '../constants.js';
 import { cleanupGitState } from './git-merge.js';
+import { ensureForkBaseRemote, fetchRemoteBranch } from './git-conflicts.js';
 
 /** Normalize clone URL for comparison: strip credentials and trailing .git so same repo matches. */
 function normalizeCloneUrl(url: string): string {
@@ -85,24 +86,39 @@ function findReferenceWorkdir(workdir: string, cloneUrl: string): string | null 
 async function assertAdditionalBranchTrackingRefs(
   git: SimpleGit,
   primaryBranch: string,
-  additionalBranches: string[] | undefined
+  additionalBranches: string[] | undefined,
+  opts?: { allowUpstreamBase?: boolean }
 ): Promise<void> {
   if (!additionalBranches?.length) return;
   const missing: string[] = [];
   for (const b of additionalBranches) {
     if (!b || b === primaryBranch) continue;
+    let ok = false;
     try {
       await git.raw(['rev-parse', '--verify', `refs/remotes/origin/${b}`]);
+      ok = true;
     } catch {
-      missing.push(b);
+      /* */
     }
+    if (!ok && opts?.allowUpstreamBase) {
+      try {
+        await git.raw(['rev-parse', '--verify', `refs/remotes/upstream/${b}`]);
+        ok = true;
+      } catch {
+        /* */
+      }
+    }
+    if (!ok) missing.push(b);
   }
   if (missing.length === 0) return;
-  const list = missing.map((b) => `origin/${b}`).join(', ');
+  const originList = missing.map((br) => `origin/${br}`).join(', ');
+  const upstreamHint = opts?.allowUpstreamBase
+    ? ` For fork PRs, PRR also accepts upstream/${missing.join(', upstream/')} after fetching the base repo — ensure baseRepoCloneUrl / token can reach upstream.`
+    : '';
   throw new Error(
-    `Missing remote tracking ref(s) after fetch: ${list}. ` +
-      `Those branches may not exist on the remote, or fetching them failed. ` +
-      `PRR needs these refs for base-branch merge checks. Fix the branch name or ensure it exists on origin, then re-run.`,
+    `Missing remote tracking ref(s) after fetch: ${originList}. ` +
+      `Those branches may not exist on the fork remote (**origin**), or fetching them failed. ` +
+      `PRR needs these refs for base-branch merge checks.${upstreamHint} Fix the branch name or ensure it exists, then re-run.`,
   );
 }
 
@@ -163,6 +179,41 @@ async function fetchAdditionalBranches(git: SimpleGit, primaryBranch: string, ad
   }
 }
 
+/**
+ * Fork PRs: **`origin/<base>`** often does not exist (fork never pushed **`develop`**).
+ * Fetch **`upstream/<base>`** from **`baseRepoCloneUrl`** so merge-base and recovery can run.
+ */
+async function fetchMissingAdditionalBranchesFromUpstream(
+  git: SimpleGit,
+  primaryBranch: string,
+  additionalBranches: string[] | undefined,
+  baseRepoCloneUrl: string | undefined,
+  githubToken?: string
+): Promise<void> {
+  const base = baseRepoCloneUrl?.trim();
+  if (!base || !additionalBranches?.length) return;
+  await ensureForkBaseRemote(git, base);
+  for (const b of additionalBranches) {
+    const name = typeof b === 'string' ? b.trim() : '';
+    if (!name || name === primaryBranch) continue;
+    let hasOrigin = false;
+    try {
+      await git.raw(['rev-parse', '--verify', `refs/remotes/origin/${name}`]);
+      hasOrigin = true;
+    } catch {
+      /* */
+    }
+    if (hasOrigin) continue;
+    try {
+      await fetchRemoteBranch(git, 'upstream', name, { githubToken });
+      debug('Fetched PR base branch from upstream (fork clone)', { branch: name });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      debug('Failed to fetch upstream base branch for fork PR', { branch: name, err: msg });
+    }
+  }
+}
+
 /** Clone timeout in ms. Override with PRR_CLONE_TIMEOUT_MS (default 900s). */
 function getCloneTimeoutMs(): number {
   const raw = process.env.PRR_CLONE_TIMEOUT_MS;
@@ -197,6 +248,11 @@ export interface CloneOptions {
    * exist on the remote yet; pass `verifyAdditionalRemoteRefs: false` there.
    */
   verifyAdditionalRemoteRefs?: boolean;
+  /**
+   * PR base repo clone URL when the PR is from a fork (**`head` ≠ `base` repo**). Used to fetch
+   * **`upstream/<additionalBranch>`** when **`origin/<branch>`** is missing on the fork.
+   */
+  baseRepoCloneUrl?: string;
 }
 
 export async function cloneOrUpdate(
@@ -381,9 +437,20 @@ export async function cloneOrUpdate(
   if (git === undefined) {
     throw new Error('cloneOrUpdate: internal error — git instance was not initialized');
   }
+
+  await fetchMissingAdditionalBranchesFromUpstream(
+    git,
+    branch,
+    options?.additionalBranches,
+    options?.baseRepoCloneUrl,
+    githubToken,
+  );
+
   const verifyRefs = options?.verifyAdditionalRemoteRefs !== false;
   if (verifyRefs) {
-    await assertAdditionalBranchTrackingRefs(git, branch, options?.additionalBranches);
+    await assertAdditionalBranchTrackingRefs(git, branch, options?.additionalBranches, {
+      allowUpstreamBase: Boolean(options?.baseRepoCloneUrl?.trim()),
+    });
   }
   return { git, workdir };
 }

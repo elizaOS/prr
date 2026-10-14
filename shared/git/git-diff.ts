@@ -10,6 +10,31 @@ import { debug } from '../logger.js';
  * reduces WRONG_LOCATION when the fixer looks up code at the comment's line.
  * Only context lines (unchanged) are mapped; deleted/added lines are skipped.
  */
+/**
+ * Pick a git ref for **`base..HEAD`** diffs (line map, PR changed-file list) when the PR base is **`develop`** etc.
+ * WHY: On fork clones **`origin/<base>`** may not exist (fork never had that branch); **`upstream/<base>`** was fetched from the base repo (**`baseRepoCloneUrl`**). Using the wrong remote breaks **`computeLineMapFromDiff`** with “ambiguous argument” / missing ref (output.log audits on eliza fork PRs).
+ */
+export async function resolveRemoteTrackingRefForPrBase(
+  git: SimpleGit,
+  prInfo: { baseBranch: string; baseRepoCloneUrl?: string }
+): Promise<string> {
+  const b = prInfo.baseBranch?.trim();
+  if (!b) return 'HEAD~1';
+  const preferUpstreamFirst = Boolean(prInfo.baseRepoCloneUrl?.trim());
+  const candidates = preferUpstreamFirst
+    ? ([`upstream/${b}`, `origin/${b}`] as const)
+    : ([`origin/${b}`, `upstream/${b}`] as const);
+  for (const ref of candidates) {
+    try {
+      await git.revparse([ref]);
+      return ref;
+    } catch {
+      /* try next */
+    }
+  }
+  return candidates[0];
+}
+
 export async function computeLineMapFromDiff(
   git: SimpleGit,
   baseRef: string,
