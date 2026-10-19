@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-10-12T06:30:19.475Z",
+  "fetchedAtIso": "2026-10-19T06:24:32.964Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -15,7 +15,7 @@
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 119
+      "idCount": 122
     }
   ],
   "providers": {
@@ -63,7 +63,9 @@
         "chatgpt-work-overview",
         "chatgpt-work-usage-and-cost",
         "codex-mini-latest",
+        "computer-use-integration",
         "computer-use-preview",
+        "computer-use-sdk-drivers",
         "davinci-002",
         "gpt-3.5-turbo",
         "gpt-4",
@@ -117,6 +119,7 @@
         "gpt-5.6-terra",
         "gpt-6",
         "gpt-6-astra",
+        "gpt-6-family",
         "gpt-6-luna",
         "gpt-6-sol",
         "gpt-6.1",
@@ -187,7 +190,9 @@
       "chatgptworkoverview": "chatgpt-work-overview",
       "chatgptworkusageandcost": "chatgpt-work-usage-and-cost",
       "codexminilatest": "codex-mini-latest",
+      "computeruseintegration": "computer-use-integration",
       "computerusepreview": "computer-use-preview",
+      "computerusesdkdrivers": "computer-use-sdk-drivers",
       "davinci002": "davinci-002",
       "gpt3.5turbo": "gpt-3.5-turbo",
       "gpt4": "gpt-4",
@@ -243,6 +248,7 @@
       "gpt6.1": "gpt-6.1",
       "gpt6.1sol": "gpt-6.1-sol",
       "gpt6astra": "gpt-6-astra",
+      "gpt6family": "gpt-6-family",
       "gpt6luna": "gpt-6-luna",
       "gpt6sol": "gpt-6-sol",
       "gptaudio": "gpt-audio",
