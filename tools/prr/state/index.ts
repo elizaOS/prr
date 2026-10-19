@@ -2,6 +2,9 @@
  * State management exports - procedural functions
  */
 
+export { transitionIssue, type IssueStateTransition } from './state-transitions.js';
+export type { MarkVerifiedOptions } from './state-verification.js';
+
 // Core
 export * from './state-context.js';
 export * as Core from './state-core.js';

@@ -40,16 +40,17 @@ Welcome to the PRR documentation! This directory contains comprehensive guides a
 
 ---
 
-### 💬 [Thread replies (GitHub feedback)](THREAD-REPLIES.md)
-**Best for**: Enabling and understanding PRR’s replies on GitHub review threads
+### 💬 [Thread replies & working reactions (GitHub feedback)](THREAD-REPLIES.md)
+**Best for**: Enabling and understanding PRR’s **replies** and **👀 working reactions** on GitHub review threads
 
 **Contains**:
-- What thread replies do (fixed vs dismissed, reply-eligible categories) and why they are opt-in
-- Why one reply per thread, why fixed vs dismissed timing, why only some dismissal categories get a reply
-- In-run and cross-run idempotency, batch idempotency check, use of databaseId and skip of ic-* threads
-- Configuration: `--reply-to-threads`, `--resolve-threads`, `PRR_BOT_LOGIN`
+- **Thread replies:** What they do (fixed vs dismissed, reply-eligible categories) and **WHY** they stay **opt-in** (`--reply-to-threads`)
+- **WHY** one reply per thread, fixed vs dismissed timing, which dismissal categories get a reply
+- In-run and cross-run idempotency, batch idempotency check, use of `databaseId`, skip of `ic-*` threads
+- **Thread working reactions (👀):** **WHY** default-on signals “working on it” **without** coupling to replies; throttle, dedupe, rate-limit disable, and **WHY** `not_found` / hard `error` are handled so REST noise does not break the fix loop
+- Configuration: `--reply-to-threads`, `--resolve-threads`, `--thread-working-reactions`, env vars (`PRR_REPLY_TO_THREADS`, `PRR_RESOLVE_THREADS`, `PRR_THREAD_WORKING_REACTIONS`, `PRR_THREAD_WORKING_REACTION_MIN_MS`, `PRR_BOT_LOGIN`)
 
-**Read this if**: You use or maintain `--reply-to-threads` or need the WHYs for design/audit.
+**Read this if**: You use or maintain `--reply-to-threads`, care about 👀 while fixing, or need the WHYs for design/audit.
 
 ---
 

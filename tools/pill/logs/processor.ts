@@ -13,6 +13,7 @@ import {
   storyReadChapters,
   storyReadPlainText as sharedStoryReadPlainText,
   type StoryReadClient,
+  type StoryReadOptions,
 } from '../../../shared/llm/story-read.js';
 import { estimateTokens } from '../utils/files.js';
 import { truncateHeadAndTailByChars } from '../../../shared/utils/tokens.js';
@@ -112,7 +113,7 @@ const PLAIN_TEXT_CHAPTER_TOKEN_BUDGET = 10_000;
 export async function storyReadPlainText(
   text: string,
   client: LLMClientForProcessor,
-  options: { model?: string } = {}
+  options: StoryReadOptions = {}
 ): Promise<string> {
   return sharedStoryReadPlainText(text, client, {
     ...options,
@@ -127,7 +128,7 @@ export async function storyReadPlainText(
 export async function processLogChapters(
   entries: LogEntry[],
   client: LLMClientForProcessor,
-  options: { model?: string } = {}
+  options: StoryReadOptions = {}
 ): Promise<string> {
   const pairs = groupPairs(entries);
   if (pairs.length === 0) return '';

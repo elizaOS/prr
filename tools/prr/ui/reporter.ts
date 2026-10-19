@@ -84,8 +84,8 @@ const LOOKS_FIXED_REGEXES = [
  * Strips HTML tags, massive URLs (JWT tokens, data URIs, tracking links),
  * markdown images, and collapses whitespace.
  */
-export function sanitizeCommentForDisplay(body: string): string {
-  let text = body;
+export function sanitizeCommentForDisplay(body: string | undefined | null): string {
+  let text = typeof body === 'string' ? body : '';
   
   // Strip HTML comments (<!-- ... -->) including BugBot metadata
   text = text.replace(/<!--[\s\S]*?-->/g, '');
@@ -250,6 +250,27 @@ export function isFailureExitReason(exitReason: string | null): boolean {
 }
 
 /**
+ * True when the fix loop never meaningfully ran (clone/setup/sync or hard early exit).
+ * WHY: **`remainingCount === 0`** then means "no queue loaded", not "all threads resolved" — avoid green **No issues remaining**.
+ * **`error`** is only treated as "setup never reached comment load" when **`currentCommentIds`** was never set (orchestrator catch-all after the queue exists must not use this copy).
+ */
+export function isNoFixQueueSummaryExit(exitReason: string | null, stateContext: StateContext | null): boolean {
+  if (!exitReason) return false;
+  if (
+    exitReason === 'init_failed' ||
+    exitReason === 'sync_failed' ||
+    exitReason === 'stale_bot_review' ||
+    exitReason === 'github_unmergeable'
+  ) {
+    return true;
+  }
+  if (exitReason === 'error') {
+    return stateContext?.currentCommentIds === undefined;
+  }
+  return false;
+}
+
+/**
  * Print final results summary
  * WHY: Profiling info pushes important results off screen. This ensures
  * the most important info (what got fixed) is visible at the end.
@@ -293,6 +314,8 @@ export function printFinalSummary(
     overlapVerifiedAndAlreadyFixed: alreadyFixedOverlap.length,
     relevantVerified: relevantVerified.length,
     toolFixedCount,
+    finalAuditTruncationDemotions: stateContext.finalAuditTruncationDemotionsThisRun ?? 0,
+    finalAuditUuidAlignOverrides: stateContext.finalAuditUuidAlignOverridesThisRun ?? 0,
   });
   if (overlapIds.length > 0) {
     debug('Overlap IDs (verifiedFixed ∩ dismissed)', overlapIds);
@@ -320,9 +343,13 @@ export function printFinalSummary(
   const auditOverridesThisRun = stateContext.auditOverridesThisRun ?? [];
 
   if (overlapIds.length > 0) {
+    const showOverlap = 20;
+    const overlapSample = overlapIds.slice(0, showOverlap).join(', ');
+    const more =
+      overlapIds.length > showOverlap ? ` … (+${formatNumber(overlapIds.length - showOverlap)} more)` : '';
     console.warn(
       chalk.yellow(
-        `  ⚠ verified ∩ dismissed still shows ${formatNumber(overlapIds.length)} ID(s) at summary time — unexpected. Delete .pr-resolver-state.json in the clone workdir (see README Troubleshooting), then re-run.`,
+        `  ⚠ verified ∩ dismissed still shows ${formatNumber(overlapIds.length)} ID(s) at summary time — unexpected. Overlap: ${overlapSample}${more}. Delete .pr-resolver-state.json in the clone workdir (see README Troubleshooting), then re-run.`,
       ),
     );
   }
@@ -337,7 +364,18 @@ export function printFinalSummary(
   if (exitDetails) {
     console.log(chalk.gray(`     ${exitDetails}`));
   }
-  
+  const successLikeExit =
+    effectiveReason === 'all_fixed' ||
+    effectiveReason === 'all_resolved' ||
+    effectiveReason === 'audit_passed';
+  if (successLikeExit && remainingCount !== undefined && remainingCount > 0) {
+    console.log(
+      chalk.gray(
+        `     Note: Fix loop finished for all active threads. Remaining (${formatNumber(remainingCount)}) counts exhausted or “remaining” locations in state (deduped by file:line), not open fix-queue work.`,
+      ),
+    );
+  }
+
   // Fixed issues (only count issues actually fixed by the tool, not pre-existing fixes)
   // Use verifiedThisSession (the actual Set of IDs verified during iteration loops)
   // instead of delta counting, which undercounts re-verifications of issues already
@@ -380,11 +418,49 @@ export function printFinalSummary(
     }
   }
 
+  // Pill-output #407: surface UNCERTAIN vs truncation-guard counts in the summary (not only debug).
+  const finalAuditUncertain = stateContext.finalAuditUncertainThisRun ?? [];
+  if (finalAuditUncertain.length > 0) {
+    const trunc = finalAuditUncertain.filter((u) => u.kind === 'truncation-guard').length;
+    const unc = finalAuditUncertain.filter((u) => u.kind === 'uncertain').length;
+    console.log(
+      chalk.gray(
+        `\n  ℹ Final audit non-affirming passes: ${formatNumber(finalAuditUncertain.length)} (${formatNumber(unc)} UNCERTAIN, ${formatNumber(trunc)} truncation guard)`,
+      ),
+    );
+  }
+
+  const truncationDemotions = stateContext.finalAuditTruncationDemotionsThisRun ?? 0;
+  const uuidAlignOverrides = stateContext.finalAuditUuidAlignOverridesThisRun ?? 0;
+  if (truncationDemotions > 0 || uuidAlignOverrides > 0) {
+    const parts: string[] = [];
+    if (truncationDemotions > 0) {
+      parts.push(
+        `${formatNumber(truncationDemotions)} truncation demotion${truncationDemotions === 1 ? '' : 's'} (excerpt guard)`,
+      );
+    }
+    if (uuidAlignOverrides > 0) {
+      parts.push(
+        `${formatNumber(uuidAlignOverrides)} UUID / regex align override${uuidAlignOverrides === 1 ? '' : 's'}`,
+      );
+    }
+    console.log(
+      chalk.gray(
+        `\n  ℹ Final audit post-checks (UNFIXED → pass): ${parts.join('; ')} — see debug log / prompts.log`,
+      ),
+    );
+  }
+
   // Pill-output #18: keep final-audit re-queue count with other outcome lines (fixed / dismissed), not only above Exit.
   if (auditOverridesThisRun.length > 0) {
     console.log(
       chalk.cyan(
         `\n  ◆ Final audit re-queued: ${formatNumber(auditOverridesThisRun.length)} issue(s) (adversarial pass said UNFIXED for previously verified — see After Action Report)`,
+      ),
+    );
+    console.log(
+      chalk.gray(
+        `     (This count is only threads that were verified then challenged by final audit — not the same as “Remaining” unless those were the only open issues.)`,
       ),
     );
     if (
@@ -394,7 +470,7 @@ export function printFinalSummary(
     ) {
       console.log(
         chalk.gray(
-          `     (If Remaining below differs: re-queue is per thread; Remaining dedupes by file:line and can shrink after fixes.)`,
+          `     If Remaining below differs: re-queue is per thread id; Remaining dedupes by file:line and can include issues never verified this run.`,
         ),
       );
     }
@@ -403,14 +479,24 @@ export function printFinalSummary(
   // Remaining = unresolved + exhausted/chronic-failure (we gave up after repeated failures; they need human follow-up).
   if (remainingCount !== undefined) {
     if (remainingCount === 0) {
-      console.log(chalk.green(`\n  ✓ No issues remaining`));
       if (exitReason === 'merge_conflicts') {
-        // Avoid implying success: queue is empty but run stopped before main loop (AUDIT-CYCLES merge_conflicts audits).
+        // Avoid green "success" — queue is empty because analysis never ran (AUDIT-CYCLES merge_conflicts audits).
+        console.log(
+          chalk.gray(`\n  ℹ No review threads were processed (run stopped at base-merge before the fix loop).`),
+        );
         console.log(
           chalk.yellow(
             `  ⚠ Run blocked on base-merge: resolve the conflicted files above, then re-run PRR (review issues were not processed this run).`,
           ),
         );
+      } else if (isNoFixQueueSummaryExit(exitReason, stateContext)) {
+        console.log(
+          chalk.gray(
+            `\n  ℹ No review threads were analyzed (run stopped with an error or setup exit before the fix loop — not the same as “all resolved”).`,
+          ),
+        );
+      } else {
+        console.log(chalk.green(`\n  ✓ No issues remaining`));
       }
     } else {
       console.log(chalk.yellow(`\n  ○ Remaining: ${formatNumber(remainingCount)} (auto-stopped after repeated failures — resolve by fix or conversation)`));
@@ -422,6 +508,12 @@ export function printFinalSummary(
         );
       }
     }
+  } else if (isNoFixQueueSummaryExit(exitReason, stateContext)) {
+    console.log(
+      chalk.gray(
+        `\n  ℹ Review backlog was not evaluated (setup did not complete — see Exit details above).`,
+      ),
+    );
   }
 
   // Pill #4: Warn about late-cycle comments (new comments added during fix cycle that weren't processed)
@@ -547,8 +639,15 @@ export function buildReviewSummaryMarkdown(
     const catParts = Object.entries(byCategory).map(([c, n]) => `${formatNumber(n)} ${c}`).join(', ');
     lines.push(`- ○ ${formatNumber(dismissedIssues.length)} dismissed (${catParts})`);
   }
-  if (remainingCount === 0) lines.push('- ✓ No issues remaining');
-  else lines.push(`- ○ ${formatNumber(remainingCount)} remaining (resolve by fix or conversation)`);
+  if (remainingCount === 0) {
+    if (exitReason === 'merge_conflicts') {
+      lines.push('- ℹ No issues in the fix queue (base-merge blocked before comment analysis).');
+    } else if (isNoFixQueueSummaryExit(exitReason, stateContext)) {
+      lines.push('- ℹ No review backlog processed (run failed or exited during setup before the fix loop).');
+    } else {
+      lines.push('- ✓ No issues remaining');
+    }
+  } else lines.push(`- ○ ${formatNumber(remainingCount)} remaining (resolve by fix or conversation)`);
 
   const auditOverrides = stateContext.auditOverridesThisRun ?? [];
   if (auditOverrides.length > 0) {
@@ -650,8 +749,8 @@ export function printHandoffPrompt(
  */
 function suggestResolutions(issue: UnresolvedIssue, stateContext?: StateContext | null): string[] {
   const resolutions: string[] = [];
-  const body = issue.comment.body.toLowerCase();
-  const path = issue.comment.path;
+  const body = (issue.comment.body ?? '').toLowerCase();
+  const path = issue.comment.path ?? '';
   const pathLower = path.toLowerCase();
 
   // --- Pattern 1: File corruption (multiple reviews about same file being broken) ---
@@ -966,7 +1065,7 @@ export async function printAfterActionReport(
     }
   }
 
-  // Summary — Fixed, Dismissed, Remaining (by unique comment IDs so total never exceeds comment count).
+  // Summary — Fixed, Dismissed, Remaining (union of distinct comment IDs across buckets vs fetched rows).
   console.log(chalk.cyan('\n━━━ Summary ━━━'));
   const fixedIds = new Set(
     comments
@@ -995,7 +1094,16 @@ export async function printAfterActionReport(
     ),
   );
   if (totalAccounted !== comments.length) {
-    console.log(chalk.gray(`  (Unique comment IDs in these buckets: ${formatNumber(totalAccounted)})`));
+    console.log(
+      chalk.gray(
+        `  Distinct comment IDs in at least one bucket: ${formatNumber(totalAccounted)} (loaded: ${formatNumber(commentsFetched)})`,
+      ),
+    );
+    console.log(
+      chalk.gray(
+        "  → Buckets can be larger if dismissed/remaining/exhausted reference IDs not in this run's fetch; smaller if many loaded comments are only outdated / out of queue.",
+      ),
+    );
   }
   console.log(chalk.green(`  Fixed: ${formatNumber(fixedCount)}${fixedThisSessionCount > 0 ? ` (${formatNumber(fixedThisSessionCount)} this session)` : ''}`));
   console.log(chalk.gray(`  Dismissed: ${formatNumber(dismissedCount)}`));

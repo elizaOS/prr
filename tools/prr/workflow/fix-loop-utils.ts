@@ -20,8 +20,19 @@ import type { PRInfo } from '../github/types.js';
 import { checkRemoteAhead } from '../../../shared/git/git-conflicts.js';
 import { pullLatest } from '../../../shared/git/git-pull.js';
 import { debug, formatNumber } from '../../../shared/logger.js';
+import { getMidLoopNewCommentCap } from '../../../shared/constants.js';
 import { dedupeNewCommentsByQueue } from './utils.js';
 import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solvability.js';
+import {
+  isPullConflictErrorMessage,
+  resolvePullRebaseConflictsAfterFailedPull,
+  resolveStashPopConflictsWithLLM,
+  type ResolveConflictsWithLLMFn,
+} from './repository.js';
+import {
+  dismissDuplicateClusterFromComments,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
 
 // Note: All imports must be at module top level - do not use dynamic imports inside functions
 
@@ -47,6 +58,7 @@ import { assessSolvability, resolveTrackedPathWithPrFiles } from './helpers/solv
  * @param headSha - Optional PR head SHA for the check
  * @param stateContext - State context (for solvability and dismissals)
  * @param workdir - Repo workdir (for solvability path checks). If missing, solvability is skipped for new comments.
+ * @param duplicateMap - LLM dedup map from this push iteration’s analysis — dismiss cluster when a new thread is unsolvable.
  */
 export async function processNewBotReviews(
   github: GitHubAPI,
@@ -60,7 +72,8 @@ export async function processNewBotReviews(
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
   headSha?: string,
   stateContext?: StateContext,
-  workdir?: string
+  workdir?: string,
+  duplicateMap?: Map<string, string[]>,
 ): Promise<void> {
   // Check for new bot reviews if expected time has passed. Skip fetch when head unchanged and recently fetched (backoff).
   const newReviewResult = await checkForNewBotReviews(owner, repo, prNumber, existingCommentIds, headSha);
@@ -80,22 +93,27 @@ export async function processNewBotReviews(
     // and burned 10+ fix iterations each. Apply the same filter as findUnresolvedIssues.
     const solvableComments: ReviewComment[] = [];
     if (workdir && stateContext) {
+      const lookupComments = [...comments, ...newComments];
+      const effectiveDupForLookup = resolveEffectiveDuplicateMapForComments(
+        stateContext,
+        duplicateMap,
+        lookupComments,
+      );
       for (const comment of newComments) {
         // WHY: Track every new comment ID (including ones we will dismiss) so the next checkForNewBotReviews does not return them again as "new".
         existingCommentIds.add(comment.id);
         const solvability = assessSolvability(workdir, comment, stateContext);
         if (!solvability.solvable) {
-          Dismissed.dismissIssue(
+          dismissDuplicateClusterFromComments(
             stateContext,
-            comment.id,
+            comment,
+            effectiveDupForLookup,
+            lookupComments,
             solvability.reason ?? 'Not solvable',
             solvability.dismissCategory ?? 'not-an-issue',
-            comment.path,
-            comment.line,
-            comment.body,
-            solvability.remediationHint
+            solvability.remediationHint,
           );
-          debug('P1: dismissed unsolvable new comment (solvability)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
+          debug('P1: dismissed unsolvable new comment (solvability, cluster)', { commentId: comment.id, path: comment.path, reason: solvability.reason });
         } else {
           solvableComments.push(comment);
         }
@@ -110,26 +128,41 @@ export async function processNewBotReviews(
     } else {
       solvableComments.push(...newComments);
     }
-    // Add solvable new comments to tracking — fetch all snippets concurrently
+
+    const cap = getMidLoopNewCommentCap();
+    const overflow =
+      cap > 0 && solvableComments.length > cap ? solvableComments.length - cap : 0;
+    const toEnqueue = overflow > 0 ? solvableComments.slice(0, cap) : solvableComments;
+    if (overflow > 0) {
+      console.log(
+        chalk.yellow(
+          `   Capping mid-loop enqueue: ${formatNumber(toEnqueue.length)} of ${formatNumber(solvableComments.length)} new thread(s) (PRR_MID_LOOP_NEW_COMMENT_CAP=${formatNumber(cap)}). ${formatNumber(overflow)} remain in the PR but are deferred until the next full analysis.`,
+        ),
+      );
+    }
+
+    // Register every solvable new comment on the PR list so later phases see full thread set; only `toEnqueue` enters the fix queue now.
     for (const comment of solvableComments) {
       existingCommentIds.add(comment.id);
       comments.push(comment);
+    }
+    for (const comment of toEnqueue) {
       console.log(chalk.yellow(`  • ${comment.path}:${comment.line || '?'} (by ${comment.author})`));
     }
     const newSnippets = await Promise.all(
-      solvableComments.map((c) => getCodeSnippet(c.path, c.line, c.body))
+      toEnqueue.map((c) => getCodeSnippet(c.path, c.line, c.body))
     );
-    for (let i = 0; i < solvableComments.length; i++) {
+    for (let i = 0; i < toEnqueue.length; i++) {
       unresolvedIssues.push({
-        comment: solvableComments[i],
+        comment: toEnqueue[i],
         codeSnippet: newSnippets[i],
         stillExists: true,
         explanation: 'New comment from bot review',
         triage: { importance: 3, ease: 3 },
       });
     }
-    
-    console.log(chalk.cyan(`   Added ${formatNumber(solvableComments.length)} new issue(s) to workflow\n`));
+
+    console.log(chalk.cyan(`   Added ${formatNumber(toEnqueue.length)} new issue(s) to workflow\n`));
   }
 }
 
@@ -303,6 +336,8 @@ export async function checkEmptyIssues(
  * @param repo - Repository name
  * @param prNumber - Pull request number
  * @param getCodeSnippet - Function to fetch code snippets
+ * @param resolveConflictsWithLLM - Same as setup **`checkAndSyncWithRemote`** — used when pull leaves conflict markers (top of fix iteration).
+ * @param noPush - When true, deconflict does not push (fix loop defers to **commit-and-push**).
  * @returns Exit signal if conflicts detected, continue signal with new SHA otherwise
  */
 export async function checkAndPullRemoteCommits(
@@ -315,7 +350,9 @@ export async function checkAndPullRemoteCommits(
   repo: string,
   prNumber: number,
   getCodeSnippet: (path: string, line: number | null, body: string) => Promise<string>,
-  githubToken?: string
+  githubToken: string | undefined,
+  resolveConflictsWithLLM: ResolveConflictsWithLLMFn,
+  noPush: boolean,
 ): Promise<{
   shouldBreak: boolean;
   exitReason?: string;
@@ -334,53 +371,70 @@ export async function checkAndPullRemoteCommits(
     return { shouldBreak: false };
   }
   if (remoteStatus.behind > 0) {
-    console.log(chalk.yellow(`\n⚠ Remote has ${remoteStatus.behind} new commit(s) - pulling...`));
-    
+    console.log(
+      chalk.yellow(`\n⚠ Remote has ${formatNumber(remoteStatus.behind)} new commit(s) - pulling...`),
+    );
+
     const pullResult = await pullLatest(git, branch, fetchOpts);
+    let pullSucceeded = pullResult.success;
+
     if (!pullResult.success) {
       console.log(chalk.red(`  Failed to pull: ${pullResult.error}`));
-      if (pullResult.error?.includes('conflict')) {
-        // Conflicts need manual resolution - bail out
-        console.log(chalk.red('  Conflicts detected. Please resolve manually and restart.'));
-        return {
-          shouldBreak: true,
-          exitReason: 'error',
-          exitDetails: 'Pull conflicts require manual resolution',
-        };
+      if (isPullConflictErrorMessage(pullResult.error)) {
+        const dr = await resolvePullRebaseConflictsAfterFailedPull(git, branch, resolveConflictsWithLLM, {
+          noPush,
+          githubToken,
+        });
+        if (!dr.ok) {
+          return {
+            shouldBreak: true,
+            exitReason: 'error',
+            exitDetails: dr.error,
+          };
+        }
+        pullSucceeded = true;
+        console.log(chalk.green(`  ✓ Auto-resolved pull/rebase conflicts (${formatNumber(dr.resolvedRounds)} round(s))`));
+      } else {
+        console.log(chalk.yellow('  Continuing with potentially stale code...'));
       }
-      // Other pull errors - continue but warn
-      console.log(chalk.yellow('  Continuing with potentially stale code...'));
-    } else {
-      console.log(chalk.green(`  ✓ Pulled ${remoteStatus.behind} commit(s)`));
-      
-      // Invalidate verification cache - code has changed
-      // WHY: Previous "fixed" status may no longer be valid
+    }
+
+    if (pullSucceeded) {
+      if (pullResult.stashConflicts && pullResult.stashConflicts.length > 0) {
+        await resolveStashPopConflictsWithLLM(git, resolveConflictsWithLLM, pullResult.stashConflicts);
+      }
+
+      if (pullResult.success || isPullConflictErrorMessage(pullResult.error)) {
+        console.log(chalk.green(`  ✓ Pulled ${formatNumber(remoteStatus.behind)} commit(s)`));
+      }
+
       const previouslyVerified = Verification.getVerifiedComments(stateContext).length;
       if (previouslyVerified > 0) {
-        console.log(chalk.yellow(`  Invalidating ${previouslyVerified} cached verifications (code changed)`));
-        debug('Stale verification: clearing all after remote pull', { previouslyVerified, behind: remoteStatus.behind });
+        console.log(
+          chalk.yellow(`  Invalidating ${formatNumber(previouslyVerified)} cached verifications (code changed)`),
+        );
+        debug('Stale verification: clearing all after remote pull', {
+          previouslyVerified,
+          behind: remoteStatus.behind,
+        });
         Verification.clearAllVerifications(stateContext);
       }
-      
-      // Re-fetch code snippets for unresolved issues concurrently
-      // WHY parallel: Each snippet is an independent file read; code at those
-      // lines may have changed after the pull.
+
       console.log(chalk.gray(`  Refreshing code snippets for ${formatNumber(unresolvedIssues.length)} issues...`));
       const refreshedSnippets = await Promise.all(
-        unresolvedIssues.map(issue =>
-          getCodeSnippet(getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body)
-        )
+        unresolvedIssues.map((issue) =>
+          getCodeSnippet(getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body),
+        ),
       );
       for (let i = 0; i < unresolvedIssues.length; i++) {
-        unresolvedIssues[i].codeSnippet = refreshedSnippets[i];
+        unresolvedIssues[i].codeSnippet = refreshedSnippets[i]!;
       }
-      
-      // Update PR info with new head SHA
+
       try {
         const updatedPR = await github.getPRInfo(owner, repo, prNumber);
         const newHeadSha = updatedPR.headSha;
         debug('Updated PR head SHA', { newSha: newHeadSha });
-        
+
         return {
           shouldBreak: false,
           updatedHeadSha: newHeadSha,

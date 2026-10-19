@@ -64,3 +64,52 @@ export const LLM_REQUEST_TIMEOUT_MS = 90_000; // 90 seconds
  * so the request can complete before the gateway returns 504.
  */
 export const LLM_REQUEST_TIMEOUT_FULL_FILE_MS = 180_000; // 3 minutes
+
+/** Optional flags for {@link getLlmApiRequestTimeoutMs}. */
+export interface LlmApiRequestTimeoutOptions {
+  /**
+   * Base-merge batch prompts (`MERGE CONFLICT RESOLUTION`): multi-file conflict bodies are dense;
+   * audits (e.g. eliza #6733) showed ~30–36k char batches timing out at 90s while normal fix tiers
+   * only rise at 60k+. When set, use lower char thresholds for the same 120s / 150s / 180s caps.
+   */
+  isMergeConflictResolution?: boolean;
+}
+
+/**
+ * Client-side wait for each llm-api HTTP attempt (wrapped by with504Retry in shared/runners/llm-api.ts).
+ * Full-file rewrite prompts use {@link LLM_REQUEST_TIMEOUT_FULL_FILE_MS} always.
+ *
+ * Large search/replace prompts (e.g. 100k+ chars) often need more than 90s wall time; output.log audits
+ * showed Opus timing out at 90s with ~137k input while `isFullFileRewrite` was false.
+ *
+ * **Override:** set **`PRR_LLM_API_REQUEST_TIMEOUT_MS`** to a positive integer (ms) to use a fixed cap for
+ * non-full-file fix calls (skips size tiers below).
+ */
+export function getLlmApiRequestTimeoutMs(
+  promptCharCount: number,
+  isFullFileRewrite: boolean,
+  options?: LlmApiRequestTimeoutOptions,
+): number {
+  if (isFullFileRewrite) {
+    return LLM_REQUEST_TIMEOUT_FULL_FILE_MS;
+  }
+  const raw = process.env.PRR_LLM_API_REQUEST_TIMEOUT_MS?.trim();
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) {
+      return n;
+    }
+  }
+  let ms = LLM_REQUEST_TIMEOUT_MS;
+  const merge = options?.isMergeConflictResolution === true;
+  if (merge) {
+    if (promptCharCount > 18_000) ms = Math.max(ms, 120_000);
+    if (promptCharCount > 28_000) ms = Math.max(ms, 150_000);
+    if (promptCharCount > 45_000) ms = Math.max(ms, 180_000);
+  } else {
+    if (promptCharCount >= 60_000) ms = Math.max(ms, 120_000);
+    if (promptCharCount >= 100_000) ms = Math.max(ms, 150_000);
+    if (promptCharCount >= 140_000) ms = Math.max(ms, 180_000);
+  }
+  return Math.min(ms, LLM_REQUEST_TIMEOUT_FULL_FILE_MS);
+}

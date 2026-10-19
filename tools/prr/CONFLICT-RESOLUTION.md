@@ -19,8 +19,16 @@ PRR resolves conflicts in **two separate steps** during setup:
 
 1. **Three-way merge** — Every LLM resolution sees **base** (Git stage 1), **ours** (stage 2), and **theirs** (stage 3). The model merges both changes relative to the common ancestor.
 2. **File overview (chunked only)** — We do a **full read** of the file in consecutive full-content segments (no cap; we always chunk). Each segment is sent in full; the LLM builds the story across turns. That story is then injected into every chunk-resolution prompt so the model has global context.
-3. **Sub-chunking** — When a single conflict region exceeds the model’s segment cap, we split at **semantic boundaries** (TS/JS: AST statement boundaries; Python: `def`/`class`; fallback: blank lines or line cap). Each sub-chunk is resolved with its base segment, then results are concatenated.
+3. **Sub-chunking** — When a single conflict region exceeds the model’s **segment char cap** **or** exceeds **`CONFLICT_OVERSIZED_LINE_THRESHOLD`** lines (`TOP_TAILS_FALLBACK_MAX_CHUNK_LINES + 20`), we split at **semantic boundaries** (TS/JS: AST statement boundaries; Python: `def`/`class`; fallback: blank lines or line cap). If AST/coalesce still yields **one** segment for a line-oversized region, we **force fallback** splits. Each sub-chunk is resolved with its base segment, then results are concatenated.
 4. **Validation** — Before writing or staging, we validate the resolved file (parse for TS/JS; JSON and size checks for other cases). If invalid, we leave the file conflicted and report.
+
+### Attempt 2 (direct LLM API) — operator visibility
+
+When the fixer runner (Attempt 1) leaves markers, **Attempt 2** resolves per file via **`resolveConflictsWithLLM`** in **`git-conflict-resolve.ts`**.
+
+- **Queue order:** Conflict paths are sorted by **largest conflict region (lines) first** (precomputed from disk). **WHY:** Surfaces the worst merge in logs first; does not skip later files (partial resolution still matters).
+- **Progress:** **`Resolving (i of n): path`**; during long LLM work a **30s heartbeat** logs **`Still resolving (file i of n — …path) — Xm Ys`**. **WHY:** Chunked merges can exceed wall-clock expectations; heartbeat without file index looked stuck.
+- **Preflight:** If any region exceeds **`TOP_TAILS_FALLBACK_MAX_CHUNK_LINES`**, a **yellow** line explains that **top+tails** cannot help that region if the main strategy fails. **WHY:** Aligns expectations with **`resolveConflictsWithTopTailsFallback`**’s hard line cap (model cannot invent a safe “middle” from top+tails alone).
 
 ---
 
@@ -41,6 +49,12 @@ When validation fails (e.g. `'*/' expected`), we retry resolution once with the 
 **Why derive segment cap from model context?**  
 A fixed cap (e.g. 25k chars) would overflow a 40k-context model (3×25k input). We compute `(effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3` and clamp to [4k, 25k] so small-context models get smaller segments and we never exceed the model’s window.
 
+**Why a line threshold *in addition to* the char cap (`CONFLICT_OVERSIZED_LINE_THRESHOLD`)?**  
+Char caps alone miss **dense** conflicts: thousands of short lines can fit under **25k chars** per side but still overwhelm a **single** `RESOLVED` code-block response from the model (truncation → catastrophic size regression). The threshold is **`TOP_TAILS_FALLBACK_MAX_CHUNK_LINES + 20`** so anything **too large for top+tails** never relies on one-shot full-region merge on the main path.
+
+**Why force `findConflictChunkEdgesFallback` when `edges.length <= 2` but the conflict is line-oversized?**  
+TypeScript route files can parse as **one** top-level statement (e.g. one huge object literal). **`coalesceEdgesBySize`** then returns **`[0, N]`** — the same as not sub-chunking. Fallback blank-line / line-cap splits restore bounded segments.
+
 **Why no skip by file size?**  
 We always chunk (story and resolution). No cap; no "file too large, resolve manually."
 
@@ -57,6 +71,7 @@ When resolving many conflict regions in one file, each chunk is sent in isolatio
 - **CONFLICT_PROMPT_OVERHEAD_CHARS** — Reserve for system/instructions and model response. Segment cap leaves room so input + output stays under context.
 - **FILE_OVERVIEW_*** — Full-read story: trigger when `FILE_OVERVIEW_MIN_CHUNKS` (2) or `FILE_OVERVIEW_MIN_FILE_CHARS` (15k). We always chunk the file into full-content segments of `FILE_OVERVIEW_SEGMENT_CHARS` (40k) and build the story across turns (no whole-file cap).
 - **MAX_SINGLE_CHUNK_CHARS** / **MAX_EDGE_SEGMENT_CHARS_DEFAULT** — Default segment size when model is unknown. Overridden in resolve path by the derived cap.
+- **CONFLICT_OVERSIZED_LINE_THRESHOLD** (`TOP_TAILS_FALLBACK_MAX_CHUNK_LINES + 20`, currently **300** lines) — Sub-chunk when the larger conflict **side** exceeds this even if under the char cap; ties to top+tails cap so regions too large for that fallback never use one-shot full-region merge.
 - Segment cap formula: `(effectiveMaxChars - CONFLICT_PROMPT_OVERHEAD_CHARS) / 3`, clamped to [4_000, 25_000].
 - **TOP_TAILS_*** — Top+tails fallback (used only when main strategy failed): `TOP_TAILS_FALLBACK_MAX_CHUNK_LINES` (280), `TOP_TAILS_CONTEXT_LINES` (15), `TOP_TAILS_TOP_CONFLICT_LINES` (80), `TOP_TAILS_TAIL_LINES` (80), `TOP_TAILS_TWO_PASS_THRESHOLD_LINES` (150).
 
