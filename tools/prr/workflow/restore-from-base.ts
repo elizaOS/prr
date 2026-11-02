@@ -8,7 +8,7 @@ import { resolve } from 'path';
 import { writeFileSync } from 'fs';
 import { debug } from '../../../shared/logger.js';
 import { PROTECTED_DIRS } from '../../../shared/git/git-commit-core.js';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 
 /**
  * Parse fixer/LLM output for "restore from base" or "file corrupted" intent.
@@ -33,12 +33,12 @@ export function parseRestoreFromBaseIntent(
     if (path && !path.includes('..') && path.length < 300) return path;
   }
 
-  // Fallback: single unresolved issue's file
-  if (unresolvedIssues.length === 1) return unresolvedIssues[0].comment.path;
+  // Fallback: single unresolved issue's file (canonical path when basename was resolved).
+  if (unresolvedIssues.length === 1) return getIssuePrimaryPath(unresolvedIssues[0]);
   if (unresolvedIssues.length > 1) {
     // Prefer a path that appears in the output (e.g. "restore lib/privy-sync.ts from base")
     for (const issue of unresolvedIssues) {
-      const p = issue.comment.path;
+      const p = getIssuePrimaryPath(issue);
       if (output.includes(p)) return p;
     }
     return null;

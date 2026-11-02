@@ -1,7 +1,7 @@
 /**
  * Lock file utilities for conflict detection
  */
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, lstatSync } from 'fs';
 import { join } from 'path';
 
 export function isLockFile(filepath: string): boolean {
@@ -171,12 +171,16 @@ export function findFilesWithConflictMarkers(workdir: string, files: string[]): 
     const fullPath = join(workdir, file);
     if (existsSync(fullPath)) {
       try {
+        // WHY lstat guard: submodules/directories exist on disk but readFileSync
+        // throws EISDIR. Skip them — they are resolved by the submodule handler.
+        const stat = lstatSync(fullPath);
+        if (stat.isDirectory()) continue;
         const content = readFileSync(fullPath, 'utf-8');
         if (hasConflictMarkers(content)) {
           conflicted.push(file);
         }
       } catch {
-        // Skip files that can't be read
+        // Skip files that can't be read (EISDIR, permission, etc.)
       }
     }
   }

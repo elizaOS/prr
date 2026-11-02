@@ -23,9 +23,41 @@ This contrasts with fully autonomous agents that create PRs without human involv
 
 Audits and agents sometimes conflate these when logs mention “workdir” next to paths like `tools/prr/...` — the latter are almost always **this** tree; the former is the **target** checkout.
 
-## Pill output triage (`pill-output.md`)
+## Pill output triage (`pill-output.md` + **`pill-inventory/`**)
 
-**What it is:** Optional artifact from **pill** after auditing a run’s `output.log`. This repo may keep a copy at **`pill-output.md`** for traceability.
+**What it is:** Optional artifact from **pill** after auditing a run’s **`output.log`**.
+
+### Raw inbox vs canonical backlog
+
+- **`pill-output.md`** — **Raw append inbox** only. Pill writes dated sections with **`####`** items here. It is **not** the canonical backlog: the file can grow very large and is often **gitignored** locally. **Do not** add long narrative “summary blobs” at the top; keep a short inbox notice (if any) and dated raw sections.
+- **`pill-inventory/INDEX.md`** — **Compact priority queue** (what to do next on **this** repo). Points to per-theme files under **`pill-inventory/items/`**.
+- **`pill-inventory/items/INV-NNN-*.md`** — **One actionable theme per file** (evidence, hit counts, next action, resolution). Each file includes **`## Why This Document`** (WHY it lives outside **`DEVELOPMENT.md`**: sustained operational dataset, small LLM-friendly chunks).
+
+Landed code changes and audit narrative still belong in **`CHANGELOG.md`** [Unreleased], **`tools/prr/AUDIT-CYCLES.md`**, and **git history** — the inventory tracks **open** pill themes without duplicating those docs.
+
+### Inventory fields (per `INV-*` item file)
+
+| Field | Meaning |
+|-------|---------|
+| **Status** | Open / Partial / Done / Cancelled — same spirit as pill status tags. |
+| **Priority** | High / Medium / Low — queue ordering hint. |
+| **Area** | Rough bucket (e.g. `llm`, `paths`, `verifier`). |
+| **Hits** | Count of raw pill findings merged into this same canonical issue (increment when triaging duplicates). |
+| **Events** | Dates (`YYYY-MM-DD`) of pill runs or manual triage where the theme appeared. |
+| **Evidence** | **`pill-output.md`** item anchors, paths, or short notes so raw sections can be rotated/archived later. |
+| **Next action** | One concrete next step for implementers. |
+| **Resolution** | Where it landed (paths, tests) when **Done**; empty until closed. |
+
+### Rotation workflow (after each pill append or audit)
+
+1. **Do not** implement only from raw **`pill-output.md`** — open **`pill-inventory/INDEX.md`** first.
+2. For each new **`####`** item (or repeated theme): **merge** into an existing **`INV-*`** file (bump **Hits**, append **Events** + **Evidence**) **or** create **`pill-inventory/items/INV-NNN-slug.md`** if no theme matches.
+3. Mark raw lines **N/A (external)**, **Duplicate**, or **Dismissed** when not actionable in this repo (see table below).
+4. Update **`pill-inventory/INDEX.md`** so the **Queue** reflects status, priority, hits, last event, and next action (compact table or list).
+5. When you **implement** a fix, update **both** the **`INV-*`** file **and** **`INDEX.md`** in the same commit.
+6. **After triage, remove that dated `## …` block from `pill-output.md`** (or move it to a local archive file) once **`INV-*`** evidence + **`INDEX.md`** are updated — so the inbox only shows **unprocessed** runs. **WHY:** Otherwise you cannot tell at a glance what still needs promotion; the inventory is the canonical record for processed themes.
+
+**Cursor rule:** **`.cursor/rules/pill-inventory.mdc`** — inbox vs inventory discipline for agents.
 
 **Tool-repo scope filter (default on here):** When pill’s **`targetDir`** contains **`tools/prr`**, only improvements whose **`file`** is under **`tools/`**, **`shared/`**, **`tests/`**, **`docs/`**, **`generated/`**, **`.cursor/`**, **`.github/`**, or an allowlisted root file (e.g. **`README.md`**, **`package.json`**) are **appended** to **`pill-output.md`**. Clone-shaped paths (`src/`, `packages/`, `apps/`, …) are dropped (with console / summary notes). **`PILL_TOOL_REPO_SCOPE_FILTER=0`** turns filtering off. **`PILL_TOOL_REPO_SCOPE_FILTER=1`** forces it on even when **`tools/prr`** is absent (rare).
 
@@ -33,11 +65,17 @@ Audits and agents sometimes conflate these when logs mention “workdir” next 
 
 **Mixed sources:** Items that reference **`src/`** or **`packages/`** usually mean **that other repository**, not prr’s layout — treat as **N/A (external)** when porting fixes into **this** repo. PRR work maps to **`tools/prr/`** and **`shared/`** (e.g. state under **`tools/prr/state`**, not root **`src/state.ts`**). **In this repo’s docs,** lesson examples mostly use **`tools/prr/`** / **`shared/`**; a few **downstream-style** snippets (e.g. eliza **`src/runtime.rs`**) illustrate foreign-repo lesson files — not paths in this tree.
 
-**Per-item status:** Each improvement line includes **`**Status:** …`** and a legend at the top of **`pill-output.md`** (`Done (prr)`, `Partial (prr)`, `Open (prr)`, `N/A (external)`, etc.).
+**Per-item status in raw pill:** When pill **appends** new sections, use **`**Status:** …`** per **`####`** line; the legend in **`pill-output.md`** defines **`Done (prr)`**, **`Partial (prr)`**, **`Open (prr)`**, **`N/A (external)`**, etc. **Promotion:** mirror that status into **`pill-inventory`** when you triage; shrinking raw **`pill-output.md`** is optional once inventory evidence exists.
 
 **WHY document this here:** Contributors otherwise grep for `src/` in pill text and assume missing files are a bug in prr. The status lines record what was implemented in **this** tree vs. what was eliza/downstream-only.
 
 **Where the prr-side work landed (pointers):** Path fragments vs `missing-file` and extension variants — **`shared/path-utils.ts`**, solvability; verified/dismissed overlap and head cleanup — **`tools/prr/state`**; session model skip / diminishing-returns warning — **`shared/constants.js`** (see **`shared/constants/runners.ts`** / related domain files), **`tools/prr/models/rotation.ts`**, **`tools/prr/workflow/push-iteration-loop.ts`**; committed-fix scan cache — **`shared/git/git-commit-scan.ts`**; 429 concurrency restore — **`shared/llm/rate-limit.ts`**; dirty / unmergeable PR warning — setup phase (see **AGENTS.md**). Full bullets: **CHANGELOG [Unreleased]**.
+
+### Pill LLM provider, default models, and OpenAI-compat chat (WHY)
+
+- **Provider detection:** **`tools/pill/config.ts`** loads **`<targetDir>/.env`** then **`~/.pill/.env`** (home does not override target). **`PILL_LLM_PROVIDER`** can force **`elizacloud`**, **`anthropic`**, **`openai`**, **`nvidiacloud`**, **`openrouter`**, **`ollama`**, or **`lmstudio`** (**`lmstudio`** requires **`PILL_LLM_MODEL`**); otherwise keys are tried in order **ElizaCloud → Anthropic → OpenAI → OpenRouter → NVIDIA** (aligned with PRR auto-detect so one **`.env`** works for **`prr --pill`** and **`pill <dir>`**). **`ollama`** / **`lmstudio`** are explicit-only (not inferred from URLs).
+- **WHY provider-specific default `PILL_AUDIT_MODEL` / `PILL_LLM_MODEL`:** The pill CLI still defaults **`--audit-model`** to **`claude-opus-4-6`** for Eliza/Anthropic-heavy workflows. If the only key present is **OpenRouter**, **NVIDIA**, or **direct OpenAI**, sending that Claude id to **`/v1/chat/completions`** fails before any audit. When **`PILL_AUDIT_MODEL`** is unset and the CLI value is still that legacy default, **`loadConfig`** substitutes **`DEFAULT_OPENAI_MODEL`**, **`DEFAULT_OPENROUTER_LLM_MODEL`**, or **`DEFAULT_NVIDIA_LLM_MODEL`** from **`shared/constants`** for both audit and story-read defaults. Explicit **`--audit-model`**, **`PILL_AUDIT_MODEL`**, or **`PILL_LLM_MODEL`** always wins.
+- **WHY `max_tokens` vs `max_completion_tokens`:** OpenRouter and NVIDIA OpenAI-compatible stacks typically accept **`max_tokens`**; OpenAI’s newer APIs and ElizaCloud expect **`max_completion_tokens`**. Pill, PRR transport, and **`llm-api`** share **`shared/llm/openai-compat-chat-params.ts`** — **WHY one module:** avoids drift where one path 400s on a gateway another path already handles.
 
 ### Pill `N/A (external)` items → what to do in **this** repo
 
@@ -46,7 +84,7 @@ Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or *
 | External theme (pill path) | Action in prr monorepo |
 |----------------------------|-------------------------|
 | **`src/config.ts`** skip models | **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`), **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`**, **`PRR_ELIZACLOUD_INCLUDE_MODELS`**, **`validateAndFilterModels`** warning in **`tools/prr/models/rotation.ts`**. |
-| **`src/state.ts`** verified ∩ dismissed | **`tools/prr/state/`** (`StateManager.load`, **`markVerified`** / **`markDismissed`**, overlap warnings in **`analysis.ts`**). |
+| **`src/state.ts`** verified ∩ dismissed | **`tools/prr/state/`** — **`transitionIssue`** + **`StateManager.load`**, **`markVerified`** / **`dismissIssue`**, overlap warnings in **`analysis.ts`**. |
 | **`src/commit.ts`** emoji / noun phrase in commits | **`shared/git/git-commit-message.ts`** (`stripMarkdownForCommit`, **`generateCommitFirstLine`**). |
 | **`src/lessons.ts`** lesson bloat | **`.prr/lessons.md`** + **`tools/prr/state/lessons-prune.ts`**, **`compactLessons`**, **`prr --tidy-lessons`**. |
 | **`src/git.ts` / `scanCommittedFixes` / `baseBranch: null`** | **`shared/git/git-commit-scan.ts`**: pass **`prBaseBranch`** from the GitHub PR (wired from **`recoverVerificationState`** in **`run-setup-phase.ts`**) so `git log` uses `origin/<base>..branch` when the clone isn’t `main`/`master`/`develop`. |
@@ -58,23 +96,31 @@ Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or *
 | Runtime / embedding / batch API / serverless / **`packages/core`** | **Product code** under review — open issues in **that** repository; prr only sees them via logs. |
 | **`CHANGELOG.md` / `ROADMAP.md`** conflicts in pill | Were **eliza** merge artifacts — maintain **`CHANGELOG.md`** and **`docs/ROADMAP.md`** here separately. |
 | **`AGENTS.md`** “companion architecture” | Describes **eliza** — **root `AGENTS.md` here** documents **prr**, pill, clone workdir, state/path rules. |
-| **CodeRabbit SHA ≠ HEAD** | Warn by default; **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** exits after workdir setup **before clone** (**`run-setup-phase.ts`**). |
-| **GitHub mergeable false / dirty** | Warn after clone by default; **`PRR_EXIT_ON_UNMERGEABLE=1`** exits **before clone** when **`--merge-base` is not set**. |
+| **CodeRabbit SHA ≠ HEAD** | Warn by default; **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** exits after workdir setup **before clone** (**`run-setup-phase.ts`**). Otherwise **`stateContext.staleBotInlineReviewVsHead`** deprioritizes known inline review-bot authors in queue + fix-prompt batch order (**`main-loop-setup.ts`**, **`severity.ts`**, **`prompt-building.ts`**) so human threads run first. |
+| **GitHub mergeable false / dirty** | **Setup:** visible **yellow** console lines after clone when GitHub reports not mergeable — both with default **`--merge-base`** (API may stay dirty until you push) and with **`--no-merge-base`** (stronger banner + stderr warn). **`PRR_EXIT_ON_UNMERGEABLE=1`** exits **before clone** and at **each push iteration** start (fresh **`getPRInfo`**) when **`--no-merge-base`** and GitHub still reports not mergeable. **Push loop:** each iteration refreshes merge fields; with base merge enabled, a **one-time** stronger nudge after **3** consecutive dirty iterations (Cycle 80). **Merge noise:** bot anchors vs eventual merged tree — resolve base conflicts and re-run. |
 | **Clear all dismissals on rebase** | Default: only **`already-fixed`** cleared on HEAD change; **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears entire **`dismissedIssues`** (**`state-core.ts`** / **`manager.ts`**). |
-| **“path-fragment” in pill** | Same as **`path-unresolved`** in state — see **AGENTS.md** path rules (no separate category value). |
+| **“path-fragment” in pill** | Persisted as **`path-fragment`** in state; **`path-unresolved`** is for ambiguous basename resolution — see **AGENTS.md** path rules. |
 | **merge-tree / latent conflicts (pill #32)** | **`shared/git/git-conflicts.ts`**: after fetch, **`probeLatentMergeConflictsWithOrigin`** runs **`git merge-tree`** for **`HEAD`** vs **`origin/<prBranch>`** and (when **`prBase ≠ prBranch`**) a **second** probe vs **`origin/<prBase>`** (GitHub mergeable/dirty). **`checkAndSyncWithRemote`** warns for each; **`PRR_MATERIALIZE_LATENT_MERGE`** / **`PRR_MATERIALIZE_LATENT_MERGE_BASE`** materialize the corresponding **`git merge --no-commit`**. Skip: **`PRR_DISABLE_LATENT_MERGE_PROBE`**, **`PRR_DISABLE_LATENT_MERGE_PROBE_BASE`**. |
 
 **Fix-loop lifecycle (short):** Setup → clone/sync → **`recoverVerificationState`** (scan `prr-fix:` markers, optional **`prBaseBranch`**) → analysis → solvability/dismissals → fix iterations (push cycles, verification, rotation) → final audit → optional thread replies. **Resolver state file:** **`<clone workdir>/.pr-resolver-state.json`** (see **`tools/prr/state/manager.ts`**). Lessons and other artifacts may live under **`<clone>/.prr/`** — do not confuse that folder with the resolver JSON path. **Diagram:** **AGENTS.md** (mermaid under “Fix-loop lifecycle”).
 
 ### State invariants, paths, and skip-list (operator reference)
 
-**Verified vs dismissed:** A comment ID must not appear in both **verified** (`verifiedFixed` / `verifiedComments`) and **`dismissedIssues`**. **`markVerified`** / **`dismissIssue`** remove the ID from the opposite set; **`StateManager.load`** / **`loadState`** repair legacy overlap (prefer verified). If **RESULTS SUMMARY** still shows overlap at exit, capture **`output.log`** and delete **`.pr-resolver-state.json`** in the workdir — see **README.md** (Troubleshooting).
+**Verified vs dismissed:** A comment ID must not appear in both **verified** (`verifiedFixed` / `verifiedComments`) and **`dismissedIssues`**. **`markVerified`** / **`dismissIssue`** (and legacy **`StateManager`** helpers) apply transitions through **`transitionIssue`** (`state-transitions.ts`) so **`verifiedThisSession`** and **`commentStatuses`** stay in sync; **`StateManager.load`** / **`loadState`** still repair legacy overlap (prefer verified). If **RESULTS SUMMARY** still shows overlap at exit, capture **`output.log`** and delete **`.pr-resolver-state.json`** in the workdir — see **README.md** (Troubleshooting).
 
-**HEAD change:** When GitHub PR **head SHA** changes, **verified** state is cleared so fixes are re-checked; **`already-fixed`** dismissals are cleared. **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears **all** dismissals (aggressive, e.g. after a messy rebase). See **AGENTS.md** and **`tools/prr/state/state-core.ts`**.
+**HEAD change:** When GitHub PR **head SHA** changes, **verified** state is cleared so fixes are re-checked; **`already-fixed`**, **`chronic-failure`**, and **`stale`** dismissals are cleared by default (others, e.g. **not-an-issue**, are kept unless overlap repair removes them). **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** clears **all** dismissals (aggressive, e.g. after a messy rebase). See **AGENTS.md** and **`tools/prr/state/manager.ts`** / **`state-core.ts`**.
 
 **State repair quick ref (pill / audits):** On load, **`StateManager.load`** / **`loadState`** may log **Cleaned N overlap** or **removed … from verifiedFixed** — that is automatic repair of legacy **`verified ∩ dismissed`**; a one-time message is normal. If **RESULTS SUMMARY** still warns **verified ∩ dismissed** at exit, delete **`<clone>/.pr-resolver-state.json`**, keep **`output.log`**, re-run (**README** Troubleshooting). After a messy rebase, consider **`PRR_CLEAR_ALL_DISMISSED_ON_HEAD=1`** once. **`prr --clean-state`** removes state accidentally committed in the workdir.
 
-**Path resolution (review comments):** Extension fallbacks (**`tryResolvePathWithExtensionVariants`** in **`shared/path-utils.ts`**) and fragment handling (**`isReviewPathFragment`**, **`pathDismissCategoryForNotFound`**) keep **one path → one dismissal category**; legacy fragment **`missing-file`** is normalized to **`path-unresolved`** on load. Extend rules in **`path-utils`** / solvability, not ad hoc branches.
+**State overlap repair contract (load):** After fragment-path normalization on **`dismissedIssues`**, **`loadState`** (**`tools/prr/state/state-core.ts`**) builds **`verifiedSet`** from **`verifiedFixed`** ∪ **`verifiedComments`** and snapshots **`dismissedIds`** from **`dismissedIssues`**. (1) Remove dismissed rows whose **`commentId`** is in **`verifiedSet`**. (2) Remove **`verifiedFixed`** ids that appear in that **snapshot** **`dismissedIds`**. (3) Remove **`verifiedComments`** rows whose **`commentId`** is in **`dismissedIds`**. Repair logs include up to **15** comment ids per step. **WHY snapshot:** Steps (2)–(3) use the pre-(1) dismissed set so legacy double-membership is scrubbed in one pass; new code should use **`transitionIssue`** only. **`PRR_STRICT_STATE_OVERLAP=1`** runs **`assertNoVerifiedDismissedOverlapOrThrow`** before that repair: if any comment id is still in both verified and dismissed, load throws (so corrupt JSON fails fast instead of silently resetting in a catch — rethrow in **`loadState`** / **`StateManager.load`**). **Write-through (default):** When load mutates state (HEAD sync, overlap scrub, lesson compact, dismissed normalization, verified dedupe / **`noProgressCycles`** reset, post-overlap cleanup, etc.), **`loadState`** / **`StateManager.load`** immediately **`saveState`** so repairs survive a crash before the next normal save — unless **`PRR_PERSIST_STATE_AFTER_LOAD_REPAIR=0`**. **`StateManager`** uses **`saveState(..., { skipRotationPersist: true })`** so ephemeral rotation context is not merged into JSON on that path.
+
+**Path resolution (review comments):** Extension fallbacks (**`tryResolvePathWithExtensionVariants`** in **`shared/path-utils.ts`**) and fragment handling (**`isReviewPathFragment`**, **`pathDismissCategoryForNotFound`**) keep **one path → one dismissal category**; legacy fragment **`missing-file`** or old **`path-unresolved`** for the same path shape is normalized to **`path-fragment`** on load. Extend rules in **`path-utils`** / solvability, not ad hoc branches. **WHY one category per shape:** If one path is sometimes **`missing-file`** and sometimes **`path-fragment`** (e.g. bare **`.d.ts`**), state and solvability can disagree across runs and operators see churn; central rules prevent that.
+
+**Committed-fix scan cache (`scanCommittedFixes`):** **`shared/git/git-commit-scan.ts`** keeps an in-process map from a composite key to the list of recovered comment ids. **Key fields:** **`workdir`** (absolute clone root) **+** **`branch`** **+** **`headSha`** **+** **`prBaseBranch`** (GitHub base name or empty) **+** **`resolvedBaseLabel`** (the **`origin/…`** ref actually used for **`base..branch`**, or **`n100`** when the scan falls back to **`-n 100`**). **WHY `resolvedBaseLabel`:** The same workdir path and HEAD can still pick a different log range if **`origin/<prBase>`** appears later or resolution falls back differently — without this segment, cache hits could return wrong ids. **Hit vs miss:** Same key → skip **`git log`**; any segment changes → rescan. **Markers:** Lines are parsed with **`/prr-fix:(\S+)/g`** so multiple ids on one line (squash commits) are all recovered.
+
+**Meta-review / rollup comments (solvability 0a2):** **`isSummaryOrMetaReviewComment`** (**`tools/prr/workflow/helpers/solvability.ts`**) dismisses status tables, **`### Summary`** with multiple status phrases, and **rollup section headings** in the first ~1.5k chars (e.g. **`### Remaining Issues`**, **`Issues Fixed Since Previous Reviews`**). **WHY:** Those posts summarize many threads; they are not one searchable fix. Cycle 72 showed they could miss the table heuristic yet still enter the fix loop and burn **`couldNotInject`** / single-issue slots.
+
+**Fixer allowed paths (`isPathAllowedForFix` / `filterAllowedPathsForFix`):** Paths in **`allowedPaths`**, **`TARGET FILE(S)`**, and the llm-api runner allowlist must pass **`isPathAllowedForFix`** in **`shared/path-utils.ts`**. **Default (open):** any repo-relative path is allowed if it is not absolute, does not live under **`node_modules`** or **`dist/`**, and does not contain internal segments (**.cursor**, **.prr**, leading **`root/`**). **WHY open:** A static “first segment must look like `src` or `packages`” rule silently dropped real targets (`agent/`, `cmd/`, `contracts/`, …), so the fixer could not inject file contents and burned iterations (**`tools/prr/AUDIT-CYCLES.md`** Cycle 72). Reviews that cite **adjacent** files (callers, shared utils) need those paths in the allow set even when the PR diff never touched that top-level dir — open default makes that possible without expanding a hardcoded list per customer repo. **WHY we still have strict mode:** Some operators may want the old “reject package-shaped first segments” behavior when comment bodies paste dependency paths; set **`PRR_STRICT_ALLOWED_PATHS=1`**. In strict mode, **`REPO_TOP_LEVEL`** plus **`setDynamicRepoTopLevelDirs`** (called from **`processCommentsAndPrepareFixLoop`** after **`git diff --name-only`**) whitelist first segments from the PR’s changed files. **WHY `isReferencePathInComment` stays separate:** Do not add a path to allowedPaths when the comment only *references* another file (e.g. “duplicates logic in X”) — that guard lives in solvability / CANNOT_FIX handling, not in **`isPathAllowedForFix`**.
 
 **Ambiguous basename + PR diff (`resolveTrackedPathWithPrFiles`):** **`resolveTrackedPathDetailed`** may return **`ambiguous`** when the review path is a bare filename and **`git ls-files`** finds several matches. **`resolveTrackedPathWithPrFiles`** (in **`tools/prr/workflow/helpers/solvability.ts`**) intersects those candidates with the PR’s **`changedFiles`** list (**`git diff --name-only`** `origin/<base>...HEAD` from **`processCommentsAndPrepareFixLoop`**). **WHY:** The PR almost always intends the file it modifies; guessing another same-named file would be wrong-file fixes or “path does not exist” skips. If **0** or **2+** candidates lie in **`changedFiles`**, resolution stays unset (conservative).
 
@@ -84,13 +130,47 @@ Many **`pill-output.md`** lines use **`src/...`**, **`packages/core/...`**, or *
 
 **AAR “Fixed this session” detail filter:** **`printAfterActionReport`** (**`tools/prr/ui/reporter.ts`**) omits per-line previews for threads whose sanitized body starts with **`### What this adds`** and for **`verifiedComments`** rows with **`autoVerifiedFrom`** (duplicate-of-canonical). **WHY:** Those lines are noise in operator handoff; the header still shows the total verified-this-session count plus a gray line counting omitted threads.
 
-**Model skip list (ElizaCloud / llm-api):** Built-in skip IDs and reasons live in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`, `ELIZACLOUD_SKIP_REASON`). Operators can add removals via **`PRR_ELIZACLOUD_INCLUDE_MODELS`** or extra skips via **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** (see **README** / **`.env.example`**). **Session-level** skip after repeated zero-fix failures: **`PRR_SESSION_MODEL_SKIP_FAILURES`** (**`tools/prr/models/rotation.ts`**). **Session skip reset (pill #847):** **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`** clears session **`skippedModelKeys`** every N fix iterations (see **`maybeResetSessionSkippedModelsAfterFixIteration`** in **`rotation.ts`**, wired from **`push-iteration-loop.ts`**). **Maintainer cadence (ops):** From **`output.log`** **Model Performance**, add persistent **0%** ids to **`constants.ts`** with **`ELIZACLOUD_SKIP_REASON`** and a dated comment; mirror the table in **`docs/MODELS.md`** (“last reviewed” line). There is no automatic PR for the static list.
+**AAR Summary bucket union vs “loaded”:** The line **Distinct comment IDs in at least one bucket** is the union of Fixed, Dismissed, Remaining, and exhausted IDs. It can **exceed** **PR comments loaded this run** when dismissed/remaining/exhausted reference IDs not returned in this fetch (state, exhaustion records). It can be **lower** when many fetched rows are only outdated / never queued. **WHY:** Operators misread 41 vs 51 as a bug (output.log audit eliza#6702).
+
+**Model skip list (ElizaCloud / llm-api):** Built-in skip IDs and reasons live in **`shared/constants.ts`** (`ELIZACLOUD_SKIP_MODEL_IDS`, `ELIZACLOUD_SKIP_REASON`). Operators can add removals via **`PRR_ELIZACLOUD_INCLUDE_MODELS`** or extra skips via **`PRR_ELIZACLOUD_EXTRA_SKIP_MODELS`** (see **README** / **`.env.example`**). **Session-level** skip after repeated zero-fix failures: **`PRR_SESSION_MODEL_SKIP_FAILURES`** (**`tools/prr/models/rotation.ts`**). **Session skip reset (pill #847):** **`PRR_SESSION_MODEL_SKIP_RESET_AFTER_FIX_ITERATIONS`** removes each key from session **`skippedModelKeys`** after N **completed fix iterations since that key was skipped** (`sessionSkippedSinceFixIteration` in **`state-context.ts`**; see **`maybeResetSessionSkippedModelsAfterFixIteration`** in **`rotation.ts`**, wired from **`push-iteration-loop.ts`**). **Maintainer cadence (ops):** From **`output.log`** **Model Performance**, add persistent **0%** ids to **`constants.ts`** with **`ELIZACLOUD_SKIP_REASON`** and a dated comment; mirror the table in **`docs/MODELS.md`** (“last reviewed” line). There is no automatic PR for the static list.
+
+**`validateAndFilterModels` (OpenRouter / NVIDIA / local `llm-api`):** At startup, **`tools/prr/models/rotation.ts`** merges **`config.openrouterApiKey`** / **`config.nvidiaApiKey`** with **`OPENROUTER_API_KEY`** and **`getNvidiaApiKeyFromEnv()`** so **`GET /v1/models`** runs even when only env has the key. It also treats **`llm-api`**’s **`runner.provider`** as **`openrouter`** / **`nvidiacloud`** when deciding whether those fetches are needed. For **`llm-api`** on OpenAI-compatible backends, if the fetched model set is **empty** (fetch failed or server returned nothing), rotation **keeps** fallback / pinned models instead of pruning every id. **`LLMAPIRunner`** (**`shared/runners/llm-api.ts`**) honors **`PRR_LLM_PROVIDER=openrouter` / `nvidiacloud`** before other keys and fails **`checkStatus`** if the explicit provider’s key is missing (no silent ElizaCloud fallback). **WHY:** Audits found subprocess fixer on the wrong gateway when multiple keys existed, and empty local **`/v1/models`** wiping the whole rotation list.
 
 **Fetch / concurrent LLM pool:** **`PRR_FETCH_TIMEOUT_MS`** — non-integer values use the default; with **`--verbose`**, a debug line records the bad value (**`parseFetchTimeoutMs`** in **`shared/git/git-conflicts.ts`**). Branch names for fetch use **`isBranchRefSafeForOriginFetch`** (**`git check-ref-format --branch`**). **`fetchOriginBranch`** logs (verbose) why one-shot HTTPS auth was skipped; spawn **`error`** messages are redacted. **`PRR_LLM_TASK_TIMEOUT_MS`** — optional per-slot wall clock for **`runWithConcurrency`** / **`runWithConcurrencyAllSettled`** (**`shared/run-with-concurrency.ts`**); see **README** Troubleshooting.
 
 **Partial base-merge cache:** State may hold **`partialConflictResolutions`** and **`partialConflictSavedOriginBaseSha`** (tip of **`origin/<base>`** when merge failed part-way). If the base tip changes before the next run, partials are cleared (**`tools/prr/workflow/base-merge.ts`**). Cleared on PR **HEAD** change (**`StateManager`**, **`state-core`**).
 
 **Final audit vs queue:** When the final adversarial audit returns **UNFIXED** for an issue that was **verified** earlier in the run, PRR **re-queues** it (removes from verified, fix loop again). **RESULTS SUMMARY** prints **◆ Final audit re-queued: N** next to fixed/dismissed outcome lines (**`auditOverridesThisRun`**); follow-up gray/yellow lines explain recovery vs **Remaining**. **WHY:** Scannable counts (pill-output #18); “safe over sorry” in **README** / **AGENTS.md**.
+
+**Final-audit snippet metadata:** **`getFullFileForAudit`** returns **`fixSiteInWindow`** when the GitHub line or keyword anchor lies inside the shown numbered excerpt (or the whole file fits the budget). **`LLMClient.finalAudit`** skips the UNFIXED truncation-demotion guard when that flag is true so line-centered budget excerpts are not treated like blind head/tail clips (**`issue-analysis-snippet-helpers.ts`**, **`workflow/analysis.ts`**, **`tools/prr/llm/client.ts`**).
+
+### Unified issue state writes (`transitionIssue`)
+
+**What:** **`tools/prr/state/state-transitions.ts`** exports **`transitionIssue(ctx, commentId, transition)`** — the single mutation path for **verified**, **dismissed**, **unverified**, and **undismissed** per comment ID.
+
+**WHY one function:** Output.log / pill audits showed some code paths updated **`verifiedFixed`** or **`dismissedIssues`** without updating **`verifiedThisSession`**, **`commentStatuses`**, or **`lastApplyErrorByCommentId`** / **`applyFailureCountByCommentId`**, or left **verified ∩ dismissed** overlap. Centralizing writes makes new call sites harder to get wrong.
+
+**Public API:** Prefer **`Verification.markVerified`**, **`Verification.unmarkVerified`**, **`Dismissed.dismissIssue`**, **`Dismissed.undismissIssue`** from workflow code. **`StateManager.markCommentVerifiedFixed`** / **`unmarkCommentVerifiedFixed`** / **`addDismissedIssue`** build a minimal **`StateContext`** (no session **`Set`**) and delegate — **WHY:** Legacy callers stay stable; **`verifiedThisSession`** is owned by the resolver context, not the class.
+
+**Flags:** **`skipSessionTracking`** on verify — used when **`recoverVerificationState`** marks IDs from **`prr-fix:`** git history so the commit gate does not treat recovery as “newly verified this iteration”. **`forceVerificationRefresh`** — **`markCommentVerifiedFixed`** forces timestamp refresh even in the same iteration. **`replaceExistingDismissal`** — only **`addDismissedIssue`** sets this so a second dismiss replaces the row; procedural **`dismissIssue`** stays idempotent (no duplicate rows).
+
+**Bulk clears:** **`clearAllVerifications`**, **`clearVerificationCache`**, **`StateManager.load`** overlap repair, and **`state-core`** normalization still manipulate arrays directly — **WHY:** Those are cross-cutting resets or migration repair, not single-comment lifecycle events.
+
+### Prompt context budgeting (`shared/prompt-budget.ts`)
+
+**What:** **`computeBudget({ model, reservedChars, divisor? })`** returns **`availableForCode`** from the model’s input ceiling (see **`shared/llm/model-context-limits.ts`**) minus reserved non-code chars, optionally split across N slots. **`fitToBudget(rawFile, anchorLine, maxChars, { commentBody, findKeywordAnchor })`** returns numbered-line excerpts centered on the review line or a keyword anchor. **`computePerFixVerifyCurrentCodeBudget`** + **`truncateNumberedCodeAroundAnchor`** shrink already-numbered “current code” blocks for batch verify prompts.
+
+**WHY:** Fix-loop audits repeatedly showed inconsistent caps: one path used a huge window and timed out on small-context models; another used a tiny window and produced **STALE** / wrong **YES** because the bug line was not in view. Sharing math avoids chasing seven magic constants when the gateway or default model changes.
+
+**Consumers (non-exhaustive):** **`issue-analysis-snippet-helpers.ts`** (`buildWindowedSnippet`, **`getFullFileForAudit`**), **`issue-analysis-snippets.ts`** (**`getCodeSnippet`** — char shrink after line-window build), **`tools/prr/llm/client.ts`** batch verify, **`tools/prr/workflow/fix-verification.ts`** **`getCurrentCodeAtLine`**.
+
+### Canonical paths in workflow (file operations vs display)
+
+**Rule of thumb:** For **`readFile`**, **`pathTrackedAtGitHead`**, **`getCodeSnippet(path, …)`**, dismissal **`filePath`**, bailout **`remainingIssues`**, use **`getIssuePrimaryPath(issue)`** or **`resolveTrackedPath(workdir, comment.path, comment.body)`** when **`workdir`** is known — same as **`resolvedPath ?? comment.path`** after analysis.
+
+**WHY:** GitHub’s **`path`** may be a bare basename, wrong extension, or diff-prefixed; the clone resolves to a single tracked path. Using the raw string for disk I/O targets the wrong file or misses it.
+
+**Intentional raw `comment.path`:** Thread display, **`auditOverridesThisRun.path`** for operator correlation with GitHub, **`shouldSkipFinalAuditLlmForPath(comment.path)`** (fragment / synthetic path gate aligned with solvability), and some **`checkForNewComments`** dismissal rows when **`resolvedPath`** was not yet stored — document with **`// INTENTIONAL`** when adding new sites.
 
 **Technical implications**:
 - State persistence is critical (resume after interruption)
@@ -158,6 +238,7 @@ PRR’s tree was refactored to **separate concerns without changing intended run
 | **LLM** | **`tools/prr/llm/client.ts`** (**`LLMClient`**) + **`verification-heuristics.ts`**, **`provider-probes.ts`**, **`error-helpers.ts`** (re-exported from **`client.ts`**) | Probes and pure string/heuristic logic do not need a client instance; one barrel (**`client.js`**) avoids churn for **split-plan**, rotation, and tests. |
 | **Issue analysis** | **`issue-analysis.ts`** (orchestrator, **`findUnresolvedIssues`**) + **`issue-analysis-snippet-helpers.ts`**, **`issue-analysis-snippets.ts`**, **`issue-analysis-dedup.ts`**, **`issue-analysis-context.ts`** | Dedup, low-level snippets, and STALE/ordering context evolve on different cadences; the orchestrator reads as a pipeline driver. |
 | **Resolver surface** | **`tools/prr/resolver-proc.ts`** — **only** **`export { … } from './workflow/…'`** | **`resolver.ts`** and integration tests import one facade; implementations stay next to related workflow code (**`bot-wait.ts`**, **`bailout.ts`**, …). |
+| **Blast radius** | **`shared/dependency-graph/`** — import scanners (multi-language regex), **`specifier-resolver.ts`** (**async** `fs/promises` probes — **WHY:** thousands of **`existsSync`**-style calls blocked the event loop during graph builds), **`proximity.ts`** (directory + filename stems), **`graph.ts`** (**`buildDependencyGraph`**, **`computeBlastRadius`** — BFS uses an **index queue** instead of **`Array.shift()`** — **WHY:** O(1) dequeue when the frontier is large) | **WHY feature:** Approximate “PR scope” without `tsc`/`go`/`javac` in the clone; union of graph + proximity reduces false negatives vs regex-only. **`main-loop-setup.ts`** builds after **`git diff --name-only`** (try/catch: failure → no map → all in-scope); **`issue-analysis.ts`** annotates **`UnresolvedIssue`** and optional **`PRR_BLAST_RADIUS_DISMISS`**; **`execute-fix-iteration.ts`** intersects **`allowedPathsForInjection`** with **`stateContext.blastRadiusPaths`** (empty intersection → full batch — **WHY:** never starve the fixer of file contents). Analysis cache persists **`blastRadiusPaths`** for injection on cache hit. Disable: **`PRR_DISABLE_BLAST_RADIUS`**. |
 
 ### Commit gate and catalog model auto-heal
 
@@ -183,7 +264,7 @@ Review bots sometimes claim a **valid** vendor model id is a “typo” and tell
 
 ## Key Files
 
-Paths below are relative to the repo root. PRR-specific code lives under `tools/prr/`; shared modules (logger, git) under `shared/` (pill-output.md #8).
+Paths below are relative to the repo root. PRR-specific code lives under `tools/prr/`; shared modules (logger, git) under `shared/` (see **Pill output triage** above for clone vs tool paths).
 
 ### Core
 
@@ -192,6 +273,7 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 |------|---------|
 | `tools/prr/index.ts` | CLI entry point, signal handlers |
 | `tools/prr/cli.ts` | Argument parsing, validation |
+| `shared/dependency-graph/` | Blast-radius graph (regex imports + proximity + BFS); see **Architecture — Blast radius** |
 | `shared/config.ts` | Environment/config loading |
 | `tools/prr/resolver.ts` | Main orchestration (delegates to workflow/) |
 | `tools/prr/resolver-proc.ts` | **Facade only** — re-exports workflow APIs for resolver/tests (**WHY:** one stable import surface; see *Codebase structure*) |
@@ -199,6 +281,7 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 | `shared/timing.ts` | Session/overall timers (**WHY:** separated from logger I/O; imported via **`logger.js`** for most code) |
 | `shared/token-tracking.ts` | Token phase + usage (**WHY:** same as timing) |
 | `shared/constants.ts` | Shim → **`shared/constants/index.ts`** barrel (**WHY:** domain-sized constant files; see **AGENTS.md**) |
+| `shared/prompt-budget.ts` | **`computeBudget`**, **`fitToBudget`**, batch-verify current-code caps (**WHY:** model-aware shared math for injected code text; see *Prompt context budgeting* above) |
 
 
 ### GitHub Integration
@@ -210,7 +293,7 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 | `tools/prr/github/github-api-errors.ts` | **`logGitHubApiFailure` / `summarizeGitHubError`** — on REST/GraphQL failures, **`debug`** logs phase, context, HTTP status, **`x-github-request-id`**, method/URL, response preview; **`warn`** on HTTP ≥500 / gateway-style messages or **429**. Wired around **`getPRInfo`**, **`submitPullRequestReview`**, **`postComment`**, **`getReviewThreads`** (each page), **`replyToReviewThread`** (non-404), **`resolveReviewThread`**. Use **`--verbose`** to see **`GitHub API request failed`** lines in **`output.log`**. |
 | `tools/prr/github/types.ts` | PRInfo, ReviewComment (with databaseId), etc. |
 
-**Thread replies:** When `--reply-to-threads` is set, PRR posts a short reply on each review thread when it fixes or dismisses. **WHY:** Gives reviewers visible feedback in the PR; one reply per thread keeps noise low. Orchestration: `tools/prr/workflow/thread-replies.ts` (postThreadReplies); called from iteration-cleanup (after push), commit-and-push-loop (squash push), and final-cleanup (dismissed). See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
+**Thread replies:** When `--reply-to-threads` is set, PRR posts a short reply on each review thread when it fixes or dismisses. **Resolving threads** defaults **on** with replies (`--no-resolve-threads` / `PRR_RESOLVE_THREADS=0` to opt out). **WHY:** Gives reviewers visible feedback in the PR; one reply per thread keeps noise low. Orchestration: `tools/prr/workflow/thread-replies.ts` (postThreadReplies); called from iteration-cleanup (after push), commit-and-push-loop (squash push), and final-cleanup (dismissed). See [docs/THREAD-REPLIES.md](docs/THREAD-REPLIES.md).
 
 
 ### Git Operations
@@ -268,7 +351,8 @@ Paths below are relative to the repo root. PRR-specific code lives under `tools/
 
 | File | Purpose |
 |------|---------|
-| `tools/prr/state/state-*.ts` | Per-workdir state modules (verification, iterations, rotation, bail-out) |
+| `tools/prr/state/state-transitions.ts` | **`transitionIssue`** — single write path for verified / dismissed / unverified / undismissed (**WHY:** keeps **`verifiedThisSession`**, **`commentStatuses`**, and mutual exclusion consistent; see *Unified issue state writes*) |
+| `tools/prr/state/state-*.ts` | Per-workdir state modules (verification, dismissed, iterations, rotation, bail-out) |
 | `tools/prr/state/lessons-*.ts` | Branch-permanent lessons (~/.prr/lessons/) |
 | `tools/prr/state/types.ts` | State interfaces (ResolverState, BailOutRecord, ModelPerformance) |
 
@@ -433,6 +517,8 @@ Data flows between subsystems so the next step has the right context. Improving 
 4. **Per-file pipeline** (`issue-analysis.ts`): Heuristic merge → **`llmDedup`** (3+ items, or 2 with different authors + same symbol) → **`crossFileDedup`** when **≥5** survivors, distinct paths, **`GROUP:`** validation. **WHY:** Cross-bot pairs of two need LLM merge; repeated root causes across files need one batched decision.
 
 5. **State:** **`dedupCache.schema === 'dedup-v2'`** required for cache hit. **WHY:** Cross-file phase invalidates pre-schema caches; recompute avoids wrong groupings.
+
+6. **LLM dedup responses and logs:** Per-file **`llmDedup`** asks for **`GROUP: … → canonical …`** lines or the literal **`NONE`** when there are no duplicate groups (see **`LLM_DEDUP_SYSTEM_PROMPT`** in **`issue-analysis-dedup.ts`**). A **`RESPONSE #…/llm-elizacloud → { chars: 4 }`** line in **`output.log`** is very often the four letters **`NONE`** — expected, not an empty or truncated model bug. Check **`prompts.log`** for the body. In-process calls set **`phase: dedup-v2-grouping`** (per file) or **`dedup-v2-cross-file`** (cross-file batch); **`output.log`** PROMPT/RESPONSE debug lines include **`phase`** when set so you can grep separately from verification or fix prompts.
 
 **Note:** Inline GraphQL review comments are **not** merged by **`deduplicateSameBotAcrossComments`** (only synthetic **`ic-*`** from issue comments). Dropping **`ic-*`** ids can orphan resolver state entries; comment-set key changes invalidate dedup cache.
 
@@ -634,14 +720,18 @@ export type PriorityOrder =
   | 'oldest'         // Oldest comments first (GitHub default)
   | 'none';          // No sorting (preserve input order)
 
-export function sortByPriority(issues: UnresolvedIssue[], order: PriorityOrder): UnresolvedIssue[] {
+export function sortByPriority(
+  issues: UnresolvedIssue[],
+  order: PriorityOrder,
+  options?: { staleBotInlineReviewVsHead?: boolean },
+): UnresolvedIssue[] {
   if (order === 'none') return issues;
   const sorted = [...issues];  // NEVER mutate input
   sorted.sort((a, b) => {
     switch (order) {
       case 'important':
         return (a.triage?.importance ?? 3) - (b.triage?.importance ?? 3);
-      // ... other cases
+      // ... other cases + snippet tie-break; optional bot deprioritize when CodeRabbit SHA < HEAD
     }
   });
   return sorted;
@@ -662,7 +752,9 @@ If we mutated, single-issue randomization and priority sort would fight each oth
 // Same unresolvedIssues array shared with single-issue mode (randomizes)
 // and no-changes verification. Sorting at prompt boundary means we pick
 // the best issues for the batch without affecting other consumers.
-const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder);
+const sortedIssues = sortByPriority(unresolvedIssues, priorityOrder, {
+  staleBotInlineReviewVsHead: !!stateContext?.staleBotInlineReviewVsHead,
+});
 const { prompt, detailedSummary } = buildPrompt(sortedIssues, lessons, { maxIssues: effectiveMax });
 ```
 
@@ -930,7 +1022,7 @@ The following pain points and improvements come from auditing real runs (e.g. el
 4. **couldNotInject for create-file** — **Done:** `COULD_NOT_INJECT_CREATE_FILE_THRESHOLD = 1`.
 5. **Verifier: "The code diff is empty"** — **Done:** Fixer reports changes but diff empty → `noMeaningfulChanges`, skip verification, rotate; verifier empty-diff already adds lesson and skips escalate (fix-verification.ts, recovery.ts).
 6. **Analyze issues / fetch comments repeated** — **Optional:** Cache analysis by comment IDs + file hashes; reuse when unchanged. Partially: `findUnresolvedIssuesOptions` supports `changedFiles` and analysis cache key; full reuse is a larger change.
-7. **Thread reply Validation Failed** — **Done:** Full error logging; retry with shortened message; stop after 3 consecutive 422s; user-visible summary when replied < 10% attempted. See CHANGELOG and docs/THREAD-REPLIES.md. AUDIT-CYCLES 43–45.
+7. **Thread reply Validation Failed** — **Done:** Full error logging; retry with shortened message; stop after 3 consecutive 422s; user-visible summary when replied < 10% attempted. See CHANGELOG and docs/THREAD-REPLIES.md. AUDIT-CYCLES 43–45. **Thread working reactions (👀)** — **Done:** default-on **`eyes`** on inline comments during fix work (**`thread-working-reactions.ts`**), spaced + deduped, **429** backoff + run-wide disable, first hard **`error`** disables (**WHY:** REST must never dominate logs or block **`executeFixIteration`**), **`not_found`** deduped (**WHY:** skip repeat POSTs on deleted anchors), cached poster cleared each **`PRResolver.run()`** (**WHY:** avoid stale **`prInfo`**). **`docs/THREAD-REPLIES.md`**, **CHANGELOG**, **`tests/thread-working-reactions.test.ts`**.
 8. **Empty exitReason on push iteration** — **Done:** push-iteration-loop sets `exitReason = iterResult.exitReason || 'no_progress'` so analytics and logs never show empty reason when loop breaks without all_fixed.
 9. **CI 0/0 checks** — **Done:** When `totalChecks === 0`, startup shows "No status checks reported for this ref" (tools/prr/workflow/startup.ts).
 10. **Pill 504** — **Done:** Chunk/summarize at 30k tokens or 100k chars; 50k char cap; no-LLM fallback. Audit request uses 60k token context budget so the assembled context stays under limit and avoids FUNCTION_INVOCATION_TIMEOUT. See tools/pill/README.md, CHANGELOG; AUDIT-CYCLES Cycle 41.
@@ -1434,8 +1526,10 @@ Layer 5: In every runner (cursor.ts, llm-api.ts, etc.)
 │                                                                          │
 │  Trigger Points (all call resolveConflictsWithLLM):                      │
 │    1. Initial conflict check (previous interrupted merge/rebase)         │
-│    2. Pull conflicts (branch diverged from remote)                       │
-│    3. Stash pop conflicts (interrupted run with local changes)           │
+│    2. Pull conflicts (branch diverged from remote) — setup **and**       │
+│       top-of-fix-iteration **`checkAndPullRemoteCommits`**               │
+│    3. Stash pop conflicts (interrupted run with local changes) — same   │
+│       mid-iteration path after a conflicted pull is resolved              │
 │    4. Base branch merge (PR conflicts with main/master)                  │
 │                                                                          │
 │  Stage 1: Lock Files (handleLockFileConflicts)                           │
@@ -1451,16 +1545,31 @@ Layer 5: In every runner (cursor.ts, llm-api.ts, etc.)
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**WHY unified method?** Conflict resolution code was duplicated in 4 places with slight variations:
+**WHY unified method?** Conflict resolution code was duplicated in several places with slight variations:
 - Initial conflict detection after clone
-- Pull conflicts when syncing with remote
-- Stash pop conflicts from interrupted runs
+- Pull conflicts when syncing with remote (**`checkAndSyncWithRemote`**) and again at **each fix iteration** (**`checkAndPullRemoteCommits`** → **`resolvePullRebaseConflictsAfterFailedPull`**) when someone else pushed to the PR branch mid-run
+- Stash pop conflicts after an auto-stashed pull (**`resolveStashPopConflictsWithLLM`**) — same setup vs fix-iteration paths
 - Base branch merge conflicts for PR updates
 
 The old code had ~250 lines duplicated. Now all share `resolveConflictsWithLLM()` for:
 - Consistent behavior across all conflict scenarios
 - Single place to improve/fix conflict resolution logic
 - Easier testing and maintenance
+
+**Attempt 2 (direct API) — queue order, heartbeat, preflight (audit: eliza#6733):**
+
+- **Largest conflict region first:** Before Attempt 2, PRR scans each remaining conflicted file (read + `extractConflictChunks` / `extractConflictSides`) and sorts the queue by **descending max region lines** (cheap, no LLM). **WHY:** The hardest file surfaces first in logs and in the **`Resolving (i of n)`** sequence so operators see the likely blocker early; smaller files are still processed afterward so the worktree reaches **maximum auto-resolution** (we intentionally did **not** default “stop after first failure” — that would leave many files conflicted when one monster region fails).
+- **`Resolving (i of n):`** Each file line includes **queue position**; the **30s heartbeat** during long chunked merges shows **`file i of n — …path`** (path tail truncated). **WHY:** One file can run many minutes of sub-chunk LLM calls; a static spinner looked hung.
+- **Yellow preflight:** If any conflict region’s larger side exceeds **`TOP_TAILS_FALLBACK_MAX_CHUNK_LINES` (280)**, a warning names an example file and line count. **WHY:** **Top+tails** fallback (second strategy after main merge fails) **cannot** run above that cap — operators should know before spend that manual merge may be required for that file if chunked merge fails.
+
+**Dense conflict regions (`CONFLICT_OVERSIZED_LINE_THRESHOLD`):**
+
+- Sub-chunking now runs when **`max(ours lines, theirs lines) > TOP_TAILS_FALLBACK_MAX_CHUNK_LINES + 20`** (~**300**), **not only** when char size exceeds the segment cap (**`shared/constants/llm.ts`**, **`tools/prr/git/git-conflict-chunked.ts`**). **WHY:** Very long regions of **short lines** stayed under ~25k chars per side but still went **one-shot** `resolveConflictChunk` → model returned a tiny **`RESOLVED`** block → **catastrophic size regression** validation.
+- When **`resolveOversizedChunk`** gets only **one** AST segment for such a region (common in TS route files with one huge top-level value), PRR **forces** `findConflictChunkEdgesFallback` (blank-line / **150-line** splits). **WHY:** Otherwise **`edges = [0, N]`** still called one-shot on the whole region — same failure mode.
+
+**Pill — context assembly progress:**
+
+- **`PillConfig.onAssembleProgress`** + **`StoryReadOptions.onChapterProgress`** update the **spinner text** (or **`--verbose`** **`[pill] …`**) through **docs/source read**, **output.log** summarize, and **prompts.log** story-read chapters. **WHY:** **`prompts.log`** can be **>1M chars**; story-read runs tens of sequential LLM chapters before the audit step — without progress, **`Assembling context…`** looked frozen.
 
 **WHY check early (before fix loop)?**
 - Conflict markers (`<<<<<<<`) in files will cause fixer tools to fail confusingly
@@ -1778,7 +1887,7 @@ if (hasForbidden) {
 }
 ```
 
-**Why `verifiedComments` with timestamps?** Enables verification expiry. If a verification is N iterations old, re-check it.
+**Why `verifiedComments` with timestamps?** Enables verification expiry. If a verification is past the expiry threshold (at least **`VERIFICATION_EXPIRY_ITERATIONS`**, scaled up on long runs via **`getVerificationExpiryForIterationCount`** — **`max(5, floor(totalIterations/15))`**), re-check it.
 
 **Why `currentRunnerIndex` and `modelIndices`?** Resume rotation from where we left off. Without this, every restart begins with the same tool/model.
 

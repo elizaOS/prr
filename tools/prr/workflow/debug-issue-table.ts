@@ -8,16 +8,17 @@ import * as CommentStatusAPI from '../state/state-comment-status.js';
 import { formatNumber } from '../../../shared/logger.js';
 
 function truncate(value: string, max: number): string {
-  if (value.length <= max) return value;
-  return value.slice(0, Math.max(0, max - 3)) + '...';
+  const s = value ?? '';
+  if (s.length <= max) return s;
+  return s.slice(0, Math.max(0, max - 3)) + '...';
 }
 
-function pad(value: string, width: number): string {
-  return truncate(value, width).padEnd(width, ' ');
+function pad(value: string | undefined, width: number): string {
+  return truncate(value ?? '', width).padEnd(width, ' ');
 }
 
-function firstLine(text: string): string {
-  return text.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+function firstLine(text: string | undefined): string {
+  return (text ?? '').split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
 }
 
 function buildRow(
@@ -26,11 +27,13 @@ function buildRow(
   statusLabel: string,
   reason: string,
 ): string {
-  const location = `${comment.path}:${comment.line ?? '?'}`;
-  const summary = firstLine(comment.body ?? '');
+  const cid = String(comment?.id ?? '');
+  const cpath = typeof comment?.path === 'string' ? comment.path : '?';
+  const location = `${cpath}:${comment?.line ?? '?'}`;
+  const summary = firstLine(comment?.body ?? '');
   return [
     pad(String(index + 1), 4),
-    pad(comment.id.length <= 20 ? comment.id : comment.id.slice(0, 20) + '…', 22),
+    pad(cid.length <= 20 ? cid : cid.slice(0, 20) + '…', 22),
     pad(location, 42),
     pad(statusLabel, 20),
     pad(reason, 72),
@@ -91,7 +94,7 @@ export function printDebugIssueTable(
     }
 
     counts.set(statusLabel, (counts.get(statusLabel) ?? 0) + 1);
-    rows.push(buildRow(i, comment, statusLabel, reason));
+    rows.push(buildRow(i, comment, statusLabel, reason ?? ''));
   }
 
   const summary = [...counts.entries()]

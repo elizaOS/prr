@@ -88,9 +88,19 @@ export interface RunCallbacks {
   getCodeSnippet: (path: string, line: number | null, commentBody?: string) => Promise<string>;
   printUnresolvedIssues: (issues: UnresolvedIssue[]) => void;
   parseNoChangesExplanation: (output: string) => string | null;
-  trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  trySingleIssueFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>;
   tryRotation: (failureErrorType?: string) => boolean;
-  tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  tryDirectLLMFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>;
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
   onDisableRunner?: (runnerName: string) => void;
   /** Reset model rotation to first model for this push iteration (pushIteration > 1). WHY: Each push cycle gets best model first instead of retrying the model that may have just 500'd or timed out. */
@@ -98,6 +108,8 @@ export interface RunCallbacks {
   checkForNewBotReviews: (owner: string, repo: string, prNumber: number, existingIds: Set<string>, headSha?: string) => Promise<{ newComments: ReviewComment[]; message: string } | null>;
   calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null;
   waitForBotReviews: (owner: string, repo: string, prNumber: number, headSha: string) => Promise<void>;
+  /** Post 👀 on PR review comments while working issues (optional). */
+  notifyThreadWorking?: (issues: UnresolvedIssue[]) => Promise<void>;
   cleanupCreatedSyncTargets: (git: SimpleGit) => Promise<void>;
   printModelPerformance: () => void;
   printHandoffPrompt: (
@@ -261,7 +273,7 @@ export async function executeRun(
         { git, github, owner, repo, number, workdir: state.workdir },
         { pushIteration, maxPushIterations, rapidFailureCount: state.rapidFailureCount, lastFailureTime: state.lastFailureTime, consecutiveFailures: state.consecutiveFailures, modelFailuresInCycle: state.modelFailuresInCycle, progressThisCycle: state.progressThisCycle, expectedBotResponseTime: state.expectedBotResponseTime },
         pushContexts,
-        { findUnresolvedIssues: callbacks.findUnresolvedIssues, resolveConflictsWithLLM: callbacks.resolveConflictsWithLLM, getCodeSnippet: callbacks.getCodeSnippet, printUnresolvedIssues: callbacks.printUnresolvedIssues, getCurrentModel: callbacks.getCurrentModel, getRunner: callbacks.getRunner, parseNoChangesExplanation: callbacks.parseNoChangesExplanation, trySingleIssueFix: callbacks.trySingleIssueFix, tryRotation: callbacks.tryRotation, tryDirectLLMFix: callbacks.tryDirectLLMFix, executeBailOut: callbacks.executeBailOut, onDisableRunner: callbacks.onDisableRunner, resetRotationToFirstModel: callbacks.resetRotationToFirstModel, checkForNewBotReviews: callbacks.checkForNewBotReviews, calculateExpectedBotResponseTime: callbacks.calculateExpectedBotResponseTime, waitForBotReviews: callbacks.waitForBotReviews },
+        { findUnresolvedIssues: callbacks.findUnresolvedIssues, resolveConflictsWithLLM: callbacks.resolveConflictsWithLLM, getCodeSnippet: callbacks.getCodeSnippet, printUnresolvedIssues: callbacks.printUnresolvedIssues, getCurrentModel: callbacks.getCurrentModel, getRunner: callbacks.getRunner, parseNoChangesExplanation: callbacks.parseNoChangesExplanation, trySingleIssueFix: callbacks.trySingleIssueFix, tryRotation: callbacks.tryRotation, tryDirectLLMFix: callbacks.tryDirectLLMFix, executeBailOut: callbacks.executeBailOut, onDisableRunner: callbacks.onDisableRunner, resetRotationToFirstModel: callbacks.resetRotationToFirstModel, checkForNewBotReviews: callbacks.checkForNewBotReviews, calculateExpectedBotResponseTime: callbacks.calculateExpectedBotResponseTime, waitForBotReviews: callbacks.waitForBotReviews, notifyThreadWorking: callbacks.notifyThreadWorking },
         { llm, options, config, spinner, runner: state.runner }
       );
       state.rapidFailureCount = iterResult.updatedRapidFailureCount;

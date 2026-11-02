@@ -37,6 +37,8 @@ import * as ResolverProc from './resolver-proc.js';
 import * as Performance from './state/state-performance.js';
 import { getWiderSnippetForAnalysis } from './workflow/issue-analysis.js';
 import { getFullFileContentForSingleIssue } from './workflow/utils.js';
+import { resolveTrackedPathWithPrFiles } from './workflow/helpers/solvability.js';
+import { createThreadWorkingReactionPoster } from './workflow/thread-working-reactions.js';
 
 export class PRResolver {
   private config: Config;
@@ -74,6 +76,7 @@ export class PRResolver {
   private finalComments: ReviewComment[] = [];
   private rapidFailureCount = 0;
   private lastFailureTime = 0;
+  private threadWorkingReactionPoster?: ReturnType<typeof createThreadWorkingReactionPoster>;
 
   constructor(config: Config, options: CLIOptions) {
     this.config = config;
@@ -148,9 +151,60 @@ export class PRResolver {
   /** Reset model rotation to first model (call at start of each push iteration when pushIteration > 1). WHY: Each push cycle gets best model first instead of retrying the model that may have just 500'd or timed out. */
   private resetRotationToFirstModel(): void { const ctx = this.getRotationContext(); Rotation.resetCurrentModelToFirst(ctx, this.stateContext); this.syncRotationContext(ctx); }
   private async executeBailOut(unresolvedIssues: UnresolvedIssue[], comments: ReviewComment[]): Promise<void> { const result = await ResolverProc.executeBailOut(unresolvedIssues, comments, this.stateContext, this.lessonsContext, this.runners, this.options, (runner) => this.getModelsForRunner(runner), this.workdir, this.llm); this.bailedOut = result.bailedOut; this.exitReason = result.exitReason; this.exitDetails = result.exitDetails; this.finalUnresolvedIssues = result.finalUnresolvedIssues; this.finalComments = result.finalComments; }
-  private async trySingleIssueFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.trySingleIssueFix(issues, git, this.workdir, this.runner, this.stateContext, this.lessonsContext, this.llm, verifiedThisSession, (issue, options) => this.buildSingleIssuePrompt(issue, options), () => this.getCurrentModel(), (output) => this.parseNoChangesExplanation(output), (output, maxLength) => this.sanitizeOutputForLog(output, maxLength), this.config.openaiApiKey); }
+  /**
+   * Lazily builds one poster per run. **`run()`** clears **`threadWorkingReactionPoster`** first
+   * (**WHY:** each `run()` may target a new PR; the poster closes over `prInfo` and must not go stale).
+   */
+  private getNotifyThreadWorking(): (issues: UnresolvedIssue[]) => Promise<void> {
+    return (issues) => {
+      if (!this.threadWorkingReactionPoster) {
+        this.threadWorkingReactionPoster = createThreadWorkingReactionPoster(
+          this.github,
+          this.prInfo,
+          this.options,
+          this.stateContext,
+          { hasGithubToken: Boolean(this.config.githubToken?.trim()) },
+        );
+      }
+      return this.threadWorkingReactionPoster.notifyIssuesFocused(issues);
+    };
+  }
+
+  private async trySingleIssueFix(
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: import('./github/types.js').ReviewComment[],
+  ): Promise<boolean> {
+    return await ResolverProc.trySingleIssueFix(
+      issues,
+      git,
+      this.workdir,
+      this.runner,
+      this.stateContext,
+      this.lessonsContext,
+      this.llm,
+      verifiedThisSession,
+      (issue, options) => this.buildSingleIssuePrompt(issue, options),
+      () => this.getCurrentModel(),
+      (output) => this.parseNoChangesExplanation(output),
+      (output, maxLength) => this.sanitizeOutputForLog(output, maxLength),
+      this.config.openaiApiKey,
+      comments,
+      this.getNotifyThreadWorking(),
+    );
+  }
   private async buildSingleIssuePrompt(issue: UnresolvedIssue, options?: { pathExists?: (path: string) => boolean }): Promise<string> {
-    const primaryPath = issue.resolvedPath ?? issue.comment.path;
+    const prFiles = this.stateContext.prChangedFilesForRecovery;
+    const primaryPath =
+      issue.resolvedPath
+      ?? resolveTrackedPathWithPrFiles(
+        this.workdir,
+        issue.comment.path,
+        issue.comment.body ?? '',
+        prFiles,
+      )
+      ?? issue.comment.path;
     let codeSnippetOverride: string | undefined;
     if (this.stateContext.state?.widerSnippetRequestedByCommentId?.[issue.comment.id]) {
       codeSnippetOverride = await getWiderSnippetForAnalysis(this.workdir, primaryPath, issue.comment.line ?? null, issue.comment.body);
@@ -165,7 +219,24 @@ export class PRResolver {
     const lastApplyError = this.stateContext.state?.lastApplyErrorByCommentId?.[issue.comment.id];
     return ResolverProc.buildSingleIssuePrompt(issue, this.lessonsContext, this.prInfo, codeSnippetOverride, { pathExists, lastApplyError });
   }
-  private async tryDirectLLMFix(issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>): Promise<boolean> { return await ResolverProc.tryDirectLLMFix(issues, git, this.workdir, this.config.llmProvider, this.llm, this.stateContext, verifiedThisSession, this.lessonsContext); }
+  private async tryDirectLLMFix(
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
+  ): Promise<boolean> {
+    return await ResolverProc.tryDirectLLMFix(
+      issues,
+      git,
+      this.workdir,
+      this.config.llmProvider,
+      this.llm,
+      this.stateContext,
+      verifiedThisSession,
+      this.lessonsContext,
+      comments,
+    );
+  }
   async gracefulShutdown(): Promise<void> { this.isShuttingDown = await ResolverProc.executeGracefulShutdown(this.isShuttingDown, this.stateContext, () => this.printModelPerformance(), () => this.printFinalSummary()); }
   isRunning(): boolean { return !this.isShuttingDown; }
 
@@ -181,6 +252,8 @@ export class PRResolver {
   private runAbortController: AbortController | null = null;
 
   async run(prUrl: string): Promise<void> {
+    // Fresh poster each run — see `getNotifyThreadWorking` WHY.
+    this.threadWorkingReactionPoster = undefined;
     this.disabledRunners.clear();
     this.runAbortController = new AbortController();
     this.llm.setRunAbortSignal(this.runAbortController.signal);
@@ -197,10 +270,11 @@ export class PRResolver {
       getCodeSnippet: (path, line, commentBody) => this.getCodeSnippet(path, line, commentBody),
       printUnresolvedIssues: (issues) => this.printUnresolvedIssues(issues),
       parseNoChangesExplanation: (output) => this.parseNoChangesExplanation(output),
-      trySingleIssueFix: (issues, git, verified) => this.trySingleIssueFix(issues, git, verified),
+      trySingleIssueFix: (issues, git, verified, comments) => this.trySingleIssueFix(issues, git, verified, comments),
+      notifyThreadWorking: (issues) => this.getNotifyThreadWorking()(issues),
       tryRotation: (failureErrorType?: string) => this.tryRotation(failureErrorType),
       resetRotationToFirstModel: () => this.resetRotationToFirstModel(),
-      tryDirectLLMFix: (issues, git, verified) => this.tryDirectLLMFix(issues, git, verified),
+      tryDirectLLMFix: (issues, git, verified, comments) => this.tryDirectLLMFix(issues, git, verified, comments),
       executeBailOut: (issues, comments) => this.executeBailOut(issues, comments),
       onDisableRunner: (name) => this.disabledRunners.add(name),
       checkForNewBotReviews: (o, r, n, ids, headSha) => this.checkForNewBotReviews(o, r, n, ids, headSha), 

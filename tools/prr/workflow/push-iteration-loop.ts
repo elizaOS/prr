@@ -13,6 +13,7 @@ import type { SimpleGit } from 'simple-git';
 import type { Config } from '../../../shared/config.js';
 import type { CLIOptions } from '../cli.js';
 import type { ReviewComment, PRInfo } from '../github/types.js';
+import { applyFreshPrInfoFromRest, githubPrSaysNotMergeable } from '../github/pr-mergeable.js';
 import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import type { GitHubAPI } from '../github/api.js';
@@ -41,6 +42,11 @@ import * as Bailout from '../state/state-bailout.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import { assessSolvability, recheckSolvability } from './helpers/solvability.js';
 import type { FindUnresolvedIssuesOptions } from './issue-analysis.js';
+import {
+  dismissDuplicateClusterFromComments,
+  getClusterIdsAccountedOnState,
+  resolveEffectiveDuplicateMapForComments,
+} from './issue-analysis-dedup.js';
 import { looksLikeCreateFileIssue } from './utils.js';
 
 /** Git and GitHub context for a push iteration */
@@ -89,7 +95,19 @@ export interface PushIterationContexts {
    * Cache of last analysis result (comment IDs + headSha + file hashes → unresolved, duplicateMap).
    * When comment set and file content for comment paths unchanged, reuse to skip expensive findUnresolvedIssues (output.log audit).
    */
-  lastAnalysisCacheRef?: { current: { commentCount: number; headSha: string; commentIds?: string; fileHashesKeyDigest?: string; unresolvedIssues: UnresolvedIssue[]; comments: ReviewComment[]; duplicateMap: Map<string, string[]>; changedFiles?: string[] } | null };
+  lastAnalysisCacheRef?: {
+    current: {
+      commentCount: number;
+      headSha: string;
+      commentIds?: string;
+      fileHashesKeyDigest?: string;
+      unresolvedIssues: UnresolvedIssue[];
+      comments: ReviewComment[];
+      duplicateMap: Map<string, string[]>;
+      changedFiles?: string[];
+      blastRadiusPaths?: string[];
+    } | null;
+  };
   /** Thread IDs we have already replied to this run (one reply per thread). */
   repliedThreadIds: Set<string>;
 }
@@ -109,9 +127,19 @@ export interface PushIterationCallbacks {
   getCurrentModel: () => string | undefined;
   getRunner: () => Runner;
   parseNoChangesExplanation: (output: string) => string | null;
-  trySingleIssueFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  trySingleIssueFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>;
   tryRotation: (failureErrorType?: string) => boolean;
-  tryDirectLLMFix: (issues: UnresolvedIssue[], git: SimpleGit, verifiedThisSession?: Set<string>) => Promise<boolean>;
+  tryDirectLLMFix: (
+    issues: UnresolvedIssue[],
+    git: SimpleGit,
+    verifiedThisSession?: Set<string>,
+    comments?: ReviewComment[],
+  ) => Promise<boolean>;
   executeBailOut: (issues: UnresolvedIssue[], comments: ReviewComment[]) => Promise<void>;
   /** Called when a runner fails with tool_config (e.g. unknown option) so it's skipped for rest of run */
   onDisableRunner?: (runnerName: string) => void;
@@ -120,6 +148,8 @@ export interface PushIterationCallbacks {
   checkForNewBotReviews: (owner: string, repo: string, number: number, existingIds: Set<string>, headSha?: string) => Promise<{ newComments: ReviewComment[]; message: string } | null>;
   calculateExpectedBotResponseTime: (lastCommitTime: Date) => Date | null;
   waitForBotReviews: (owner: string, repo: string, number: number, sha: string) => Promise<void>;
+  /** Post 👀 on inline review comments before batch fixer work (optional). */
+  notifyThreadWorking?: (issues: UnresolvedIssue[]) => Promise<void>;
 }
 
 /** Service dependencies for push iteration */
@@ -177,8 +207,75 @@ export async function executePushIteration(
     findUnresolvedIssues, resolveConflictsWithLLM, getCodeSnippet, printUnresolvedIssues,
     getCurrentModel, getRunner, parseNoChangesExplanation, trySingleIssueFix, tryRotation,
     tryDirectLLMFix, executeBailOut, checkForNewBotReviews, calculateExpectedBotResponseTime, waitForBotReviews,
+    notifyThreadWorking,
   } = callbacks;
   const { llm, options, config, spinner } = services;
+
+  function envExitOnUnmergeable(): boolean {
+    const v = process.env.PRR_EXIT_ON_UNMERGEABLE?.trim().toLowerCase();
+    return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }
+
+  // Refresh mergeable / head from GitHub so push iterations see current API state (Cycle 80).
+  try {
+    const freshPr = await github.getPRInfo(owner, repo, number);
+    applyFreshPrInfoFromRest(prInfoRef.current, freshPr);
+  } catch (err) {
+    warn(
+      `Could not refresh PR from GitHub (mergeable state may be stale): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const pr = prInfoRef.current;
+  if (envExitOnUnmergeable() && !options.mergeBase && githubPrSaysNotMergeable(pr)) {
+    const ms = pr.mergeableState ?? '(unset)';
+    const mb = pr.mergeable === null || pr.mergeable === undefined ? 'unknown' : String(pr.mergeable);
+    return {
+      shouldBreak: true,
+      exitReason: 'github_unmergeable',
+      exitDetails: `GitHub reports mergeable=${mb}, mergeableState=${ms}. Resolve conflicts, drop --no-merge-base to integrate base, or unset PRR_EXIT_ON_UNMERGEABLE.`,
+      updatedRapidFailureCount: rapidFailureCount,
+      updatedLastFailureTime: lastFailureTime,
+      updatedConsecutiveFailures: consecutiveFailures,
+      updatedModelFailuresInCycle: modelFailuresInCycle,
+      updatedProgressThisCycle: progressThisCycle,
+      committedThisIteration: false,
+    };
+  }
+  if (githubPrSaysNotMergeable(pr)) {
+    if (!options.mergeBase) {
+      if (pushIteration > 1) {
+        console.log(
+          chalk.gray(
+            `  GitHub still not mergeable (mergeable=${String(pr.mergeable)}, state=${pr.mergeableState ?? '(unset)'}) — push iteration ${formatNumber(pushIteration)}; omit ${chalk.white('--no-merge-base')} for default base integration, or ${chalk.white('PRR_EXIT_ON_UNMERGEABLE=1')} to exit.`,
+          ),
+        );
+      }
+    } else {
+      stateContext.githubDirtyMergeBasePushCount = (stateContext.githubDirtyMergeBasePushCount ?? 0) + 1;
+      const dirtyCount = stateContext.githubDirtyMergeBasePushCount;
+      if (dirtyCount >= 3 && !stateContext.githubDirtyMergeBaseNudgePrinted) {
+        stateContext.githubDirtyMergeBaseNudgePrinted = true;
+        console.log(
+          chalk.yellow(
+            `\n  GitHub still reports not mergeable after ${formatNumber(dirtyCount)} push iteration(s) — fixes may churn until base conflicts are resolved and mergeable clears.`,
+          ),
+        );
+        console.log(
+          chalk.gray(
+            '     Check latent merge / base-merge messages in output.log; resolve conflicts on GitHub or locally, then re-run.\n',
+          ),
+        );
+      } else if (pushIteration > 1) {
+        console.log(
+          chalk.gray(
+            `  GitHub mergeable=${String(pr.mergeable)}, state=${pr.mergeableState ?? '(unset)'} — push iteration ${formatNumber(pushIteration)} (${formatNumber(dirtyCount)} consecutive while API reports not mergeable)`,
+          ),
+        );
+      }
+    }
+  } else {
+    stateContext.githubDirtyMergeBasePushCount = 0;
+  }
 
   if (options.autoPush && pushIteration > 1) {
     const iterLabel = maxPushIterations === Infinity ? `${pushIteration}` : `${pushIteration}/${maxPushIterations}`;
@@ -200,6 +297,8 @@ export async function executePushIteration(
   );
   
   const { comments, unresolvedIssues, duplicateMap, changedFiles: prChangedFiles } = loopResult;
+  stateContext.prChangedFilesForRecovery = prChangedFiles;
+  stateContext.duplicateMapForSession = duplicateMap;
   debug('Push iteration: comments processed', {
     pushIteration,
     commentCount: comments.length,
@@ -208,6 +307,16 @@ export async function executePushIteration(
     exitReason: loopResult.exitReason,
     usedPrefetched: !!prefetched?.length,
   });
+
+  const prevCommentCount = finalCommentsRef.current.length;
+  if (pushIteration > 1 && comments.length > prevCommentCount) {
+    const delta = comments.length - prevCommentCount;
+    console.log(
+      chalk.gray(
+        `  Review comments grew from ${formatNumber(prevCommentCount)} to ${formatNumber(comments.length)} (+${formatNumber(delta)}); new threads are triaged with the current queue.`,
+      ),
+    );
+  }
 
   if (loopResult.shouldBreak) {
     // Snapshot for AAR/remaining count (same as other exit paths); usually empty when breaking here (e.g. no comments).
@@ -264,9 +373,11 @@ export async function executePushIteration(
     // Pre-iteration checks
     const preChecks = await ResolverProc.executePreIterationChecks(
       fixIteration, git, github, owner, repo, number, prInfo, comments, unresolvedIssues, existingCommentIds, verifiedThisSession, stateContext, getRunner(), options,
+      callbacks.resolveConflictsWithLLM,
       checkForNewBotReviews, getCodeSnippet, getCurrentModel, config.githubToken,
       workdir,
       prChangedFiles,
+      duplicateMap,
     );
     
     if (preChecks.shouldBreak) {
@@ -277,6 +388,12 @@ export async function executePushIteration(
     if (preChecks.updatedHeadSha) {
       prInfoRef.current.headSha = preChecks.updatedHeadSha;
     }
+
+    const effectiveDuplicateMap = resolveEffectiveDuplicateMapForComments(
+      stateContext,
+      duplicateMap,
+      comments,
+    );
 
     // Dismiss issues that hit couldNotInject threshold (file unresolved in repo + no-change cycles).
     // WHY: The threshold is also checked in findUnresolvedIssues, but that only runs at the start of
@@ -289,9 +406,12 @@ export async function executePushIteration(
     });
     if (couldNotInjectDismiss.length > 0) {
       const reason = 'Target file could not be resolved in the repository (repeated could-not-inject + no-change cycles)';
-      const dismissedIds = new Set(couldNotInjectDismiss.map((i) => i.comment.id));
+      const dismissedIds = new Set<string>();
       for (const issue of couldNotInjectDismiss) {
-        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'file-unchanged', getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body, undefined);
+        dismissDuplicateClusterFromComments(stateContext, issue.comment, effectiveDuplicateMap, comments, reason, 'file-unchanged');
+        for (const cid of getClusterIdsAccountedOnState(stateContext, issue.comment.id, effectiveDuplicateMap)) {
+          dismissedIds.add(cid);
+        }
       }
       unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
       console.log(chalk.yellow(`  ${formatNumber(couldNotInjectDismiss.length)} issue(s) dismissed (file not in repo after repeated could-not-inject + no-change cycles)`));
@@ -313,9 +433,12 @@ export async function executePushIteration(
     );
     if (deleteEntirelyDismiss.length > 0) {
       const reason = 'Requires file deletion (use <deletefile path="..."/> or resolve manually)';
-      const dismissedIds = new Set(deleteEntirelyDismiss.map((i) => i.comment.id));
+      const dismissedIds = new Set<string>();
       for (const issue of deleteEntirelyDismiss) {
-        Dismissed.dismissIssue(stateContext, issue.comment.id, reason, 'remaining', getIssuePrimaryPath(issue), issue.comment.line, issue.comment.body, undefined);
+        dismissDuplicateClusterFromComments(stateContext, issue.comment, effectiveDuplicateMap, comments, reason, 'remaining');
+        for (const cid of getClusterIdsAccountedOnState(stateContext, issue.comment.id, effectiveDuplicateMap)) {
+          dismissedIds.add(cid);
+        }
       }
       unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !dismissedIds.has(i.comment.id)));
       console.log(chalk.yellow(`  ${formatNumber(deleteEntirelyDismiss.length)} issue(s) dismissed (requires file deletion after ${DELETE_ENTIRELY_DISMISS_THRESHOLD}+ verifier verdicts)`));
@@ -341,7 +464,7 @@ export async function executePushIteration(
     });
     if (wrongFileIssues.length > 0) {
       debug('Trying single-issue first for issues with wrong-file history (1–2 attempts)', { count: wrongFileIssues.length });
-      const singleFixed = await trySingleIssueFix(wrongFileIssues, git, verifiedThisSession);
+      const singleFixed = await trySingleIssueFix(wrongFileIssues, git, verifiedThisSession, comments);
       if (singleFixed) {
         unresolvedIssues.splice(0, unresolvedIssues.length, ...unresolvedIssues.filter((i) => !verifiedThisSession.has(i.comment.id)));
         if (unresolvedIssues.length === 0) {
@@ -374,8 +497,9 @@ export async function executePushIteration(
       rapidFailureCount, lastFailureTime, consecutiveFailures, modelFailuresInCycle, progressThisCycle,
       getCurrentModel, parseNoChangesExplanation, trySingleIssueFix, tryRotation, tryDirectLLMFix, executeBailOut,
       fixIteration,
-      duplicateMap,
-      callbacks.onDisableRunner
+      effectiveDuplicateMap,
+      callbacks.onDisableRunner,
+      notifyThreadWorking,
     );
     
     // Audit: don't count duplicate-prompt skip as an iteration (next iteration keeps same number).
@@ -418,7 +542,21 @@ export async function executePushIteration(
     // WHY: Verification result is what we need; fetch has no shared mutable state with it.
     // Best-effort fetch so a network blip does not fail the iteration.
     const [verifyResult] = await Promise.all([
-      ResolverProc.verifyFixes(git, unresolvedIssues, stateContext, lessonsContext, llm, verifiedThisSession, options.noBatch, duplicateMap, workdir, getCurrentModel, getRunner, filesModifiedThisRun),
+      ResolverProc.verifyFixes(
+        git,
+        unresolvedIssues,
+        stateContext,
+        lessonsContext,
+        llm,
+        verifiedThisSession,
+        options.noBatch,
+        effectiveDuplicateMap,
+        workdir,
+        getCurrentModel,
+        getRunner,
+        filesModifiedThisRun,
+        comments,
+      ),
       git.fetch().catch(() => {}),
     ]);
     const { verifiedCount, failedCount, changedIssues, unchangedIssues, changedFiles } = verifyResult;
@@ -507,38 +645,35 @@ export async function executePushIteration(
     for (const issue of stillUnresolved) {
       const solvability = assessSolvability(gitCtx.workdir, issue.comment, stateContext);
       if (!solvability.solvable && solvability.dismissCategory === 'chronic-failure') {
-        Dismissed.dismissIssue(
+        dismissDuplicateClusterFromComments(
           stateContext,
-          issue.comment.id,
+          issue.comment,
+          effectiveDuplicateMap,
+          comments,
           solvability.reason ?? 'Chronic failure — too many fix attempts with no success',
           'chronic-failure',
-          getIssuePrimaryPath(issue),
-          issue.comment.line,
-          issue.comment.body
         );
-        chronicDismissed.push(issue.comment.id);
+        chronicDismissed.push(...getClusterIdsAccountedOnState(stateContext, issue.comment.id, effectiveDuplicateMap));
       } else if (!solvability.solvable && solvability.dismissCategory === 'already-fixed') {
-        Dismissed.dismissIssue(
+        dismissDuplicateClusterFromComments(
           stateContext,
-          issue.comment.id,
+          issue.comment,
+          effectiveDuplicateMap,
+          comments,
           solvability.reason ?? 'Multiple models reported already fixed — dismissing',
           'already-fixed',
-          getIssuePrimaryPath(issue),
-          issue.comment.line,
-          issue.comment.body
         );
-        alreadyFixedDismissed.push(issue.comment.id);
+        alreadyFixedDismissed.push(...getClusterIdsAccountedOnState(stateContext, issue.comment.id, effectiveDuplicateMap));
       } else if (!solvability.solvable && solvability.dismissCategory === 'remaining') {
-        Dismissed.dismissIssue(
+        dismissDuplicateClusterFromComments(
           stateContext,
-          issue.comment.id,
+          issue.comment,
+          effectiveDuplicateMap,
+          comments,
           solvability.reason ?? 'Repeated failures — dismissing for human follow-up',
           'remaining',
-          getIssuePrimaryPath(issue),
-          issue.comment.line,
-          issue.comment.body
         );
-        remainingDismissed.push(issue.comment.id);
+        remainingDismissed.push(...getClusterIdsAccountedOnState(stateContext, issue.comment.id, effectiveDuplicateMap));
       }
     }
     if (chronicDismissed.length > 0) {
@@ -578,11 +713,13 @@ export async function executePushIteration(
       const getCodeSnippetFn = (path: string, line: number | null, body?: string) =>
         ResolverProc.getCodeSnippet(gitCtx.workdir, path, line, body);
       const refreshResult = await recheckSolvability(
-        unresolvedIssues, 
-        changedFiles, 
-        gitCtx.workdir, 
-        stateContext, 
-        getCodeSnippetFn
+        unresolvedIssues,
+        changedFiles,
+        gitCtx.workdir,
+        stateContext,
+        getCodeSnippetFn,
+        effectiveDuplicateMap,
+        comments,
       );
       if (refreshResult.dismissed > 0) {
         console.log(chalk.yellow(`  ${refreshResult.dismissed} issue(s) became stale (files deleted by fixer)`));

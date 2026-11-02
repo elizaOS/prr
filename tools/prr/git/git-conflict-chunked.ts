@@ -7,12 +7,14 @@
  */
 
 import type { LLMClient } from '../llm/client.js';
+import { getConflictFileTypeRules } from '../llm/error-helpers.js';
 import { debug } from '../../../shared/logger.js';
 import {
   MIN_CONFLICT_RESOLUTION_SIZE_RATIO,
   MIN_LINES_FOR_SIZE_REGRESSION_CHECK,
   ASYMMETRIC_CONFLICT_SIDE_RATIO,
   MAX_SINGLE_CHUNK_CHARS,
+  CONFLICT_OVERSIZED_LINE_THRESHOLD,
   FILE_OVERVIEW_SEGMENT_CHARS,
   FILE_OVERVIEW_MIN_CHUNKS,
   FILE_OVERVIEW_MIN_FILE_CHARS,
@@ -113,7 +115,11 @@ export function buildConflictResolutionPromptThreeWay(
   const parseHint = previousParseError
     ? `\n\nIMPORTANT: A previous resolution attempt had a syntax/parse error: "${previousParseError}". Ensure the RESOLVED code is complete, valid code (e.g. close all block comments with */, no missing commas or brackets).\n`
     : '';
-  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}
+  const fileRules = filePath ? getConflictFileTypeRules(filePath) : '';
+  const fileRulesBlock = fileRules
+    ? `\n\nApply to the RESOLVED block:${fileRules}`
+    : '';
+  return `${fileHint}${overviewBlock}Merge the changes from both sides relative to BASE. Produce a single resolved version (no conflict markers).${parseHint}${fileRulesBlock}
 
 BASE (common ancestor):
 \`\`\`
@@ -796,7 +802,16 @@ async function resolveOversizedChunk(
   const baseSegmentForChunk = getBaseSegmentForChunk(baseContent, chunk);
   const baseSegmentLines = baseSegmentForChunk.split('\n');
   const linesForEdges = ours.length >= theirs.length ? ours : theirs;
-  const edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
+  let edges = await findConflictChunkEdges(linesForEdges, filePath, maxSegmentChars);
+  // WHY: TS route files can be one huge top-level block (few `sf.statements`) so coalesce merges the
+  // entire conflict into one segment (edges = [0, N]) — same failure mode as skipping sub-chunks entirely.
+  if (edges.length <= 2 && linesForEdges.length > CONFLICT_OVERSIZED_LINE_THRESHOLD) {
+    debug('Oversized chunk: AST/coalesce yielded one segment; forcing blank-line / line-cap splits', {
+      filePath,
+      lines: linesForEdges.length,
+    });
+    edges = findConflictChunkEdgesFallback(linesForEdges, maxSegmentChars);
+  }
 
   if (edges.length <= 2) {
     return resolveConflictChunk(llm, filePath, chunk, baseBranch, model, baseSegmentForChunk, previousParseError, fileOverview);
@@ -886,12 +901,15 @@ export async function resolveConflictsChunked(
   const baseContentNorm = baseContent ?? '';
   const segmentCap = maxSegmentChars ?? MAX_SINGLE_CHUNK_CHARS;
 
-  // WHY check oversized per chunk: A single conflict region can be 50k+ lines; sending it in one prompt
-  // would exceed context and cause 504/truncation. We sub-chunk at AST boundaries and resolve each segment.
+  // WHY check oversized per chunk: (1) Char cap — one prompt must not exceed segment size × three sides + overhead.
+  // (2) Line cap (`CONFLICT_OVERSIZED_LINE_THRESHOLD`) — dense short-line regions can stay under the char cap
+  // but still break one-shot `RESOLVED` output (audit: eliza#6733). Sub-chunk at AST / fallback boundaries.
   for (const chunk of chunks) {
     const { ours, theirs } = extractConflictSides(chunk.conflictLines);
     const largerSideChars = Math.max(ours.join('\n').length, theirs.join('\n').length);
-    const isOversized = largerSideChars > segmentCap;
+    const largerSideLineCount = Math.max(ours.length, theirs.length);
+    const isOversized =
+      largerSideChars > segmentCap || largerSideLineCount > CONFLICT_OVERSIZED_LINE_THRESHOLD;
 
     const overview = fileOverview ?? undefined;
     const result = isOversized
@@ -1211,6 +1229,28 @@ export async function resolveConflictsWithTopTailsFallback(
         resolvedLines = resolvedCode.split('\n');
         explanations.push(`Lines ${chunk.startLine}-${chunk.endLine}: top+tails`);
       }
+      // Strip contextBefore lines that the model may have echoed back.
+      // The stitching code already preserves non-conflict lines before the chunk,
+      // so including them in the resolved output would duplicate them.
+      if (chunk.contextBefore.length > 0 && resolvedLines.length > chunk.contextBefore.length) {
+        const ctxLines = chunk.contextBefore;
+        let prefixMatch = true;
+        for (let ci = 0; ci < ctxLines.length; ci++) {
+          if (resolvedLines[ci]?.trim() !== ctxLines[ci]?.trim()) {
+            prefixMatch = false;
+            break;
+          }
+        }
+        if (prefixMatch) {
+          debug('Top+tails: stripping echoed contextBefore from resolved output', {
+            filePath,
+            strippedLines: ctxLines.length,
+            chunkStart: chunk.startLine,
+          });
+          resolvedLines = resolvedLines.slice(ctxLines.length);
+        }
+      }
+
       resolutions.set(chunk.startLine, resolvedLines);
     } catch (e) {
       debug('Top+tails fallback LLM error', { filePath, error: e });

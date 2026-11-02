@@ -100,6 +100,8 @@ export interface MergeBaseBranchOptions {
   forceMerge?: boolean;
   /** When true, use --no-ff so a merge commit is always created when there are incoming commits (never fast-forward). Ensures we have a commit to push and GitHub stops showing "out of date with base branch". */
   noFastForward?: boolean;
+  /** Remote holding **`baseBranch`** (default **`origin`**; fork PRs use **`upstream`**). */
+  baseRemote?: string;
 }
 
 export async function mergeBaseBranch(
@@ -107,30 +109,35 @@ export async function mergeBaseBranch(
   baseBranch: string,
   options?: MergeBaseBranchOptions
 ): Promise<MergeBaseResult> {
-  debug('Merging base branch into PR branch', { baseBranch, forceMerge: options?.forceMerge });
+  const baseRemote = (options?.baseRemote ?? 'origin').trim() || 'origin';
+  debug('Merging base branch into PR branch', { baseBranch, baseRemote, forceMerge: options?.forceMerge });
   await ensureGitIdentity(git);
 
   try {
     // WHY explicit refspec: On --single-branch clones the default fetch config only
-    // includes the PR branch; a plain fetch does not update origin/<baseBranch>, so
+    // includes the PR branch; a plain fetch does not update <remote>/<baseBranch>, so
     // the ref can be stale and the merge-base check incorrectly reports "already up-to-date".
-    debug('Fetching base branch with explicit refspec', { baseBranch });
-    await git.raw(['remote', 'set-branches', '--add', 'origin', baseBranch]);
-    await git.fetch(['origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
-    
+    debug('Fetching base branch with explicit refspec', { baseBranch, baseRemote });
+    await git.raw(['remote', 'set-branches', '--add', baseRemote, baseBranch]);
+    await git.fetch([
+      baseRemote,
+      `+refs/heads/${baseBranch}:refs/remotes/${baseRemote}/${baseBranch}`,
+    ]);
+
+    const baseRef = `${baseRemote}/${baseBranch}`;
+
     // Check if we're already up-to-date before trying merge (skip when forceMerge: GitHub said "behind")
     if (!options?.forceMerge) {
-      const headSha = await git.revparse(['HEAD']);
-      const baseSha = await git.revparse([`origin/${baseBranch}`]);
-      const mergeBase = await git.raw(['merge-base', 'HEAD', `origin/${baseBranch}`]).then(s => s.trim());
+      const baseSha = await git.revparse([baseRef]);
+      const mergeBase = await git.raw(['merge-base', 'HEAD', baseRef]).then((s) => s.trim());
       if (baseSha.trim() === mergeBase) {
         debug('Already up-to-date with base branch');
         return { success: true, alreadyUpToDate: true };
       }
     }
-    
+
     // Try to merge (--no-ff when requested so we always create a merge commit and have something to push)
-    const mergeArgs: string[] = [`origin/${baseBranch}`, '--no-edit'];
+    const mergeArgs: string[] = [baseRef, '--no-edit'];
     if (options?.noFastForward) mergeArgs.push('--no-ff');
     const headBefore = (await git.revparse(['HEAD'])).trim();
     debug('Attempting merge', { noFastForward: options?.noFastForward, headBefore: headBefore.slice(0, 10) });
@@ -179,26 +186,36 @@ export async function mergeBaseBranch(
   }
 }
 
+export interface StartMergeForConflictResolutionOptions {
+  baseRemote?: string;
+}
+
 export async function startMergeForConflictResolution(
   git: SimpleGit,
   baseBranch: string,
-  mergeMessage: string
+  mergeMessage: string,
+  mergeOptions?: StartMergeForConflictResolutionOptions
 ): Promise<{ conflictedFiles: string[]; error?: string }> {
-  debug('Starting merge for conflict resolution', { baseBranch });
-  
+  const baseRemote = (mergeOptions?.baseRemote ?? 'origin').trim() || 'origin';
+  const baseRef = `${baseRemote}/${baseBranch}`;
+  debug('Starting merge for conflict resolution', { baseBranch, baseRemote });
+
   try {
-    // WHY explicit refspec: Same as mergeBaseBranch — ensure origin/<baseBranch> is
+    // WHY explicit refspec: Same as mergeBaseBranch — ensure <remote>/<baseBranch> is
     // up-to-date so the merge we're about to start sees the real remote tip.
     try {
-      await git.fetch(['origin', `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`]);
+      await git.fetch([
+        baseRemote,
+        `+refs/heads/${baseBranch}:refs/remotes/${baseRemote}/${baseBranch}`,
+      ]);
     } catch {
       // May fail if branch doesn't exist on remote
     }
-    
+
     // Start the merge (will fail with conflicts, that's expected). Only suppress conflict errors;
     // other failures (e.g. ref not found, permission) must propagate so callers don't assume conflicts.
     try {
-      await git.merge([`origin/${baseBranch}`, '--no-commit']);
+      await git.merge([baseRef, '--no-commit']);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const isConflict = /CONFLICT|conflict|Automatic merge failed|fix conflicts/i.test(msg);

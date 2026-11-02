@@ -32,6 +32,13 @@ export interface PRInfo {
   baseBranch: string;
   headSha: string;
   cloneUrl: string;
+  /**
+   * When the PR head lives on a fork (**`head.repo` ≠ `base.repo`**), this is **`base.repo.clone_url`**
+   * (the upstream repo GitHub merges against). PRR adds a git remote **`upstream`** and merges
+   * **`upstream/<baseBranch>`** so local state matches GitHub’s conflict surface; **`origin/<baseBranch>`**
+   * alone would track the fork’s copy of the base branch, which can diverge.
+   */
+  baseRepoCloneUrl?: string;
   mergeable: boolean | null;  // null = GitHub is still calculating
   mergeableState: string;     // 'clean', 'dirty', 'blocked', 'unstable', 'unknown'
 }

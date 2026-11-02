@@ -5,7 +5,7 @@
 import chalk from 'chalk';
 import type { CLIOptions } from '../cli.js';
 import type { ReviewComment } from '../github/types.js';
-import type { UnresolvedIssue } from '../analyzer/types.js';
+import { getIssuePrimaryPath, type UnresolvedIssue } from '../analyzer/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
 import type { LLMClient } from '../llm/client.js';
 import type { StateContext } from '../state/state-context.js';
@@ -54,7 +54,7 @@ export async function executeBailOut(
     const firstLine = issue.comment.body.split('\n')[0];
     return {
       commentId: issue.comment.id,
-      filePath: issue.comment.path,
+      filePath: getIssuePrimaryPath(issue),
       line: issue.comment.line,
       summary: firstLine.length > 100 ? firstLine.substring(0, 100) + '...' : firstLine,
     };
@@ -109,7 +109,7 @@ export async function executeBailOut(
   if (unresolvedIssues.length > 0) {
     console.log(chalk.cyan('\n  Remaining Issues (need human attention):'));
     for (const issue of unresolvedIssues.slice(0, 5)) {
-      console.log(chalk.yellow(`    • ${issue.comment.path}:${issue.comment.line || '?'}`));
+      console.log(chalk.yellow(`    • ${getIssuePrimaryPath(issue)}:${issue.comment.line || '?'}`));
       const cleanPreview = Reporter.sanitizeCommentForDisplay(issue.comment.body).split('\n')[0];
       const truncated = cleanPreview.length > 80 ? `${cleanPreview.substring(0, 80)}...` : cleanPreview;
       console.log(chalk.gray(`      "${truncated}"`));
@@ -134,7 +134,7 @@ export async function executeBailOut(
       dismissedAt: new Date().toISOString(),
       dismissedAtIteration: 0,
       category: 'remaining' as const,
-      filePath: issue.comment.path,
+      filePath: getIssuePrimaryPath(issue),
       line: issue.comment.line,
       commentBody: issue.comment.body,
     }));

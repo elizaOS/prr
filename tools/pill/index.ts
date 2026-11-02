@@ -75,6 +75,8 @@ async function main(): Promise<void> {
       dryRun: parsed.options.dryRun,
       verbose: parsed.options.verbose,
       instructionsOut: parsed.options.instructionsOut,
+      outputLogPath: parsed.options.outputLog,
+      promptsLogPath: parsed.options.promptsLog,
     });
     console.log(getBanner());
     if (config.verbose) {
@@ -82,6 +84,8 @@ async function main(): Promise<void> {
         directory: config.targetDir,
         auditModel: config.auditModel,
         dryRun: config.dryRun,
+        outputLogPath: config.outputLogPath ?? '(default under directory)',
+        promptsLogPath: config.promptsLogPath ?? '(default under directory)',
       });
     }
     const out = await runPillAnalysis(config);

@@ -7,7 +7,8 @@
  * remote and merge base so the fix loop runs against an up-to-date tree. WHY
  * recover verification before merge: So we know which comments are already
  * verified and don't re-analyze them; merge may add conflicts but doesn't
- * change which comments we've already fixed.
+ * change which comments we've already fixed. Fork PRs: prefetch **`upstream/<base>`** before
+ * recovery so **`scanCommittedFixes`** can use the same base as GitHub.
  */
 
 import type { Ora } from 'ora';
@@ -21,6 +22,8 @@ import type { LessonsContext, LessonsSyncTarget } from '../state/lessons-context
 import type { LockConfig } from '../state/lock-functions.js';
 import type { ReviewComment } from '../github/types.js';
 import type { Runner } from '../../../shared/runners/types.js';
+import chalk from 'chalk';
+import { githubPrSaysNotMergeable } from '../github/pr-mergeable.js';
 import { debug, debugStep, warn } from '../../../shared/logger.js';
 import * as LessonsAPI from '../state/lessons-index.js';
 import * as ResolverProc from '../resolver-proc.js';
@@ -28,6 +31,11 @@ import * as State from '../state/state-core.js';
 import { setPhase } from '../state/state-context.js';
 import { resolveConflictsWithLLM as resolveConflictsImpl } from '../git/git-conflict-resolve.js';
 import { LLMClient } from '../llm/client.js';
+import {
+  ensureForkBaseRemote,
+  fetchRemoteBranch,
+  FORK_PR_BASE_REMOTE,
+} from '../../../shared/git/git-clone-index.js';
 
 function isEnvTruthy(key: string): boolean {
   const v = process.env[key]?.trim().toLowerCase();
@@ -98,6 +106,7 @@ export async function executeSetupPhase(
     throw new Error('State not initialized after setupWorkdirAndManagers');
   }
   const state = stateContext.state;
+  stateContext.staleBotInlineReviewVsHead = crStatus.staleInlineReviewVsHead;
   onManagersReady?.(workdir, stateContext);
 
   // Setup runner
@@ -138,8 +147,7 @@ export async function executeSetupPhase(
     };
   }
 
-  const githubSaysNotMergeable =
-    prInfo.mergeable === false || prInfo.mergeableState?.toLowerCase() === 'dirty';
+  const githubSaysNotMergeable = githubPrSaysNotMergeable(prInfo);
   if (
     isEnvTruthy('PRR_EXIT_ON_UNMERGEABLE') &&
     githubSaysNotMergeable &&
@@ -173,11 +181,34 @@ export async function executeSetupPhase(
   const git = await ResolverProc.cloneOrUpdateRepository(prInfo, workdir, config.githubToken, hasVerifiedFixes, spinner, github);
   setPhase(stateContext, 'setup');
 
-  if (githubSaysNotMergeable && !options.mergeBase) {
-    warn(
-      `GitHub reports this PR is not cleanly mergeable (mergeable: ${String(prInfo.mergeable)}, state: ${prInfo.mergeableState}). ` +
-        `PRR will still run, but fixing conflicts first or passing --merge-base may avoid wasted work.`,
-    );
+  if (githubSaysNotMergeable) {
+    const mb = prInfo.mergeable === null || prInfo.mergeable === undefined ? 'unknown' : String(prInfo.mergeable);
+    const ms = prInfo.mergeableState ?? '(unset)';
+    if (!options.mergeBase) {
+      warn(
+        `GitHub reports this PR is not cleanly mergeable (mergeable: ${mb}, state: ${ms}). ` +
+          `PRR will still run; use --merge-base (default) to integrate the PR base, or set PRR_EXIT_ON_UNMERGEABLE=1 to exit before clone.`,
+      );
+      console.log(
+        chalk.yellow.bold('\n  GitHub: PR not cleanly mergeable ') +
+          chalk.yellow(`(mergeable=${mb}, mergeableState=${ms}) with --no-merge-base`) +
+          chalk.gray('\n     Review anchors may not match what GitHub will merge. Prefer removing --no-merge-base unless you intend to fix without base integration.\n'),
+      );
+    } else {
+      warn(
+        `GitHub reports this PR is not cleanly mergeable (mergeable: ${mb}, state: ${ms}) — PRR will still merge/sync locally; the API may stay dirty until conflicts are resolved and pushed.`,
+      );
+      console.log(
+        chalk.yellow(
+          `\n  GitHub: PR not cleanly mergeable (mergeable=${mb}, state=${ms}) — continuing with base merge enabled.`,
+        ),
+      );
+      console.log(
+        chalk.gray(
+          '     If this persists across push iterations, resolve base conflicts or check latent merge probes in the log (Cycle 80: merge noise / wasted fix cycles).\n',
+        ),
+      );
+    }
   }
 
   // Re-detect sync target existence so we don't delete repo-owned CLAUDE.md/AGENTS.md at final cleanup.
@@ -206,9 +237,23 @@ export async function executeSetupPhase(
   // Ensure state file is in .gitignore
   await ensureStateFileIgnored(workdir);
 
-  // Recover verification state from git history
+  // Recover verification state from git history (fork PRs: fetch upstream base so `prr-fix:` scan uses same merge base as GitHub)
+  if (prInfo.baseRepoCloneUrl?.trim()) {
+    await ensureForkBaseRemote(git, prInfo.baseRepoCloneUrl.trim());
+    try {
+      await fetchRemoteBranch(git, FORK_PR_BASE_REMOTE, prInfo.baseBranch, {
+        githubToken: config.githubToken,
+      });
+    } catch (err) {
+      debug('Pre-recovery upstream fetch failed; prr-fix scan may fall back to origin/<base>', {
+        baseBranch: prInfo.baseBranch,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   await ResolverProc.recoverVerificationState(git, prInfo.branch, stateContext, workdir, {
     prBaseBranch: prInfo.baseBranch,
+    useUpstreamPrBaseForGitRecovery: Boolean(prInfo.baseRepoCloneUrl?.trim()),
   });
 
   // Create conflict resolution wrapper with setup phase context
@@ -247,7 +292,8 @@ export async function executeSetupPhase(
     resolveConflictsInSetup,
     config.githubToken,
     options.noPush,
-    prInfo.baseBranch
+    prInfo.baseBranch,
+    prInfo.baseRepoCloneUrl,
   );
   if (!syncResult.success) {
     return {

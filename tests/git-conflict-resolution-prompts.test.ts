@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { LLMClient } from '../tools/prr/llm/client.js';
-import { CONFLICT_USE_CHUNKED_FIRST_CHUNKS } from '../shared/constants.js';
+import {
+  CONFLICT_USE_CHUNKED_FIRST_CHARS,
+  CONFLICT_USE_CHUNKED_FIRST_CHUNKS,
+} from '../shared/constants.js';
 import {
   buildConflictResolutionPromptWithContent,
   splitConflictFilesIntoBatches,
@@ -60,6 +63,22 @@ describe('conflict resolution prompt improvements', () => {
     );
     expect(prompt).toContain('--- FILE: demo.ts (section 1/');
     expect(prompt).not.toContain('--- FILE: demo.ts ---\nbefore_0');
+  });
+
+  it('embeds conflict sections (not full file) when size exceeds CONFLICT_USE_CHUNKED_FIRST_CHARS with one chunk', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'prr-conflicts-one-big'));
+    tempDirs.push(dir);
+
+    const conflict = makeConflictFile(1);
+    const padLen = CONFLICT_USE_CHUNKED_FIRST_CHARS - conflict.length + 500;
+    const padded = `${'x'.repeat(Math.max(0, padLen))}\n${conflict}`;
+    expect(padded.length).toBeGreaterThan(CONFLICT_USE_CHUNKED_FIRST_CHARS);
+
+    writeFileSync(join(dir, 'big.ts'), padded, 'utf-8');
+    const prompt = buildConflictResolutionPromptWithContent(['big.ts'], 'main', dir, 200_000);
+
+    expect(prompt).toContain('--- FILE: big.ts (section 1/');
+    expect(prompt).not.toContain('--- FILE: big.ts ---\n');
   });
 
   it('splits conflict files into multiple batches when a single prompt would exceed the batch char cap', () => {

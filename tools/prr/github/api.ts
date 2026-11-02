@@ -8,8 +8,9 @@ import {
   type BotResponseTiming,
   extractFullCommitShaFromText,
 } from './types.js';
-import { debug } from '../../../shared/logger.js';
+import { debug, formatNumber } from '../../../shared/logger.js';
 import { logGitHubApiFailure } from './github-api-errors.js';
+import { githubPrMergeableUnknown } from './pr-mergeable.js';
 import { deduplicateSameBotAcrossComments } from './issue-comment-dedup.js';
 import { normalizeReviewBotAuthorLabel } from './bot-author-normalize.js';
 import { isNonReviewContent } from './review-ingestion-filters.js';
@@ -73,6 +74,8 @@ function isBotNoiseComment(body: string): boolean {
 export class GitHubAPI {
   private octokit: Octokit;
   private graphqlWithAuth: typeof graphql;
+  /** Memoized `GET /user` for thread-reply idempotency when PRR_BOT_LOGIN is unset. */
+  private authenticatedLoginPromise: Promise<string | undefined> | undefined;
 
   constructor(token: string) {
     this.octokit = new Octokit({ auth: token });
@@ -84,6 +87,30 @@ export class GitHubAPI {
     debug('GitHub API client initialized');
   }
 
+  /**
+   * GitHub login for the current auth token (`GET /user`).
+   * WHY: Thread-reply cross-run idempotency matches review comment `author` to a login; PAT / Actions
+   * tokens can resolve that login here so PRR_BOT_LOGIN is optional.
+   */
+  async getAuthenticatedLogin(): Promise<string | undefined> {
+    if (!this.authenticatedLoginPromise) {
+      this.authenticatedLoginPromise = this.octokit.users
+        .getAuthenticated()
+        .then(({ data }) => {
+          const login = data.login?.trim();
+          return login || undefined;
+        })
+        .catch((err: unknown) => {
+          this.authenticatedLoginPromise = undefined;
+          debug('users.getAuthenticated failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          return undefined;
+        });
+    }
+    return this.authenticatedLoginPromise;
+  }
+
   private escapeRegex(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
@@ -91,25 +118,90 @@ export class GitHubAPI {
   async getPRInfo(owner: string, repo: string, prNumber: number): Promise<PRInfo> {
     debug('Fetching PR info', { owner, repo, prNumber });
     try {
-      const { data: pr } = await this.octokit.pulls.get({
+      type RestPull = {
+        title: string;
+        body: string | null | undefined;
+        head: {
+          ref: string;
+          sha: string;
+          repo?: { full_name?: string; clone_url?: string } | null;
+        };
+        base: { ref: string; repo?: { full_name?: string; clone_url?: string } | null };
+        mergeable: boolean | null;
+        mergeable_state?: string | null;
+      };
+      const mapPull = (pr: RestPull): PRInfo => {
+        const headFn = pr.head.repo?.full_name?.trim().toLowerCase();
+        const baseFn = pr.base.repo?.full_name?.trim().toLowerCase();
+        const baseClone = pr.base.repo?.clone_url?.trim();
+        const baseRepoCloneUrl =
+          baseClone && headFn && baseFn && headFn !== baseFn ? baseClone : undefined;
+        return {
+          owner,
+          repo,
+          number: prNumber,
+          title: pr.title,
+          body: pr.body ?? '',
+          branch: pr.head.ref,
+          baseBranch: pr.base.ref,
+          headSha: pr.head.sha,
+          cloneUrl: pr.head.repo?.clone_url || `https://github.com/${owner}/${repo}.git`,
+          baseRepoCloneUrl,
+          mergeable: pr.mergeable,
+          mergeableState: pr.mergeable_state ?? 'unknown',
+        };
+      };
+
+      const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+      const pollAttemptsRaw = process.env.PRR_MERGEABLE_POLL_ATTEMPTS?.trim();
+      let maxExtraPolls = 3;
+      if (pollAttemptsRaw !== undefined && pollAttemptsRaw !== '') {
+        const n = parseInt(pollAttemptsRaw, 10);
+        if (Number.isFinite(n) && n >= 0) maxExtraPolls = Math.min(n, 20);
+      }
+
+      const delayRaw = process.env.PRR_MERGEABLE_POLL_MS?.trim();
+      let delayMs = 2000;
+      if (delayRaw !== undefined && delayRaw !== '') {
+        const n = parseInt(delayRaw, 10);
+        if (Number.isFinite(n) && n >= 0) delayMs = Math.min(n, 30_000);
+      }
+
+      let { data: pr } = await this.octokit.pulls.get({
         owner,
         repo,
         pull_number: prNumber,
       });
+      let info = mapPull(pr);
 
-      const info: PRInfo = {
-        owner,
-        repo,
-        number: prNumber,
-        title: pr.title,
-        body: pr.body ?? '',
-        branch: pr.head.ref,
-        baseBranch: pr.base.ref,
-        headSha: pr.head.sha,
-        cloneUrl: pr.head.repo?.clone_url || `https://github.com/${owner}/${repo}.git`,
-        mergeable: pr.mergeable,
-        mergeableState: pr.mergeable_state,
-      };
+      if (githubPrMergeableUnknown(info) && maxExtraPolls > 0) {
+        let polls = 0;
+        while (githubPrMergeableUnknown(info) && polls < maxExtraPolls) {
+          debug('pulls.get mergeable still null; polling', {
+            owner,
+            repo,
+            prNumber,
+            poll: polls + 1,
+            maxExtraPolls,
+            delayMs,
+          });
+          await sleepMs(delayMs);
+          const next = await this.octokit.pulls.get({ owner, repo, pull_number: prNumber });
+          pr = next.data;
+          info = mapPull(pr);
+          polls += 1;
+        }
+        if (githubPrMergeableUnknown(info)) {
+          debug('pulls.get mergeable still null after polls', {
+            owner,
+            repo,
+            prNumber,
+            attempts: formatNumber(polls),
+          });
+        }
+      }
+
       debug('PR info fetched', info);
       return info;
     } catch (err) {
@@ -851,8 +943,67 @@ export class GitHubAPI {
   }
 
   /**
+   * POST a reaction on a pull request review comment (REST).
+   *
+   * Returns an outcome instead of throwing for common failure modes so **`thread-working-reactions`**
+   * can keep the fix loop running (**WHY:** reactions are best-effort UX, not correctness).
+   *
+   * - **404 / not_found:** Comment gone or not visible — caller should not retry blindly.
+   * - **422 / duplicate_or_validation:** Often “already reacted” or validation — skip quietly.
+   * - **429 / rate_limited** and **403** with rate-ish message: caller backs off once, then may disable.
+   * - **Other errors:** Logged via **`logGitHubApiFailure`**; returned as **`error`** so caller can disable
+   *   after the first hard failure (**WHY:** avoid N identical 403/5xx lines on huge PRs).
+   */
+  async createPullRequestReviewCommentReaction(
+    owner: string,
+    repo: string,
+    commentDatabaseId: number,
+    content: 'eyes' = 'eyes'
+  ): Promise<'created' | 'not_found' | 'duplicate_or_validation' | 'rate_limited' | 'error'> {
+    debug('Posting review-comment reaction', { owner, repo, commentDatabaseId, content });
+    try {
+      await this.octokit.reactions.createForPullRequestReviewComment({
+        owner,
+        repo,
+        comment_id: commentDatabaseId,
+        content,
+      });
+      return 'created';
+    } catch (err: unknown) {
+      const status =
+        err && typeof err === 'object' && 'status' in err ? (err as { status: number }).status : undefined;
+      if (status === 404) {
+        debug('Review comment not found (404), skipping reaction', { commentDatabaseId });
+        return 'not_found';
+      }
+      if (status === 422) {
+        debug('Review comment reaction rejected (422), skipping', { commentDatabaseId });
+        return 'duplicate_or_validation';
+      }
+      if (status === 429) {
+        return 'rate_limited';
+      }
+      if (status === 403) {
+        const msg =
+          err && typeof err === 'object' && 'message' in err
+            ? String((err as { message: unknown }).message)
+            : '';
+        if (/rate limit|secondary|abuse|too many/i.test(msg)) {
+          return 'rate_limited';
+        }
+      }
+      logGitHubApiFailure('REST reactions.createForPullRequestReviewComment', err, {
+        owner,
+        repo,
+        commentDatabaseId,
+      });
+      return 'error';
+    }
+  }
+
+  /**
    * Get comment authors in a review thread (for cross-run idempotency: skip if we already replied).
-   * WHY: When PRR_BOT_LOGIN is set, callers check whether this thread already has a comment from that login; if so, we skip posting to avoid duplicate replies on re-runs.
+   * WHY: When we know the bot login (PRR_BOT_LOGIN or token from getAuthenticatedLogin), callers check whether this thread already has a comment from that login; if so, we skip posting to avoid duplicate replies on re-runs.
    * owner/repo/prNumber are unused (GraphQL node(id) only needs threadId) but kept for API consistency and future use.
    */
   async getThreadComments(

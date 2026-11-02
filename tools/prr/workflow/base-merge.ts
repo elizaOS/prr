@@ -7,11 +7,21 @@ import chalk from 'chalk';
 import type { SimpleGit } from 'simple-git';
 import type { Ora } from 'ora';
 import type { PRInfo } from '../github/types.js';
+import { githubPrMergeableUnknown, githubPrSaysNotMergeable } from '../github/pr-mergeable.js';
 import type { CLIOptions } from '../cli.js';
 import type { GitHubAPI } from '../github/api.js';
 import type { StateContext } from '../state/state-context.js';
 import { debug, debugStep, startTimer, endTimer, formatNumber } from '../../../shared/logger.js';
-import { mergeBaseBranch, startMergeForConflictResolution, abortMerge, completeMerge, markConflictsResolved, isLockFile } from '../../../shared/git/git-clone-index.js';
+import {
+  mergeBaseBranch,
+  startMergeForConflictResolution,
+  abortMerge,
+  completeMerge,
+  markConflictsResolved,
+  isLockFile,
+  ensureForkBaseRemote,
+  FORK_PR_BASE_REMOTE,
+} from '../../../shared/git/git-clone-index.js';
 import { push } from '../../../shared/git/git-push.js';
 import { findFilesWithConflictMarkers } from '../../../shared/git/git-lock-files.js';
 
@@ -38,8 +48,8 @@ export async function checkAndMergeBaseBranch(
 }> {
   debugStep('CHECKING PR MERGE STATUS');
   
-  const githubSaysConflicts = prInfo.mergeable === false || prInfo.mergeableState === 'dirty';
-  const githubStillCalculating = prInfo.mergeable === null;
+  const githubSaysConflicts = githubPrSaysNotMergeable(prInfo);
+  const githubStillCalculating = githubPrMergeableUnknown(prInfo);
   
   if (githubSaysConflicts) {
     console.log(chalk.yellow(`⚠ PR has conflicts with ${prInfo.baseBranch}`));
@@ -50,7 +60,9 @@ export async function checkAndMergeBaseBranch(
   // Always try to merge base branch when --merge-base is enabled (default)
   if (options.mergeBase) {
     startTimer('Merge base branch');
-    console.log(chalk.cyan(`  Syncing with origin/${prInfo.baseBranch}...`));
+    const baseRemote = prInfo.baseRepoCloneUrl?.trim() ? FORK_PR_BASE_REMOTE : 'origin';
+    const baseRef = `${baseRemote}/${prInfo.baseBranch}`;
+    console.log(chalk.cyan(`  Syncing with ${baseRef}...`));
 
     // Stash uncommitted changes so merge can run (e.g. .gitignore modified by ensureStateFileIgnored)
     const status = await git.status();
@@ -65,7 +77,11 @@ export async function checkAndMergeBaseBranch(
       try {
         await git.stash(['push', '-u', '-m', 'prr-auto-stash-before-base-merge']);
         didStash = true;
-        console.log(chalk.gray(`  Stashed ${status.modified.length + status.created.length + status.deleted.length} local change(s) before merge`));
+        console.log(
+          chalk.gray(
+            `  Stashed ${formatNumber(status.modified.length + status.created.length + status.deleted.length)} local change(s) before merge`,
+          ),
+        );
       } catch (stashErr) {
         debug('Failed to stash before base merge', { error: stashErr });
       }
@@ -88,19 +104,27 @@ export async function checkAndMergeBaseBranch(
     };
 
     try {
+    if (prInfo.baseRepoCloneUrl?.trim()) {
+      await ensureForkBaseRemote(git, prInfo.baseRepoCloneUrl.trim());
+    }
+
     // Fetch latest base branch and PR branch.
     // WHY explicit refspec: On --single-branch clones the default fetch config only
     // includes the PR branch. A plain `git fetch origin <baseBranch>` downloads objects
     // but does NOT update refs/remotes/origin/<baseBranch>, leaving a stale ref so the
     // merge-base check thinks we're already up-to-date and the PR stays "dirty" on GitHub.
-    await git.raw(['remote', 'set-branches', '--add', 'origin', prInfo.baseBranch]);
-    await git.fetch(['origin', `+refs/heads/${prInfo.baseBranch}:refs/remotes/origin/${prInfo.baseBranch}`]);
+    // Fork PRs: **`baseRemote`** is **`upstream`** (true **`base.repo`**), not the fork’s **`origin/<base>`**.
+    await git.raw(['remote', 'set-branches', '--add', baseRemote, prInfo.baseBranch]);
+    await git.fetch([
+      baseRemote,
+      `+refs/heads/${prInfo.baseBranch}:refs/remotes/${baseRemote}/${prInfo.baseBranch}`,
+    ]);
     await git.fetch('origin', prInfo.branch);
 
     // When the PR branch is behind the base (locally or per GitHub), merge with --no-ff and push so the branch is up to date. Use local state after fetch so we don't rely only on GitHub's mergeableState (which can be stale or missing). WHY: User expects PRR to "update the branch, pull target into source, and push" so the PR is not "out of date with base branch".
     const headSha = (await git.revparse(['HEAD'])).trim();
-    const baseSha = (await git.revparse([`origin/${prInfo.baseBranch}`])).trim();
-    const mergeBaseSha = (await git.raw(['merge-base', 'HEAD', `origin/${prInfo.baseBranch}`])).trim();
+    const baseSha = (await git.revparse([baseRef])).trim();
+    const mergeBaseSha = (await git.raw(['merge-base', 'HEAD', baseRef])).trim();
 
     const partials = stateContext?.state?.partialConflictResolutions;
     if (partials && Object.keys(partials).length > 0) {
@@ -111,7 +135,7 @@ export async function checkAndMergeBaseBranch(
         stateContext!.state!.partialConflictSavedOriginBaseSha = undefined;
         console.warn(
           chalk.yellow(
-            `Cleared ${formatNumber(n)} partial conflict resolution(s): origin/${prInfo.baseBranch} advanced (${saved.slice(0, 7)} → ${baseSha.slice(0, 7)}).`,
+            `Cleared ${formatNumber(n)} partial conflict resolution(s): ${baseRef} advanced (${saved.slice(0, 7)} → ${baseSha.slice(0, 7)}).`,
           ),
         );
       }
@@ -126,7 +150,11 @@ export async function checkAndMergeBaseBranch(
       githubMergeableState: prInfo.mergeableState,
       forceMerge,
     });
-    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, { forceMerge, noFastForward: forceMerge });
+    const mergeResult = await mergeBaseBranch(git, prInfo.baseBranch, {
+      forceMerge,
+      noFastForward: forceMerge,
+      baseRemote,
+    });
     debug('Base merge result', { success: mergeResult.success, alreadyUpToDate: mergeResult.alreadyUpToDate, error: mergeResult.error });
 
     if (!mergeResult.success) {
@@ -137,7 +165,8 @@ export async function checkAndMergeBaseBranch(
       const { conflictedFiles, error } = await startMergeForConflictResolution(
         git,
         prInfo.baseBranch,
-        `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`
+        `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`,
+        { baseRemote },
       );
       
       if (error && conflictedFiles.length === 0) {
@@ -203,7 +232,6 @@ export async function checkAndMergeBaseBranch(
         } else {
           // All conflicts resolved - stage files and complete the merge
           const codeFiles = conflictedFiles.filter((f: string) => !isLockFile(f));
-          const lockFiles = conflictedFiles.filter((f: string) => isLockFile(f));
 
           // Verify no conflict markers remain (LLM can sometimes leave <<<<<<< in output)
           const workdir = (await git.revparse(['--show-toplevel'])).trim();
@@ -225,12 +253,9 @@ export async function checkAndMergeBaseBranch(
             };
           }
 
-          // Lock files should be regenerated — accept theirs to unblock the merge
-          if (lockFiles.length > 0) {
-            await git.checkout(['--theirs', '--', ...lockFiles]);
-            await git.add(lockFiles);
-            console.log(chalk.gray(`  ℹ ${formatNumber(lockFiles.length)} lock file(s) accepted from ${prInfo.baseBranch} — consider regenerating`));
-          }
+          // Lock files: already deleted/regenerated and staged inside resolveConflicts (handleLockFileConflicts).
+          // Do not checkout --theirs here — it errors with "pathspec did not match" when Git no longer
+          // has an unmerged entry, and would replace a freshly regenerated lock with the base version.
 
           await markConflictsResolved(git, codeFiles);
           const commitResult = await completeMerge(git, `Merge branch '${prInfo.baseBranch}' into ${prInfo.branch}`);

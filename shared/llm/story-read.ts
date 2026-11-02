@@ -46,6 +46,11 @@ export interface StoryReadOptions {
   maxContextTokens?: number;
   /** On chapter LLM failure: 'break' (stop, return digest so far), 'skip' (continue), 'throw'. */
   onChapterError?: 'break' | 'skip' | 'throw';
+  /**
+   * Called before each chapter LLM (1-based index, total chapters, short label e.g. slug range).
+   * WHY: Pill "Assembling context" can take many minutes on large prompts.log; UI stays informative.
+   */
+  onChapterProgress?: (chapterIndex: number, chapterTotal: number, slugRange: string) => void;
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are reading a log from a software tool run, chapter by chapter.
@@ -210,8 +215,10 @@ export async function storyReadChapters(
   let threads: string[] = [];
 
   for (let i = 0; i < chapters.length; i++) {
+    const ch = chapters[i]!;
+    options.onChapterProgress?.(i + 1, chapters.length, ch.slugRange);
     const priorContext = compressContext(openQuestions, predictions, threads, maxContextTokens);
-    const userPrompt = buildChapterPrompt(chapters[i], priorContext);
+    const userPrompt = buildChapterPrompt(ch, priorContext);
     let analysis: ChapterAnalysis;
     try {
       const res = await client.complete(userPrompt, systemPrompt, { model: options.model });

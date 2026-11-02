@@ -4,8 +4,18 @@
  */
 import OpenAI from 'openai';
 import { debug } from '../../../shared/logger.js';
-import { ELIZACLOUD_API_BASE_URL } from '../../../shared/constants.js';
+import {
+  ELIZACLOUD_API_BASE_URL,
+  LMSTUDIO_OPENAI_COMPAT_BASE_URL,
+  NVIDIA_API_BASE_URL,
+  OLLAMA_OPENAI_COMPAT_BASE_URL,
+  OPENROUTER_API_BASE_URL,
+} from '../../../shared/constants.js';
 import { createElizaCloudOpenAIClient } from '../../../shared/llm/elizacloud.js';
+import { createLmStudioOpenAIClient } from '../../../shared/llm/lmstudio.js';
+import { createNvidiaCloudOpenAIClient } from '../../../shared/llm/nvidiacloud.js';
+import { createOllamaOpenAIClient } from '../../../shared/llm/ollama.js';
+import { createOpenRouterOpenAIClient } from '../../../shared/llm/openrouter.js';
 import { getElizaCloudErrorContext, maskApiKey } from './error-helpers.js';
 
 /**
@@ -36,7 +46,35 @@ export interface ModelRecommendationContext {
  * Returns an empty set on error (network issue, invalid key) so callers
  * can safely fall back to the full rotation list.
  */
+/**
+ * List model IDs from any OpenAI-compatible `/v1` host (OpenAI, OpenRouter, NVIDIA, local proxies).
+ * WHY: One implementation for rotation validation across providers.
+ */
+export async function fetchAvailableOpenAICompatibleModels(apiKey: string, baseURL: string): Promise<Set<string>> {
+  const base = baseURL.replace(/\/$/, '');
+  try {
+    const client = new OpenAI({ apiKey: apiKey.trim(), baseURL: base });
+    const models = await client.models.list();
+    const ids = new Set<string>();
+    for await (const model of models) {
+      ids.add(model.id);
+    }
+    debug(`Fetched ${ids.size.toLocaleString()} available OpenAI-compatible models`, { baseURL: base });
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch OpenAI-compatible models list', {
+      baseURL: base,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set();
+  }
+}
+
 export async function fetchAvailableOpenAIModels(apiKey: string): Promise<Set<string>> {
+  const rawBase = process.env.OPENAI_BASE_URL?.trim();
+  if (rawBase) {
+    return fetchAvailableOpenAICompatibleModels(apiKey, rawBase);
+  }
   try {
     const client = new OpenAI({ apiKey });
     const models = await client.models.list();
@@ -66,7 +104,10 @@ export async function validateOpenAIKey(apiKey: string): Promise<void> {
   const keyHint = maskApiKey(key);
   debug('Validating OpenAI API key');
   try {
-    const client = new OpenAI({ apiKey: key });
+    const rawBase = process.env.OPENAI_BASE_URL?.trim();
+    const client = rawBase
+      ? new OpenAI({ apiKey: key, baseURL: rawBase.replace(/\/$/, '') })
+      : new OpenAI({ apiKey: key });
     for await (const _ of client.models.list()) {
       break; // one request to verify auth
     }
@@ -79,7 +120,8 @@ export async function validateOpenAIKey(apiKey: string): Promise<void> {
         `OpenAI API key was rejected (401 Unauthorized). ` +
         `API key: ${keyHint}. ` +
         `Check that OPENAI_API_KEY in .env is correct, has no extra spaces/newlines, and has not been revoked. ` +
-        `If OPENAI_BASE_URL is set, unset it so the key is used with api.openai.com (see github.com/openai/codex/issues/9153).`
+        `If you meant api.openai.com, unset OPENAI_BASE_URL (some proxies return 401; see github.com/openai/codex/issues/9153). ` +
+        `If you use a local OpenAI-compatible server (Ollama, LM Studio), keep OPENAI_BASE_URL pointed at its /v1 base and set a key the server accepts (often any non-empty string).`
       );
     }
     throw err;
@@ -205,6 +247,219 @@ export async function validateElizaCloudKey(apiKey: string): Promise<void> {
  * Fetch all available models from ElizaCloud API.
  * Returns empty set if fetch fails (skip filtering).
  */
+/** Models available to this NVIDIA API key (OpenAI-compatible `/v1/models`). */
+export async function fetchAvailableNvidiaCloudModels(apiKey: string): Promise<Set<string>> {
+  try {
+    const client = createNvidiaCloudOpenAIClient(apiKey?.trim() ?? '');
+    const models = await client.models.list();
+    const ids = new Set<string>();
+    for await (const model of models) {
+      ids.add(model.id);
+    }
+    debug(`Fetched ${ids.size.toLocaleString()} available NVIDIA Cloud models`);
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch NVIDIA Cloud models list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set();
+  }
+}
+
+/** Models available to this OpenRouter key (OpenAI-compatible `/v1/models`). */
+export async function fetchAvailableOpenRouterModels(apiKey: string): Promise<Set<string>> {
+  try {
+    const client = createOpenRouterOpenAIClient(apiKey?.trim() ?? '');
+    const models = await client.models.list();
+    const ids = new Set<string>();
+    for await (const model of models) {
+      ids.add(model.id);
+    }
+    debug(`Fetched ${ids.size.toLocaleString()} available OpenRouter models`);
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch OpenRouter models list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set();
+  }
+}
+
+/**
+ * Validate NVIDIA Build / NIM API key (fail fast on 401).
+ * WHY: Same pattern as OpenAI — one `models.list` round-trip.
+ */
+export async function validateNvidiaCloudKey(apiKey: string): Promise<void> {
+  const key = apiKey?.trim();
+  if (!key) {
+    throw new Error('NVIDIA API key is empty. Set NVIDIA_API_KEY or NVIDIA_CLOUD_API_KEY in .env.');
+  }
+  const keyHint = maskApiKey(key);
+  const base = (process.env.NVIDIA_BASE_URL?.trim() || NVIDIA_API_BASE_URL).replace(/\/$/, '');
+  debug('Validating NVIDIA Cloud API key', { requestURL: `${base}/models`, apiKey: keyHint });
+  try {
+    const client = createNvidiaCloudOpenAIClient(key);
+    for await (const _ of client.models.list()) {
+      break;
+    }
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
+      throw new Error(
+        `NVIDIA API key was rejected (401 Unauthorized). ` +
+          `Request URL: ${base}/models. API key: ${keyHint}. ` +
+          `Check NVIDIA_API_KEY / NVIDIA_CLOUD_API_KEY and optional NVIDIA_BASE_URL.`,
+      );
+    }
+    throw err;
+  }
+}
+
+/**
+ * Validate OpenRouter API key (fail fast on 401).
+ */
+export async function validateOpenRouterKey(apiKey: string): Promise<void> {
+  const key = apiKey?.trim();
+  if (!key) {
+    throw new Error('OPENROUTER_API_KEY is empty. Set it in your .env or environment.');
+  }
+  const keyHint = maskApiKey(key);
+  const base = (process.env.OPENROUTER_BASE_URL?.trim() || OPENROUTER_API_BASE_URL).replace(/\/$/, '');
+  debug('Validating OpenRouter API key', { requestURL: `${base}/models`, apiKey: keyHint });
+  try {
+    const client = createOpenRouterOpenAIClient(key);
+    for await (const _ of client.models.list()) {
+      break;
+    }
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (status === 401 || /401|Unauthorized|Authentication required/i.test(msg)) {
+      throw new Error(
+        `OpenRouter API key was rejected (401 Unauthorized). ` +
+          `Request URL: ${base}/models. API key: ${keyHint}. ` +
+          `Check OPENROUTER_API_KEY and optional OPENROUTER_BASE_URL.`,
+      );
+    }
+    throw err;
+  }
+}
+
+/** Models reported by Ollama’s OpenAI-compatible `/v1/models`. */
+export async function fetchAvailableOllamaModels(apiKey: string): Promise<Set<string>> {
+  try {
+    const client = createOllamaOpenAIClient(apiKey?.trim() ?? '');
+    const models = await client.models.list();
+    const ids = new Set<string>();
+    for await (const model of models) {
+      ids.add(model.id);
+    }
+    debug(`Fetched ${ids.size.toLocaleString()} available Ollama models`);
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch Ollama models list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set();
+  }
+}
+
+/** Models reported by LM Studio’s OpenAI-compatible `/v1/models`. */
+export async function fetchAvailableLmStudioModels(apiKey: string): Promise<Set<string>> {
+  try {
+    const client = createLmStudioOpenAIClient(apiKey?.trim() ?? '');
+    const models = await client.models.list();
+    const ids = new Set<string>();
+    for await (const model of models) {
+      ids.add(model.id);
+    }
+    debug(`Fetched ${ids.size.toLocaleString()} available LM Studio models`);
+    return ids;
+  } catch (err) {
+    debug('Failed to fetch LM Studio models list', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return new Set();
+  }
+}
+
+/**
+ * Collect message + errno codes from an error and nested `cause`.
+ * WHY: The OpenAI SDK often surfaces **`ECONNREFUSED`** only on **`err.cause`**; matching **`err.message`**
+ * alone misses localhost failures and we misclassify as a generic API error instead of a clear “start the server” hint.
+ */
+function connectionFailureDiagnostics(err: unknown): string {
+  const parts: string[] = [];
+  const visit = (e: unknown) => {
+    if (e == null) return;
+    if (e instanceof Error) {
+      parts.push(e.message);
+      const ne = e as NodeJS.ErrnoException;
+      if (ne.code) parts.push(ne.code);
+      visit(ne.cause);
+    } else {
+      parts.push(String(e));
+    }
+  };
+  visit(err);
+  return parts.join(' ');
+}
+
+/**
+ * True when the error chain looks like a dead local /v1 host (refused, DNS, network).
+ * Exported for unit tests; used by **`validateOllamaReachable`** / **`validateLmStudioReachable`**.
+ */
+export function isLikelyLocalEndpointConnectionFailure(err: unknown): boolean {
+  const combined = connectionFailureDiagnostics(err);
+  return /ECONNREFUSED|fetch failed|ENOTFOUND|EAI_AGAIN|network|Connection error|socket hang up/i.test(combined);
+}
+
+/**
+ * Fail fast if Ollama OpenAI bridge is unreachable (connection refused, DNS, etc.).
+ * WHY: Same one-shot as NVIDIA — avoids a long fix loop against a dead localhost.
+ */
+export async function validateOllamaReachable(apiKey: string): Promise<void> {
+  const key = apiKey?.trim() || 'ollama';
+  const base = (process.env.OLLAMA_BASE_URL?.trim() || OLLAMA_OPENAI_COMPAT_BASE_URL).replace(/\/$/, '');
+  debug('Validating Ollama server', { requestURL: `${base}/models` });
+  try {
+    const client = createOllamaOpenAIClient(key);
+    for await (const _ of client.models.list()) {
+      break;
+    }
+  } catch (err) {
+    if (isLikelyLocalEndpointConnectionFailure(err)) {
+      const msg = connectionFailureDiagnostics(err);
+      throw new Error(
+        `Cannot reach Ollama at ${base}/models (${msg}). Start \`ollama serve\` or set OLLAMA_BASE_URL to your OpenAI-compatible /v1 base.`,
+      );
+    }
+    throw err;
+  }
+}
+
+/** Fail fast if LM Studio local server is unreachable. */
+export async function validateLmStudioReachable(apiKey: string): Promise<void> {
+  const key = apiKey?.trim() || 'lm-studio';
+  const base = (process.env.LMSTUDIO_BASE_URL?.trim() || LMSTUDIO_OPENAI_COMPAT_BASE_URL).replace(/\/$/, '');
+  debug('Validating LM Studio server', { requestURL: `${base}/models` });
+  try {
+    const client = createLmStudioOpenAIClient(key);
+    for await (const _ of client.models.list()) {
+      break;
+    }
+  } catch (err) {
+    if (isLikelyLocalEndpointConnectionFailure(err)) {
+      const msg = connectionFailureDiagnostics(err);
+      throw new Error(
+        `Cannot reach LM Studio at ${base}/models (${msg}). Start the local server in LM Studio (Developer → Server) or set LMSTUDIO_BASE_URL.`,
+      );
+    }
+    throw err;
+  }
+}
+
 export async function fetchAvailableElizaCloudModels(apiKey: string): Promise<Set<string>> {
   try {
     const client = createElizaCloudOpenAIClient(apiKey?.trim() ?? '');
@@ -267,6 +522,10 @@ const CHEAP_MODELS: Record<string, string> = {
   anthropic: 'claude-haiku-4-5-20251001',
   openai: 'gpt-4o-mini',
   elizacloud: 'openai/gpt-4o-mini',               // ElizaCloud uses owner/model IDs
+  /** WHY: @elizaos/plugin-nvidiacloud defaults — fast instruct for small calls. */
+  nvidiacloud: 'meta/llama-3.1-8b-instruct',
+  /** WHY: Widely routed on OpenRouter for cheap completions. */
+  openrouter: 'openai/gpt-4o-mini',
 };
 
 /** Return the fast/cheap model for the provider (for split-plan, dedup, etc.). WHY exported: split-plan uses it when SPLIT_PLAN_LLM_MODEL is unset to avoid 504 timeouts. */

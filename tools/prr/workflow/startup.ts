@@ -19,6 +19,9 @@ import chalk from 'chalk';
 import { warn, info, debug, debugStep, formatDuration, formatNumber } from '../../../shared/logger.js';
 import { getWorkdirInfo, ensureWorkdir } from '../../../shared/git/workdir.js';
 
+/** One stale-inline warning per process per (repo, PR, HEAD, bot review SHA) — pill-output #619. */
+const codeRabbitStaleInlineWarned = new Set<string>();
+
 /**
  * Display PR status including CI checks, bot reviews, and overall activity
  */
@@ -95,7 +98,7 @@ export async function analyzeBotTimingAndDisplay(
       console.log(chalk.cyan('\n📊 Bot Response Timing (observed on this PR):'));
       for (const timing of botTimings) {
         console.log(chalk.gray(
-          `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${timing.responseCount})`
+          `   ${timing.botName}: ${formatDuration(timing.minResponseMs)} / ${formatDuration(timing.avgResponseMs)} / ${formatDuration(timing.maxResponseMs)} (min/avg/max, n=${formatNumber(timing.responseCount)})`
         ));
       }
       // Recommend wait time based on 75th percentile (not max — outliers waste time).
@@ -110,7 +113,11 @@ export async function analyzeBotTimingAndDisplay(
         Math.ceil(p75Wait / 1000 / 30) * 30, // Round up to nearest 30s
         MAX_RECOMMENDED_WAIT_S
       );
-      console.log(chalk.gray(`   Recommended wait after push: ~${recommendedWait}s (p75, capped at ${MAX_RECOMMENDED_WAIT_S}s)`));
+      console.log(
+        chalk.gray(
+          `   Recommended wait after push: ~${formatNumber(recommendedWait)}s (p75, capped at ${formatNumber(MAX_RECOMMENDED_WAIT_S)}s)`,
+        ),
+      );
       
       // Calculate when we expect bot reviews to arrive
       if (lastCommitTime) {
@@ -142,7 +149,7 @@ export async function analyzeBotTimingAndDisplay(
  * Check CodeRabbit status and trigger review if needed.
  * By default we do not wait on CodeRabbit; after triggering we fetch current comments once and return so the analysis/fix loop can start immediately. New CodeRabbit comments are picked up on a later run or when checking for new comments. Optional **`PRR_EXIT_ON_STALE_BOT_REVIEW`** stops before clone when the bot’s review SHA ≠ PR HEAD.
  *
- * When **`triggerCodeRabbitIfNeeded`** reports a **bot review commit** older than PR HEAD, we emit a **warn** and set **`staleInlineReviewVsHead`**. **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** in **`run-setup-phase`** exits before clone (pill-output CodeRabbit SHA mismatch).
+ * When **`triggerCodeRabbitIfNeeded`** reports a **bot review commit** older than PR HEAD, we emit a **warn** and set **`staleInlineReviewVsHead`** (mirrored on **`stateContext.staleBotInlineReviewVsHead`**). **`PRR_EXIT_ON_STALE_BOT_REVIEW=1`** in **`run-setup-phase`** exits before clone (pill-output CodeRabbit SHA mismatch). Otherwise PRR **deprioritizes** known inline review-bot authors in queue / fix-prompt batch order so human threads run first (**`main-loop-setup.ts`**, **`severity.ts`**, **`prompt-building.ts`**).
  *
  * prefetchedComments: When we trigger CodeRabbit we fetch comments once here; the caller can reuse them in the "FETCHING REVIEW COMMENTS" phase to avoid a redundant API call.
  */
@@ -200,11 +207,15 @@ export async function checkCodeRabbitStatus(
       crResult.botReviewCommitSha !== headSha
     ) {
       staleInlineReviewVsHead = true;
-      console.log(
-        chalk.yellow(
-          `  ⚠ CodeRabbit's latest review targets \`${crResult.botReviewCommitSha.substring(0, 7)}\`; PR HEAD is \`${headSha.substring(0, 7)}\` — inline comments may be stale until the bot re-reviews.`,
-        ),
-      );
+      const staleKey = `${owner}\0${repo}\0${String(prNumber)}\0${headSha}\0${crResult.botReviewCommitSha}`;
+      if (!codeRabbitStaleInlineWarned.has(staleKey)) {
+        codeRabbitStaleInlineWarned.add(staleKey);
+        console.log(
+          chalk.yellow(
+            `  ⚠ CodeRabbit's latest review targets \`${crResult.botReviewCommitSha.substring(0, 7)}\`; PR HEAD is \`${headSha.substring(0, 7)}\` — inline comments may be stale until the bot re-reviews.`,
+          ),
+        );
+      }
     }
 
     // Check for bot rate-limit signals (e.g. CodeRabbit posting "review paused")
@@ -304,7 +315,7 @@ export async function setupWorkdirAndManagers(
     if (lockStatus.isLocked && !lockStatus.isOurs) {
       console.log(chalk.yellow(`⚠ Another prr instance is working on this PR`));
       console.log(chalk.gray(`  Instance: ${lockStatus.holder?.instanceId} on ${lockStatus.holder?.hostname}`));
-      console.log(chalk.gray(`  Claimed issues: ${lockStatus.claimedIssues.length}`));
+      console.log(chalk.gray(`  Claimed issues: ${formatNumber(lockStatus.claimedIssues.length)}`));
       console.log(chalk.gray(`  We will avoid those issues`));
     }
   }
@@ -313,7 +324,7 @@ export async function setupWorkdirAndManagers(
   // WHY: Lessons about files that no longer exist are useless clutter
   const prunedDeletedFiles = LessonsAPI.Prune.pruneDeletedFiles(lessonsContext, workdir);
   if (prunedDeletedFiles > 0) {
-    console.log(chalk.gray(`Pruned ${prunedDeletedFiles} lessons for deleted files`));
+    console.log(chalk.gray(`Pruned ${formatNumber(prunedDeletedFiles)} lessons for deleted files`));
     await LessonsAPI.Save.save(lessonsContext);
   }
   

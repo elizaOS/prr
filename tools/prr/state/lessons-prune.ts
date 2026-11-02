@@ -7,6 +7,7 @@ import { join, dirname, relative } from 'path';
 import { homedir } from 'os';
 import { readdirSync, statSync } from 'fs';
 import chalk from 'chalk';
+import { formatNumber } from '../../../shared/logger.js';
 import type { LessonsContext, LessonsStore } from './lessons-context.js';
 import * as Normalize from './lessons-normalize.js';
 import * as Parse from './lessons-parse.js';
@@ -476,7 +477,7 @@ export async function tidyAllLessons(): Promise<void> {
     return;
   }
 
-  console.log(chalk.cyan(`\nFound ${jsonFiles.length} lesson file(s)\n`));
+  console.log(chalk.cyan(`\nFound ${formatNumber(jsonFiles.length)} lesson file(s)\n`));
 
   let totalOriginal = 0;
   let totalFinal = 0;
@@ -510,20 +511,38 @@ export async function tidyAllLessons(): Promise<void> {
         await writeFile(filePath, JSON.stringify(store, null, 2), 'utf-8');
         filesModified++;
 
-        console.log(chalk.green(`  ✓ ${relativePath}: ${originalTotal} → ${finalTotal} lessons (removed ${removed})`));
-        if (stats.removedNormalize > 0) console.log(chalk.gray(`      ${stats.removedNormalize} failed normalization (garbage/malformed)`));
-        if (stats.removedDuplicate > 0) console.log(chalk.gray(`      ${stats.removedDuplicate} duplicates`));
-        if (stats.removedTransient > 0) console.log(chalk.gray(`      ${stats.removedTransient} transient/infra errors`));
-        if (stats.removedRelative > 0) console.log(chalk.gray(`      ${stats.removedRelative} relative references`));
+        console.log(
+          chalk.green(
+            `  ✓ ${relativePath}: ${formatNumber(originalTotal)} → ${formatNumber(finalTotal)} lessons (removed ${formatNumber(removed)})`,
+          ),
+        );
+        if (stats.removedNormalize > 0) {
+          console.log(
+            chalk.gray(`      ${formatNumber(stats.removedNormalize)} failed normalization (garbage/malformed)`),
+          );
+        }
+        if (stats.removedDuplicate > 0) {
+          console.log(chalk.gray(`      ${formatNumber(stats.removedDuplicate)} duplicates`));
+        }
+        if (stats.removedTransient > 0) {
+          console.log(chalk.gray(`      ${formatNumber(stats.removedTransient)} transient/infra errors`));
+        }
+        if (stats.removedRelative > 0) {
+          console.log(chalk.gray(`      ${formatNumber(stats.removedRelative)} relative references`));
+        }
       } else {
-        console.log(chalk.gray(`  - ${relativePath}: ${originalTotal} lessons (already clean)`));
+        console.log(chalk.gray(`  - ${relativePath}: ${formatNumber(originalTotal)} lessons (already clean)`));
       }
     } catch (e) {
       console.log(chalk.red(`  ✗ ${relativePath}: ${e}`));
     }
   }
 
-  console.log(chalk.cyan(`\n  Summary: ${totalOriginal} → ${totalFinal} lessons total (removed ${totalRemoved} across ${filesModified} file(s))`));
+  console.log(
+    chalk.cyan(
+      `\n  Summary: ${formatNumber(totalOriginal)} → ${formatNumber(totalFinal)} lessons total (removed ${formatNumber(totalRemoved)} across ${formatNumber(filesModified)} file(s))`,
+    ),
+  );
 
   // Also tidy any .prr/lessons.md in the current working directory
   const cwd = process.cwd();
@@ -660,7 +679,7 @@ async function tidyMarkdownLessonsFile(filePath: string): Promise<void> {
     const removed = originalTotal - finalTotal;
 
     if (removed === 0) {
-      console.log(chalk.gray(`\n  .prr/lessons.md: ${originalTotal} lessons (already clean)`));
+      console.log(chalk.gray(`\n  .prr/lessons.md: ${formatNumber(originalTotal)} lessons (already clean)`));
       return;
     }
 
@@ -697,7 +716,11 @@ async function tidyMarkdownLessonsFile(filePath: string): Promise<void> {
 
     await writeFile(filePath, lines.join('\n') + '\n', 'utf-8');
     // Review: keeps output format consistent with tools expecting trailing newlines.
-    console.log(chalk.green(`\n  .prr/lessons.md: ${originalTotal} → ${finalTotal} lessons (removed ${removed})`));
+    console.log(
+      chalk.green(
+        `\n  .prr/lessons.md: ${formatNumber(originalTotal)} → ${formatNumber(finalTotal)} lessons (removed ${formatNumber(removed)})`,
+      ),
+    );
   } catch (e) {
     console.log(chalk.red(`\n  Failed to tidy .prr/lessons.md: ${e}`));
   }

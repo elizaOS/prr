@@ -4,7 +4,7 @@
  * check so we don't prompt for password when remote has no credentials (see git-conflicts.ts).
  */
 import type { SimpleGit } from 'simple-git';
-import { debug } from '../logger.js';
+import { debug, formatNumber } from '../logger.js';
 import { abortMerge } from './git-merge.js';
 import { fetchOriginBranch, type FetchOptions } from './git-conflicts.js';
 
@@ -30,10 +30,19 @@ export async function pullLatest(
     try {
       await git.stash(['push', '-u', '-m', 'prr-auto-stash-before-pull']);
       didStash = true;
-      console.log(`  Stashed ${status.modified.length + status.created.length + status.deleted.length} local changes`);
+      console.log(
+        `  Stashed ${formatNumber(status.modified.length + status.created.length + status.deleted.length)} local changes`,
+      );
     } catch (stashError) {
       debug('Failed to stash', { error: stashError });
-      // Continue anyway - pull might still work
+      console.warn(
+        '  ⚠ Could not stash local changes before pull — aborting pull to avoid merging/rebasing on a dirty tree (resolve or stash manually, then retry).',
+      );
+      return {
+        success: false,
+        error: stashError instanceof Error ? stashError.message : String(stashError),
+        stashLeft: false,
+      };
     }
   }
   
@@ -66,7 +75,9 @@ export async function pullLatest(
     if (ahead > 0 && behind > 0) {
       // Branches have diverged - need to rebase our commits on top of remote
       debug('Branches diverged, rebasing local commits on remote');
-      console.log(`  Rebasing ${ahead} local commit(s) onto ${behind} remote commit(s)...`);
+      console.log(
+        `  Rebasing ${formatNumber(ahead)} local commit(s) onto ${formatNumber(behind)} remote commit(s)...`,
+      );
       
       try {
         await git.rebase([`origin/${branch}`]);
@@ -81,6 +92,9 @@ export async function pullLatest(
           // Don't abort - leave conflicts for programmatic resolution
           // WHY: If we abort, git status shows no conflicts and we can't resolve them
           debug('Rebase has conflicts - leaving in conflicted state for resolution');
+          console.log(
+            '  Hint: resolve conflicted files, then `git rebase --continue`, or `git rebase --abort` to undo.',
+          );
           await restoreStashOnFailure();
           return { success: false, error: `Rebase conflicts detected` };
         }

@@ -19,6 +19,7 @@ import type { LessonsContext } from '../state/lessons-context.js';
 import type { LockConfig } from '../state/lock-functions.js';
 import type { ResultCode, Runner } from '../../../shared/runners/types.js';
 import * as LessonsAPI from '../state/lessons-index.js';
+import { formatNumber } from '../../../shared/logger.js';
 
 /**
  * Heuristic: issue is likely "create this file" (e.g. missing test file).
@@ -391,7 +392,9 @@ export function validateDismissalExplanation(
   }
 
   if (explanation.length < MIN_EXPLANATION_LENGTH) {
-    console.warn(`Explanation too short (${explanation.length} chars) for ${commentPath}:${commentLine || '?'}: "${explanation}" - treating as unresolved`);
+    console.warn(
+      `Explanation too short (${formatNumber(explanation.length)} chars) for ${commentPath}:${commentLine || '?'}: "${explanation}" - treating as unresolved`,
+    );
     return false;
   }
 

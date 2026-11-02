@@ -124,7 +124,7 @@ export async function runSplitExec(
   // Prefetching every split branch caused "not found" noise and invalid refspecs when names contained `:`.
   const cloneAdditionalBranches =
     plan.targetBranch !== plan.sourceBranch ? [plan.targetBranch] : undefined;
-  // No spinner during clone — git clone/fetch output is shown directly.
+  // No spinner during clone — WHY: git streams clone/fetch progress to the TTY; ora redraws the line and interferes. Post-clone uses ora.
   const { git } = await cloneOrUpdate(cloneUrl, plan.sourceBranch, workdir, config.githubToken, {
     additionalBranches: cloneAdditionalBranches,
   });

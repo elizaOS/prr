@@ -46,8 +46,14 @@ const COMMITS_LINE_REGEX = /\*\*Commits:\*\*\s*(.+?)(?:\n|$)/i;
 const COMMIT_BULLET_REGEX = /^\s*[-*]\s+`([a-fA-F0-9]{7,40})`/;
 /** **Files:** section header */
 const FILES_LINE_REGEX = /\*\*Files:\*\*/i;
+/** **Commits:** section header (bullets may follow on subsequent lines). */
+const COMMITS_SECTION_REGEX = /\*\*Commits:\*\*/i;
 /** Bullet with backtick-wrapped path; we only treat as file if it looks like a path (has / or .ext), not a commit SHA. */
 const FILE_BULLET_REGEX = /^\s*[-*]\s+`([^`]+)`/;
+/** Plain bullet path (no backticks), e.g. `  - packages/foo/bar.ts` — common in LLM-generated plans. */
+const FILE_BULLET_PLAIN_REGEX = /^\s*[-*]\s+(\S.*)$/;
+/** Commit SHA on its own bullet line without backticks. */
+const COMMIT_BULLET_PLAIN_REGEX = /^\s*[-*]\s+([0-9a-f]{7,40})\s*$/i;
 function looksLikePath(s: string): boolean {
   const t = s.trim();
   if (/^[a-fA-F0-9]{7,40}$/.test(t)) return false;
@@ -205,15 +211,50 @@ function parseSplits(body: string): ParsedSplit[] {
     let commits: string[] = [];
     const rawCommitLines: string[] = [];
     let inFilesSection = false;
+    let inCommitsSection = false;
     i++;
     while (i < lines.length && !lines[i].match(/^###\s+\d+\./) && !lines[i].startsWith('## ')) {
       const line = lines[i];
       if (line.match(/\*\*\w+:\*\*/)) {
-        if (line.match(FILES_LINE_REGEX)) inFilesSection = true;
-        else inFilesSection = false;
+        if (line.match(FILES_LINE_REGEX)) {
+          inFilesSection = true;
+          inCommitsSection = false;
+        } else if (line.match(COMMITS_SECTION_REGEX)) {
+          inFilesSection = false;
+          inCommitsSection = true;
+          const commitsMatch = line.match(COMMITS_LINE_REGEX);
+          if (commitsMatch) {
+            const inline = parseCommitsLine(commitsMatch[1]);
+            if (inline.length > 0) commits.push(...inline);
+            rawCommitLines.push(line);
+          }
+        } else {
+          inFilesSection = false;
+          inCommitsSection = false;
+        }
       } else if (inFilesSection) {
-        const fileMatch = line.match(FILE_BULLET_REGEX);
-        if (fileMatch && looksLikePath(fileMatch[1])) files.push(fileMatch[1].trim());
+        const fileBacktick = line.match(FILE_BULLET_REGEX);
+        if (fileBacktick && looksLikePath(fileBacktick[1])) {
+          files.push(fileBacktick[1].trim());
+        } else {
+          const filePlain = line.match(FILE_BULLET_PLAIN_REGEX);
+          if (filePlain) {
+            const cand = filePlain[1].trim();
+            if (looksLikePath(cand)) files.push(cand);
+          }
+        }
+      } else if (inCommitsSection) {
+        const bulletBacktick = line.match(COMMIT_BULLET_REGEX);
+        if (bulletBacktick) {
+          commits.push(bulletBacktick[1]);
+          rawCommitLines.push(line);
+        } else {
+          const bulletPlain = line.match(COMMIT_BULLET_PLAIN_REGEX);
+          if (bulletPlain && isValidCommitSha(bulletPlain[1])) {
+            commits.push(bulletPlain[1].toLowerCase());
+            rawCommitLines.push(line);
+          }
+        }
       }
       const prTitleMatch = line.match(PR_TITLE_REGEX);
       if (prTitleMatch) prTitle = (prTitleMatch[1] ?? prTitleMatch[2] ?? '').trim() || null;
@@ -221,17 +262,20 @@ function parseSplits(body: string): ParsedSplit[] {
       if (routeMatch) routeToPrNumber = parseInt(routeMatch[1], 10);
       const newMatch = line.match(NEW_PR_REGEX);
       if (newMatch) newBranch = newMatch[1].trim();
-      const commitsMatch = line.match(COMMITS_LINE_REGEX);
-      if (commitsMatch) {
-        inFilesSection = false;
-        const inline = parseCommitsLine(commitsMatch[1]);
-        if (inline.length > 0) commits.push(...inline);
-        rawCommitLines.push(line);
-      } else {
-        const bulletMatch = line.match(COMMIT_BULLET_REGEX);
-        if (bulletMatch) {
-          commits.push(bulletMatch[1]);
+      if (!line.match(COMMITS_SECTION_REGEX)) {
+        const commitsMatch = line.match(COMMITS_LINE_REGEX);
+        if (commitsMatch) {
+          inFilesSection = false;
+          inCommitsSection = false;
+          const inline = parseCommitsLine(commitsMatch[1]);
+          if (inline.length > 0) commits.push(...inline);
           rawCommitLines.push(line);
+        } else if (!inCommitsSection) {
+          const bulletMatch = line.match(COMMIT_BULLET_REGEX);
+          if (bulletMatch) {
+            commits.push(bulletMatch[1]);
+            rawCommitLines.push(line);
+          }
         }
       }
       i++;

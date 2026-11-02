@@ -21,6 +21,46 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929';
 export const DEFAULT_OPENAI_MODEL = 'gpt-4o';
 
 /**
+ * NVIDIA NIM / Build OpenAI-compatible API root (see @elizaos/plugin-nvidiacloud).
+ */
+export const NVIDIA_API_BASE_URL = 'https://integrate.api.nvidia.com/v1';
+
+/**
+ * Default chat model for PRR when `PRR_LLM_PROVIDER=nvidiacloud` and `PRR_LLM_MODEL` unset.
+ * WHY: Plugin README lists reliable XML/control choices; 405B is the strong default for review/fix work.
+ */
+export const DEFAULT_NVIDIA_LLM_MODEL = 'meta/llama-3.1-405b-instruct';
+
+/**
+ * OpenRouter OpenAI-compatible API root (see @elizaos/plugin-openrouter).
+ */
+export const OPENROUTER_API_BASE_URL = 'https://openrouter.ai/api/v1';
+
+/**
+ * Default chat model for PRR when `PRR_LLM_PROVIDER=openrouter` and `PRR_LLM_MODEL` unset.
+ * WHY: Matches plugin’s fast default family (`google/gemini-2.0-flash-001` in README fallbacks).
+ */
+export const DEFAULT_OPENROUTER_LLM_MODEL = 'google/gemini-2.0-flash-001';
+
+/**
+ * Ollama OpenAI-compatible bridge default (`ollama serve` — see Ollama docs for `/v1`).
+ * WHY 127.0.0.1: Matches common local bind; override with **`OLLAMA_BASE_URL`** for Docker / remote.
+ */
+export const OLLAMA_OPENAI_COMPAT_BASE_URL = 'http://127.0.0.1:11434/v1';
+
+/**
+ * LM Studio local server OpenAI-compatible default (Developer tab → Server).
+ * WHY 1234: Documented default port; override with **`LMSTUDIO_BASE_URL`**.
+ */
+export const LMSTUDIO_OPENAI_COMPAT_BASE_URL = 'http://127.0.0.1:1234/v1';
+
+/**
+ * Default chat model when **`PRR_LLM_PROVIDER=ollama`** and **`PRR_LLM_MODEL`** unset.
+ * WHY: Common tag in Ollama docs; operators should set **`PRR_LLM_MODEL`** to a model they **`ollama pull`**’d.
+ */
+export const DEFAULT_OLLAMA_LLM_MODEL = 'llama3.2';
+
+/**
  * Default LLM model for ElizaCloud provider.
  * ElizaCloud is an OpenAI-compatible gateway that routes to multiple providers.
  * Eliza Cloud uses owner/model IDs (e.g. anthropic/claude-sonnet-4-5-20250929).
@@ -47,12 +87,15 @@ export type ElizaCloudSkipReason = 'timeout' | 'zero-fix-rate';
  * Model IDs to skip when using ElizaCloud, with reason. WHY: Audits showed these models
  * 500/timeout repeatedly or had 0% fix rate. Timeout-only models may be retried after cooldown
  * (transient gateway issues); zero-fix-rate are skipped for audit (pill-output #2).
+ *
+ * **Maintainer refresh:** When **RESULTS SUMMARY → Model Performance** shows a model at **0%** verified
+ * fixes across meaningful attempts, add it here with **`ELIZACLOUD_SKIP_REASON`** **`zero-fix-rate`** and a
+ * short evidence comment. **Last reviewed:** 2026-04-12 — removed **`anthropic/claude-sonnet-4.5`** (dot alias; use catalog **`claude-sonnet-4-5-20250929`**). Prior 2026-04-08: no new static entries from CI conflict runs.
  */
 export const ELIZACLOUD_SKIP_MODEL_IDS: readonly string[] = [
   'openai/gpt-5.2-codex',
   'anthropic/claude-3-opus',
   'openai/gpt-4.1',
-  'anthropic/claude-sonnet-4.5',
   'openai/gpt-5.1-codex-max',
   'anthropic/claude-3.7-sonnet',
   'openai/gpt-4o',
@@ -89,12 +132,49 @@ export function getElizaCloudSkipReason(modelId: string): ElizaCloudSkipReason {
 let loggedElizacloudIncludeModels = false;
 
 let loggedElizacloudExtraSkip = false;
+let loggedElizacloudExtraSkipInvalid = false;
+
+/** Skip-list ids must be sane strings (no `//`, bounded length) — avoids junk env breaking merges. */
+function isPlausibleSkipListModelId(id: string): boolean {
+  if (!id || id.length > 200 || id.includes('//')) return false;
+  return /^[A-Za-z0-9._\/-]+$/.test(id);
+}
+
+function skipListCanonicalKeys(id: string): string[] {
+  const trimmed = id.trim();
+  const keys = new Set<string>([trimmed, trimmed.toLowerCase()]);
+  const noPrefix = trimmed.replace(/^(openai|anthropic|google|alibaba|qwen)\//i, '');
+  keys.add(noPrefix);
+  keys.add(noPrefix.toLowerCase());
+  const last = (trimmed.split('/').pop() ?? trimmed).toLowerCase();
+  keys.add(last);
+  keys.add(last.replace(/[^a-z0-9]/g, ''));
+  return [...keys];
+}
+
+function includeTokenMatchesSkipId(includeTokens: Set<string>, skipId: string): boolean {
+  const skipKeys = new Set(skipListCanonicalKeys(skipId));
+  for (const token of includeTokens) {
+    for (const k of skipListCanonicalKeys(token)) {
+      if (skipKeys.has(k)) return true;
+    }
+  }
+  return false;
+}
 
 export function getEffectiveElizacloudSkipModelIds(): string[] {
   const extraRaw = process.env.PRR_ELIZACLOUD_EXTRA_SKIP_MODELS?.trim();
-  const extraIds = extraRaw
+  const extraParsed = extraRaw
     ? extraRaw.split(',').map((s) => s.trim()).filter(Boolean)
     : [];
+  const extraDropped = extraParsed.filter((id) => !isPlausibleSkipListModelId(id));
+  const extraIds = extraParsed.filter((id) => isPlausibleSkipListModelId(id));
+  if (extraDropped.length > 0 && !loggedElizacloudExtraSkipInvalid) {
+    loggedElizacloudExtraSkipInvalid = true;
+    console.warn(
+      `PRR_ELIZACLOUD_EXTRA_SKIP_MODELS: ignored ${extraDropped.length.toLocaleString()} malformed id(s) (empty, //, or invalid chars).`,
+    );
+  }
   const mergedBase = [...new Set([...ELIZACLOUD_SKIP_MODEL_IDS, ...extraIds])];
   if (extraIds.length > 0 && !loggedElizacloudExtraSkip) {
     loggedElizacloudExtraSkip = true;
@@ -105,9 +185,13 @@ export function getEffectiveElizacloudSkipModelIds(): string[] {
 
   const raw = process.env.PRR_ELIZACLOUD_INCLUDE_MODELS?.trim();
   if (!raw) return mergedBase;
-  const include = new Set(raw.split(',').map(s => s.trim()).filter(Boolean));
-  const match = (id: string) => include.has(id) || include.has(id.replace(/^(openai|anthropic|google)\//, ''));
-  const filtered = mergedBase.filter(id => !match(id));
+  const include = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s && isPlausibleSkipListModelId(s)),
+  );
+  const filtered = mergedBase.filter((id) => !includeTokenMatchesSkipId(include, id));
   if (!loggedElizacloudIncludeModels) {
     loggedElizacloudIncludeModels = true;
     const before = mergedBase.length;

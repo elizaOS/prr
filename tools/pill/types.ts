@@ -1,13 +1,34 @@
 export interface PillConfig {
   targetDir: string;
-  llmProvider: 'anthropic' | 'openai' | 'elizacloud';
+  llmProvider:
+    | 'anthropic'
+    | 'openai'
+    | 'elizacloud'
+    | 'nvidiacloud'
+    | 'openrouter'
+    | 'ollama'
+    | 'lmstudio';
   auditModel: string;
   llmModel: string;
   elizacloudApiKey?: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
+  nvidiaApiKey?: string;
+  openrouterApiKey?: string;
+  ollamaApiKey?: string;
+  lmstudioApiKey?: string;
   /** '' | undefined = output.log; 'story' = story-output.log; 'pill' = pill-output.log */
   logPrefix?: string;
+  /**
+   * Absolute path to the output log to audit. When unset, uses `join(targetDir, logPrefix-output.log | output.log)`.
+   * CLI `--output-log` or env `PILL_OUTPUT_LOG_PATH`.
+   */
+  outputLogPath?: string;
+  /**
+   * Absolute path to the prompts log. When unset, uses default name under targetDir.
+   * CLI `--prompts-log` or env `PILL_PROMPTS_LOG_PATH`.
+   */
+  promptsLogPath?: string;
   /** Override path for pill-output.md (e.g. from --instructions-out). */
   instructionsOut?: string;
   /** Max context tokens for the audit request (user + system). Overridable via PILL_CONTEXT_BUDGET_TOKENS. Default 35k; use 20k for small-context models. */
@@ -28,6 +49,11 @@ export interface PillConfig {
   promptsOnly: boolean;
   dryRun: boolean;
   verbose: boolean;
+  /**
+   * Short status lines during `assembleContext` (large log story-read, prompts digest).
+   * Wired from the orchestrator spinner when not verbose.
+   */
+  onAssembleProgress?: (message: string) => void;
 }
 
 export interface PillContext {

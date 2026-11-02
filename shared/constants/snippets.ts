@@ -20,3 +20,9 @@ export const CODE_SNIPPET_CONTEXT_AFTER = 30;
  * Default line range when only start line is provided (for bugbot comments).
  */
 export const DEFAULT_LINE_RANGE_SIZE = 20;
+
+// Per-model **character** budgets for injected file text live in `shared/prompt-budget.ts`
+// (`computeBudget`, `fitToBudget`). **WHY keep these line constants:** `getCodeSnippet` still
+// builds an initial window from `CODE_SNIPPET_CONTEXT_*` and `MAX_SNIPPET_LINES`, then **shrinks**
+// with `computeBudget` if the numbered slice is still too large — line caps anchor on review
+// structure; char caps respect the active model gateway.
