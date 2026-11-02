@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "fetchedAtIso": "2026-10-26T06:24:29.632Z",
+  "fetchedAtIso": "2026-11-02T06:16:20.702Z",
   "recommendedRefreshDays": 7,
   "sources": [
     {
@@ -15,7 +15,7 @@
       "url": "https://developers.openai.com/api/docs/models/all",
       "ok": true,
       "httpStatus": 200,
-      "idCount": 122
+      "idCount": 123
     }
   ],
   "providers": {
@@ -51,13 +51,13 @@
         "babbage-002",
         "chatgpt-4o",
         "chatgpt-4o-latest",
+        "chatgpt-api-credits",
         "chatgpt-docs",
         "chatgpt-image-latest",
         "chatgpt-plugin",
         "chatgpt-preview",
         "chatgpt-slack-and-teams",
         "chatgpt-staging",
-        "chatgpt-through-a-gateway",
         "chatgpt-work-cloud-security",
         "chatgpt-work-local-security",
         "chatgpt-work-overview",
@@ -124,6 +124,7 @@
         "gpt-6-sol",
         "gpt-6.1",
         "gpt-6.1-sol",
+        "gpt-6.1-terra",
         "gpt-audio",
         "gpt-audio-1.5",
         "gpt-audio-mini",
@@ -178,13 +179,13 @@
       "babbage002": "babbage-002",
       "chatgpt4o": "chatgpt-4o",
       "chatgpt4olatest": "chatgpt-4o-latest",
+      "chatgptapicredits": "chatgpt-api-credits",
       "chatgptdocs": "chatgpt-docs",
       "chatgptimagelatest": "chatgpt-image-latest",
       "chatgptplugin": "chatgpt-plugin",
       "chatgptpreview": "chatgpt-preview",
       "chatgptslackandteams": "chatgpt-slack-and-teams",
       "chatgptstaging": "chatgpt-staging",
-      "chatgptthroughagateway": "chatgpt-through-a-gateway",
       "chatgptworkcloudsecurity": "chatgpt-work-cloud-security",
       "chatgptworklocalsecurity": "chatgpt-work-local-security",
       "chatgptworkoverview": "chatgpt-work-overview",
@@ -247,6 +248,7 @@
       "gpt6": "gpt-6",
       "gpt6.1": "gpt-6.1",
       "gpt6.1sol": "gpt-6.1-sol",
+      "gpt6.1terra": "gpt-6.1-terra",
       "gpt6astra": "gpt-6-astra",
       "gpt6family": "gpt-6-family",
       "gpt6luna": "gpt-6-luna",
